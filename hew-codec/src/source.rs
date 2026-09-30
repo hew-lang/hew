@@ -21,6 +21,9 @@ pub struct Source<'t> {
     stack: Vec<Frame<'t>>,
     staged: Option<Value>,
     path: Vec<String>,
+    /// The most recently staged sequence element or map key, rendered, for
+    /// [`Source::duplicate`].
+    last: String,
 }
 
 #[derive(Debug)]
@@ -90,6 +93,7 @@ impl<'t> Source<'t> {
             stack: Vec::new(),
             staged: Some(value),
             path: Vec::new(),
+            last: String::new(),
         }
     }
 
@@ -362,6 +366,7 @@ impl<'t> Source<'t> {
             panic!("hew-codec: `seq_next` outside a sequence or before its element was read");
         };
         if let Some(item) = items.next() {
+            self.last = item.render_key();
             let segment = format!("[{index}]");
             *index += 1;
             *open = true;
@@ -440,7 +445,8 @@ impl<'t> Source<'t> {
             panic!("hew-codec: `map_next` outside a map or before its entry was read");
         };
         if let Some((key, value)) = entries.next() {
-            let segment = format!("[{}]", key.render_key());
+            self.last = key.render_key();
+            let segment = format!("[{}]", self.last);
             *state = MapState::Key { value, segment };
             self.staged = Some(key);
             Ok(true)
@@ -451,13 +457,23 @@ impl<'t> Source<'t> {
         }
     }
 
+    /// A walk found the element or key it just read already present in the
+    /// collection it is building (equal under the type's own `Eq`).
+    #[must_use]
+    pub fn duplicate(&self) -> DecodeError {
+        DecodeError::Duplicate {
+            path: self.path(),
+            key: self.last.clone(),
+        }
+    }
+
     /// The key a record field or variant is read under matches `member`.
     fn is_key(&self, table: &Table<'_>, member: &Member<'_>, key: &Value) -> bool {
         match key {
             Value::Int(tag) if table.tagged && !self.format.is_text() => {
                 *tag == i128::from(member.tag)
             }
-            Value::Str(text) if !table.tagged || self.format.is_text() => text == member.key,
+            Value::Str(text) if !table.tagged || self.format.is_text() => text == member.key(),
             _ => false,
         }
     }
@@ -469,10 +485,10 @@ impl<'t> Source<'t> {
             Value::Map(entries) => entries,
             other => return Err(self.mismatch("map", &other)),
         };
-        let mut values: Vec<Option<Value>> = vec![None; table.members.len()];
+        let mut values: Vec<Option<Value>> = vec![None; table.members().len()];
         for (key, value) in entries {
             if let Some(index) = table
-                .members
+                .members()
                 .iter()
                 .position(|member| !member.has(Member::SKIP) && self.is_key(&table, member, &key))
             {
@@ -503,13 +519,13 @@ impl<'t> Source<'t> {
             panic!("hew-codec: `record_next` outside a record or before its field was read");
         };
         let index = *next;
-        let Some(member) = table.members.get(index) else {
+        let Some(member) = table.members().get(index) else {
             self.stack.pop();
             self.complete();
             return Ok(None);
         };
         *next += 1;
-        let segment = format!(".{}", member.key);
+        let segment = format!(".{}", member.key());
         let value = match values[index].take() {
             Some(value) => value,
             None if member.has(Member::ACCEPT_ABSENT) || member.has(Member::SKIP) => Value::Null,
@@ -546,7 +562,7 @@ impl<'t> Source<'t> {
             other => return Err(self.mismatch("variant", &other)),
         };
         let Some(index) = table
-            .members
+            .members()
             .iter()
             .position(|member| self.is_key(&table, member, &key))
         else {
@@ -558,19 +574,19 @@ impl<'t> Source<'t> {
                 },
             });
         };
-        let member = &table.members[index];
+        let member = &table.members()[index];
         match (member.has(Member::PAYLOAD), payload) {
             (true, Some(payload)) => {
-                self.path.push(format!(".{}", member.key));
+                self.path.push(format!(".{}", member.key()));
                 self.staged = Some(payload);
                 self.stack.push(Frame::Variant { payload: true });
             }
             (false, None) => self.stack.push(Frame::Variant { payload: false }),
             (true, None) => {
-                return Err(self.type_error(format!("{} with a payload", member.key), key.kind()))
+                return Err(self.type_error(format!("{} with a payload", member.key()), key.kind()))
             }
             (false, Some(_)) => {
-                return Err(self.type_error(format!("unit variant {}", member.key), "map"))
+                return Err(self.type_error(format!("unit variant {}", member.key()), "map"))
             }
         }
         Ok(index)

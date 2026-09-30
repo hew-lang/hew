@@ -83,7 +83,7 @@ impl<'t> Sink<'t> {
         if table.tagged && !self.format.is_text() {
             Value::Int(member.tag.into())
         } else {
-            Value::Str(member.key.to_owned())
+            Value::Str(member.key().to_owned())
         }
     }
 
@@ -211,7 +211,7 @@ impl<'t> Sink<'t> {
     pub fn record_begin(&mut self, table: Table<'t>) {
         self.stack.push(Frame::Record {
             table,
-            fields: Vec::with_capacity(table.members.len()),
+            fields: Vec::with_capacity(table.members().len()),
             field: None,
         });
     }
@@ -220,7 +220,7 @@ impl<'t> Sink<'t> {
     pub fn field(&mut self, index: usize) {
         match self.stack.last_mut() {
             Some(Frame::Record { table, field, .. })
-                if field.is_none() && index < table.members.len() =>
+                if field.is_none() && index < table.members().len() =>
             {
                 *field = Some(index);
             }
@@ -243,14 +243,14 @@ impl<'t> Sink<'t> {
         };
         fields.retain(|(index, value)| {
             !(matches!(value, Value::Null)
-                && (self.format == Format::Toml || table.members[*index].has(Member::OMIT_NULL)))
+                && (self.format == Format::Toml || table.members()[*index].has(Member::OMIT_NULL)))
         });
         if table.tagged && !self.format.is_text() {
-            fields.sort_by_key(|(index, _)| table.members[*index].tag);
+            fields.sort_by_key(|(index, _)| table.members()[*index].tag);
         }
         let entries = fields
             .into_iter()
-            .map(|(index, value)| (self.member_key(&table, &table.members[index]), value))
+            .map(|(index, value)| (self.member_key(&table, &table.members()[index]), value))
             .collect();
         self.emit(Value::Map(entries));
     }
@@ -259,7 +259,7 @@ impl<'t> Sink<'t> {
     /// one payload value (a sequence for several, a record for named fields).
     pub fn variant(&mut self, table: Table<'t>, index: usize) {
         assert!(
-            index < table.members.len(),
+            index < table.members().len(),
             "hew-codec: variant index out of range"
         );
         self.stack.push(Frame::Variant {
@@ -280,7 +280,7 @@ impl<'t> Sink<'t> {
         else {
             panic!("hew-codec: `variant_end` without an open variant");
         };
-        let key = self.member_key(&table, &table.members[index]);
+        let key = self.member_key(&table, &table.members()[index]);
         self.emit(match payload {
             Some(payload) => Value::Map(vec![(key, payload)]),
             None => key,

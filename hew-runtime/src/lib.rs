@@ -294,6 +294,9 @@ pub mod xnode_serial;
 /// CBOR `bstr` payload slot unchanged.
 pub mod cbor_serial;
 
+/// The serialization event ABI over `hew-codec` that compiled walks call.
+pub mod codec;
+
 /// Managed-value adapters for the generated wire walks, and the JSON/YAML
 /// bridge from the binary walk onto `hew-codec`.
 pub mod wire_native;

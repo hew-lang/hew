@@ -97,7 +97,7 @@ fn encode(shape: Shape, value: &D, sink: &mut Sink<'static>) {
         (Shape::Rec(table, fields), D::Rec(values)) => {
             sink.record_begin(*table);
             for (index, (field, value)) in fields.iter().zip(values).enumerate() {
-                if table.members[index].has(Member::SKIP) {
+                if table.members()[index].has(Member::SKIP) {
                     continue;
                 }
                 sink.field(index);
@@ -241,48 +241,34 @@ fn sorted_set(items: &[D]) -> D {
 // ── The shapes of a realistic configuration ────────────────────────────────
 
 const fn m(key: &'static str, tag: u64, flags: u32) -> Member<'static> {
-    Member { key, tag, flags }
+    Member::new(key, tag, flags)
 }
 
-static PAIR: Table<'static> = Table {
-    name: "Pair",
-    members: &[m("left", 1, 0), m("right", 2, 0)],
-    tagged: false,
-};
+static PAIR: Table<'static> = Table::new(&[m("left", 1, 0), m("right", 2, 0)], false);
 // A generic `Pair<i64>`: the instantiation's fields are the shape.
 const PAIR_I64: Shape = Shape::Rec(&PAIR, &[Shape::I64, Shape::I64]);
 
-static TREE: Table<'static> = Table {
-    name: "Tree",
-    members: &[m("label", 1, 0), m("children", 2, 0)],
-    tagged: false,
-};
+static TREE: Table<'static> = Table::new(&[m("label", 1, 0), m("children", 2, 0)], false);
 fn tree() -> Shape {
     Shape::Rec(&TREE, &[Shape::Str, Shape::Vec(&Shape::Lazy(tree))])
 }
 
-static RESULT: Table<'static> = Table {
-    name: "Result",
-    members: &[m("Ok", 0, Member::PAYLOAD), m("Err", 1, Member::PAYLOAD)],
-    tagged: false,
-};
+static RESULT: Table<'static> = Table::new(
+    &[m("Ok", 0, Member::PAYLOAD), m("Err", 1, Member::PAYLOAD)],
+    false,
+);
 const RESULT_I64_STR: Shape = Shape::Enum(&RESULT, &[Some(Shape::I64), Some(Shape::Str)]);
 
-static RECT: Table<'static> = Table {
-    name: "Rect",
-    members: &[m("w", 1, 0), m("h", 2, 0)],
-    tagged: false,
-};
-static FIGURE: Table<'static> = Table {
-    name: "Figure",
-    members: &[
+static RECT: Table<'static> = Table::new(&[m("w", 1, 0), m("h", 2, 0)], false);
+static FIGURE: Table<'static> = Table::new(
+    &[
         m("Circle", 1, Member::PAYLOAD),
         m("Rect", 2, Member::PAYLOAD),
         m("Line", 3, Member::PAYLOAD),
         m("Empty", 4, 0),
     ],
-    tagged: false,
-};
+    false,
+);
 const FIGURE_SHAPE: Shape = Shape::Enum(
     &FIGURE,
     &[
@@ -293,9 +279,8 @@ const FIGURE_SHAPE: Shape = Shape::Enum(
     ],
 );
 
-static CONFIG: Table<'static> = Table {
-    name: "Config",
-    members: &[
+static CONFIG: Table<'static> = Table::new(
+    &[
         m("serviceName", 1, 0),
         m("port", 2, 0),
         m("tags", 3, 0),
@@ -313,8 +298,8 @@ static CONFIG: Table<'static> = Table {
         m("cached", 15, Member::SKIP | Member::ACCEPT_ABSENT),
         m("extra", 16, 0),
     ],
-    tagged: false,
-};
+    false,
+);
 fn config_shape() -> Shape {
     Shape::Rec(
         &CONFIG,
@@ -401,7 +386,12 @@ fn config_round_trips_through_every_format() {
             } else {
                 (normalize(got), normalize(want))
             };
-            assert_eq!(got, want, "{format:?} field {}", CONFIG.members[index].key);
+            assert_eq!(
+                got,
+                want,
+                "{format:?} field {}",
+                CONFIG.members()[index].key()
+            );
         }
         // Output is deterministic: encoding the decoded value is byte-identical.
         assert_eq!(
@@ -687,25 +677,21 @@ fn every_format_bounds_nesting_at_the_same_depth() {
 
 // ── Tagged (`#[wire]`) types and presence ───────────────────────────────────
 
-static PACKET: Table<'static> = Table {
-    name: "Packet",
-    members: &[
+static PACKET: Table<'static> = Table::new(
+    &[
         m("id", 1, 0),
         m("note", 3, Member::ACCEPT_ABSENT | Member::OMIT_NULL),
         m("reply_to", 2, 0),
     ],
-    tagged: true,
-};
+    true,
+);
 const PACKET_SHAPE: Shape = Shape::Rec(
     &PACKET,
     &[Shape::I64, Shape::Opt(&Shape::Str), Shape::Opt(&Shape::I64)],
 );
 
-static EVENT: Table<'static> = Table {
-    name: "Event",
-    members: &[m("Joined", 1, Member::PAYLOAD), m("Idle", 7, 0)],
-    tagged: true,
-};
+static EVENT: Table<'static> =
+    Table::new(&[m("Joined", 1, Member::PAYLOAD), m("Idle", 7, 0)], true);
 const EVENT_SHAPE: Shape = Shape::Enum(&EVENT, &[Some(Shape::Str), None]);
 
 #[test]
@@ -796,11 +782,10 @@ fn canonical_order_is_per_format() {
     );
 }
 
-static MAYBE_PAIR: Table<'static> = Table {
-    name: "MaybePair",
-    members: &[m("left", 1, 0), m("right", 2, Member::ACCEPT_ABSENT)],
-    tagged: false,
-};
+static MAYBE_PAIR: Table<'static> = Table::new(
+    &[m("left", 1, 0), m("right", 2, Member::ACCEPT_ABSENT)],
+    false,
+);
 
 #[test]
 fn text_formats_spell_the_same_document() {

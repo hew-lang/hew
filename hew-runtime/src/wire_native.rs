@@ -285,7 +285,7 @@ impl<'d> Desc<'d> {
                         "optional" => Member::ACCEPT_ABSENT | Member::OMIT_NULL,
                         _ => return None,
                     };
-                    members.push(Member { key, tag, flags });
+                    members.push(Member::new(key, tag, flags));
                     fields.push(Self::parse(field.get("d")?, depth + 1)?);
                 }
                 Self::Struct(members, fields)
@@ -305,7 +305,7 @@ impl<'d> Desc<'d> {
                     } else {
                         Member::PAYLOAD
                     };
-                    members.push(Member { key, tag, flags });
+                    members.push(Member::new(key, tag, flags));
                     payloads.push(payload);
                 }
                 Self::Enum(members, payloads)
@@ -316,11 +316,7 @@ impl<'d> Desc<'d> {
 }
 
 fn table<'t>(members: &'t [Member<'t>]) -> Table<'t> {
-    Table {
-        name: "",
-        members,
-        tagged: true,
-    }
+    Table::new(members, true)
 }
 
 /// Replay one value from `source` into `sink`, shaped by `desc`. A variant

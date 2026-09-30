@@ -210,54 +210,6 @@ fn sum(p: Point) -> i64 {
     );
 }
 
-/// The migrator resolves its rewrites from the checker's own output, so the
-/// downgraded severity must still carry the same kind and suggestions — for
-/// the pattern form as much as the expression form.
-#[test]
-fn migration_mode_downgrades_both_bare_variant_spellings_to_warnings() {
-    let parse_result = hew_parser::parse(
-        r"enum Choice {
-    Present(i64);
-    Absent;
-}
-
-fn contextual() -> Choice {
-    Present(7)
-}
-
-fn read(value: Choice) -> i64 {
-    match value {
-        Present(number) => number,
-        Absent => 0,
-    }
-}
-",
-    );
-    assert!(
-        parse_result.errors.is_empty(),
-        "migration fixture should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.set_migration_mode();
-    let output = checker.check_program(&parse_result.program);
-    assert!(
-        output.errors.is_empty(),
-        "migration mode must still type-check a legacy source: {:#?}",
-        output.errors
-    );
-    for kind in [
-        TypeErrorKind::BareVariantExpr,
-        TypeErrorKind::BareVariantPattern,
-    ] {
-        assert!(
-            output.warnings.iter().any(|warning| warning.kind == kind),
-            "migration mode must report {kind:?} as a warning: {:#?}",
-            output.warnings
-        );
-    }
-}
-
 #[test]
 fn bare_variant_expression_suggestions_preserve_expected_type_context() {
     let output = check_source(

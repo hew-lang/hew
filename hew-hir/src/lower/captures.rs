@@ -94,7 +94,7 @@ pub(super) fn collect_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_captures_walk(conn, param_ids, seen, captures, self_id);
         }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             collect_captures_walk(child, param_ids, seen, captures, self_id);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -354,7 +354,7 @@ pub(super) fn collect_general_closure_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_general_closure_captures_walk(conn, outer_bindings, seen, captures);
         }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             collect_general_closure_captures_walk(child, outer_bindings, seen, captures);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {

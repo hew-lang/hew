@@ -429,7 +429,6 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
         Expr::Cast { expr, .. }
         | Expr::PostfixTry(expr)
         | Expr::Await(expr)
-        | Expr::AwaitRestart(expr)
         | Expr::ForkChild { expr, .. } => ast_expr_has_break(&expr.0, query, depth),
 
         // ── Range ─────────────────────────────────────────────────────────

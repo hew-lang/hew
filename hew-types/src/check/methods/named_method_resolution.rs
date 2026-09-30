@@ -896,23 +896,6 @@ impl Checker {
                 // delivery and error type.
                 self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
             }
-            "close" => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorHandleMethodRetired,
-                    "E_ACTOR_HANDLE_METHOD_RETIRED: lambda actor `.close()` is retired".to_string(),
-                    "write `stop(handle); stopped(handle);`".to_string(),
-                    span,
-                );
-                if self.migration_mode {
-                    Ty::Unit
-                } else {
-                    Ty::Error
-                }
-            }
             _ => {
                 // Synthesize args for error recovery.
                 for arg in args {

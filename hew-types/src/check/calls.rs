@@ -2199,28 +2199,6 @@ impl Checker {
                 );
                 return Ty::Error;
             }
-            "close" | "closed" | "supervisor_stop" if !self.declares_function(&func_name) => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                let replacement = if func_name == "closed" {
-                    "stopped(handle)"
-                } else {
-                    "stop(handle); stopped(handle);"
-                };
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorLifecycleRetired,
-                    format!("E_ACTOR_LIFECYCLE_RETIRED: `{func_name}` is retired for actors"),
-                    format!("write `{replacement}` using the original handle expression"),
-                    span,
-                );
-                return if self.migration_mode {
-                    Ty::Unit
-                } else {
-                    Ty::Error
-                };
-            }
             "bytes::from" => {
                 self.check_arity(args, 1, "`bytes.from`", span);
                 if let Some(arg) = args.first() {

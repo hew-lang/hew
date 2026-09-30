@@ -1101,15 +1101,6 @@ fn fmt_restarted_call_roundtrips() {
     exact_roundtrip("fn main() {\n    restarted(sup.worker);\n}\n");
 }
 
-#[test]
-fn await_restart_is_a_targeted_migration_error() {
-    let parsed = parse("fn main() { let w = await_restart sup.worker; }");
-    assert!(parsed.errors.iter().any(|error| {
-        error.kind == hew_parser::ParseDiagnosticKind::AwaitRestartRetired
-            && error.message.contains("E_AWAIT_RESTART_RETIRED")
-    }));
-}
-
 // -----------------------------------------------------------------------
 // Comments preservation
 // -----------------------------------------------------------------------

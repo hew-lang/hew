@@ -618,7 +618,6 @@ impl Checker {
             {
                 "await"
             }
-            Expr::AwaitRestart(_) => "await_restart",
             Expr::Race(_) => "race",
             Expr::Select { .. } => "select",
             Expr::ForkChild { .. } | Expr::ForkBlock { .. } => "fork",

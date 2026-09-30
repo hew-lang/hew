@@ -1555,15 +1555,6 @@ impl Checker {
                 return None;
             }
             Some("start" | "stop" | "crash" | "link" | "down") => {}
-            Some("exit") => {
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorLifecycleRetired,
-                    "E_ACTOR_LIFECYCLE_RETIRED: `#[on(exit)]` is retired".to_string(),
-                    "replace `#[on(exit)]` with `#[on(link)]`".to_string(),
-                    &hook_attr.span,
-                );
-                return self.migration_mode.then_some("link");
-            }
             Some(unknown) => {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,

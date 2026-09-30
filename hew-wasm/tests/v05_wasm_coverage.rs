@@ -8,7 +8,7 @@
 //!
 //! ## Fixture tiers
 //!
-//! **`FIXTURES`** (all 30, excluding the cross-module main): every fixture is
+//! **`FIXTURES`** (all 29, excluding the cross-module main): every fixture is
 //! checked for API validity (no export panic, well-formed JSON, diagnostics array
 //! present).
 //!
@@ -32,7 +32,6 @@ macro_rules! fixture {
 
 const FIXTURES: &[(&str, &str)] = &[
     fixture!("v05_associated_type_projection"),
-    fixture!("v05_async_await"),
     fixture!("v05_attributes"),
     fixture!("v05_closures"),
     fixture!("machines/toggle"),
@@ -71,10 +70,6 @@ const FIXTURES: &[(&str, &str)] = &[
 /// See the LSP fixture classification matrix in `hew-lsp/src/server/mod.rs`
 /// (the "W4.023 Stage 0" comment block) for the authoritative table.
 const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
-    // known-rejected: `async fn` / `await` are not valid Hew syntax; the parser
-    // rejects them.  The corresponding fail-closed LSP test is
-    // `v05_async_await_is_rejected_with_parse_errors`.
-    "v05_async_await",
     // accepted (intentional type error): `obj[key]` on a type that does not
     // implement Indexable — type error by design, exercising error-recovery in
     // the index-expression checker.
@@ -150,7 +145,7 @@ fn is_analysis_error_fixture(name: &str) -> bool {
 
 // ── Fixture count sanity ──────────────────────────────────────────────────
 
-// ── API-valid: all 30 fixtures produce well-formed JSON ───────────────────
+// ── API-valid: all 29 fixtures produce well-formed JSON ───────────────────
 
 #[test]
 fn v05_wasm_coverage_analyze_all_api_valid() {
@@ -199,38 +194,6 @@ fn v05_wasm_coverage_type_check_clean_fixtures() {
 }
 
 // ── Known-error fixtures: dedicated tests documenting the gap ─────────────
-
-/// `async fn` / `await` are not valid Hew syntax.  The parser rejects the
-/// fixture with one or more error-severity, parse-phase diagnostics.  Mirrors
-/// the canonical contract established by
-/// `hew-lsp/.../mod.rs::v05_async_await_is_rejected_with_parse_errors`:
-/// the fixture must produce parse errors; the exact message text is not
-/// contractual (it is a parser-recovery implementation detail).
-#[test]
-fn v05_wasm_coverage_async_await_api_valid() {
-    const FIXTURE: &str = "v05_async_await";
-    let source = include_str!("../../hew-lsp/tests/fixtures/v05_async_await.hew");
-    let json = hew_wasm::analyze(source)
-        .unwrap_or_else(|_| panic!("fixture {FIXTURE}: analyze() export error"));
-    let parsed = parse_json(FIXTURE, "analyze", &json);
-    let diags = parsed["diagnostics"]
-        .as_array()
-        .unwrap_or_else(|| panic!("fixture {FIXTURE}: missing diagnostics array"));
-
-    // Require at least one error-severity, parse-phase diagnostic: the parser
-    // must reject `async fn` / `await` with an error.  Message text is
-    // intentionally not asserted — recovery wording is non-contractual.
-    let parse_errors: Vec<&serde_json::Value> = diags
-        .iter()
-        .filter(|d| d["severity"].as_str() == Some("error") && d["phase"].as_str() == Some("parse"))
-        .collect();
-    assert!(
-        !parse_errors.is_empty(),
-        "fixture {FIXTURE}: expected ≥1 parse-phase error diagnostic; \
-         got {} diagnostics: {diags:?}",
-        diags.len()
-    );
-}
 
 /// Nested closure captures (a closure that captures another closure binding —
 /// `let twice = |x: i32| -> i32 { inc(inc(x)) }` where `inc` is itself a

@@ -897,10 +897,6 @@ impl LowerCtx {
                     result_ty,
                 )
             }
-            Expr::AwaitRestart(inner) => {
-                let _ = inner;
-                return self.unsupported_expr(span, "retired await_restart cannot be lowered");
-            }
             Expr::Await(inner) => {
                 // TCP methods retain their authored wrapper and checked return
                 // type. Their canonical extern call owns native I/O suspension.

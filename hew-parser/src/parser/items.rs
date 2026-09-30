@@ -270,36 +270,6 @@ impl Parser<'_> {
         Some(Item::Function(f))
     }
 
-    /// Reject the retired `async fn` spellings while keeping `async` available
-    /// as an ordinary identifier everywhere else.
-    fn retired_async_fn(&mut self) -> bool {
-        if !matches!(self.peek(), Some(Token::Identifier(name)) if *name == "async") {
-            return false;
-        }
-        let is_generator = matches!(self.peek_at(self.pos + 1), Some(Token::Gen));
-        let is_function = matches!(self.peek_at(self.pos + 1), Some(Token::Fn))
-            || (is_generator && matches!(self.peek_at(self.pos + 2), Some(Token::Fn)));
-        if !is_function {
-            return false;
-        }
-
-        let span = self.peek_span();
-        let (code, kind) = if is_generator {
-            ("E_NO_ASYNC_GEN", ParseDiagnosticKind::NoAsyncGen)
-        } else {
-            ("E_NO_ASYNC_FN", ParseDiagnosticKind::NoAsyncFn)
-        };
-        self.error_at_with_kind_and_hint(
-            format!(
-                "{code}: `async` no longer marks a callable; suspension is inferred from its body"
-            ),
-            span,
-            "delete `async`",
-            kind,
-        );
-        true
-    }
-
     /// Redirect a foreign-language keyword found where an item was expected
     /// to the matching Hew construct, with an actionable hint. Shared by the
     /// bare-item path and the post-visibility-modifier path so both give the
@@ -509,9 +479,6 @@ impl Parser<'_> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
-                        if self.retired_async_fn() {
-                            return None;
-                        }
                         if let Some(Token::Identifier(id)) = self.peek() {
                             let id = *id;
                             if self.foreign_keyword_redirect(id, has_wire_attr) {
@@ -527,13 +494,6 @@ impl Parser<'_> {
             }
             Some(Token::Fn | Token::Gen) => {
                 self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
-            }
-            Some(Token::Identifier("async")) => {
-                if self.retired_async_fn() {
-                    return None;
-                }
-                self.error("expected item declaration".to_string());
-                return None;
             }
             Some(Token::Indirect) => {
                 let mut t = self.parse_indirect_enum(Visibility::Private, &attrs)?;

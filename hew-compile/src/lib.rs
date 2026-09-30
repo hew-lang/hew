@@ -1385,36 +1385,11 @@ fn project_context_for_program(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FrontendParseMode {
-    Strict,
-    Migration,
-}
-
-fn parse_for_frontend(source: &str, mode: FrontendParseMode) -> hew_parser::ParseResult {
-    let mut result = hew_parser::parse(source);
-    if mode == FrontendParseMode::Migration {
-        for error in &mut result.errors {
-            if matches!(
-                error.kind,
-                hew_parser::ParseDiagnosticKind::LegacyPathSeparator
-                    | hew_parser::ParseDiagnosticKind::LegacyTurbofish
-                    | hew_parser::ParseDiagnosticKind::AwaitRestartRetired
-                    | hew_parser::ParseDiagnosticKind::SupervisorStopClauseRetired
-            ) {
-                error.severity = hew_parser::Severity::Warning;
-            }
-        }
-    }
-    result
-}
-
 fn parse_source_with_diagnostics(
     source: &str,
     input: &str,
-    mode: FrontendParseMode,
 ) -> Result<(Program, Vec<FrontendDiagnostic>), FrontendFailure> {
-    let result = parse_for_frontend(source, mode);
+    let result = hew_parser::parse(source);
     let diagnostics = result
         .errors
         .iter()
@@ -1438,8 +1413,7 @@ fn parse_source_with_diagnostics(
 /// Returns [`FrontendFailure`] when parsing reports any error-severity
 /// diagnostic for the supplied source.
 pub fn parse_source(source: &str, input: &str) -> Result<Program, FrontendFailure> {
-    parse_source_with_diagnostics(source, input, FrontendParseMode::Strict)
-        .map(|(program, _)| program)
+    parse_source_with_diagnostics(source, input).map(|(program, _)| program)
 }
 
 fn resolve_imports_internal(
@@ -1449,7 +1423,6 @@ fn resolve_imports_internal(
     project: &ProjectContext,
     options: &FrontendOptions,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<(), FrontendFailure> {
     if let Some(deps) = &project.manifest_deps {
         let errs = validate_imports_against_manifest(
@@ -1486,7 +1459,6 @@ fn resolve_imports_internal(
         program.module_doc.clone(),
         &mut import_ctx,
         diagnostics,
-        mode,
     )?;
     program.module_graph = Some(module_graph);
     Ok(())
@@ -1678,7 +1650,6 @@ fn typecheck_program_with_diagnostics(
     source: &str,
     input: &str,
     options: &FrontendOptions,
-    mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
     let search_paths = checker_search_paths(options);
@@ -1700,9 +1671,6 @@ fn typecheck_program_with_diagnostics(
     }
     if options.repl_fragment {
         checker.set_repl_fragment();
-    }
-    if mode == FrontendParseMode::Migration {
-        checker.set_migration_mode();
     }
     if !options.test_entry_selections.is_empty() {
         checker.set_test_entry_selections(options.test_entry_selections.clone());
@@ -1764,14 +1732,8 @@ pub fn typecheck_program(
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
     require_deterministic_typecheck(options)?;
-    let (result, mut diagnostics) = typecheck_program_with_diagnostics(
-        program,
-        source,
-        input,
-        options,
-        FrontendParseMode::Strict,
-        None,
-    );
+    let (result, mut diagnostics) =
+        typecheck_program_with_diagnostics(program, source, input, options, None);
     if type_check_failed(&result) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
     }
@@ -1827,19 +1789,12 @@ pub fn check_program(
         &project,
         options,
         &mut diagnostics,
-        FrontendParseMode::Strict,
     ) {
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    let (tcr, type_diagnostics) = typecheck_program_with_diagnostics(
-        &program,
-        source,
-        source_label,
-        options,
-        FrontendParseMode::Strict,
-        None,
-    );
+    let (tcr, type_diagnostics) =
+        typecheck_program_with_diagnostics(&program, source, source_label, options, None);
     diagnostics.extend(type_diagnostics);
     if type_check_failed(&tcr) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
@@ -2033,16 +1988,12 @@ const DIRECTORY_MODULE_ROOT_LABEL: &str = "(directory module)";
 /// anchored in the module's directory, so project discovery and relative
 /// imports behave as they do for the requested file. Root-only lints (unused
 /// private items) do not run on an imported module.
-fn run_directory_module_frontend(
-    entry: &Path,
-    options: &FrontendOptions,
-    mode: FrontendParseMode,
-) -> DocumentFrontendState {
+fn run_directory_module_frontend(entry: &Path, options: &FrontendOptions) -> DocumentFrontendState {
     let label = entry
         .with_file_name(DIRECTORY_MODULE_ROOT_LABEL)
         .display()
         .to_string();
-    let empty = parse_for_frontend("", mode);
+    let empty = hew_parser::parse("");
     let mut state = DocumentFrontendState {
         source: String::new(),
         program: empty.program.clone(),
@@ -2065,7 +2016,7 @@ fn run_directory_module_frontend(
         .program
         .items
         .push(file_import(entry_name.to_string()));
-    run_frontend_after_parse(state, &project, &label, options, mode, None)
+    run_frontend_after_parse(state, &project, &label, options, None)
 }
 
 /// Resolve a module import of a directory peer through that directory's
@@ -2297,7 +2248,6 @@ fn build_module_graph_with_diagnostics(
     module_doc: Option<String>,
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     use hew_parser::module::{Module, ModuleGraph};
 
@@ -2306,8 +2256,7 @@ fn build_module_graph_with_diagnostics(
     let source_dir = input_canonical.parent().unwrap_or(Path::new("."));
 
     ctx.in_progress_imports.insert(input_canonical.clone());
-    let resolve_result =
-        resolve_file_imports_internal(&input_canonical, items, ctx, diagnostics, mode);
+    let resolve_result = resolve_file_imports_internal(&input_canonical, items, ctx, diagnostics);
     ctx.in_progress_imports.remove(&input_canonical);
     resolve_result?;
 
@@ -2623,14 +2572,7 @@ pub fn build_module_graph(
     ctx: &mut ImportResolutionContext<'_>,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     let mut diagnostics = Vec::new();
-    build_module_graph_with_diagnostics(
-        source_file,
-        items,
-        module_doc,
-        ctx,
-        &mut diagnostics,
-        FrontendParseMode::Strict,
-    )
+    build_module_graph_with_diagnostics(source_file, items, module_doc, ctx, &mut diagnostics)
 }
 
 fn flatten_file_import_items(program: &mut Program) {
@@ -2771,7 +2713,6 @@ fn resolve_file_imports_internal(
     items: &mut [Spanned<Item>],
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<(), FrontendFailure> {
     let source_dir = source_file
         .parent()
@@ -3142,7 +3083,7 @@ fn resolve_file_imports_internal(
         };
 
         let Some(resolved_import) =
-            resolve_completed_import_internal(&canonical, ctx, &items[*idx].0, diagnostics, mode)?
+            resolve_completed_import_internal(&canonical, ctx, &items[*idx].0, diagnostics)?
         else {
             continue;
         };
@@ -3164,7 +3105,6 @@ fn resolve_completed_import_internal(
     ctx: &mut ImportResolutionContext<'_>,
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<Option<ResolvedImport>, FrontendFailure> {
     if let Some(cached) = ctx.resolved_imports.get(canonical) {
         return Ok(Some(cached.clone()));
@@ -3174,7 +3114,7 @@ fn resolve_completed_import_internal(
     }
 
     ctx.in_progress_imports.insert(canonical.to_path_buf());
-    let resolved = build_resolved_import_internal(canonical, ctx, import_item, diagnostics, mode);
+    let resolved = build_resolved_import_internal(canonical, ctx, import_item, diagnostics);
     ctx.in_progress_imports.remove(canonical);
 
     match resolved {
@@ -3192,7 +3132,6 @@ fn build_resolved_import_internal(
     ctx: &mut ImportResolutionContext<'_>,
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<ResolvedImport, FrontendFailure> {
     let module_dir = canonical.parent();
     let is_directory_module = module_dir.is_some_and(|dir| {
@@ -3220,19 +3159,14 @@ fn build_resolved_import_internal(
         Vec::new()
     };
 
-    let mut import_items = parse_and_resolve_file_internal(canonical, ctx, diagnostics, mode)?;
+    let mut import_items = parse_and_resolve_file_internal(canonical, ctx, diagnostics)?;
     let mut import_item_source_paths = vec![canonical.to_path_buf(); import_items.len()];
     let mut source_paths = vec![canonical.to_path_buf()];
 
     for peer in &peer_files {
         let peer_canonical = peer.canonicalize().unwrap_or_else(|_| peer.clone());
-        let Some(peer_resolved) = resolve_completed_import_internal(
-            &peer_canonical,
-            ctx,
-            import_item,
-            diagnostics,
-            mode,
-        )?
+        let Some(peer_resolved) =
+            resolve_completed_import_internal(&peer_canonical, ctx, import_item, diagnostics)?
         else {
             continue;
         };
@@ -3275,7 +3209,6 @@ fn parse_and_resolve_file_internal(
     canonical: &Path,
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<Vec<Spanned<Item>>, FrontendFailure> {
     let source = read_source(ctx.documents, canonical).map_err(|e| {
         FrontendFailure::message_only(format!(
@@ -3284,7 +3217,7 @@ fn parse_and_resolve_file_internal(
         ))
     })?;
 
-    let result = parse_for_frontend(&source, mode);
+    let result = hew_parser::parse(&source);
     let display_path = canonical.display().to_string();
     let parse_diagnostics = result
         .errors
@@ -3306,7 +3239,7 @@ fn parse_and_resolve_file_internal(
 
     diagnostics.extend(parse_diagnostics);
     let mut import_items = result.program.items;
-    resolve_file_imports_internal(canonical, &mut import_items, ctx, diagnostics, mode)?;
+    resolve_file_imports_internal(canonical, &mut import_items, ctx, diagnostics)?;
     Ok(import_items)
 }
 
@@ -3403,26 +3336,7 @@ pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict).into_result()
-}
-
-/// Run the shared file frontend for the checker-backed syntax migrator.
-///
-/// This is the only frontend entry point that recovers removed path separators
-/// and Rust-style turbofish long enough to resolve migration edits. Ordinary
-/// [`run_file_frontend_to_typecheck`], [`check_file`], and compile paths remain
-/// strict. Removed glob imports and every other parse error remain fatal here.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when project loading, non-migratable parsing,
-/// import resolution, or type-checking fails.
-pub fn run_file_frontend_to_typecheck_for_migration(
-    input: &str,
-    options: &FrontendOptions,
-) -> Result<FileFrontendState, FrontendFailure> {
-    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Migration)
-        .into_result()
+    run_document_frontend_from(input, None, options).into_result()
 }
 
 /// What the shared frontend produced for one document.
@@ -3485,7 +3399,7 @@ impl DocumentFrontendState {
 /// so an open buffer checks against its saved siblings.
 #[must_use]
 pub fn run_document_frontend(input: &str, options: &FrontendOptions) -> DocumentFrontendState {
-    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict)
+    run_document_frontend_from(input, None, options)
 }
 
 /// [`run_document_frontend`] for a buffer with no file behind it.
@@ -3497,39 +3411,18 @@ pub fn run_source_frontend(
     label: &str,
     options: &FrontendOptions,
 ) -> DocumentFrontendState {
-    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Strict)
+    run_document_frontend_from(label, Some(source), options)
 }
 
-/// Run migration parsing and import resolution against an in-memory source.
-/// The returned state retains its module graph even when old spelling causes
-/// a later type error, so the migrator can prove an edit from declarations.
-///
-/// A directory-module entry or peer is checked as its whole module (see
-/// [`directory_module_entry`]), with `source` standing in for `label`.
-#[must_use]
-pub fn run_source_frontend_for_migration(
-    source: &str,
-    label: &str,
-    options: &FrontendOptions,
-) -> DocumentFrontendState {
-    if let Some(entry) = directory_module_entry(Path::new(label)) {
-        let mut options = options.clone();
-        options.documents.insert(label, source);
-        return run_directory_module_frontend(&entry, &options, FrontendParseMode::Migration);
-    }
-    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Migration)
-}
-
-fn run_document_frontend_with_mode(
+fn run_document_frontend_from(
     input: &str,
     source_override: Option<&str>,
     options: &FrontendOptions,
-    mode: FrontendParseMode,
 ) -> DocumentFrontendState {
     let project = match load_project_context(input, Some(options), source_override) {
         Ok(project) => project,
         Err(failure) => {
-            let empty = parse_for_frontend("", mode);
+            let empty = hew_parser::parse("");
             return DocumentFrontendState {
                 source: String::new(),
                 program: empty.program.clone(),
@@ -3542,7 +3435,7 @@ fn run_document_frontend_with_mode(
         }
     };
 
-    let parse_result = parse_for_frontend(&project.source, mode);
+    let parse_result = hew_parser::parse(&project.source);
     let diagnostics = parse_result
         .errors
         .iter()
@@ -3565,12 +3458,8 @@ fn run_document_frontend_with_mode(
         return state.stop(FrontendFailure::message_only("parsing failed"));
     }
 
-    let entry_selection = (mode == FrontendParseMode::Strict)
-        .then_some(options.entry_selection)
-        .flatten();
-    let companion = (mode == FrontendParseMode::Strict)
-        .then_some(options.companion.as_deref())
-        .flatten();
+    let entry_selection = options.entry_selection;
+    let companion = options.companion.as_deref();
     if let Some(companion) = companion {
         // First, as an import written at the top of the file: the test file's
         // own declarations (a trait impl) resolve against it.
@@ -3580,7 +3469,7 @@ fn run_document_frontend_with_mode(
             .insert(0, file_import(companion.display().to_string()));
     }
 
-    run_frontend_after_parse(state, &project, input, options, mode, entry_selection)
+    run_frontend_after_parse(state, &project, input, options, entry_selection)
 }
 
 /// The frontend stages every host shares once a program exists: import
@@ -3590,7 +3479,6 @@ fn run_frontend_after_parse(
     project: &ProjectContext,
     input: &str,
     options: &FrontendOptions,
-    mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> DocumentFrontendState {
     if let Err(failure) = require_deterministic_typecheck(options) {
@@ -3603,7 +3491,6 @@ fn run_frontend_after_parse(
         project,
         options,
         &mut state.diagnostics,
-        mode,
     ) {
         return state.stop(failure);
     }
@@ -3613,7 +3500,6 @@ fn run_frontend_after_parse(
         &project.source,
         input,
         options,
-        mode,
         entry_selection,
     );
     state.diagnostics.extend(type_diagnostics);
@@ -3718,14 +3604,7 @@ pub fn run_program_frontend(
         typecheck_result: None,
         stopped: None,
     };
-    run_frontend_after_parse(
-        state,
-        &project,
-        source_label,
-        options,
-        FrontendParseMode::Strict,
-        None,
-    )
+    run_frontend_after_parse(state, &project, source_label, options, None)
 }
 
 /// Parse, resolve imports, and type-check a Hew source file.
@@ -3754,8 +3633,7 @@ pub fn check_file_with_state(
     options: &FrontendOptions,
 ) -> Result<(CheckOutput, FileFrontendState), FrontendFailure> {
     let state = match directory_module_entry(Path::new(input)) {
-        Some(entry) => run_directory_module_frontend(&entry, options, FrontendParseMode::Strict)
-            .into_result()?,
+        Some(entry) => run_directory_module_frontend(&entry, options).into_result()?,
         None => run_file_frontend_to_typecheck(input, options)?,
     };
     let diagnostics = fail_on_warning_diagnostics(state.diagnostics.clone(), options)?;
@@ -3970,8 +3848,7 @@ mod tests {
         build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
         directory_module_entry, display_path, hir_diagnostics_to_frontend, load_dependencies,
         load_lockfile, load_package_name, parse_source, retain_user_facing_diagnostics,
-        run_document_frontend, run_file_frontend_to_typecheck,
-        run_file_frontend_to_typecheck_for_migration, run_source_frontend, test_companion,
+        run_document_frontend, run_file_frontend_to_typecheck, run_source_frontend, test_companion,
         DiagnosticPolicy, DocumentSet, FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions,
         ImportResolutionContext, Session, SessionTarget,
     };
@@ -4975,51 +4852,6 @@ mod tests {
             "one C symbol declared by two peers is a redeclaration: {:#?}",
             result.err()
         );
-    }
-
-    #[test]
-    fn migration_frontend_does_not_relax_the_ordinary_frontend() {
-        let dir = tempfile::tempdir().expect("create migration frontend fixture");
-        let legacy = write_source(
-            dir.path(),
-            "legacy.hew",
-            "fn main() { let values: Vec<i64> = Vec::new(); println(values.len()); }\n",
-        );
-        let options = FrontendOptions {
-            project_dir: Some(dir.path().to_path_buf()),
-            ..FrontendOptions::default()
-        };
-
-        let strict = run_file_frontend_to_typecheck(&legacy, &options);
-        assert!(
-            strict.is_err(),
-            "ordinary frontend must reject legacy paths"
-        );
-
-        let migration = run_file_frontend_to_typecheck_for_migration(&legacy, &options)
-            .expect("migration frontend should recover a mechanically rewritable path");
-        assert!(migration.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            FrontendDiagnosticKind::Parse(ref error)
-                if matches!(error.kind, hew_parser::ParseDiagnosticKind::LegacyPathSeparator)
-                    && error.severity == hew_parser::Severity::Warning
-        )));
-
-        let removed_glob = write_source(
-            dir.path(),
-            "removed_glob.hew",
-            "import std::*;\nfn main() {}\n",
-        );
-        let Err(failure) = run_file_frontend_to_typecheck_for_migration(&removed_glob, &options)
-        else {
-            panic!("migration frontend must not admit removed glob imports");
-        };
-        assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            FrontendDiagnosticKind::Parse(ref error)
-                if matches!(error.kind, hew_parser::ParseDiagnosticKind::ImportGlobRemoved)
-                    && error.severity == hew_parser::Severity::Error
-        )));
     }
 
     #[test]

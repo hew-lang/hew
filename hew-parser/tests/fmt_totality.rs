@@ -173,7 +173,6 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Handle { .. } => {}
         Expr::Range { .. } => {}
         Expr::Await(_) => {}
-        Expr::AwaitRestart(_) => {}
         Expr::RegexLiteral(_) => {}
         Expr::ByteStringLiteral(_) => {}
         Expr::ByteArrayLiteral(_) => {}

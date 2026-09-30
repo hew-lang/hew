@@ -446,7 +446,7 @@ pub(super) fn scan_expr_for_call_shape(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             scan_expr_for_call_shape(conn, callable, diagnostics);
         }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             scan_expr_for_call_shape(child, callable, diagnostics);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {

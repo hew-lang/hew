@@ -729,8 +729,6 @@ qualifier — is **not** part of edition 2026:
 
 Both diagnostics carry a machine-applicable fix-it that replaces `X` with
 `.X` where the context selects the enum, and with `Type.X` where it does not.
-`hew fmt --migrate` applies those fix-its across a source tree, so a pre-2026
-program is rewritten rather than hand-edited.
 
 State names inside a `machine` declaration are not variants at the surface,
 and this rule does not reach them (§3.11.3). Outside the machine that declares
@@ -4855,8 +4853,7 @@ names it says the body yields handles. A generator yielding `i64` is declared
 
 There is no `async gen fn`. A plain `gen fn` body may suspend and is consumed
 by `for` wherever its producer lives, so the word marked nothing; `async` is
-not a keyword (§12) and `async gen fn` is `E_NO_ASYNC_GEN` (User) with a
-fix-it that deletes it. `gen.next()` and `for x in gen` are plain calls:
+not a keyword (§12) and `async gen fn` does not parse. `gen.next()` and `for x in gen` are plain calls:
 pulling from a generator you own is a call into your own frame, and it carries
 the generator's inferred suspension effect like any other call (§4.0). The
 pull that crosses an actor boundary is written the same way:
@@ -6085,7 +6082,7 @@ added in later editions without growing the annotation vocabulary.
 | `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on cooperative actor termination or supervisor shutdown. |
 | `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before restart-policy handling.                            |
 
-`#[on(exit)]` and `#[on(down)]` are the two further accepted kinds; they
+`#[on(link)]` and `#[on(down)]` are the two further accepted kinds; they
 deliver link and monitor notifications and their payload types are not
 specified in this section.
 
@@ -6377,9 +6374,8 @@ against a surface that either shipped under another spelling or was refused:
 
 - `async` marked nothing. Functions are colourless — suspension is inferred
   from the body and written only on a callable type (§4.0), and `await`
-  joins a Task or vector of Tasks (§4.4). `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
-  deletes the word, and `async gen fn` is `E_NO_ASYNC_GEN` (User) with the
-  same fix-it (§4.12).
+  joins a Task or vector of Tasks (§4.4). Neither `async fn` nor
+  `async gen fn` parses (§4.12).
 - `try` and `catch` have no construct: fallible operations return `Result`
   and propagate with `?` (§2.2.1). `catch` never reached the parser at all.
 - `join` is retired. Waiting for every operand is batch `fork`

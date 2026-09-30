@@ -96,36 +96,6 @@ fn generated_machine_parameters_keep_distinct_binding_spans() {
     );
 }
 
-#[test]
-fn flat_machine_event_spelling_has_an_owned_path_fix_it() {
-    let source = "machine Tank {\n    events {\n        Tick;\n    }\n    state Idle;\n    on Tick: Idle => Idle;\n}\n\nfn feed(event: TankEvent) -> i64 {\n    1\n}\n\nfn main() {\n    let _ = TankEvent.Tick;\n}\n";
-    let parsed = hew_parser::parse(source);
-    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
-    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    assert!(
-        output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::UndefinedType
-                && error
-                    .suggestions
-                    .iter()
-                    .any(|suggestion| suggestion.contains("Tank.Event"))
-        }),
-        "{:#?}",
-        output.errors
-    );
-    assert!(
-        output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::UndefinedVariable
-                && error
-                    .suggestions
-                    .iter()
-                    .any(|suggestion| suggestion.contains("Tank.Event"))
-        }),
-        "{:#?}",
-        output.errors
-    );
-}
-
 fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {
     let source = format!(
         "{helper}\n machine Gate {{ events {{ Open; }} emits {{ Changed {{ label: string; }} }} state Closed {{ label: string; }} state Opened {{ label: string; }} on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"

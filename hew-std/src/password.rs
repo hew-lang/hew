@@ -3,7 +3,6 @@
 //! Provides C ABI functions for hashing passwords, verifying passwords
 //! against PHC-format hashes, and hashing with a custom cost parameter. All
 //! returned strings are managed strings, released with `hew_string_drop`.
-use argon2::password_hash::SaltString;
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
@@ -20,8 +19,7 @@ use hew_cabi::string::{string_as_str, string_from_str, HewString};
 pub unsafe extern "C" fn hew_password_hash(password: *const HewString) -> *mut HewString {
     // SAFETY: password is null (canonical empty) or a live managed string handle.
     let pw_str = unsafe { string_as_str(password) };
-    let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
-    let Ok(hash) = Argon2::default().hash_password(pw_str.as_bytes(), &salt) else {
+    let Ok(hash) = Argon2::default().hash_password(pw_str.as_bytes()) else {
         return std::ptr::null_mut();
     };
     string_from_str(&hash.to_string())
@@ -87,8 +85,7 @@ pub unsafe extern "C" fn hew_password_hash_custom(
         return std::ptr::null_mut();
     };
     let hasher = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
-    let Ok(hash) = hasher.hash_password(pw_str.as_bytes(), &salt) else {
+    let Ok(hash) = hasher.hash_password(pw_str.as_bytes()) else {
         return std::ptr::null_mut();
     };
     string_from_str(&hash.to_string())

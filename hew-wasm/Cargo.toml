@@ -34,7 +34,7 @@ hew-mir = { path = "../hew-mir" }
 hew-sir = { path = "../hew-sir" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
-wasm-bindgen = "0.2.125"
+wasm-bindgen = "0.2.128"
 serde.workspace = true
 serde_json.workspace = true
 

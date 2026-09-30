@@ -1,0 +1,20 @@
+// `string` is an `Error`: text is an ad-hoc error in `fails dyn Error` code
+// and a `fails string` entry prints it as written.
+fn check_port(port: i64) -> i64 fails dyn Error {
+    if port > 65535 {
+        return error f"port {port} is out of range";
+    }
+    port
+}
+
+fn main() fails string {
+    match check_port(70000) {
+        .Ok(port) => println(f"port {port}"),
+        .Err(e) => println(f"refused: {e.fmt()}"),
+    }
+    match check_port(8080) {
+        .Ok(port) => println(f"port {port}"),
+        .Err(e) => println(f"refused: {e.fmt()}"),
+    }
+    return error "shutting down";
+}

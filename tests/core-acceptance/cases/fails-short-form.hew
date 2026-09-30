@@ -1,0 +1,43 @@
+// A function that only fails writes `fails E` with no success type, in free
+// functions, trait methods and `main`.
+enum Oops {
+    Bad(i64);
+}
+
+impl Display for Oops {
+    fn fmt(self) -> string {
+        match self {
+            .Bad(n) => f"Bad: {n}",
+        }
+    }
+}
+
+impl Error for Oops {}
+
+trait Step {
+    fn run(self) fails Oops;
+}
+
+type Job {
+    n: i64;
+}
+
+impl Step for Job {
+    fn run(self) fails Oops {
+        if self.n > 1 {
+            return error Oops.Bad(self.n);
+        }
+        println(f"ran {self.n}");
+    }
+}
+
+fn check(n: i64) fails Oops {
+    let job = Job { n: n };
+    job.run()?;
+}
+
+fn main() fails dyn Error {
+    check(1)?;
+    check(2)?;
+    println("unreachable");
+}

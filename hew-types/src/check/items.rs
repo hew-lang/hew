@@ -2832,12 +2832,78 @@ impl Checker {
         }
     }
 
+    /// Whether `bound` names the prelude `From` trait, by the same trait
+    /// identity impl registration files the impl's methods under.
+    fn trait_bound_is_from(&self, bound: &TraitBound) -> bool {
+        let from = self
+            .lang_items
+            .get(crate::LangItem::From.key())
+            .map(|binding| binding.trait_id);
+        from.is_some()
+            && self.trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string())) // TRANSITION(P1): deleted by A1 commit 2
+                == from
+    }
+
+    /// Refuse a `From` impl the failure-edge rule cannot use (D547): the
+    /// identity conversion, a trait-object target (erasure owns that edge)
+    /// and a blanket impl over a bare type parameter.
+    fn check_from_impl(&mut self, id: &ImplDecl, type_name: Option<&str>, span: &Span) {
+        let reason = if matches!(id.target_type.0, TypeExpr::TraitObject(_)) {
+            Some("a `From` impl cannot target a trait object; erasure into `dyn Error` needs no impl")
+        } else {
+            let row = type_name.and_then(|type_name| {
+                id.methods.iter().find_map(|method| {
+                    let declaration = self.impl_method_declaration_id(
+                        type_name,
+                        method,
+                        id.trait_bound.as_ref(),
+                    )?;
+                    self.from_impls
+                        .iter()
+                        .position(|row| row.method == declaration)
+                })
+            });
+            row.and_then(|index| {
+                let row = &self.from_impls[index];
+                let reason = if matches!(
+                    row.source,
+                    Ty::Named {
+                        head: crate::TypeHead::Param(_),
+                        ..
+                    }
+                ) {
+                    Some("a `From` impl cannot convert from a bare type parameter; name the source type")
+                } else if row.source == row.target {
+                    Some("a type converts into itself without an impl; the identity `From` is never used")
+                } else {
+                    None
+                };
+                if reason.is_some() {
+                    self.from_impls.remove(index);
+                }
+                reason
+            })
+        };
+        if let Some(reason) = reason {
+            self.report_error(
+                TypeErrorKind::FromInvalid,
+                span,
+                format!("{}: {reason}", TypeErrorKind::FromInvalid.as_kind_str()),
+            );
+        }
+    }
+
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.
             // Do not body-check an unsupported destructor and risk cascading
             // errors after its method symbols were deliberately withheld.
             return;
+        }
+        if let (Some(bound), TypeExpr::TraitObject(_)) = (&id.trait_bound, &id.target_type.0) {
+            if self.trait_bound_is_from(bound) {
+                self.check_from_impl(id, None, span);
+            }
         }
         if let TypeExpr::Named {
             path: named_path,
@@ -2886,6 +2952,9 @@ impl Checker {
                 }
                 self.require_supertrait_impls(type_name, &tb.path.to_string(), span);
                 // TRANSITION(P1): deleted by A1 commit 2
+                if self.trait_bound_is_from(tb) {
+                    self.check_from_impl(id, Some(type_name), span);
+                }
             }
 
             // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)

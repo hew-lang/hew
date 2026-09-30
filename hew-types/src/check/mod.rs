@@ -1322,14 +1322,17 @@ impl Checker {
             } if matches!(args.as_slice(), [Ty::Unit, _]) => {
                 let error_ty = args[1].clone();
                 if !self.type_satisfies_trait_bound(&error_ty, "Error") {
-                    self.errors.push(TypeError::new(
+                    let error_name = error_ty.user_facing();
+                    self.report_error_with_suggestions(
                         TypeErrorKind::BoundsNotSatisfied,
-                        span.clone(),
+                        span,
                         format!(
-                            "process entry error type `{}` does not satisfy the bound `Error`",
-                            error_ty.user_facing()
+                            "process entry error type `{error_name}` does not satisfy the bound `Error`"
                         ),
-                    ));
+                        vec![format!(
+                            "implement `Error` for `{error_name}`, or declare `fails dyn Error`"
+                        )],
+                    );
                     return None;
                 }
                 // An erased entry error renders through its vtable rather

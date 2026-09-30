@@ -8,11 +8,7 @@
 //!   reported where the promise is made, in either declaration order.
 //! * A type that implements `Error` coerces to `dyn Error` at every error
 //!   position - `return error e`, `?` into a `fails dyn Error` caller and
-//!   `Err(e)` - while a type that does not stays a type mismatch.
-//!
-//! Native execution of a `dyn Error` value is a separate matter: SIR has no
-//! value contract for any trait object yet, so these programs check and then
-//! fail closed at semantic lowering.
+//!   `Err(e)`. The failure-edge refusals live in `try_conversion.rs`.
 
 use crate::common;
 
@@ -112,30 +108,6 @@ fn wrapped(text: string) -> Result<i64, dyn Error> {
     assert!(
         output.errors.is_empty(),
         "expected a clean check, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn type_without_error_impl_does_not_coerce_to_dyn_error() {
-    let output = typecheck(
-        r#"type Bare {
-    detail: string;
-}
-
-fn parse() -> i64 fails dyn Error {
-    return error Bare { detail: "empty" };
-}
-"#,
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|err| matches!(err.kind, TypeErrorKind::Mismatch { .. })
-                && err.message.contains("dyn Error")
-                && err.message.contains("Bare")),
-        "expected a `dyn Error` mismatch on the un-erasable payload, got: {:#?}",
         output.errors
     );
 }

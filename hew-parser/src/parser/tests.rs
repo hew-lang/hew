@@ -5821,6 +5821,27 @@ fn fallible_function_surface_preserves_success_and_error_types() {
 }
 
 #[test]
+fn fallible_function_without_success_type_is_unit_fallible() {
+    for source in [
+        "fn check() fails string { return error \"bad\"; }",
+        "trait Step { fn run(self) fails string; }",
+        "extern \"C\" { fn c_call() -> i32; }\nfn main() fails string { }",
+    ] {
+        let parsed = crate::parse(source);
+        assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+    }
+    let parsed = crate::parse("fn check() fails string { }");
+    let Item::Function(function) = &parsed.program.items[0].0 else {
+        panic!("function");
+    };
+    assert!(matches!(
+        &function.return_type.as_ref().expect("return type").0,
+        TypeExpr::Fallible { success, .. }
+            if matches!(&success.0, TypeExpr::Tuple(fields) if fields.is_empty())
+    ));
+}
+
+#[test]
 fn fallible_function_and_error_return_roundtrip() {
     for source in [
         "fn f() -> (i64, string) fails string { return (10, \"hello\"); }",

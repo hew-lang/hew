@@ -927,7 +927,7 @@ impl Checker {
                 vec![
                     format!(
                         "declare the conversion: `impl From<{source_name}> for {target_name} \
-                         {{ fn from(e: {source_name}) -> {target_name} {{ ... }} }}`"
+                         {{ fn from(value: {source_name}) -> {target_name} {{ ... }} }}`"
                     ),
                     convert_here,
                     "or compose errors: declare the function `fails dyn Error`".to_string(),

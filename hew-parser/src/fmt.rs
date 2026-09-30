@@ -59,10 +59,17 @@ pub fn format_expression(expr: &Spanned<Expr>) -> String {
 /// Format an AST [`Program`] as canonical Hew source text, preserving comments from `source`.
 #[must_use]
 pub fn format_source(source: &str, program: &Program) -> String {
+    format_source_as(source, program, false)
+}
+
+/// Format `program`, rewriting spellings the migrator owns to their current
+/// form when `migrating`; otherwise every such spelling stays as written.
+fn format_source_as(source: &str, program: &Program, migrating: bool) -> String {
     // Doc comments travel with the other comments, so they keep their place
     // among attributes and declarations exactly as written.
     let comments = extract_comments(source, true);
     let mut f = Formatter::new(source, comments);
+    f.migrating = migrating;
     f.format_program(program);
     f.flush_comments_before(usize::MAX);
     with_line_endings(&f.output, fidelity::uses_crlf(source))
@@ -185,7 +192,7 @@ pub fn migrate_punctuation(source: &str) -> Result<String, MigrationError> {
     if !refusals.is_empty() {
         return Err(MigrationError { refusals });
     }
-    let formatted = format_source(source, &parsed.program);
+    let formatted = format_source_as(source, &parsed.program, true);
     let checked = crate::parse(&formatted);
     let refusals = checked
         .errors
@@ -329,6 +336,9 @@ struct Formatter<'a> {
     comments: Vec<Comment>,
     next_comment: usize,
     prev_source_pos: usize,
+    /// Rewrite spellings the migrator owns (`-> () fails E` becomes
+    /// `fails E`) instead of keeping them as written.
+    migrating: bool,
 }
 
 impl<'a> Formatter<'a> {
@@ -370,6 +380,7 @@ impl<'a> Formatter<'a> {
             comments,
             next_comment: 0,
             prev_source_pos: 0,
+            migrating: false,
         }
     }
 
@@ -1539,8 +1550,7 @@ impl<'a> Formatter<'a> {
         self.format_params(&decl.params);
         self.write(")");
         if let Some(ret) = &decl.return_type {
-            self.write(" -> ");
-            self.format_type_expr(&ret.0);
+            self.format_return_clause(ret);
         }
         self.format_opt_where_clause(decl.where_clause.as_ref());
         self.write(" ");
@@ -1827,8 +1837,7 @@ impl<'a> Formatter<'a> {
             self.format_params(rest);
             self.write(")");
             if let Some(ret) = m.return_type.as_ref() {
-                self.write(" -> ");
-                self.format_type_expr(&ret.0);
+                self.format_return_clause(ret);
             }
             self.format_opt_where_clause(m.where_clause.as_ref());
         } else {
@@ -2999,8 +3008,7 @@ impl<'a> Formatter<'a> {
             self.format_params(rest);
             self.write(")");
             if let Some(ret) = decl.return_type.as_ref() {
-                self.write(" -> ");
-                self.format_type_expr(&ret.0);
+                self.format_return_clause(ret);
             }
             self.format_opt_where_clause(decl.where_clause.as_ref());
         } else {
@@ -3022,6 +3030,33 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     /// One parameter list and optional reply, shared by `fn` and `actor` types.
+    /// Write a declaration's return clause. A function that only fails
+    /// prints the short form `fails E`; everything else prints `-> T`.
+    fn format_return_clause(&mut self, ret: &Spanned<TypeExpr>) {
+        if let Some(error) = self.unit_fallible_error(&ret.0) {
+            self.write(" fails ");
+            self.format_type_expr(&error.0);
+        } else {
+            self.write(" -> ");
+            self.format_type_expr(&ret.0);
+        }
+    }
+
+    /// The error type of `() fails E` when it prints in the short form: as
+    /// written (the parser gives the omitted unit an empty span), when
+    /// migrating, or when there is no source to follow.
+    fn unit_fallible_error<'t>(&self, ty: &'t TypeExpr) -> Option<&'t Spanned<TypeExpr>> {
+        match ty {
+            TypeExpr::Fallible { success, error }
+                if matches!(&success.0, TypeExpr::Tuple(elems) if elems.is_empty())
+                    && (self.migrating || self.source.is_empty() || success.1.is_empty()) =>
+            {
+                Some(error)
+            }
+            _ => None,
+        }
+    }
+
     fn format_callable_type(
         &mut self,
         head: &str,
@@ -3154,8 +3189,13 @@ impl<'a> Formatter<'a> {
         let bounds = self.params_list(from);
         self.delimited_list("(", ")", params, bounds, true, true, Self::format_param);
         if let Some(ret) = return_type {
-            self.write_token(" -> ", |t| matches!(t, hew_lexer::Token::Arrow));
-            self.format_type_expr(&ret.0);
+            if let Some(error) = self.unit_fallible_error(&ret.0) {
+                self.write(" fails ");
+                self.format_type_expr(&error.0);
+            } else {
+                self.write_token(" -> ", |t| matches!(t, hew_lexer::Token::Arrow));
+                self.format_type_expr(&ret.0);
+            }
             if ret.1.start < ret.1.end {
                 self.prev_source_pos = self.prev_source_pos.max(ret.1.end);
             }
@@ -5840,6 +5880,21 @@ trait Fluent {
             result.errors
         );
         format_source(src, &result.program)
+    }
+
+    #[test]
+    fn short_fails_form_keeps_its_spelling_and_migrate_adopts_it() {
+        let short =
+            "fn load(path: string) fails LoadError {\n    return error LoadError.Missing;\n}\n";
+        assert_eq!(roundtrip_source(short), short);
+
+        let long = "fn load(path: string) -> () fails LoadError {\n    return error LoadError.Missing;\n}\n";
+        assert_eq!(roundtrip_source(long), long);
+        assert_eq!(migrate_punctuation(long).unwrap(), short);
+
+        // A success type other than unit keeps its arrow.
+        let valued = "fn load(path: string) -> string fails LoadError {\n    path\n}\n";
+        assert_eq!(migrate_punctuation(valued).unwrap(), valued);
     }
 
     #[test]

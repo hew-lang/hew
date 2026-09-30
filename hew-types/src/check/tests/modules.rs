@@ -2448,8 +2448,8 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         assert!(
             errors
                 .iter()
-                .any(|e| e.message.contains("`?` error type mismatch")),
-            "Result<T, E1>? in Result<_, E2> function must reject mismatched E; got {errors:?}"
+                .any(|e| e.kind == crate::error::TypeErrorKind::ErrorNoConversion),
+            "Result<T, E1>? in Result<_, E2> function without a conversion must be refused; got {errors:?}"
         );
     }
 

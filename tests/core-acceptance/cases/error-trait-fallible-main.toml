@@ -9,9 +9,3 @@ timeout_seconds = 15
 stdout = "width=5\n"
 stderr = "error: parse failed: empty input\n"
 exit = 1
-
-# The three `dyn Error` cases below are the erased half of the same story and
-# do not pass yet: SIR has no value contract for a trait object. The entry case
-# additionally needs a `Display::fmt` target an erased value can supply, which
-# the process-entry exit plan resolves as a concrete declaration. They are held
-# for the lane that gives dyn objects a value contract.

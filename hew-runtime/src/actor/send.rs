@@ -388,28 +388,6 @@ pub(crate) unsafe fn try_terminalize_idle_actor(
     true
 }
 
-/// Close an actor, rejecting new messages.
-///
-/// Transitions the actor state to `Stopping`.
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
-    cabi_guard!(actor.is_null());
-    // SAFETY: caller keeps this actor live during the legacy close request.
-    let a = unsafe { &*actor };
-    let mb = a.mailbox.cast::<HewMailbox>();
-    if !mb.is_null() {
-        // SAFETY: the mailbox belongs to the live actor.
-        unsafe { mailbox::mailbox_close(mb) };
-    }
-    // SAFETY: actor and mailbox are one live allocation.
-    let _ = unsafe { try_terminalize_idle_actor(actor, a, mb, true) };
-}
-
 /// Request a graceful actor stop without waiting for the actor's release.
 ///
 /// Closing admission preserves every queued message and the active turn. An

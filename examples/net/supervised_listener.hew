@@ -32,7 +32,6 @@ actor Acceptor {
     receive fn start() {
         let listener = net.listen(address).expect("listen");
         events.mark(f"port {listener.local_port()}").expect("record port");
-
         for index in 1 .. 4 {
             let conn = listener.accept();
             events.mark(f"accepted {index}").expect("record acceptance");
@@ -44,7 +43,6 @@ actor Acceptor {
                 events.mark(f"overload {index}").expect("record overload");
             }
         }
-
         // Main waits for this event before probing scheduler progress and
         // stopping the supervisor, so this fourth accept is known to be idle.
         events.mark("accepting").expect("record blocked accept");
@@ -100,24 +98,19 @@ fn expect_server_closed(consume conn: net.Connection) {
 }
 
 fn main() {
-    let (event_output, event_input): (stream.Sink<string>, stream.Stream<string>) =
-        stream.pipe(8).expect("event pipe");
+    let (event_output, event_input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(8).expect("event pipe");
     let events = spawn Events(output: event_output);
     let service = spawn Service(events: events);
     let probe = spawn Probe;
-
     mailbox(service.acceptor, on_full: .Wait).start().expect("start acceptor");
     let port_event = next(event_input);
     let address = "127.0.0.1:" + port_event.slice(5, port_event.len());
-
     let first = net.connect(address).expect("first client");
     expect(event_input, "accepted 1");
     expect(event_input, "attached 1");
-
     let second = net.connect(address).expect("second client");
     expect(event_input, "accepted 2");
     expect(event_input, "attached 2");
-
     let third = net.connect(address).expect("third client");
     expect(event_input, "accepted 3");
     expect(event_input, "overload 3");
@@ -130,19 +123,15 @@ fn main() {
     // With one scheduler worker, this can run only if accept parks on the
     // reactor. Both attached clients are still active at this point.
     probe.ping().expect("scheduler remains responsive");
-
     stop(service);
     stopped(service);
     println("supervisor stopped");
-
     expect_server_closed(first);
     expect_server_closed(second);
     println("connections closed");
-
     event_input.close();
     stop(events);
     stopped(events);
     stop(probe);
     stopped(probe);
 }
-

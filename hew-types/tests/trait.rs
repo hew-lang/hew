@@ -31,3 +31,5 @@ mod trait_impl_signature_equivalence;
 mod trait_object_order;
 #[path = "trait/trait_self_primitive_impl.rs"]
 mod trait_self_primitive_impl;
+#[path = "trait/try_conversion.rs"]
+mod try_conversion;

@@ -1,0 +1,69 @@
+// Conversions never chain: `From<A> for B` and `From<B> for C` do not carry
+// an `A` into `C`.
+enum A {
+    Bad;
+}
+
+impl Display for A {
+    fn fmt(self) -> string {
+        "Bad"
+    }
+}
+
+impl Error for A {}
+
+enum B {
+    FromA(A);
+}
+
+impl Display for B {
+    fn fmt(self) -> string {
+        match self {
+            .FromA(e) => f"FromA: {e}",
+        }
+    }
+}
+
+impl Error for B {}
+
+impl From<A> for B {
+    fn from(value: A) -> B {
+        .FromA(value)
+    }
+}
+
+enum C {
+    FromB(B);
+}
+
+impl Display for C {
+    fn fmt(self) -> string {
+        match self {
+            .FromB(e) => f"FromB: {e}",
+        }
+    }
+}
+
+impl Error for C {}
+
+impl From<B> for C {
+    fn from(value: B) -> C {
+        .FromB(value)
+    }
+}
+
+fn fail_a() -> Result<i64, A> {
+    .Err(.Bad)
+}
+
+fn chained() -> i64 fails C {
+    let n = fail_a()?;
+    n
+}
+
+fn main() {
+    match chained() {
+        .Ok(n) => println(f"{n}"),
+        .Err(e) => println(f"{e}"),
+    }
+}

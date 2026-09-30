@@ -755,6 +755,16 @@ pub trait Display {
 pub trait Error: Display {
 }
 
+/// Declares that a `Source` error converts into `Self` where a failure
+/// leaves a function. `?` and `return error` apply it; everywhere else the
+/// conversion is the explicit call `Target.from(value)`.
+///
+/// A conversion never chains, and erasure into `dyn Error` needs no impl.
+#[lang_item("from")]
+pub trait From<Source> {
+    fn from(value: Source) -> Self;
+}
+
 // Blanket impls for primitive types.  Each body delegates to the magic
 // `to_string` helper which still routes through `MarkerTrait::Display`
 // for primitives; once the surviving five magic dyn-Display callers
@@ -849,6 +859,10 @@ impl Display for string {
         val
     }
 }
+
+/// Text is an ad-hoc error: `return error f"port {port} is out of range"`
+/// works in a `fails dyn Error` function, and the message renders as written.
+impl Error for string {}
 
 // ---------------------------------------------------------------------------
 // Time canaries

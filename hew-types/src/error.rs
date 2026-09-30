@@ -829,6 +829,13 @@ pub enum TypeErrorKind {
     /// A statement-position `Result` whose error is discarded implicitly.
     /// Deliberate discard is written as `let _ = ...`.
     ResultDropped,
+    /// A failure edge (`?` or `return error`) whose error type is neither the
+    /// function's error type, erasable into its `dyn` error type, nor covered
+    /// by a declared `impl From<E> for F`.
+    ErrorNoConversion,
+    /// An `impl From<S> for T` that the failure-edge rule cannot use: the
+    /// identity conversion, a `dyn` target, or a bare type-parameter source.
+    FromInvalid,
     /// A block-like form used as a statement that produces a value other than
     /// `()`. The statement ends at its `}` and the value would be dropped
     /// silently; parenthesize it to use the value, or discard it with
@@ -1554,6 +1561,8 @@ impl TypeErrorKind {
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::ResultDropped => "E_RESULT_DROPPED",
+            Self::ErrorNoConversion => "E_ERROR_NO_CONVERSION",
+            Self::FromInvalid => "E_FROM_INVALID",
             Self::BlockStatementValue => "E_BLOCK_STATEMENT_VALUE",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",

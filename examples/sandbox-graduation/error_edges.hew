@@ -1,0 +1,100 @@
+// Errors compose at the failure edge: `?` and `return error` keep the same
+// type, erase into `dyn Error`, or apply a declared `From`.
+
+enum ParseError {
+    Empty;
+    NotANumber(string);
+}
+
+impl Display for ParseError {
+    fn fmt(self) -> string {
+        match self {
+            .Empty => "Empty",
+            .NotANumber(text) => f"NotANumber: {text}",
+        }
+    }
+}
+
+impl Error for ParseError {}
+
+enum ConfigError {
+    Parse(ParseError);
+    Missing(string);
+    OutOfRange(i64);
+}
+
+impl Display for ConfigError {
+    fn fmt(self) -> string {
+        match self {
+            .Parse(e) => f"Parse: {e}",
+            .Missing(key) => f"Missing: {key}",
+            .OutOfRange(n) => f"OutOfRange: {n}",
+        }
+    }
+}
+
+impl Error for ConfigError {}
+
+impl From<ParseError> for ConfigError {
+    fn from(value: ParseError) -> ConfigError {
+        .Parse(value)
+    }
+}
+
+impl From<i64> for ConfigError {
+    fn from(value: i64) -> ConfigError {
+        .OutOfRange(value)
+    }
+}
+
+fn parse_number(text: string) -> i64 fails ParseError {
+    if text == "" {
+        return error ParseError.Empty;
+    }
+    if text == "8080" {
+        return 8080;
+    }
+    return error ParseError.NotANumber(text);
+}
+
+fn port(text: string, limit: i64) -> i64 fails ConfigError {
+    if text == "none" {
+        return error ConfigError.Missing("port");
+    }
+    let n = parse_number(text)?;
+    if n > limit {
+        return error n;
+    }
+    n
+}
+
+fn describe(text: string, limit: i64) {
+    match port(text, limit) {
+        .Ok(n) => println(f"ok {n}"),
+        .Err(.Parse(e)) => println(f"parse arm: {e}"),
+        .Err(.Missing(key)) => println(f"missing arm: {key}"),
+        .Err(.OutOfRange(n)) => println(f"range arm: {n}"),
+    }
+}
+
+fn load(text: string) -> i64 fails dyn Error {
+    let n = port(text, 9000).context("loading config")?;
+    if n == 8080 {
+        return error f"port {n} is reserved";
+    }
+    n
+}
+
+fn main() fails dyn Error {
+    describe("8080", 9000);
+    describe("", 9000);
+    describe("abc", 9000);
+    describe("none", 9000);
+    describe("8080", 80);
+    match load("8080") {
+        .Ok(n) => println(f"loaded {n}"),
+        .Err(e) => println(f"load failed: {e.fmt()}"),
+    }
+    load("abc")?;
+    println("unreachable");
+}

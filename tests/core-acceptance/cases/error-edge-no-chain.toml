@@ -1,0 +1,13 @@
+[[case]]
+id = "error-edge-no-chain"
+intent = "`From<A> for B` and `From<B> for C` do not chain: `?` on an `A` inside `fails C` is refused."
+source = "cases/error-edge-no-chain.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_ERROR_NO_CONVERSION"
+line = 60
+column = 13
+message = "`?` cannot convert `A` into `C`"

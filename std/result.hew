@@ -270,3 +270,16 @@ impl<T, E> Result<T, E> {
         }
     }
 }
+
+// Methods that need the error to describe itself.
+impl<T, E: Error> Result<T, E> {
+    /// Say what the caller was doing when the operation failed. `Ok` passes
+    /// through; `Err(e)` becomes the message `"{doing}: {e}"` erased to
+    /// `dyn Error`.
+    pub fn context(consume self, doing: string) -> Result<T, dyn Error> {
+        match self {
+            .Ok(value) => .Ok(value),
+            .Err(e) => .Err(f"{doing}: {e}"),
+        }
+    }
+}

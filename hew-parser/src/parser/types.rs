@@ -544,6 +544,22 @@ impl Parser<'_> {
             } else {
                 Some(Some(success))
             }
+        } else if matches!(self.peek(), Some(Token::Identifier("fails")))
+            && !matches!(context, TypeParseContext::ExternSignature)
+        {
+            // `fn f() fails E` is `fn f() -> () fails E`: a function that
+            // only fails needs no success type.
+            let start = self.peek_span().start;
+            self.advance();
+            let error = self.parse_type_with_context(context)?;
+            let end = error.1.end;
+            Some(Some((
+                TypeExpr::Fallible {
+                    success: Box::new((TypeExpr::Tuple(Vec::new()), start..start)),
+                    error: Box::new(error),
+                },
+                start..end,
+            )))
         } else {
             Some(None)
         }

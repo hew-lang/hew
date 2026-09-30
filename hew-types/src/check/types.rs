@@ -298,6 +298,27 @@ pub enum ResultReturnKind {
     Error,
 }
 
+/// How an error crosses one failure edge (`?` or `return error`), chosen by
+/// the checker in rule order (D547): the same type passes through, a trait
+/// object target erases, and a declared `impl From<E> for F` converts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorConversion {
+    Same,
+    Erase(DynCoercion),
+    /// Call the selected `From.from` impl method on the error payload.
+    From {
+        method: crate::DefId,
+    },
+}
+
+/// One declared `impl From<Source> for Target`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FromImpl {
+    pub target: Ty,
+    pub source: Ty,
+    pub method: crate::DefId,
+}
+
 /// Checked source for one select arm, stored in source-arm order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedSelectSource {
@@ -788,6 +809,9 @@ pub struct TypeCheckOutput {
     /// method name is prefixed by its declaring trait (`Trait::method`) for
     /// diagnostics.
     pub dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// The conversion chosen at each failure edge, keyed by the span of the
+    /// `?` or `return error` expression.
+    pub error_conversions: HashMap<SpanKey, ErrorConversion>,
     /// Per-method-call-site resolution for `obj.method()` where `obj` has
     /// resolved type `Ty::TraitObject`. Each entry pins the originating trait,
     /// the method name, and the vtable slot index (`3 + layout position` —
@@ -3629,6 +3653,11 @@ pub struct Checker {
     /// into `TypeCheckOutput::dyn_trait_coercions` at the end of
     /// `check_program`.
     pub(super) dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Failure-edge conversions, moved into
+    /// `TypeCheckOutput::error_conversions`.
+    pub(super) error_conversions: HashMap<SpanKey, ErrorConversion>,
+    /// Every declared `impl From<Source> for Target`, in registration order.
+    pub(super) from_impls: Vec<FromImpl>,
     /// Side-table populated during method-call type-checking on a `dyn Trait`
     /// receiver. Keyed by the `SpanKey` of the method-call expression. Moved
     /// into `TypeCheckOutput::dyn_trait_method_calls` at the end of
@@ -4489,6 +4518,8 @@ impl Checker {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            error_conversions: HashMap::new(),
+            from_impls: Vec::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
             select_sources: HashMap::new(),

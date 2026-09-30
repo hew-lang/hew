@@ -86,10 +86,10 @@ pub use self::types::{
     CallableFieldFlow, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
     DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
-    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, ImplMethodProvenance,
-    ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind, MathGenericOp,
-    MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion, ExecutionContextReader,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, FromImpl,
+    ImplMethodProvenance, ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind,
+    MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
     OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
     PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
@@ -1322,14 +1322,17 @@ impl Checker {
             } if matches!(args.as_slice(), [Ty::Unit, _]) => {
                 let error_ty = args[1].clone();
                 if !self.type_satisfies_trait_bound(&error_ty, "Error") {
-                    self.errors.push(TypeError::new(
+                    let error_name = error_ty.user_facing();
+                    self.report_error_with_suggestions(
                         TypeErrorKind::BoundsNotSatisfied,
-                        span.clone(),
+                        span,
                         format!(
-                            "process entry error type `{}` does not satisfy the bound `Error`",
-                            error_ty.user_facing()
+                            "process entry error type `{error_name}` does not satisfy the bound `Error`"
                         ),
-                    ));
+                        vec![format!(
+                            "implement `Error` for `{error_name}`, or declare `fails dyn Error`"
+                        )],
+                    );
                     return None;
                 }
                 // An erased entry error renders through its vtable rather
@@ -3293,6 +3296,7 @@ impl Checker {
             record_init_type_args: resolved_record_init_type_args,
             stack_hints: std::mem::take(&mut self.stack_hints),
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
+            error_conversions: std::mem::take(&mut self.error_conversions),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             closure_capture_facts: resolved_closure_capture_facts,
             closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),

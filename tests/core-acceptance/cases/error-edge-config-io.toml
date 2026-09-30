@@ -1,0 +1,11 @@
+[[case]]
+id = "error-edge-config-io"
+intent = "`?` on `fs.read` applies `From<fs.IoError>` into the function's error enum, and `.context` erases it for `main`'s report."
+source = "cases/error-edge-config-io.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "error: loading app.conf: Io: NotFound(2)\n"
+exit = 1

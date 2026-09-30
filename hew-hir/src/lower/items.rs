@@ -1191,7 +1191,16 @@ impl LowerCtx {
                     .all(|part| self.imported_signature_type_available(part, receiver))
                     && self.imported_signature_type_available(ret, receiver)
             }
-            ResolvedTy::TraitObject { .. } => false,
+            // A trait object names its traits by checked identity; its
+            // arguments and bindings must be available like any other type.
+            ResolvedTy::TraitObject { traits } => traits.iter().all(|bound| {
+                bound.trait_id.is_some()
+                    && bound
+                        .args
+                        .iter()
+                        .chain(bound.assoc_bindings.iter().map(|(_, ty)| ty))
+                        .all(|ty| self.imported_signature_type_available(ty, receiver))
+            }),
             _ => true,
         }
     }

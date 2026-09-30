@@ -70,6 +70,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/seeded_random.hew",
     },
     ParityCase {
+        // Failure edges: `?` and `return error` keep the same error, apply a
+        // declared `From` and erase into `dyn Error`, with `main`'s exit.
+        test_name: "error_edges",
+        source_rel: "examples/sandbox-graduation/error_edges.hew",
+    },
+    ParityCase {
         test_name: "hello_world",
         source_rel: "examples/playground/basics/hello_world.hew",
     },
@@ -608,6 +614,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
+        "error_edges" => Some(
+            "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\n",
+        ),
         _ => None,
     };
     if let Some(expected) = expected {

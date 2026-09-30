@@ -665,15 +665,30 @@ impl Checker {
         concrete_type: &Ty,
         span: &Span,
     ) -> bool {
-        // How the concrete type satisfies each bound. Bail (false) if any
-        // bound is unsatisfied or not object-safe.
+        let Some(coercion) = self.build_dyn_trait_coercion(traits, type_name, concrete_type, span)
+        else {
+            return false;
+        };
+        self.dyn_trait_coercions
+            .insert(SpanKey::in_module(span, self.current_module_idx), coercion);
+        true
+    }
+
+    /// Build the [`DynCoercion`] erasing `concrete_type` into `dyn traits`, or
+    /// `None` when a bound is unsatisfied or not object-safe.
+    fn build_dyn_trait_coercion(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        type_name: &str,
+        concrete_type: &Ty,
+        span: &Span,
+    ) -> Option<DynCoercion> {
+        // How the concrete type satisfies each bound. Bail if any bound is
+        // unsatisfied or not object-safe.
         let mut structural_by_bound = Vec::with_capacity(traits.len());
         for bound in traits {
-            let Some(structural) =
-                self.validate_dyn_trait_bound(bound, type_name, concrete_type, span)
-            else {
-                return false;
-            };
+            let structural =
+                self.validate_dyn_trait_bound(bound, type_name, concrete_type, span)?;
             structural_by_bound.push(structural);
         }
 
@@ -709,9 +724,7 @@ impl Checker {
         let assoc_bindings = canonical_dyn_assoc_bindings(traits);
         let mut method_table: Vec<(String, String)> = Vec::new();
         let mut vtable_entries: Vec<DynVtableEntry> = Vec::new();
-        let Some(layout) = self.dyn_layout(traits, span) else {
-            return false;
-        };
+        let layout = self.dyn_layout(traits, span)?;
         for slot in layout {
             let bound = &traits[slot.bound];
             let impl_fn_key = format!("{canonical_type_name}::{}", slot.method_name);
@@ -761,19 +774,172 @@ impl Checker {
             assoc_bindings: assoc_bindings.clone(),
         };
 
-        self.dyn_trait_coercions.insert(
-            SpanKey::in_module(span, self.current_module_idx),
-            DynCoercion {
-                trait_name: composite_trait_name,
-                trait_bounds: traits.to_vec(),
-                concrete_type: concrete_type.clone(),
-                vtable_key,
-                assoc_bindings,
-                vtable_entries,
-                method_table,
-            },
+        Some(DynCoercion {
+            trait_name: composite_trait_name,
+            trait_bounds: traits.to_vec(),
+            concrete_type: concrete_type.clone(),
+            vtable_key,
+            assoc_bindings,
+            vtable_entries,
+            method_table,
+        })
+    }
+}
+
+/// The two places an error leaves a function (D547).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FailureEdge {
+    /// A postfix `?` on a `Result`.
+    Try,
+    /// `return error e`.
+    ReturnError,
+}
+
+impl FailureEdge {
+    fn spelling(self) -> &'static str {
+        match self {
+            Self::Try => "`?`",
+            Self::ReturnError => "`return error`",
+        }
+    }
+}
+
+impl Checker {
+    /// Publish `impl From<Source> for receiver` when `owner` is the prelude
+    /// `From` trait. Registration may visit one impl through several routes;
+    /// the method identity keeps a single row.
+    pub(super) fn record_from_impl(
+        &mut self,
+        owner: super::dispatch_table::MethodOwner,
+        bound: &TraitBound,
+        receiver: &Ty,
+        method: crate::DefId,
+    ) {
+        let from_trait = self
+            .lang_items
+            .get(crate::LangItem::From.key())
+            .map(|binding| binding.trait_id);
+        if from_trait.is_none()
+            || Some(owner) != from_trait.map(super::dispatch_table::MethodOwner::Trait)
+        {
+            return;
+        }
+        let [source] = bound.type_args.as_deref().unwrap_or_default() else {
+            return;
+        };
+        if self.from_impls.iter().any(|row| row.method == method) {
+            return;
+        }
+        let source = self.resolve_type_expr(source);
+        self.from_impls.push(FromImpl {
+            target: receiver.clone(),
+            source,
+            method,
+        });
+    }
+
+    /// The declared `impl From<source> for target`, if any. Coherence admits
+    /// at most one impl per pair, so the first match is the only one.
+    fn declared_from_impl(&mut self, target: &Ty, source: &Ty) -> Option<crate::DefId> {
+        let rows = self.from_impls.clone();
+        rows.into_iter().find_map(|row| {
+            let snapshot = self.subst.snapshot();
+            let matched = self.try_unify_with_owner_identity(&row.target, target)
+                && self.try_unify_with_owner_identity(&row.source, source);
+            self.subst.restore(snapshot);
+            matched.then_some(row.method)
+        })
+    }
+
+    /// Choose how `source` crosses a failure edge into the enclosing error
+    /// type `target` and record the choice at `span`. The first rule that
+    /// holds wins: the same type, erasure into a trait object, or a declared
+    /// `From`. Returns `false` after reporting `E_ERROR_NO_CONVERSION`.
+    pub(super) fn select_error_conversion(
+        &mut self,
+        edge: FailureEdge,
+        source: &Ty,
+        target: &Ty,
+        span: &Span,
+    ) -> bool {
+        let source = self.subst.resolve(source);
+        let target = self.subst.resolve(target);
+        if matches!(source, Ty::Error) || matches!(target, Ty::Error) {
+            return true;
+        }
+        let snapshot = self.subst.snapshot();
+        let conversion = if self.try_unify_with_owner_identity(&target, &source) {
+            Some(ErrorConversion::Same)
+        } else {
+            self.subst.restore(snapshot);
+            if let Ty::TraitObject { traits } = &target {
+                let concrete = source.materialize_literal_defaults();
+                concrete_type_name_for_dyn(&concrete)
+                    .and_then(|name| self.build_dyn_trait_coercion(traits, &name, &concrete, span))
+                    .map(ErrorConversion::Erase)
+            } else {
+                self.declared_from_impl(&target, &source)
+                    .map(|method| ErrorConversion::From { method })
+            }
+        };
+        if let Some(conversion) = conversion {
+            self.error_conversions.insert(
+                SpanKey::in_module(span, self.current_module_idx),
+                conversion,
+            );
+            return true;
+        }
+        self.report_error_no_conversion(edge, &source, &target, span);
+        false
+    }
+
+    fn report_error_no_conversion(
+        &mut self,
+        edge: FailureEdge,
+        source: &Ty,
+        target: &Ty,
+        span: &Span,
+    ) {
+        let edge_name = edge.spelling();
+        let source_name = source.user_facing().to_string();
+        let target_name = target.user_facing().to_string();
+        let code = TypeErrorKind::ErrorNoConversion.as_kind_str();
+        let (message, suggestions) = if matches!(target, Ty::TraitObject { .. }) {
+            (
+                format!("{code}: {edge_name} cannot erase `{source_name}` into `{target_name}`"),
+                vec![format!(
+                    "implement `Display` and `Error` for `{source_name}` so it can be erased"
+                )],
+            )
+        } else {
+            let convert_here = match edge {
+                FailureEdge::Try => {
+                    format!("or convert here: `.map_err(|e| <a {target_name}>)?`")
+                }
+                FailureEdge::ReturnError => {
+                    format!(
+                        "or convert here: `return error <a {target_name} built from the value>`"
+                    )
+                }
+            };
+            (
+                format!("{code}: {edge_name} cannot convert `{source_name}` into `{target_name}`"),
+                vec![
+                    format!(
+                        "declare the conversion: `impl From<{source_name}> for {target_name} \
+                         {{ fn from(value: {source_name}) -> {target_name} {{ ... }} }}`"
+                    ),
+                    convert_here,
+                    "or compose errors: declare the function `fails dyn Error`".to_string(),
+                ],
+            )
+        };
+        self.report_error_with_suggestions(
+            TypeErrorKind::ErrorNoConversion,
+            span,
+            message,
+            suggestions,
         );
-        true
     }
 }
 

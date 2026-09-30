@@ -766,6 +766,8 @@ pub enum ParseDiagnosticKind {
     AwaitRestartRetired,
     /// Retired supervisor child `shutdown:` clause.
     SupervisorStopClauseRetired,
+    /// `-> () fails E` spells out the unit a failing function omits.
+    UnitFailsArrow,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -817,6 +819,7 @@ impl ParseDiagnosticKind {
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
             Self::AwaitRestartRetired => "E_AWAIT_RESTART_RETIRED",
             Self::SupervisorStopClauseRetired => "E_SUPERVISOR_STOP_CLAUSE",
+            Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",

@@ -1,7 +1,7 @@
 [[case]]
 id = "error-edges"
 intent = "`?` and `return error` keep the same error, apply each declared `From` and erase into `dyn Error`; the caller's match reaches the right arm and `main` reports the erased error."
-source = "../../../examples/sandbox-graduation/error_edges.hew"
+source = "../../examples/sandbox-graduation/error_edges.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 

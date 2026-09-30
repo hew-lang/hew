@@ -25,7 +25,7 @@ actor Ledger {
         balance
     }
 
-    receive fn note(amount: i64) -> () fails string {
+    receive fn note(amount: i64) fails string {
         if amount < 0 {
             return error "a note cannot be negative";
         }

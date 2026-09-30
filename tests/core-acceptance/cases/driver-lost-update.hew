@@ -10,7 +10,7 @@ actor Account {
     }
 }
 
-fn deposit(account: Account, amount: i64) -> () fails ActorError {
+fn deposit(account: Account, amount: i64) fails ActorError {
     let current = account.balance()?;
     account.set(current + amount)?;
 }

@@ -1,0 +1,13 @@
+[[case]]
+id = "example-net-supervised_listener"
+intent = "A reactor-backed listener stays responsive on one scheduler worker, transfers accepted connections into a bounded actor mailbox, rejects overload, and releases blocked accept plus active and queued clients on supervisor shutdown."
+source = "../../examples/net/supervised_listener.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "scheduler live\nsupervisor stopped\nconnections closed\n"
+exit = 0

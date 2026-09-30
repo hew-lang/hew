@@ -38,6 +38,30 @@ fn descriptor(signal: &Arc<ReadySignal>) -> HewWaker {
     }
 }
 
+/// Poll `operation` the way its owning task does: a readiness wake only
+/// flags the operation, and the status poll runs the syscall on this thread.
+unsafe fn drive(operation: *const HewAsyncIo, signal: &ReadySignal) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let seen = *signal.notifications.lock().unwrap();
+        // SAFETY: the caller owns a live operation reference.
+        let status = unsafe { hew_async_io_status(operation) };
+        if status != AsyncIoStatus::Pending as i32 {
+            return status;
+        }
+        let mut notifications = signal.notifications.lock().unwrap();
+        while *notifications == seen {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "operation never completed");
+            notifications = signal
+                .ready
+                .wait_timeout(notifications, remaining)
+                .unwrap()
+                .0;
+        }
+    }
+}
+
 fn await_ready(signal: &ReadySignal) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut notifications = signal.notifications.lock().unwrap();
@@ -307,7 +331,7 @@ fn late_accept_after_abandonment_closes_its_connection_without_waking() {
     );
     let (handle, _peer) = crate::transport::tcp_socketpair_conn_for_test();
     producer.complete(Ok(IoValue::Connection(AcceptedConnection(handle))));
-    assert!(crate::transport::tcp_conn_raw_fd(handle).is_none());
+    assert!(!crate::transport::tcp_streams_has_handle_for_test(handle));
     assert_eq!(*signal.notifications.lock().unwrap(), 0);
 }
 
@@ -332,7 +356,10 @@ fn accepted_handle_has_one_owner_before_and_after_take() {
             }
             hew_async_io_free(operation);
         }
-        assert_eq!(crate::transport::tcp_conn_raw_fd(handle).is_some(), take);
+        assert_eq!(
+            crate::transport::tcp_streams_has_handle_for_test(handle),
+            take
+        );
         if take {
             crate::transport::tcp_close_orphan_conn(handle);
         }
@@ -404,7 +431,7 @@ fn queued_connection_deadline_wakes_before_producer_admission() {
     let gate: WorkerGate = Arc::new((Mutex::new(false), Condvar::new()));
     let release_workers = ReleaseWorkers(Arc::clone(&gate));
     let (entered, workers) = std::sync::mpsc::channel::<()>();
-    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_SIZE {
+    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_MAX {
         let job = Box::into_raw(Box::new((Arc::clone(&gate), entered.clone())));
         // SAFETY: each admitted callback owns its gate box; runtime owns pool.
         let status = unsafe {
@@ -412,7 +439,7 @@ fn queued_connection_deadline_wakes_before_producer_admission() {
         };
         assert_eq!(status, 0);
     }
-    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_SIZE {
+    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_MAX {
         workers.recv_timeout(Duration::from_secs(5)).unwrap();
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -493,7 +520,7 @@ fn queued_file_cancellation_never_blocks_submission_or_writes_after_abandonment(
     // Even a failed assertion releases workers before the runtime joins them.
     let release_workers = ReleaseWorkers(Arc::clone(&gate));
     let (entered, workers) = std::sync::mpsc::channel::<()>();
-    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_SIZE {
+    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_MAX {
         let job = Box::into_raw(Box::new((Arc::clone(&gate), entered.clone())));
         // SAFETY: the runtime owns pool; each admitted callback owns one gate box.
         assert_eq!(
@@ -504,7 +531,7 @@ fn queued_file_cancellation_never_blocks_submission_or_writes_after_abandonment(
             0
         );
     }
-    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_SIZE {
+    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_MAX {
         workers.recv_timeout(Duration::from_secs(5)).unwrap();
     }
     let signal = Arc::new(ReadySignal::default());
@@ -601,14 +628,19 @@ fn tcp_read_rearms_after_each_result_and_preserves_eof() {
     // SAFETY: handle and waker are live across the pending operation.
     let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&first)) };
     peer.write_all(&payload).unwrap();
-    await_ready(&first);
+    // SAFETY: the operation is live until take_read frees it.
+    assert_eq!(
+        unsafe { drive(operation, &first) },
+        AsyncIoStatus::Success as i32
+    );
     // SAFETY: a successful read owns bytes and its operation reference.
     let mut received = unsafe { take_read(operation) };
     while received.len() < payload.len() {
         let signal = Arc::new(ReadySignal::default());
         // SAFETY: handle remains live; the new read retains signal's descriptor.
         let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
-        await_ready(&signal);
+        // SAFETY: as above.
+        unsafe { drive(operation, &signal) };
         // SAFETY: readiness makes the owned result available to this sole take.
         received.extend(unsafe { take_read(operation) });
     }
@@ -617,7 +649,8 @@ fn tcp_read_rearms_after_each_result_and_preserves_eof() {
     let eof = Arc::new(ReadySignal::default());
     // SAFETY: the local handle remains live after the peer closes its write half.
     let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&eof)) };
-    await_ready(&eof);
+    // SAFETY: as above.
+    unsafe { drive(operation, &eof) };
     // SAFETY: EOF is a successful empty bytes result, not an error.
     assert!(unsafe { take_read(operation) }.is_empty());
     assert_eq!(crate::transport::hew_tcp_close(handle), 0);
@@ -634,16 +667,12 @@ fn tcp_write_owns_its_buffer_and_resumes_without_repeating_a_prefix() {
         .map(|index| u8::try_from(index % 251).unwrap())
         .collect();
     let signal = Arc::new(ReadySignal::default());
-    // SAFETY: the connection remains live; submission copies the borrowed bytes.
-    let operation = unsafe {
-        let bytes = crate::bytes::hew_bytes_from_static(
-            payload.as_ptr(),
-            u32::try_from(payload.len()).unwrap(),
-        );
-        let operation = hew_async_tcp_write(handle, &raw const bytes, &descriptor(&signal));
-        crate::bytes::hew_bytes_drop(bytes.ptr);
-        operation
+    // SAFETY: the bytes stay live until the operation is freed below.
+    let bytes = unsafe {
+        crate::bytes::hew_bytes_from_static(payload.as_ptr(), u32::try_from(payload.len()).unwrap())
     };
+    // SAFETY: the connection and the borrowed bytes outlive the operation.
+    let operation = unsafe { hew_async_tcp_write(handle, &raw const bytes, &descriptor(&signal)) };
     let mut prefix = vec![0; 1024];
     peer.read_exact(&mut prefix).unwrap();
     assert_eq!(
@@ -655,20 +684,16 @@ fn tcp_write_owns_its_buffer_and_resumes_without_repeating_a_prefix() {
         peer.read_to_end(&mut prefix).unwrap();
         prefix
     });
-    await_ready(&signal);
     let mut count = -1;
     // SAFETY: readiness admits one result transfer; free releases the creator.
     unsafe {
+        assert_eq!(drive(operation, &signal), AsyncIoStatus::Success as i32);
         assert_eq!(
             hew_async_io_take_count(operation, &raw mut count),
             AsyncIoStatus::Success as i32
         );
-        let cleanup = Arc::new(ReadySignal::default());
-        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
-            await_ready(&cleanup);
-        }
-        assert_eq!(hew_async_io_cleanup_status(operation, ptr::null()), 1);
         hew_async_io_free(operation);
+        crate::bytes::hew_bytes_drop(bytes.ptr);
     }
     assert_eq!(count, i64::try_from(payload.len()).unwrap());
     assert_eq!(crate::transport::hew_tcp_close(handle), 0);
@@ -677,32 +702,25 @@ fn tcp_write_owns_its_buffer_and_resumes_without_repeating_a_prefix() {
 
 #[cfg(unix)]
 #[test]
-fn cancelling_a_partial_tcp_write_quiesces_before_reusing_its_connection() {
+fn cancelling_a_partial_tcp_write_leaves_its_connection_usable() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let payload = vec![0xa5; 16 * 1024 * 1024];
     let signal = Arc::new(ReadySignal::default());
-    // SAFETY: the resource stays live through cancellation and quiescence.
-    let operation = unsafe {
-        let bytes = crate::bytes::hew_bytes_from_static(
-            payload.as_ptr(),
-            u32::try_from(payload.len()).unwrap(),
-        );
-        let operation = hew_async_tcp_write(handle, &raw const bytes, &descriptor(&signal));
-        crate::bytes::hew_bytes_drop(bytes.ptr);
-        operation
+    // SAFETY: the bytes stay live until the operation is freed below.
+    let bytes = unsafe {
+        crate::bytes::hew_bytes_from_static(payload.as_ptr(), u32::try_from(payload.len()).unwrap())
     };
+    // SAFETY: the connection and the borrowed bytes outlive the operation.
+    let operation = unsafe { hew_async_tcp_write(handle, &raw const bytes, &descriptor(&signal)) };
     let mut prefix = vec![0; 1024];
     peer.read_exact(&mut prefix).unwrap();
-    let cleanup = Arc::new(ReadySignal::default());
-    // SAFETY: cancellation retains the operation while its producer detaches.
+    // SAFETY: cancellation stops further syscalls; free releases the creator.
     unsafe {
         assert_eq!(hew_async_io_cancel(operation), 1);
-        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
-            await_ready(&cleanup);
-        }
+        // A cancelled operation needs no producer drain.
         assert_eq!(hew_async_io_cleanup_status(operation, ptr::null()), 1);
         let mut count = -1;
         assert_eq!(
@@ -711,6 +729,7 @@ fn cancelling_a_partial_tcp_write_quiesces_before_reusing_its_connection() {
         );
         assert_eq!(count, -1);
         hew_async_io_free(operation);
+        crate::bytes::hew_bytes_drop(bytes.ptr);
     }
     let reader = std::thread::spawn(move || {
         peer.read_to_end(&mut prefix).unwrap();
@@ -718,25 +737,16 @@ fn cancelling_a_partial_tcp_write_quiesces_before_reusing_its_connection() {
     });
     let next = Arc::new(ReadySignal::default());
     let marker = b"after cancelled write";
-    // SAFETY: quiescence permits a new request to borrow the same connection.
-    let operation = unsafe {
+    // SAFETY: the marker bytes stay live until the operation is freed.
+    unsafe {
         let bytes = crate::bytes::hew_bytes_from_static(
             marker.as_ptr(),
             u32::try_from(marker.len()).unwrap(),
         );
         let operation = hew_async_tcp_write(handle, &raw const bytes, &descriptor(&next));
-        crate::bytes::hew_bytes_drop(bytes.ptr);
-        operation
-    };
-    await_ready(&next);
-    // SAFETY: retain the connection until the completed producer detaches.
-    unsafe {
-        let cleanup = Arc::new(ReadySignal::default());
-        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
-            await_ready(&cleanup);
-        }
-        assert_eq!(hew_async_io_cleanup_status(operation, ptr::null()), 1);
+        assert_eq!(drive(operation, &next), AsyncIoStatus::Success as i32);
         hew_async_io_free(operation);
+        crate::bytes::hew_bytes_drop(bytes.ptr);
     }
     assert_eq!(crate::transport::hew_tcp_close(handle), 0);
     let received = reader.join().unwrap();
@@ -763,7 +773,8 @@ fn tcp_cancel_detaches_before_rearming_the_same_handle() {
     // SAFETY: the original resource remains live and starts a new borrow.
     let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
     peer.write_all(b"after cancellation").unwrap();
-    await_ready(&signal);
+    // SAFETY: the operation is live until take_read frees it.
+    unsafe { drive(operation, &signal) };
     // SAFETY: the new operation is ready and solely owned by this consumer.
     assert_eq!(unsafe { take_read(operation) }, b"after cancellation");
     assert_eq!(*cancelled.notifications.lock().unwrap(), 0);
@@ -783,7 +794,8 @@ fn tcp_accept_untaken_result_closes_the_peer_and_taken_result_stays_owned() {
         // SAFETY: listener remains live through readiness and the operation owns
         // its accepted connection until a take transfers that authority.
         let operation = unsafe { hew_async_tcp_accept(listener, &descriptor(&signal)) };
-        await_ready(&signal);
+        // SAFETY: the operation is live until freed below.
+        unsafe { drive(operation, &signal) };
         // SAFETY: creator reference is live; inspection records the exact socket
         // whose external close/table lifetime the test checks below.
         let accepted = unsafe {
@@ -828,7 +840,7 @@ fn tcp_busy_and_invalid_handle_errors_do_not_replace_the_pending_owner() {
     let duplicate_ready = Arc::new(ReadySignal::default());
     let invalid_ready = Arc::new(ReadySignal::default());
     // SAFETY: each probe owns its operation and retains its readiness signal.
-    // Admission can report EBUSY when the reactor promotes a queued request.
+    // Admission refuses a second reader while the first one waits.
     unsafe {
         let duplicate = hew_async_tcp_read(handle, &descriptor(&duplicate_ready));
         await_ready(&duplicate_ready);
@@ -842,7 +854,8 @@ fn tcp_busy_and_invalid_handle_errors_do_not_replace_the_pending_owner() {
         hew_async_io_free(invalid);
     }
     peer.write_all(b"original owner").unwrap();
-    await_ready(&signal);
+    // SAFETY: the operation is live until take_read frees it.
+    unsafe { drive(first, &signal) };
     // SAFETY: admission refusal must leave this first operation intact.
     assert_eq!(unsafe { take_read(first) }, b"original owner");
     assert_eq!(crate::transport::hew_tcp_close(handle), 0);
@@ -891,7 +904,7 @@ fn cleanup_waits_for_the_last_readiness_snapshot_and_discards_late_accept() {
     assert_eq!(*cleanup.notifications.lock().unwrap(), 0);
     let (handle, _peer) = crate::transport::tcp_socketpair_conn_for_test();
     snapshot.complete(Ok(IoValue::Connection(AcceptedConnection(handle))));
-    assert!(crate::transport::tcp_conn_raw_fd(handle).is_none());
+    assert!(!crate::transport::tcp_streams_has_handle_for_test(handle));
     drop(snapshot);
     await_ready(&cleanup);
     // SAFETY: cleanup is finished; free consumes the sole creator reference.
@@ -977,10 +990,10 @@ fn tcp_read_timeout_is_an_io_error_and_releases_the_connection_for_reuse() {
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     assert_eq!(crate::transport::hew_tcp_set_read_timeout(handle, 50), 0);
     let signal = Arc::new(ReadySignal::default());
-    // SAFETY: keep the connection and request alive through producer quiescence.
+    // SAFETY: the connection and each request stay live until freed.
     unsafe {
         let operation = hew_async_tcp_read(handle, &descriptor(&signal));
-        await_ready(&signal);
+        assert_eq!(drive(operation, &signal), AsyncIoStatus::Error as i32);
         assert_eq!(
             hew_async_io_restore_error(operation),
             AsyncIoStatus::Error as i32
@@ -989,24 +1002,12 @@ fn tcp_read_timeout_is_an_io_error_and_releases_the_connection_for_reuse() {
             crate::stream_error::take_last_errno(),
             crate::transport::etimedout_errno()
         );
-        let cleanup = Arc::new(ReadySignal::default());
-        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
-            await_ready(&cleanup);
-        }
         hew_async_io_free(operation);
         assert_eq!(crate::transport::hew_tcp_set_read_timeout(handle, -1), 0);
         let next = Arc::new(ReadySignal::default());
         let operation = hew_async_tcp_read(handle, &descriptor(&next));
         peer.write_all(b"after timeout").unwrap();
-        await_ready(&next);
-        assert_eq!(
-            hew_async_io_status(operation),
-            AsyncIoStatus::Success as i32
-        );
-        let cleanup = Arc::new(ReadySignal::default());
-        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
-            await_ready(&cleanup);
-        }
+        assert_eq!(drive(operation, &next), AsyncIoStatus::Success as i32);
         hew_async_io_free(operation);
     }
     assert_eq!(crate::transport::hew_tcp_close(handle), 0);
@@ -1022,15 +1023,14 @@ fn tcp_write_timeout_reports_partial_progress_as_an_io_error() {
     assert_eq!(crate::transport::hew_tcp_set_write_timeout(handle, 250), 0);
     let payload = vec![0x5a; 16 * 1024 * 1024];
     let signal = Arc::new(ReadySignal::default());
-    // SAFETY: submission copies the bytes; the connection survives quiescence.
+    // SAFETY: the bytes stay live until the operation is freed.
     unsafe {
         let bytes = crate::bytes::hew_bytes_from_static(
             payload.as_ptr(),
             u32::try_from(payload.len()).unwrap(),
         );
         let operation = hew_async_tcp_write(handle, &raw const bytes, &descriptor(&signal));
-        crate::bytes::hew_bytes_drop(bytes.ptr);
-        await_ready(&signal);
+        assert_eq!(drive(operation, &signal), AsyncIoStatus::Error as i32);
         assert_eq!(
             hew_async_io_restore_error(operation),
             AsyncIoStatus::Error as i32
@@ -1039,15 +1039,186 @@ fn tcp_write_timeout_reports_partial_progress_as_an_io_error() {
             crate::stream_error::take_last_errno(),
             crate::transport::etimedout_errno()
         );
-        let cleanup = Arc::new(ReadySignal::default());
-        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
-            await_ready(&cleanup);
-        }
         hew_async_io_free(operation);
+        crate::bytes::hew_bytes_drop(bytes.ptr);
     }
     assert_eq!(crate::transport::hew_tcp_close(handle), 0);
     let mut received = Vec::new();
     peer.read_to_end(&mut received).unwrap();
     assert!(!received.is_empty() && received.len() < payload.len());
     assert!(received.iter().all(|byte| *byte == 0x5a));
+}
+
+/// Closing a connection while another task waits on it completes that wait
+/// with `ECANCELED` and wakes it, instead of stranding the waiter.
+#[test]
+fn close_while_waiting_completes_the_waiter_with_ecanceled() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let (handle, _peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: the operation is live until freed below.
+    unsafe {
+        let operation = hew_async_tcp_read(handle, &descriptor(&signal));
+        assert_eq!(
+            hew_async_io_status(operation),
+            AsyncIoStatus::Pending as i32
+        );
+        assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+        await_ready(&signal);
+        assert_eq!(hew_async_io_status(operation), AsyncIoStatus::Error as i32);
+        assert_eq!(hew_async_io_errno(operation), libc::ECANCELED);
+        hew_async_io_free(operation);
+    }
+    assert_eq!(crate::reactor::waiter_count(), 0);
+}
+
+/// Data already buffered completes the read at submission on the calling
+/// thread: no readiness registration and no wake.
+#[test]
+fn buffered_read_completes_at_submission_without_a_wake() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    peer.write_all(b"ready now").unwrap();
+    // Give loopback delivery a moment so the bytes are in the receive buffer.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let slot = crate::reactor::lookup(handle).unwrap();
+    while slot.stream().unwrap().peek(&mut [0; 1]).unwrap_or(0) == 0 {
+        assert!(Instant::now() < deadline, "loopback bytes never arrived");
+        std::thread::yield_now();
+    }
+    drop(slot);
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: the operation is live until take_read frees it.
+    let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { hew_async_io_status(operation) },
+        AsyncIoStatus::Success as i32
+    );
+    assert_eq!(crate::reactor::waiter_count(), 0);
+    // SAFETY: the result is ready and solely owned here.
+    assert_eq!(unsafe { take_read(operation) }, b"ready now");
+    assert_eq!(*signal.notifications.lock().unwrap(), 1);
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+}
+
+/// A readiness report with nothing to read costs one attempt and a re-arm;
+/// the operation stays pending and completes when data arrives.
+#[test]
+fn spurious_readiness_rearms_and_completes_later() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: the operation is live until take_read frees it.
+    let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
+    for _ in 0..3 {
+        // SAFETY: the creator reference keeps the operation live.
+        unsafe { (*operation).signal_ready() };
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { hew_async_io_status(operation) },
+            AsyncIoStatus::Pending as i32
+        );
+        assert_eq!(crate::reactor::waiter_count(), 1, "the attempt re-armed");
+    }
+    peer.write_all(b"eventually").unwrap();
+    // SAFETY: as above.
+    unsafe { drive(operation, &signal) };
+    // SAFETY: the result is ready and solely owned here.
+    assert_eq!(unsafe { take_read(operation) }, b"eventually");
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+}
+
+/// One task can wait to read a connection while another writes it.
+#[test]
+fn a_reader_and_a_writer_share_one_connection() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let read_signal = Arc::new(ReadySignal::default());
+    // SAFETY: the operation is live until take_read frees it.
+    let read = unsafe { hew_async_tcp_read(handle, &descriptor(&read_signal)) };
+    let write_signal = Arc::new(ReadySignal::default());
+    let message = b"from the writer";
+    // SAFETY: the bytes stay live until the write is freed.
+    unsafe {
+        let bytes = crate::bytes::hew_bytes_from_static(
+            message.as_ptr(),
+            u32::try_from(message.len()).unwrap(),
+        );
+        let write = hew_async_tcp_write(handle, &raw const bytes, &descriptor(&write_signal));
+        assert_eq!(drive(write, &write_signal), AsyncIoStatus::Success as i32);
+        hew_async_io_free(write);
+        crate::bytes::hew_bytes_drop(bytes.ptr);
+    }
+    let mut received = [0; 15];
+    peer.read_exact(&mut received).unwrap();
+    assert_eq!(&received, message);
+    peer.write_all(b"to the reader").unwrap();
+    // SAFETY: as above.
+    unsafe { drive(read, &read_signal) };
+    // SAFETY: the result is ready and solely owned here.
+    assert_eq!(unsafe { take_read(read) }, b"to the reader");
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+}
+
+/// Readiness, cancellation and close race on one waiting read. Whatever wins,
+/// the operation ends in exactly one terminal state, its waker fires at most
+/// once per transition, and no waiter is left registered.
+#[test]
+fn readiness_cancel_and_close_races_leave_no_waiter() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    for round in 0..200 {
+        let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+        let signal = Arc::new(ReadySignal::default());
+        // SAFETY: the operation is live until freed below.
+        let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
+        let raw = operation as usize;
+        let barrier = Arc::new(Barrier::new(3));
+        let writer = {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let _ = peer.write_all(b"x");
+                peer
+            })
+        };
+        let closer = {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                if round % 2 == 0 {
+                    let _ = crate::transport::hew_tcp_close(handle);
+                }
+            })
+        };
+        barrier.wait();
+        if round % 3 == 0 {
+            // SAFETY: the creator reference is live on this thread.
+            unsafe { hew_async_io_cancel(raw as *const HewAsyncIo) };
+        }
+        let _peer = writer.join().unwrap();
+        closer.join().unwrap();
+        // SAFETY: the operation stays live until this free.
+        unsafe {
+            let status = hew_async_io_status(operation);
+            if status == AsyncIoStatus::Pending as i32 {
+                // Neither cancel nor close won: readiness must finish it.
+                assert_eq!(drive(operation, &signal), AsyncIoStatus::Success as i32);
+            }
+            hew_async_io_free(operation);
+        }
+        if round % 2 != 0 {
+            assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+        }
+        assert_eq!(
+            crate::reactor::waiter_count(),
+            0,
+            "round {round} left a waiter"
+        );
+    }
 }

@@ -47,42 +47,33 @@ fn now_ms_for_wheel() -> u64 {
 pub type HewTimerCb = unsafe extern "C" fn(*mut c_void);
 
 // ---------------------------------------------------------------------------
-// Ticker-notify hook
+// Insert hook
 //
-// The ticker thread in `timer_periodic` registers a lightweight `fn()` here
-// at startup.  `hew_timer_wheel_schedule_handle` calls it after every insert
-// so the ticker re-evaluates its park deadline.  An unconditional call on
-// every insert is correct: a spurious wake just re-computes and re-parks.
-//
-// WHY here: the wheel is the insert site; `timer_periodic` depends on
-// `timer_wheel`, so the hook must live in `timer_wheel` to avoid a circular
-// dependency.
+// The reactor ticks the process wheel and sleeps until its next deadline.
+// `timer_periodic` registers a hook here that wakes the reactor when an insert
+// lands before that deadline. The hook lives in `timer_wheel` because the
+// wheel is the insert site and `timer_periodic` depends on `timer_wheel`.
 // ---------------------------------------------------------------------------
 
-static TICKER_NOTIFY_HOOK: OnceLock<fn()> = OnceLock::new();
+type InsertHook = fn(*mut HewTimerWheel, u64);
 
-/// Register the ticker's wakeup function.  Called once from
-/// `timer_periodic::start_ticker_thread`.  Subsequent calls are ignored.
+static INSERT_HOOK: OnceLock<InsertHook> = OnceLock::new();
+
+/// Register the process wheel's insert hook. Only the first registration
+/// takes effect.
 //
-// KEEP(wasm32): `timer_periodic` is declared
-// `#[cfg(not(target_arch = "wasm32"))]` in lib.rs while `timer_wheel` compiles
-// for both targets by design (wasm ticks are host-driven), so wasm32 is the
-// only build where nobody registers. `notify_ticker` degrades correctly there:
-// `OnceLock::get()` returns `None` and the call is a no-op. On native the hook
-// is what stops the ticker parking on a stale deadline — without it a timer
-// scheduled onto an empty wheel would not fire until an unrelated wake.
+// KEEP(wasm32): wasm32 ticks its wheel from the host driver and never
+// registers, so `notify_inserted` is a no-op there.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) fn register_ticker_notify_hook(f: fn()) {
-    // OnceLock: only the first registration wins; safe to call again.
-    let _ = TICKER_NOTIFY_HOOK.set(f);
+pub(crate) fn register_insert_hook(hook: InsertHook) {
+    let _ = INSERT_HOOK.set(hook);
 }
 
-/// Notify the ticker that a new timer has been inserted.  Called from the
-/// schedule path while the wheel lock is **not** held.
+/// Report an insert at `deadline_ms`. Called with the wheel lock released.
 #[inline]
-fn notify_ticker() {
-    if let Some(f) = TICKER_NOTIFY_HOOK.get() {
-        f();
+fn notify_inserted(tw: *mut HewTimerWheel, deadline_ms: u64) {
+    if let Some(hook) = INSERT_HOOK.get() {
+        hook(tw, deadline_ms);
     }
 }
 
@@ -506,7 +497,12 @@ unsafe fn timer_wheel_schedule_handle_inner(
         return HewTimerHandle::null();
     }
     let deadline_ms = match schedule {
-        TimerSchedule::After(delay_ms) => w.current_ms.saturating_add(delay_ms),
+        // Count from the clock, not the cursor: the cursor rests at the last
+        // tick while the wheel sleeps, and a delay measured from it would
+        // fire early.
+        TimerSchedule::After(delay_ms) => now_ms_for_wheel()
+            .max(w.current_ms)
+            .saturating_add(delay_ms),
         // A deadline that elapsed before registration is already due. Keep it
         // in the current slot so the next tick can collect it immediately.
         TimerSchedule::At(deadline_ms) => deadline_ms.max(w.current_ms),
@@ -532,10 +528,10 @@ unsafe fn timer_wheel_schedule_handle_inner(
 
     insert_entry(&mut w, entry);
     let handle = HewTimerHandle { entry, generation };
-    // Release the wheel lock before notifying the ticker so the ticker can
-    // immediately call hew_timer_wheel_next_deadline_ms without contending.
+    // Release the wheel lock before notifying, so the woken reactor can read
+    // the next deadline without contending.
     drop(w);
-    notify_ticker();
+    notify_inserted(tw, deadline_ms);
     handle
 }
 
@@ -748,7 +744,66 @@ pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
     unsafe { timer_wheel_tick_to(tw, now) }
 }
 
+/// The earliest live deadline in one list, if any.
+fn list_earliest(mut entry: *mut HewTimerEntry) -> Option<u64> {
+    let mut earliest = None;
+    while !entry.is_null() {
+        // SAFETY: list entries are owned by the wheel; the caller holds its lock.
+        unsafe {
+            if (*entry).cancelled == 0 {
+                earliest = Some(
+                    earliest.map_or((*entry).deadline_ms, |d: u64| d.min((*entry).deadline_ms)),
+                );
+            }
+            entry = (*entry).next;
+        }
+    }
+    earliest
+}
+
+/// The earliest live deadline, visiting slots in time order from the cursor
+/// and stopping at the first level that holds one. Each level's slots cover
+/// consecutive, non-overlapping ranges, so the first non-empty slot holds the
+/// level's earliest entry; entries left in a slot the cursor has passed are
+/// overdue and found in the cursor's own slot first.
+fn earliest_deadline(w: &WheelInner) -> Option<u64> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "masked to the level size, which fits in usize"
+    )]
+    let l0_start = (w.current_ms / L0_MS) as usize & (L0_SIZE - 1);
+    for offset in 0..L0_SIZE {
+        if let Some(deadline) = list_earliest(w.l0[(l0_start + offset) & (L0_SIZE - 1)]) {
+            return Some(deadline);
+        }
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "masked to the level size, which fits in usize"
+    )]
+    let l1_start = (w.current_ms / L1_MS) as usize & (L1_SIZE - 1);
+    for offset in 0..L1_SIZE {
+        if let Some(deadline) = list_earliest(w.l1[(l1_start + offset) & (L1_SIZE - 1)]) {
+            return Some(deadline);
+        }
+    }
+    // Overflow is kept sorted, so its first live entry is the earliest.
+    let mut entry = w.overflow;
+    while !entry.is_null() {
+        // SAFETY: overflow entries are owned by the wheel under its lock.
+        unsafe {
+            if (*entry).cancelled == 0 {
+                return Some((*entry).deadline_ms);
+            }
+            entry = (*entry).next;
+        }
+    }
+    None
+}
+
 /// Return milliseconds until the next pending timer, or −1 if none exist.
+/// The gap is measured from the clock, so a cursor resting at its last tick
+/// never overstates it.
 ///
 /// # Safety
 ///
@@ -762,86 +817,14 @@ pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel
         .inner
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let now = w.current_ms;
-    let mut earliest: u64 = u64::MAX;
-
-    // Scan L0.
-    for slot in &w.l0 {
-        let mut e = *slot;
-        while !e.is_null() {
-            // SAFETY: entry is valid under lock.
-            unsafe {
-                if (*e).cancelled == 0 && (*e).deadline_ms < earliest {
-                    earliest = (*e).deadline_ms;
-                }
-                e = (*e).next;
-            }
-        }
-    }
-
-    // Check L1 only if L0 had nothing.
-    if earliest == u64::MAX {
-        for slot in &w.l1 {
-            let mut e = *slot;
-            while !e.is_null() {
-                // SAFETY: entry is valid under lock.
-                unsafe {
-                    if (*e).cancelled == 0 && (*e).deadline_ms < earliest {
-                        earliest = (*e).deadline_ms;
-                    }
-                    e = (*e).next;
-                }
-            }
-        }
-    }
-
-    // Check overflow: scan past cancelled heads to find the first live entry.
-    // The overflow list is sorted by deadline_ms ascending.  A cancelled head
-    // must not shadow a live entry further down the list — if it did,
-    // next_deadline_ms would return -1 and the ticker would park indefinitely,
-    // never waking to fire the live timer.
-    if earliest == u64::MAX {
-        let mut e = w.overflow;
-        while !e.is_null() {
-            // SAFETY: overflow list nodes are valid under lock.
-            unsafe {
-                if (*e).cancelled == 0 {
-                    earliest = (*e).deadline_ms;
-                    break;
-                }
-                e = (*e).next;
-            }
-        }
-    }
-
-    drop(w);
-
-    if earliest == u64::MAX {
+    let Some(earliest) = earliest_deadline(&w) else {
         return -1;
-    }
-
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "monotonic ms values fit in i64 for many centuries"
-    )]
-    let remaining = earliest as i64 - now as i64;
-    if remaining > 0 {
-        remaining
-    } else {
-        0
-    }
+    };
+    let now = now_ms_for_wheel().max(w.current_ms);
+    drop(w);
+    i64::try_from(earliest.saturating_sub(now)).unwrap_or(i64::MAX)
 }
 
-/// Test-only: return the earliest **absolute** deadline (`deadline_ms`) of any
-/// live entry, or `None` when the wheel is empty.
-///
-/// Unlike [`hew_timer_wheel_next_deadline_ms`], which returns the delay
-/// *relative* to the wheel's `current_ms`, this returns the absolute fire time
-/// stored on the earliest entry.
-///
-/// # Safety
-///
-/// `tw` must be null or a valid pointer returned by [`hew_timer_wheel_new`].
 #[cfg(test)]
 #[allow(dead_code, reason = "used by wasm32-only shutdown tests")]
 pub(crate) unsafe fn timer_wheel_earliest_abs_deadline_ms(tw: *mut HewTimerWheel) -> Option<u64> {

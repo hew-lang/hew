@@ -1691,18 +1691,17 @@ fn main() {}
         }
     }
 
-    /// The suspending-read lifecycle ABI (`hew_conn_await_read` /
-    /// `hew_read_slot_new` / `_free` / `_cancel` / `_status` / `_take`) is
-    /// compiler-emission only — codegen lowers `await conn.read()` into these
-    /// calls and manages the slot's manual refcount + cancellation protocol.
-    /// Exposing them as user-callable `extern "rt"` surface would let user code
+    /// The read-slot lifecycle ABI (`hew_read_slot_new` / `_free` /
+    /// `_cancel` / `_status` / `_take`) is runtime-internal: the runtime
+    /// manages the slot's manual refcount and cancellation protocol. Exposing
+    /// it as user-callable `extern "rt"` surface would let user code
     /// allocate/free/cancel slots out of protocol and corrupt the refcount
-    /// (double-free / use-after-free). All six must live in `non-declarable` and
-    /// the checker must reject any `extern "rt"` declaration that names them.
+    /// (double-free / use-after-free). All five must live in `non-declarable`
+    /// and the checker must reject any `extern "rt"` declaration that names
+    /// them.
     #[test]
     fn extern_rt_read_slot_lifecycle_symbols_rejected() {
         for sym in [
-            "hew_conn_await_read",
             "hew_read_slot_new",
             "hew_read_slot_free",
             "hew_read_slot_cancel",

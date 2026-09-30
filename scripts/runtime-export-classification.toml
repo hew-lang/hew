@@ -351,12 +351,6 @@ stable = [
   "hew_hostname",
   "hew_i64_to_string",
   "hew_int_to_string",
-  "hew_io_poller_new",
-  "hew_io_poller_poll",
-  "hew_io_poller_poll_ready",
-  "hew_io_poller_register",
-  "hew_io_poller_stop",
-  "hew_io_poller_unregister",
   "hew_io_read_all",
   "hew_io_read_line",
   "hew_io_write",
@@ -675,7 +669,6 @@ stable = [
   "hew_tcp_connect",
   "hew_tcp_connect_timed",
   "hew_tcp_connect_timeout",
-  "hew_tcp_detach",
   "hew_tcp_listen",
   "hew_tcp_listener_close",
   "hew_tcp_listener_local_port",
@@ -1464,7 +1457,6 @@ non-declarable = [
   "hew_cbor_ser_null",
   "hew_cbor_ser_string",
   "hew_cbor_ser_u64",
-  "hew_conn_await_read",
   "hew_cont_crash_cleanup_arm",
   "hew_cont_crash_cleanup_deactivate",
   "hew_cont_crash_cleanup_retire",
@@ -1501,7 +1493,6 @@ non-declarable = [
   "hew_glob_get",
   "hew_glob_is_valid",
   "hew_global_timer_wheel",
-  "hew_listener_await_accept",
   "hew_location_display",
   "hew_location_format",
   "hew_location_incarnation",
@@ -1536,7 +1527,6 @@ non-declarable = [
   "hew_read_slot_set_await_cancel",
   "hew_read_slot_status",
   "hew_read_slot_take",
-  "hew_read_slot_take_handle",
   "hew_realloc",
   "hew_require_execution_context",
   "hew_reply_channel_await_status",
@@ -4283,14 +4273,6 @@ discharge-depth = "none"
 symbol = "hew_tcp_close"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.net.Connection"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_tcp_detach"
-result = "none"
-params = ["borrow"]
 resource-param-types = ["std.net.Connection"]
 release-symbol = ""
 discharge-depth = "none"

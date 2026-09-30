@@ -1,9 +1,11 @@
-//! File I/O, sleep, clock, and I/O poller for the Hew runtime.
+//! File reads and the platform readiness poller for the Hew runtime.
 //!
-//! Provides `hew_read_file`, `hew_sleep_ns`, `hew_sleep_until_ns`,
-//! `hew_now_ms`, duration helpers,
-//! and a platform I/O poller (epoll on Linux, kqueue on FreeBSD/macOS, stub
-//! elsewhere).
+//! The poller is the per-OS half of the reactor: epoll with an eventfd wake on
+//! Linux, kqueue with an `EVFILT_USER` wake on FreeBSD and macOS, and an I/O
+//! completion port with `AFD_POLL` readiness and a posted wake packet on
+//! Windows. Every arm is one-shot: one arm reports at most one readiness, and
+//! the waiting task re-arms after its next syscall would block. Arming is
+//! thread-safe, so the task that met `WouldBlock` arms from its own worker.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -11,10 +13,6 @@
 
 use hew_cabi::string::HewString;
 use std::ffi::c_int;
-// Only the Linux/BSD/macOS pollers below re-export this through `super::`;
-// the Windows AFD poller and the no-poller stub each import their own.
-#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
-use std::ffi::c_void;
 
 // ---------------------------------------------------------------------------
 // Duration
@@ -41,786 +39,353 @@ pub unsafe extern "C" fn hew_read_file(path: *const HewString) -> *mut HewString
 }
 
 // ---------------------------------------------------------------------------
-// I/O Poller (epoll on Linux, kqueue on FreeBSD/macOS, stub elsewhere)
+// Readiness poller
 // ---------------------------------------------------------------------------
 
-/// I/O event interest flags.
+/// Readiness interest and report flag: a read would make progress.
 pub const HEW_IO_READ: c_int = 0x01;
-/// I/O event interest flag: write-ready.
+/// Readiness interest and report flag: a write would make progress.
 pub const HEW_IO_WRITE: c_int = 0x02;
-/// I/O event interest flag: error.
+/// Readiness report flag: the socket reported an error.
 pub const HEW_IO_ERROR: c_int = 0x04;
-/// I/O event interest flag: hang-up.
+/// Readiness report flag: the peer hung up.
 pub const HEW_IO_HUP: c_int = 0x08;
 
-#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
-use crate::actor::hew_actor_send;
-use crate::actor::HewActor;
+/// One readiness report. `token` names the reactor slot on Unix; on Windows it
+/// is the completion context the arm supplied.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Event {
+    pub(crate) token: u64,
+    pub(crate) events: c_int,
+}
 
-// ---- Linux (epoll) --------------------------------------------------------
+/// Reserved token for the wake source; no slot uses it.
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+const WAKE_TOKEN: u64 = u64::MAX;
+
+/// Most events drained per wait. Excess readiness surfaces on the next wait.
+const MAX_EVENTS: usize = 256;
+
+// ---- Linux (epoll + eventfd) ------------------------------------------------
 
 #[cfg(target_os = "linux")]
 mod platform {
     use super::{
-        c_int, c_void, hew_actor_send, HewActor, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ,
-        HEW_IO_WRITE,
+        Event, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE, MAX_EVENTS, WAKE_TOKEN,
     };
-    use std::collections::HashMap;
+    use std::ffi::c_int;
+    use std::io;
+    use std::os::fd::RawFd;
 
-    /// Per-fd registration data.
+    /// Epoll set plus the eventfd that interrupts a wait.
     #[derive(Debug)]
-    struct FdEntry {
-        actor: *mut HewActor,
-        msg_type: c_int,
+    pub(crate) struct Poller {
+        epfd: RawFd,
+        wake: RawFd,
     }
 
-    /// Epoll-backed I/O poller.
-    #[derive(Debug)]
-    pub struct HewIoPoller {
-        epfd: c_int,
-        entries: HashMap<c_int, FdEntry>,
-    }
-
-    // SAFETY: The poller is only accessed through `extern "C"` functions which
-    // take `&mut` semantics via `*mut` — no concurrent access.
-    unsafe impl Send for HewIoPoller {}
-
-    impl HewIoPoller {
-        #[must_use]
-        pub fn new() -> Option<Self> {
-            // SAFETY: `epoll_create1(0)` is always valid.
-            let epfd = unsafe { libc::epoll_create1(0) };
-            if epfd < 0 {
-                return None;
-            }
-            Some(Self {
-                epfd,
-                entries: HashMap::new(),
-            })
+    fn check(rc: c_int) -> io::Result<c_int> {
+        if rc < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(rc)
         }
     }
 
-    impl Drop for HewIoPoller {
-        fn drop(&mut self) {
-            if self.epfd >= 0 {
-                // SAFETY: closing our own epoll fd.
-                unsafe {
-                    libc::close(self.epfd);
-                }
-            }
+    fn interest_bits(interest: c_int) -> u32 {
+        let mut bits = libc::EPOLLONESHOT as u32;
+        if interest & HEW_IO_READ != 0 {
+            bits |= (libc::EPOLLIN | libc::EPOLLRDHUP) as u32;
         }
+        if interest & HEW_IO_WRITE != 0 {
+            bits |= libc::EPOLLOUT as u32;
+        }
+        bits
     }
 
-    fn hew_to_epoll(events: c_int) -> u32 {
-        let mut ep: u32 = 0;
-        if events & HEW_IO_READ != 0 {
-            ep |= libc::EPOLLIN as u32;
-        }
-        if events & HEW_IO_WRITE != 0 {
-            ep |= libc::EPOLLOUT as u32;
-        }
-        if events & HEW_IO_ERROR != 0 {
-            ep |= libc::EPOLLERR as u32;
-        }
-        if events & HEW_IO_HUP != 0 {
-            ep |= libc::EPOLLHUP as u32;
-        }
-        ep
-    }
-
-    fn epoll_to_hew(ep: u32) -> c_int {
-        let mut events: c_int = 0;
-        if ep & libc::EPOLLIN as u32 != 0 {
+    fn report_bits(bits: u32) -> c_int {
+        let mut events = 0;
+        if bits & libc::EPOLLIN as u32 != 0 {
             events |= HEW_IO_READ;
         }
-        if ep & libc::EPOLLOUT as u32 != 0 {
+        if bits & libc::EPOLLOUT as u32 != 0 {
             events |= HEW_IO_WRITE;
         }
-        if ep & libc::EPOLLERR as u32 != 0 {
+        if bits & libc::EPOLLERR as u32 != 0 {
             events |= HEW_IO_ERROR;
         }
-        if ep & libc::EPOLLHUP as u32 != 0 {
+        if bits & (libc::EPOLLHUP | libc::EPOLLRDHUP) as u32 != 0 {
             events |= HEW_IO_HUP;
         }
         events
     }
 
-    /// Create a new I/O poller.
-    ///
-    /// # Safety
-    ///
-    /// No preconditions.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_new() -> *mut HewIoPoller {
-        match HewIoPoller::new() {
-            Some(p) => Box::into_raw(Box::new(p)),
-            None => std::ptr::null_mut(),
-        }
-    }
-
-    /// Register a file descriptor with the poller.
-    ///
-    /// Returns 0 on success, -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`]. `actor`
-    /// must remain valid for the lifetime of the registration.
-    #[no_mangle]
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "fd stored as u64 in epoll_event for later recovery"
-    )]
-    pub unsafe extern "C" fn hew_io_poller_register(
-        p: *mut HewIoPoller,
-        fd: c_int,
-        actor: *mut HewActor,
-        msg_type: c_int,
-        events: c_int,
-    ) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        let mut ev = libc::epoll_event {
-            events: hew_to_epoll(events),
-            u64: fd as u64,
-        };
-
-        // SAFETY: epoll_ctl with valid epfd and event pointer.
-        let rc = unsafe { libc::epoll_ctl(poller.epfd, libc::EPOLL_CTL_ADD, fd, &raw mut ev) };
-        if rc < 0 {
-            return -1;
-        }
-        poller.entries.insert(fd, FdEntry { actor, msg_type });
-        0
-    }
-
-    /// Unregister a file descriptor from the poller.
-    ///
-    /// Returns 0 on success, -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_unregister(p: *mut HewIoPoller, fd: c_int) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        // SAFETY: epoll_ctl DEL with valid epfd.
-        let rc =
-            unsafe { libc::epoll_ctl(poller.epfd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
-        if rc < 0 {
-            return -1;
-        }
-        poller.entries.remove(&fd);
-        0
-    }
-
-    /// Maximum number of epoll events to process per poll call.
-    const MAX_EVENTS: c_int = 64;
-
-    /// Poll for I/O events, dispatching to registered actors.
-    ///
-    /// Returns the number of events dispatched, or -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    /// All registered actor pointers must still be valid.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll(p: *mut HewIoPoller, timeout_ms: c_int) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        let mut ep_events = [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS as usize];
-
-        // SAFETY: epoll_wait with valid fd and buffer.
-        let n = unsafe {
-            libc::epoll_wait(poller.epfd, ep_events.as_mut_ptr(), MAX_EVENTS, timeout_ms)
-        };
-        if n < 0 {
-            return -1;
+    impl Poller {
+        pub(crate) fn new() -> io::Result<Self> {
+            // SAFETY: no pointer arguments.
+            let epfd = check(unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) })?;
+            // SAFETY: no pointer arguments.
+            let wake =
+                match check(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) }) {
+                    Ok(fd) => fd,
+                    Err(error) => {
+                        // SAFETY: closing the epoll fd this constructor created.
+                        unsafe { libc::close(epfd) };
+                        return Err(error);
+                    }
+                };
+            let poller = Self { epfd, wake };
+            // The wake source stays level-triggered: a pending count keeps the
+            // next wait from sleeping until the reactor drains it.
+            let mut event = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: WAKE_TOKEN,
+            };
+            // SAFETY: both fds are live and the event is a valid local.
+            check(unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, wake, &raw mut event) })?;
+            Ok(poller)
         }
 
-        #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
-        let count = n as usize;
-        for ev in &ep_events[..count] {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "fd was stored as u64; fits in c_int"
-            )]
-            let fd = ev.u64 as c_int;
-            if let Some(entry) = poller.entries.get(&fd) {
-                let mut hew_ev = epoll_to_hew(ev.events);
-                // SAFETY: actor pointer is valid per caller contract; sending
-                // the event int by reference.
-                unsafe {
-                    hew_actor_send(
-                        entry.actor,
-                        entry.msg_type,
-                        std::ptr::addr_of_mut!(hew_ev).cast::<c_void>(),
-                        std::mem::size_of::<c_int>(),
-                    );
+        /// Arm one readiness report for `fd`. `added` says whether `fd` is
+        /// already in the set; the first arm adds it, later arms modify it.
+        pub(crate) fn arm(
+            &self,
+            fd: RawFd,
+            token: u64,
+            interest: c_int,
+            added: bool,
+        ) -> io::Result<()> {
+            let mut event = libc::epoll_event {
+                events: interest_bits(interest),
+                u64: token,
+            };
+            let op = if added {
+                libc::EPOLL_CTL_MOD
+            } else {
+                libc::EPOLL_CTL_ADD
+            };
+            // SAFETY: fd is a live socket owned by the caller's slot.
+            check(unsafe { libc::epoll_ctl(self.epfd, op, fd, &raw mut event) }).map(|_| ())
+        }
+
+        /// Remove `fd` before its slot closes it. A later report for the old
+        /// token is ignored because the slot no longer exists.
+        pub(crate) fn remove(&self, fd: RawFd) {
+            // SAFETY: fd is still open; failure only means it was never added.
+            unsafe { libc::epoll_ctl(self.epfd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+        }
+
+        /// Interrupt a wait. The count persists until drained, so a wake sent
+        /// before the reactor sleeps is never lost.
+        pub(crate) fn wake(&self) {
+            let one: u64 = 1;
+            // SAFETY: writes eight bytes from a local to the eventfd.
+            unsafe { libc::write(self.wake, (&raw const one).cast(), 8) };
+        }
+
+        /// Wait up to `timeout_ms` (negative: no limit) and append readiness
+        /// reports. A wake is drained here and reports nothing.
+        pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> io::Result<()> {
+            let mut events = [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
+            // SAFETY: the buffer holds MAX_EVENTS entries.
+            let count = check(unsafe {
+                libc::epoll_wait(
+                    self.epfd,
+                    events.as_mut_ptr(),
+                    MAX_EVENTS as c_int,
+                    timeout_ms,
+                )
+            })?;
+            for event in &events[..count as usize] {
+                if event.u64 == WAKE_TOKEN {
+                    let mut drained: u64 = 0;
+                    // SAFETY: reads eight bytes into a local; EAGAIN is benign.
+                    unsafe { libc::read(self.wake, (&raw mut drained).cast(), 8) };
+                    continue;
                 }
+                out.push(Event {
+                    token: event.u64,
+                    events: report_bits(event.events),
+                });
             }
-        }
-
-        n
-    }
-
-    /// Poll for I/O readiness and report the ready fds WITHOUT dispatching.
-    ///
-    /// Unlike [`hew_io_poller_poll`], which auto-sends a 4-byte event-mask
-    /// message to the registered actor from inside the poll loop (no liveness
-    /// guard, wrong payload for byte-stream `on_data` delivery), this variant
-    /// writes each ready `(fd, hew_event_mask)` pair into the caller-provided
-    /// `out_fds` / `out_events` buffers and returns the number of pairs
-    /// written. The caller (the active-mode reactor) then performs the
-    /// liveness check, the socket read, and the deep-copied mailbox delivery
-    /// itself — outside any lock. This is the primitive the
-    /// "I/O completion as a mailbox message" reactor needs; the auto-send
-    /// variant is unsuitable because it neither reads the data nor checks
-    /// actor liveness.
-    ///
-    /// Returns the number of ready fds (0..=`out_cap`), or -1 on error.
-    /// At most `out_cap` (clamped to [`MAX_EVENTS`]) fds are reported per call;
-    /// any excess remain ready and surface on the next poll (level/edge per
-    /// the registration flags).
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    /// `out_fds` and `out_events` must each point to at least `out_cap`
-    /// writable `c_int` slots, or be null when `out_cap` is 0.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll_ready(
-        p: *mut HewIoPoller,
-        timeout_ms: c_int,
-        out_fds: *mut c_int,
-        out_events: *mut c_int,
-        out_cap: c_int,
-    ) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        if out_cap <= 0 || out_fds.is_null() || out_events.is_null() {
-            return 0;
-        }
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        let mut ep_events = [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS as usize];
-
-        // SAFETY: epoll_wait with valid fd and buffer.
-        let n = unsafe {
-            libc::epoll_wait(poller.epfd, ep_events.as_mut_ptr(), MAX_EVENTS, timeout_ms)
-        };
-        if n < 0 {
-            return -1;
-        }
-
-        #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
-        let count = (n as usize).min(out_cap as usize);
-        for (i, ev) in ep_events[..count].iter().enumerate() {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "fd was stored as u64; fits in c_int"
-            )]
-            let fd = ev.u64 as c_int;
-            let hew_ev = epoll_to_hew(ev.events);
-            // SAFETY: i < count <= out_cap; out_fds/out_events have out_cap slots.
-            unsafe {
-                *out_fds.add(i) = fd;
-                *out_events.add(i) = hew_ev;
-            }
-        }
-
-        #[expect(clippy::cast_possible_truncation, reason = "count <= out_cap (c_int)")]
-        #[expect(clippy::cast_possible_wrap, reason = "count <= out_cap (c_int)")]
-        {
-            count as c_int
-        }
-    }
-
-    /// Stop and destroy the poller.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`], and must
-    /// not be used after this call.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_stop(p: *mut HewIoPoller) {
-        if !p.is_null() {
-            // SAFETY: caller guarantees `p` is valid and surrenders ownership.
-            let _ = unsafe { Box::from_raw(p) };
+            Ok(())
         }
     }
 }
 
-// ---- FreeBSD / macOS (kqueue) ----------------------------------------------
+// ---- FreeBSD / macOS (kqueue + EVFILT_USER) ---------------------------------
 
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 mod platform {
     use super::{
-        c_int, c_void, hew_actor_send, HewActor, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ,
-        HEW_IO_WRITE,
+        Event, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE, MAX_EVENTS, WAKE_TOKEN,
     };
-    use std::collections::HashMap;
+    use std::ffi::c_int;
+    use std::io;
+    use std::os::fd::RawFd;
 
-    /// Per-fd registration data.
+    /// Kqueue plus a user event that interrupts a wait.
     #[derive(Debug)]
-    struct FdEntry {
-        actor: *mut HewActor,
-        msg_type: c_int,
+    pub(crate) struct Poller {
+        kq: RawFd,
     }
 
-    /// Kqueue-backed I/O poller.
-    #[derive(Debug)]
-    pub struct HewIoPoller {
-        kq: c_int,
-        entries: HashMap<c_int, FdEntry>,
+    fn change(ident: usize, filter: i16, flags: u16, fflags: u32, token: u64) -> libc::kevent {
+        libc::kevent {
+            ident,
+            filter,
+            flags,
+            fflags,
+            data: 0,
+            udata: token as usize as *mut libc::c_void,
+            #[cfg(target_os = "freebsd")]
+            ext: [0; 4],
+        }
     }
 
-    // SAFETY: The poller is only accessed through `extern "C"` functions which
-    // take `&mut` semantics via `*mut` — no concurrent access.
-    unsafe impl Send for HewIoPoller {}
+    impl Poller {
+        fn apply(&self, changes: &[libc::kevent]) -> io::Result<()> {
+            // SAFETY: changes is a valid slice; no event list is requested.
+            let rc = unsafe {
+                libc::kevent(
+                    self.kq,
+                    changes.as_ptr(),
+                    changes.len() as c_int,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if rc < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
 
-    impl HewIoPoller {
-        #[must_use]
-        pub fn new() -> Option<Self> {
-            // SAFETY: `kqueue()` is always valid.
+        pub(crate) fn new() -> io::Result<Self> {
+            // SAFETY: no arguments.
             let kq = unsafe { libc::kqueue() };
             if kq < 0 {
-                return None;
+                return Err(io::Error::last_os_error());
             }
-            Some(Self {
-                kq,
-                entries: HashMap::new(),
-            })
+            // SAFETY: kq is the descriptor just created.
+            unsafe { libc::fcntl(kq, libc::F_SETFD, libc::FD_CLOEXEC) };
+            let poller = Self { kq };
+            poller.apply(&[change(
+                0,
+                libc::EVFILT_USER,
+                libc::EV_ADD | libc::EV_CLEAR,
+                0,
+                WAKE_TOKEN,
+            )])?;
+            Ok(poller)
         }
-    }
 
-    impl Drop for HewIoPoller {
-        fn drop(&mut self) {
-            if self.kq >= 0 {
-                // SAFETY: closing our own kqueue fd.
-                unsafe {
-                    libc::close(self.kq);
-                }
+        /// Arm one readiness report per requested direction. Each filter is
+        /// one-shot, so arming reads leaves an armed write filter alone.
+        pub(crate) fn arm(
+            &self,
+            fd: RawFd,
+            token: u64,
+            interest: c_int,
+            _added: bool,
+        ) -> io::Result<()> {
+            let flags = libc::EV_ADD | libc::EV_ONESHOT;
+            let mut changes = Vec::with_capacity(2);
+            if interest & HEW_IO_READ != 0 {
+                changes.push(change(fd as usize, libc::EVFILT_READ, flags, 0, token));
+            }
+            if interest & HEW_IO_WRITE != 0 {
+                changes.push(change(fd as usize, libc::EVFILT_WRITE, flags, 0, token));
+            }
+            self.apply(&changes)
+        }
+
+        /// Remove both filters before the slot closes `fd`.
+        pub(crate) fn remove(&self, fd: RawFd) {
+            // Each deletion may fail with ENOENT when that filter already
+            // fired; apply them one at a time so one failure skips nothing.
+            for filter in [libc::EVFILT_READ, libc::EVFILT_WRITE] {
+                let _ = self.apply(&[change(fd as usize, filter, libc::EV_DELETE, 0, 0)]);
             }
         }
-    }
 
-    /// Maximum number of kqueue events to process per poll call.
-    const MAX_EVENTS: usize = 64;
-
-    /// Create a new I/O poller.
-    ///
-    /// # Safety
-    ///
-    /// No preconditions.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_new() -> *mut HewIoPoller {
-        match HewIoPoller::new() {
-            Some(p) => Box::into_raw(Box::new(p)),
-            None => std::ptr::null_mut(),
-        }
-    }
-
-    /// Register a file descriptor with the poller.
-    ///
-    /// Returns 0 on success, -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`]. `actor`
-    /// must remain valid for the lifetime of the registration.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_register(
-        p: *mut HewIoPoller,
-        fd: c_int,
-        actor: *mut HewActor,
-        msg_type: c_int,
-        events: c_int,
-    ) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        // Build changelist for the requested filters.
-        let mut changelist: Vec<libc::kevent> = Vec::new();
-
-        if events & HEW_IO_READ != 0 {
-            #[expect(
-                clippy::cast_sign_loss,
-                reason = "fd is a valid file descriptor from the OS, always non-negative"
-            )]
-            changelist.push(libc::kevent {
-                ident: fd as usize,
-                filter: libc::EVFILT_READ,
-                flags: libc::EV_ADD | libc::EV_CLEAR,
-                fflags: 0,
-                data: 0,
-                udata: std::ptr::null_mut(),
-                // FreeBSD 15+ kevent has an extra `ext: [u64; 4]` field.
-                #[cfg(target_os = "freebsd")]
-                ext: [0; 4],
-            });
-        }
-        if events & HEW_IO_WRITE != 0 {
-            #[expect(
-                clippy::cast_sign_loss,
-                reason = "fd is a valid file descriptor from the OS, always non-negative"
-            )]
-            changelist.push(libc::kevent {
-                ident: fd as usize,
-                filter: libc::EVFILT_WRITE,
-                flags: libc::EV_ADD | libc::EV_CLEAR,
-                fflags: 0,
-                data: 0,
-                udata: std::ptr::null_mut(),
-                // FreeBSD 15+ kevent has an extra `ext: [u64; 4]` field.
-                #[cfg(target_os = "freebsd")]
-                ext: [0; 4],
-            });
-        }
-
-        if changelist.is_empty() {
-            return -1;
-        }
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "changelist has at most 2 entries, fits in c_int"
-        )]
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "changelist has at most 2 entries, fits in c_int"
-        )]
-        // SAFETY: kevent with valid kq, changelist, and no eventlist.
-        let rc = unsafe {
-            libc::kevent(
-                poller.kq,
-                changelist.as_ptr(),
-                changelist.len() as c_int,
-                std::ptr::null_mut(),
+        /// Trigger the user event; it stays pending until the next wait.
+        pub(crate) fn wake(&self) {
+            let _ = self.apply(&[change(
                 0,
-                std::ptr::null(),
-            )
-        };
-        if rc < 0 {
-            return -1;
-        }
-
-        poller.entries.insert(fd, FdEntry { actor, msg_type });
-        0
-    }
-
-    /// Unregister a file descriptor from the poller.
-    ///
-    /// Returns 0 on success, -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_unregister(p: *mut HewIoPoller, fd: c_int) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        // Delete both read and write filters — ignore errors for filters that
-        // were not registered (kevent returns -1 with ENOENT, which is benign).
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "fd is a valid file descriptor from the OS, always non-negative"
-        )]
-        let changelist = [
-            libc::kevent {
-                ident: fd as usize,
-                filter: libc::EVFILT_READ,
-                flags: libc::EV_DELETE,
-                fflags: 0,
-                data: 0,
-                udata: std::ptr::null_mut(),
-                #[cfg(target_os = "freebsd")]
-                ext: [0; 4],
-            },
-            libc::kevent {
-                ident: fd as usize,
-                filter: libc::EVFILT_WRITE,
-                flags: libc::EV_DELETE,
-                fflags: 0,
-                data: 0,
-                udata: std::ptr::null_mut(),
-                #[cfg(target_os = "freebsd")]
-                ext: [0; 4],
-            },
-        ];
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
-        )]
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
-        )]
-        // SAFETY: kevent with valid kq and changelist.
-        unsafe {
-            libc::kevent(
-                poller.kq,
-                changelist.as_ptr(),
-                changelist.len() as c_int,
-                std::ptr::null_mut(),
+                libc::EVFILT_USER,
                 0,
-                std::ptr::null(),
-            );
+                libc::NOTE_TRIGGER,
+                WAKE_TOKEN,
+            )]);
         }
 
-        poller.entries.remove(&fd);
-        0
-    }
-
-    /// Poll for I/O events, dispatching to registered actors.
-    ///
-    /// Returns the number of events dispatched, or -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    /// All registered actor pointers must still be valid.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll(p: *mut HewIoPoller, timeout_ms: c_int) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        // SAFETY: `libc::kevent` is a C struct of integer and pointer fields;
-        // an all-zeroes bit pattern is a valid representation.
-        let mut kq_events: [libc::kevent; MAX_EVENTS] =
-            // SAFETY: libc::kevent is a POD C struct; all-zero is valid.
-            unsafe { std::mem::zeroed() };
-
-        // Build timeout: negative means block indefinitely (pass null).
-        let ts;
-        let timeout_ptr = if timeout_ms < 0 {
-            std::ptr::null()
-        } else {
-            ts = libc::timespec {
-                tv_sec: libc::time_t::from(timeout_ms / 1000),
-                tv_nsec: libc::c_long::from(timeout_ms % 1000) * 1_000_000,
+        pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> io::Result<()> {
+            // SAFETY: kevent is plain data; all-zero is a valid value.
+            let mut events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
+            let spec;
+            let timeout = if timeout_ms < 0 {
+                std::ptr::null()
+            } else {
+                spec = libc::timespec {
+                    tv_sec: libc::time_t::from(timeout_ms / 1000),
+                    tv_nsec: libc::c_long::from(timeout_ms % 1000) * 1_000_000,
+                };
+                &raw const spec
             };
-            &raw const ts
-        };
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "MAX_EVENTS is 64, fits in c_int"
-        )]
-        #[expect(clippy::cast_possible_wrap, reason = "MAX_EVENTS is 64, fits in c_int")]
-        let max_events_cint = MAX_EVENTS as c_int;
-
-        // SAFETY: kevent with valid kq, no changelist, eventlist buffer.
-        let n = unsafe {
-            libc::kevent(
-                poller.kq,
-                std::ptr::null(),
-                0,
-                kq_events.as_mut_ptr(),
-                max_events_cint,
-                timeout_ptr,
-            )
-        };
-        if n < 0 {
-            return -1;
-        }
-
-        #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
-        let count = n as usize;
-        for ev in &kq_events[..count] {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "fd was stored as usize via ident; fits in c_int"
-            )]
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "fd was stored as usize via ident; original value was a non-negative c_int"
-            )]
-            let fd = ev.ident as c_int;
-            if let Some(entry) = poller.entries.get(&fd) {
-                let mut hew_ev: c_int = 0;
-
-                // Map kqueue filter to Hew event flags.
-                if ev.filter == libc::EVFILT_READ {
-                    hew_ev |= HEW_IO_READ;
-                }
-                if ev.filter == libc::EVFILT_WRITE {
-                    hew_ev |= HEW_IO_WRITE;
-                }
-                // Check for EOF and error conditions.
-                if ev.flags & libc::EV_EOF != 0 {
-                    hew_ev |= HEW_IO_HUP;
-                }
-                if ev.flags & libc::EV_ERROR != 0 {
-                    hew_ev |= HEW_IO_ERROR;
-                }
-
-                // SAFETY: actor pointer is valid per caller contract; sending
-                // the event int by reference.
-                unsafe {
-                    hew_actor_send(
-                        entry.actor,
-                        entry.msg_type,
-                        std::ptr::addr_of_mut!(hew_ev).cast::<c_void>(),
-                        std::mem::size_of::<c_int>(),
-                    );
-                }
-            }
-        }
-
-        n
-    }
-
-    /// Poll for I/O readiness and report the ready fds WITHOUT dispatching.
-    ///
-    /// kqueue counterpart of the epoll `hew_io_poller_poll_ready`. Writes each
-    /// ready `(fd, hew_event_mask)` pair into the caller buffers and returns
-    /// the count, leaving the liveness check, socket read, and deep-copied
-    /// mailbox delivery to the active-mode reactor (outside any lock). See the
-    /// epoll variant's rationale for why the auto-send `hew_io_poller_poll`
-    /// is unsuitable for byte-stream `on_data` delivery.
-    ///
-    /// Returns the number of ready fds (0..=`out_cap`), or -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    /// `out_fds` and `out_events` must each point to at least `out_cap`
-    /// writable `c_int` slots, or be null when `out_cap` is 0.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll_ready(
-        p: *mut HewIoPoller,
-        timeout_ms: c_int,
-        out_fds: *mut c_int,
-        out_events: *mut c_int,
-        out_cap: c_int,
-    ) -> c_int {
-        cabi_guard!(p.is_null(), -1);
-        if out_cap <= 0 || out_fds.is_null() || out_events.is_null() {
-            return 0;
-        }
-        // SAFETY: caller guarantees `p` is valid.
-        let poller = unsafe { &mut *p };
-
-        // SAFETY: `libc::kevent` is a POD C struct; all-zero is a valid bit pattern.
-        let mut kq_events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
-
-        let ts;
-        let timeout_ptr = if timeout_ms < 0 {
-            std::ptr::null()
-        } else {
-            ts = libc::timespec {
-                tv_sec: libc::time_t::from(timeout_ms / 1000),
-                tv_nsec: libc::c_long::from(timeout_ms % 1000) * 1_000_000,
+            // SAFETY: the buffer holds MAX_EVENTS entries.
+            let count = unsafe {
+                libc::kevent(
+                    self.kq,
+                    std::ptr::null(),
+                    0,
+                    events.as_mut_ptr(),
+                    MAX_EVENTS as c_int,
+                    timeout,
+                )
             };
-            &raw const ts
-        };
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "MAX_EVENTS is 64, fits in c_int"
-        )]
-        #[expect(clippy::cast_possible_wrap, reason = "MAX_EVENTS is 64, fits in c_int")]
-        let max_events_cint = MAX_EVENTS as c_int;
-
-        // SAFETY: kevent with valid kq, no changelist, eventlist buffer.
-        let n = unsafe {
-            libc::kevent(
-                poller.kq,
-                std::ptr::null(),
-                0,
-                kq_events.as_mut_ptr(),
-                max_events_cint,
-                timeout_ptr,
-            )
-        };
-        if n < 0 {
-            return -1;
-        }
-
-        #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
-        let count = (n as usize).min(out_cap as usize);
-        for (i, ev) in kq_events[..count].iter().enumerate() {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "fd was stored as usize via ident; fits in c_int"
-            )]
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "fd was stored as usize via ident; original value was a non-negative c_int"
-            )]
-            let fd = ev.ident as c_int;
-            let mut hew_ev: c_int = 0;
-            if ev.filter == libc::EVFILT_READ {
-                hew_ev |= HEW_IO_READ;
+            if count < 0 {
+                return Err(io::Error::last_os_error());
             }
-            if ev.filter == libc::EVFILT_WRITE {
-                hew_ev |= HEW_IO_WRITE;
+            for event in &events[..count as usize] {
+                if event.filter == libc::EVFILT_USER {
+                    continue;
+                }
+                let mut report = 0;
+                if event.filter == libc::EVFILT_READ {
+                    report |= HEW_IO_READ;
+                }
+                if event.filter == libc::EVFILT_WRITE {
+                    report |= HEW_IO_WRITE;
+                }
+                if event.flags & libc::EV_EOF != 0 {
+                    report |= HEW_IO_HUP;
+                }
+                if event.flags & libc::EV_ERROR != 0 {
+                    report |= HEW_IO_ERROR;
+                }
+                out.push(Event {
+                    token: event.udata as usize as u64,
+                    events: report,
+                });
             }
-            if ev.flags & libc::EV_EOF != 0 {
-                hew_ev |= HEW_IO_HUP;
-            }
-            if ev.flags & libc::EV_ERROR != 0 {
-                hew_ev |= HEW_IO_ERROR;
-            }
-            // SAFETY: i < count <= out_cap; out_fds/out_events have out_cap slots.
-            unsafe {
-                *out_fds.add(i) = fd;
-                *out_events.add(i) = hew_ev;
-            }
-        }
-
-        #[expect(clippy::cast_possible_truncation, reason = "count <= out_cap (c_int)")]
-        #[expect(clippy::cast_possible_wrap, reason = "count <= out_cap (c_int)")]
-        {
-            count as c_int
-        }
-    }
-
-    /// Stop and destroy the poller.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`], and must
-    /// not be used after this call.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_stop(p: *mut HewIoPoller) {
-        if !p.is_null() {
-            // SAFETY: caller guarantees `p` is valid and surrenders ownership.
-            let _ = unsafe { Box::from_raw(p) };
+            Ok(())
         }
     }
 }
 
-// ---- Windows (IOCP + AFD_POLL readiness bridge) ----------------------------
+// ---- Windows (IOCP + AFD_POLL) ----------------------------------------------
 //
-// IOCP is completion-based; the Hew reactor contract is readiness-based. We
-// synthesize readiness with the AFD_POLL technique (the mio/wepoll production
-// approach): a single `\Device\Afd` helper handle is associated with an I/O
-// completion port, and each registered socket arms a one-shot
-// `NtDeviceIoControlFile(IOCTL_AFD_POLL)` whose completion reports which socket
-// events fired. `poll_ready` dequeues those completions, translates the AFD
-// event mask to the `HEW_IO_*` flags the reactor expects, writes `(token, mask)`
-// pairs, and re-arms the one-shot poll. The reactor — not the poller — then does
-// the recv/accept and the mailbox delivery, exactly as on epoll/kqueue.
-//
-// D-2a token model: a Windows `SOCKET` is pointer-width and does not fit the
-// poller's `c_int fd` ABI, so the reactor registers the user-facing connection
-// (or listener) HANDLE as the `c_int` token; the poller resolves token→`SOCKET`
-// via `crate::transport::tcp_handle_raw_socket`. The engine never sees a `SOCKET`.
+// IOCP reports completions; the reactor needs readiness. The `AFD_POLL`
+// technique (mio, wepoll) supplies it: one `\Device\Afd` helper handle is bound
+// to the completion port, and each arm issues a one-shot `IOCTL_AFD_POLL` on a
+// socket whose completion reports which events fired. The poll buffers live in
+// the socket's slot and the arm passes the slot's retained address as the
+// completion context, so the kernel never writes into freed memory. A wake is a
+// posted completion packet with its own key.
+
 #[cfg(windows)]
 #[allow(
     non_snake_case,
@@ -835,21 +400,19 @@ mod platform {
               and the constants are copied from the documented Win32 headers"
 )]
 mod platform {
-    use super::{c_int, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE};
-    use std::collections::HashMap;
-    use std::ffi::c_void;
+    use super::{Event, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE, MAX_EVENTS};
+    use std::ffi::{c_int, c_void};
+    use std::io;
     use std::ptr;
 
     type HANDLE = *mut c_void;
     type SOCKET = usize;
     type NTSTATUS = i32;
 
-    // NT status codes (low 32 bits of the IO_STATUS_BLOCK union).
     const STATUS_SUCCESS: NTSTATUS = 0x0000_0000;
     const STATUS_PENDING: NTSTATUS = 0x0000_0103;
     const STATUS_CANCELLED: u32 = 0xC000_0120;
 
-    // Win32 / NT constants.
     const SYNCHRONIZE: u32 = 0x0010_0000;
     const FILE_OPEN: u32 = 0x0000_0001;
     const FILE_SHARE_READ: u32 = 0x0000_0001;
@@ -859,7 +422,6 @@ mod platform {
     const IOCTL_AFD_POLL: u32 = 0x0001_2024;
     const SIO_BASE_HANDLE: u32 = 0x4800_0022;
 
-    // AFD poll event flags (the undocumented-but-stable wepoll/mio set).
     const AFD_POLL_RECEIVE: u32 = 0x0001;
     const AFD_POLL_RECEIVE_EXPEDITED: u32 = 0x0002;
     const AFD_POLL_SEND: u32 = 0x0004;
@@ -869,13 +431,10 @@ mod platform {
     const AFD_POLL_ACCEPT: u32 = 0x0080;
     const AFD_POLL_CONNECT_FAIL: u32 = 0x0100;
 
-    /// Completion key used when associating the AFD helper handle with the IOCP.
-    /// Unused for routing (we key on the completion's overlapped/ApcContext
-    /// pointer) but a stable constant aids debugging.
-    const AFD_COMPLETION_KEY: usize = 0xAFD0;
-
-    /// Maximum completions dequeued per `GetQueuedCompletionStatusEx` call.
-    const MAX_COMPLETIONS: usize = 64;
+    /// Completion key of AFD poll completions.
+    const AFD_KEY: usize = 0xAFD0;
+    /// Completion key of a posted wake.
+    const WAKE_KEY: usize = 0x3A4E;
 
     #[repr(C)]
     struct UNICODE_STRING {
@@ -894,27 +453,12 @@ mod platform {
         SecurityQualityOfService: *mut c_void,
     }
 
-    /// `IO_STATUS_BLOCK`: the first member is a pointer-sized union of an
-    /// `NTSTATUS` and a `PVOID`. We store it as `isize` and read the status from
-    /// its low 32 bits (little-endian), matching the kernel's layout.
+    /// `IO_STATUS_BLOCK`: a pointer-sized status/pointer union and a count.
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct IO_STATUS_BLOCK {
         status: isize,
         information: usize,
-    }
-
-    impl IO_STATUS_BLOCK {
-        const fn zeroed() -> Self {
-            Self {
-                status: 0,
-                information: 0,
-            }
-        }
-        fn ntstatus(self) -> u32 {
-            // Read the NTSTATUS from the low 32 bits of the pointer-sized union.
-            self.status as u32
-        }
     }
 
     #[repr(C)]
@@ -995,6 +539,12 @@ mod platform {
             dwMilliseconds: u32,
             fAlertable: i32,
         ) -> i32;
+        fn PostQueuedCompletionStatus(
+            CompletionPort: HANDLE,
+            dwNumberOfBytesTransferred: u32,
+            dwCompletionKey: usize,
+            lpOverlapped: *mut c_void,
+        ) -> i32;
         fn CloseHandle(hObject: HANDLE) -> i32;
         fn GetLastError() -> u32;
     }
@@ -1014,25 +564,18 @@ mod platform {
         ) -> i32;
     }
 
-    fn invalid_handle() -> HANDLE {
-        (-1isize) as HANDLE
-    }
-
-    /// Resolve a socket's AFD base handle (peeling any layered service
-    /// providers). Falls back to the socket itself when `SIO_BASE_HANDLE` is
-    /// unsupported (the common case for vanilla loopback TCP).
+    /// Resolve a socket's AFD base handle, peeling layered providers.
     fn base_socket(socket: SOCKET) -> SOCKET {
         let mut base: SOCKET = 0;
         let mut bytes: u32 = 0;
-        // SAFETY: `socket` is a live OS SOCKET; the output buffer is a local
-        // `SOCKET`-sized slot. A failed ioctl leaves `base` unchanged.
+        // SAFETY: socket is live; the output is a local SOCKET slot.
         let rc = unsafe {
             WSAIoctl(
                 socket,
                 SIO_BASE_HANDLE,
                 ptr::null_mut(),
                 0,
-                ptr::addr_of_mut!(base).cast::<c_void>(),
+                ptr::addr_of_mut!(base).cast(),
                 std::mem::size_of::<SOCKET>() as u32,
                 ptr::addr_of_mut!(bytes),
                 ptr::null_mut(),
@@ -1046,444 +589,85 @@ mod platform {
         }
     }
 
-    /// Translate the requested `HEW_IO_*` interest into the AFD poll event mask
-    /// to arm. Read interest always includes the close/abort family so EOF and
-    /// resets surface as `HUP`/`ERROR` readiness; `ACCEPT` lets a listener token
-    /// report readability for `accept()`.
-    fn afd_interest(events: c_int) -> u32 {
+    fn afd_interest(interest: c_int) -> u32 {
         let mut mask =
             AFD_POLL_ABORT | AFD_POLL_CONNECT_FAIL | AFD_POLL_DISCONNECT | AFD_POLL_LOCAL_CLOSE;
-        if events & HEW_IO_READ != 0 {
+        if interest & HEW_IO_READ != 0 {
             mask |= AFD_POLL_RECEIVE | AFD_POLL_RECEIVE_EXPEDITED | AFD_POLL_ACCEPT;
         }
-        if events & HEW_IO_WRITE != 0 {
+        if interest & HEW_IO_WRITE != 0 {
             mask |= AFD_POLL_SEND;
         }
         mask
     }
 
-    /// Translate fired AFD poll events into the reactor's `HEW_IO_*` mask.
-    fn afd_to_hew(afd: u32) -> c_int {
-        let mut hew = 0;
+    fn afd_report(afd: u32) -> c_int {
+        let mut report = 0;
         if afd & (AFD_POLL_RECEIVE | AFD_POLL_RECEIVE_EXPEDITED | AFD_POLL_ACCEPT) != 0 {
-            hew |= HEW_IO_READ;
+            report |= HEW_IO_READ;
         }
         if afd & AFD_POLL_SEND != 0 {
-            hew |= HEW_IO_WRITE;
+            report |= HEW_IO_WRITE;
         }
         if afd & (AFD_POLL_DISCONNECT | AFD_POLL_LOCAL_CLOSE) != 0 {
-            hew |= HEW_IO_HUP;
+            report |= HEW_IO_HUP;
         }
         if afd & (AFD_POLL_ABORT | AFD_POLL_CONNECT_FAIL) != 0 {
-            hew |= HEW_IO_ERROR;
+            report |= HEW_IO_ERROR;
         }
-        hew
+        report
     }
 
-    /// Per-registered-socket AFD poll state. Boxed so its heap address is stable;
-    /// that address is passed as the `ApcContext` of the AFD poll IOCTL and comes
-    /// back as the completion's `lpOverlapped`, keying the completion to this
-    /// state. The `poll_info`/`iosb` buffers are owned here and MUST outlive any
-    /// in-flight poll (the kernel writes into them on completion), which is why a
-    /// cancelled state is held in `zombies` until its cancellation completion is
-    /// drained.
-    struct AfdState {
-        token: c_int,
-        base_socket: SOCKET,
-        interest: u32,
-        /// Whether this state currently has an ARMED (genuinely in-flight) AFD
-        /// poll IOCTL. `true` from a successful `arm_poll` until its completion is
-        /// dequeued in `poll_ready`; set back to `false` on a delivered TERMINAL
-        /// (HUP/ERROR) completion that is not re-armed. Distinguishes a state with
-        /// a pending kernel completion (must be cancelled+drained / zombied) from
-        /// a terminal one with nothing in flight (can be dropped directly).
-        armed: bool,
-        poll_info: AFD_POLL_INFO,
+    /// The buffers of one in-flight AFD poll. They live in the socket's slot;
+    /// the kernel writes them until the completion is dequeued.
+    pub(crate) struct AfdPoll {
+        base: SOCKET,
+        info: AFD_POLL_INFO,
         iosb: IO_STATUS_BLOCK,
     }
 
-    /// Arm a one-shot AFD poll for `state` on the `afd` helper handle. Returns the
-    /// raw `NTSTATUS`; `STATUS_PENDING` (armed) and `STATUS_SUCCESS` (already
-    /// ready, completion queued) are both success.
-    fn arm_poll(afd: HANDLE, state: &mut AfdState) -> NTSTATUS {
-        // ApcContext = this state's stable heap address; comes back as the
-        // completion's lpOverlapped.
-        let apc_ctx = (state as *mut AfdState).cast::<c_void>();
-        state.poll_info.Timeout = i64::MAX;
-        state.poll_info.NumberOfHandles = 1;
-        state.poll_info.Exclusive = 0;
-        state.poll_info.Handles[0].Handle = state.base_socket as HANDLE;
-        state.poll_info.Handles[0].Status = 0;
-        state.poll_info.Handles[0].Events = state.interest;
-        state.iosb.status = STATUS_PENDING as isize;
-        let info_ptr = ptr::addr_of_mut!(state.poll_info).cast::<c_void>();
-        let iosb_ptr = ptr::addr_of_mut!(state.iosb);
-        let size = std::mem::size_of::<AFD_POLL_INFO>() as u32;
-        // SAFETY: `afd` is the live helper handle bound to the IOCP; the buffers
-        // are owned by `state` and outlive the in-flight poll (held in `entries`
-        // or `zombies`); ApcRoutine is null so the completion posts to the IOCP
-        // with `apc_ctx` as the overlapped pointer.
-        unsafe {
-            NtDeviceIoControlFile(
-                afd,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                apc_ctx,
-                iosb_ptr,
-                IOCTL_AFD_POLL,
-                info_ptr,
-                size,
-                info_ptr,
-                size,
-            )
+    impl AfdPoll {
+        pub(crate) fn new(socket: SOCKET) -> Self {
+            Self {
+                base: base_socket(socket),
+                // SAFETY: plain data; all-zero is valid.
+                info: unsafe { std::mem::zeroed() },
+                iosb: IO_STATUS_BLOCK {
+                    status: 0,
+                    information: 0,
+                },
+            }
+        }
+
+        /// The readiness a dequeued completion reported; nothing when the
+        /// poll was cancelled.
+        pub(crate) fn report(&self) -> c_int {
+            if self.iosb.status as u32 == STATUS_CANCELLED || self.info.NumberOfHandles == 0 {
+                0
+            } else {
+                afd_report(self.info.Handles[0].Events)
+            }
         }
     }
 
-    fn arm_ok(status: NTSTATUS) -> bool {
-        status == STATUS_PENDING || status == STATUS_SUCCESS
-    }
-
-    /// IOCP + `AFD_POLL` readiness poller. Single-threaded: every method runs on the
-    /// reactor thread (the sole poller owner), so no interior locking is needed.
-    #[derive(Debug)]
-    pub struct HewIoPoller {
+    /// Completion port plus the AFD helper handle bound to it.
+    pub(crate) struct Poller {
         iocp: HANDLE,
         afd: HANDLE,
-        /// Active registrations, keyed by reactor token.
-        entries: HashMap<c_int, Box<AfdState>>,
-        /// `AfdState` heap address → token, for routing a completion (keyed by its
-        /// `lpOverlapped`) back to the owning entry.
-        index: HashMap<usize, c_int>,
-        /// Cancelled registrations awaiting their final (cancellation) completion;
-        /// kept alive so the kernel's last write into their `iosb` is not a UAF.
-        zombies: HashMap<usize, Box<AfdState>>,
     }
 
-    impl std::fmt::Debug for AfdState {
+    // SAFETY: both handles are kernel objects safe to use from any thread.
+    unsafe impl Send for Poller {}
+    // SAFETY: see Send; every method is a thread-safe kernel call.
+    unsafe impl Sync for Poller {}
+
+    impl std::fmt::Debug for Poller {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("AfdState")
-                .field("token", &self.token)
-                .finish_non_exhaustive()
+            f.debug_struct("Poller").finish_non_exhaustive()
         }
     }
 
-    impl HewIoPoller {
-        fn new() -> Option<Self> {
-            // SAFETY: no preconditions; creating a fresh completion port.
-            let iocp = unsafe { CreateIoCompletionPort(invalid_handle(), ptr::null_mut(), 0, 0) };
-            if iocp.is_null() {
-                return None;
-            }
-            let Some(afd) = open_afd_helper() else {
-                // SAFETY: iocp is our freshly-created port; close it on failure.
-                unsafe { CloseHandle(iocp) };
-                return None;
-            };
-            // Associate the AFD helper handle with the completion port.
-            // SAFETY: both handles are live and owned here.
-            let assoc = unsafe { CreateIoCompletionPort(afd, iocp, AFD_COMPLETION_KEY, 0) };
-            if assoc != iocp {
-                // SAFETY: both handles are live and owned here.
-                unsafe {
-                    CloseHandle(afd);
-                    CloseHandle(iocp);
-                }
-                return None;
-            }
-            Some(Self {
-                iocp,
-                afd,
-                entries: HashMap::new(),
-                index: HashMap::new(),
-                zombies: HashMap::new(),
-            })
-        }
-
-        fn register(&mut self, token: c_int, events: c_int) -> c_int {
-            if self.entries.contains_key(&token) {
-                // Already armed for this token; idempotent success.
-                return 0;
-            }
-            let Some(raw) = crate::transport::tcp_handle_raw_socket(token) else {
-                return -1; // unknown handle (closed/never existed)
-            };
-            let socket = raw as SOCKET;
-            // SAFETY: `socket` is a live OS SOCKET from the transport table.
-            let base = base_socket(socket);
-            let mut state = Box::new(AfdState {
-                token,
-                base_socket: base,
-                interest: afd_interest(events),
-                armed: false,
-                // SAFETY: AFD_POLL_INFO / IO_STATUS_BLOCK are POD; all-zero is valid.
-                poll_info: unsafe { std::mem::zeroed() },
-                iosb: IO_STATUS_BLOCK::zeroed(),
-            });
-            let addr = ptr::addr_of!(*state) as usize;
-            let status = arm_poll(self.afd, &mut state);
-            if !arm_ok(status) {
-                // Arm failed: no I/O was queued, so dropping the box is safe.
-                return -1;
-            }
-            state.armed = true;
-            self.index.insert(addr, token);
-            self.entries.insert(token, state);
-            0
-        }
-
-        fn unregister(&mut self, token: c_int) -> c_int {
-            let Some(mut state) = self.entries.remove(&token) else {
-                // Benign double-unregister (mirrors the unix backends).
-                return 0;
-            };
-            let addr = ptr::addr_of!(*state) as usize;
-            self.index.remove(&addr);
-            if !state.armed {
-                // A terminal (HUP/ERROR) completion was already delivered and the
-                // poll was NOT re-armed, so nothing is in flight: no future
-                // completion will ever arrive. Drop the state directly — issuing
-                // NtCancelIoFileEx would be a no-op and parking it in `zombies`
-                // would leak it (the zombie-cleanup path in `poll_ready` only runs
-                // when a completion is dequeued, which never happens here) and
-                // would inflate the shutdown in-flight count.
-                drop(state);
-                return 0;
-            }
-            let mut cancel_iosb = IO_STATUS_BLOCK::zeroed();
-            // SAFETY: `afd` is live; `state.iosb` identifies the in-flight poll to
-            // cancel. The state is moved into `zombies` so its buffers stay valid
-            // until the cancellation completion is drained in `poll_ready`/shutdown.
-            unsafe {
-                NtCancelIoFileEx(
-                    self.afd,
-                    ptr::addr_of_mut!(state.iosb),
-                    ptr::addr_of_mut!(cancel_iosb),
-                );
-            }
-            self.zombies.insert(addr, state);
-            0
-        }
-
-        fn poll_ready(
-            &mut self,
-            timeout_ms: c_int,
-            out_fds: *mut c_int,
-            out_events: *mut c_int,
-            out_cap: c_int,
-        ) -> c_int {
-            // SAFETY: OVERLAPPED_ENTRY is POD; all-zero is a valid bit pattern.
-            let mut completions: [OVERLAPPED_ENTRY; MAX_COMPLETIONS] =
-                unsafe { std::mem::zeroed() };
-            let mut removed: u32 = 0;
-            let timeout = if timeout_ms < 0 {
-                INFINITE
-            } else {
-                timeout_ms as u32
-            };
-            // SAFETY: `iocp` is live; the entries buffer holds MAX_COMPLETIONS slots.
-            let ok = unsafe {
-                GetQueuedCompletionStatusEx(
-                    self.iocp,
-                    completions.as_mut_ptr(),
-                    MAX_COMPLETIONS as u32,
-                    ptr::addr_of_mut!(removed),
-                    timeout,
-                    0,
-                )
-            };
-            if ok == 0 {
-                // SAFETY: no preconditions.
-                let err = unsafe { GetLastError() };
-                if err == WAIT_TIMEOUT {
-                    return 0;
-                }
-                return -1;
-            }
-
-            let cap = out_cap as usize;
-            let mut count: usize = 0;
-            for entry in completions.iter().take(removed as usize) {
-                let addr = entry.lpOverlapped as usize;
-                if let Some(&token) = self.index.get(&addr) {
-                    let (mask, is_close) = {
-                        let state = self
-                            .entries
-                            .get(&token)
-                            .expect("index points to a live entry");
-                        let cancelled = state.iosb.ntstatus() == STATUS_CANCELLED;
-                        let mask = if cancelled || state.poll_info.NumberOfHandles == 0 {
-                            0
-                        } else {
-                            afd_to_hew(state.poll_info.Handles[0].Events)
-                        };
-                        (mask, mask & (HEW_IO_HUP | HEW_IO_ERROR) != 0)
-                    };
-                    if mask != 0 && count < cap {
-                        // SAFETY: count < cap <= out_cap; the buffers have out_cap slots.
-                        unsafe {
-                            *out_fds.add(count) = token;
-                            *out_events.add(count) = mask;
-                        }
-                        count += 1;
-                    }
-                    if is_close {
-                        // Close/error reported: do NOT re-arm (avoid busy-cycling on
-                        // a level-triggered close). The reactor will unregister.
-                        // Mark the state disarmed: its one-shot completion has been
-                        // dequeued and no new poll is in flight, so a later
-                        // `unregister` must drop it directly (no zombie) and
-                        // shutdown must not count it as in-flight.
-                        if let Some(state) = self.entries.get_mut(&token) {
-                            state.armed = false;
-                        }
-                        continue;
-                    }
-                    // Re-arm the one-shot poll for the next readiness.
-                    let state = self
-                        .entries
-                        .get_mut(&token)
-                        .expect("index points to a live entry");
-                    if !arm_ok(arm_poll(self.afd, state)) {
-                        // Re-arm failed (socket gone): surface a HUP so the reactor
-                        // closes + unregisters, and drop the entry (no I/O queued).
-                        if count < cap {
-                            // SAFETY: count < cap <= out_cap.
-                            unsafe {
-                                *out_fds.add(count) = token;
-                                *out_events.add(count) = HEW_IO_HUP;
-                            }
-                            count += 1;
-                        }
-                        self.index.remove(&addr);
-                        self.entries.remove(&token);
-                    }
-                } else {
-                    // Cancelled entry's final completion: drop the zombie now that
-                    // the kernel is done writing into its buffers.
-                    self.zombies.remove(&addr);
-                }
-            }
-            count as c_int
-        }
-
-        /// Cancel every genuinely in-flight AFD poll (armed `entries` + already-
-        /// cancelled `zombies`) and block until EVERY one of their guaranteed
-        /// completions has been dequeued from the IOCP. Returns
-        /// `(pending, drained)`; on return all `entries` are disarmed and
-        /// `zombies` is empty, so a second call is a no-op (no double-cancel hang).
-        ///
-        /// Termination proof (no bounded give-up needed): a one-shot
-        /// `IOCTL_AFD_POLL` is either still pending — in which case
-        /// `NtCancelIoFileEx` forces the AFD driver to complete the IRP with
-        /// `STATUS_CANCELLED` — or it has already completed and its packet is
-        /// queued on the port. Either way each in-flight request posts EXACTLY one
-        /// completion to `iocp`, so `drained` reaches `pending` after a finite
-        /// number of `GetQueuedCompletionStatusEx` dequeues. A poll timeout is NOT
-        /// treated as progress; the loop simply keeps waiting until the count is
-        /// reached, so no `AfdState`/`iosb`/`poll_info` buffer is ever freed while
-        /// the kernel still owns a pending write into it.
-        fn cancel_and_drain_inflight(&mut self) -> (usize, usize) {
-            let mut pending = self.zombies.len();
-            for state in self.entries.values_mut() {
-                if !state.armed {
-                    // Terminal completion already dequeued, not re-armed: nothing
-                    // is in flight, so it must NOT be cancelled or counted.
-                    continue;
-                }
-                let mut cancel_iosb = IO_STATUS_BLOCK::zeroed();
-                // SAFETY: `afd` is live; cancels the in-flight poll for this state.
-                unsafe {
-                    NtCancelIoFileEx(
-                        self.afd,
-                        ptr::addr_of_mut!(state.iosb),
-                        ptr::addr_of_mut!(cancel_iosb),
-                    );
-                }
-                // Its completion is now accounted for in `pending`; the buffers
-                // remain alive (still owned by `entries`) until drained below.
-                state.armed = false;
-                pending += 1;
-            }
-            let mut drained = 0usize;
-            while drained < pending {
-                // SAFETY: OVERLAPPED_ENTRY is POD; all-zero is valid.
-                let mut completions: [OVERLAPPED_ENTRY; MAX_COMPLETIONS] =
-                    unsafe { std::mem::zeroed() };
-                let mut removed: u32 = 0;
-                // SAFETY: `iocp` is live; buffer holds MAX_COMPLETIONS slots.
-                let ok = unsafe {
-                    GetQueuedCompletionStatusEx(
-                        self.iocp,
-                        completions.as_mut_ptr(),
-                        MAX_COMPLETIONS as u32,
-                        ptr::addr_of_mut!(removed),
-                        1000,
-                        0,
-                    )
-                };
-                if ok == 0 {
-                    // SAFETY: no preconditions.
-                    let err = unsafe { GetLastError() };
-                    if err == WAIT_TIMEOUT {
-                        // Timeout is NOT progress: the cancelled completions are
-                        // guaranteed to arrive, so keep waiting rather than free
-                        // buffers the kernel may still write.
-                        continue;
-                    }
-                    // A hard port error: we can no longer prove further completions
-                    // will be posted, so stop to avoid an unbounded hang. The
-                    // `debug_assert` in `shutdown` flags the (should-be-impossible)
-                    // free-while-pending this would imply.
-                    break;
-                }
-                drained += removed as usize;
-            }
-            // Their completions have been drained, so the zombie boxes are now
-            // safe to free; clearing here keeps a repeat call a no-op.
-            self.zombies.clear();
-            (pending, drained)
-        }
-
-        /// Cancel and drain every in-flight AFD poll before the handles are closed
-        /// and the state boxes freed, so the kernel never writes into a freed
-        /// `iosb`/`poll_info`.
-        fn shutdown(&mut self) {
-            let (pending, drained) = self.cancel_and_drain_inflight();
-            // Instrumentation: we must NOT free any buffer while a completion is
-            // still pending. With a healthy port `drained == pending` always.
-            debug_assert_eq!(
-                drained, pending,
-                "AFD buffers freed while a kernel completion was still pending"
-            );
-            // SAFETY: all in-flight I/O has completed/cancelled above, so closing
-            // the handles and freeing the state boxes is sound.
-            unsafe {
-                CloseHandle(self.afd);
-                CloseHandle(self.iocp);
-            }
-            self.entries.clear();
-            self.index.clear();
-            self.zombies.clear();
-        }
-
-        /// (entries, zombies, index) sizes — test-only inspection of internal
-        /// bookkeeping (no zombie retention / phantom in-flight checks).
-        #[cfg(test)]
-        pub(crate) fn debug_state_counts(&self) -> (usize, usize, usize) {
-            (self.entries.len(), self.zombies.len(), self.index.len())
-        }
-
-        /// Test-only: cancel + drain all in-flight polls and return
-        /// `(pending, drained)` without closing handles, so a test can assert the
-        /// drain-before-free invariant on a still-usable poller.
-        #[cfg(test)]
-        pub(crate) fn cancel_and_drain_for_test(&mut self) -> (usize, usize) {
-            self.cancel_and_drain_inflight()
-        }
-    }
-
-    /// Open a `\Device\Afd` helper handle for arming AFD polls.
-    fn open_afd_helper() -> Option<HANDLE> {
+    fn open_afd_helper() -> io::Result<HANDLE> {
         let name: Vec<u16> = r"\Device\Afd\Hew".encode_utf16().collect();
         let byte_len = (name.len() * 2) as u16;
         let mut unicode = UNICODE_STRING {
@@ -1491,7 +675,7 @@ mod platform {
             MaximumLength: byte_len,
             Buffer: name.as_ptr().cast_mut(),
         };
-        let mut object_attributes = OBJECT_ATTRIBUTES {
+        let mut attributes = OBJECT_ATTRIBUTES {
             Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
             RootDirectory: ptr::null_mut(),
             ObjectName: ptr::addr_of_mut!(unicode),
@@ -1500,14 +684,16 @@ mod platform {
             SecurityQualityOfService: ptr::null_mut(),
         };
         let mut handle: HANDLE = ptr::null_mut();
-        let mut iosb = IO_STATUS_BLOCK::zeroed();
-        // SAFETY: all pointers reference live locals that outlive the call; `name`
-        // backs the UNICODE_STRING buffer for the duration of NtCreateFile.
+        let mut iosb = IO_STATUS_BLOCK {
+            status: 0,
+            information: 0,
+        };
+        // SAFETY: every pointer names a live local for the call.
         let status = unsafe {
             NtCreateFile(
                 ptr::addr_of_mut!(handle),
                 SYNCHRONIZE,
-                ptr::addr_of_mut!(object_attributes),
+                ptr::addr_of_mut!(attributes),
                 ptr::addr_of_mut!(iosb),
                 ptr::null_mut(),
                 0,
@@ -1519,123 +705,149 @@ mod platform {
             )
         };
         if status == STATUS_SUCCESS {
-            Some(handle)
+            Ok(handle)
         } else {
-            None
+            Err(io::Error::other(format!(
+                "open AFD helper: NTSTATUS {status:#x}"
+            )))
         }
     }
 
-    /// Create a new I/O poller.
-    ///
-    /// # Safety
-    ///
-    /// No preconditions.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_new() -> *mut HewIoPoller {
-        match HewIoPoller::new() {
-            Some(p) => Box::into_raw(Box::new(p)),
-            None => ptr::null_mut(),
+    impl Poller {
+        pub(crate) fn new() -> io::Result<Self> {
+            // SAFETY: creating a fresh completion port.
+            let iocp =
+                unsafe { CreateIoCompletionPort((-1isize) as HANDLE, ptr::null_mut(), 0, 0) };
+            if iocp.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let afd = match open_afd_helper() {
+                Ok(afd) => afd,
+                Err(error) => {
+                    // SAFETY: the port was created above.
+                    unsafe { CloseHandle(iocp) };
+                    return Err(error);
+                }
+            };
+            // SAFETY: both handles are live.
+            if unsafe { CreateIoCompletionPort(afd, iocp, AFD_KEY, 0) } != iocp {
+                let error = io::Error::last_os_error();
+                // SAFETY: both handles were created above.
+                unsafe {
+                    CloseHandle(afd);
+                    CloseHandle(iocp);
+                }
+                return Err(error);
+            }
+            Ok(Self { iocp, afd })
         }
-    }
 
-    /// Register a connection/listener token for read readiness.
-    ///
-    /// The `actor`/`msg_type` parameters are unused on this backend (the reactor
-    /// drives the readiness-reporting `poll_ready` path and does its own
-    /// lookup/recv/deliver). Returns 0 on success, -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_register(
-        p: *mut HewIoPoller,
-        fd: c_int,
-        _actor: *mut super::HewActor,
-        _msg_type: c_int,
-        events: c_int,
-    ) -> c_int {
-        if p.is_null() {
-            return -1;
+        /// Issue a one-shot poll. `context` returns as the completion's token.
+        ///
+        /// # Safety
+        /// `poll` stays live and unmoved until the completion is dequeued, and
+        /// no other poll on it is in flight.
+        pub(crate) unsafe fn arm(
+            &self,
+            poll: *mut AfdPoll,
+            interest: c_int,
+            context: usize,
+        ) -> io::Result<()> {
+            let poll = &mut *poll;
+            poll.info.Timeout = i64::MAX;
+            poll.info.NumberOfHandles = 1;
+            poll.info.Exclusive = 0;
+            poll.info.Handles[0].Handle = poll.base as HANDLE;
+            poll.info.Handles[0].Status = 0;
+            poll.info.Handles[0].Events = afd_interest(interest);
+            poll.iosb.status = STATUS_PENDING as isize;
+            let info = ptr::addr_of_mut!(poll.info).cast::<c_void>();
+            let size = std::mem::size_of::<AFD_POLL_INFO>() as u32;
+            let status = NtDeviceIoControlFile(
+                self.afd,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                context as *mut c_void,
+                ptr::addr_of_mut!(poll.iosb),
+                IOCTL_AFD_POLL,
+                info,
+                size,
+                info,
+                size,
+            );
+            if status == STATUS_PENDING || status == STATUS_SUCCESS {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "arm AFD poll: NTSTATUS {status:#x}"
+                )))
+            }
         }
-        // SAFETY: caller guarantees `p` is valid and reactor-owned (single thread).
-        let poller = unsafe { &mut *p };
-        poller.register(fd, events)
-    }
 
-    /// Unregister a token from the poller. Idempotent (benign double-unregister).
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_unregister(p: *mut HewIoPoller, fd: c_int) -> c_int {
-        if p.is_null() {
-            return -1;
+        /// Cancel an in-flight poll; its completion still arrives.
+        ///
+        /// # Safety
+        /// `poll` has an in-flight arm.
+        pub(crate) unsafe fn cancel(&self, poll: *mut AfdPoll) {
+            let mut cancel = IO_STATUS_BLOCK {
+                status: 0,
+                information: 0,
+            };
+            NtCancelIoFileEx(
+                self.afd,
+                ptr::addr_of_mut!((*poll).iosb),
+                ptr::addr_of_mut!(cancel),
+            );
         }
-        // SAFETY: caller guarantees `p` is valid and reactor-owned.
-        let poller = unsafe { &mut *p };
-        poller.unregister(fd)
-    }
 
-    /// Auto-send poll variant — unsupported on this backend (the reactor uses
-    /// `hew_io_poller_poll_ready`). Always returns -1.
-    ///
-    /// # Safety
-    ///
-    /// No preconditions.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll(_p: *mut HewIoPoller, _timeout_ms: c_int) -> c_int {
-        -1
-    }
+        pub(crate) fn wake(&self) {
+            // SAFETY: posts a packet with no overlapped structure.
+            unsafe { PostQueuedCompletionStatus(self.iocp, 0, WAKE_KEY, ptr::null_mut()) };
+        }
 
-    /// Poll for readiness and report ready `(token, hew_event_mask)` pairs without
-    /// dispatching (the Windows IOCP/AFD counterpart of the epoll/kqueue
-    /// `hew_io_poller_poll_ready`). Returns the number of ready tokens
-    /// (0..=`out_cap`), or -1 on error.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`]. `out_fds`
-    /// and `out_events` must each point to at least `out_cap` writable `c_int`
-    /// slots, or be null when `out_cap` is 0.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll_ready(
-        p: *mut HewIoPoller,
-        timeout_ms: c_int,
-        out_fds: *mut c_int,
-        out_events: *mut c_int,
-        out_cap: c_int,
-    ) -> c_int {
-        if p.is_null() {
-            return -1;
+        /// Wait for completions. Each AFD completion reports its arm context
+        /// as the token with no events; the slot reads its own poll report.
+        pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> io::Result<()> {
+            // SAFETY: plain data; all-zero is valid.
+            let mut entries: [OVERLAPPED_ENTRY; MAX_EVENTS] = unsafe { std::mem::zeroed() };
+            let mut removed: u32 = 0;
+            let timeout = if timeout_ms < 0 {
+                INFINITE
+            } else {
+                timeout_ms as u32
+            };
+            // SAFETY: the buffer holds MAX_EVENTS entries.
+            let ok = unsafe {
+                GetQueuedCompletionStatusEx(
+                    self.iocp,
+                    entries.as_mut_ptr(),
+                    MAX_EVENTS as u32,
+                    ptr::addr_of_mut!(removed),
+                    timeout,
+                    0,
+                )
+            };
+            if ok == 0 {
+                // SAFETY: no preconditions.
+                if unsafe { GetLastError() } == WAIT_TIMEOUT {
+                    return Ok(());
+                }
+                return Err(io::Error::last_os_error());
+            }
+            for entry in &entries[..removed as usize] {
+                if entry.lpCompletionKey == AFD_KEY {
+                    out.push(Event {
+                        token: entry.lpOverlapped as usize as u64,
+                        events: 0,
+                    });
+                }
+            }
+            Ok(())
         }
-        if out_cap <= 0 || out_fds.is_null() || out_events.is_null() {
-            return 0;
-        }
-        // SAFETY: caller guarantees `p` is valid and reactor-owned.
-        let poller = unsafe { &mut *p };
-        poller.poll_ready(timeout_ms, out_fds, out_events, out_cap)
-    }
-
-    /// Stop and destroy the poller, draining all in-flight AFD polls first.
-    ///
-    /// # Safety
-    ///
-    /// `p` must be a valid pointer returned by [`hew_io_poller_new`], and must
-    /// not be used after this call.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_stop(p: *mut HewIoPoller) {
-        if p.is_null() {
-            return;
-        }
-        // SAFETY: caller surrenders ownership of `p`.
-        let mut poller = unsafe { Box::from_raw(p) };
-        poller.shutdown();
     }
 }
 
-// ---- Stub (other unsupported native targets) -------------------------------
+// ---- Other native targets ----------------------------------------------------
 
 #[cfg(not(any(
     target_os = "linux",
@@ -1644,76 +856,51 @@ mod platform {
     windows
 )))]
 mod platform {
+    use super::Event;
     use std::ffi::c_int;
+    use std::io;
 
-    /// Stub poller for unsupported platforms.
+    /// No readiness source on this target: the reactor refuses to start.
     #[derive(Debug)]
-    pub struct HewIoPoller {
-        _unused: u8,
-    }
+    pub(crate) struct Poller;
 
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_new() -> *mut HewIoPoller {
-        std::ptr::null_mut()
-    }
+    impl Poller {
+        pub(crate) fn new() -> io::Result<Self> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no readiness poller on this target",
+            ))
+        }
 
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_register(
-        _p: *mut HewIoPoller,
-        _fd: c_int,
-        _actor: *mut super::HewActor,
-        _msg_type: c_int,
-        _events: c_int,
-    ) -> c_int {
-        -1
-    }
+        pub(crate) fn arm(
+            &self,
+            _fd: c_int,
+            _token: u64,
+            _interest: c_int,
+            _added: bool,
+        ) -> io::Result<()> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no readiness poller on this target",
+            ))
+        }
 
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_unregister(_p: *mut HewIoPoller, _fd: c_int) -> c_int {
-        -1
-    }
+        pub(crate) fn remove(&self, _fd: c_int) {}
 
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll(_p: *mut HewIoPoller, _timeout_ms: c_int) -> c_int {
-        -1
-    }
+        pub(crate) fn wake(&self) {}
 
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_poll_ready(
-        _p: *mut HewIoPoller,
-        _timeout_ms: c_int,
-        _out_fds: *mut c_int,
-        _out_events: *mut c_int,
-        _out_cap: c_int,
-    ) -> c_int {
-        -1
+        pub(crate) fn wait(&self, _timeout_ms: c_int, _out: &mut Vec<Event>) -> io::Result<()> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no readiness poller on this target",
+            ))
+        }
     }
-
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_io_poller_stop(_p: *mut HewIoPoller) {}
 }
 
-// Re-export the platform poller type so consumers can reference it.
-pub use platform::HewIoPoller;
-
-// Re-export the poller C-ABI entry points so the in-process active-mode reactor
-// (`crate::reactor`) can drive the poller directly without an FFI round-trip.
-// These are `#[no_mangle] extern "C"` for the codegen/runtime boundary; the
-// re-export only adds a Rust path, it does not change the ABI.
-//
-// Re-exported unconditionally: both the real Unix poller (epoll/kqueue) and the
-// fail-closed stub module (Windows and other unsupported targets) define all
-// five entry points, so consumers can name `crate::io_time::hew_io_poller_*`
-// on every non-wasm target. (Gating this to Unix previously left the symbols
-// unreachable on Windows even though the stub `platform` module defines them.)
-pub use platform::{
-    hew_io_poller_new, hew_io_poller_poll_ready, hew_io_poller_register, hew_io_poller_stop,
-    hew_io_poller_unregister,
-};
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+#[cfg(windows)]
+pub(crate) use platform::AfdPoll;
+pub(crate) use platform::Poller;
 
 #[cfg(test)]
 mod tests {
@@ -1805,540 +992,82 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
-    // -- Event flag constants -----------------------------------------------
-
-    #[test]
-    fn io_event_flags_are_distinct_bits() {
-        let all = [HEW_IO_READ, HEW_IO_WRITE, HEW_IO_ERROR, HEW_IO_HUP];
-        for (i, &a) in all.iter().enumerate() {
-            assert_eq!(a.count_ones(), 1, "flag is not a single bit");
-            for &b in &all[i + 1..] {
-                assert_eq!(a & b, 0, "flags overlap");
-            }
-        }
-    }
-
-    // -- I/O Poller lifecycle -----------------------------------------------
-    //
-    // Exercises create/register/unregister/poll/stop using OS pipes.
-    // Actual event *dispatch* (sending to an HewActor) requires an
-    // initialised scheduler and is covered by E2E tests.
+    // -- Poller ----------------------------------------------------------------
 
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
     mod poller {
-        use super::*;
-        use crate::io_time::platform::*;
-
-        /// Non-null dummy actor pointer for register calls that will
-        /// never trigger dispatch (no data written to pipe).
-        fn dummy_actor() -> *mut HewActor {
-            std::ptr::NonNull::<HewActor>::dangling().as_ptr()
-        }
-
-        /// Create an OS pipe pair, returning `(read_fd, write_fd)`.
-        fn make_pipe() -> (c_int, c_int) {
-            let mut fds: [c_int; 2] = [0; 2];
-            // SAFETY: fds is a valid 2-element array.
-            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-            (fds[0], fds[1])
-        }
-
-        #[test]
-        fn new_returns_non_null() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            // SAFETY: p is valid, surrendering ownership.
-            unsafe { hew_io_poller_stop(p) };
-        }
-
-        #[test]
-        fn stop_null_is_safe() {
-            // SAFETY: null is explicitly guarded.
-            unsafe { hew_io_poller_stop(std::ptr::null_mut()) };
-        }
-
-        #[test]
-        fn register_null_poller_returns_error() {
-            // SAFETY: null poller is guarded by cabi_guard.
-            let rc = unsafe {
-                hew_io_poller_register(
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null_mut(),
-                    0,
-                    HEW_IO_READ,
-                )
-            };
-            assert_eq!(rc, -1);
-        }
-
-        #[test]
-        fn unregister_null_poller_returns_error() {
-            // SAFETY: null poller is guarded by cabi_guard.
-            let rc = unsafe { hew_io_poller_unregister(std::ptr::null_mut(), 0) };
-            assert_eq!(rc, -1);
-        }
-
-        #[test]
-        fn poll_null_poller_returns_error() {
-            // SAFETY: null poller is guarded by cabi_guard.
-            let rc = unsafe { hew_io_poller_poll(std::ptr::null_mut(), 0) };
-            assert_eq!(rc, -1);
-        }
-
-        #[test]
-        fn register_bad_fd_returns_error() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-
-            // SAFETY: p is valid; -1 is an invalid fd that will make
-            // epoll_ctl / kevent return an error.
-            let rc = unsafe { hew_io_poller_register(p, -1, dummy_actor(), 1, HEW_IO_READ) };
-            assert_eq!(rc, -1);
-
-            // SAFETY: p is valid, surrendering ownership.
-            unsafe { hew_io_poller_stop(p) };
-        }
-
-        #[test]
-        fn register_and_unregister_valid_pipe() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (rfd, wfd) = make_pipe();
-
-            // SAFETY: p is valid; rfd is a valid fd from pipe();
-            // dummy_actor is non-null but never dispatched.
-            let reg = unsafe { hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ) };
-            assert_eq!(reg, 0);
-
-            // SAFETY: p is valid; rfd was previously registered.
-            let unreg = unsafe { hew_io_poller_unregister(p, rfd) };
-            assert_eq!(unreg, 0);
-
-            // SAFETY: closing our own fds; p surrendering ownership.
-            unsafe {
-                libc::close(rfd);
-                libc::close(wfd);
-                hew_io_poller_stop(p);
-            }
-        }
-
-        // Platform-specific: epoll_ctl(DEL) fails for unregistered fds
-        // on Linux (returns -1), but the kqueue backend on macOS/FreeBSD
-        // ignores EV_DELETE errors and always returns 0.
-        #[test]
-        fn unregister_unknown_fd_platform_behaviour() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-
-            // SAFETY: p is valid; fd 9999 was never registered.
-            let rc = unsafe { hew_io_poller_unregister(p, 9999) };
-
-            #[cfg(target_os = "linux")]
-            assert_eq!(rc, -1, "epoll returns -1 for unregistered fd");
-
-            #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-            assert_eq!(rc, 0, "kqueue silently ignores EV_DELETE for unknown fd");
-
-            // SAFETY: p is valid, surrendering ownership.
-            unsafe { hew_io_poller_stop(p) };
-        }
-
-        #[test]
-        fn poll_empty_zero_timeout_returns_zero() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-
-            // SAFETY: p is valid; 0ms timeout returns immediately.
-            let n = unsafe { hew_io_poller_poll(p, 0) };
-            assert_eq!(n, 0);
-
-            // SAFETY: p is valid, surrendering ownership.
-            unsafe { hew_io_poller_stop(p) };
-        }
-
-        #[test]
-        fn poll_registered_no_data_zero_timeout_returns_zero() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (rfd, wfd) = make_pipe();
-
-            // SAFETY: p is valid; rfd from pipe(); dummy_actor non-null.
-            let reg = unsafe { hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ) };
-            assert_eq!(reg, 0);
-
-            // Nothing written to the pipe -> 0ms timeout -> 0 events.
-            // SAFETY: p is valid.
-            let n = unsafe { hew_io_poller_poll(p, 0) };
-            assert_eq!(n, 0);
-
-            // SAFETY: p is valid; closing our own fds.
-            unsafe {
-                hew_io_poller_unregister(p, rfd);
-                libc::close(rfd);
-                libc::close(wfd);
-                hew_io_poller_stop(p);
-            }
-        }
-
-        #[test]
-        fn poll_ready_reports_ready_fd_without_dispatch() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (rfd, wfd) = make_pipe();
-
-            // Register the read end. The actor is a dangling dummy that must
-            // NEVER be dereferenced — poll_ready reports readiness, it does not
-            // dispatch, so the dummy is safe even though data is written.
-            // SAFETY: p valid; rfd from pipe(); dummy actor never dispatched.
-            let reg = unsafe { hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ) };
-            assert_eq!(reg, 0);
-
-            // Write a byte so the read end becomes ready.
-            let byte = [0xABu8];
-            // SAFETY: wfd is a valid write fd; byte is one valid byte.
-            let written = unsafe { libc::write(wfd, byte.as_ptr().cast(), 1) };
-            assert_eq!(written, 1);
-
-            let mut out_fds = [0i32; 8];
-            let mut out_events = [0i32; 8];
-            // SAFETY: p valid; out buffers have 8 slots each; cap is 8.
-            let n = unsafe {
-                hew_io_poller_poll_ready(p, 100, out_fds.as_mut_ptr(), out_events.as_mut_ptr(), 8)
-            };
-            assert_eq!(n, 1, "exactly one fd should be ready");
-            assert_eq!(out_fds[0], rfd, "the ready fd is the registered read end");
-            assert!(
-                out_events[0] & HEW_IO_READ != 0,
-                "ready event must carry READ"
-            );
-
-            // SAFETY: p valid; closing our own fds.
-            unsafe {
-                hew_io_poller_unregister(p, rfd);
-                libc::close(rfd);
-                libc::close(wfd);
-                hew_io_poller_stop(p);
-            }
-        }
-
-        #[test]
-        fn poll_ready_empty_returns_zero() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let mut out_fds = [0i32; 4];
-            let mut out_events = [0i32; 4];
-            // SAFETY: p valid; buffers have 4 slots; 0ms timeout returns at once.
-            let n = unsafe {
-                hew_io_poller_poll_ready(p, 0, out_fds.as_mut_ptr(), out_events.as_mut_ptr(), 4)
-            };
-            assert_eq!(n, 0);
-            // SAFETY: p valid, surrendering ownership.
-            unsafe { hew_io_poller_stop(p) };
-        }
-
-        #[test]
-        fn poll_ready_zero_cap_returns_zero() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            // SAFETY: p valid; out_cap 0 means no slots, returns 0 without
-            // touching the (null) buffers.
-            let n = unsafe {
-                hew_io_poller_poll_ready(p, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0)
-            };
-            assert_eq!(n, 0);
-            // SAFETY: p valid, surrendering ownership.
-            unsafe { hew_io_poller_stop(p) };
-        }
-
-        #[test]
-        fn register_both_read_and_write_succeeds() {
-            // SAFETY: no preconditions for new.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (rfd, wfd) = make_pipe();
-
-            // SAFETY: p valid; rfd from pipe(); dummy_actor non-null.
-            let rc = unsafe {
-                hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ | HEW_IO_WRITE)
-            };
-            assert_eq!(rc, 0);
-
-            // SAFETY: p valid; closing our own fds.
-            unsafe {
-                hew_io_poller_unregister(p, rfd);
-                libc::close(rfd);
-                libc::close(wfd);
-                hew_io_poller_stop(p);
-            }
-        }
-    }
-
-    // -- Windows IOCP/AFD_POLL readiness (G0 spike + backend coverage) -------
-    //
-    // Drives the real IOCP + AFD_POLL backend over loopback TCP sockets, proving
-    // peer-write → AFD_POLL_RECEIVE → HEW_IO_READ readiness and peer-close →
-    // HEW_IO_HUP, plus the register/unregister/stop lifecycle.
-    #[cfg(windows)]
-    #[allow(
-        clippy::undocumented_unsafe_blocks,
-        clippy::cast_sign_loss,
-        reason = "test-only FFI: every pointer is a fresh local poller/socket the test \
-                  body sets up and tears down; the lifecycle is described inline"
-    )]
-    mod afd_poller {
-        use super::*;
+        use super::super::{Event, Poller, HEW_IO_READ, HEW_IO_WRITE};
         use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+        use std::os::fd::AsRawFd;
+        use std::time::{Duration, Instant};
 
-        /// Poll until `poll_ready` reports the token (any event) and return the
-        /// reported event mask. The test runner's timeout is the hang guard.
-        unsafe fn wait_ready(p: *mut HewIoPoller, token: c_int) -> c_int {
-            let mut fds = [0_i32; 8];
-            let mut evs = [0_i32; 8];
-            loop {
-                let n = unsafe {
-                    hew_io_poller_poll_ready(p, 50, fds.as_mut_ptr(), evs.as_mut_ptr(), 8)
-                };
-                if n > 0 {
-                    for i in 0..n as usize {
-                        if fds[i] == token {
-                            return evs[i];
-                        }
-                    }
-                }
-            }
+        fn pair() -> (TcpStream, TcpStream) {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let client = TcpStream::connect(listener.local_addr().unwrap()).expect("connect");
+            let (server, _) = listener.accept().expect("accept");
+            server.set_nonblocking(true).unwrap();
+            (server, client)
+        }
+
+        fn wait(poller: &Poller, timeout_ms: i32) -> Vec<Event> {
+            let mut events = Vec::new();
+            poller.wait(timeout_ms, &mut events).expect("wait");
+            events
         }
 
         #[test]
-        fn new_returns_non_null_and_stop_is_clean() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null(), "IOCP poller creation failed");
-            // SAFETY: p valid; surrenders ownership.
-            unsafe { hew_io_poller_stop(p) };
+        fn one_arm_reports_one_readiness() {
+            let poller = Poller::new().expect("poller");
+            let (server, mut client) = pair();
+            poller
+                .arm(server.as_raw_fd(), 7, HEW_IO_READ, false)
+                .unwrap();
+            client.write_all(b"x").unwrap();
+            let events = wait(&poller, 1000);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].token, 7);
+            assert_ne!(events[0].events & HEW_IO_READ, 0);
+            // The byte is still unread, but the arm was spent.
+            assert!(wait(&poller, 50).is_empty(), "a spent arm must stay silent");
+            // Re-arming reports the still-pending byte again.
+            poller
+                .arm(server.as_raw_fd(), 7, HEW_IO_READ, true)
+                .unwrap();
+            assert_eq!(wait(&poller, 1000).len(), 1);
+            poller.remove(server.as_raw_fd());
         }
 
         #[test]
-        fn register_unknown_token_returns_error() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            // A token that names no live socket must fail closed.
-            // SAFETY: p valid.
-            let rc =
-                unsafe { hew_io_poller_register(p, 999_999, std::ptr::null_mut(), 0, HEW_IO_READ) };
-            assert_eq!(rc, -1);
-            // SAFETY: p valid.
-            unsafe { hew_io_poller_stop(p) };
+        fn write_interest_reports_writable_socket() {
+            let poller = Poller::new().expect("poller");
+            let (server, _client) = pair();
+            poller
+                .arm(server.as_raw_fd(), 9, HEW_IO_WRITE, false)
+                .unwrap();
+            let events = wait(&poller, 1000);
+            assert_eq!(events.len(), 1);
+            assert_ne!(events[0].events & HEW_IO_WRITE, 0);
+            poller.remove(server.as_raw_fd());
         }
 
         #[test]
-        fn peer_write_reports_read_readiness() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
-            // SAFETY: conn is a live stream handle = the poller token (D-2a).
-            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
-            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
-            // SAFETY: p valid; token names a live socket.
-            assert_eq!(
-                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
-                0
-            );
-
-            client.write_all(b"ping").expect("client write");
-            client.flush().ok();
-
-            // SAFETY: p valid; token registered.
-            let mask = unsafe { wait_ready(p, token) };
-            assert!(
-                mask & HEW_IO_READ != 0,
-                "expected HEW_IO_READ, got {mask:#x}"
-            );
-
-            // SAFETY: cleanup.
-            unsafe {
-                hew_io_poller_unregister(p, token);
-                hew_io_poller_stop(p);
-            }
-            drop(client);
-            crate::transport::tcp_close_raw_for_test(conn);
-        }
-
-        #[test]
-        fn peer_close_reports_hup() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
-            // SAFETY: conn is a live stream handle.
-            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
-            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
-            // SAFETY: p valid; token names a live socket.
-            assert_eq!(
-                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
-                0
-            );
-
-            // Peer closes its end → AFD reports disconnect/abort.
-            drop(client);
-
-            // SAFETY: p valid; token registered.
-            let mask = unsafe { wait_ready(p, token) };
-            assert!(
-                mask & (HEW_IO_HUP | HEW_IO_ERROR | HEW_IO_READ) != 0,
-                "expected close/read readiness, got {mask:#x}"
-            );
-
-            // SAFETY: cleanup.
-            unsafe {
-                hew_io_poller_unregister(p, token);
-                hew_io_poller_stop(p);
-            }
-            crate::transport::tcp_close_raw_for_test(conn);
-        }
-
-        #[test]
-        fn double_unregister_is_benign() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
-            // SAFETY: conn is a live stream handle.
-            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
-            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
-            // SAFETY: p valid.
-            assert_eq!(
-                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
-                0
-            );
-            // SAFETY: p valid; second unregister must be a no-op (returns 0).
-            unsafe {
-                assert_eq!(hew_io_poller_unregister(p, token), 0);
-                assert_eq!(hew_io_poller_unregister(p, token), 0);
-                hew_io_poller_stop(p);
-            }
-            drop(client);
-            crate::transport::tcp_close_raw_for_test(conn);
-        }
-
-        /// Poll until `poll_ready` reports a TERMINAL (HUP/ERROR) mask for
-        /// `token` and return it. The test runner's timeout is the hang guard.
-        unsafe fn wait_terminal(p: *mut HewIoPoller, token: c_int) -> c_int {
-            let mut fds = [0_i32; 8];
-            let mut evs = [0_i32; 8];
-            loop {
-                let n = unsafe {
-                    hew_io_poller_poll_ready(p, 50, fds.as_mut_ptr(), evs.as_mut_ptr(), 8)
-                };
-                for i in 0..n.max(0) as usize {
-                    if fds[i] == token && evs[i] & (HEW_IO_HUP | HEW_IO_ERROR) != 0 {
-                        return evs[i];
-                    }
-                }
-            }
-        }
-
-        /// REGRESSION (MED/code, zombie leak): a peer close delivers a terminal
-        /// completion that is NOT re-armed; the subsequent `unregister` must DROP
-        /// the disarmed state directly — no `NtCancelIoFileEx`, no zombie — so
-        /// there is no per-connection heap leak and no phantom in-flight count at
-        /// shutdown, and the whole HUP→unregister→stop sequence has bounded latency.
-        #[test]
-        fn close_readiness_unregister_drops_without_zombie() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
-            // SAFETY: conn is a live stream handle = the poller token.
-            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
-            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
-            // SAFETY: p valid; token names a live socket.
-            assert_eq!(
-                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
-                0
-            );
-
-            // Peer closes → AFD reports disconnect/abort: a terminal completion the
-            // poller delivers and deliberately does not re-arm.
-            drop(client);
-            // SAFETY: p valid; token registered.
-            let mask = unsafe { wait_terminal(p, token) };
-            assert!(mask & (HEW_IO_HUP | HEW_IO_ERROR) != 0, "got {mask:#x}");
-
-            // The state is now disarmed (terminal completion drained, no re-arm).
-            // unregister must drop it directly rather than zombieing it.
-            // SAFETY: p valid.
-            assert_eq!(unsafe { hew_io_poller_unregister(p, token) }, 0);
-            // SAFETY: p valid; inspecting internal bookkeeping on the reactor thread.
-            let (entries, zombies, index) = unsafe { (*p).debug_state_counts() };
-            assert_eq!(entries, 0, "entry not dropped on unregister");
-            assert_eq!(
-                zombies, 0,
-                "terminal state was zombied — per-connection leak"
-            );
-            assert_eq!(index, 0, "index left dangling");
-
-            // Nothing is in flight, so stop drains zero and returns; the zero
-            // zombie count above is what makes that drain empty.
-            // SAFETY: p valid; surrenders ownership.
-            unsafe { hew_io_poller_stop(p) };
-            crate::transport::tcp_close_raw_for_test(conn);
-        }
-
-        /// REGRESSION (SEC-HIGH, shutdown UAF): with a genuinely-pending AFD poll
-        /// IOCTL in flight, shutdown must CANCEL and DRAIN its completion before any
-        /// buffer is freed. The drain is unbounded/proven: it reports exactly one
-        /// pending request and drains exactly one completion (`pending == drained`),
-        /// so no `AfdState`/`iosb`/`poll_info` is freed while the kernel still owns a
-        /// pending write. (`shutdown` also carries a `debug_assert_eq!` enforcing
-        /// the same no-free-while-pending invariant.)
-        #[test]
-        fn shutdown_drains_genuinely_pending_inflight_poll() {
-            // SAFETY: no preconditions.
-            let p = unsafe { hew_io_poller_new() };
-            assert!(!p.is_null());
-            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
-            // SAFETY: conn is a live stream handle = the poller token.
-            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
-            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
-            // Arm a poll and leave it genuinely in flight: no peer write, no close,
-            // so the one-shot IOCTL_AFD_POLL is still pending in the kernel.
-            // SAFETY: p valid; token names a live socket.
-            assert_eq!(
-                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
-                0
-            );
-            // SAFETY: p valid; single-threaded inspection.
-            let (entries, zombies, _) = unsafe { (*p).debug_state_counts() };
-            assert_eq!(entries, 1, "expected one armed entry");
-            assert_eq!(zombies, 0);
-
-            // Drive the exact cancel-and-drain shutdown performs, observing counts.
-            // SAFETY: p valid and still owned (cancel_and_drain leaves handles open).
-            let (pending, drained) = unsafe { (*p).cancel_and_drain_for_test() };
-            assert_eq!(pending, 1, "the in-flight poll was not counted as pending");
-            assert_eq!(
-                drained, pending,
-                "shutdown would free buffers with a pending completion (UAF)"
-            );
-
-            // Now fully stop/free (the in-flight completion is already drained, so
-            // this second cancel-and-drain is a no-op and cannot hang).
-            // SAFETY: p valid; surrenders ownership.
-            unsafe { hew_io_poller_stop(p) };
-            drop(client);
-            crate::transport::tcp_close_raw_for_test(conn);
+        fn wake_interrupts_an_unbounded_wait_and_is_sticky() {
+            let poller = std::sync::Arc::new(Poller::new().expect("poller"));
+            // A wake sent before the wait is not lost.
+            poller.wake();
+            let started = Instant::now();
+            assert!(wait(&poller, 5000).is_empty());
+            assert!(started.elapsed() < Duration::from_secs(1));
+            let waker = std::sync::Arc::clone(&poller);
+            let thread = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                waker.wake();
+            });
+            let started = Instant::now();
+            assert!(wait(&poller, -1).is_empty());
+            assert!(started.elapsed() < Duration::from_secs(5));
+            thread.join().unwrap();
         }
     }
 }

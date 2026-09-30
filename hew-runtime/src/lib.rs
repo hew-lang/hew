@@ -775,13 +775,11 @@ pub mod pid;
 pub mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process;
-/// Active-mode network I/O reactor ("I/O completion as a mailbox message").
-/// Native (non-WASM) on all targets: epoll on Linux, kqueue on macOS/FreeBSD,
-/// and an IOCP/AFD_POLL readiness backend on Windows
-/// ([`crate::io_time::HewIoPoller`]). The shared engine is platform-independent
-/// Rust over the poller's `c_int` token; only the per-platform readiness source
-/// differs. WASM fails closed via the type checker's
-/// `WasmUnsupportedFeature::TcpNetworking` gate (the reactor is not compiled).
+/// The I/O reactor: readiness for waiting operations and the timer wheel's
+/// clock. Native (non-WASM) on all targets: epoll on Linux, kqueue on
+/// macOS/FreeBSD and IOCP with `AFD_POLL` on Windows. WASM fails closed via the
+/// type checker's `WasmUnsupportedFeature::TcpNetworking` gate (the reactor is
+/// not compiled).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reactor;
 pub mod registry;

@@ -175,9 +175,12 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 | `coroutines.resumes_total` | counter | no | Coroutine resume count. |
 | `coroutines.suspends_total` | counter | no | Coroutine suspend count. |
 | `coroutines.frame_bytes_live` | gauge | no | Bytes held by live coroutine frames. |
-| `threads.blocking_count` | gauge | no | Current blocking-thread count. |
-| `reactor.registrations_live` | gauge | no | Live reactor registration count. |
-| `reactor.ready_events_total` | counter | no | Reactor ready-event count. |
+| `threads.blocking_count` | gauge | no | Blocking-pool jobs running now. |
+| `reactor.registrations_live` | gauge | no | Operations currently waiting on socket readiness. |
+| `reactor.ready_events_total` | counter | no | Readiness reports handed to waiting operations. |
+| `io.handles_live` | gauge | no | Open socket and listener handles. |
+| `pool.threads` | gauge | no | Threads in the blocking-work pool. |
+| `pool.saturations_total` | counter | no | Jobs that queued because every pool thread was busy at the cap. |
 | `arena.resets_total` | counter | no | Arena reset count. |
 
 ### What the heap counters cover

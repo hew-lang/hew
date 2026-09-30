@@ -4043,10 +4043,10 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         let _reactor = native::TestReactor::new();
         let (conn_handle, mut peer) = make_loopback_conn();
-        assert!(
-            crate::transport::tcp_conn_set_nonblocking(conn_handle, true),
-            "test connection enters the reactor's accepted-socket mode"
-        );
+        crate::reactor::lookup(conn_handle)
+            .expect("live test connection")
+            .ensure_nonblocking()
+            .expect("test connection enters the reactor's nonblocking mode");
 
         // SAFETY: conn_handle and the returned pair are live runtime handles.
         let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };

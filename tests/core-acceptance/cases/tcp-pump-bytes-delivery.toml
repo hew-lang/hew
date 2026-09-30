@@ -5,6 +5,9 @@ source = "cases/tcp-pump-bytes-delivery.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 60
 
+[case.env]
+HEW_IO_LEAK_CHECK = "1"
+
 [case.expected]
 stdout = "DATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDONE\n"
 exit = 0

@@ -1,21 +1,29 @@
-//! Fixed-size thread pool for offloading blocking work.
+//! Elastic thread pool for work with no portable readiness.
 //!
-//! Provides a simple pool of `HEW_BLOCKING_POOL_SIZE` (4) worker threads that
-//! drain a shared task queue. The pool is opaque to C callers (Box-allocated).
+//! Jobs run in submission order. A job that finds no idle thread starts a new
+//! one, up to [`HEW_BLOCKING_POOL_MAX`]; past that cap it waits in the queue and
+//! the saturation counter records it. A thread that stays idle for the idle
+//! timeout (`HEW_POOL_IDLE_MS`, default ten seconds) exits, so the pool shrinks
+//! back after a burst. The pool is opaque to C callers (Box-allocated).
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::util::{CondvarExt, MutexExt};
 
-/// Number of worker threads in the blocking pool.
-pub const HEW_BLOCKING_POOL_SIZE: usize = 4;
+/// Most threads the blocking pool runs at once.
+pub const HEW_BLOCKING_POOL_MAX: usize = 64;
+
+/// How long a thread waits for a job before it exits.
+const DEFAULT_IDLE: Duration = Duration::from_secs(10);
 
 /// C function pointer for a blocking task.
 pub type HewBlockingFn = unsafe extern "C" fn(arg: *mut c_void);
@@ -31,27 +39,65 @@ struct Task {
 // guarantees the pointer is valid until the function completes.
 unsafe impl Send for Task {}
 
-/// Shared state between the pool handle and worker threads.
-struct PoolInner {
-    queue: Mutex<(Vec<Task>, bool)>, // (tasks, running)
-    condvar: Condvar,
+struct Queue {
+    tasks: VecDeque<Task>,
+    running: bool,
+    /// Threads alive, including those running a job.
+    threads: usize,
+    /// Threads waiting for a job.
+    idle: usize,
 }
 
-/// Fixed-size blocking thread pool.
+/// Shared state between the pool handle and worker threads.
+struct PoolInner {
+    queue: Mutex<Queue>,
+    work: Condvar,
+    max_threads: usize,
+    idle_timeout: Duration,
+    /// Jobs that found every thread busy at the cap and had to queue.
+    saturations: AtomicU64,
+}
+
+/// Elastic blocking thread pool.
 pub struct HewBlockingPool {
-    inner: std::sync::Arc<PoolInner>,
-    workers: Vec<JoinHandle<()>>,
+    inner: Arc<PoolInner>,
+    workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for HewBlockingPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewBlockingPool")
-            .field("workers", &self.workers.len())
+            .field("threads", &self.inner.queue.lock_or_recover().threads)
             .finish_non_exhaustive()
     }
 }
 
-/// Create a new blocking pool with [`HEW_BLOCKING_POOL_SIZE`] worker threads.
+fn idle_timeout_from_env() -> Duration {
+    std::env::var("HEW_POOL_IDLE_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map_or(DEFAULT_IDLE, Duration::from_millis)
+}
+
+fn new_pool(max_threads: usize, idle_timeout: Duration) -> *mut HewBlockingPool {
+    Box::into_raw(Box::new(HewBlockingPool {
+        inner: Arc::new(PoolInner {
+            queue: Mutex::new(Queue {
+                tasks: VecDeque::new(),
+                running: true,
+                threads: 0,
+                idle: 0,
+            }),
+            work: Condvar::new(),
+            max_threads: max_threads.max(1),
+            idle_timeout,
+            saturations: AtomicU64::new(0),
+        }),
+        workers: Mutex::new(Vec::new()),
+    }))
+}
+
+/// Create a new blocking pool. It starts with no threads and grows on demand.
 ///
 /// Returns a heap-allocated, opaque pool pointer.
 ///
@@ -61,20 +107,48 @@ impl std::fmt::Debug for HewBlockingPool {
 /// to free the pool.
 #[no_mangle]
 pub unsafe extern "C" fn hew_blocking_pool_new() -> *mut HewBlockingPool {
-    let inner = std::sync::Arc::new(PoolInner {
-        queue: Mutex::new((Vec::new(), true)),
-        condvar: Condvar::new(),
-    });
+    new_pool(HEW_BLOCKING_POOL_MAX, idle_timeout_from_env())
+}
 
-    let mut workers = Vec::with_capacity(HEW_BLOCKING_POOL_SIZE);
-    for _ in 0..HEW_BLOCKING_POOL_SIZE {
-        let shared = std::sync::Arc::clone(&inner);
-        workers.push(std::thread::spawn(move || {
-            worker_loop(&shared);
-        }));
+impl HewBlockingPool {
+    fn spawn_worker(&self) {
+        let shared = Arc::clone(&self.inner);
+        let spawned = std::thread::Builder::new()
+            .name("hew-blocking".into())
+            .spawn(move || worker_loop(&shared));
+        let mut workers = self.workers.lock_or_recover();
+        // Reap threads that exited on idle so the list tracks live threads.
+        let (finished, live): (Vec<_>, Vec<_>) =
+            workers.drain(..).partition(JoinHandle::is_finished);
+        *workers = live;
+        match spawned {
+            Ok(handle) => workers.push(handle),
+            Err(error) => {
+                // The job stays queued for an existing thread; undo the count.
+                let mut queue = self.inner.queue.lock_or_recover();
+                queue.threads -= 1;
+                crate::observe::record_pool_threads(queue.threads);
+                drop(queue);
+                eprintln!("hew: blocking pool could not start a thread: {error}");
+            }
+        }
+        drop(workers);
+        for handle in finished {
+            let _ = handle.join();
+        }
     }
 
-    Box::into_raw(Box::new(HewBlockingPool { inner, workers }))
+    /// Threads alive now.
+    #[cfg(test)]
+    pub(crate) fn thread_count(&self) -> usize {
+        self.inner.queue.lock_or_recover().threads
+    }
+
+    /// Jobs that had to queue behind a full pool.
+    #[cfg(test)]
+    pub(crate) fn saturation_count(&self) -> u64 {
+        self.inner.saturations.load(Ordering::Relaxed)
+    }
 }
 
 /// Submit a blocking task to the pool.
@@ -97,22 +171,39 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     }
     // SAFETY: caller guarantees `pool` is valid.
     let p = unsafe { &*pool };
-    let mut guard = p.inner.queue.lock_or_recover();
-    let (ref mut queue, running) = *guard;
-    if !running {
+    let mut queue = p.inner.queue.lock_or_recover();
+    if !queue.running {
         return -1;
     }
     // The single-thread driver runs offloaded work inline at submission, so
     // its completion enters the ready list in program order.
     if crate::driver::active() {
-        drop(guard);
+        drop(queue);
         // SAFETY: the caller keeps `arg` valid until `func` completes, which
         // is before this call returns.
         unsafe { func(arg) };
         return 0;
     }
-    queue.push(Task { func, arg });
-    p.inner.condvar.notify_one();
+    queue.tasks.push_back(Task { func, arg });
+    // More queued jobs than waiting threads: grow, or record saturation.
+    let grow = if queue.tasks.len() > queue.idle {
+        if queue.threads < p.inner.max_threads {
+            queue.threads += 1;
+            crate::observe::record_pool_threads(queue.threads);
+            true
+        } else {
+            p.inner.saturations.fetch_add(1, Ordering::Relaxed);
+            crate::observe::record_pool_saturation();
+            false
+        }
+    } else {
+        false
+    };
+    drop(queue);
+    p.inner.work.notify_one();
+    if grow {
+        p.spawn_worker();
+    }
     0
 }
 
@@ -410,7 +501,7 @@ pub fn shared_blocking_pool_opt() -> Option<*mut HewBlockingPool> {
     crate::runtime::rt_current_opt().map(crate::runtime::RuntimeInner::blocking_pool)
 }
 
-/// Stop the pool: reject new work, wake all workers, and join threads.
+/// Stop the pool: reject new work, let workers finish the queue, and join them.
 ///
 /// # Safety
 ///
@@ -422,17 +513,11 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
         return;
     }
     // SAFETY: caller guarantees `pool` is valid and surrenders ownership.
-    let mut p = unsafe { *Box::from_raw(pool) };
-
-    // Signal workers to stop.
-    {
-        let mut guard = p.inner.queue.lock_or_recover();
-        guard.1 = false; // running = false
-    }
-    p.inner.condvar.notify_all();
-
-    // Join all worker threads.
-    for handle in p.workers.drain(..) {
+    let p = unsafe { *Box::from_raw(pool) };
+    p.inner.queue.lock_or_recover().running = false;
+    p.inner.work.notify_all();
+    let workers = std::mem::take(&mut *p.workers.lock_or_recover());
+    for handle in workers {
         if let Err(panic_payload) = handle.join() {
             let message = format!(
                 "blocking pool worker panicked during teardown: {}",
@@ -444,33 +529,45 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
     }
 }
 
-/// Worker thread main loop.
+/// Worker thread main loop: take jobs in submission order; exit after the idle
+/// timeout with nothing queued, or once the pool stops and its queue is empty.
 fn worker_loop(inner: &PoolInner) {
     loop {
         let task = {
-            let mut guard = inner.queue.lock_or_recover();
+            let mut queue = inner.queue.lock_or_recover();
             loop {
-                let (ref mut queue, running) = *guard;
-                if let Some(t) = queue.pop() {
-                    break Some(t);
+                if let Some(task) = queue.tasks.pop_front() {
+                    break Some(task);
                 }
-                if !running {
+                let expired = if queue.running {
+                    queue.idle += 1;
+                    let (next, waited) = inner
+                        .work
+                        .wait_timeout_or_recover(queue, inner.idle_timeout);
+                    queue = next;
+                    queue.idle -= 1;
+                    waited.timed_out() && queue.tasks.is_empty()
+                } else {
+                    true
+                };
+                if expired {
+                    // Leave under the same lock that decided, so a submitter
+                    // never counts this thread as able to take its job.
+                    queue.threads -= 1;
+                    crate::observe::record_pool_threads(queue.threads);
                     break None;
                 }
-                guard = inner.condvar.wait_or_recover(guard);
             }
         };
-        match task {
-            Some(t) => {
-                crate::observe::record_blocking_start();
-                // SAFETY: the submitter guarantees `func` and `arg` are valid.
-                unsafe {
-                    (t.func)(t.arg);
-                }
-                crate::observe::record_blocking_finish();
-            }
-            None => return,
+        let Some(task) = task else {
+            return;
+        };
+        crate::observe::record_blocking_start();
+        // SAFETY: the submitter guarantees `func` and `arg` are valid.
+        unsafe {
+            (task.func)(task.arg);
         }
+        crate::observe::record_blocking_finish();
     }
 }
 
@@ -478,7 +575,7 @@ fn worker_loop(inner: &PoolInner) {
 mod tests {
     use super::*;
     use std::ffi::CStr;
-    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize};
 
     /// A count paired with a Mutex+Condvar "done" latch so the submitting
     /// thread can wait for the worker to actually finish, rather than racing
@@ -574,34 +671,129 @@ mod tests {
         }
     }
 
-    /// A poisoned pool mutex does not cascade via `lock_or_recover`.
-    ///
-    /// We build a `PoolInner` directly so we can poison its mutex from a
-    /// regular Rust thread (extern "C" fns abort on panic, so we can't
-    /// poison through the task callback).
+    /// A gate the test opens to release every blocked job at once.
+    struct Gate {
+        open: Mutex<bool>,
+        opened: Condvar,
+        order: Mutex<Vec<usize>>,
+        finished: Condvar,
+    }
+
+    struct GatedJob {
+        gate: Arc<Gate>,
+        id: usize,
+    }
+
+    unsafe extern "C" fn gated_job(arg: *mut c_void) {
+        // SAFETY: each submission transfers one boxed job.
+        let job = unsafe { Box::from_raw(arg.cast::<GatedJob>()) };
+        let mut open = job.gate.open.lock_or_recover();
+        while !*open {
+            open = job.gate.opened.wait_or_recover(open);
+        }
+        drop(open);
+        job.gate.order.lock_or_recover().push(job.id);
+        job.gate.finished.notify_all();
+    }
+
+    fn submit_gated(pool: *mut HewBlockingPool, gate: &Arc<Gate>, id: usize) {
+        let job = Box::into_raw(Box::new(GatedJob {
+            gate: Arc::clone(gate),
+            id,
+        }));
+        // SAFETY: the pool is live and the job box is transferred.
+        assert_eq!(
+            unsafe { hew_blocking_pool_submit(pool, gated_job, job.cast()) },
+            0
+        );
+    }
+
+    fn new_gate() -> Arc<Gate> {
+        Arc::new(Gate {
+            open: Mutex::new(false),
+            opened: Condvar::new(),
+            order: Mutex::new(Vec::new()),
+            finished: Condvar::new(),
+        })
+    }
+
+    fn wait_for(gate: &Gate, count: usize) {
+        let mut order = gate.order.lock_or_recover();
+        while order.len() < count {
+            let (next, waited) = gate
+                .finished
+                .wait_timeout_or_recover(order, Duration::from_secs(10));
+            order = next;
+            assert!(!waited.timed_out() || order.len() >= count, "jobs stalled");
+        }
+    }
+
+    /// Three times the cap completes: the pool grows to its cap, queues the
+    /// rest (counting each as saturation) and runs queued jobs in submission
+    /// order. With a short idle timeout every thread then exits.
     #[test]
-    fn poisoned_mutex_does_not_cascade() {
-        let inner = Arc::new(PoolInner {
-            queue: Mutex::new((Vec::new(), true)),
-            condvar: Condvar::new(),
-        });
+    fn saturated_pool_runs_fifo_then_shrinks_when_idle() {
+        let cap = 4;
+        let pool = new_pool(cap, Duration::from_millis(50));
+        // SAFETY: the pool lives until stopped below.
+        let handle = unsafe { &*pool };
+        let gate = new_gate();
+        for id in 0..cap * 3 {
+            submit_gated(pool, &gate, id);
+        }
+        assert_eq!(
+            handle.thread_count(),
+            cap,
+            "pool grows to its cap and no further"
+        );
+        assert_eq!(
+            handle.saturation_count(),
+            (cap * 2) as u64,
+            "every job past the cap queued behind a busy pool"
+        );
+        *gate.open.lock_or_recover() = true;
+        gate.opened.notify_all();
+        wait_for(&gate, cap * 3);
+        let order = gate.order.lock_or_recover().clone();
+        // The first `cap` jobs ran concurrently; the queued rest ran FIFO.
+        assert_eq!(&order[cap..], &(cap..cap * 3).collect::<Vec<_>>()[..]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while handle.thread_count() != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "idle threads must exit after the idle timeout"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // A job after the pool shrank to nothing still runs.
+        submit_gated(pool, &gate, 99);
+        wait_for(&gate, cap * 3 + 1);
+        // SAFETY: the pool is live and not used after this call.
+        unsafe { hew_blocking_pool_stop(pool) };
+    }
 
-        // Poison the mutex: acquire it in a thread that panics.
-        let shared = Arc::clone(&inner);
-        let handle = std::thread::spawn(move || {
-            let _guard = shared.queue.lock().unwrap();
-            panic!("intentional poison");
-        });
-        let _ = handle.join(); // join collects the panic
-
-        // The mutex is now poisoned. Verify lock_or_recover succeeds.
-        let guard = inner.queue.lock_or_recover();
-        assert!(guard.1, "running flag should still be true");
-        drop(guard);
-
-        // Condvar wait_or_recover also tolerates the poisoned state.
-        // (We can't easily test wait without a second thread, but
-        // lock_or_recover proves the PoisonError path works.)
+    /// An idle thread takes the next job instead of a new thread starting.
+    #[test]
+    fn idle_thread_is_reused_before_growing() {
+        let pool = new_pool(8, Duration::from_secs(60));
+        // SAFETY: the pool lives until stopped below.
+        let handle = unsafe { &*pool };
+        let gate = new_gate();
+        *gate.open.lock_or_recover() = true;
+        submit_gated(pool, &gate, 0);
+        wait_for(&gate, 1);
+        // Let the worker settle into its idle wait.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while handle.inner.queue.lock_or_recover().idle != 1 {
+            assert!(std::time::Instant::now() < deadline, "worker never idled");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        submit_gated(pool, &gate, 1);
+        wait_for(&gate, 2);
+        assert_eq!(handle.thread_count(), 1);
+        assert_eq!(handle.saturation_count(), 0);
+        // SAFETY: the pool is live and not used after this call.
+        unsafe { hew_blocking_pool_stop(pool) };
     }
 
     /// Off-dispatch fallback: a closure run on a blocking-pool worker thread

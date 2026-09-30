@@ -1976,15 +1976,48 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
 /// A peer shares one namespace with its entry and siblings, and an entry is
 /// incomplete without its peers, so neither is a program of its own. Checking
 /// or migrating such a file checks the whole module as an importer sees it.
-/// Test files (`*_test.hew`) are never peers.
+/// Test files (`*_test.hew`) are never peers; see [`test_companion`]. A
+/// shipped std source already has its module identity from the std root, so
+/// it checks through that identity instead.
 #[must_use]
 pub fn directory_module_entry(path: &Path) -> Option<PathBuf> {
     let path = path.canonicalize().ok()?;
-    if path.extension()? != "hew" || is_hew_test_file(&path) {
+    if path.extension()? != "hew"
+        || is_hew_test_file(&path)
+        || hew_types::module_registry::canonical_stdlib_module_for_source(&path).is_some()
+    {
         return None;
     }
-    let entry = canonical_directory_module_entry_source(&path);
-    (entry.file_stem() == entry.parent().and_then(Path::file_name)).then_some(entry)
+    directory_module_entry_in(path.parent()?)
+}
+
+/// The production source a test file (`*_test.hew`) is compiled with.
+///
+/// A test file inside a directory module tests that whole module, so its
+/// companion is the module's entry, which assembles every peer. Elsewhere it is
+/// the same-stem file beside it (`math_test.hew` tests `math.hew`).
+#[must_use]
+pub fn test_companion(test_file: &Path) -> Option<PathBuf> {
+    let test_file = test_file.canonicalize().ok()?;
+    if !is_hew_test_file(&test_file) {
+        return None;
+    }
+    let dir = test_file.parent()?;
+    directory_module_entry_in(dir).or_else(|| {
+        let stem = test_file.file_stem()?.to_str()?.strip_suffix("_test")?;
+        dir.join(stem)
+            .with_extension("hew")
+            .canonicalize()
+            .ok()
+            .filter(|path| path.is_file())
+    })
+}
+
+/// The canonical entry file `dir/<dir>.hew` of the directory module `dir`,
+/// when it exists.
+fn directory_module_entry_in(dir: &Path) -> Option<PathBuf> {
+    let entry = dir.join(dir.file_name()?).with_extension("hew");
+    entry.canonicalize().ok().filter(|path| path.is_file())
 }
 
 /// The label of the root that checks a directory module through an import.
@@ -3539,10 +3572,12 @@ fn run_document_frontend_with_mode(
         .then_some(options.companion.as_deref())
         .flatten();
     if let Some(companion) = companion {
+        // First, as an import written at the top of the file: the test file's
+        // own declarations (a trait impl) resolve against it.
         state
             .program
             .items
-            .push(file_import(companion.display().to_string()));
+            .insert(0, file_import(companion.display().to_string()));
     }
 
     run_frontend_after_parse(state, &project, input, options, mode, entry_selection)
@@ -3936,8 +3971,8 @@ mod tests {
         directory_module_entry, display_path, hir_diagnostics_to_frontend, load_dependencies,
         load_lockfile, load_package_name, parse_source, retain_user_facing_diagnostics,
         run_document_frontend, run_file_frontend_to_typecheck,
-        run_file_frontend_to_typecheck_for_migration, run_source_frontend, DiagnosticPolicy,
-        DocumentSet, FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions,
+        run_file_frontend_to_typecheck_for_migration, run_source_frontend, test_companion,
+        DiagnosticPolicy, DocumentSet, FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions,
         ImportResolutionContext, Session, SessionTarget,
     };
     use hew_parser::ast::Item;
@@ -4143,10 +4178,11 @@ mod tests {
             &FrontendOptions {
                 project_dir: Some(dir.path().to_path_buf()),
                 entry_selection: Some(selection),
+                companion: test_companion(Path::new(&input)),
                 ..FrontendOptions::default()
             },
         )
-        .expect("selected occurrence must survive implicit entry import");
+        .expect("selected occurrence must survive the module companion import");
 
         let tco = state.typecheck_result.tco.expect("typecheck output");
         assert_eq!(

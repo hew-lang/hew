@@ -95,11 +95,11 @@ fn main() -> i64 {
         _ => return 7,
     }
     let text_none = TextMatrix { required_value: 7, required_option: .None, optional_option: .None };
-    if text_none.to_json() != "{\"required_option\":null,\"required_value\":7}" {
+    if text_none.to_json() != "{\"required_value\":7,\"required_option\":null}" {
         return 8;
     }
     let yaml_none = TextMatrix { required_value: 7, required_option: .None, optional_option: .None };
-    if yaml_none.to_yaml() != "required_option: null\nrequired_value: 7\n" {
+    if yaml_none.to_yaml() != "required_value: 7\nrequired_option: null\n" {
         return 29;
     }
     match TextMatrix.from_json("{\"required_value\":7,\"required_option\":null}") {

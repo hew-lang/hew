@@ -71,7 +71,7 @@ fn valid(settings: Settings) -> bool {
 }
 
 fn main() -> i64 {
-    let document = "{\"displayLabels\":[\"admin\\u0000é\",null],\"rows\":[[\"first\",\"雪\"],[]],\"binaryKeys\":[[[0,255],[\"byte\\u0000key\"]]],\"delivery\":{\"sendNow\":[\"packet\\u0000name\",[\"Montréal\"]]}}";
+    let document = "{\"displayLabels\":[\"admin\\u0000é\",null],\"rows\":[[\"first\",\"雪\"],[]],\"binaryKeys\":[[\"AP8=\",[\"byte\\u0000key\"]]],\"delivery\":{\"sendNow\":[\"packet\\u0000name\",[\"Montréal\"]]}}";
     let settings = Settings.from_json(document) handle error {
         return 1;
     };
@@ -117,7 +117,7 @@ fn main() -> i64 {
     if unique.len() != 1 || !unique.contains(key) {
         return 11;
     }
-    let blobs = wire.from_json<Vec<bytes>>("[[0,255],[1]]") handle error {
+    let blobs = wire.from_json<Vec<bytes>>("[\"AP8=\",\"AQ==\"]") handle error {
         return 12;
     };
     if blobs[0][1] != 255 || blobs[1][0] != 1 {

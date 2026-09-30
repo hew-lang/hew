@@ -1819,6 +1819,17 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     };
     let frontend_options = compile::frontend_options(&target, &options);
 
+    if !json {
+        if let Some(entry) = hew_compile::directory_module_entry(&resolved.source()) {
+            let module_dir = entry.parent().unwrap_or(&entry);
+            eprintln!(
+                "note: {input} belongs to directory module {}; checking the entry and all its peers",
+                display_relative_to_cwd(module_dir).display()
+            );
+        }
+    }
+
+    let frontend_started = std::time::Instant::now();
     let (result, state) = match hew_compile::check_file_with_state(&input, &frontend_options) {
         Ok(result) => result,
         Err(failure) => {
@@ -1830,6 +1841,7 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
         }
     };
 
+    measure_compile_phase("frontend", frontend_started.elapsed());
     compile::render_frontend_diagnostics(&result.diagnostics);
     // Stack hints and explain-cow are human-only diagnostic surfaces; suppress
     // them under JSON so stdout carries only the diagnostic array.
@@ -1837,10 +1849,12 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
         diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
     }
 
+    let deep_started = std::time::Instant::now();
     let semantics = match run_check_deep_gates(&input, &target, &state, &options.lint_levels) {
         Ok(output) => output,
         Err(channel) => return channel.exit_code(),
     };
+    measure_compile_phase("semantic lowering", deep_started.elapsed());
     if !json && a.explain_cow {
         if let Some(output) = semantics {
             explain_cow::print(&output.semantics().module, &input, &result.source);
@@ -2582,8 +2596,16 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
     let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
     let label = file_path.display().to_string();
     let initial = hew_compile::run_source_frontend_for_migration(source, &label, &options);
-    let source = migrate_machine_event_spellings(source, &initial.program);
+    let source = migrate_machine_event_spellings(
+        source,
+        &hew_parser::parse(source).program.items,
+        initial.program.module_graph.as_ref(),
+    );
     let state = hew_compile::run_source_frontend_for_migration(&source, &label, &options);
+    // A directory-module entry or peer is checked through its whole module, so
+    // the root program is not this file. Every per-file fact below comes from
+    // this file's own parse or from the checker facts attributed to it.
+    let own = hew_parser::parse(&source);
     let state = match &state.stopped {
         None => state,
         Some(failure) => {
@@ -2630,37 +2652,43 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         return Err(());
     };
 
-    // A std source migrated in place is also loaded as its own std module
-    // (`std/option.hew` is `std.option`), and its diagnostics carry that
-    // module. Accept those when this file is the module's only source, so the
-    // spans index this file.
-    let own_path = std::fs::canonicalize(file_path).ok();
-    let own_modules: Vec<String> = state
+    // The checker tags a diagnostic with the module it came from: the dotted
+    // module for an item of a module's primary file, the file's own path for a
+    // directory-module peer, none for the root. A std source migrated in place
+    // is also loaded as its own std module (`std/option.hew` is `std.option`).
+    // Accept exactly the tags that name this file, so the spans index it.
+    let own_path = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+    let mut own_modules: Vec<String> = state
         .program
         .module_graph
         .iter()
         .flat_map(|graph| graph.modules.values())
         .filter(|module| {
-            !module.id.segments.is_empty()
-                && module.source_paths.len() == 1
-                && std::fs::canonicalize(&module.source_paths[0]).ok() == own_path
+            !module.id.segments.is_empty() && module.source_paths.first() == Some(&own_path)
         })
         .map(|module| module.id.dotted())
         .collect();
+    own_modules.push(own_path.display().to_string());
+    // Span keys carry the file's span index; the root compilation unit is 0
+    // and has no path entry.
+    let own_index = state
+        .program
+        .module_graph
+        .as_ref()
+        .and_then(|graph| graph.file_span_indices().path_index(&own_path))
+        .unwrap_or(0);
     let tokens = hew_lexer::lex(&source);
     let mut variants = Vec::new();
     let mut selected = Vec::new();
     let mut refusals = Vec::new();
-    if let Some(parse) = &state.parse_result {
-        for error in &parse.errors {
-            match actor_parser_migration(&source, error) {
-                Ok(Some(edit)) => selected.push(edit),
-                Err(reason) => refusals.push(format!(
-                    "{}:{}-{}: {reason}",
-                    file, error.span.start, error.span.end
-                )),
-                Ok(None) => {}
-            }
+    for error in &own.errors {
+        match actor_parser_migration(&source, error) {
+            Ok(Some(edit)) => selected.push(edit),
+            Err(reason) => refusals.push(format!(
+                "{}:{}-{}: {reason}",
+                file, error.span.start, error.span.end
+            )),
+            Ok(None) => {}
         }
     }
     for error in &typecheck.warnings {
@@ -2758,7 +2786,7 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         .collect::<std::collections::HashSet<_>>();
     // A machine names its own states bare inside its declaration (§3.11.3),
     // so tokens there are never unmigrated variants.
-    let machine_spans = state
+    let machine_spans = own
         .program
         .items
         .iter()
@@ -2767,6 +2795,7 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         .collect::<Vec<_>>();
     refusals.extend(unlisted_bare_variant_refusals(
         typecheck,
+        own_index,
         &tokens,
         &selected_variant_spans,
         &machine_spans,
@@ -2797,7 +2826,11 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
 /// Replace the former flat machine companion only when a loaded declaration
 /// proves its owner. Lexer tokens keep strings and comments intact; an
 /// authored declaration with the same flat spelling wins and is left alone.
-fn migrate_machine_event_spellings(source: &str, program: &hew_parser::ast::Program) -> String {
+fn migrate_machine_event_spellings(
+    source: &str,
+    items: &[hew_parser::ast::Spanned<hew_parser::ast::Item>],
+    graph: Option<&hew_parser::module::ModuleGraph>,
+) -> String {
     use hew_parser::ast::{ImportSpec, Item};
 
     let mut machines = std::collections::HashSet::new();
@@ -2836,8 +2869,8 @@ fn migrate_machine_event_spellings(source: &str, program: &hew_parser::ast::Prog
             }
         }
     };
-    collect(&program.items);
-    if let Some(graph) = &program.module_graph {
+    collect(items);
+    if let Some(graph) = graph {
         for module in graph.modules.values() {
             collect(&module.items);
         }
@@ -2854,7 +2887,7 @@ fn migrate_machine_event_spellings(source: &str, program: &hew_parser::ast::Prog
         if !machines.contains(machine) || authored.contains(name) {
             continue;
         }
-        let import = program.items.iter().find_map(|(item, item_span)| {
+        let import = items.iter().find_map(|(item, item_span)| {
             (item_span.start <= span.start && span.end <= item_span.end)
                 .then_some((item, item_span))
         });
@@ -2908,10 +2941,15 @@ fn recheck_migrated_sources(outputs: &[(&Path, &str, &str)]) -> bool {
     let mut options = compile::frontend_options_for_check(&compile::CompileOptions::default());
     options.documents = documents;
     let mut clean = true;
-    for (path, file, formatted) in outputs {
-        let recheck =
-            hew_compile::run_source_frontend(formatted, &path.display().to_string(), &options);
-        if let Some(failure) = recheck.stopped {
+    let mut checked_modules = std::collections::HashSet::new();
+    for (path, file, _) in outputs {
+        // One directory module is one check, however many of its files moved.
+        if let Some(entry) = hew_compile::directory_module_entry(path) {
+            if !checked_modules.insert(entry) {
+                continue;
+            }
+        }
+        if let Err(failure) = hew_compile::check_file(&path.display().to_string(), &options) {
             compile::render_frontend_diagnostics(&failure.diagnostics);
             eprintln!("Error: migration refused {file}: the migrated source does not type-check");
             clean = false;
@@ -2922,6 +2960,7 @@ fn recheck_migrated_sources(outputs: &[(&Path, &str, &str)]) -> bool {
 
 fn unlisted_bare_variant_refusals(
     typecheck: &hew_types::check::TypeCheckOutput,
+    own_index: u32,
     tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
     selected: &std::collections::HashSet<(usize, usize)>,
     machine_spans: &[std::ops::Range<usize>],
@@ -2936,7 +2975,7 @@ fn unlisted_bare_variant_refusals(
     let mut refused = std::collections::HashSet::new();
 
     for (expression_span, ty) in &typecheck.expr_types {
-        if expression_span.module_idx != 0 {
+        if expression_span.module_idx != own_index {
             continue;
         }
         let Some(type_def) = typecheck.types().of_ty(ty) else {
@@ -2964,7 +3003,7 @@ fn unlisted_bare_variant_refusals(
     }
 
     for (pattern_span, resolution) in &typecheck.pattern_resolutions {
-        if pattern_span.module_idx != 0 {
+        if pattern_span.module_idx != own_index {
             continue;
         }
         let Some(variant_match) = &resolution.variant_match else {

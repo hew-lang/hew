@@ -2039,7 +2039,7 @@ fn cmd_fmt(a: &args::FmtArgs) {
     };
 
     if a.migrate {
-        match migrate_files(&files, a.check) {
+        match migrate_files(&files, &a.exclude, a.check) {
             Ok(false) => {}
             Ok(true) | Err(()) => std::process::exit(1),
         }
@@ -2241,18 +2241,51 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 ///
 /// The rewrite is syntactic, so each file migrates on its own: nothing is
 /// type-checked, and a deliberately invalid program migrates like any other.
-/// A file whose rewritten text would not parse back to the same program is
-/// refused, and any refusal leaves every file unwritten.
-fn migrate_files(files: &[PathBuf], check: bool) -> Result<bool, ()> {
+/// Files at or below an `exclude` path are left out. Every selected file is
+/// migrated in memory first; a refusal, or a file that changed on disk while
+/// it was being migrated, leaves every file unwritten. `check` previews the
+/// same report without writing. Each file is replaced atomically; an I/O
+/// failure stops the run and names what was and was not written. A second
+/// run changes nothing.
+fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<bool, ()> {
+    let excluded_roots = exclude
+        .iter()
+        .map(|path| {
+            std::fs::canonicalize(path).map_err(|error| {
+                eprintln!(
+                    "Error: cannot resolve exclusion {}: {error}",
+                    path.display()
+                );
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut excluded = 0usize;
+    let mut unchanged = 0usize;
     let mut changed = Vec::new();
     let mut refused = false;
     for file in files {
-        let source = std::fs::read_to_string(file).map_err(|error| {
+        let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+        if excluded_roots
+            .iter()
+            .any(|root| canonical.starts_with(root))
+        {
+            excluded += 1;
+            continue;
+        }
+        let original = std::fs::read(file).map_err(|error| {
             eprintln!("Error: cannot read {}: {error}", file.display());
         })?;
-        match hew_parser::fmt::migrate_syntax(&source) {
-            Ok(migrated) if migrated != source => changed.push((file, migrated)),
-            Ok(_) => {}
+        let Ok(source) = std::str::from_utf8(&original) else {
+            eprintln!(
+                "Error: migration refused {}: not UTF-8 text",
+                file.display()
+            );
+            refused = true;
+            continue;
+        };
+        match hew_parser::fmt::migrate_syntax(source) {
+            Ok(migrated) if migrated.as_bytes() == original => unchanged += 1,
+            Ok(migrated) => changed.push((file, original, migrated)),
             Err(error) => {
                 refused = true;
                 for site in error.refusals {
@@ -2267,20 +2300,81 @@ fn migrate_files(files: &[PathBuf], check: bool) -> Result<bool, ()> {
             }
         }
     }
+    let summary = |verb: &str| {
+        eprintln!(
+            "migration: {} {verb}, {unchanged} unchanged, {excluded} excluded",
+            changed.len()
+        );
+    };
     if refused {
+        summary("migratable");
+        eprintln!("no files were written");
         return Err(());
     }
-    for (file, migrated) in &changed {
-        if check {
-            eprintln!("{}: needs formatting", file.display());
-        } else {
-            std::fs::write(file, migrated).map_err(|error| {
-                eprintln!("Error: cannot write {}: {error}", file.display());
-            })?;
-            eprintln!("Formatted {}", file.display());
+    if check {
+        for (file, _, _) in &changed {
+            eprintln!("{}: needs migration", file.display());
         }
+        summary("to migrate");
+        return Ok(!changed.is_empty());
     }
-    Ok(check && !changed.is_empty())
+    let stale = changed
+        .iter()
+        .filter(|(file, original, _)| std::fs::read(file).ok().as_ref() != Some(original))
+        .map(|(file, _, _)| file.display().to_string())
+        .collect::<Vec<_>>();
+    if !stale.is_empty() {
+        for file in &stale {
+            eprintln!("Error: {file} changed while it was being migrated");
+        }
+        eprintln!("no files were written; run the migration again");
+        return Err(());
+    }
+    for (index, (file, _, migrated)) in changed.iter().enumerate() {
+        if let Err(error) = replace_file(file, migrated) {
+            eprintln!("Error: cannot write {}: {error}", file.display());
+            let written = changed[..index]
+                .iter()
+                .map(|(file, _, _)| file.display().to_string())
+                .collect::<Vec<_>>();
+            let remaining = changed[index..]
+                .iter()
+                .map(|(file, _, _)| file.display().to_string())
+                .collect::<Vec<_>>();
+            eprintln!("migrated before the failure: {}", list_or_none(&written));
+            eprintln!("not migrated: {}", list_or_none(&remaining));
+            eprintln!(
+                "fix the cause and run the migration again; migrated files are left as they are"
+            );
+            return Err(());
+        }
+        eprintln!("Migrated {}", file.display());
+    }
+    summary("migrated");
+    Ok(false)
+}
+
+fn list_or_none(files: &[String]) -> String {
+    if files.is_empty() {
+        "none".to_string()
+    } else {
+        files.join(", ")
+    }
+}
+
+/// Replace `path` with `contents` through a temporary file beside the file it
+/// names, so a failed write never leaves a truncated source. The file keeps
+/// its permissions, and a symbolic link keeps pointing at the migrated file.
+fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path)?;
+    let directory = target.parent().unwrap_or_else(|| Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(directory)?;
+    staged.write_all(contents.as_bytes())?;
+    staged
+        .as_file()
+        .set_permissions(std::fs::metadata(&target)?.permissions())?;
+    staged.persist(&target).map_err(|error| error.error)?;
+    Ok(())
 }
 
 fn format_for_display(input_name: &str, source: &str) -> Option<String> {

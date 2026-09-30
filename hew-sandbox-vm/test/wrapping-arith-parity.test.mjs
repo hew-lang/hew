@@ -19,7 +19,7 @@ const I64_MAX = "9223372036854775807";
 function wrappingPackage(binaryOp, lhs, rhs, ty, printKind) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.0-rc4",
+    hew_version: "0.6.0-rc5",
     compiler_version: "wrapping-arith-parity-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

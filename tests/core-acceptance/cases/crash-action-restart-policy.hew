@@ -64,9 +64,6 @@ fn main() {
         __hew_migrated_role_1208
     });
     println("root escalation stopped");
-    {
-        let __hew_migrated_actor_1282 = app;
-        stop(__hew_migrated_actor_1282);
-        stopped(__hew_migrated_actor_1282);
-    };
+    stop(app);
+    stopped(app);
 }

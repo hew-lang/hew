@@ -20,11 +20,8 @@ fn main() {
     let worker = spawn Worker;
     worker.ready().expect("ready");
     scope {
-        {
-            let __hew_migrated_actor_401 = worker;
-            stop(__hew_migrated_actor_401);
-            stopped(__hew_migrated_actor_401);
-        };
+        stop(worker);
+        stopped(worker);
         panic("close must fail");
     } handle failure {
         match failure {

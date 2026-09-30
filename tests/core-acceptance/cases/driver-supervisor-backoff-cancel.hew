@@ -25,10 +25,7 @@ fn main() {
     };
     let _ = app.worker.crash_me();
     testing.settle();
-    {
-        let __hew_migrated_actor_449 = app;
-        stop(__hew_migrated_actor_449);
-        stopped(__hew_migrated_actor_449);
-    };
+    stop(app);
+    stopped(app);
     println(datetime.now_ms() - started < 200);
 }

@@ -29,10 +29,7 @@ fn main() {
         .Ok(value) => println(value),
         .Err(_) => panic("ping failed"),
     }
-    {
-        let __hew_migrated_actor_655 = keeper;
-        stop(__hew_migrated_actor_655);
-        stopped(__hew_migrated_actor_655);
-    };
+    stop(keeper);
+    stopped(keeper);
     println("unreachable");
 }

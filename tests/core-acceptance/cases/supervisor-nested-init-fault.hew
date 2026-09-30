@@ -30,9 +30,6 @@ supervisor Root(seed: string) {
 fn main() {
     let root = spawn Root(seed: "completed child released".to_upper());
     println("unreachable");
-    {
-        let __hew_migrated_actor_744 = root;
-        stop(__hew_migrated_actor_744);
-        stopped(__hew_migrated_actor_744);
-    };
+    stop(root);
+    stopped(root);
 }

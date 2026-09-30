@@ -16,11 +16,8 @@ impl Hash for Key {
     fn hash(self) -> i64 {
         let oracle = spawn Oracle;
         let hash = oracle.hash().expect("hash reply");
-        {
-            let __hew_migrated_actor_330 = oracle;
-            stop(__hew_migrated_actor_330);
-            stopped(__hew_migrated_actor_330);
-        };
+        stop(oracle);
+        stopped(oracle);
         hash
     }
 }
@@ -29,11 +26,8 @@ impl Eq for Key {
     fn eq(self, other: Key) -> bool {
         let oracle = spawn Oracle;
         let equal = oracle.equal(self.id, other.id).expect("equality reply");
-        {
-            let __hew_migrated_actor_544 = oracle;
-            stop(__hew_migrated_actor_544);
-            stopped(__hew_migrated_actor_544);
-        };
+        stop(oracle);
+        stopped(oracle);
         equal
     }
 }
@@ -70,9 +64,6 @@ actor Decoder {
 fn main() {
     let decoder = spawn Decoder;
     println(decoder.exercise().expect("wire exercise"));
-    {
-        let __hew_migrated_actor_1801 = decoder;
-        stop(__hew_migrated_actor_1801);
-        stopped(__hew_migrated_actor_1801);
-    };
+    stop(decoder);
+    stopped(decoder);
 }

@@ -69,11 +69,8 @@ fn main() {
     assert(all.before.get().expect("all before after nested failure") == 0);
     assert(all_leaf.get().expect("all nested replacement") == 0);
     assert(all.after.get().expect("all after nested failure") == 0);
-    {
-        let __hew_migrated_actor_1729 = all;
-        stop(__hew_migrated_actor_1729);
-        stopped(__hew_migrated_actor_1729);
-    };
+    stop(all);
+    stopped(all);
     let rest = spawn Rest();
     let rest_leaf = rest.branch.leaf;
     mark(rest.before, rest_leaf, rest.after);
@@ -112,10 +109,7 @@ fn main() {
     assert(rest.before.get().expect("rest first actor") == 0);
     assert(rest_leaf.get().expect("rest later subtree") == 0);
     assert(rest.after.get().expect("rest later actor") == 0);
-    {
-        let __hew_migrated_actor_2842 = rest;
-        stop(__hew_migrated_actor_2842);
-        stopped(__hew_migrated_actor_2842);
-    };
+    stop(rest);
+    stopped(rest);
     println("mixed child kinds obey declaration-ordered restart strategies");
 }

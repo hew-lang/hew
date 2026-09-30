@@ -44,10 +44,7 @@ fn main() {
         __hew_migrated_role_911
     };
     println("restarted a");
-    {
-        let __hew_migrated_actor_964 = app;
-        stop(__hew_migrated_actor_964);
-        stopped(__hew_migrated_actor_964);
-    };
+    stop(app);
+    stopped(app);
     println("stopped");
 }

@@ -57,10 +57,7 @@ fn main() {
         sleep(1ms);
     }
     assert(finished);
-    {
-        let __hew_migrated_actor_1451 = receiver;
-        stop(__hew_migrated_actor_1451);
-        stopped(__hew_migrated_actor_1451);
-    };
+    stop(receiver);
+    stopped(receiver);
     println("tcp attached bytes and close");
 }

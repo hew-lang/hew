@@ -206,9 +206,6 @@ fn main() {
     client.close();
     second.close();
     listener.close();
-    {
-        let __hew_migrated_actor_6363 = echo;
-        stop(__hew_migrated_actor_6363);
-        stopped(__hew_migrated_actor_6363);
-    };
+    stop(echo);
+    stopped(echo);
 }

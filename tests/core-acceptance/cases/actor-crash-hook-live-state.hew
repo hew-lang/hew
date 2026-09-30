@@ -54,10 +54,7 @@ fn main() {
         __hew_migrated_role_1039
     };
     println(group.vault.swap(false).expect("fresh"));
-    {
-        let __hew_migrated_actor_1124 = group;
-        stop(__hew_migrated_actor_1124);
-        stopped(__hew_migrated_actor_1124);
-    };
+    stop(group);
+    stopped(group);
     println("done");
 }

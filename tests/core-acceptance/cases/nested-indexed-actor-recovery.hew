@@ -33,10 +33,7 @@ fn main() {
         __hew_migrated_role_702
     };
     assert(group.worker.get().expect("fresh") == "INITIAL");
-    {
-        let __hew_migrated_actor_795 = group;
-        stop(__hew_migrated_actor_795);
-        stopped(__hew_migrated_actor_795);
-    };
+    stop(group);
+    stopped(group);
     println("recovered");
 }

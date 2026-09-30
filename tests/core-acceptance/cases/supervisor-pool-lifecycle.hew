@@ -72,10 +72,7 @@ fn main() {
             .Err(_) => println("read failed"),
         }
     }
-    {
-        let __hew_migrated_actor_1828 = farm;
-        stop(__hew_migrated_actor_1828);
-        stopped(__hew_migrated_actor_1828);
-    };
+    stop(farm);
+    stopped(farm);
     println("stopped");
 }

@@ -17,10 +17,7 @@ fn main() -> i64 {
     let sup = spawn AppSupervisor;
     let w = sup.w1;
     let _ = w.ping(1);
-    {
-        let __hew_migrated_actor_506 = sup;
-        stop(__hew_migrated_actor_506);
-        stopped(__hew_migrated_actor_506);
-    };
+    stop(sup);
+    stopped(sup);
     0
 }

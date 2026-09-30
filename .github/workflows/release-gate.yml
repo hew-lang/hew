@@ -50,8 +50,31 @@ env:
   # exception is the FreeBSD guest, which takes what pkg serves and says so.
   WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
+  # Native acceptance runs as this many `--partition k/N` shards on macOS and
+  # Windows, each its own job beside one `tests` leg. The shard list below is
+  # generated from this number so a shard cannot be dropped while the total
+  # still names it. Unsharded, Windows needed ~47 minutes of acceptance after
+  # 43 of build and tests, past its 60-minute cap; macOS x86_64 needed 81.
+  ACCEPTANCE_SHARDS: 4
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Shard plan — one source for the shard ids every sharded leg fans out over.
+  # ─────────────────────────────────────────────────────────────────────────
+  plan:
+    name: Plan acceptance shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - id: plan
+        run: |
+          set -euo pipefail
+          test "${ACCEPTANCE_SHARDS}" -ge 1
+          shards="$(python3 -c 'import json, os; print(json.dumps(["tests"] + [str(k) for k in range(int(os.environ["ACCEPTANCE_SHARDS"]))]))')"
+          echo "shards=${shards}" | tee -a "$GITHUB_OUTPUT"
+
   # ─────────────────────────────────────────────────────────────────────────
   # Sanitizers — executed ASan hard gate. TSan and Miri remain nightly lanes.
   # ─────────────────────────────────────────────────────────────────────────
@@ -384,25 +407,30 @@ jobs:
           require_tests: true
 
   # ─────────────────────────────────────────────────────────────────────────
-  # macOS arm64 — full Rust build + workspace tests
+  # macOS — full Rust build + workspace tests (`tests` leg) and native
+  # acceptance (one leg per shard), on both architectures
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
-    name: Release Gate — macOS ${{ matrix.arch }}
+    name: Release Gate — macOS ${{ matrix.cfg.arch }} (${{ matrix.shard }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macos-15 for the same reason as ci.yml's macOS job: macos-14's
-          # lldb predates `DW_TAG_variant_part` support.
+        # macos-15 for the same reason as ci.yml's macOS job: macos-14's
+        # lldb predates `DW_TAG_variant_part` support.
+        cfg:
           - os: macos-15
             arch: aarch64
           - os: macos-15-intel
             arch: x86_64
-    runs-on: ${{ matrix.os }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    runs-on: ${{ matrix.cfg.os }}
     # Three x86_64 runs reached 60m, 60m, and 90m with workspace tests still
     # unfinished. Keep a finite 180-minute ceiling to obtain a completed
-    # duration from this slower runner before choosing a tighter budget.
-    timeout-minutes: 180
+    # duration from this slower runner before choosing a tighter budget. An
+    # acceptance shard is a quarter of the measured 81-minute x86_64 run plus
+    # the debug build, so 90 minutes is slack, not a target.
+    timeout-minutes: ${{ matrix.shard == 'tests' && 180 || 90 }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -415,7 +443,7 @@ jobs:
         with:
           targets: "aarch64-apple-darwin, x86_64-apple-darwin"
           tools: nextest@0.9.120
-          cache-shared-key: build-test-macos
+          cache-shared-key: build-${{ matrix.shard == 'tests' && 'test' || 'acceptance' }}-macos
 
       - name: Install LLVM
         run: |
@@ -435,6 +463,7 @@ jobs:
           echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
 
       - name: Build and verify release binaries
+        if: matrix.shard == 'tests'
         run: |
           make test-release-lib-link
           target/release/hew --version
@@ -442,6 +471,7 @@ jobs:
           target/release/hew-observe --version
 
       - name: Smoke test — compile and run a .hew program
+        if: matrix.shard == 'tests'
         run: |
           echo 'fn main() { println("smoke-ok") }' > _smoke.hew
           target/release/hew build _smoke.hew -o _smoke_bin
@@ -453,7 +483,7 @@ jobs:
       - name: Install WASI prerequisites
         env:
           GH_TOKEN: ${{ github.token }}
-          WASMTIME_ARCH: ${{ matrix.arch }}
+          WASMTIME_ARCH: ${{ matrix.cfg.arch }}
         run: |
           set -euo pipefail
           rustup target add wasm32-wasip1
@@ -478,34 +508,45 @@ jobs:
         # need entitlements/wall-time hosted runners cannot give (300s
         # timeouts, no failure signal). They are local release evidence and
         # their memory coverage is the Linux ASan job; exclude them here.
+        if: matrix.shard == 'tests'
         env:
           NEXTEST_WORKSPACE_FILTER: "not binary(~oracle)"
         run: make test-strict
 
       - name: Run C-ABI crate tests
+        if: matrix.shard == 'tests'
         run: make test-cabi
 
-      - name: Run native acceptance
-        run: make core-acceptance
+      - name: Run native acceptance (shard ${{ matrix.shard }} of ${{ env.ACCEPTANCE_SHARDS }})
+        if: matrix.shard != 'tests'
+        run: make core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/${{ env.ACCEPTANCE_SHARDS }}"
 
       - name: Upload test reports
-        if: always()
+        if: always() && matrix.shard == 'tests'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
-          check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
+          check_name: Release Gate Test Results (macOS ${{ matrix.cfg.arch }})
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Windows x86_64 — Rust workspace tests
+  # Windows x86_64 — Rust workspace tests (`tests` leg) and native acceptance
+  # (one leg per shard)
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
-    name: Release Gate — Windows x86_64
+    name: Release Gate — Windows x86_64 (${{ matrix.shard }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: windows-2022
-    # This job-level value is the Windows leg's sole timeout. Its measured
-    # 39m35s pass leaves 20m25s of headroom under the finite 60-minute cap.
+    # This job-level value is each Windows leg's sole timeout, under the
+    # finite 60-minute cap. The `tests` leg (release build, workspace and
+    # C-ABI tests) measured 14 + 26 minutes; acceptance, sharded out of it,
+    # needed ~47 minutes at four jobs before it was killed 17 minutes in.
     timeout-minutes: 60
     env:
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
@@ -529,7 +570,7 @@ jobs:
         with:
           targets: wasm32-wasip1
           tools: nextest@0.9.120
-          cache-shared-key: build-test-windows
+          cache-shared-key: build-${{ matrix.shard == 'tests' && 'test' || 'acceptance' }}-windows
 
       - name: Install GNU Make
         shell: pwsh
@@ -541,11 +582,13 @@ jobs:
           version: 22.1.5
 
       - name: Build release crates
+        if: matrix.shard == 'tests'
         run: |
           cargo build -p hew-lsp -p hew-observe -p hew-cli --release
           cargo build -p hew-lib --profile release-lib
 
       - name: Prove release library consumer linking
+        if: matrix.shard == 'tests'
         shell: pwsh
         run: |
           ./scripts/test-release-lib-link.ps1 `
@@ -553,6 +596,7 @@ jobs:
             -Archive target/release-lib/hew.lib
 
       - name: Verify binaries
+        if: matrix.shard == 'tests'
         shell: bash
         run: |
           target/release/hew-lsp.exe --version && echo "hew-lsp runs"
@@ -581,20 +625,23 @@ jobs:
           & (Join-Path $bin "wasmtime.exe") --version
 
       - name: Run Rust workspace tests
+        if: matrix.shard == 'tests'
         shell: bash
         run: make SHELL=bash test-strict
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
+        if: matrix.shard == 'tests'
         shell: bash
         run: make SHELL=bash test-cabi
 
-      - name: Run native acceptance
+      - name: Run native acceptance (shard ${{ matrix.shard }} of ${{ env.ACCEPTANCE_SHARDS }})
+        if: matrix.shard != 'tests'
         shell: bash
-        run: make SHELL=bash core-acceptance
+        run: make SHELL=bash core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/${{ env.ACCEPTANCE_SHARDS }}"
 
       - name: Upload test reports
-        if: always()
+        if: always() && matrix.shard == 'tests'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"

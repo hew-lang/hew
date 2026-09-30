@@ -333,16 +333,16 @@ impl<'t> Source<'t> {
     /// A set; returns its length.
     ///
     /// # Errors
-    /// `Type` when the value is not a sequence, `Invalid` when an element
+    /// `Type` when the value is not a sequence, `Duplicate` when an element
     /// repeats.
     pub fn set_begin(&mut self) -> Result<usize, DecodeError> {
         let items = self.open_seq()?;
         let pairs: Vec<(Value, Value)> =
             items.into_iter().map(|item| (item, Value::Null)).collect();
         if let Some(element) = duplicate_key(&pairs) {
-            return Err(DecodeError::Invalid {
+            return Err(DecodeError::Duplicate {
                 path: self.path(),
-                reason: format!("duplicate set element {}", element.render_key()),
+                key: element.render_key(),
             });
         }
         Ok(self.push_seq(pairs.into_iter().map(|(item, _)| item).collect()))
@@ -379,7 +379,7 @@ impl<'t> Source<'t> {
     /// `string` keys is the `[key, value]` pair sequence the sink writes.
     ///
     /// # Errors
-    /// `Type` when the value is not the map form its keys select, `Invalid`
+    /// `Type` when the value is not the map form its keys select, `Duplicate`
     /// for a repeated key in the pair form.
     pub fn map_begin(&mut self, string_keys: bool) -> Result<usize, DecodeError> {
         let pairs = self.format.is_text() && !string_keys;
@@ -402,9 +402,9 @@ impl<'t> Source<'t> {
                     }
                 }
                 if let Some(key) = duplicate_key(&entries) {
-                    return Err(DecodeError::Invalid {
+                    return Err(DecodeError::Duplicate {
                         path: self.path(),
-                        reason: format!("duplicate key {}", key.render_key()),
+                        key: key.render_key(),
                     });
                 }
                 entries

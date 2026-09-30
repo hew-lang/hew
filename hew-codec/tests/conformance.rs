@@ -652,13 +652,13 @@ fn every_format_refuses_duplicate_keys() {
         from_json(pairs, r#"[[1,"a"],[1,"b"]]"#)
             .unwrap_err()
             .to_string(),
-        "Invalid: duplicate key 1"
+        "Duplicate: 1 repeats"
     );
     assert_eq!(
         from_json(Shape::Set(&Shape::I64), "[3,1,3]")
             .unwrap_err()
             .to_string(),
-        "Invalid: duplicate set element 3"
+        "Duplicate: 3 repeats"
     );
 }
 
@@ -875,6 +875,13 @@ fn decode_error_display_covers_every_variant() {
                 name: "Hex".into(),
             },
             "UnknownVariant: .shape: no variant named Hex",
+        ),
+        (
+            DecodeError::Duplicate {
+                path: ".ids".into(),
+                key: "3".into(),
+            },
+            "Duplicate: .ids: 3 repeats",
         ),
         (
             DecodeError::Invalid {

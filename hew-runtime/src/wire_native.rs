@@ -578,11 +578,11 @@ mod tests {
             ),
             (
                 text.replace(r#"[2,"two"]"#, r#"[1,"two"]"#),
-                "Invalid: .codes: duplicate key 1",
+                "Duplicate: .codes: 1 repeats",
             ),
             (
                 text.replace("[1,2,3]", "[1,1]"),
-                "Invalid: .ids: duplicate set element 1",
+                "Duplicate: .ids: 1 repeats",
             ),
             (
                 text.replace(r#"[[1,"one"],[2,"two"]]"#, r#"{"1":"one"}"#),

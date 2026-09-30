@@ -55,9 +55,6 @@ fn main() {
     select {
         value from receiver_source(rx2).recv() => println(value.expect("prepared value")),
     };
-    {
-        let __hew_migrated_actor_1957 = worker;
-        stop(__hew_migrated_actor_1957);
-        stopped(__hew_migrated_actor_1957);
-    };
+    stop(worker);
+    stopped(worker);
 }

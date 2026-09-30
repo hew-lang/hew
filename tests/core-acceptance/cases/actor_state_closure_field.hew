@@ -37,15 +37,9 @@ fn main() {
     println(worker.apply(1).expect("default closure"));
     worker.configure(audit).expect("configure closure");
     println(worker.apply(2).expect("capturing closure"));
-    {
-        let __hew_migrated_actor_895 = worker;
-        stop(__hew_migrated_actor_895);
-        stopped(__hew_migrated_actor_895);
-    };
+    stop(worker);
+    stopped(worker);
     println("barrier");
-    {
-        let __hew_migrated_actor_938 = audit;
-        stop(__hew_migrated_actor_938);
-        stopped(__hew_migrated_actor_938);
-    };
+    stop(audit);
+    stopped(audit);
 }

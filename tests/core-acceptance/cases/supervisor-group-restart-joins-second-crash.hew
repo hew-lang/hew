@@ -92,15 +92,9 @@ fn main() {
         __hew_migrated_role_2259
     };
     println("restarted");
-    {
-        let __hew_migrated_actor_2310 = app;
-        stop(__hew_migrated_actor_2310);
-        stopped(__hew_migrated_actor_2310);
-    };
+    stop(app);
+    stopped(app);
     println("stopped");
-    {
-        let __hew_migrated_actor_2360 = gate;
-        stop(__hew_migrated_actor_2360);
-        stopped(__hew_migrated_actor_2360);
-    };
+    stop(gate);
+    stopped(gate);
 }

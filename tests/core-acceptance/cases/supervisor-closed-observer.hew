@@ -42,19 +42,15 @@ fn main() {
     assert(group.worker.get().expect("live child") == "OWNED");
     println("tree remains live");
     let closing = fork {
-        let __hew_migrated_actor_1086 = group;
-        stop(__hew_migrated_actor_1086);
-        stopped(__hew_migrated_actor_1086);
+        stop(group);
+        stopped(group);
     };
     stopped(group);
     await closing;
     await observer;
     assert(progress.get().expect("completed observer") == 2);
     stopped(group);
-    {
-        let __hew_migrated_actor_1243 = progress;
-        stop(__hew_migrated_actor_1243);
-        stopped(__hew_migrated_actor_1243);
-    };
+    stop(progress);
+    stopped(progress);
     println("tree observed closed");
 }

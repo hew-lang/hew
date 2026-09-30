@@ -140,6 +140,9 @@ impl DocumentSet {
     }
 
     fn get(&self, path: &Path) -> Option<&str> {
+        if self.sources.is_empty() {
+            return None;
+        }
         if let Some(source) = self.sources.get(path) {
             return Some(source);
         }
@@ -1339,77 +1342,6 @@ fn load_project_context(
     })
 }
 
-/// Return the same-name entry file when `input` is a directory-module peer
-/// whose impl names a trait declared by that entry. Checking the peer directly
-/// must retain the lexical trait namespace that materializes default methods,
-/// without assembling unrelated peers into every standalone file check.
-fn directory_module_entry_for_peer(
-    program: &Program,
-    input: &Path,
-    documents: &DocumentSet,
-    mode: FrontendParseMode,
-) -> Option<String> {
-    let input_name = input.file_name()?.to_str()?;
-    let parent = input.parent()?;
-    let module_name = parent.file_name()?.to_str()?;
-    let entry_name = format!("{module_name}.hew");
-    let entry_path = parent.join(&entry_name);
-    if input_name == entry_name || !entry_path.is_file() {
-        return None;
-    }
-    let local_traits = program
-        .items
-        .iter()
-        .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.name.as_str()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    let entry_source = read_source(documents, &entry_path).ok()?;
-    let entry_parse = parse_for_frontend(&entry_source, mode);
-    if entry_parse
-        .errors
-        .iter()
-        .any(|error| error.severity == hew_parser::Severity::Error)
-    {
-        return None;
-    }
-    let entry_traits = entry_parse
-        .program
-        .items
-        .iter()
-        .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.name.as_str()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    let needs_entry_trait = program.items.iter().any(|(item, _)| {
-        let Item::Impl(decl) = item else {
-            return false;
-        };
-        decl.trait_bound.as_ref().is_some_and(|bound| {
-            entry_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
-                && !local_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
-        })
-    });
-    if !needs_entry_trait {
-        return None;
-    }
-    Some(entry_name)
-}
-
-fn import_directory_module_entry_for_peer(
-    program: &mut Program,
-    input: &Path,
-    documents: &DocumentSet,
-    mode: FrontendParseMode,
-) {
-    let Some(entry_name) = directory_module_entry_for_peer(program, input, documents, mode) else {
-        return;
-    };
-    program.items.insert(0, file_import(entry_name));
-}
-
 fn file_import(file_path: String) -> Spanned<Item> {
     (
         Item::Import(ImportDecl {
@@ -2038,6 +1970,104 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     hew_parser::module::ModulePath::new(segments)
 }
 
+/// The entry file of the directory module (spec 3.5.1) that `path` belongs
+/// to, when `path` is that module's entry or one of its peers.
+///
+/// A peer shares one namespace with its entry and siblings, and an entry is
+/// incomplete without its peers, so neither is a program of its own. Checking
+/// or migrating such a file checks the whole module as an importer sees it.
+/// Test files (`*_test.hew`) are never peers; see [`test_companion`]. A
+/// shipped std source already has its module identity from the std root, so
+/// it checks through that identity instead.
+#[must_use]
+pub fn directory_module_entry(path: &Path) -> Option<PathBuf> {
+    let path = path.canonicalize().ok()?;
+    if path.extension()? != "hew"
+        || is_hew_test_file(&path)
+        || hew_types::module_registry::canonical_stdlib_module_for_source(&path).is_some()
+    {
+        return None;
+    }
+    directory_module_entry_in(path.parent()?)
+}
+
+/// The production source a test file (`*_test.hew`) is compiled with.
+///
+/// A test file inside a directory module tests that whole module, so its
+/// companion is the module's entry, which assembles every peer. Elsewhere it is
+/// the same-stem file beside it (`math_test.hew` tests `math.hew`).
+#[must_use]
+pub fn test_companion(test_file: &Path) -> Option<PathBuf> {
+    let test_file = test_file.canonicalize().ok()?;
+    if !is_hew_test_file(&test_file) {
+        return None;
+    }
+    let dir = test_file.parent()?;
+    directory_module_entry_in(dir).or_else(|| {
+        let stem = test_file.file_stem()?.to_str()?.strip_suffix("_test")?;
+        dir.join(stem)
+            .with_extension("hew")
+            .canonicalize()
+            .ok()
+            .filter(|path| path.is_file())
+    })
+}
+
+/// The canonical entry file `dir/<dir>.hew` of the directory module `dir`,
+/// when it exists.
+fn directory_module_entry_in(dir: &Path) -> Option<PathBuf> {
+    let entry = dir.join(dir.file_name()?).with_extension("hew");
+    entry.canonicalize().ok().filter(|path| path.is_file())
+}
+
+/// The label of the root that checks a directory module through an import.
+/// It names no source, so it can never be the module's entry or a peer.
+const DIRECTORY_MODULE_ROOT_LABEL: &str = "(directory module)";
+
+/// Check the directory module whose entry is `entry` from a root that holds
+/// nothing but a file import of that entry.
+///
+/// The import resolver assembles the entry and every peer into one module and
+/// attributes each item to its own file, so diagnostics, deep checks and
+/// migration facts are the ones any importer of the module gets. The root is
+/// anchored in the module's directory, so project discovery and relative
+/// imports behave as they do for the requested file. Root-only lints (unused
+/// private items) do not run on an imported module.
+fn run_directory_module_frontend(
+    entry: &Path,
+    options: &FrontendOptions,
+    mode: FrontendParseMode,
+) -> DocumentFrontendState {
+    let label = entry
+        .with_file_name(DIRECTORY_MODULE_ROOT_LABEL)
+        .display()
+        .to_string();
+    let empty = parse_for_frontend("", mode);
+    let mut state = DocumentFrontendState {
+        source: String::new(),
+        program: empty.program.clone(),
+        parse_result: Some(empty),
+        diagnostics: Vec::new(),
+        typecheck_result: None,
+        stopped: None,
+    };
+    let project = match load_project_context(&label, Some(options), Some("")) {
+        Ok(project) => project,
+        Err(failure) => return state.stop(failure),
+    };
+    let Some(entry_name) = entry.file_name().and_then(|name| name.to_str()) else {
+        return state.stop(FrontendFailure::message_only(format!(
+            "Error: directory module entry {} has no file name",
+            entry.display()
+        )));
+    };
+    state
+        .program
+        .items
+        .push(file_import(entry_name.to_string()));
+    run_frontend_after_parse(state, &project, &label, options, mode, None)
+}
+
 /// Resolve a module import of a directory peer through that directory's
 /// canonical entry file before parsing its source set. A peer such as
 /// `http_client.hew` is still a valid import spelling, but loading it as an
@@ -2612,21 +2642,17 @@ fn flatten_file_import_items(program: &mut Program) {
 }
 
 /// The graph node already assembled from `source`, if the walk reached that
-/// file under an earlier spelling. Paths are compared canonically because the
-/// two spellings arrive through different candidate roots.
+/// file under an earlier spelling. The two spellings arrive through different
+/// candidate roots, but import resolution records every resolved source path
+/// canonically, so the paths compare directly.
 fn graph_module_for_source(
     graph: &hew_parser::module::ModuleGraph,
     source: &Path,
 ) -> Option<hew_parser::module::ModulePath> {
-    let key = std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
     graph
         .modules
         .iter()
-        .find(|(_, module)| {
-            module.source_paths.first().is_some_and(|existing| {
-                std::fs::canonicalize(existing).unwrap_or_else(|_| existing.clone()) == key
-            })
-        })
+        .find(|(_, module)| module.source_paths.first().map(PathBuf::as_path) == Some(source))
         .map(|(module_id, _)| module_id.clone())
 }
 
@@ -3477,12 +3503,20 @@ pub fn run_source_frontend(
 /// Run migration parsing and import resolution against an in-memory source.
 /// The returned state retains its module graph even when old spelling causes
 /// a later type error, so the migrator can prove an edit from declarations.
+///
+/// A directory-module entry or peer is checked as its whole module (see
+/// [`directory_module_entry`]), with `source` standing in for `label`.
 #[must_use]
 pub fn run_source_frontend_for_migration(
     source: &str,
     label: &str,
     options: &FrontendOptions,
 ) -> DocumentFrontendState {
+    if let Some(entry) = directory_module_entry(Path::new(label)) {
+        let mut options = options.clone();
+        options.documents.insert(label, source);
+        return run_directory_module_frontend(&entry, &options, FrontendParseMode::Migration);
+    }
     run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Migration)
 }
 
@@ -3531,12 +3565,6 @@ fn run_document_frontend_with_mode(
         return state.stop(FrontendFailure::message_only("parsing failed"));
     }
 
-    import_directory_module_entry_for_peer(
-        &mut state.program,
-        Path::new(input),
-        &options.documents,
-        mode,
-    );
     let entry_selection = (mode == FrontendParseMode::Strict)
         .then_some(options.entry_selection)
         .flatten();
@@ -3544,10 +3572,12 @@ fn run_document_frontend_with_mode(
         .then_some(options.companion.as_deref())
         .flatten();
     if let Some(companion) = companion {
+        // First, as an import written at the top of the file: the test file's
+        // own declarations (a trait impl) resolve against it.
         state
             .program
             .items
-            .push(file_import(companion.display().to_string()));
+            .insert(0, file_import(companion.display().to_string()));
     }
 
     run_frontend_after_parse(state, &project, input, options, mode, entry_selection)
@@ -3700,6 +3730,9 @@ pub fn run_program_frontend(
 
 /// Parse, resolve imports, and type-check a Hew source file.
 ///
+/// A directory-module entry or peer checks its whole module (see
+/// [`directory_module_entry`]).
+///
 /// # Errors
 ///
 /// Returns [`FrontendFailure`] when parsing, import resolution, or type
@@ -3720,7 +3753,11 @@ pub fn check_file_with_state(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<(CheckOutput, FileFrontendState), FrontendFailure> {
-    let state = run_file_frontend_to_typecheck(input, options)?;
+    let state = match directory_module_entry(Path::new(input)) {
+        Some(entry) => run_directory_module_frontend(&entry, options, FrontendParseMode::Strict)
+            .into_result()?,
+        None => run_file_frontend_to_typecheck(input, options)?,
+    };
     let diagnostics = fail_on_warning_diagnostics(state.diagnostics.clone(), options)?;
     let stack_hints = state
         .typecheck_result
@@ -3931,11 +3968,12 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 mod tests {
     use super::{
         build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
-        display_path, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
-        load_package_name, parse_source, retain_user_facing_diagnostics, run_document_frontend,
-        run_file_frontend_to_typecheck, run_file_frontend_to_typecheck_for_migration,
-        run_source_frontend, DiagnosticPolicy, DocumentSet, FrontendDiagnostic,
-        FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
+        directory_module_entry, display_path, hir_diagnostics_to_frontend, load_dependencies,
+        load_lockfile, load_package_name, parse_source, retain_user_facing_diagnostics,
+        run_document_frontend, run_file_frontend_to_typecheck,
+        run_file_frontend_to_typecheck_for_migration, run_source_frontend, test_companion,
+        DiagnosticPolicy, DocumentSet, FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions,
+        ImportResolutionContext, Session, SessionTarget,
     };
     use hew_parser::ast::Item;
     use std::collections::{HashMap, HashSet};
@@ -4140,10 +4178,11 @@ mod tests {
             &FrontendOptions {
                 project_dir: Some(dir.path().to_path_buf()),
                 entry_selection: Some(selection),
+                companion: test_companion(Path::new(&input)),
                 ..FrontendOptions::default()
             },
         )
-        .expect("selected occurrence must survive implicit entry import");
+        .expect("selected occurrence must survive the module companion import");
 
         let tco = state.typecheck_result.tco.expect("typecheck output");
         assert_eq!(
@@ -4507,6 +4546,96 @@ mod tests {
             "a directly checked peer must share its directory module entry: {:#?}",
             result.err()
         );
+    }
+
+    /// A package with a `forge` directory module whose entry uses a peer's
+    /// function and whose peer uses the entry's types, plus a package-local
+    /// `util` module the peer imports.
+    fn forge_package(peer_extra: &str) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().expect("create package fixture");
+        fs::write(
+            dir.path().join("hew.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+        )
+        .expect("write manifest");
+        let src = dir.path().join("src");
+        let forge = src.join("forge");
+        fs::create_dir_all(&forge).expect("create module directory");
+        write_source(
+            &src,
+            "util.hew",
+            "pub fn twice(x: i64) -> i64 {\n    x * 2\n}\n",
+        );
+        let entry = write_source(
+            &forge,
+            "forge.hew",
+            "pub type ForgeConfig {\n    timeout: i64;\n}\n\npub fn describe(config: ForgeConfig) -> string {\n    ado_name(config)\n}\n",
+        );
+        let peer = write_source(
+            &forge,
+            "ado.hew",
+            &format!(
+                "import app.util;\n\npub fn ado_name(config: ForgeConfig) -> string {{\n    f\"ado:{{util.twice(config.timeout)}}\"\n}}\n{peer_extra}"
+            ),
+        );
+        write_source(&forge, "ado_test.hew", "not a peer, never parsed(\n");
+        (dir, entry, peer)
+    }
+
+    #[test]
+    fn directory_module_entry_selects_entries_and_peers_only() {
+        let (dir, entry, peer) = forge_package("");
+        let canonical_entry = Path::new(&entry).canonicalize().expect("entry exists");
+        assert_eq!(
+            directory_module_entry(Path::new(&entry)),
+            Some(canonical_entry.clone())
+        );
+        assert_eq!(
+            directory_module_entry(Path::new(&peer)),
+            Some(canonical_entry)
+        );
+        let forge = dir.path().join("src").join("forge");
+        assert_eq!(directory_module_entry(&forge.join("ado_test.hew")), None);
+        assert_eq!(
+            directory_module_entry(&dir.path().join("src").join("util.hew")),
+            None
+        );
+    }
+
+    #[test]
+    fn checking_a_directory_module_file_checks_the_whole_module() {
+        let (_dir, entry, peer) = forge_package("");
+        for input in [&entry, &peer] {
+            let result = check_file(input, &FrontendOptions::default());
+            assert!(
+                result.is_ok(),
+                "{input} must check with its entry, peers and package imports: {:#?}",
+                result.err().map(|failure| failure.diagnostics)
+            );
+        }
+    }
+
+    #[test]
+    fn checking_a_directory_module_entry_reports_errors_in_its_peers() {
+        let (_dir, entry, peer) = forge_package("\nfn broken() -> i64 {\n    \"no\"\n}\n");
+        for input in [&entry, &peer] {
+            let failure = check_file(input, &FrontendOptions::default())
+                .expect_err("the peer's type error must fail the module check");
+            let mismatches = failure
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error)
+                        if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. }))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(mismatches.len(), 1, "{:#?}", failure.diagnostics);
+            let file = mismatches[0].filename.as_deref().expect("routed to a file");
+            assert!(
+                Path::new(file).ends_with("forge/ado.hew"),
+                "the error belongs to the peer, not {file}"
+            );
+        }
     }
 
     #[test]

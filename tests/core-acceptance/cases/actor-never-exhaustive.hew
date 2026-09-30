@@ -49,10 +49,7 @@ fn main() {
             ActorError.Partition => println("partition"),
         }
     }
-    {
-        let __hew_migrated_actor_1974 = counter;
-        stop(__hew_migrated_actor_1974);
-        stopped(__hew_migrated_actor_1974);
-    };
+    stop(counter);
+    stopped(counter);
     println("closed");
 }

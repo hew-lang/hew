@@ -6815,7 +6815,7 @@ fn label(colour: Colour) -> string {
     //  v05_async_await                    | known-rejected                 | `async fn` / `await` are not valid Hew syntax; parser rejects them; permanently out of v0.5 scope (see ignored test below)
     //  v05_attributes                     | accepted                       | actor attributes (#[max_heap]); LSP test passes
     //  v05_closures                       | accepted                       | closure syntax |x| { … }; LSP test passes
-    //  v05_cross_module_machine_defs      | accepted                       | machine defs module; used as dep in cross-module native test
+    //  machines/toggle (cross-module defs) | accepted                      | machine defs module at its import path; used as dep in cross-module native test
     //  v05_cross_module_machine_main      | cross-module-single-source-limited | single-source WASM API cannot resolve cross-file imports; native test uses multi-doc workspace
     //  v05_display_fstring                | accepted                       | Display impl + f-string formatting; LSP test passes
     //  v05_extern_unsafe                  | accepted                       | `extern "C"` block; LSP + resolver tests pass
@@ -7584,7 +7584,7 @@ fn label(colour: Colour) -> string {
     #[test]
     fn v05_cross_module_machine_ctor_lsp_coverage() {
         let main_source = include_str!("../../tests/fixtures/v05_cross_module_machine_main.hew");
-        let defs_source = include_str!("../../tests/fixtures/v05_cross_module_machine_defs.hew");
+        let defs_source = include_str!("../../tests/fixtures/machines/toggle.hew");
         let main_uri = make_test_uri("/v05/cross_module/main.hew");
         let defs_uri = make_test_uri("/v05/cross_module/machines/toggle.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();

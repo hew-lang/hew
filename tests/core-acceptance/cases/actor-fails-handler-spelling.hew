@@ -68,10 +68,7 @@ fn main() {
         .Ok(_) => println("noted"),
         .Err(problem) => println(f"{problem}"),
     }
-    {
-        let __hew_migrated_actor_2353 = ledger;
-        stop(__hew_migrated_actor_2353);
-        stopped(__hew_migrated_actor_2353);
-    };
+    stop(ledger);
+    stopped(ledger);
     println("closed");
 }

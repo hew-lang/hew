@@ -26,10 +26,7 @@ fn main() {
         assert(packet.label == "PACKET");
         break;
     }
-    {
-        let __hew_migrated_actor_737 = producer;
-        stop(__hew_migrated_actor_737);
-        stopped(__hew_migrated_actor_737);
-    };
+    stop(producer);
+    stopped(producer);
     println("owned stream elements and early close");
 }

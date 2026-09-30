@@ -67,11 +67,8 @@ fn main() {
         }
         after 0ns => panic("the ready rejection must beat the timer"),
     };
-    {
-        let __hew_migrated_actor_2255 = spare;
-        stop(__hew_migrated_actor_2255);
-        stopped(__hew_migrated_actor_2255);
-    };
+    stop(spare);
+    stopped(spare);
     select {
         value from worker.record("unadmitted owned request") => println(value.expect("unexpected admission")),
         after 0ns => println("admission did not block"),
@@ -117,9 +114,6 @@ fn main() {
     release3.send(1).expect("send");
     release3.close();
     println(f"handled {worker.count().expect("count")}");
-    {
-        let __hew_migrated_actor_4268 = worker;
-        stop(__hew_migrated_actor_4268);
-        stopped(__hew_migrated_actor_4268);
-    };
+    stop(worker);
+    stopped(worker);
 }

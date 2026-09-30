@@ -49,16 +49,10 @@ fn main() {
     });
     let watcher = spawn Watcher;
     assert(watcher.observe(target).expect("live observations") == 1);
-    {
-        let __hew_migrated_actor_1384 = target;
-        stop(__hew_migrated_actor_1384);
-        stopped(__hew_migrated_actor_1384);
-    };
+    stop(target);
+    stopped(target);
     assert(watcher.observe_dead(target).expect("retired observations") == 2);
-    {
-        let __hew_migrated_actor_1481 = watcher;
-        stop(__hew_migrated_actor_1481);
-        stopped(__hew_migrated_actor_1481);
-    };
+    stop(watcher);
+    stopped(watcher);
     println("local observations own subscriptions and report context");
 }

@@ -10,9 +10,7 @@
 # amendment) — delete the row by hand once it recovers.
 
 corpus	*	docs/repros/final-core/own-generic-identity-transfer.hew	compile	#3598	tracked corpus refusal; see linked issue
-corpus	*	hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew	compile	#3594	tracked corpus refusal; see linked issue
 corpus	*	hew-lsp/tests/fixtures/v05_index_trait.hew	compile	#3595	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/bytes_clone.hew	compile	#3602	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/cond_init.hew	diagnostic:E_SIR_UNSUPPORTED	#3605	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/state_reinit.hew	diagnostic:E_SIR_UNSUPPORTED	#3611	tracked corpus refusal; see linked issue
-corpus	*	tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew	compile	#3612	tracked corpus refusal; see linked issue

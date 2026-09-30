@@ -44,10 +44,7 @@ fn main() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }
-    {
-        let __hew_migrated_actor_935 = app;
-        stop(__hew_migrated_actor_935);
-        stopped(__hew_migrated_actor_935);
-    };
+    stop(app);
+    stopped(app);
     println("stopped");
 }

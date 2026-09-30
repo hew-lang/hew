@@ -35,7 +35,7 @@ const FIXTURES: &[(&str, &str)] = &[
     fixture!("v05_async_await"),
     fixture!("v05_attributes"),
     fixture!("v05_closures"),
-    fixture!("v05_cross_module_machine_defs"),
+    fixture!("machines/toggle"),
     fixture!("v05_display_fstring"),
     fixture!("v05_extern_unsafe"),
     fixture!("v05_generators"),

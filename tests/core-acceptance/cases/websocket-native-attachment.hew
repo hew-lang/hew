@@ -57,10 +57,7 @@ fn main() {
         server.close();
     };
     listener.close();
-    {
-        let __hew_migrated_actor_1508 = receiver;
-        stop(__hew_migrated_actor_1508);
-        stopped(__hew_migrated_actor_1508);
-    };
+    stop(receiver);
+    stopped(receiver);
     println("websocket attached text and outbound reply");
 }

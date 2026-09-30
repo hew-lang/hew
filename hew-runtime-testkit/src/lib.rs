@@ -47,9 +47,8 @@
 //!
 //! ## Drop ordering
 //!
-//! - [`TestActor`]: `hew_actor_close` → `hew_actor_free`. Free waits for the
-//!   actor to reach a terminal state (≤2s), so close-before-free is the
-//!   canonical idiom and is what the integration tests already do.
+//! - [`TestActor`]: `hew_actor_free`. Free latches an idle actor terminal and
+//!   waits for a busy one to reach a terminal state (≤2s).
 //! - [`TestSupervisor`]: `hew_supervisor_stop` (idempotent; stops children).
 //!   The runtime owns the supervisor allocation after `stop`.
 //! - [`TestMailbox`]: `hew_mailbox_free`. Pending messages are drained inside
@@ -139,8 +138,7 @@ pub fn ensure_scheduler() {
 /// Safe RAII wrapper around a runtime actor handle (`*mut HewActor`).
 ///
 /// Construct with [`TestActor::spawn`] or [`TestActor::spawn_with_state`].
-/// On drop, the wrapper invokes `hew_actor_close` followed by
-/// `hew_actor_free` — the canonical teardown the integration tests use.
+/// On drop, the wrapper invokes `hew_actor_free`.
 ///
 /// The pointer is non-null and points to a runtime-allocated `HewActor`
 /// for the wrapper's whole lifetime. Methods that consult the actor read
@@ -340,10 +338,12 @@ impl TestActor {
         }
     }
 
-    /// Close the actor (no further sends accepted; drains pending).
-    pub fn close(&self) {
-        // SAFETY: self.ptr is a live HewActor; hew_actor_close is idempotent.
-        unsafe { hew_runtime::actor::hew_actor_close(self.ptr) }
+    /// Terminate the actor: admission closes immediately and a scheduler
+    /// worker discards queued messages and finishes the actor.
+    pub fn terminate(&self) {
+        // SAFETY: self.ptr is a live HewActor; hew_actor_terminate is
+        // idempotent and callable from any thread.
+        unsafe { hew_runtime::actor::hew_actor_terminate(self.ptr) }
     }
 
     /// Stop the actor immediately (enqueues a system stop message, closes
@@ -434,13 +434,12 @@ impl Drop for TestActor {
         // - validity: self.ptr is non-null by invariant.
         // - aliasing: Drop is the unique consumer.
         // - lifetimes: after free the pointer is invalid; nothing else holds it.
-        // - threads: hew_actor_close and hew_actor_free are documented as safe
-        //   to call from a non-scheduler thread; hew_actor_free blocks until
-        //   the actor reaches a terminal state.
-        // - unwind: both FFI fns cannot unwind.
-        // - soundness: close-before-free is the canonical teardown.
+        // - threads: hew_actor_free is documented as safe to call from a
+        //   non-scheduler thread; it blocks until the actor reaches a
+        //   terminal state.
+        // - unwind: the FFI fn cannot unwind.
+        // - soundness: free latches an idle actor terminal before reclaiming.
         unsafe {
-            hew_runtime::actor::hew_actor_close(self.ptr);
             let _ = hew_runtime::actor::hew_actor_free(self.ptr);
         }
     }

@@ -1,5 +1,5 @@
 use hew_analysis::util::offset_to_line_col;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Documentation, InsertTextFormat,
     MarkupContent, MarkupKind, SemanticToken, SemanticTokenModifier, SymbolKind,
 };
@@ -8,7 +8,7 @@ use super::{modifier_bit, offset_range_to_lsp};
 
 // ── Completion ───────────────────────────────────────────────────────
 
-/// Convert an `hew_analysis::CompletionItem` to an `lsp_types::CompletionItem`.
+/// Convert an `hew_analysis::CompletionItem` to an `ls_types::CompletionItem`.
 pub(super) fn to_lsp_completion(item: hew_analysis::CompletionItem) -> CompletionItem {
     use hew_analysis::CompletionKind;
     let kind = match item.kind {

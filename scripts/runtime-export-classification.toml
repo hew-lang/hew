@@ -142,7 +142,6 @@ stable = [
   "hew_actor_await",
   "hew_actor_await_all",
   "hew_actor_cancel_periodic",
-  "hew_actor_close",
   "hew_actor_current_id",
   "hew_actor_demonitor",
   "hew_actor_exit_unhandled",

@@ -2393,7 +2393,7 @@ mod tests {
 
     /// `hew_unicode_is_punct` must answer for the Unicode `P*` category group
     /// exactly, over every scalar value, not for a hand-maintained subset of
-    /// ranges. The pinned Unicode 17 tables are the authority.
+    /// ranges. The pinned Unicode 18 tables are the authority.
     #[test]
     fn unicode_is_punct_matches_every_p_category_scalar() {
         use finl_unicode::categories::{CharacterCategories, MinorCategory};
@@ -2435,8 +2435,8 @@ mod tests {
              in the sweep, saw {categories_seen:?}"
         );
         assert_eq!(
-            punct_count, 856,
-            "Unicode 17 defines 856 P* scalars; a different count means the pinned tables moved"
+            punct_count, 860,
+            "Unicode 18 defines 860 P* scalars; a different count means the pinned tables moved"
         );
     }
 

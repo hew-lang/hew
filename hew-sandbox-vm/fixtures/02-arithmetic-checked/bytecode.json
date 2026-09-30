@@ -3,7 +3,7 @@
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc5",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -187,7 +187,7 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.0-rc4",
+  "hew_version": "0.6.0-rc5",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

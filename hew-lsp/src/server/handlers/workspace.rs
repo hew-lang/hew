@@ -1,11 +1,10 @@
 use serde_json::Value;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeLens, CodeLensParams, ExecuteCommandParams, MessageType, SymbolInformation,
     WorkspaceSymbolParams,
 };
 
-use super::super::uri::FileUriExt;
 use super::super::workspace::build_code_lenses_with_seeds;
 use super::super::workspace::normalize_workspace_path;
 use super::super::{

@@ -76,19 +76,19 @@ use hew_types::TypeCheckOutput;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
-    CallHierarchyServerCapability, CodeLens, CodeLensOptions, CodeLensParams, SymbolInformation,
-    WorkspaceSymbolParams,
+    CallHierarchyServerCapability, CodeLens, CodeLensOptions, CodeLensParams,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 #[cfg(test)]
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeActionContext, CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol,
     InlayHintTooltip, InsertTextFormat, PartialResultParams, SemanticToken, SymbolKind,
     WorkDoneProgressParams,
 };
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
     CompletionResponse, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
@@ -110,12 +110,12 @@ use tower_lsp_server::lsp_types::{
 pub struct TestsParams {
     text_document: Option<TextDocumentIdentifier>,
 }
-use tower_lsp_server::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
+use tower_lsp_server::ls_types::{
     InlayHint, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams,
 };
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
     TypeHierarchySupertypesParams,
 };
@@ -166,8 +166,7 @@ struct DocumentState {
 
 type DiagnosticMap = HashMap<Url, Vec<Diagnostic>>;
 
-/// Restores the explicit parsing entry point that `lsp-types` replaced with
-/// `FromStr` when it moved from `Url` to `Uri`.
+/// Keep the test parsing entry point over `Uri`'s `FromStr` implementation.
 #[cfg(test)]
 pub(crate) trait UriParse: Sized + FromStr {
     fn parse(input: &str) -> std::result::Result<Self, <Self as FromStr>::Err> {
@@ -242,7 +241,7 @@ fn build_server_capabilities() -> ServerCapabilities {
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
         references_provider: Some(OneOf::Left(true)),
-        rename_provider: Some(OneOf::Right(tower_lsp_server::lsp_types::RenameOptions {
+        rename_provider: Some(OneOf::Right(tower_lsp_server::ls_types::RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
@@ -258,8 +257,8 @@ fn build_server_capabilities() -> ServerCapabilities {
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
         code_action_provider: Some(
-            tower_lsp_server::lsp_types::CodeActionProviderCapability::Options(
-                tower_lsp_server::lsp_types::CodeActionOptions {
+            tower_lsp_server::ls_types::CodeActionProviderCapability::Options(
+                tower_lsp_server::ls_types::CodeActionOptions {
                     code_action_kinds: Some(vec![
                         CodeActionKind::QUICKFIX,
                         CodeActionKind::SOURCE,
@@ -270,16 +269,13 @@ fn build_server_capabilities() -> ServerCapabilities {
             ),
         ),
         folding_range_provider: Some(
-            tower_lsp_server::lsp_types::FoldingRangeProviderCapability::Simple(true),
+            tower_lsp_server::ls_types::FoldingRangeProviderCapability::Simple(true),
         ),
         document_formatting_provider: Some(OneOf::Left(true)),
-        // lsp-types 0.94.1 (pinned by tower-lsp 0.20's ^0.94.1 constraint) does not have a
-        // `type_hierarchy_provider` field on `ServerCapabilities`.  The field was added in
-        // lsp-types 0.95.0, which requires also bumping tower-lsp.  Until that migration lands
-        // (tracked in GitHub issue #2167), we advertise via the `experimental` slot so that
-        // the three implemented type-hierarchy handlers become reachable by clients that inspect
-        // `experimental.typeHierarchyProvider`.  The field survives the encode-decode round-trip
-        // in `build_initialize_result` because `experimental` is a valid 0.94.1 field.
+        // ls-types 0.0.6 still has no `type_hierarchy_provider` field on
+        // `ServerCapabilities`. Advertise via `experimental` so clients that
+        // inspect `experimental.typeHierarchyProvider` can reach the three
+        // implemented handlers. The field survives capability serialization.
         experimental: Some(json!({"typeHierarchyProvider": true})),
         ..Default::default()
     }
@@ -474,7 +470,7 @@ impl HewLanguageServer {
         self.documents.iter().find_map(|entry| {
             entry
                 .key()
-                .to_file_path()
+                .to_checked_file_path()
                 .and_then(|path| path.parent().map(Path::to_path_buf))
         })
     }
@@ -569,7 +565,7 @@ impl HewLanguageServer {
         let file = test_name
             .rsplit_once("::")
             .map_or(test_name, |(file, _)| file);
-        let target_uri = Url::from_file_path(Path::new(file))
+        let target_uri = Url::from_checked_file_path(Path::new(file))
             .map(|uri| open_document_uri(&uri, &self.documents));
         let mut affected = HashSet::new();
         let run_version = target_uri.as_ref().map(|uri| {
@@ -814,7 +810,7 @@ impl LanguageServer for HewLanguageServer {
 
     async fn prepare_rename(
         &self,
-        params: tower_lsp_server::lsp_types::TextDocumentPositionParams,
+        params: tower_lsp_server::ls_types::TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         Ok(handlers::navigation::prepare_rename(self, &params))
     }
@@ -851,8 +847,8 @@ impl LanguageServer for HewLanguageServer {
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
-    ) -> Result<Option<Vec<SymbolInformation>>> {
-        Ok(handlers::workspace::symbol(self, &params))
+    ) -> Result<Option<WorkspaceSymbolResponse>> {
+        Ok(handlers::workspace::symbol(self, &params).map(Into::into))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
@@ -2772,7 +2768,7 @@ impl Worker {
     fn failed_test_event_uses_fault_site_operands_and_seed_lens() {
         let source = "#[test]\nfn fails() { assert(1 == 2); }\n";
         let file = std::env::temp_dir().join("hew-lsp-fault-site.hew");
-        let uri = Url::from_file_path(&file).unwrap();
+        let uri = Url::from_checked_file_path(&file).unwrap();
         let documents = DashMap::new();
         documents.insert(uri.clone(), make_doc(source));
         let site = source.find("assert").unwrap();
@@ -2821,7 +2817,7 @@ impl Worker {
     fn test_inventory_uses_open_document_and_exact_identity() {
         let root = std::env::temp_dir().join("hew-lsp-inventory-project");
         let file = root.join("cart_test.hew");
-        let uri = Url::from_file_path(&file).unwrap();
+        let uri = Url::from_checked_file_path(&file).unwrap();
         let documents = DashMap::new();
         documents.insert(uri.clone(), make_doc("#[test]\nfn totals() {}\n"));
         let entries = test_inventory(&documents, &[root], Some(&uri));
@@ -2841,8 +2837,8 @@ impl Worker {
         let second_root = std::env::temp_dir().join("hew-lsp-inventory-second");
         let first_file = first_root.join("cart_test.hew");
         let second_file = second_root.join("cart_test.hew");
-        let first = Url::from_file_path(&first_file).unwrap();
-        let second = Url::from_file_path(&second_file).unwrap();
+        let first = Url::from_checked_file_path(&first_file).unwrap();
+        let second = Url::from_checked_file_path(&second_file).unwrap();
         let documents = DashMap::new();
         documents.insert(first.clone(), make_doc("#[test]\nfn totals() {}\n"));
         documents.insert(second.clone(), make_doc("#[test]\nfn totals() {}\n"));
@@ -2917,7 +2913,7 @@ impl Worker {
     fn code_action_capabilities_advertise_remove_unused_imports_kind() {
         let capabilities = build_server_capabilities();
         let kinds = match capabilities.code_action_provider {
-            Some(tower_lsp_server::lsp_types::CodeActionProviderCapability::Options(options)) => {
+            Some(tower_lsp_server::ls_types::CodeActionProviderCapability::Options(options)) => {
                 options
                     .code_action_kinds
                     .expect("code action kinds should be advertised")
@@ -3202,9 +3198,7 @@ machine Traffic {
 
         assert_eq!(
             diag.tags,
-            Some(vec![
-                tower_lsp_server::lsp_types::DiagnosticTag::UNNECESSARY
-            ])
+            Some(vec![tower_lsp_server::ls_types::DiagnosticTag::UNNECESSARY])
         );
     }
 
@@ -4039,7 +4033,7 @@ fn label(colour: Colour) -> string {
         let path = PathBuf::from(format!("C:{posix_path}"));
         #[cfg(not(windows))]
         let path = PathBuf::from(posix_path);
-        Url::from_file_path(path).expect("test path should be an absolute file path")
+        Url::from_checked_file_path(path).expect("test path should be an absolute file path")
     }
 
     #[test]
@@ -4050,7 +4044,10 @@ fn label(colour: Colour) -> string {
             let expected = PathBuf::from(format!("C:{path}"));
             #[cfg(not(windows))]
             let expected = PathBuf::from(path);
-            assert_eq!(uri.to_file_path().as_deref(), Some(expected.as_path()));
+            assert_eq!(
+                uri.to_checked_file_path().as_deref(),
+                Some(expected.as_path())
+            );
         }
     }
 
@@ -4955,13 +4952,12 @@ fn label(colour: Colour) -> string {
         drop(doc);
 
         let params = GotoDefinitionParams {
-            text_document_position_params:
-                tower_lsp_server::lsp_types::TextDocumentPositionParams {
-                    text_document: TextDocumentIdentifier {
-                        uri: main_uri.clone(),
-                    },
-                    position,
+            text_document_position_params: tower_lsp_server::ls_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: main_uri.clone(),
                 },
+                position,
+            },
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
         };
@@ -5415,10 +5411,10 @@ fn label(colour: Colour) -> string {
         };
         #[cfg(not(unix))]
         let editor_root = root.clone();
-        let main_url =
-            Url::from_file_path(editor_root.join("main.hew")).expect("workspace path is absolute");
-        let foo_url =
-            Url::from_file_path(editor_root.join("foo.hew")).expect("workspace path is absolute");
+        let main_url = Url::from_checked_file_path(editor_root.join("main.hew"))
+            .expect("workspace path is absolute");
+        let foo_url = Url::from_checked_file_path(editor_root.join("foo.hew"))
+            .expect("workspace path is absolute");
         let main_source = std::fs::read_to_string(root.join("main.hew")).expect("read main.hew");
         let foo_source = std::fs::read_to_string(root.join("foo.hew")).expect("read foo.hew");
 
@@ -5456,8 +5452,8 @@ fn label(colour: Colour) -> string {
         let root = make_temp_workspace_dir(&[("main.hew", main_source), ("dep.hew", disk_source)]);
         let alias = root.join("editor");
         std::os::unix::fs::symlink(&root, &alias).unwrap();
-        let main_uri = Url::from_file_path(alias.join("main.hew")).unwrap();
-        let dep_uri = Url::from_file_path(alias.join("dep.hew")).unwrap();
+        let main_uri = Url::from_checked_file_path(alias.join("main.hew")).unwrap();
+        let dep_uri = Url::from_checked_file_path(alias.join("dep.hew")).unwrap();
         let documents = DashMap::new();
         refresh_document_and_dependents(&dep_uri, duplicate_source, &documents, &[]);
         let published = refresh_document_and_dependents(&main_uri, main_source, &documents, &[]);
@@ -5615,8 +5611,8 @@ fn label(colour: Colour) -> string {
         let main_source =
             "import shapes.circle;\nfn circumference_check() -> f64 { circle.circumference(1.0) }";
         let main_url =
-            Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
-        let circle_url = Url::from_file_path(root.join("shapes/circle.hew"))
+            Url::from_checked_file_path(root.join("main.hew")).expect("workspace path is absolute");
+        let circle_url = Url::from_checked_file_path(root.join("shapes/circle.hew"))
             .expect("workspace path is absolute");
 
         // Negative control: the saved sibling has no `circumference`.
@@ -5772,7 +5768,7 @@ fn label(colour: Colour) -> string {
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(util_uri.clone(), make_doc(util_source));
@@ -5832,8 +5828,8 @@ fn label(colour: Colour) -> string {
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
-        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_checked_file_path(&importer_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         // Both files are initially open for import resolution to work.
@@ -5894,7 +5890,7 @@ fn label(colour: Colour) -> string {
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&aliased_path, aliased_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(util_uri.clone(), make_doc(util_source));
@@ -5945,8 +5941,8 @@ fn label(colour: Colour) -> string {
         std::fs::write(&importer_path, importer_source).unwrap();
         std::fs::write(&sibling_path, sibling_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
-        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_checked_file_path(&importer_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(util_uri.clone(), make_doc(util_source));
@@ -6004,7 +6000,7 @@ fn label(colour: Colour) -> string {
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&wt_importer_path, wt_importer_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(util_uri.clone(), make_doc(util_source));
@@ -6057,7 +6053,7 @@ fn label(colour: Colour) -> string {
             return;
         }
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(util_uri.clone(), make_doc(util_source));
 
@@ -6112,7 +6108,7 @@ fn label(colour: Colour) -> string {
         // Restore permissions on drop so TestDir cleanup succeeds.
         let _restore = RestoreOnDrop(secret_path.clone(), 0o644);
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(util_uri.clone(), make_doc(util_source));
 
@@ -6170,7 +6166,7 @@ fn label(colour: Colour) -> string {
 
         let _restore = RestoreOnDrop(locked_dir.clone(), 0o755);
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(util_uri.clone(), make_doc(util_source));
 
@@ -6226,8 +6222,8 @@ fn label(colour: Colour) -> string {
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
-        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_checked_file_path(&importer_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         // Both files are initially open for import resolution to work.
@@ -6334,9 +6330,9 @@ fn label(colour: Colour) -> string {
         std::fs::write(&importer1_path, importer1_source).unwrap();
         std::fs::write(&importer2_path, importer2_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
-        let importer1_uri = Url::from_file_path(&importer1_path).unwrap();
-        let importer2_uri = Url::from_file_path(&importer2_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
+        let importer1_uri = Url::from_checked_file_path(&importer1_path).unwrap();
+        let importer2_uri = Url::from_checked_file_path(&importer2_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         // Only importer1 is open; importer2 is closed.
@@ -6445,8 +6441,8 @@ fn label(colour: Colour) -> string {
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
 
-        let util_uri = Url::from_file_path(&util_path).unwrap();
-        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+        let util_uri = Url::from_checked_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_checked_file_path(&importer_path).unwrap();
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         // Only util is open; importer is closed.
@@ -6566,8 +6562,8 @@ fn label(colour: Colour) -> string {
 
         let _restore = RestoreOnDrop(util_path.clone(), 0o644);
 
-        let _util_uri = Url::from_file_path(&util_path).unwrap();
-        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+        let _util_uri = Url::from_checked_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_checked_file_path(&importer_path).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(importer_uri.clone(), make_doc(importer_source));
 
@@ -7714,8 +7710,10 @@ fn label(colour: Colour) -> string {
             .parent()
             .expect("hew-lsp has a parent (repo root)")
             .to_path_buf();
-        let uri = Url::from_file_path(repo_root.join("hew-lsp/tests/fixtures/v05_select_arms.hew"))
-            .expect("fixture path is absolute");
+        let uri = Url::from_checked_file_path(
+            repo_root.join("hew-lsp/tests/fixtures/v05_select_arms.hew"),
+        )
+        .expect("fixture path is absolute");
         let docs: DashMap<Url, DocumentState> = DashMap::new();
         let doc = analyze_document(&uri, source, &docs, &[]);
         assert_no_hard_type_errors("v05_select_arms", &doc);
@@ -8040,7 +8038,7 @@ fn label(colour: Colour) -> string {
     /// test only checks symbols that appear in `expected_symbols`; Stage 2 pins
     /// every event and state name.
     ///
-    /// Note: non-exhaustive event coverage is intentional in this fixture.
+    /// Note: the fixture is a valid program; the pins below check symbols only.
     #[test]
     fn v05_machine_methods_document_symbols_include_machine_and_all_events() {
         let source = include_str!("../../tests/fixtures/v05_machine_methods.hew");
@@ -8167,7 +8165,7 @@ fn label(colour: Colour) -> string {
     #[test]
     fn to_lsp_completion_propagates_doc_comment_as_markdown() {
         // `to_lsp_completion` must map `CompletionItem.documentation` to
-        // `lsp_types::Documentation::MarkupContent` with `MarkupKind::Markdown`.
+        // `ls_types::Documentation::MarkupContent` with `MarkupKind::Markdown`.
         let item = hew_analysis::CompletionItem {
             label: "greet".to_string(),
             kind: CompletionKind::Function,
@@ -8182,15 +8180,15 @@ fn label(colour: Colour) -> string {
             .documentation
             .expect("documentation field must be populated");
         match doc {
-            tower_lsp_server::lsp_types::Documentation::MarkupContent(markup) => {
+            tower_lsp_server::ls_types::Documentation::MarkupContent(markup) => {
                 assert_eq!(
                     markup.kind,
-                    tower_lsp_server::lsp_types::MarkupKind::Markdown,
+                    tower_lsp_server::ls_types::MarkupKind::Markdown,
                     "documentation kind must be Markdown"
                 );
                 assert_eq!(markup.value, "Greets the named entity.");
             }
-            tower_lsp_server::lsp_types::Documentation::String(s) => {
+            tower_lsp_server::ls_types::Documentation::String(s) => {
                 panic!("expected MarkupContent, got plain String({s:?})")
             }
         }
@@ -8236,14 +8234,14 @@ fn label(colour: Colour) -> string {
             .as_ref()
             .expect("documentation must be propagated");
         match doc {
-            tower_lsp_server::lsp_types::Documentation::MarkupContent(markup) => {
+            tower_lsp_server::ls_types::Documentation::MarkupContent(markup) => {
                 assert_eq!(
                     markup.kind,
-                    tower_lsp_server::lsp_types::MarkupKind::Markdown
+                    tower_lsp_server::ls_types::MarkupKind::Markdown
                 );
                 assert_eq!(markup.value, "Returns the sum of a and b.");
             }
-            tower_lsp_server::lsp_types::Documentation::String(s) => {
+            tower_lsp_server::ls_types::Documentation::String(s) => {
                 panic!("expected MarkupContent, got plain String({s:?})")
             }
         }

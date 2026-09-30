@@ -5,7 +5,7 @@ use std::path::Path;
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
 use serde_json::Value;
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, Uri as Url};
+use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Uri as Url};
 
 use super::analysis::{open_document_uri, source_for_path};
 use super::uri::FileUriExt;
@@ -30,7 +30,7 @@ pub(super) fn failure_from_event(
     let selector = event.get("selector")?.as_str()?;
     let (file, name) = selector.rsplit_once("::")?;
     let path = Path::new(file);
-    let uri = open_document_uri(&Url::from_file_path(path)?, documents);
+    let uri = open_document_uri(&Url::from_checked_file_path(path)?, documents);
     let source = source_for_path(path, documents)?;
     let lines = compute_line_offsets(&source);
     let offset = event

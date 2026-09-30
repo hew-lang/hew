@@ -311,19 +311,6 @@
       "availability": [
         "native"
       ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_actor_close( *mut HewActor)"
-      },
-      "symbol": "hew_actor_close"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",

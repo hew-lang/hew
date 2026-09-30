@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
 use hew_parser::ast::{ImportDecl, ImportSpec, Item, Span};
 use hew_parser::ParseResult;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     DocumentLink, Location, PrepareRenameResponse, Range, TextEdit, Uri as Url, WorkspaceEdit,
 };
 
@@ -20,7 +20,7 @@ use super::{offset_range_to_lsp, span_to_range, DocumentState};
 /// and "could not read source file" error patterns.
 fn read_source_or_io_error(uri: &Url) -> Result<String, hew_analysis::RenameError> {
     let path = uri
-        .to_file_path()
+        .to_checked_file_path()
         .ok_or_else(|| hew_analysis::RenameError::Io {
             path: uri.as_str().to_string(),
             message: "could not convert URI to file path".to_string(),
@@ -92,7 +92,7 @@ pub(super) fn identity_definition_location(
     let target_uri = target
         .source
         .as_deref()
-        .and_then(Url::from_file_path)
+        .and_then(Url::from_checked_file_path)
         .unwrap_or_else(|| uri.clone());
     if target_uri == *uri {
         let span =
@@ -201,7 +201,7 @@ fn source_uri_for_module_idx(uri: &Url, doc: &DocumentState, module_idx: u32) ->
         .values()
         .flat_map(|module| &module.source_paths)
         .find(|path| indices.path_index(path) == Some(module_idx))
-        .and_then(Url::from_file_path)
+        .and_then(Url::from_checked_file_path)
 }
 
 /// Search for a definition matching `word` in the AST, returning an LSP `Range`.
@@ -226,7 +226,7 @@ pub(super) fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std:
     // String-literal import: `import "relative/path.hew";`
     if let Some(fp) = &import.file_path {
         let file_dir = uri
-            .to_file_path()
+            .to_checked_file_path()
             .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
         return Some(file_dir.join(fp));
     }
@@ -247,7 +247,7 @@ pub(super) fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std:
 
     // Fall back to the directory of the importing file.
     let file_dir = uri
-        .to_file_path()
+        .to_checked_file_path()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
     Some(file_dir.join(&relative))
 }
@@ -352,7 +352,7 @@ fn build_named_importer_index(documents: &DashMap<Url, DocumentState>) -> NamedI
             let Some(path) = compute_import_path(&importer_uri, &import) else {
                 continue;
             };
-            let Some(resolved_uri) = Url::from_file_path(&path) else {
+            let Some(resolved_uri) = Url::from_checked_file_path(&path) else {
                 continue;
             };
 
@@ -428,7 +428,7 @@ pub(super) fn find_named_import_match(
         let Some(path) = compute_import_path(current_uri, &import) else {
             continue;
         };
-        let Some(imported_uri) = Url::from_file_path(&path) else {
+        let Some(imported_uri) = Url::from_checked_file_path(&path) else {
             continue;
         };
 
@@ -451,7 +451,7 @@ pub(super) fn find_named_import_match(
                 .is_some()
             } else {
                 // File not open; check on disk (degrades gracefully on I/O error).
-                if let Some(file_path) = imported_uri.to_file_path() {
+                if let Some(file_path) = imported_uri.to_checked_file_path() {
                     if let Ok(file_source) = std::fs::read_to_string(&file_path) {
                         let file_parse = hew_parser::parse(&file_source);
                         hew_analysis::definition::find_definition(
@@ -1331,7 +1331,7 @@ fn plan_checked_field_rename(
         if target
             .source
             .as_deref()
-            .and_then(Url::from_file_path)
+            .and_then(Url::from_checked_file_path)
             .is_some_and(|source_uri| source_uri != *uri)
             || hew_analysis::identity::all_reference_spans(output, resolution)
                 .iter()
@@ -1534,7 +1534,7 @@ fn scan_disk_importers_for_conflicts(
     conflicts: &mut Vec<hew_analysis::RenameConflict>,
 ) -> Result<(), hew_analysis::RenameError> {
     super::workspace::for_each_hew_file(root, |path| -> Result<(), hew_analysis::RenameError> {
-        let Some(file_uri) = Url::from_file_path(path) else {
+        let Some(file_uri) = Url::from_checked_file_path(path) else {
             return Ok(());
         };
         // Already checked by the open-documents pass.
@@ -1565,7 +1565,7 @@ fn scan_disk_importers_for_conflicts(
                     let Some(resolved) = compute_import_path(&file_uri, &import) else {
                         return false;
                     };
-                    Url::from_file_path(&resolved).as_ref() == Some(definition_uri)
+                    Url::from_checked_file_path(&resolved).as_ref() == Some(definition_uri)
                 });
         if !imports_target_nonaliased {
             return Ok(());
@@ -1588,7 +1588,7 @@ fn collect_unopened_sibling_importers_for_edits(
 ) -> Result<Vec<NamedImportMatch>, hew_analysis::RenameError> {
     let mut matches = Vec::new();
     super::workspace::for_each_hew_file(root, |path| -> Result<(), hew_analysis::RenameError> {
-        let Some(file_uri) = Url::from_file_path(path) else {
+        let Some(file_uri) = Url::from_checked_file_path(path) else {
             return Ok(());
         };
         if open_uris.contains(&file_uri) || file_uri == *definition_uri {
@@ -1609,7 +1609,7 @@ fn collect_unopened_sibling_importers_for_edits(
             let Some(resolved) = compute_import_path(&file_uri, &import) else {
                 continue;
             };
-            let Some(resolved_uri) = Url::from_file_path(&resolved) else {
+            let Some(resolved_uri) = Url::from_checked_file_path(&resolved) else {
                 continue;
             };
             if resolved_uri != *definition_uri {
@@ -1682,7 +1682,7 @@ fn find_cross_file_definition_impl(
         let Some(path) = compute_import_path(current_uri, import) else {
             continue;
         };
-        let Some(target_uri) = Url::from_file_path(&path) else {
+        let Some(target_uri) = Url::from_checked_file_path(&path) else {
             continue;
         };
 
@@ -1816,7 +1816,7 @@ pub(super) fn find_stdlib_definition(
     let mut already_searched: HashSet<Url> = HashSet::from([current_uri.clone()]);
     for import in imports {
         if let Some(path) = compute_import_path(current_uri, import) {
-            if let Some(u) = Url::from_file_path(&path) {
+            if let Some(u) = Url::from_checked_file_path(&path) {
                 already_searched.insert(u);
             }
         }
@@ -1828,7 +1828,7 @@ pub(super) fn find_stdlib_definition(
     // for the whole workspace.
     let workspace_files = super::workspace::collect_hew_files(&root);
     for path in workspace_files {
-        let Some(file_uri) = Url::from_file_path(&path) else {
+        let Some(file_uri) = Url::from_checked_file_path(&path) else {
             continue;
         };
         if already_searched.contains(&file_uri) {
@@ -1876,7 +1876,7 @@ fn collect_workspace_references(
     let mut locations = Vec::new();
 
     for path in workspace_files {
-        let Some(file_uri) = Url::from_file_path(&path) else {
+        let Some(file_uri) = Url::from_checked_file_path(&path) else {
             continue;
         };
 
@@ -1953,7 +1953,7 @@ pub(super) fn build_document_links(
             if !path.exists() {
                 continue;
             }
-            if let Some(target_uri) = Url::from_file_path(&path) {
+            if let Some(target_uri) = Url::from_checked_file_path(&path) {
                 let relative = format!("{}.hew", import_file_stem(&import.path));
                 links.push(DocumentLink {
                     range: span_to_range(source, lo, span),
@@ -1996,7 +1996,7 @@ mod tests {
         let path = std::path::PathBuf::from(format!("C:{posix_path}"));
         #[cfg(not(windows))]
         let path = std::path::PathBuf::from(posix_path);
-        Url::from_file_path(path).expect("test path should be an absolute file path")
+        Url::from_checked_file_path(path).expect("test path should be an absolute file path")
     }
 
     fn first_named_import_match(
@@ -2114,7 +2114,7 @@ mod tests {
                 std::fs::create_dir_all(parent).expect("create dir");
             }
             std::fs::write(&path, content).expect("write file");
-            uris.push(Url::from_file_path(&path).expect("valid path"));
+            uris.push(Url::from_checked_file_path(&path).expect("valid path"));
         }
         (root, uris)
     }

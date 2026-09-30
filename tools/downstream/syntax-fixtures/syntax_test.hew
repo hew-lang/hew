@@ -44,6 +44,8 @@ trait Drawable {
 }
 
 impl Drawable for Point {
+    type Canvas = i32;
+
     fn draw(d: i32) -> bool {
         true
     }
@@ -66,7 +68,7 @@ enum Command {
 
 // === Actor ===
 actor Counter {
-    let count: i32;
+    var count: i32;
     receive fn increment() {
         count = count + 1;
     }

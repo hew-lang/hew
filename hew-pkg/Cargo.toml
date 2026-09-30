@@ -16,12 +16,12 @@ toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 rand = "0.10.1"
 base64.workspace = true
 libc.workspace = true
 tar = "0.4"
-zstd = "0.13"
+zstd = "0.14"
 ureq = { version = "3", features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]

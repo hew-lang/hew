@@ -1,8 +1,7 @@
 //! Tests for the `BlockingCallInReceiveFn` warning.
 //!
 //! Actor receive functions run synchronously on scheduler worker threads.
-//! Blocking operations inside them (`net.Connection.read`,
-//! `net.Listener.accept`, `http.Server.accept`) can stall the thread and
+//! Blocking operations inside them (`http.Server.accept`) can stall the thread and
 //! prevent other actors from being scheduled, potentially deadlocking the
 //! program.  The type-checker emits a `BlockingCallInReceiveFn` warning for
 //! each such call site.
@@ -31,28 +30,32 @@ fn assert_single_blocking_warning(output: &hew_types::TypeCheckOutput, operation
     );
 }
 
-/// `net.Connection.read` inside a receive function triggers a warning.
+/// Reactor-backed TCP receive calls suspend without blocking a scheduler worker.
 #[test]
-fn warn_net_connection_read_inside_receive_fn() {
+fn no_warn_net_connection_recv_inside_receive_fn() {
     let output = typecheck(
         r"
         import std.net;
 
         actor Networker {
             receive fn handle(conn: net.Connection) {
-                let data = conn.read();
+                let data = conn.recv();
             }
         }
 
         fn main() {}
         ",
     );
-    assert_single_blocking_warning(&output, "std.net.Connection.read");
+    let blocking_warnings = warnings_of_kind(&output, &TypeErrorKind::BlockingCallInReceiveFn);
+    assert!(
+        blocking_warnings.is_empty(),
+        "reactor-backed Connection.recv must not produce a blocking warning: {blocking_warnings:#?}"
+    );
 }
 
-/// `net.Listener.accept` inside a receive function triggers a warning.
+/// Reactor-backed listener acceptance suspends without blocking a scheduler worker.
 #[test]
-fn warn_net_listener_accept_inside_receive_fn() {
+fn no_warn_net_listener_accept_inside_receive_fn() {
     let output = typecheck(
         r"
         import std.net;
@@ -66,7 +69,11 @@ fn warn_net_listener_accept_inside_receive_fn() {
         fn main() {}
         ",
     );
-    assert_single_blocking_warning(&output, "std.net.Listener.accept");
+    let blocking_warnings = warnings_of_kind(&output, &TypeErrorKind::BlockingCallInReceiveFn);
+    assert!(
+        blocking_warnings.is_empty(),
+        "reactor-backed Listener.accept must not produce a blocking warning: {blocking_warnings:#?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -125,9 +132,9 @@ fn no_warn_connection_timeout_inside_receive_fn() {
     );
 }
 
-// Multiple blocking calls in the same receive fn produce one warning each.
+// Several reactor-backed calls in one receive function stay warning-free.
 #[test]
-fn multiple_blocking_calls_each_warned() {
+fn multiple_reactor_calls_do_not_warn() {
     let output = typecheck(
         r"
         import std.net;
@@ -135,7 +142,7 @@ fn multiple_blocking_calls_each_warned() {
         actor Combo {
             receive fn handle(listener: net.Listener, conn: net.Connection) {
                 let accepted = listener.accept();
-                let data = conn.read();
+                let data = conn.recv();
             }
         }
 
@@ -147,24 +154,22 @@ fn multiple_blocking_calls_each_warned() {
         .iter()
         .filter(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
         .collect();
-    assert_eq!(
-        blocking_warnings.len(),
-        2,
-        "expected exactly 2 BlockingCallInReceiveFn warnings (one per call), got: {:#?}",
-        output.warnings
+    assert!(
+        blocking_warnings.is_empty(),
+        "reactor-backed network calls must not produce blocking warnings: {blocking_warnings:#?}"
     );
 }
 
-/// Warning message includes guidance about scheduler starvation and suggestions.
+/// Warning text explains that another actor or task is not blocking isolation.
 #[test]
 fn warning_message_mentions_scheduler_with_suggestion() {
     let output = typecheck(
         r"
-        import std.net;
+        import std.http;
 
         actor Worker {
-            receive fn process(conn: net.Connection) {
-                let _ = conn.read();
+            receive fn process(server: http.Server) {
+                let _ = server.accept();
             }
         }
 
@@ -184,6 +189,13 @@ fn warning_message_mentions_scheduler_with_suggestion() {
     assert!(
         !w.suggestions.is_empty(),
         "warning should carry at least one suggestion"
+    );
+    assert!(
+        w.suggestions
+            .iter()
+            .any(|suggestion| suggestion.contains("another actor")),
+        "warning should explain that another actor does not isolate blocking work: {:?}",
+        w.suggestions
     );
 }
 
@@ -210,24 +222,17 @@ fn warn_http_server_accept_inside_receive_fn() {
 // Suggestion text: no blocking op has a drop-in suspending spelling
 // ---------------------------------------------------------------------------
 
-/// `await` is reserved for tasks, asks and actor handles, so no blocking-call
-/// suggestion may point the programmer at an `await` form.  The remedy is to
-/// move the wait off the receive function.
+/// The genuinely blocking HTTP accept warning must not suggest an `await` form
+/// that its API does not support.
 #[test]
 fn no_blocking_suggestion_names_await() {
     let output = typecheck(
         r"
-        import std.net;
+        import std.http;
 
         actor Mixed {
-            receive fn serve(
-                listener: net.Listener,
-                conn: net.Connection,
-                second: net.Connection,
-            ) {
-                let accepted = listener.accept();
-                let data = conn.read();
-                let other = second.read();
+            receive fn serve(server: http.Server) {
+                let accepted = server.accept();
             }
         }
 
@@ -237,8 +242,8 @@ fn no_blocking_suggestion_names_await() {
     let blocking_warnings = warnings_of_kind(&output, &TypeErrorKind::BlockingCallInReceiveFn);
     assert_eq!(
         blocking_warnings.len(),
-        3,
-        "expected one warning per blocking call, got: {:#?}",
+        1,
+        "expected one warning for the blocking HTTP accept, got: {:#?}",
         output.warnings
     );
     for w in blocking_warnings {

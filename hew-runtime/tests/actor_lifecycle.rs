@@ -1,13 +1,13 @@
 //! Actor lifecycle integration tests.
 //!
-//! Tests the critical actor lifecycle paths: spawn → dispatch → close → free,
+//! Tests the critical actor lifecycle paths: spawn → dispatch → terminate → free,
 //! mailbox FIFO ordering, and the ask/reply pattern.  These exercise the
 //! lowest-coverage areas of the actor module.
 //!
 //! Every test uses condvar-based signalling instead of fixed sleeps so
 //! that behaviour is deterministic under CI load.
 //!
-//! Handle lifecycle (spawn/close/free, mailbox new/free, msg-node free)
+//! Handle lifecycle (spawn/terminate/free, mailbox new/free, msg-node free)
 //! is funnelled through `hew_runtime_testkit::{TestActor, TestMailbox}`.
 //! The remaining `unsafe { … }` blocks are inherent to the C ABI: dispatch
 //! callbacks have `extern "C"` signatures, and reading `HewMsgNode` payload
@@ -133,12 +133,14 @@ fn actor_send_triggers_dispatch() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 3. Actor close / stop lifecycle
+// 3. Actor terminate / stop lifecycle
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Closing an idle actor transitions it directly to Stopped.
 #[test]
-fn actor_close_idle_transitions_to_stopped() {
+fn actor_terminate_idle_transitions_to_stopped() {
+    ensure_scheduler();
+
     let actor = TestActor::spawn(noop_dispatch);
 
     // Actor is idle (no messages enqueued).
@@ -148,16 +150,15 @@ fn actor_close_idle_transitions_to_stopped() {
         "precondition: actor must be idle"
     );
 
-    actor.close();
+    actor.terminate();
 
-    assert_eq!(
-        actor.state_raw(),
-        HewActorState::Stopped as i32,
-        "close on an idle actor should transition to Stopped"
+    assert!(
+        actor.wait_for_state(HewActorState::Stopped, Duration::from_secs(10)),
+        "terminate on an idle actor should transition to Stopped"
     );
 }
 
-/// After closing an actor, sends should be rejected (mailbox closed).
+/// After terminating an actor, sends should be rejected (mailbox closed).
 ///
 /// `hew_actor_try_send` delegates to `hew_mailbox_try_send` on native targets,
 /// which returns [`HewError::ErrClosed`] (`-4`) when the mailbox is closed.
@@ -167,7 +168,7 @@ fn actor_close_idle_transitions_to_stopped() {
 #[test]
 fn send_to_closed_actor_is_rejected() {
     let actor = TestActor::spawn(noop_dispatch);
-    actor.close();
+    actor.terminate();
 
     // hew_actor_try_send → hew_mailbox_try_send → ErrClosed (-4).
     let mut val: i32 = 7;
@@ -179,9 +180,9 @@ fn send_to_closed_actor_is_rejected() {
     );
 }
 
-/// Full lifecycle: spawn → send → close → free.
+/// Full lifecycle: spawn → send → terminate → free.
 #[test]
-fn actor_full_lifecycle_spawn_send_close_free() {
+fn actor_full_lifecycle_spawn_send_terminate_free() {
     static LIFECYCLE_SIGNAL: DispatchLog = DispatchLog::new();
     static LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -215,7 +216,7 @@ fn actor_full_lifecycle_spawn_send_close_free() {
     );
 
     // Close explicitly; Drop will free.
-    actor.close();
+    actor.terminate();
     // TestActor::Drop runs hew_actor_free; success is implied if the test
     // does not deadlock or abort.
 }
@@ -393,7 +394,7 @@ fn actor_ask_closed_returns_null() {
     ensure_scheduler();
 
     let actor = TestActor::spawn(noop_dispatch);
-    actor.close();
+    actor.terminate();
 
     let mut val: i32 = 0;
     let reply = actor.ask(1, &mut val);
@@ -669,8 +670,8 @@ fn ask_timeout_returns_null() {
     );
 
     // The slow dispatch is still running on a scheduler thread.
-    // Drop runs close + free; free waits for the actor to finish.
-    actor.close();
+    // Drop runs free; free waits for the actor to finish.
+    actor.terminate();
 }
 
 // ═══════════════════════════════════════════════════════════════════════

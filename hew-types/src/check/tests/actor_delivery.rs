@@ -338,7 +338,7 @@ fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
 #[test]
 fn a_unit_fails_handler_submits_through_a_mailbox_view() {
     let output = check_source(
-        "actor Worker { receive fn note(n: i64) -> () fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
+        "actor Worker { receive fn note(n: i64) fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
     );
     assert!(
         output.errors.is_empty(),
@@ -352,7 +352,7 @@ fn a_unit_fails_handler_submits_through_a_mailbox_view() {
 #[test]
 fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
     let output = check_source(
-        "type Opaque {\n    code: i64;\n}\n\nactor Worker {\n    receive fn note(n: i64) -> () fails Opaque {\n        if n < 0 {\n            return error Opaque { code: n };\n        }\n    }\n}\n\nfn main() {\n    let w = mailbox(spawn Worker(), on_full: .Reject);\n    let _ = w.note(1);\n}\n",
+        "type Opaque {\n    code: i64;\n}\n\nactor Worker {\n    receive fn note(n: i64) fails Opaque {\n        if n < 0 {\n            return error Opaque { code: n };\n        }\n    }\n}\n\nfn main() {\n    let w = mailbox(spawn Worker(), on_full: .Reject);\n    let _ = w.note(1);\n}\n",
     );
     assert!(
         output

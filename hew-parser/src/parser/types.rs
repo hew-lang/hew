@@ -519,6 +519,7 @@ impl Parser<'_> {
         &mut self,
         context: TypeParseContext,
     ) -> Option<Option<Spanned<TypeExpr>>> {
+        let arrow_start = self.peek_span().start;
         if self.eat(&Token::Arrow) {
             let success = self.parse_type_with_context(context)?;
             if matches!(self.peek(), Some(Token::Identifier("fails"))) {
@@ -534,6 +535,14 @@ impl Parser<'_> {
                 self.advance();
                 let error = self.parse_type_with_context(context)?;
                 let end = error.1.end;
+                if matches!(&success.0, TypeExpr::Tuple(elems) if elems.is_empty()) {
+                    self.error_at_with_kind_and_hint(
+                        "E_FAILS_UNIT_ARROW: a function that only fails omits `-> ()`".to_string(),
+                        arrow_start..end,
+                        "write `fails E`; `hew fmt --migrate` rewrites it",
+                        ParseDiagnosticKind::UnitFailsArrow,
+                    );
+                }
                 Some(Some((
                     TypeExpr::Fallible {
                         success: Box::new(success),

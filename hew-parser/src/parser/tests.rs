@@ -5842,6 +5842,21 @@ fn fallible_function_without_success_type_is_unit_fallible() {
 }
 
 #[test]
+fn unit_arrow_before_fails_is_refused_with_its_migration() {
+    let parsed = crate::parse("fn check() -> () fails string { }");
+    assert!(
+        parsed
+            .errors
+            .iter()
+            .any(|error| error.kind == ParseDiagnosticKind::UnitFailsArrow),
+        "{:?}",
+        parsed.errors
+    );
+    let parsed = crate::parse("fn check() -> i64 fails string { 1 }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+}
+
+#[test]
 fn fallible_function_and_error_return_roundtrip() {
     for source in [
         "fn f() -> (i64, string) fails string { return (10, \"hello\"); }",

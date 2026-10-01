@@ -784,6 +784,21 @@ impl Checker {
         name.to_string()
     }
 
+    /// The function or extern a bare callee names in the current file's
+    /// scope, unless a local binding shadows it.
+    pub(super) fn scoped_fn_declaration(&self, name: &str, shadowed: bool) -> Option<crate::DefId> {
+        if shadowed {
+            return None;
+        }
+        match self.current_declaration_module().and_then(|module| {
+            self.scopes
+                .item(self.scopes.namespace_of(module), Symbol::intern(name))
+        }) {
+            Some(scope::Binding::Fn(declaration)) => Some(declaration),
+            _ => None,
+        }
+    }
+
     /// Select a free-function signature in the current source file. Explicit
     /// imports publish only lexical bindings; their canonical declarations own
     /// the signatures, leaving ambient builtin signatures intact.
@@ -793,9 +808,11 @@ impl Checker {
         // any imported binding with the same spelling. Extern declarations do
         // not populate fn_def_spans, so that index alone cannot establish this
         // precedence. Join the exact scoped DefId to its registered signature.
-        if let Some(scope::Binding::Fn(declaration)) = self
-            .current_declaration_module()
-            .and_then(|module| self.scopes.item(module, Symbol::intern(name)))
+        if let Some(scope::Binding::Fn(declaration)) =
+            self.current_declaration_module().and_then(|module| {
+                self.scopes
+                    .item(self.scopes.namespace_of(module), Symbol::intern(name))
+            })
         {
             for key in [&canonical, name] {
                 if self.fn_sig_keys.get(key) == Some(&declaration) {

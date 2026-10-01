@@ -1552,6 +1552,37 @@ impl Checker {
         }
     }
 
+    /// The target a record or extern declaration publishes by its identity
+    /// alone; `None` for a declaration the signature ladder classifies.
+    pub(super) fn declared_call_target(&self, declaration: crate::DefId) -> Option<CallTarget> {
+        if self.defs.kind(declaration) == crate::DeclarationKind::Record {
+            return Some(CallTarget::RecordConstructor(declaration));
+        }
+        let extern_decl = self.extern_table.declaration(declaration)?;
+        if extern_decl.symbol.is_empty() {
+            return Some(CallTarget::Unsupported {
+                reason: format!(
+                    "generic extern declaration `{}` has no monomorphic endpoint",
+                    self.defs.path(declaration)
+                ),
+            });
+        }
+        // Provenance is per DECLARATION: `trusted_compiled_stdlib` derives
+        // from the declaring module of the declaration used at the call site,
+        // never from whichever declaration minted the symbol's ABI contract.
+        if let Some(family) = self.source_runtime_target(declaration, extern_decl) {
+            return Some(CallTarget::Runtime(family));
+        }
+        Some(CallTarget::Extern {
+            declaration,
+            endpoint: extern_decl.symbol.clone(),
+            trusted_compiled_stdlib: extern_decl
+                .declaring_module
+                .as_deref()
+                .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
+        })
+    }
+
     fn user_call_target_for_declared_fn(&self, signature_key: &str) -> Option<CallTarget> {
         let (_, declaring_module) = self.fn_def_spans.get(signature_key)?;
         let declaration = declaring_module.as_ref().map_or_else(
@@ -1565,10 +1596,6 @@ impl Checker {
             .map(|declaration| self.source_call_target(declaration))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "call-target precedence stays explicit in one resolution ladder"
-    )]
     pub(super) fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1580,49 +1607,11 @@ impl Checker {
         // is also importable in its own right publishes both `pkg.f` and
         // `pkg.file.f`), and the extern table is keyed by the identity, not by
         // a spelling. Resolve the key first, then read the extern row.
-        let resolved = self.lookup_declaration(signature_key);
-        if self.defs.declaration_kind_by_path(signature_key) == Some(crate::DeclarationKind::Record)
+        if let Some(target) = self
+            .lookup_declaration(signature_key)
+            .and_then(|declaration| self.declared_call_target(declaration))
         {
-            if let Some(declaration) = resolved {
-                return CallTarget::RecordConstructor(declaration);
-            }
-        }
-        if let Some(extern_decl) = resolved
-            .as_ref()
-            .and_then(|declaration| self.extern_table.declaration(*declaration))
-        {
-            if extern_decl.symbol.is_empty() {
-                return CallTarget::Unsupported {
-                    reason: format!(
-                        "generic extern declaration `{signature_key}` has no monomorphic endpoint"
-                    ),
-                };
-            }
-            // Provenance is per DECLARATION: the published identity is the
-            // declaration used at the call site, and `trusted_compiled_stdlib`
-            // derives from ITS declaring module — never from whichever
-            // declaration minted the symbol's ABI contract (a user extern
-            // stays user-provenance even when its spelling collides with an
-            // audited runtime endpoint, in either registration order).
-            //
-            let Some(declaration) = resolved else {
-                return CallTarget::Unsupported {
-                    reason: format!(
-                        "checker identity table has no extern declaration `{signature_key}`"
-                    ),
-                };
-            };
-            if let Some(family) = self.source_runtime_target(declaration, extern_decl) {
-                return CallTarget::Runtime(family);
-            }
-            return CallTarget::Extern {
-                declaration,
-                endpoint: extern_decl.symbol.clone(),
-                trusted_compiled_stdlib: extern_decl
-                    .declaring_module
-                    .as_deref()
-                    .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
-            };
+            return target;
         }
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
             return CallTarget::Runtime(family);
@@ -2539,7 +2528,12 @@ impl Checker {
                 span,
             );
 
-            let target = self.call_target_for_signature(&resolved_fn_name);
+            // The file's own binding is the callee's identity; its spelling
+            // may name a peer file's declaration of the same leaf.
+            let target = self
+                .scoped_fn_declaration(&func_name, lexical_shadow_of_item)
+                .and_then(|declaration| self.declared_call_target(declaration))
+                .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
             if matches!(
                 &target,
                 CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::RcNew)

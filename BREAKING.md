@@ -9,6 +9,15 @@ syntax and semantics, and the [language guide](docs/hew-language-guide.md)
 for examples. The release-labelled entries below preserve migration history;
 old spellings and ABI layouts in them are not current programming guidance.
 
+## Errors in v0.6.0-rc5
+
+The `std.concurrency` module is gone; import `std.concurrency.lifecycle` for
+`LifecycleError` and the lifecycle operations. `ActorError.Timeout` is
+`ActorError.TimedOut`. `link` and `monitor` refuse only when there is no
+current actor: `LinkError` has the one variant `NoContext`. A dead, retired or
+unreachable target is not an error; a monitor receives its `DOWN` at once and
+a link receives the target's exit (or fires its `PartitionPolicy`) at once.
+
 ## Declaration separators in v0.6.0-rc4
 
 Bodyless members inside types, enums, actors, machines and supervisors end

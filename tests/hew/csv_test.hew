@@ -13,7 +13,6 @@ fn test_parse_rows_count() {
     };
     // 2 data rows (header excluded)
     assert(tbl.rows() == 2);
-    tbl.free();
 }
 
 #[test]
@@ -23,7 +22,6 @@ fn test_parse_cols_count() {
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
     assert(tbl.cols() == 2);
-    tbl.free();
 }
 
 #[test]
@@ -34,7 +32,6 @@ fn test_parse_get_by_index() {
     };
     assert(tbl.get(0, 0) == "Alice");
     assert(tbl.get(1, 1) == "25");
-    tbl.free();
 }
 
 #[test]
@@ -45,7 +42,6 @@ fn test_parse_get_by_name() {
     };
     assert(tbl.get_by_name(0, "name") == "Alice");
     assert(tbl.get_by_name(0, "age") == "30");
-    tbl.free();
 }
 
 #[test]
@@ -56,7 +52,6 @@ fn test_parse_header_names() {
     };
     assert(tbl.header(0) == "first");
     assert(tbl.header(1) == "last");
-    tbl.free();
 }
 
 // ── Boundary / error ─────────────────────────────────────────────────
@@ -68,7 +63,6 @@ fn test_parse_get_out_of_bounds_returns_empty() {
     };
     assert(tbl.get(99, 0) == "");
     assert(tbl.get(0, 99) == "");
-    tbl.free();
 }
 
 #[test]
@@ -78,7 +72,6 @@ fn test_parse_get_by_name_missing_column_returns_empty() {
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
     assert(tbl.get_by_name(0, "nonexistent") == "");
-    tbl.free();
 }
 
 #[test]
@@ -87,10 +80,7 @@ fn test_parse_file_missing_path_returns_err() {
     let path = "tests/hew/_csv_try_parse_missing.csv";
     let _ = fs.delete(path);
     match csv.parse_file(path) {
-        .Ok(tbl) => {
-            tbl.free();
-            panic("expected missing CSV path to return Err");
-        }
+        .Ok(_) => panic("expected missing CSV path to return Err"),
         .Err(reason) => assert(reason.contains("NotFound")),
     }
 }
@@ -105,7 +95,6 @@ fn test_parse_quoted_field_with_comma_parses_as_one_field() {
     };
     assert(tbl.cols() == 2);
     assert(tbl.get_by_name(0, "city") == "Portland, OR");
-    tbl.free();
 }
 
 #[test]
@@ -116,7 +105,6 @@ fn test_parse_escaped_quote_in_quoted_field_decoded() {
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
     assert(tbl.get_by_name(0, "quote") == "say \"hi\"");
-    tbl.free();
 }
 
 // ── Property round-trip (parse_no_headers → header naming) ───────────
@@ -130,7 +118,6 @@ fn test_parse_no_headers_generates_synthetic_headers() {
     assert(tbl.header(0) == "col0");
     assert(tbl.header(1) == "col1");
     assert(tbl.get(0, 0) == "a");
-    tbl.free();
 }
 
 // ── Empty input ───────────────────────────────────────────────────────
@@ -144,7 +131,6 @@ fn test_parse_empty_string_returns_zero_rows_and_cols() {
     };
     assert(tbl.rows() == 0);
     assert(tbl.cols() == 0);
-    tbl.free();
 }
 
 #[test]
@@ -155,7 +141,6 @@ fn test_parse_no_headers_empty_string_returns_zero_rows_and_cols() {
     };
     assert(tbl.rows() == 0);
     assert(tbl.cols() == 0);
-    tbl.free();
 }
 
 // ── Trailing newline tolerance ────────────────────────────────────────
@@ -170,7 +155,6 @@ fn test_parse_trailing_newline_yields_one_data_row() {
     assert(tbl.rows() == 1);
     assert(tbl.get(0, 0) == "1");
     assert(tbl.get(0, 1) == "2");
-    tbl.free();
 }
 
 // ── parse_no_headers: multi-row multi-col ────────────────────────────
@@ -186,7 +170,6 @@ fn test_parse_no_headers_three_rows_three_cols_data() {
     assert(tbl.get(0, 0) == "1");
     assert(tbl.get(1, 1) == "5");
     assert(tbl.get(2, 2) == "9");
-    tbl.free();
 }
 
 #[test]
@@ -210,7 +193,6 @@ fn test_parse_every_cell_distinct_no_row_aliasing() {
     assert(tbl.get(1, 1) == "r1b");
     assert(tbl.get(2, 0) == "r2a");
     assert(tbl.get(2, 1) == "r2b");
-    tbl.free();
 }
 
 #[test]
@@ -224,15 +206,11 @@ fn test_parse_no_headers_three_cols_get_by_name() {
     assert(tbl.get_by_name(0, "col0") == "a");
     assert(tbl.get_by_name(0, "col2") == "c");
     assert(tbl.get_by_name(1, "col1") == "e");
-    tbl.free();
 }
 
-// ── Ownership: two tables, reverse-order free ─────────────────────────
+// ── Independent tables ────────────────────────────────────────────────
 #[test]
-fn test_two_tables_sequential_alloc_free_reverse_order() {
-    // Allocate two independent Table values, verify cells, then free in
-    // reverse allocation order. Table.free() is a no-op (value type), but
-    // the pattern establishes discipline for future handle-type codecs.
+fn test_two_tables_are_independent() {
     let tbl1 = match csv.parse("x,y\n1,2") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
@@ -243,8 +221,6 @@ fn test_two_tables_sequential_alloc_free_reverse_order() {
     };
     assert(tbl1.get_by_name(0, "x") == "1");
     assert(tbl2.get_by_name(0, "q") == "4");
-    tbl2.free();
-    tbl1.free();
 }
 
 // ── Out-of-range header access ────────────────────────────────────────
@@ -256,7 +232,6 @@ fn test_header_out_of_range_returns_empty() {
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
     assert(tbl.header(99) == "");
-    tbl.free();
 }
 
 // ── Embedded newlines in quoted fields (RFC 4180 §2.6) ───────────────
@@ -271,7 +246,6 @@ fn test_parse_embedded_lf_in_quoted_field_preserved() {
     assert(tbl.rows() == 1);
     assert(tbl.get(0, 0) == "line1\nline2");
     assert(tbl.get(0, 1) == "2");
-    tbl.free();
 }
 
 #[test]
@@ -285,7 +259,6 @@ fn test_parse_crlf_row_terminator_produces_correct_rows() {
     assert(tbl.rows() == 2);
     assert(tbl.get_by_name(0, "name") == "Alice");
     assert(tbl.get_by_name(1, "age") == "25");
-    tbl.free();
 }
 
 #[test]
@@ -298,7 +271,6 @@ fn test_parse_mixed_lf_and_crlf_terminators() {
     assert(tbl.rows() == 2);
     assert(tbl.get(0, 0) == "1");
     assert(tbl.get(1, 0) == "3");
-    tbl.free();
 }
 
 #[test]
@@ -311,7 +283,6 @@ fn test_parse_crlf_inside_quoted_field_preserved() {
     };
     assert(tbl.rows() == 1);
     assert(tbl.get(0, 0) == "x\r\ny");
-    tbl.free();
 }
 
 #[test]
@@ -326,7 +297,6 @@ fn test_parse_empty_quoted_field() {
     assert(tbl.get(0, 1) == "");
     assert(tbl.get(0, 0) == "1");
     assert(tbl.get(0, 2) == "3");
-    tbl.free();
 }
 
 #[test]
@@ -340,7 +310,6 @@ fn test_parse_embedded_newline_with_escaped_quote_in_same_field() {
     };
     assert(tbl.rows() == 1);
     assert(tbl.get(0, 0) == "say \"hi\"\nbye");
-    tbl.free();
 }
 
 #[test]
@@ -354,7 +323,6 @@ fn test_parse_trailing_crlf_yields_correct_row_count() {
     };
     assert(tbl.rows() == 1);
     assert(tbl.get(0, 0) == "1");
-    tbl.free();
 }
 
 // ── Malformed quote states are refused, not silently repaired ─────────

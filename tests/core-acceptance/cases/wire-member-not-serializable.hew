@@ -1,6 +1,8 @@
 // Every member of a `#[wire]` type must be data: a resource and a nested
 // `Option` are refused at the member. Plain records, tuples and a schema that
 // contains itself are data and are accepted.
+import std.encoding.json;
+
 #[resource]
 type Handle {
     fd: i64;
@@ -30,5 +32,5 @@ type Tree {
 
 fn main() {
     let tree = Tree { v: 1, kids: [], plain: Plain { a: 2 }, pair: (3, 4) };
-    println(tree.to_json());
+    println(json.encode(tree));
 }

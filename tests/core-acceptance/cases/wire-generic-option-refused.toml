@@ -9,6 +9,6 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
-line = 15
+line = 16
 column = 5
-message = "type `Vec<Option<T>>` does not implement trait `Serializable`"
+message = "type `Vec<Option<T>>` does not implement trait `Serializable` required by `T`"

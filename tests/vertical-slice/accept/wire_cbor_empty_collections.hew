@@ -2,6 +2,8 @@
 // codec — an empty `Vec<i64>` (CBOR empty array) and an empty `string` (CBOR
 // empty text). Both must decode back empty, not null or absent. Success
 // returns 42.
+import std.encoding.cbor;
+
 #[wire]
 type Empties {
     items: Vec<i64> @1;
@@ -11,7 +13,7 @@ type Empties {
 fn main() -> i64 {
     let xs: Vec<i64> = Vec.new();
     let h = Empties { items: xs, label: "" };
-    let back = Empties.decode(h.encode());
+    let back = cbor.decode<Empties>(cbor.encode(h)).expect("decode");
     if back.items.len() != 0 {
         return 1;
     }

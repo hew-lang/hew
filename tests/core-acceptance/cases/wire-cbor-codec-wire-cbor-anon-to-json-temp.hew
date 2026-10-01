@@ -1,3 +1,5 @@
+import std.encoding.json;
+
 #[wire]
 type Scalar {
     seq: i64 @1;
@@ -9,7 +11,7 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 50 {
         let p = Scalar { seq: i, flag: true };
-        match Scalar.from_json(p.to_json()) {
+        match json.decode<Scalar>(json.encode(p)) {
             .Ok(back) => {
                 total = total + back.seq;
             }

@@ -6,6 +6,8 @@
 // by scanning MIR locals. Without that seed the thunk would be
 // declared-but-undefined and LLVM verify would reject the module. Exit 11 proves
 // the decode-only program links and round-trips.
+import std.encoding.cbor;
+
 #[wire]
 type Item {
     name: string @1;
@@ -21,10 +23,10 @@ fn source_bytes() -> bytes {
     var xs: Vec<Item> = Vec.new();
     xs.push(Item { name: "seeded-element" });
     let b = Batch { items: xs, seq: 11 };
-    b.encode()
+    cbor.encode(b)
 }
 
 fn main() -> i64 {
-    let back = Batch.decode(source_bytes());
+    let back = cbor.decode<Batch>(source_bytes()).expect("decode");
     back.seq
 }

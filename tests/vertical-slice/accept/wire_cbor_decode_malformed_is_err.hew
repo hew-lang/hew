@@ -1,0 +1,22 @@
+// Validation: decoding malformed bytes through the CBOR codec returns a Syntax
+// error rather than a partial or garbage Packet.
+import std.encoding.cbor;
+
+#[wire]
+type Packet {
+    id: i64 @1;
+}
+
+fn main() -> i64 {
+    var junk: bytes = bytes.new();
+    junk.push(255);
+    junk.push(255);
+    junk.push(255);
+    match cbor.decode<Packet>(junk) {
+        .Ok(_) => 1,
+        .Err(e) => {
+            println(e);
+            42
+        }
+    }
+}

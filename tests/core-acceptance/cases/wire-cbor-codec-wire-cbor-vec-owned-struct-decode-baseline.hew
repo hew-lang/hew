@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 type Item {
     name: string @1;
@@ -18,7 +20,7 @@ type BatchBad {
 actor Decoder {
     let seq: i64;
     receive fn decode_it(raw: bytes) -> i64 {
-        let bad = BatchBad.decode(raw);
+        let bad = cbor.decode<BatchBad>(raw).expect("decode");
         bad.tail
     }
 }
@@ -31,7 +33,7 @@ fn main() -> i64 {
         xs.push(Item { name: "alpha-owned-element" });
         xs.push(Item { name: "beta-owned-element" });
         let g = BatchBad { items: xs, tail: 7 };
-        let raw = g.encode();
+        let raw = cbor.encode(g);
         let a = spawn Decoder(seq: i);
         let r = a.decode_it(raw);
         match r {

@@ -9,13 +9,13 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
-line = 15
+line = 17
 column = 8
 message = "E_NOT_SERIALIZABLE: field `h` of `#[wire]` type `HasHandle` reaches `Handle`, a resource, linear or opaque type"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
-line = 20
+line = 22
 column = 8
 message = "E_NOT_SERIALIZABLE: field `n` of `#[wire]` type `HasNested` reaches `Option<Option<i64>>`, a nested `Option`, which null cannot represent"

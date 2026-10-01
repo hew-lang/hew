@@ -1,3 +1,9 @@
+import std.encoding.cbor;
+
+import std.encoding.json;
+
+import std.encoding.yaml;
+
 actor Oracle {
     receive fn hash() -> i64 {
         7
@@ -48,15 +54,15 @@ actor Decoder {
             keys.insert(key);
         }
         let source = Registry { groups: [values], keys: keys };
-        let binary = Registry.decode(source.encode());
-        let json = Registry.from_json(source.to_json()).expect("JSON decode");
-        let yaml = Registry.from_yaml(source.to_yaml()).expect("YAML decode");
-        for result in [binary, json, yaml] {
+        let binary = cbor.decode<Registry>(cbor.encode(source)).expect("decode");
+        let json_text = json.decode<Registry>(json.encode(source)).expect("JSON decode");
+        let yaml_text = yaml.decode<Registry>(yaml.encode(source)).expect("YAML decode");
+        for result in [binary, json_text, yaml_text] {
             assert(result.groups[0].get(Key { id: 7 }).expect("decoded value")[0] == "item 7");
             assert(result.keys.contains(Key { id: 3 }));
         }
         let duplicate = "{\"groups\":[[[{\"id\":1},[\"first\"]],[{\"id\":1},[\"duplicate\"]]]],\"keys\":[]}";
-        assert(Registry.from_json(duplicate).is_err());
+        assert(json.decode<Registry>(duplicate).is_err());
         "wire callbacks complete"
     }
 }

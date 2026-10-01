@@ -1,6 +1,8 @@
 // Validation (FAIL CLOSED): `from_json` on well-formed JSON whose shape does not
 // match the target type (an array where the struct expects an object) returns
 // `Err`, never a misread or trap. Exits 42 only via the `Err` arm.
+import std.encoding.json;
+
 #[wire]
 type Point {
     x: i64 @1;
@@ -8,7 +10,7 @@ type Point {
 }
 
 fn main() -> i64 {
-    match Point.from_json("[1, 2]") {
+    match json.decode<Point>("[1, 2]") {
         .Ok(_) => 1,
         .Err(_) => 42,
     }

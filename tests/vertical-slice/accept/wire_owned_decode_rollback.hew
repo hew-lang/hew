@@ -1,5 +1,7 @@
 // The text parser accepts these integers; native narrow-field validation fails
 // after earlier strings, variants and collection elements already own storage.
+import std.encoding.json;
+
 #[wire]
 enum Payload {
     Empty @0;
@@ -21,21 +23,21 @@ type Batch {
 
 fn main() -> i64 {
     for i in 0 .. 32 {
-        match Batch.from_json("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}},{\"label\":\"second\",\"payload\":{\"Data\":[\"partial\",[\"released\"],999]}}],\"lookup\":[],\"last\":1}") {
+        match json.decode<Batch>("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}},{\"label\":\"second\",\"payload\":{\"Data\":[\"partial\",[\"released\"],999]}}],\"lookup\":[],\"last\":1}") {
             .Ok(_) => return 1,
             .Err(_) => {}
         }
-        match Batch.from_json("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}}],\"lookup\":[[\"AP8=\",[\"one\",\"two\"]]],\"last\":999}") {
+        match json.decode<Batch>("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}}],\"lookup\":[[\"AP8=\",[\"one\",\"two\"]]],\"last\":999}") {
             .Ok(_) => return 2,
             .Err(_) => {}
         }
-        match Batch.from_json("{\"items\":[],\"lookup\":[[\"AA==\",[\"first\"]],[\"AA==\",[\"duplicate\"]]],\"last\":1}") {
+        match json.decode<Batch>("{\"items\":[],\"lookup\":[[\"AA==\",[\"first\"]],[\"AA==\",[\"duplicate\"]]],\"last\":1}") {
             .Ok(_) => return 3,
             .Err(_) => {}
         }
     }
     // A managed string's NUL does not terminate the input document.
-    match Payload.from_json("\"Empty\"\0ignored suffix") {
+    match json.decode<Payload>("\"Empty\"\0ignored suffix") {
         .Ok(_) => return 4,
         .Err(_) => {}
     }

@@ -1,0 +1,28 @@
+[[case]]
+id = "codec-unsettled-refused"
+intent = "A decode whose value type never settles and an encoder used as a function value are check-time errors; the annotated decode beside them is accepted."
+source = "cases/codec-unsettled-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 13
+column = 19
+message = "`std.encoding.json.encode` is a compiler codec and cannot be used as a value"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InferenceFailed"
+line = 12
+column = 20
+message = "E_TYPE_ANNOTATION_NEEDED: cannot infer the value type of this codec call"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InferenceFailed"
+line = 12
+column = 9
+message = "cannot infer type for local binding `_unknown`"

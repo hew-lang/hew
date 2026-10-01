@@ -1,0 +1,35 @@
+// Validation: decoding a CBOR body whose enum variant tag is out of range for
+// the target enum returns an UnknownVariant error rather than constructing a
+// fabricated or partially-initialised value. The bytes are well-formed CBOR
+// (unlike wire_cbor_decode_malformed_is_err, which feeds 0xFF garbage that fails
+// at the CBOR-parse layer) - they decode to a single-entry map whose key is an
+// unknown variant tag, so the failure is at the variant-dispatch layer.
+//
+// `Wide::C` encodes wire tag 2; `Narrow` declares only tags 0 and 1. The
+// decoder frees the reader and partial shell before returning the error.
+import std.encoding.cbor;
+
+#[wire]
+enum Wide {
+    A @0;
+    B(i64) @1;
+    C(string) @2;
+}
+
+#[wire]
+enum Narrow {
+    A @0;
+    B(i64) @1;
+}
+
+fn main() -> i64 {
+    let w = Wide.C("out-of-range-payload");
+    let raw = cbor.encode(w);
+    match cbor.decode<Narrow>(raw) {
+        .Ok(_) => 1,
+        .Err(e) => {
+            println(e);
+            42
+        }
+    }
+}

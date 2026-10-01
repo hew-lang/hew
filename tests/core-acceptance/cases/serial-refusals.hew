@@ -1,6 +1,6 @@
 // A key collision after the case is applied, a skipped non-Option field, a
 // resource field and a nested Option are refused at check time.
-import std.encoding.wire;
+import std.encoding.json;
 
 #[resource]
 type Handle {
@@ -27,6 +27,6 @@ type Skipped {
 }
 
 fn main() {
-    let _ = wire.to_json(Holder { handle: Handle { fd: 1 } });
-    let _ = wire.to_json(Twice { value: .None });
+    let _ = json.encode(Holder { handle: Handle { fd: 1 } });
+    let _ = json.encode(Twice { value: .None });
 }

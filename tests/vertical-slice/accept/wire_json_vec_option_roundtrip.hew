@@ -1,6 +1,8 @@
 // Validation: `Vec<T>` and `Option<T>` fields round-trip through JSON. A vector
 // serializes as a JSON array; a `Some(x)` as the value, `None` as null. The
 // recovered vector elements (10 + 20 + 12 = 42) select the exit code.
+import std.encoding.json;
+
 #[wire]
 type Bag {
     items: Vec<i64> @1;
@@ -13,8 +15,8 @@ fn main() -> i64 {
     xs.push(20);
     xs.push(12);
     let bag = Bag { items: xs, label: .Some("tag") };
-    let j = bag.to_json();
-    match Bag.from_json(j) {
+    let j = json.encode(bag);
+    match json.decode<Bag>(j) {
         .Ok(b) => {
             if b.items.len() != 3 {
                 return 1;

@@ -6,6 +6,4 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 60
 
 [case.expected]
-stdout = ""
-stderr = "hew: failure: WireDecodeFailed (210)\n"
-exit = 1
+stdout = "Type: .tail: expected integer, found string\n"

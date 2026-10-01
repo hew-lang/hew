@@ -71,10 +71,10 @@ impl Drop for Line {
     }
 }
 
-fn line(bytes: Vec<u8>) -> Option<Result<IoValue, IoFailure>> {
+fn line(bytes: Vec<u8>) -> IoValue {
     #[cfg(windows)]
     ROOM.notify_all();
-    Some(Ok(IoValue::StdinLine(Line(Some(bytes)))))
+    IoValue::StdinLine(Line(Some(bytes)))
 }
 
 /// Take the next line, or `None` when the buffer needs input it cannot get
@@ -84,12 +84,12 @@ fn attempt(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
     loop {
         if let Some(end) = buffer.data.iter().position(|&byte| byte == b'\n') {
             let bytes = buffer.data.drain(..=end).collect();
-            return line(bytes);
+            return Some(Ok(line(bytes)));
         }
         if buffer.eof || buffer.error.is_some() {
             if !buffer.data.is_empty() {
                 let bytes = std::mem::take(&mut buffer.data);
-                return line(bytes);
+                return Some(Ok(line(bytes)));
             }
             if let Some(error) = buffer.error.take() {
                 #[cfg(windows)]
@@ -97,7 +97,7 @@ fn attempt(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
                 return Some(Err(IoFailure::from_io("read standard input", &error)));
             }
             buffer.eof = false;
-            return line(Vec::new());
+            return Some(Ok(line(Vec::new())));
         }
         #[cfg(unix)]
         match fill(buffer) {

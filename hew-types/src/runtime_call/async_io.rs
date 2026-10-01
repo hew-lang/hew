@@ -248,6 +248,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row and five refusals per native I/O operation"
+    )]
     fn native_io_externs_require_exact_owner_signature_and_borrow_contract() {
         let connection = handle("std.net.Connection");
         let listener = handle("std.net.Listener");

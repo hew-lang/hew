@@ -1,17 +1,17 @@
 //! Small, verifier-backed SIR canonicalization passes.
 //!
 //! This module intentionally starts with CFG canonicalization rather than a
-//! general pass manager. Each transformation is transactional: malformed input
-//! is rejected before mutation, and the verifier must accept the complete
-//! result before it becomes visible to a caller.
+//! general pass manager. A pass assumes a module that already verifies and
+//! rewrites it in place; the caller verifies once after the last pass, so a
+//! pipeline pays for one whole-module verification, not one per pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ownership::TypeFactTable;
 use crate::verify::verify_cfg_discard_safety;
 use crate::{
-    build_cfg_index, verify_module, BlockId, CallableId, SemFunction, SemModule, SemOpKind,
-    SemTerminator, SirDiagnostic, ValueId,
+    build_cfg_index, BlockId, CallableId, SemFunction, SemModule, SemOpKind, SemTerminator,
+    SirDiagnostic, ValueId,
 };
 
 /// Stable result facts from one constant-CFG canonicalization.
@@ -30,70 +30,50 @@ pub struct CfgCanonicalizationReport {
     pub block_remap: BTreeMap<BlockId, BlockId>,
 }
 
-/// A verifier boundary failure around a SIR optimization pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SirOptimizationError {
-    /// The caller supplied malformed SIR. No transformation was attempted.
-    InvalidInput(Vec<SirDiagnostic>),
-    /// A pass implementation violated a SIR invariant. The caller's original
-    /// SIR remains intact.
-    InvalidOutput(Vec<SirDiagnostic>),
-}
-
-/// Canonicalize every verified SIR body in a module transactionally.
+/// Canonicalize every body of a verified module in place.
 ///
 /// The module form preserves callable-table validation around direct calls and
-/// is the intended SIR-to-MIR pipeline boundary.
+/// is the intended SIR-to-MIR pipeline boundary. The module must already pass
+/// [`crate::verify_module`] and the caller verifies it again after the last pass.
 ///
 /// # Errors
 ///
-/// Returns [`SirOptimizationError::InvalidInput`] when the module is not
-/// valid SIR, or [`SirOptimizationError::InvalidOutput`] if canonicalization
-/// would violate a module invariant. In either case, `module` is unchanged.
+/// Returns the diagnostics of the first body whose canonical form no longer
+/// verifies. The module is then partly rewritten and must be discarded.
 pub fn canonicalize_module_constant_cfg(
     module: &mut SemModule,
-) -> Result<Vec<(CallableId, CfgCanonicalizationReport)>, SirOptimizationError> {
-    let diagnostics = verify_module(module);
-    if !diagnostics.is_empty() {
-        return Err(SirOptimizationError::InvalidInput(diagnostics));
-    }
-
-    let mut candidate = module.clone();
-    let facts = candidate.type_facts.clone();
-    let aggregate_shapes = candidate.aggregate_shapes.clone();
-    let variant_shapes = candidate.variant_shapes.clone();
-    let resources = candidate.resources.clone();
+) -> Result<Vec<(CallableId, CfgCanonicalizationReport)>, Vec<SirDiagnostic>> {
+    let SemModule {
+        defs,
+        type_facts,
+        aggregate_shapes,
+        variant_shapes,
+        resources,
+        callables,
+        closures,
+        actors,
+        supervisors,
+        vtables,
+        functions,
+        ..
+    } = module;
     // The callables are not touched by a CFG rewrite, so one index over them
-    // serves every body. `verify_module` above already validated the table.
-    let callables = candidate.callables.clone();
-    let context = crate::verify::callable_context(
-        &candidate.defs,
-        &callables,
-        &candidate.closures,
-        &candidate.actors,
-        &candidate.supervisors,
-        &candidate.vtables,
-    );
-    let mut reports = Vec::with_capacity(candidate.functions.len());
-    for function in &mut candidate.functions {
+    // serves every body.
+    let context =
+        crate::verify::callable_context(defs, callables, closures, actors, supervisors, vtables);
+    let mut reports = Vec::with_capacity(functions.len());
+    for function in functions {
         let report = canonicalize_verified_function(
-            &candidate.defs,
+            defs,
             function,
             Some(&context),
-            &facts,
-            &aggregate_shapes,
-            &variant_shapes,
-            &resources,
-        )
-        .map_err(SirOptimizationError::InvalidOutput)?;
+            type_facts,
+            aggregate_shapes,
+            variant_shapes,
+            resources,
+        )?;
         reports.push((function.callable, report));
     }
-    let diagnostics = verify_module(&candidate);
-    if !diagnostics.is_empty() {
-        return Err(SirOptimizationError::InvalidOutput(diagnostics));
-    }
-
-    *module = candidate;
     Ok(reports)
 }
 
@@ -342,36 +322,29 @@ pub struct DeadLocalTransferReport {
 ///
 /// # Errors
 ///
-/// Returns [`SirOptimizationError::InvalidInput`] when the module is not valid
-/// SIR, or [`SirOptimizationError::InvalidOutput`] when the rewritten module
-/// no longer verifies. In either case, `module` is unchanged.
+/// The module must already pass [`crate::verify_module`] and the caller verifies it
+/// again after the last pass.
 pub fn transfer_module_dead_local_reads(
     module: &mut SemModule,
-) -> Result<Vec<(CallableId, DeadLocalTransferReport)>, SirOptimizationError> {
-    let diagnostics = verify_module(module);
-    if !diagnostics.is_empty() {
-        return Err(SirOptimizationError::InvalidInput(diagnostics));
-    }
-
-    let mut candidate = module.clone();
-    let facts = candidate.type_facts.clone();
-    let aggregate_shapes = candidate.aggregate_shapes.clone();
-    let mut reports = Vec::with_capacity(candidate.functions.len());
-    for function in &mut candidate.functions {
-        let transferred_reads =
-            transfer_dead_local_reads(&candidate.defs, function, &aggregate_shapes, &facts);
-        reports.push((
-            function.callable,
-            DeadLocalTransferReport { transferred_reads },
-        ));
-    }
-    let diagnostics = verify_module(&candidate);
-    if !diagnostics.is_empty() {
-        return Err(SirOptimizationError::InvalidOutput(diagnostics));
-    }
-
-    *module = candidate;
-    Ok(reports)
+) -> Vec<(CallableId, DeadLocalTransferReport)> {
+    let SemModule {
+        defs,
+        type_facts,
+        aggregate_shapes,
+        functions,
+        ..
+    } = module;
+    functions
+        .iter_mut()
+        .map(|function| {
+            let transferred_reads =
+                transfer_dead_local_reads(defs, function, aggregate_shapes, type_facts);
+            (
+                function.callable,
+                DeadLocalTransferReport { transferred_reads },
+            )
+        })
+        .collect()
 }
 
 /// Rewrite one body's dead-after copying reads and report the operations moved.

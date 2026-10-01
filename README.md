@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/hew-bluejay-dark.svg">
+    <img src="assets/brand/hew-bluejay.svg" width="180" alt="Hew's front-facing blue jay, with swept wings">
+  </picture>
+</p>
+
 # Hew
 
 A statically-typed, actor-oriented programming language for concurrent and distributed systems.

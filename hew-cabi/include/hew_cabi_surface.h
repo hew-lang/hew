@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1620u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1619u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1620] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -8065,10 +8065,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1620] = {
      "\"wasm32-wasip1\": \"fn hew_vtable_dispatch_panic_on_oob( u32, u32) -> "
      "!\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_wasm_register_actor_meta",
-     "{\"native\": \"fn hew_wasm_register_actor_meta( *const c_void)\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_weak_clone_rc",
      "{\"native\": \"fn hew_weak_clone_rc( *mut u8) -> *mut u8\", "

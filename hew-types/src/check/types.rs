@@ -316,6 +316,8 @@ pub enum ErrorConversion {
 pub struct FromImpl {
     pub target: Ty,
     pub source: Ty,
+    /// The impl's own type parameters, in the order its method takes them.
+    pub params: Vec<crate::ParamHead>,
     pub method: crate::DefId,
 }
 

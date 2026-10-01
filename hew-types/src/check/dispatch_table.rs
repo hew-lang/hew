@@ -38,10 +38,19 @@ pub struct DispatchTable {
     specialized: HashMap<(NominalInstance, Symbol), Vec<(MethodOwner, DefId)>>,
 }
 
+/// File one method. A later inherent method of the name replaces an earlier
+/// one. A trait implemented at several arguments on one type (`From<A>` and
+/// `From<B>`) files one method per impl, so a call naming the method by name
+/// alone sees every one of them.
 fn file(entries: &mut Vec<(MethodOwner, DefId)>, owner: MethodOwner, method: DefId) {
-    match entries.iter_mut().find(|(existing, _)| *existing == owner) {
-        Some(entry) => entry.1 = method,
-        None => entries.push((owner, method)),
+    if owner == MethodOwner::Inherent {
+        if let Some(entry) = entries.iter_mut().find(|(existing, _)| *existing == owner) {
+            entry.1 = method;
+            return;
+        }
+    }
+    if !entries.contains(&(owner, method)) {
+        entries.push((owner, method));
     }
 }
 
@@ -86,8 +95,9 @@ impl DispatchTable {
             .and_then(|instance| self.specialized.get(&(instance.clone(), name)))
             .cloned()
             .unwrap_or_default();
+        let specialized_owners: Vec<MethodOwner> = found.iter().map(|(owner, _)| *owner).collect();
         for &(owner, method) in self.by_head.get(&(head, name)).into_iter().flatten() {
-            if !found.iter().any(|(existing, _)| *existing == owner) {
+            if !specialized_owners.contains(&owner) {
                 found.push((owner, method));
             }
         }

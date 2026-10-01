@@ -173,6 +173,26 @@ impl Checker {
             .iter()
             .map(|(declaring, _)| self.defs.display(*declaring))
             .collect();
+        if let [(first, _), rest @ ..] = traits {
+            if rest.iter().all(|(declaring, _)| declaring == first) {
+                let name = names[0];
+                self.report_error_with_suggestions(
+                    TypeErrorKind::AmbiguousTraitMethod,
+                    span,
+                    format!(
+                        "ambiguous method `{method}` on `{}`: it implements `{name}` more than \
+                         once, and a call by name cannot choose between the impls",
+                        receiver.user_facing(),
+                    ),
+                    vec![
+                        "give the impls distinct method names, or for `From` let `?` and \
+                          `return error` apply the impl for the error's own type"
+                            .to_string(),
+                    ],
+                );
+                return;
+            }
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousTraitMethod,
             span,

@@ -622,7 +622,14 @@ impl Checker {
                     // A leading-dot variant names a member of the function's
                     // own error type; everything else crosses the edge by the
                     // failure-edge rule.
-                    if matches!(value.0, Expr::ContextVariant(_)) {
+                    let names_own_variant = match &value.0 {
+                        Expr::ContextVariant(_) => true,
+                        Expr::Call { function, .. } => {
+                            matches!(function.0, Expr::ContextVariant(_))
+                        }
+                        _ => false,
+                    };
+                    if names_own_variant {
                         self.check_against(&value.0, &value.1, &error);
                         self.error_conversions.insert(
                             SpanKey::in_module(span, self.current_module_idx),

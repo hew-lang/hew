@@ -2,9 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use hew_parser::ast::{
-    Item, NamingCase, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind,
-};
+use hew_parser::ast::{Item, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind};
 
 // Private schema types — mirror the information extracted from `Item::TypeDecl` with `#[wire]`.
 // These exist so the compatibility logic does not depend on parser AST types directly.
@@ -23,22 +21,6 @@ struct WireSchemaField {
     is_optional: bool,
     is_repeated: bool,
     is_deprecated: bool,
-    // Reserved for future cross-schema encoding compatibility checks.
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    json_name: Option<String>,
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    yaml_name: Option<String>,
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    since: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -47,17 +29,6 @@ struct WireSchema {
     kind: WireSchemaKind,
     fields: Vec<WireSchemaField>,
     variants: Vec<VariantDecl>,
-    // Reserved for future cross-schema encoding compatibility checks.
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    json_case: Option<NamingCase>,
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    yaml_case: Option<NamingCase>,
 }
 
 /// A wire schema with optional version metadata.
@@ -185,9 +156,6 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                             is_optional: fm.is_optional,
                             is_repeated: fm.is_repeated,
                             is_deprecated: fm.is_deprecated,
-                            json_name: fm.json_name,
-                            yaml_name: fm.yaml_name,
-                            since: fm.since,
                         }
                     })
                     .collect();
@@ -197,8 +165,6 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                         kind,
                         fields,
                         variants,
-                        json_case: wire.json_case,
-                        yaml_case: wire.yaml_case,
                     },
                     version,
                     min_version,

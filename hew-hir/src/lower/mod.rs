@@ -22,10 +22,10 @@ use hew_types::check::scope::Resolution;
 use hew_types::env::TypeBindingId;
 use hew_types::BuiltinType;
 use hew_types::{
-    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ExecutionContextReader, LoweringFact,
-    MethodCallReceiverKind, MethodCallRewrite, PatternKind, RcIntrinsicOp, ResolvedTraitBound,
-    ResolvedTy, SpanKey, Ty, TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, CallTarget, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ExecutionContextReader, MethodCallReceiverKind, MethodCallRewrite,
+    PatternKind, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    UserComparisonDispatch, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -1222,35 +1222,11 @@ struct LowerCtx {
     /// (e.g. a builtin or runtime-symbol call) and skipped.
     /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
-    /// Checker-authoritative ABI-selector facts for erased runtime types.
-    /// Currently covers `HashSet` element-type dispatch (`i64`/`u64`/`str`
-    /// → `Int64` or `String` ABI variant).
-    ///
-    /// Passive pass-through: `HashSet` ABI selection lives in MIR/codegen, not
-    /// in HIR lowering.  Future consumer: E4 codegen and slice 4.7 spine
-    /// widening when `HashSet` operations enter the Rust pipeline.
-    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is HashSet ABI selection in E4 codegen"
-    )]
-    lowering_facts: HashMap<SpanKey, LoweringFact>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span.
     ///
     /// Selects indexed-write lowering before consuming the resolved mutation.
     assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
-    /// Checker-resolved assignment target type-shape metadata (signedness flag)
-    /// keyed by the target expression span.  Populated alongside
-    /// `assign_target_kinds` for every accepted assignment.
-    ///
-    /// Passive pass-through: same consumer timeline as `assign_target_kinds`.
-    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
-    )]
-    assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     checked_indexed_place_operations:
         HashMap<SpanKey, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
     indexed_place_operations:

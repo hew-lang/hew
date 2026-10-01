@@ -80,7 +80,6 @@ checker-hir-publication	checker-insert-call	hew-types/src/check/expressions/synt
 checker-hir-publication	checker-insert-call	hew-types/src/check/methods/collections.rs	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/types.rs	stage-2	RC1 syntax-node authority inventory
-hir-ast-boundary	expr-use:collect_emitted_events_inner	hew-hir/src/lower/actors.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:diagnose_poisoned_direct_call_type_args	hew-hir/src/lower/monomorphisation.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:fold_const_expr	hew-hir/src/lower/consts.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:for_in_iterable_is_place	hew-hir/src/lower/iteration.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
@@ -139,7 +138,6 @@ hir-ast-boundary	pattern-use:pattern_name	hew-hir/src/lower/scope.rs	stage-2	D48
 hir-ast-boundary	pattern-use:struct_variant_pattern_parts	hew-hir/src/lower/patterns.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Pattern variants directly instead of a checker-resolved pattern shape
 hir-ast-boundary	pattern-use:struct_variant_payload_aggregate_subpatterns	hew-hir/src/lower/patterns.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Pattern variants directly instead of a checker-resolved pattern shape
 hir-ast-boundary	pattern-use:tuple_variant_pattern_parts	hew-hir/src/lower/patterns.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Pattern variants directly instead of a checker-resolved pattern shape
-hir-ast-boundary	stmt-use:collect_emitted_events_inner	hew-hir/src/lower/actors.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:lower_stmt	hew-hir/src/lower/stmt.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:lower_stmt_multi	hew-hir/src/lower/stmt.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:scan_stmt_for_binop_gates	hew-hir/src/lower/gates.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape

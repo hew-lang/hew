@@ -57,8 +57,8 @@ pub struct TraitImplKey {
 /// `impl Describe for Wrapper<i64>` and `impl Describe for Wrapper<string>`
 /// never collide in the index.
 ///
-/// A structural witness files the inherent method that satisfies a trait
-/// method, unless a nominal impl already provides it.
+/// A structural witness files the method that satisfies a trait method,
+/// unless a nominal impl already provides it.
 #[must_use]
 pub fn build_trait_impl_method_index(
     items: &[HirItem],
@@ -128,10 +128,9 @@ pub fn build_trait_impl_method_index(
         }
     }
     for item in items {
+        // The filler is the method the checker matched: an inherent one, or
+        // another trait's impl method of the same signature.
         let HirItem::Impl(block) = item else { continue };
-        if block.trait_name.is_some() {
-            continue;
-        }
         for (method_id, method_item) in block.method_ids.iter().zip(&block.method_item_ids) {
             let (Some(method_id), Some(function)) = (method_id, functions.get(method_item)) else {
                 continue;

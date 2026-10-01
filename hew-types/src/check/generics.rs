@@ -955,7 +955,7 @@ impl Checker {
         let trait_name: String = {
             let uq = self.strip_module_qualifier(bound);
             match uq {
-                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
+                Some(uq) if !self.has_trait_def(bound) && self.has_trait_def(uq) => uq.to_string(),
                 _ => bound.to_string(),
             }
         };
@@ -1517,9 +1517,13 @@ impl Checker {
         // Convert to owned strings immediately so the shared borrow on self ends
         // before any &mut self calls below.
         let trait_name: String = {
+            // A qualified key that names a registered trait is that trait;
+            // stripping it would select a same-leaf trait instead.
             let uq = self.strip_module_qualifier(trait_name);
             match uq {
-                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
+                Some(uq) if !self.has_trait_def(trait_name) && self.has_trait_def(uq) => {
+                    uq.to_string()
+                }
                 _ => trait_name.to_string(),
             }
         };

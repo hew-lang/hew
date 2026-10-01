@@ -302,10 +302,6 @@ pub enum ResultReturnKind {
 /// the checker in rule order (D547): the same type passes through, a trait
 /// object target erases, and a declared `impl From<E> for F` converts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one conversion per failure edge, recorded once; boxing buys nothing"
-)]
 pub enum ErrorConversion {
     Same,
     Erase(Box<DynCoercion>),
@@ -1175,7 +1171,8 @@ pub struct StructuralWitness {
     pub self_type: crate::NominalId,
     /// The trait method declaration.
     pub method: crate::DefId,
-    /// The inherent method declaration that fills it.
+    /// The method declaration that fills it: an inherent method, or another
+    /// trait's impl method with the same signature.
     pub inherent: crate::DefId,
 }
 

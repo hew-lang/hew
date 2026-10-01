@@ -1,13 +1,13 @@
 //! Call, dyn-dispatch and runtime-operation lowering.
 
 use super::{
-    collection_type_arguments, dyn_boundary_passing, dyn_receiver_passing, evaluation_sequence,
-    is_initial_value_type, lower_initial_value_transfer, positional_call_target,
-    require_initial_scalar_read, require_type_facts, BindingTarget, BlockArg, Builder, CallResult,
-    CallTarget, CallUnwind, Edge, FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand,
-    OwnKind, OwnedBindingUse, PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef,
-    ResolvedTy, SemAbiParam, SemCallableKind, SemOp, SemOpKind, SemParamPassing, SemSignature,
-    SemTerminator, TypeInstanceKey, ValueDef, ValueId, WritableRoot,
+    collection_type_arguments, dyn_boundary_passing, evaluation_sequence, is_initial_value_type,
+    lower_initial_value_transfer, positional_call_target, require_initial_scalar_read,
+    require_type_facts, BindingTarget, BlockArg, Builder, CallResult, CallTarget, CallUnwind, Edge,
+    FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand, OwnKind, OwnedBindingUse,
+    PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef, ResolvedTy, SemAbiParam,
+    SemCallableKind, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
+    TypeInstanceKey, ValueDef, ValueId, WritableRoot,
 };
 
 impl Builder<'_, '_> {
@@ -725,7 +725,6 @@ impl Builder<'_, '_> {
         target: &hew_types::CallTarget,
         args: &[HirExpr],
         evaluation_order: &[usize],
-        signature: &hew_types::FnSig,
     ) -> Result<Option<ValueId>, String> {
         let hew_types::CallTarget::DynamicVtable { method, slot, .. } = target else {
             return Err("dynamic dispatch carries no checker vtable target".to_string());
@@ -735,10 +734,24 @@ impl Builder<'_, '_> {
         let mut loans = Vec::new();
         let return_ty = self.ty(&expr.ty);
         let dispatch = self.dyn_dispatch_signature(args, &return_ty)?;
-        let decision = match dyn_receiver_passing(signature) {
-            SemParamPassing::Consume => crate::BoundaryDecision::Move,
-            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
-            SemParamPassing::Borrow | SemParamPassing::ReadOnly => crate::BoundaryDecision::Borrow,
+        // The slot's receiver mode is the trait declaration's, published in
+        // the layout the erasure filled; no implementer's value class enters.
+        let layout_slot = self
+            .service
+            .module
+            .trait_object_layouts
+            .get(&receiver.ty)
+            .and_then(|layout| layout.slots.get(*slot as usize))
+            .ok_or_else(|| {
+                format!(
+                    "the checker published no slot {slot} for `{}`",
+                    receiver.ty.user_facing()
+                )
+            })?;
+        let decision = match layout_slot.receiver {
+            hew_types::DynReceiver::Consume => crate::BoundaryDecision::Move,
+            hew_types::DynReceiver::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            hew_types::DynReceiver::Borrow => crate::BoundaryDecision::Borrow,
         };
         let value = if decision == crate::BoundaryDecision::Move {
             self.lower_consuming_value(receiver)?

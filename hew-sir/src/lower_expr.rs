@@ -174,10 +174,9 @@ impl Builder<'_, '_> {
                 target,
                 args,
                 evaluation_order,
-                signature,
                 ..
             } => self
-                .lower_dyn_call(expr, receiver, target, args, evaluation_order, signature)?
+                .lower_dyn_call(expr, receiver, target, args, evaluation_order)?
                 .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),

@@ -661,6 +661,33 @@ fn direct_main_observations_require_actor_context() {
     }
 }
 
+/// The refusal follows the callee and the entry function, not their
+/// spellings: a declared `monitor` is an ordinary call in `main`, and a
+/// helper observing an actor is not the entry function.
+#[test]
+fn actor_context_refusal_follows_the_callee_and_the_entry_function() {
+    for source in [
+        "actor Worker { receive fn ping() {} } fn monitor(worker: Worker) -> i64 { 1 } \
+         fn main() { let worker = spawn Worker; let _ = monitor(worker); }",
+        "actor Worker { receive fn ping() {} } fn link(a: Worker, b: Worker) {} \
+         fn main() { let p = spawn Worker; let q = spawn Worker; link(p, q); }",
+        "actor Worker { receive fn ping() {} } fn watch(worker: Worker) { let _ = monitor(worker); } \
+         fn main() { let worker = spawn Worker; watch(worker); }",
+    ] {
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("E_ACTOR_CONTEXT_REQUIRED")),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}
+
 /// A source declaration owns its name even when it resembles a retired
 /// lifecycle operation.
 #[test]

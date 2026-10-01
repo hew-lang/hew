@@ -1981,13 +1981,20 @@ impl Checker {
             return result_ty;
         }
 
-        if matches!(func_name.as_str(), "link" | "monitor")
-            && self
-                .current_function
-                .as_deref()
-                .and_then(|function| self.root_owned_fn_leaf(function))
-                == Some("main")
-            && !self.declares_function(&func_name)
+        // Observing an actor needs a mailbox to deliver to; the entry
+        // function has none. The file's own declaration of the name is the
+        // callee before any builtin of that spelling.
+        let observes_an_actor = self.scoped_fn_declaration(&func_name, false).is_none()
+            && matches!(
+                self.call_target_for_signature(&func_name),
+                CallTarget::Runtime(
+                    crate::runtime_call::RuntimeCallFamily::ActorLink
+                        | crate::runtime_call::RuntimeCallFamily::ActorMonitor
+                )
+            );
+        if observes_an_actor
+            && self.checking_declaration.is_some()
+            && self.checking_declaration == self.entry_function()
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,

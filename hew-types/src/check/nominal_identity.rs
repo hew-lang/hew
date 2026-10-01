@@ -576,6 +576,18 @@ impl Checker {
         self.scopes.record_resolution(site, callee_span, resolution);
     }
 
+    /// The program's entry function: the `main` its root module declares.
+    pub(super) fn entry_function(&self) -> Option<crate::DefId> {
+        let root = self.defs.root_module()?;
+        match self
+            .scopes
+            .item(self.scopes.namespace_of(root), hew_parser::ast::sym::MAIN)?
+        {
+            super::scope::Binding::Fn(id) => Some(id),
+            _ => None,
+        }
+    }
+
     /// The trait or predicate a written bound path names, resolved through
     /// `Scope`.
     pub(super) fn resolve_trait_path(

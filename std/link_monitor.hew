@@ -63,8 +63,8 @@ pub type MonitorRef {
 
 impl MonitorRef {
     /// Return this registration's stable monitor id without consuming the handle.
-    fn id(monitor_ref: MonitorRef) -> MonitorId {
-        MonitorId { value: monitor_ref.ref_id }
+    fn id(self) -> MonitorId {
+        MonitorId { value: self.ref_id }
     }
 
     /// Remove the monitor registration.

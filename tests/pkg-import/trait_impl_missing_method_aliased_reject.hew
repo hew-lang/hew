@@ -16,8 +16,8 @@ type W {
 }
 
 impl P for W {
-    fn tick(w: W) -> i64 {
-        w.id
+    fn tick(self) -> i64 {
+        self.id
     }
 }
 

@@ -1758,6 +1758,7 @@ impl Checker {
                 return_type,
                 requires_mutable_receiver,
                 consumes_receiver: m.consumes_self,
+                associated: !m.params.first().is_some_and(|p| p.is_receiver),
                 returns_receiver_identity,
                 ..FnSig::default()
             });
@@ -2054,6 +2055,7 @@ impl Checker {
                     return_type,
                     requires_mutable_receiver,
                     consumes_receiver: m.consumes_self,
+                    associated: !m.params.first().is_some_and(|p| p.is_receiver),
                     returns_receiver_identity,
                     ..FnSig::default()
                 },

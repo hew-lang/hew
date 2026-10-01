@@ -1,9 +1,9 @@
 //! Right owner in the same-final-component canonical-identity runtime fixture.
 
 pub trait Render {
-    fn render(value: Self) -> string;
+    fn render(self) -> string;
 
-    fn provided(value: Self) -> string {
+    fn provided(self) -> string {
         "right-default"
     }
 }
@@ -52,13 +52,13 @@ pub fn clone_and_consume_parcel(value: Parcel<Box<string>>) -> string {
 }
 
 impl<T> Render for Box<T> {
-    fn render(value: Box<T>) -> string {
+    fn render(self) -> string {
         "right-generic"
     }
 }
 
 impl Render for Box<string> {
-    fn render(value: Box<string>) -> string {
+    fn render(self) -> string {
         "right-specialized"
     }
 }

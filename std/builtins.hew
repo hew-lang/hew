@@ -53,8 +53,8 @@ pub enum NodeError {
 }
 
 impl Display for NodeError {
-    fn fmt(err: NodeError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             NodeError.Config => "Config: the node could not apply the supplied configuration",
         }
     }
@@ -145,8 +145,8 @@ pub type SendFailure<M> {
 }
 
 impl<M> Display for SendFailure<M> {
-    fn fmt(failure: SendFailure<M>) -> string {
-        f"{failure.reason}"
+    fn fmt(self) -> string {
+        f"{self.reason}"
     }
 }
 
@@ -161,8 +161,8 @@ pub enum Delivery {
 }
 
 impl Display for Delivery {
-    fn fmt(outcome: Delivery) -> string {
-        match outcome {
+    fn fmt(self) -> string {
+        match self {
             Delivery.Accepted => "accepted",
             Delivery.Discarded => "discarded: the destination's mailbox was full",
         }
@@ -215,8 +215,8 @@ pub enum SendError {
 }
 
 impl Display for SendError {
-    fn fmt(err: SendError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             SendError.Full => "Full: the destination mailbox is full",
             SendError.Closed => "Closed: the sink or connection is closed",
             SendError.Partition => "Partition: the route to the peer is unavailable or the peer is suspected dead",
@@ -259,8 +259,8 @@ pub enum LookupError {
 }
 
 impl Display for LookupError {
-    fn fmt(err: LookupError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             LookupError.NotFound => "NotFound: no actor is registered under the requested name",
             LookupError.Partition => "Partition: the lookup route is unavailable or the peer is suspected dead",
             LookupError.StaleRef => "StaleRef: the name resolved to an old session or actor incarnation",
@@ -283,7 +283,7 @@ pub enum Never {
 }
 
 impl Display for Never {
-    fn fmt(err: Never) -> string {
+    fn fmt(self) -> string {
         "unreachable"
     }
 }
@@ -324,8 +324,8 @@ pub enum ActorError<E, Req> {
 }
 
 impl<E: Display, Req> Display for ActorError<E, Req> {
-    fn fmt(err: ActorError<E, Req>) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             ActorError.Rejected(failure) => f"Rejected: {failure.reason}",
             ActorError.Failed(e) => f"Failed: {e}",
             ActorError.Trapped => "Trapped: the handler faulted before replying",
@@ -351,8 +351,8 @@ pub enum LinkError {
 }
 
 impl Display for LinkError {
-    fn fmt(err: LinkError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             LinkError.Dead => "Dead: the target actor has already exited",
             LinkError.Partition => "Partition: the route to the peer is unavailable",
             LinkError.NoContext => "NoContext: the operation requires an actor context",
@@ -374,7 +374,7 @@ pub trait ActorMsg {
 
 impl<T: ActorMsg> ChildRef<T> {
     /// Send a message to the currently live actor in this supervised role.
-    fn send(child: ChildRef<T>, msg: T.Msg) -> Result<(), SendError> {
+    fn send(self, msg: T.Msg) -> Result<(), SendError> {
         .Err(SendError.Closed)
     }
 }
@@ -382,54 +382,54 @@ impl<T: ActorMsg> ChildRef<T> {
 impl<T> RemotePid<T> {
     /// Return the complete carried actor location.
     #[extern_symbol(hew_remote_pid_location)]
-    fn location(pid: RemotePid<T>) -> Location {}
+    fn location(self) -> Location {}
     /// Return the stable node identity.
     #[extern_symbol(hew_remote_pid_node_id)]
-    fn node_id(pid: RemotePid<T>) -> NodeId {}
+    fn node_id(self) -> NodeId {}
     /// Return the actor's node-local slot.
     #[extern_symbol(hew_remote_pid_slot)]
-    fn slot(pid: RemotePid<T>) -> u64 {}
+    fn slot(self) -> u64 {}
     /// Return the node-session incarnation.
     #[extern_symbol(hew_remote_pid_incarnation)]
-    fn incarnation(pid: RemotePid<T>) -> u32 {}
+    fn incarnation(self) -> u32 {}
     #[extern_symbol(hew_remote_pid_display)]
-    fn display(pid: RemotePid<T>) -> string {}
+    fn display(self) -> string {}
 }
 
 impl Location {
     /// Return the stable node identity.
     #[extern_symbol(hew_location_node_id)]
-    fn node_id(location: Location) -> NodeId {}
+    fn node_id(self) -> NodeId {}
     /// Return the actor's node-local slot.
     #[extern_symbol(hew_location_slot)]
-    fn slot(location: Location) -> u64 {}
+    fn slot(self) -> u64 {}
     /// Return the node-session incarnation.
     #[extern_symbol(hew_location_incarnation)]
-    fn incarnation(location: Location) -> u32 {}
+    fn incarnation(self) -> u32 {}
     #[extern_symbol(hew_location_display)]
-    fn display(location: Location) -> string {}
+    fn display(self) -> string {}
 }
 
 impl NodeId {
     #[extern_symbol(hew_node_id_display)]
-    fn display(id: NodeId) -> string {}
+    fn display(self) -> string {}
 }
 
 impl Display for NodeId {
-    fn fmt(val: NodeId) -> string {
-        val.display()
+    fn fmt(self) -> string {
+        self.display()
     }
 }
 
 impl Display for Location {
-    fn fmt(val: Location) -> string {
-        val.display()
+    fn fmt(self) -> string {
+        self.display()
     }
 }
 
 impl<T> Display for RemotePid<T> {
-    fn fmt(val: RemotePid<T>) -> string {
-        val.display()
+    fn fmt(self) -> string {
+        self.display()
     }
 }
 
@@ -437,14 +437,14 @@ impl<T: ActorMsg> RemotePid<T> {
     /// Send a message to this remote actor's `ActorMsg` member. The message
     /// needs a `#[wire]` schema. The checker lowers every native call site
     /// to a remote submission, so this body only seeds its signature.
-    fn send(pid: RemotePid<T>, msg: T.Msg) -> Result<(), SendError> {
+    fn send(self, msg: T.Msg) -> Result<(), SendError> {
         .Err(SendError.Partition)
     }
     /// Ask this remote actor for a reply, failing with `ActorError` if the
     /// caller-supplied timeout elapses or routing/reply delivery fails. A
     /// remote call carries no sealed message, so it never reports `Rejected`.
     /// The message and reply need `#[wire]` schemas.
-    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
+    fn ask(self, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
         .Err(ActorError.NodeNotRunning)
     }
 }
@@ -510,29 +510,29 @@ pub trait IntoIterator {
 // ---------------------------------------------------------------------------
 impl<T> Vec<T> {
     #[extern_symbol("hew_vec_push_{T}")]
-    fn push(v: Vec<T>, value: T) {}
+    fn push(self, value: T) {}
     #[extern_symbol("hew_vec_pop_{T}")]
-    fn pop(v: Vec<T>) -> T {}
+    fn pop(self) -> T {}
     #[extern_symbol(hew_vec_len)]
-    fn len(v: Vec<T>) -> i64 {}
+    fn len(self) -> i64 {}
     #[extern_symbol("hew_vec_get_{T}")]
-    fn get(v: Vec<T>, index: i64) -> Option<T> {}
+    fn get(self, index: i64) -> Option<T> {}
     #[extern_symbol("hew_vec_set_{T}")]
-    fn set(v: Vec<T>, index: i64, value: T) {}
+    fn set(self, index: i64, value: T) {}
     #[extern_symbol("hew_vec_remove_at_{T}")]
-    fn remove(v: Vec<T>, index: i64) -> T {}
+    fn remove(self, index: i64) -> T {}
     #[extern_symbol("hew_vec_contains_{T}")]
-    fn contains(v: Vec<T>, value: T) -> bool {}
+    fn contains(self, value: T) -> bool {}
     #[extern_symbol(hew_vec_is_empty)]
-    fn is_empty(v: Vec<T>) -> bool {}
+    fn is_empty(self) -> bool {}
     #[extern_symbol(hew_vec_clear)]
-    fn clear(v: Vec<T>) {}
+    fn clear(self) {}
     #[extern_symbol(hew_vec_clone)]
-    fn clone(v: Vec<T>) -> Vec<T> {}
+    fn clone(self) -> Vec<T> {}
     #[extern_symbol(hew_vec_append)]
-    fn append(v: Vec<T>, other: Vec<T>) {}
+    fn append(self, other: Vec<T>) {}
     #[extern_symbol(hew_vec_join_str)]
-    fn join(v: Vec<T>, separator: string) -> string {}
+    fn join(self, separator: string) -> string {}
 }
 
 // ---------------------------------------------------------------------------
@@ -598,8 +598,8 @@ impl<T> IntoIterator for Vec<T> {
     /// storage; mutating the source `Vec` while a `VecIter` is live yields
     /// the same semantics as any other shared-handle aliasing in Hew
     /// (no iterator-invalidation diagnostic — see Stage 5 HashSet note).
-    fn into_iter(v: Vec<T>) -> VecIter<T> {
-        VecIter { vec: v, idx: 0 }
+    fn into_iter(self) -> VecIter<T> {
+        VecIter { vec: self, idx: 0 }
     }
 }
 
@@ -746,7 +746,7 @@ impl<K, V> Index<K> for HashMap<K, V> {
 #[lang_item("display")]
 pub trait Display {
     #[lang_item(display_fmt)]
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 /// The marker an error type carries so it can be erased to `dyn Error`.
@@ -773,92 +773,92 @@ pub trait From<Source> {
 // migrate to user trait dispatch, these bodies become the single
 // source of truth.
 impl Display for i8 {
-    fn fmt(val: i8) -> string {
-        to_string(val as i32)
+    fn fmt(self) -> string {
+        to_string(self as i32)
     }
 }
 
 impl Display for i16 {
-    fn fmt(val: i16) -> string {
-        to_string(val as i32)
+    fn fmt(self) -> string {
+        to_string(self as i32)
     }
 }
 
 impl Display for i32 {
-    fn fmt(val: i32) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for i64 {
-    fn fmt(val: i64) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for u8 {
-    fn fmt(val: u8) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for u16 {
-    fn fmt(val: u16) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for u32 {
-    fn fmt(val: u32) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for u64 {
-    fn fmt(val: u64) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for isize {
-    fn fmt(val: isize) -> string {
-        to_string(val as i64)
+    fn fmt(self) -> string {
+        to_string(self as i64)
     }
 }
 
 impl Display for usize {
-    fn fmt(val: usize) -> string {
-        to_string(val as u64)
+    fn fmt(self) -> string {
+        to_string(self as u64)
     }
 }
 
 impl Display for bool {
-    fn fmt(val: bool) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for char {
-    fn fmt(val: char) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for f64 {
-    fn fmt(val: f64) -> string {
-        to_string(val)
+    fn fmt(self) -> string {
+        to_string(self)
     }
 }
 
 impl Display for f32 {
-    fn fmt(val: f32) -> string {
-        to_string(val as f64)
+    fn fmt(self) -> string {
+        to_string(self as f64)
     }
 }
 
 impl Display for string {
-    fn fmt(val: string) -> string {
-        val
+    fn fmt(self) -> string {
+        self
     }
 }
 
@@ -898,42 +898,42 @@ impl duration {
 impl duration {
     #[runtime(family = DurationNanos, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_nanos)]
-    fn nanos(d: duration) -> i64 {
+    fn nanos(self) -> i64 {
         0
     }
     #[runtime(family = DurationMicros, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_micros)]
-    fn micros(d: duration) -> i64 {
+    fn micros(self) -> i64 {
         0
     }
     #[runtime(family = DurationMillis, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_millis)]
-    fn millis(d: duration) -> i64 {
+    fn millis(self) -> i64 {
         0
     }
     #[runtime(family = DurationSecs, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_secs)]
-    fn secs(d: duration) -> i64 {
+    fn secs(self) -> i64 {
         0
     }
     #[runtime(family = DurationMins, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_mins)]
-    fn mins(d: duration) -> i64 {
+    fn mins(self) -> i64 {
         0
     }
     #[runtime(family = DurationHours, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_hours)]
-    fn hours(d: duration) -> i64 {
+    fn hours(self) -> i64 {
         0
     }
     #[runtime(family = DurationAbs, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_abs)]
-    fn abs(d: duration) -> duration {
-        d
+    fn abs(self) -> duration {
+        self
     }
     #[runtime(family = DurationIsZero, lowering = direct, target = native, classification = stable, c_return = truth_i32)]
     #[extern_symbol(hew_duration_is_zero)]
-    fn is_zero(d: duration) -> bool {
+    fn is_zero(self) -> bool {
         false
     }
 }
@@ -946,12 +946,12 @@ impl instant {
     }
     #[runtime(family = InstantElapsed, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_elapsed)]
-    fn elapsed(i: instant) -> duration {
+    fn elapsed(self) -> duration {
         0ns
     }
     #[runtime(family = InstantDurationSince, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_duration_since)]
-    fn duration_since(i: instant, earlier: instant) -> duration {
+    fn duration_since(self, earlier: instant) -> duration {
         0ns
     }
 }
@@ -963,8 +963,8 @@ impl instant {
 // has no Display body — it canonicalises to i64 and renders as raw nanos
 // through HIR's i64 dispatch arm (see `require_display_impl`).
 impl Display for duration {
-    fn fmt(val: duration) -> string {
-        to_string(val.nanos()) + "ns"
+    fn fmt(self) -> string {
+        to_string(self.nanos()) + "ns"
     }
 }
 
@@ -1143,8 +1143,8 @@ pub enum ScopeFailure {
 }
 
 impl Display for ScopeFailure {
-    fn fmt(failure: ScopeFailure) -> string {
-        match failure {
+    fn fmt(self) -> string {
+        match self {
             ScopeFailure.Deadline { message } => f"Deadline: {message}",
             ScopeFailure.Fault { message } => f"Fault: {message}",
         }

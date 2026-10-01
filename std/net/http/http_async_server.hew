@@ -119,23 +119,23 @@ trait AsyncRequestMethods {
 }
 
 impl AsyncRequestMethods for AsyncRequest {
-    fn method(req: AsyncRequest) -> string {
-        req.verb
+    fn method(self) -> string {
+        self.verb
     }
-    fn path(req: AsyncRequest) -> string {
-        req.target
+    fn path(self) -> string {
+        self.target
     }
-    fn header(req: AsyncRequest, name: string) -> string {
-        find_header(req.header_section, name)
+    fn header(self, name: string) -> string {
+        find_header(self.header_section, name)
     }
-    fn body(req: AsyncRequest) -> string {
-        req.body_text
+    fn body(self) -> string {
+        self.body_text
     }
-    fn reject_status(req: AsyncRequest) -> i64 {
-        req.reject_code
+    fn reject_status(self) -> i64 {
+        self.reject_code
     }
-    fn is_valid(req: AsyncRequest) -> bool {
-        req.reject_code == 0
+    fn is_valid(self) -> bool {
+        self.reject_code == 0
     }
 }
 

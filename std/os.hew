@@ -77,8 +77,8 @@ pub enum EnvError {
 }
 
 impl Display for EnvError {
-    fn fmt(err: EnvError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             EnvError.InvalidName(name) => f"invalid environment variable name: `{name}`",
         }
     }

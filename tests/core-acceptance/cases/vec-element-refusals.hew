@@ -14,7 +14,7 @@ impl Conn {
 }
 
 trait Speaker {
-    fn speak(val: Self) -> i64;
+    fn speak(self) -> i64;
 }
 
 fn _repeat_resource() {

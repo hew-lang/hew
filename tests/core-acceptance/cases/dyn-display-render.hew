@@ -1,8 +1,8 @@
 type Note { text: string; }
-impl Display for Note { fn fmt(val: Note) -> string { f"note {val.text}" } }
+impl Display for Note { fn fmt(self) -> string { f"note {self.text}" } }
 
 type Boom { code: i64; }
-impl Display for Boom { fn fmt(val: Boom) -> string { f"boom {val.code}" } }
+impl Display for Boom { fn fmt(self) -> string { f"boom {self.code}" } }
 impl Error for Boom {}
 
 fn fail() -> Result<i64, dyn Error> { .Err(Boom { code: 7 }) }

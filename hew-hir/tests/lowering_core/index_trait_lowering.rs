@@ -49,12 +49,12 @@ fn index_trait_user_impl_lowers_to_at_call() {
 impl Index for Grid {
     type Output = i32;
 
-    fn get(g: Grid, index: i32) -> Option<i32> {
-        .Some(g.bias + index)
+    fn get(self, index: i32) -> Option<i32> {
+        .Some(self.bias + index)
     }
 
-    fn at(g: Grid, index: i32) -> i32 {
-        g.bias + index
+    fn at(self, index: i32) -> i32 {
+        self.bias + index
     }
 }
 

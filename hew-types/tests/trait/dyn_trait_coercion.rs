@@ -111,7 +111,7 @@ fn two_concrete_types_to_dyn_display_produce_distinct_entries() {
 fn generic_method_breaks_object_safety_in_dyn_position() {
     let output = typecheck_isolated(
         r#"trait WithGenericMethod {
-    fn foo<U>(val: Self, u: U) -> i64;
+    fn foo<U>(self, u: U) -> i64;
 }
 
 type Widget {
@@ -119,7 +119,7 @@ type Widget {
 }
 
 impl WithGenericMethod for Widget {
-    fn foo<U>(val: Widget, u: U) -> i64 {
+    fn foo<U>(self, u: U) -> i64 {
         0
     }
 }
@@ -165,7 +165,7 @@ fn main() {
 fn self_return_breaks_object_safety_in_dyn_position() {
     let output = typecheck_isolated(
         r#"trait Cloneable {
-    fn cloned(val: Self) -> Self;
+    fn cloned(self) -> Self;
 }
 
 type Widget {
@@ -173,8 +173,8 @@ type Widget {
 }
 
 impl Cloneable for Widget {
-    fn cloned(val: Widget) -> Widget {
-        Widget { name: val.name }
+    fn cloned(self) -> Widget {
+        Widget { name: self.name }
     }
 }
 
@@ -217,7 +217,7 @@ fn dyn_iterator_with_item_binding_object_safe() {
     let output = typecheck_embedded_builtins_isolated(
         r"trait Iterator {
     type Item;
-    fn next(iter: Self) -> Option<Self.Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 
 type Counter {
@@ -226,8 +226,8 @@ type Counter {
 
 impl Iterator for Counter {
     type Item = i32;
-    fn next(iter: Counter) -> Option<i32> {
-        .Some(iter.value)
+    fn next(self) -> Option<i32> {
+        .Some(self.value)
     }
 }
 
@@ -260,7 +260,7 @@ fn dyn_iterator_without_binding_rejected() {
     let output = typecheck_embedded_builtins_isolated(
         r"trait Iterator {
     type Item;
-    fn next(iter: Self) -> Option<Self.Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 
 type Counter {
@@ -269,8 +269,8 @@ type Counter {
 
 impl Iterator for Counter {
     type Item = i32;
-    fn next(iter: Counter) -> Option<i32> {
-        .Some(iter.value)
+    fn next(self) -> Option<i32> {
+        .Some(self.value)
     }
 }
 
@@ -311,7 +311,7 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
     let output = typecheck_embedded_builtins_isolated(
         r"trait Iterator {
     type Item;
-    fn next(iter: Self) -> Option<Self.Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 
 type Counter {
@@ -319,8 +319,8 @@ type Counter {
 }
 
 impl Iterator for Counter {
-    fn next(iter: Counter) -> Option<i32> {
-        .Some(iter.value)
+    fn next(self) -> Option<i32> {
+        .Some(self.value)
     }
 }
 
@@ -351,7 +351,7 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
     let output = typecheck_embedded_builtins_isolated(
         r#"trait Iterator {
     type Item;
-    fn next(iter: Self) -> Option<Self.Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 
 type IntCounter {
@@ -364,15 +364,15 @@ type StringCounter {
 
 impl Iterator for IntCounter {
     type Item = i32;
-    fn next(iter: IntCounter) -> Option<i32> {
-        .Some(iter.value)
+    fn next(self) -> Option<i32> {
+        .Some(self.value)
     }
 }
 
 impl Iterator for StringCounter {
     type Item = string;
-    fn next(iter: StringCounter) -> Option<string> {
-        .Some(iter.value)
+    fn next(self) -> Option<string> {
+        .Some(self.value)
     }
 }
 
@@ -411,7 +411,7 @@ fn dyn_trait_method_signature_substituted() {
     let output = typecheck_embedded_builtins_isolated(
         r"trait Iterator {
     type Item;
-    fn next(iter: Self) -> Option<Self.Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 
 type Counter {
@@ -420,8 +420,8 @@ type Counter {
 
 impl Iterator for Counter {
     type Item = i32;
-    fn next(iter: Counter) -> Option<i32> {
-        .Some(iter.value)
+    fn next(self) -> Option<i32> {
+        .Some(self.value)
     }
 }
 
@@ -460,7 +460,7 @@ fn main() {
 fn structural_impl_publishes_its_witness_for_dyn_named() {
     let output = typecheck_isolated(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Widget {
@@ -468,8 +468,8 @@ type Widget {
 }
 
 impl Widget {
-    fn name(val: Widget) -> string {
-        val.label
+    fn name(self) -> string {
+        self.label
     }
 }
 
@@ -530,7 +530,7 @@ fn main() {
 fn type_without_the_method_is_refused_for_dyn_named() {
     let output = typecheck_isolated(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Widget {
@@ -576,7 +576,7 @@ fn main() {
 fn dyn_annotated_let_binds_the_trait_object_type() {
     let output = typecheck(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Widget {
@@ -584,8 +584,8 @@ type Widget {
 }
 
 impl Named for Widget {
-    fn name(w: Widget) -> string {
-        w.label
+    fn name(self) -> string {
+        self.label
     }
 }
 
@@ -614,7 +614,7 @@ fn main() {
 fn dyn_annotated_var_accepts_a_second_concrete_impl() {
     let output = typecheck(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Widget {
@@ -622,8 +622,8 @@ type Widget {
 }
 
 impl Named for Widget {
-    fn name(w: Widget) -> string {
-        w.label
+    fn name(self) -> string {
+        self.label
     }
 }
 
@@ -632,8 +632,8 @@ type Gadget {
 }
 
 impl Named for Gadget {
-    fn name(g: Gadget) -> string {
-        g.label
+    fn name(self) -> string {
+        self.label
     }
 }
 
@@ -664,7 +664,7 @@ fn main() {
 fn dyn_annotated_let_dispatches_through_the_vtable() {
     let output = typecheck(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Widget {
@@ -672,8 +672,8 @@ type Widget {
 }
 
 impl Named for Widget {
-    fn name(w: Widget) -> string {
-        w.label
+    fn name(self) -> string {
+        self.label
     }
 }
 
@@ -704,7 +704,7 @@ fn main() {
 fn clone_on_a_trait_object_is_rejected_with_a_named_limit() {
     let output = typecheck(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Widget {
@@ -712,8 +712,8 @@ type Widget {
 }
 
 impl Named for Widget {
-    fn name(w: Widget) -> string {
-        w.label
+    fn name(self) -> string {
+        self.label
     }
 }
 
@@ -744,7 +744,7 @@ fn main() {
 fn dyn_return_joins_record_each_concrete_arm_coercion() {
     let output = typecheck_isolated(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Dog {
@@ -752,8 +752,8 @@ type Dog {
 }
 
 impl Dog {
-    fn name(val: Dog) -> string {
-        val.tag
+    fn name(self) -> string {
+        self.tag
     }
 }
 
@@ -763,8 +763,8 @@ type Cat {
 }
 
 impl Cat {
-    fn name(val: Cat) -> string {
-        val.tag
+    fn name(self) -> string {
+        self.tag
     }
 }
 
@@ -813,7 +813,7 @@ fn choose_match(kind: i64) -> dyn Named {
 fn nested_and_early_dyn_return_paths_never_reach_graph_errors() {
     let output = typecheck_isolated(
         r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Dog {
@@ -821,8 +821,8 @@ type Dog {
 }
 
 impl Dog {
-    fn name(val: Dog) -> string {
-        val.tag
+    fn name(self) -> string {
+        self.tag
     }
 }
 
@@ -832,8 +832,8 @@ type Cat {
 }
 
 impl Cat {
-    fn name(val: Cat) -> string {
-        val.tag
+    fn name(self) -> string {
+        self.tag
     }
 }
 

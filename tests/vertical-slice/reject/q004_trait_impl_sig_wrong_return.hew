@@ -21,8 +21,8 @@ pub type Holder {
 
 impl Container for Holder {
     type Item = i64;
-    fn unwrap(h: Holder) -> i64 {
-        h.n
+    fn unwrap(self) -> i64 {
+        self.n
     }
 }
 

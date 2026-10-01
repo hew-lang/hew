@@ -20,7 +20,7 @@ use hew_types::Checker;
 use common::parse_program;
 
 const TRAIT_AND_IMPL: &str = r#"trait Sink {
-    fn drain(val: Self);
+    fn drain(self);
 }
 
 type Bucket {
@@ -28,7 +28,7 @@ type Bucket {
 }
 
 impl Sink for Bucket {
-    fn drain(val: Bucket) {}
+    fn drain(self) {}
 }
 
 fn main() {
@@ -98,7 +98,7 @@ fn consume_receiver_records_per_call_site_flag() {
 #[test]
 fn flag_span_matches_consuming_call_site() {
     let source = r#"trait Sink {
-    fn drain(val: Self);
+    fn drain(self);
 }
 
 type Bucket {
@@ -106,7 +106,7 @@ type Bucket {
 }
 
 impl Sink for Bucket {
-    fn drain(val: Bucket) {}
+    fn drain(self) {}
 }
 
 fn main() {

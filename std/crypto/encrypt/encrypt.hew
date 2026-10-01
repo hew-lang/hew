@@ -58,8 +58,8 @@ fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI erro
 }
 
 impl Display for CryptoError {
-    fn fmt(err: CryptoError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             CryptoError.None => "no error",
             CryptoError.InvalidKey => "encrypt key must be 32 bytes",
             CryptoError.ShortCiphertext => "encrypt ciphertext is too short",

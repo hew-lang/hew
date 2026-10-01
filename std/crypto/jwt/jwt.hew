@@ -40,8 +40,8 @@ fn jwt_error_from_i32(code: i32) -> JwtError { // INTERNAL-ABI: C ABI error tag 
 }
 
 impl Display for JwtError {
-    fn fmt(err: JwtError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             JwtError.None => "no error",
             JwtError.AlgorithmUnsupported => "JWT algorithm is not supported",
             JwtError.InvalidKey => "JWT key input is invalid",

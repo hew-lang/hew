@@ -255,6 +255,9 @@ impl Checker {
                 None,
             ),
         };
+        if self.refuse_associated_dot_call(&sig, name, method, args, span) {
+            return Some(Ty::Error);
+        }
         let return_type = self
             .apply_instantiated_call_signature(
                 &sig,

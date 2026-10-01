@@ -28,7 +28,7 @@ fn point_sum(p: Point) -> i64 {
 // A trait declares a named contract.
 // impl blocks provide the concrete implementation for each type.
 trait Describe {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 type Circle {
@@ -41,13 +41,13 @@ type Rectangle {
 }
 
 impl Describe for Circle {
-    fn describe(c: Circle) -> string {
+    fn describe(self) -> string {
         "Circle"
     }
 }
 
 impl Describe for Rectangle {
-    fn describe(r: Rectangle) -> string {
+    fn describe(self) -> string {
         "Rectangle"
     }
 }

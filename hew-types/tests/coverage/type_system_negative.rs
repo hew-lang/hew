@@ -494,8 +494,8 @@ fn main() {}
 fn duplicate_definition_same_trait() {
     expect_duplicate_definition_span_kind_name(
         r"
-        trait Printable { fn render(val: Self) -> i64; }
-        trait Printable { fn print(val: Self) -> i64; }
+        trait Printable { fn render(self) -> i64; }
+        trait Printable { fn print(self) -> i64; }
         fn main() {}
     ",
         "Printable",
@@ -599,7 +599,7 @@ fn main() {
 fn machine_event_member_and_flat_trait_have_distinct_identities() {
     let output = typecheck(
         r"trait LightEvent {
-    fn render(val: Self) -> i64;
+    fn render(self) -> i64;
 }
 
 machine Light {
@@ -717,7 +717,7 @@ fn main() {}
 fn duplicate_definition_type_alias_collides_with_trait() {
     let output = typecheck(
         r"
-        trait Foo { fn render(val: Self) -> i64; }
+        trait Foo { fn render(self) -> i64; }
         type Foo = i64;
         fn main() {}
     ",
@@ -1511,7 +1511,7 @@ fn inference_hole_generic_impl_method_return_signature_is_resolved() {
 }
 
 impl<T> Box<T> {
-    fn get(boxed: Box<T>, x: T) -> _ {
+    fn get(self, x: T) -> _ {
         x
     }
 }
@@ -2029,7 +2029,7 @@ fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
 fn bounds_not_satisfied_missing_trait_impl() {
     let output = typecheck(
         r"trait Printable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 type Dog {
@@ -2037,8 +2037,8 @@ type Dog {
 }
 
 impl Printable for Dog {
-    fn describe(d: Dog) -> string {
-        d.name
+    fn describe(self) -> string {
+        self.name
     }
 }
 

@@ -26,6 +26,35 @@ use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 impl Checker {
+    /// A dot call reaches only a method declared with a `self` receiver. An
+    /// associated function is refused here and called through its type.
+    pub(super) fn refuse_associated_dot_call(
+        &mut self,
+        sig: &FnSig,
+        owner: &str,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> bool {
+        if !sig.associated {
+            return false;
+        }
+        for arg in args {
+            let (expr, arg_span) = arg.expr();
+            self.synthesize(expr, arg_span);
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            format!(
+                "`{method}` is an associated function of `{owner}`, not a method; \
+                 call it as `{owner}.{method}(..)`"
+            ),
+            vec!["add a `self` receiver".to_string()],
+        );
+        true
+    }
+
     /// Mutable methods write back to the receiver's place. Record projections
     /// share their root's mutability, just as they do for field assignment.
     pub(super) fn check_mutable_method_receiver(
@@ -1826,6 +1855,9 @@ impl Checker {
                     _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
                 };
                 if let Some(sig) = sig {
+                    if self.refuse_associated_dot_call(&sig, name, method, args, span) {
+                        return Ty::Error;
+                    }
                     if sig.requires_mutable_receiver {
                         self.check_mutable_method_receiver(
                             receiver,
@@ -2312,6 +2344,15 @@ impl Checker {
                         trait_sig.return_type = trait_sig
                             .return_type
                             .substitute_type_param(self_parameter, &self_ty);
+                        if self.refuse_associated_dot_call(
+                            &trait_sig,
+                            &declaring_trait,
+                            method,
+                            args,
+                            span,
+                        ) {
+                            return Ty::Error;
+                        }
                         if trait_sig.requires_mutable_receiver {
                             self.check_mutable_method_receiver(
                                 receiver,

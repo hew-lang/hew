@@ -59,8 +59,8 @@ pub enum MetricsError {
 }
 
 impl Display for MetricsError {
-    fn fmt(err: MetricsError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             MetricsError.Rejected(reason) => reason,
         }
     }
@@ -107,15 +107,15 @@ trait CounterMethods {
 
 impl CounterMethods for Counter {
     /// Increment the counter by one.
-    fn inc(c: Counter) {
+    fn inc(self) {
         unsafe {
-            hew_metric_counter_inc(c.id)
+            hew_metric_counter_inc(self.id)
         };
     }
     /// Add `n` to the counter. A negative `n` is rejected and counted.
-    fn add(c: Counter, n: i64) {
+    fn add(self, n: i64) {
         unsafe {
-            hew_metric_counter_add(c.id, n)
+            hew_metric_counter_add(self.id, n)
         };
     }
 }
@@ -137,27 +137,27 @@ trait GaugeMethods {
 
 impl GaugeMethods for Gauge {
     /// Increment the gauge by one.
-    fn inc(g: Gauge) {
+    fn inc(self) {
         unsafe {
-            hew_metric_gauge_inc(g.id)
+            hew_metric_gauge_inc(self.id)
         };
     }
     /// Decrement the gauge by one.
-    fn dec(g: Gauge) {
+    fn dec(self) {
         unsafe {
-            hew_metric_gauge_dec(g.id)
+            hew_metric_gauge_dec(self.id)
         };
     }
     /// Set the gauge to `n`.
-    fn set(g: Gauge, n: i64) {
+    fn set(self, n: i64) {
         unsafe {
-            hew_metric_gauge_set(g.id, n)
+            hew_metric_gauge_set(self.id, n)
         };
     }
     /// Add `n` (any sign) to the gauge.
-    fn add(g: Gauge, n: i64) {
+    fn add(self, n: i64) {
         unsafe {
-            hew_metric_gauge_add(g.id, n)
+            hew_metric_gauge_add(self.id, n)
         };
     }
 }
@@ -172,9 +172,9 @@ trait HistogramMethods {
 impl HistogramMethods for Histogram {
     /// Record one observation of value `v`; fractional values are preserved
     /// in the rendered histogram `_sum` sample.
-    fn observe(h: Histogram, v: f64) {
+    fn observe(self, v: f64) {
         unsafe {
-            hew_metric_histogram_record(h.id, v)
+            hew_metric_histogram_record(self.id, v)
         };
     }
 }

@@ -3,8 +3,8 @@ type Token {
 }
 
 impl Drop for Token {
-    fn drop(token: Token) {
-        println(token.id);
+    fn drop(self) {
+        println(self.id);
     }
 }
 

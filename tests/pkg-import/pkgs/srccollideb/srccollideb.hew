@@ -7,5 +7,5 @@
 
 /// A closable source whose `close` returns a bare status code.
 pub trait Source {
-    fn close(val: Self) -> i64;
+    fn close(self) -> i64;
 }

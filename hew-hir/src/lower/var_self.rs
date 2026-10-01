@@ -3,56 +3,16 @@
 use super::*;
 
 impl LowerCtx {
-    /// Reduce a symbol-prefix impl self-type name to the bare AST receiver
-    /// type name — may be the mangled form for concrete specialised impls
-    /// (e.g. `"Wrapper$$i64"`), and must compare as `"Wrapper"` so the
-    /// param-type annotation `Wrapper<i64>` still matches (#2270).
-    ///
-    /// The SINGLE derivation feeding [`Self::is_var_self_method_for_type`]:
-    /// both the fn-registry ABI registration (dual-return tuple) and the
-    /// body-lowering return wrap key off this same name reduction so the
-    /// registered callee return type and the emitted body agree.
-    pub(super) fn bare_impl_self_type_name(self_type_name: &str) -> &str {
-        let bare = self_type_name
-            .split_once("$$")
-            .map_or(self_type_name, |(bare, _)| bare);
-        hew_types::short_name(bare)
-    }
-
-    /// THE var-self receiver predicate. A method takes a `var self` receiver
-    /// iff its first parameter is mutable and typed `Self` — or, inside an
-    /// impl block, typed as the impl's own target type (the checker's
-    /// `is_receiver_param` accepts both spellings, so the ABI decision here
-    /// must too). Every site that decides the dual-return `(ret, Self)` ABI
-    /// carrier — registration and body lowering — goes through this one
-    /// function; a second predicate is how the call site and the callee
-    /// disagree on the return struct (the exact fail-closed ABI mismatch a
-    /// `fn next(var p: Pair<T>)` where-clause impl used to hit).
-    pub(super) fn is_var_self_method_for_type(
-        method: &FnDecl,
-        self_type_name: Option<&str>,
-    ) -> bool {
-        method.params.first().is_some_and(|param| {
-            param.is_mutable
-                && match self_type_name {
-                    Some(name) => Self::is_receiver_param_for_type(param, name),
-                    None => Self::is_receiver_param(param),
-                }
-        })
-    }
-
-    pub(super) fn is_receiver_param_for_type(param: &Param, self_type_name: &str) -> bool {
-        match &param.ty.0 {
-            TypeExpr::Named { path, .. } => {
-                let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                name == "Self" || name == self_type_name
-            }
-            _ => false,
-        }
-    }
-
-    pub(super) fn is_receiver_param(param: &Param) -> bool {
-        matches!(&param.ty.0, TypeExpr::Named { path, .. } if path.as_single().is_some_and(|name| name.name.as_str() == "Self"))
+    /// THE var-self receiver predicate: a method takes a `var self`
+    /// receiver iff the parser published its first parameter as the receiver
+    /// and it is mutable. Registration (dual-return `(ret, Self)` ABI) and
+    /// body lowering both read this one fact, so the call site and the callee
+    /// agree on the return struct.
+    pub(super) fn is_var_self_method(method: &FnDecl) -> bool {
+        method
+            .params
+            .first()
+            .is_some_and(|param| param.is_receiver && param.is_mutable)
     }
 
     pub(super) fn var_self_dual_return_ty(

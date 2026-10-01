@@ -15,13 +15,13 @@ type Local {
 
 trait UserPid {
     type Msg;
-    fn send(pid: Self, msg: Self.Msg) -> i32;
+    fn send(self, msg: Self.Msg) -> i32;
 }
 
 impl UserPid for Local {
     type Msg = Work;
-    fn send(pid: Local, msg: Work) -> i32 {
-        pid.id + msg.id
+    fn send(self, msg: Work) -> i32 {
+        self.id + msg.id
     }
 }
 

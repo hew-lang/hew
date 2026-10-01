@@ -1635,13 +1635,13 @@ impl Formattable for Point {
 no references in its surface syntax (§3.4.1) — and there is no implicit receiver
 anywhere else in the language.
 
-The **named-first-parameter** receiver form is not part of the language. A
-method whose first parameter is spelled with a name and the target type
-(`fn fmt(p: Point)`, `fn push(v: Vec<T>, value: T)`, the trait declaration
-`fn fmt(val: Self)`) is rejected, with a fix-it that rewrites the parameter to
-`self` — or to `var self` when the body assigns through it. This applies in
-`impl` blocks and in trait declarations alike, including for the builtin
-collection methods.
+Only the `self` token declares a receiver. A function in an `impl` block or a
+trait whose first parameter is written with a name, even when typed as the
+target (`fn same(p: Point, q: Point)`, the trait declaration
+`fn zero(value: Self)`), is an **associated function**: it is called through
+its type (`Point.same(a, b)`), and a dot call on a value never reaches it
+(`a.same(b)` is rejected with the hint "add a `self` receiver"). A trait that
+declares an associated function is not object-safe.
 
 **Calling methods:**
 

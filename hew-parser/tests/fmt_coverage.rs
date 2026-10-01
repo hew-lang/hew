@@ -496,15 +496,15 @@ impl Counter {
         Counter(value: 0)
     }
 
-    fn get(c: Counter) -> i32 {
-        c.value
+    fn get(self) -> i32 {
+        self.value
     }
 }
 ";
     let out = roundtrip(src);
     assert!(out.contains("impl Counter {"), "output: {out}");
     assert!(out.contains("fn new() -> Counter"), "output: {out}");
-    assert!(out.contains("fn get(c: Counter) -> i32"), "output: {out}");
+    assert!(out.contains("fn get(self) -> i32"), "output: {out}");
 }
 
 #[test]
@@ -514,8 +514,8 @@ fn fmt_trait_impl() {
 }
 
 impl Display for MyType {
-    fn to_string(t: MyType) -> String {
-        f"{t.val}"
+    fn to_string(self) -> String {
+        f"{self.val}"
     }
 }
 "#;
@@ -530,8 +530,8 @@ fn fmt_generic_impl() {
 }
 
 impl<T> Wrapper<T> {
-    fn unwrap(w: Wrapper<T>) -> T {
-        w.inner
+    fn unwrap(self) -> T {
+        self.inner
     }
 }
 ";

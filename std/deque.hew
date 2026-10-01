@@ -49,34 +49,34 @@ trait DequeMethods {
 }
 
 impl DequeMethods for Deque {
-    fn push_front(dq: Deque, value: i64) {
+    fn push_front(self, value: i64) {
         unsafe {
-            hew_deque_push_front(dq.handle, value)
+            hew_deque_push_front(self.handle, value)
         };
     }
-    fn push_back(dq: Deque, value: i64) {
+    fn push_back(self, value: i64) {
         unsafe {
-            hew_deque_push_back(dq.handle, value)
+            hew_deque_push_back(self.handle, value)
         };
     }
-    fn pop_front(dq: Deque) -> i64 {
+    fn pop_front(self) -> i64 {
         unsafe {
-            hew_deque_pop_front(dq.handle)
+            hew_deque_pop_front(self.handle)
         }
     }
-    fn pop_back(dq: Deque) -> i64 {
+    fn pop_back(self) -> i64 {
         unsafe {
-            hew_deque_pop_back(dq.handle)
+            hew_deque_pop_back(self.handle)
         }
     }
-    fn len(dq: Deque) -> i64 {
+    fn len(self) -> i64 {
         unsafe {
-            hew_deque_len(dq.handle)
+            hew_deque_len(self.handle)
         }
     }
-    fn is_empty(dq: Deque) -> bool {
+    fn is_empty(self) -> bool {
         unsafe {
-            hew_deque_is_empty(dq.handle)
+            hew_deque_is_empty(self.handle)
         }
     }
 }

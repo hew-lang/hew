@@ -5,7 +5,7 @@
 // Prior to W3.022 Stage 3 this dropped `U` and dispatched to an
 // unsubstituted bare symbol.
 trait Show {
-    fn show(val: Self) -> string;
+    fn show(self) -> string;
 }
 
 type Wrapper<U> {
@@ -13,7 +13,7 @@ type Wrapper<U> {
 }
 
 impl<U> Show for Wrapper<U> {
-    fn show(w: Wrapper<U>) -> string {
+    fn show(self) -> string {
         "wrapped"
     }
 }

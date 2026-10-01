@@ -11,7 +11,7 @@ impl Display for Low {
 impl Error for Low {}
 
 impl From<Low> for Low {
-    fn from(value: Low) -> Low {
-        value
+    fn from(self) -> Low {
+        self
     }
 }

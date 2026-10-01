@@ -7,14 +7,14 @@ type Point {
 }
 
 impl Point {
-    fn translate(pt: Point, dx: f64, dy: f64) -> Point {
-        return Point { x: pt.x + dx, y: pt.y + dy };
+    fn translate(self, dx: f64, dy: f64) -> Point {
+        return Point { x: self.x + dx, y: self.y + dy };
     }
-    fn distance(pt: Point) -> f64 {
-        return pt.x * pt.x + pt.y * pt.y;
+    fn distance(self) -> f64 {
+        return self.x * self.x + self.y * self.y;
     }
-    fn scale(pt: Point, factor: f64) -> Point {
-        return Point { x: pt.x * factor, y: pt.y * factor };
+    fn scale(self, factor: f64) -> Point {
+        return Point { x: self.x * factor, y: self.y * factor };
     }
 }
 

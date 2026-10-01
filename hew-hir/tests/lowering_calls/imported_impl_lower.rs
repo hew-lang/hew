@@ -117,8 +117,8 @@ fn helper(n: i64) -> i64 {
 }
 
 impl Foo {
-    pub fn bar(f: Foo) -> i64 {
-        helper(f.n)
+    pub fn bar(self) -> i64 {
+        helper(self.n)
     }
 }
 "
@@ -128,8 +128,8 @@ impl Foo {
 }
 
 impl Foo {
-    pub fn bar(f: Foo) -> i64 {
-        f.n
+    pub fn bar(self) -> i64 {
+        self.n
     }
 }
 "
@@ -415,8 +415,8 @@ trait Touch {
 }
 
 impl Touch for Handle {
-    fn touch(handle: Handle) -> Handle {
-        handle
+    fn touch(self) -> Handle {
+        self
     }
 }
 ";
@@ -501,7 +501,7 @@ fn imported_impl_body_calling_fn_typed_parameter_is_emitted() {
 }
 
 impl Foo {
-    pub fn apply(f: Foo, callback: fn()) {
+    pub fn apply(self, callback: fn()) {
         callback();
     }
 }
@@ -535,8 +535,8 @@ fn imported_impl_body_calling_overloaded_source_builtin_is_emitted() {
 }
 
 impl Foo {
-    pub fn report(f: Foo) {
-        println(f.n);
+    pub fn report(self) {
+        println(self.n);
     }
 }
 ";
@@ -579,8 +579,8 @@ pub type CaptureMatches {
 }
 
 impl Foo {
-    pub fn captures(f: Foo) -> CaptureMatches {
-        CaptureMatches { groups: Vec<string>.new(), group_count: f.n }
+    pub fn captures(self) -> CaptureMatches {
+        CaptureMatches { groups: Vec<string>.new(), group_count: self.n }
     }
 }
 ";
@@ -702,8 +702,8 @@ fn imported_impl_body_with_unresolvable_call_is_skipped_without_module_error() {
 }
 
 impl Foo {
-    pub fn bar(f: Foo) -> i64 {
-        nonexistent_fn(f.n)
+    pub fn bar(self) -> i64 {
+        nonexistent_fn(self.n)
     }
 }
 ";
@@ -745,8 +745,8 @@ fn called_imported_impl_body_with_unresolvable_call_fails_closed() {
 }
 
 impl Foo {
-    pub fn bar(f: Foo) -> i64 {
-        nonexistent_fn(f.n)
+    pub fn bar(self) -> i64 {
+        nonexistent_fn(self.n)
     }
 }
 ";

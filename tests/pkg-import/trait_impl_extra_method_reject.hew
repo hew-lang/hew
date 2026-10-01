@@ -15,16 +15,16 @@ type W {
 }
 
 impl P for W {
-    fn tick(w: W) -> i64 {
-        w.id
+    fn tick(self) -> i64 {
+        self.id
     }
 
-    fn close(w: W) -> Result<Tally, ProcErr> {
-        .Ok(Tally { code: w.id })
+    fn close(self) -> Result<Tally, ProcErr> {
+        .Ok(Tally { code: self.id })
     }
 
-    fn extra(w: W) -> i64 {
-        w.id
+    fn extra(self) -> i64 {
+        self.id
     }
 }
 

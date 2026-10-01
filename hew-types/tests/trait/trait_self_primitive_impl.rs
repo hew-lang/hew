@@ -22,12 +22,12 @@ fn self_non_receiver_param_i64_typechecks() {
     let output = typecheck(
         r"
         trait Compare {
-            fn eq_to(a: Self, b: Self) -> bool;
+            fn eq_to(self, b: Self) -> bool;
         }
 
         impl Compare for i64 {
-            fn eq_to(a: i64, b: i64) -> bool {
-                a == b
+            fn eq_to(self, b: i64) -> bool {
+                self == b
             }
         }
         ",
@@ -45,12 +45,12 @@ fn self_non_receiver_param_bool_typechecks() {
     let output = typecheck(
         r"
         trait Compare {
-            fn eq_to(a: Self, b: Self) -> bool;
+            fn eq_to(self, b: Self) -> bool;
         }
 
         impl Compare for bool {
-            fn eq_to(a: bool, b: bool) -> bool {
-                a == b
+            fn eq_to(self, b: bool) -> bool {
+                self == b
             }
         }
         ",
@@ -68,12 +68,12 @@ fn self_non_receiver_param_f64_typechecks() {
     let output = typecheck(
         r"
         trait Compare {
-            fn eq_to(a: Self, b: Self) -> bool;
+            fn eq_to(self, b: Self) -> bool;
         }
 
         impl Compare for f64 {
-            fn eq_to(a: f64, b: f64) -> bool {
-                a == b
+            fn eq_to(self, b: f64) -> bool {
+                self == b
             }
         }
         ",
@@ -91,12 +91,12 @@ fn self_non_receiver_param_i32_typechecks() {
     let output = typecheck(
         r"
         trait Compare {
-            fn eq_to(a: Self, b: Self) -> bool;
+            fn eq_to(self, b: Self) -> bool;
         }
 
         impl Compare for i32 {
-            fn eq_to(a: i32, b: i32) -> bool {
-                a == b
+            fn eq_to(self, b: i32) -> bool {
+                self == b
             }
         }
         ",
@@ -122,8 +122,8 @@ fn self_in_return_position_i64_typechecks() {
         }
 
         impl Clone for i64 {
-            fn clone(v: i64) -> i64 {
-                v
+            fn clone(self) -> i64 {
+                self
             }
         }
         ",
@@ -141,12 +141,12 @@ fn self_in_param_and_return_position_i64_typechecks() {
     let output = typecheck(
         r"
         trait Add {
-            fn add(a: Self, b: Self) -> Self;
+            fn add(self, b: Self) -> Self;
         }
 
         impl Add for i64 {
-            fn add(a: i64, b: i64) -> i64 {
-                a + b
+            fn add(self, b: i64) -> i64 {
+                self + b
             }
         }
         ",
@@ -172,7 +172,7 @@ fn self_receiver_position_i64_no_regression() {
         }
 
         impl Stringify for i64 {
-            fn to_str(v: i64) -> string {
+            fn to_str(self) -> string {
                 "num"
             }
         }
@@ -194,7 +194,7 @@ fn self_receiver_position_i64_no_regression() {
 fn self_non_receiver_param_struct_no_regression() {
     let output = typecheck(
         r"trait Compare {
-    fn eq_to(a: Self, b: Self) -> bool;
+    fn eq_to(self, b: Self) -> bool;
 }
 
 type Point {
@@ -203,8 +203,8 @@ type Point {
 }
 
 impl Compare for Point {
-    fn eq_to(a: Point, b: Point) -> bool {
-        a.x == b.x
+    fn eq_to(self, b: Point) -> bool {
+        self.x == b.x
     }
 }
 ",
@@ -228,12 +228,12 @@ fn wrong_impl_param_type_is_rejected() {
     let output = typecheck(
         r"
         trait Compare {
-            fn eq_to(a: Self, b: Self) -> bool;
+            fn eq_to(self, b: Self) -> bool;
         }
 
         impl Compare for i64 {
-            fn eq_to(a: i64, b: bool) -> bool {
-                a == 0
+            fn eq_to(self, b: bool) -> bool {
+                self == 0
             }
         }
         ",
@@ -265,11 +265,11 @@ fn nested_self_in_vec_return_i64_typechecks() {
     let output = typecheck(
         r"
         trait Dup {
-            fn dup(a: Self) -> Vec<Self>;
+            fn dup(self) -> Vec<Self>;
         }
 
         impl Dup for i64 {
-            fn dup(a: i64) -> Vec<i64> {
+            fn dup(self) -> Vec<i64> {
                 Vec.new()
             }
         }
@@ -288,12 +288,12 @@ fn nested_self_in_option_return_i64_typechecks() {
     let output = typecheck(
         r"
         trait Wrap {
-            fn wrap(a: Self) -> Option<Self>;
+            fn wrap(self) -> Option<Self>;
         }
 
         impl Wrap for i64 {
-            fn wrap(a: i64) -> Option<i64> {
-                .Some(a)
+            fn wrap(self) -> Option<i64> {
+                .Some(self)
             }
         }
         ",
@@ -311,12 +311,12 @@ fn nested_self_in_tuple_return_i64_typechecks() {
     let output = typecheck(
         r"
         trait Pair {
-            fn mk(a: Self, b: Self) -> (Self, Self);
+            fn mk(self, b: Self) -> (Self, Self);
         }
 
         impl Pair for i64 {
-            fn mk(a: i64, b: i64) -> (i64, i64) {
-                (a, b)
+            fn mk(self, b: i64) -> (i64, i64) {
+                (self, b)
             }
         }
         ",

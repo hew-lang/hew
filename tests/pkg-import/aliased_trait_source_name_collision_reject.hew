@@ -29,8 +29,8 @@ type W {
 }
 
 impl A for W {
-    fn close(w: W) -> i64 {
-        w.id
+    fn close(self) -> i64 {
+        self.id
     }
 }
 

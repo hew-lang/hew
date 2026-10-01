@@ -3,8 +3,8 @@ type Holder<T> {
 }
 
 impl<T> Holder<T> where T: Display {
-    fn show(holder: Holder<T>) {
-        println(holder.value);
+    fn show(self) {
+        println(self.value);
     }
 }
 

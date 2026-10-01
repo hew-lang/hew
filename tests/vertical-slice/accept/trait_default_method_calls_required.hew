@@ -13,8 +13,8 @@ type Person {
 }
 
 impl Greeter for Person {
-    fn name(p: Person) -> string {
-        p.name
+    fn name(self) -> string {
+        self.name
     }
 }
 

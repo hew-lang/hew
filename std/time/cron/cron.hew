@@ -49,8 +49,8 @@ fn cron_last_error_message() -> string {
 }
 
 impl Display for CronError {
-    fn fmt(err: CronError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             CronError.NoNextOccurrence(message) => message,
             CronError.InvalidInput(message) => message,
             CronError.InvalidEpoch(message) => message,
@@ -85,8 +85,8 @@ trait ExprMethods {
 
 impl ExprMethods for Expr {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: i64) -> i64 {
-        match expr.try_next(after_epoch_secs) {
+    fn next(self, after_epoch_secs: i64) -> i64 {
+        match self.try_next(after_epoch_secs) {
             .Ok(epoch_secs) => epoch_secs,
             .Err(err) => {
                 panic(f"cron.next failed: {err}");
@@ -95,9 +95,9 @@ impl ExprMethods for Expr {
         }
     }
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn try_next(expr: Expr, after_epoch_secs: i64) -> Result<i64, CronError> {
+    fn try_next(self, after_epoch_secs: i64) -> Result<i64, CronError> {
         let result = unsafe {
-            hew_cron_next_hew(expr.handle, after_epoch_secs as i64)
+            hew_cron_next_hew(self.handle, after_epoch_secs as i64)
         };
         if result.status == 0 {
             .Ok(result.timestamp as i64)
@@ -106,9 +106,9 @@ impl ExprMethods for Expr {
         }
     }
     /// Return the cron expression as a string.
-    fn to_string(expr: Expr) -> string {
+    fn to_string(self) -> string {
         unsafe {
-            hew_cron_to_string(expr.handle)
+            hew_cron_to_string(self.handle)
         }
     }
 }

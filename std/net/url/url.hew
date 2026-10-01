@@ -65,21 +65,21 @@ trait UrlMethods {
 
 impl UrlMethods for Url {
     /// Return the URL scheme (e.g. `"https"`).
-    fn scheme(u: Url) -> string {
+    fn scheme(self) -> string {
         unsafe {
-            hew_url_scheme(u.handle)
+            hew_url_scheme(self.handle)
         }
     }
     /// Return the host name.
-    fn host(u: Url) -> string {
+    fn host(self) -> string {
         unsafe {
-            hew_url_host(u.handle)
+            hew_url_host(self.handle)
         }
     }
     /// Return the explicit port number, if specified.
-    fn port(u: Url) -> Option<i64> {
+    fn port(self) -> Option<i64> {
         let port: i32 = unsafe {
-            hew_url_port(u.handle)
+            hew_url_port(self.handle)
         };
         if port < 0 {
             .None
@@ -88,27 +88,27 @@ impl UrlMethods for Url {
         }
     }
     /// Return the path component.
-    fn path(u: Url) -> string {
+    fn path(self) -> string {
         unsafe {
-            hew_url_path(u.handle)
+            hew_url_path(self.handle)
         }
     }
     /// Return the query string (without the leading `?`).
-    fn query(u: Url) -> string {
+    fn query(self) -> string {
         unsafe {
-            hew_url_query(u.handle)
+            hew_url_query(self.handle)
         }
     }
     /// Return the fragment (without the leading `#`).
-    fn fragment(u: Url) -> string {
+    fn fragment(self) -> string {
         unsafe {
-            hew_url_fragment(u.handle)
+            hew_url_fragment(self.handle)
         }
     }
     /// Return the full URL as a string.
-    fn to_string(u: Url) -> string {
+    fn to_string(self) -> string {
         unsafe {
-            hew_url_to_string(u.handle)
+            hew_url_to_string(self.handle)
         }
     }
     /// Resolve a relative path onto this URL, returning a new `Url`.
@@ -116,9 +116,9 @@ impl UrlMethods for Url {
     /// Returns `Err(string)` when the path cannot be resolved against this
     /// base. A failed join produces a null handle, which is otherwise
     /// indistinguishable from a resolved URL until the handle is read.
-    fn resolve(u: Url, path: string) -> Result<Url, string> {
+    fn resolve(self, path: string) -> Result<Url, string> {
         let handle = unsafe {
-            hew_url_join(u.handle, path)
+            hew_url_join(self.handle, path)
         };
         let ok = unsafe {
             hew_url_is_valid(handle)

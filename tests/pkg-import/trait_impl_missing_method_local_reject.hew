@@ -19,8 +19,8 @@ pub type ProcErr {
 }
 
 pub trait Proc {
-    fn tick(val: Self) -> i64;
-    fn close(val: Self) -> Result<Tally, ProcErr>;
+    fn tick(self) -> i64;
+    fn close(self) -> Result<Tally, ProcErr>;
 }
 
 type W {
@@ -28,8 +28,8 @@ type W {
 }
 
 impl Proc for W {
-    fn tick(w: W) -> i64 {
-        w.id
+    fn tick(self) -> i64 {
+        self.id
     }
 }
 

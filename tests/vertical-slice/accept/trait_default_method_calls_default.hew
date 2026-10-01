@@ -15,7 +15,7 @@ type Widget {
 }
 
 impl Describable for Widget {
-    fn kind(w: Widget) -> string {
+    fn kind(self) -> string {
         "widget"
     }
 }

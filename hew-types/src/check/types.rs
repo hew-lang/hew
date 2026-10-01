@@ -2719,7 +2719,7 @@ pub struct FnSig {
     /// `None` for every signature that does not carry the attribute.
     pub extern_symbol: Option<crate::extern_symbol::ExternSymbolSpec>,
     /// `true` iff this signature was declared with a mutable receiver
-    /// (`fn next(var self)` or a named-receiver variant marked `var`).
+    /// (`fn next(var self)`).
     ///
     /// Populated by the registration pass when the first parameter is a
     /// receiver (per [`Self::is_receiver_param`]) AND `param.is_mutable` is
@@ -2731,6 +2731,10 @@ pub struct FnSig {
     /// signatures whose receiver was declared by-value, and for free
     /// functions whose first parameter happens to be named `self`.
     pub requires_mutable_receiver: bool,
+    /// `true` for an associated function: declared in a type body, impl or
+    /// trait without a `self` receiver. It is called through its type
+    /// (`Point.origin()`); a dot call on a value never reaches it.
+    pub associated: bool,
     pub receiver_update: ReceiverUpdate,
     /// `true` iff this signature was declared with a `consume self` receiver
     /// (the terminal single-consume surface: `fn build(consume self) -> T`, a
@@ -2784,6 +2788,7 @@ impl Default for FnSig {
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
+            associated: false,
             receiver_update: ReceiverUpdate::Replace,
             consumes_receiver: false,
             returns_receiver_identity: false,

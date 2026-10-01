@@ -53,8 +53,8 @@ type Packet {
 }
 
 impl Display for Packet {
-    fn fmt(packet: Packet) -> string {
-        packet.label
+    fn fmt(self) -> string {
+        self.label
     }
 }
 

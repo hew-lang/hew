@@ -16,19 +16,19 @@ trait BagMethods {
 }
 
 impl BagMethods for Bag {
-    fn put(bag: Bag, value: i64) {
+    fn put(self, value: i64) {
         unsafe {
-            hew_deque_push_back(bag.slot, value)
+            hew_deque_push_back(self.slot, value)
         };
     }
-    fn take(bag: Bag) -> i64 {
+    fn take(self) -> i64 {
         unsafe {
-            hew_deque_pop_front(bag.slot)
+            hew_deque_pop_front(self.slot)
         }
     }
-    fn count(bag: Bag) -> i64 {
+    fn count(self) -> i64 {
         unsafe {
-            hew_deque_len(bag.slot)
+            hew_deque_len(self.slot)
         }
     }
 }

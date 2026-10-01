@@ -9,10 +9,10 @@ pub type Utf8Error {
 }
 
 impl Display for Utf8Error {
-    fn fmt(error: Utf8Error) -> string {
-        match error.error_len {
-            .Some(length) => f"invalid UTF-8 at byte {error.valid_up_to} ({length}-byte sequence)",
-            .None => f"incomplete UTF-8 sequence at byte {error.valid_up_to}",
+    fn fmt(self) -> string {
+        match self.error_len {
+            .Some(length) => f"invalid UTF-8 at byte {self.valid_up_to} ({length}-byte sequence)",
+            .None => f"incomplete UTF-8 sequence at byte {self.valid_up_to}",
         }
     }
 }

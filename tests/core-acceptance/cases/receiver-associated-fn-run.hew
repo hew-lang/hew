@@ -1,0 +1,47 @@
+// Only the `self` token declares a receiver. `same` names its first
+// parameter, so it is an associated function called through its type, next
+// to `norm`, an ordinary method on the same type.
+type Point {
+    x: i64;
+    y: i64;
+}
+
+impl Point {
+    fn same(p: Point, q: Point) -> bool {
+        p.x == q.x && p.y == q.y
+    }
+
+    fn norm(self) -> i64 {
+        self.x * self.x + self.y * self.y
+    }
+
+    fn shift(var self, dx: i64) {
+        self.x = self.x + dx;
+    }
+}
+
+trait Zero {
+    fn zero(value: Self) -> Self;
+    fn is_zero(self) -> bool;
+}
+
+impl Zero for Point {
+    fn zero(value: Point) -> Point {
+        Point { x: 0, y: value.y - value.y }
+    }
+
+    fn is_zero(self) -> bool {
+        self.x == 0 && self.y == 0
+    }
+}
+
+fn main() {
+    var a = Point { x: 3, y: 4 };
+    let b = Point { x: 3, y: 4 };
+    println(Point.same(a, b));
+    println(a.norm());
+    a.shift(1);
+    println(a.x);
+    let z = Point.zero(a);
+    println(z.is_zero());
+}

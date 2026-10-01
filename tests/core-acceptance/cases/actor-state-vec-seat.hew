@@ -6,7 +6,7 @@ import std.failure;
 // nothing to stage and the take is the only admitted shape.
 
 trait Formatter {
-    fn format(val: Self, msg: string) -> string;
+    fn format(self, msg: string) -> string;
 }
 
 type TagFormatter {
@@ -14,8 +14,8 @@ type TagFormatter {
 }
 
 impl Formatter for TagFormatter {
-    fn format(f: TagFormatter, msg: string) -> string {
-        f"{f.tag}:{msg}"
+    fn format(self, msg: string) -> string {
+        f"{self.tag}:{msg}"
     }
 }
 

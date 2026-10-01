@@ -186,8 +186,11 @@ fn scalar(ty: &TypeExpr) -> &'static str {
         type_args.is_none(),
         "direct runtime scalar cannot have type arguments"
     );
-    let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-    match name.as_str() {
+    scalar_named(&path.to_string()) // TRANSITION(P1): deleted by A1 commit 2
+}
+
+fn scalar_named(name: &str) -> &'static str {
+    match name {
         "i64" => "I64",
         "u8" => "U8",
         "bytes" => "Bytes",
@@ -283,7 +286,11 @@ fn render_direct(
         .iter()
         .map(|p| {
             assert!(!p.is_consume, "direct scalar parameter cannot consume");
-            scalar(&p.ty.0)
+            if p.is_receiver {
+                scalar_named(receiver)
+            } else {
+                scalar(&p.ty.0)
+            }
         })
         .collect();
     let result = scalar(
@@ -301,9 +308,7 @@ fn render_direct(
         ("truth_bool", "Bool") => "TruthBool",
         _ => panic!("invalid direct runtime C return conversion"),
     };
-    let receiver_param = method.params.first().is_some_and(
-        |p| matches!(&p.ty.0, TypeExpr::Named {path, ..} if path.to_string() == receiver),
-    );
+    let receiver_param = method.params.first().is_some_and(|p| p.is_receiver);
     let logical_params = &params[usize::from(receiver_param)..];
     let signature_key = format!("{receiver}::{}", method.name);
     let logical = logical_params

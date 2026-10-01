@@ -3,8 +3,8 @@ type Point {
 }
 
 impl Display for Point {
-    fn fmt(p: Point) -> string {
-        f"Point({p.x})"
+    fn fmt(self) -> string {
+        f"Point({self.x})"
     }
 }
 

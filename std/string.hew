@@ -680,89 +680,89 @@ pub fn join(parts: Vec<string>, sep: string) -> string {
 impl string {
     /// Number of encoded UTF-8 bytes, distinct from the codepoint length.
     #[extern_symbol(hew_string_byte_length)]
-    fn byte_len(s: string) -> i64 {
+    fn byte_len(self) -> i64 {
         0
     }
     /// Number of Unicode scalars. Use `byte_len()` for the encoded byte length.
     #[extern_symbol(hew_string_length)]
-    fn len(s: string) -> i64 {
+    fn len(self) -> i64 {
         0
     }
     #[extern_symbol(hew_string_is_empty)]
-    fn is_empty(s: string) -> bool {
+    fn is_empty(self) -> bool {
         false
     }
     #[extern_symbol(hew_string_contains)]
-    fn contains(s: string, needle: string) -> bool {
+    fn contains(self, needle: string) -> bool {
         false
     }
     #[extern_symbol(hew_string_starts_with)]
-    fn starts_with(s: string, prefix: string) -> bool {
+    fn starts_with(self, prefix: string) -> bool {
         false
     }
     #[extern_symbol(hew_string_ends_with)]
-    fn ends_with(s: string, suffix: string) -> bool {
+    fn ends_with(self, suffix: string) -> bool {
         false
     }
     #[extern_symbol(hew_string_to_uppercase)]
-    fn to_upper(s: string) -> string {
+    fn to_upper(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_to_lowercase)]
-    fn to_lower(s: string) -> string {
+    fn to_lower(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_trim)]
-    fn trim(s: string) -> string {
+    fn trim(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_is_digit)]
-    fn is_digit(s: string) -> bool {
+    fn is_digit(self) -> bool {
         false
     }
     #[extern_symbol(hew_string_is_alpha)]
-    fn is_alpha(s: string) -> bool {
+    fn is_alpha(self) -> bool {
         false
     }
     #[extern_symbol(hew_string_is_alphanumeric)]
-    fn is_alphanumeric(s: string) -> bool {
+    fn is_alphanumeric(self) -> bool {
         false
     }
     #[extern_symbol(hew_string_clone)]
-    fn clone(s: string) -> string {
+    fn clone(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_replace)]
-    fn replace(s: string, from: string, to: string) -> string {
+    fn replace(self, from: string, to: string) -> string {
         ""
     }
     #[extern_symbol(hew_string_split)]
-    fn split(s: string, sep: string) -> Vec<string> {
+    fn split(self, sep: string) -> Vec<string> {
         Vec.new()
     }
     #[extern_symbol(hew_string_lines)]
-    fn lines(s: string) -> Vec<string> {
+    fn lines(self) -> Vec<string> {
         Vec.new()
     }
     /// Return `Some` of the Unicode scalar index of the first occurrence of `needle`,
     /// or `None` when `needle` does not occur.
     #[extern_symbol(hew_string_find)]
-    fn find(s: string, needle: string) -> Option<i64> {
+    fn find(self, needle: string) -> Option<i64> {
         .None
     }
     /// Copy the range from `start` inclusive to `end` exclusive, in Unicode scalars.
     #[extern_symbol(hew_string_slice)]
-    fn slice(s: string, start: i64, end: i64) -> string {
+    fn slice(self, start: i64, end: i64) -> string {
         ""
     }
     #[extern_symbol(hew_string_repeat)]
-    fn repeat(s: string, n: i64) -> string {
+    fn repeat(self, n: i64) -> string {
         ""
     }
     /// Return `Some` of the Unicode scalar at `idx`, or `None` when the
     /// scalar index is out of bounds, like `get`.
     #[extern_symbol(hew_string_char_at)]
-    fn char_at(s: string, idx: i64) -> Option<char> {
+    fn char_at(self, idx: i64) -> Option<char> {
         .None
     }
     /// Return the `char` at codepoint-index `index`, or `None` when the index
@@ -770,25 +770,25 @@ impl string {
     /// de-aliased from the trapping `s[i]` sugar (which aborts on OOB). It is
     /// the same runtime operation as `char_at`, under the `Index` spelling.
     #[extern_symbol(hew_string_char_at)]
-    fn get(s: string, index: i64) -> Option<char> {
+    fn get(self, index: i64) -> Option<char> {
         .None
     }
     #[extern_symbol(hew_string_chars)]
-    fn chars(s: string) -> Vec<char> {
+    fn chars(self) -> Vec<char> {
         Vec.new()
     }
     /// Return the number of Unicode codepoints (runes) in this string.
     ///
     /// This equals `len()`. Use `byte_len()` for the UTF-8 byte length.
     #[extern_symbol(hew_string_char_count)]
-    fn char_count_utf8(s: string) -> i64 {
+    fn char_count_utf8(self) -> i64 {
         0
     }
     /// Return `Some` of the Unicode codepoint at codepoint-index `i`, or
     /// `None` if out of bounds. The index is a rune (codepoint) offset, not a
     /// byte offset.
     #[extern_symbol(hew_string_char_at_utf8)]
-    fn codepoint_at_utf8(s: string, i: i64) -> Option<i64> {
+    fn codepoint_at_utf8(self, i: i64) -> Option<i64> {
         .None
     }
     /// Return the UTF-8 byte encoding of this string as an owned `bytes` value.
@@ -798,7 +798,7 @@ impl string {
     /// reaching for raw FFI. Decode with `std.encoding.utf8.decode` to validate
     /// arbitrary bytes, or use its explicitly named `decode_lossy` operation.
     #[extern_symbol(hew_string_to_bytes)]
-    fn to_bytes(s: string) -> bytes {
+    fn to_bytes(self) -> bytes {
         bytes.new()
     }
 }
@@ -820,7 +820,7 @@ impl string {
 /// ```
 pub trait ToString {
     /// Convert this value to its string representation.
-    fn to_str(val: Self) -> string;
+    fn to_str(self) -> string;
 }
 
 // ── FFI bindings ─────────────────────────────────────────────────────

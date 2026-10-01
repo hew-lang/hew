@@ -343,8 +343,8 @@ fn direct_handle_field_return_is_rejected() {
 }
 
 impl PatternWrapper {
-    fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
-        wrapper.pattern
+    fn get_pattern(self) -> regex.Pattern {
+        self.pattern
     }
 }
 ",
@@ -371,8 +371,8 @@ fn bind_then_return_handle_field_is_rejected() {
 }
 
 impl PatternWrapper {
-    fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
-        let p = wrapper.pattern;
+    fn get_pattern(self) -> regex.Pattern {
+        let p = self.pattern;
         p
     }
 }
@@ -401,8 +401,8 @@ fn bind_then_return_diagnostic_names_binding() {
 }
 
 impl PatternWrapper {
-    fn extract(wrapper: PatternWrapper) -> regex.Pattern {
-        let p = wrapper.pattern;
+    fn extract(self) -> regex.Pattern {
+        let p = self.pattern;
         p
     }
 }
@@ -430,8 +430,8 @@ fn bind_then_return_with_intermediate_use_is_rejected() {
 }
 
 impl PatternWrapper {
-    fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
-        let p = wrapper.pattern;
+    fn get_pattern(self) -> regex.Pattern {
+        let p = self.pattern;
         println(p);
         p
     }
@@ -460,8 +460,8 @@ fn non_handle_field_return_is_allowed() {
 }
 
 impl PatternWrapper {
-    fn get_label(wrapper: PatternWrapper) -> string {
-        wrapper.label
+    fn get_label(self) -> string {
+        self.label
     }
 }
 ",
@@ -486,7 +486,7 @@ fn non_field_let_binding_return_is_allowed() {
 }
 
 impl PatternWrapper {
-    fn get_label(wrapper: PatternWrapper) -> string {
+    fn get_label(self) -> string {
         let s = to_string(42);
         s
     }

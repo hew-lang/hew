@@ -157,7 +157,7 @@ fn fstring_dispatches_through_lang_item_registry() {
 }
 
 impl Display for Point {
-    fn fmt(p: Point) -> string {
+    fn fmt(self) -> string {
         "P"
     }
 }
@@ -428,7 +428,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
 fn fstring_string_routes_through_user_display_impl() {
     let source = r#"
         impl Display for string {
-            fn fmt(s: string) -> string { s }
+            fn fmt(self) -> string { self }
         }
         fn main() {
             let v: string = "hi";
@@ -503,7 +503,7 @@ fn direct_display_surface_narrow_primitives_lower() {
 /// performs — instead of failing closed with `UnresolvedBuiltinOverload`.
 #[test]
 fn direct_display_surface_named_type_routes_to_impl() {
-    let prelude = "type Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(p: Point) -> string {\n        \"P\"\n    }\n}\n";
+    let prelude = "type Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(self) -> string {\n        \"P\"\n    }\n}\n";
     let surfaces = [
         ("println(p);", "println_str"),
         ("print(p);", "print_str"),

@@ -8,5 +8,5 @@
 
 /// Origin of the re-exported super chain. `base` returns `i64`.
 pub trait Base {
-    fn base(val: Self) -> i64;
+    fn base(self) -> i64;
 }

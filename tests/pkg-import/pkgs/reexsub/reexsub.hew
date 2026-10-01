@@ -12,5 +12,5 @@ import hew.reexbase.{Base};
 /// Sub-trait of the re-imported `Base`. The super edge must follow the
 /// re-export chain back to `reexbase.Base`.
 pub trait Sub: Base {
-    fn tag(val: Self) -> i64;
+    fn tag(self) -> i64;
 }

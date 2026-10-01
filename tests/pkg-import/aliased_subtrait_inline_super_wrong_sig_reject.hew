@@ -11,12 +11,12 @@ type W {
 }
 
 impl S for W {
-    fn base(w: W) -> bool {
+    fn base(self) -> bool {
         true
     }
 
-    fn tag(w: W) -> i64 {
-        w.id
+    fn tag(self) -> i64 {
+        self.id
     }
 }
 

@@ -7,8 +7,8 @@ pub type Local {
 }
 
 impl ClashTrait for Local {
-    fn tag(value: Local) -> i64 {
-        value.value
+    fn tag(self) -> i64 {
+        self.value
     }
 }
 

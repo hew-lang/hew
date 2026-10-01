@@ -131,7 +131,7 @@ fn method_level_type_params_freshen_per_named_method_call() {
 }
 
 impl Holder {
-    fn pick<T>(h: Holder, value: T) -> T {
+    fn pick<T>(self, value: T) -> T {
         value
     }
 }
@@ -187,8 +187,8 @@ fn generic_impl_method_level_type_params_freshen_per_call() {
 }
 
 impl<T> Box<T> {
-    fn transform<U>(b: Box<T>, f: fn(T) -> U) -> Box<U> {
-        Box { value: f(b.value) }
+    fn transform<U>(self, f: fn(T) -> U) -> Box<U> {
+        Box { value: f(self.value) }
     }
 }
 
@@ -470,7 +470,7 @@ type Holder {
 }
 
 impl Holder {
-    fn wrap<T>(h: Holder, value: Maybe<T>) -> Maybe<T> {
+    fn wrap<T>(self, value: Maybe<T>) -> Maybe<T> {
         value
     }
 }
@@ -503,7 +503,7 @@ fn main() {
 #[test]
 fn trait_method_type_params_freshen_per_call_on_bounded_type_param() {
     let source = r"trait Transform {
-    fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
+    fn apply<U>(self, f: fn(i64) -> U) -> U;
 }
 
 type Holder {
@@ -511,8 +511,8 @@ type Holder {
 }
 
 impl Transform for Holder {
-    fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
-        f(item.value)
+    fn apply<U>(self, f: fn(i64) -> U) -> U {
+        f(self.value)
     }
 }
 
@@ -570,7 +570,7 @@ fn run<T: Transform>(item: T) {
 #[test]
 fn trait_method_type_params_do_not_unify_across_calls() {
     let source = r"trait Transform {
-    fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
+    fn apply<U>(self, f: fn(i64) -> U) -> U;
 }
 
 type Holder {
@@ -578,8 +578,8 @@ type Holder {
 }
 
 impl Transform for Holder {
-    fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
-        f(item.value)
+    fn apply<U>(self, f: fn(i64) -> U) -> U {
+        f(self.value)
     }
 }
 
@@ -654,8 +654,8 @@ impl<T> Pair<T> {
         return Pair { first: first, second: second };
     }
 
-    fn swap(p: Pair<T>) -> Self {
-        return Pair { first: p.second, second: p.first };
+    fn swap(self) -> Self {
+        return Pair { first: self.second, second: self.first };
     }
 }
 ";
@@ -698,7 +698,7 @@ impl<T> Pair<T> {
 fn test_trait_object_type_args_substitution() {
     // Bug 2: Test that dyn Trait<Args> methods get correct substitutions
     let source = r"trait MyIter<T> {
-    fn next(iter: Self) -> Option<T>;
+    fn next(self) -> Option<T>;
 }
 
 type Counter {
@@ -706,7 +706,7 @@ type Counter {
 }
 
 impl MyIter<i64> for Counter {
-    fn next(c: Counter) -> Option<i64> {
+    fn next(self) -> Option<i64> {
         .Some(42)
     }
 }
@@ -751,11 +751,11 @@ fn test_iterator() -> i64 {
 )]
 fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
     let source = r#"trait Transform {
-    fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
+    fn apply<U>(self, f: fn(i64) -> U) -> U;
 }
 
 trait Label {
-    fn tag<V>(item: Self, prefix: V) -> string;
+    fn tag<V>(self, prefix: V) -> string;
 }
 
 type Holder {
@@ -763,13 +763,13 @@ type Holder {
 }
 
 impl Transform for Holder {
-    fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
-        f(item.value)
+    fn apply<U>(self, f: fn(i64) -> U) -> U {
+        f(self.value)
     }
 }
 
 impl Label for Holder {
-    fn tag<V>(item: Holder, prefix: V) -> string {
+    fn tag<V>(self, prefix: V) -> string {
         "tagged"
     }
 }
@@ -3647,8 +3647,8 @@ fn record_init_type_args_trait_rewrite_substitution_probe() {
 }
 
 impl<T: Display> Wrapper<T> {
-    fn show(w: Wrapper<T>) -> string {
-        to_string(w.value)
+    fn show(self) -> string {
+        to_string(self.value)
     }
 }
 
@@ -5297,7 +5297,7 @@ fn a_user_display_impl_satisfies_the_bound() {
     );
 
     let accepted = check_source(&format!(
-        "{POINT} impl Display for Point {{ fn fmt(p: Point) -> string {{ f\"({{p.x}}, {{p.y}})\" }} }} \
+        "{POINT} impl Display for Point {{ fn fmt(self) -> string {{ f\"({{self.x}}, {{self.y}})\" }} }} \
          fn main() {{ println(Point {{ x: 1, y: 2 }}); }}"
     ));
     assert!(

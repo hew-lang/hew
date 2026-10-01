@@ -1,8 +1,8 @@
 type Readings<T> = Vec<T>;
 
 impl<T> Display for Readings<T> {
-    fn fmt(values: Readings<T>) -> string {
-        f"readings({values.len()})"
+    fn fmt(self) -> string {
+        f"readings({self.len()})"
     }
 }
 

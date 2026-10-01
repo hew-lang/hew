@@ -6812,7 +6812,6 @@ fn label(colour: Colour) -> string {
     //  Fixture                            | Class                          | Notes / blocking lane
     //  ─────────────────────────────────────────────────────────────────────────────────────────────
     //  v05_associated_type_projection     | accepted                       | trait + assoc type + impl; LSP test passes
-    //  v05_async_await                    | known-rejected                 | `async fn` / `await` are not valid Hew syntax; parser rejects them; permanently out of v0.5 scope (see ignored test below)
     //  v05_attributes                     | accepted                       | actor attributes (#[max_heap]); LSP test passes
     //  v05_closures                       | accepted                       | closure syntax |x| { … }; LSP test passes
     //  machines/toggle (cross-module defs) | accepted                      | machine defs module at its import path; used as dep in cross-module native test
@@ -6849,7 +6848,6 @@ fn label(colour: Colour) -> string {
     //  ──────────────────────────────────────────────────────────────────────────────────────────────
     //  v05_record_tuple_literal_lsp_coverage   | remain-ignored  | Compiler-substrate dependency W3.006; do not unignore until W3.006 tuple substrate lands.
     //  v05_spawn_lambda_actor_lsp_coverage     | re-enabled (passing) | `actor |…| { }` is the landed syntax; the prior fixture used `spawn |…|` which was wrong. Test is now #[test] at mod.rs:7146 and passes.
-    //  v05_async_await_lsp_coverage            | become-fail-closed-diagnostic | `async fn`/`await` permanently not in Hew syntax; test should assert parse-error diagnostics rather than remaining an indefinitely-ignored smoke check.  See v05_async_await_is_rejected_with_parse_errors below.
     //
     // ─── ResolvedTy::user_facing() verification ──────────────────────────
     //
@@ -6865,7 +6863,7 @@ fn label(colour: Colour) -> string {
     //    accepted:                          28 (all have passing native LSP tests;
     //                                          v05_spawn_lambda_actor re-enabled)
     //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
-    //    known-rejected:                     1 (v05_async_await)
+    //    known-rejected:                     0
     //    pending-upstream-substrate:         1 (v05_record_tuple_literal)
     //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
     //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==8 in v05_wasm_coverage.rs.
@@ -7797,21 +7795,6 @@ fn label(colour: Colour) -> string {
                 "index_probe",
                 "index_trait",
             ],
-        );
-    }
-
-    // W4.023 Stage 0: known-rejected — `async fn`/`await` are not valid Hew syntax.
-    // The parser permanently rejects these keywords; they are out of v0.5 scope.
-    // This fail-closed test asserts parser errors rather than leaving the test
-    // as an indefinitely-ignored smoke check.
-    #[test]
-    fn v05_async_await_is_rejected_with_parse_errors() {
-        let source = include_str!("../../tests/fixtures/v05_async_await.hew");
-        let parse_result = hew_parser::parse(source);
-        assert!(
-            !parse_result.errors.is_empty(),
-            "v05_async_await.hew must produce parse errors: \
-             `async fn` / `await` are not valid Hew syntax and the parser must reject them"
         );
     }
 

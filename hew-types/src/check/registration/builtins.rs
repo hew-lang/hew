@@ -625,6 +625,7 @@ impl Checker {
             // `CrashInfo` / `CrashAction` are genuine prelude: a
             // `#[on(crash)]` signature names them with no import, always.
             for source_name in ["CrashInfo", "CrashAction"] {
+                self.bind_prelude_item("std.failure", source_name);
                 self.canonical_lifecycle_import_authority.insert((
                     None,
                     source_name.to_string(),

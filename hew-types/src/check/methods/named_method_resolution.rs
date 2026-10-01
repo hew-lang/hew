@@ -62,7 +62,10 @@ impl Checker {
             method,
         )
         .or_else(|| {
-            let target = self.alias_target_for_instance(type_name, type_args)?;
+            let target = self
+                .type_aliases
+                .get(&self.lookup_declaration(type_name)?)?
+                .instantiate(type_args)?;
             crate::method_resolution::lookup_method_sig(
                 &self.defs,
                 &self.type_defs,

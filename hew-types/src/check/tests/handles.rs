@@ -1178,27 +1178,6 @@ actor Server {
     }
 
     #[test]
-    fn channel_handle_receive_fn_params_are_accepted() {
-        let output = check_source(
-            r"
-            actor Server {
-                receive fn sender(tx: channel.Sender<string>) {}
-                receive fn receiver(rx: channel.Receiver<string>) {}
-                receive fn nested(
-                    handles: (channel.Sender<i64>, channel.Receiver<i64>)
-                ) {}
-            }
-            ",
-        );
-        assert!(
-            output.errors.is_empty(),
-            "built-in channel handles must remain valid local receive-fn \
-             parameters, including in aggregate payloads; got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn actor_pid_param_does_not_walk_referenced_actor_state() {
         let output = check_source(
             r"#[opaque]

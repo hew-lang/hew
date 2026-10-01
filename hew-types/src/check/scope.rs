@@ -189,6 +189,9 @@ struct FileScope {
     /// single-file module, the assembler for a directory module's peer file.
     namespace: Option<ModuleId>,
     imports: HashMap<Symbol, (Binding, ImportSite)>,
+    /// Names two imports of this file bind to different declarations; a
+    /// reference to one is ambiguous.
+    ambiguous: HashMap<Symbol, Vec<Binding>>,
     /// The module each import declaration of this file names.
     import_targets: Vec<(ModuleId, ImportSite)>,
 }
@@ -338,11 +341,53 @@ impl Scopes {
         binding: Binding,
         site: ImportSite,
     ) {
-        self.files
-            .entry(file)
-            .or_default()
+        let scope = self.files.entry(file).or_default();
+        match scope.imports.get(&name) {
+            Some((existing, existing_site)) if *existing != binding && *existing_site != site => {
+                let candidates = scope.ambiguous.entry(name).or_default();
+                for candidate in [*existing, binding] {
+                    if !candidates.contains(&candidate) {
+                        candidates.push(candidate);
+                    }
+                }
+            }
+            _ => {
+                scope.imports.insert(name, (binding, site));
+            }
+        }
+    }
+
+    /// The modules `file` imports whole that declare `name`, for the hint
+    /// on a bare reference the plain import does not publish.
+    #[must_use]
+    pub fn modules_exporting(&self, file: ModuleId, name: Symbol) -> Vec<ModuleId> {
+        let Some(scope) = self.files.get(&file) else {
+            return Vec::new();
+        };
+        let mut modules: Vec<ModuleId> = scope
             .imports
-            .insert(name, (binding, site));
+            .values()
+            .filter_map(|(binding, _)| match binding {
+                Binding::Module(module) => Some(*module),
+                _ => None,
+            })
+            .filter(|module| {
+                self.items
+                    .get(&self.namespace_of(*module))
+                    .is_some_and(|items| items.contains_key(&name))
+            })
+            .collect();
+        modules.dedup();
+        modules
+    }
+
+    /// The declarations two or more imports of `file` bind `name` to.
+    #[must_use]
+    pub fn ambiguous_import(&self, file: ModuleId, name: Symbol) -> &[Binding] {
+        self.files
+            .get(&file)
+            .and_then(|scope| scope.ambiguous.get(&name))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Record the module an import declaration names.
@@ -631,7 +676,8 @@ impl Scopes {
             .and_then(|items| items.get(&head.name))
             .map(|binding| (*binding, None))
             .or_else(|| {
-                file.and_then(|file| file.imports.get(&head.name))
+                file.filter(|file| !file.ambiguous.contains_key(&head.name))
+                    .and_then(|file| file.imports.get(&head.name))
                     .map(|(binding, import)| (*binding, Some(*import)))
             })
             .or_else(|| self.prelude.get(&head.name).map(|binding| (*binding, None)));

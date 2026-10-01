@@ -111,7 +111,9 @@ impl Checker {
             || matches!(resolved_expected, Ty::TraitObject { .. })
             || matches!(
                 &resolved_expected,
-                Ty::Named { head, .. } if self.type_aliases.contains_key(head.registry_key())
+                Ty::Named { head, .. } if head.nominal().is_some_and(|id| {
+                    self.type_aliases.contains_key(&id.declaration())
+                })
             )
         {
             return resolved_expected;

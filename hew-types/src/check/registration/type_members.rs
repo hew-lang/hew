@@ -392,7 +392,7 @@ impl Checker {
         let target = self.resolve_type_expr_tracking_holes(&decl.ty, &mut holes);
         self.generic_ctx.pop();
         self.type_aliases.insert(
-            identity.clone(),
+            declaration,
             TypeAliasDef {
                 declaration,
                 type_params,

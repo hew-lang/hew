@@ -255,6 +255,7 @@ impl Checker {
             _ => unreachable!("matched canonical lifecycle owner"),
         };
         for source_name in lifecycle_names {
+            self.bind_prelude_item(owner, source_name);
             self.canonical_lifecycle_import_authority.insert((
                 None,
                 (*source_name).to_string(),
@@ -291,9 +292,14 @@ impl Checker {
                 self.register_type_alias_decl(decl, span);
             }
         }
-        for (name, alias) in self.type_aliases.clone() {
-            if self.alias_expansion_is_recursive(&name) {
-                let span = self.type_def_spans.get(&name).cloned().unwrap_or_default();
+        for (declaration, alias) in self.type_aliases.clone() {
+            if self.alias_expansion_is_recursive(declaration) {
+                let name = self.defs.path(declaration).to_string();
+                let span = self
+                    .defs
+                    .site(declaration)
+                    .map(|site| site.span())
+                    .unwrap_or_default();
                 let mut error = TypeError::new(TypeErrorKind::InvalidOperation, span,
                     format!("type alias `{name}` is recursive: aliases cannot refer to themselves, directly or through a chain"));
                 error.source_module = alias.source_module;

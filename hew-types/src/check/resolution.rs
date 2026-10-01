@@ -832,7 +832,9 @@ impl Checker {
             crate::current_module_qualified_type_candidate(self.current_module.as_deref(), name)?;
         (self.type_def_exact(&canonical).is_some()
             || self.known_types.contains(&canonical)
-            || self.type_aliases.contains_key(&canonical)
+            || self
+                .lookup_declaration(&canonical)
+                .is_some_and(|declaration| self.type_aliases.contains_key(&declaration))
             || self.type_visibility.contains_key(&canonical))
         .then_some(canonical)
     }
@@ -2344,73 +2346,16 @@ impl Checker {
         }
     }
 
-    /// Resolve only a declaration in this module or an exact imported binding.
-    pub(super) fn resolved_alias_name(&self, name: &str) -> Option<String> {
-        let local = self.current_module.as_ref().map_or_else(
-            || name.to_string(),
-            |module| {
-                if name.contains('.') {
-                    name.to_string()
-                } else {
-                    format!("{module}.{name}")
-                }
-            },
-        );
-        if let Some(declaration) = self.lookup_declaration(&local) {
-            if self.type_aliases.contains_key(self.defs.path(declaration)) {
-                return Some(self.defs.path(declaration).to_string());
-            }
-            return None;
-        }
-        self.import_type_name_aliases
-            .get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                name.to_string(),
-            ))
-            .and_then(|source| self.lookup_declaration(source))
-            .filter(|declaration| self.type_aliases.contains_key(self.defs.path(*declaration)))
-            .map(|declaration| self.defs.path(declaration).to_string())
-    }
-
-    fn type_reference_is_visible(&mut self, name: &str, span: &Span) -> bool {
-        if !name.contains('.') || name.contains("::") {
-            return true;
-        }
-        let Some((vis, declaring_module)) = self.type_visibility.get(name).cloned() else {
-            return true;
-        };
-        if visibility::access_allowed(
-            declaring_module.as_deref(),
-            self.current_module.as_deref(),
-            vis,
-        ) {
-            return true;
-        }
-        if self
-            .reported_type_visibility_violations
-            .insert(name.to_string())
-        {
-            let declaration_span = self
-                .type_def_spans
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| span.clone());
-            self.errors.push(TypeError::visibility_violation(
-                vis,
-                span.clone(),
-                crate::short_name(name),
-                declaring_module.as_deref().unwrap_or("(root)"),
-                self.current_module.as_deref().unwrap_or("(root)"),
-                declaration_span,
-                self.current_module.clone(),
-            ));
-        }
-        false
-    }
-
-    pub(super) fn alias_target_for_instance(&self, name: &str, args: &[Ty]) -> Option<Ty> {
-        self.type_aliases.get(name)?.instantiate(args)
+    /// The target of a type alias instantiated at `args`, when `head` names
+    /// an alias declaration.
+    pub(super) fn alias_target_for_instance(
+        &self,
+        head: crate::TypeHead,
+        args: &[Ty],
+    ) -> Option<Ty> {
+        self.type_aliases
+            .get(&head.nominal()?.declaration())?
+            .instantiate(args)
     }
 
     /// Whether a just-registered top-level alias `name` is self-referential
@@ -2430,30 +2375,33 @@ impl Checker {
     /// Called once, right after registration, so the checker emits exactly
     /// ONE root-cause diagnostic per recursive alias declaration, before any
     /// use site can ever observe the silent `Ty::Error`.
-    pub(super) fn alias_expansion_is_recursive(&self, name: &str) -> bool {
-        let Some(alias) = self.type_aliases.get(name) else {
+    pub(super) fn alias_expansion_is_recursive(&self, alias: crate::DefId) -> bool {
+        let Some(definition) = self.type_aliases.get(&alias) else {
             return false;
         };
-        let placeholder_args: Vec<Ty> = alias
+        let placeholder_args: Vec<Ty> = definition
             .type_params
             .iter()
             .map(|param| Ty::param(*param))
             .collect();
-        let probe = self.named_ty_for_key(name, placeholder_args);
+        let probe = Ty::named_head(
+            self.head_of_declaration(crate::NominalId::from_minted_declaration(alias)),
+            placeholder_args,
+        );
         self.alias_expansion_has_cycle(&probe, &mut HashSet::new())
     }
 
     /// Walk an alias expansion and distinguish an actual cycle from an
     /// unrelated `Ty::Error` already reported while resolving the target.
-    fn alias_expansion_has_cycle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+    fn alias_expansion_has_cycle(&self, ty: &Ty, visiting: &mut HashSet<crate::NominalId>) -> bool {
         if let Ty::Named { head, args } = ty {
-            let name = head.registry_key();
-            if let Some(target) = self.alias_target_for_instance(name, args) {
-                if !visiting.insert(name.to_string()) {
+            if let Some(target) = self.alias_target_for_instance(*head, args) {
+                let alias = head.nominal().expect("an alias head names its declaration");
+                if !visiting.insert(alias) {
                     return true;
                 }
                 let has_cycle = self.alias_expansion_has_cycle(&target, visiting);
-                visiting.remove(name);
+                visiting.remove(&alias);
                 return has_cycle;
             }
         }
@@ -2476,11 +2424,7 @@ impl Checker {
         } = ty
         {
             let declaration = head.id.declaration();
-            if let Some(alias) = self
-                .type_aliases
-                .values()
-                .find(|alias| alias.declaration == declaration)
-            {
+            if let Some(alias) = self.type_aliases.get(&declaration) {
                 if let Some(target) = alias.instantiate(args) {
                     if !visiting.insert(declaration) {
                         return Ty::Error;
@@ -2495,132 +2439,6 @@ impl Checker {
             let mut child_visiting = visiting.clone();
             self.expand_type_aliases(child, &mut child_visiting)
         })
-    }
-
-    /// Whether a resolved type NAME refers to something that exists: a
-    /// registered user type (record / enum / actor / machine, bare or
-    /// module-qualified), a known type name (machine companion / event /
-    /// import binding), a declared trait, a registered type alias, the `Self`
-    /// keyword, or a name declared as a generic type parameter anywhere in the
-    /// program. Used by the undefined-named-type guard in
-    /// `resolve_type_expr_tracking_holes` to decide whether a name that fell
-    /// through every concrete resolution arm is genuinely undefined.
-    ///
-    /// Primitives and aliases are resolved by the caller before its guard
-    /// consults this helper, so they are intentionally not re-checked here. A
-    /// bare trait used in type position is reported by a separate path (and
-    /// still leaks `E_MIR: unknown type` for now); treating it as "resolvable"
-    /// keeps that behaviour untouched rather than relabelling it.
-    pub(super) fn named_type_is_resolvable(&self, name: &str) -> bool {
-        // `Self` is a contextual keyword type that the resolver rewrites to the
-        // enclosing impl/trait target (substituted via `current_self_type`). In
-        // some primitive trait-impl contexts the substitution has not run by the
-        // time a signature is re-resolved, so a bare `Self` reaches this check;
-        // it is never a genuinely undefined user type, so always treat it as
-        // resolvable rather than reporting `unknown type `Self``.
-        if name == "Self" {
-            return true;
-        }
-        if self.lookup_type_def(name).is_some() {
-            return true;
-        }
-        if self.known_types.contains(name)
-            || self.has_trait_def(name)
-            || self.type_aliases.contains_key(name)
-        {
-            return true;
-        }
-        // Supervisor declarations register their name in `supervisor_children`
-        // (keyed by the supervisor name), not in `known_types` like actors do.
-        // A supervisor name is nonetheless a valid type spelling — it appears as
-        // `spawn App` and as `App`'s own actor-handle type — so it
-        // must not be reported as an unknown type.
-        if self.supervisor_children.contains_key(name) {
-            return true;
-        }
-        // Module-local declaration tables. While the body of a non-root
-        // module_graph module is being checked, that module's own types/traits
-        // are seeded into these module-scoped sets (see the body-check loop in
-        // `check_program`) rather than the global `known_types` / `trait_defs`,
-        // which carry the root module's declarations. A bare `ConnectionHandler`
-        // actor-handle type inside an imported `std::net` therefore resolves
-        // against `local_trait_defs`, not `trait_defs`. Consulting these sets only ever recognises an
-        // already-declared name, so a genuinely undefined `Bogus` is still caught.
-        if self.local_type_defs.contains(name)
-            || self.source_type_defs.contains(name)
-            || self.local_trait_defs.contains(name)
-        {
-            return true;
-        }
-        // A name declared as a type parameter anywhere in the program (collected
-        // by `collect_declared_type_param_names`). The resolver intentionally
-        // leaves a generic parameter opaque (`Ty::named`) and re-resolves it at
-        // several secondary sites (signature rebuilds, receiver probes,
-        // trait-conformance checks) without re-pushing its scope, so a
-        // scope-local check alone false-positives at those sites. Consulting the
-        // program-wide set covers them uniformly; the in-scope checks below stay
-        // as defense-in-depth for names that are valid only locally.
-        //
-        // Suppressed under `scope_local_type_params_only` — set around the
-        // primary resolution of a top-level function's own signature, where the
-        // function's type-param scope IS reliably reconstructed. There the
-        // program-wide set is too broad to prove a source annotation valid: it
-        // would exempt `fn bad(x: T)` merely because some unrelated `fn id<T>`
-        // declared `T`, masking the genuinely out-of-scope use. The in-scope
-        // checks below catch the function's own legitimate type params.
-        if !self.scope_local_type_params_only && self.declared_type_param_names.contains(name) {
-            return true;
-        }
-        // A nominal type declared anywhere in the program or its module_graph
-        // (collected by `collect_declared_type_param_names`). This covers an
-        // imported module's own types/traits while that module's signatures are
-        // registered in a pass where the global `trait_defs` / `known_types`
-        // still hold only the root module's declarations (e.g.
-        // `ConnectionHandler`'s own actor-handle type inside `std::net`). A genuinely
-        // undefined name is in neither declared set, so it is still caught.
-        if self.declared_nominal_type_names.contains(name) {
-            return true;
-        }
-        // A generic type parameter in scope — impl / trait / fn / machine `<T>` —
-        // is deliberately left opaque (`Ty::named`) by the resolver so
-        // `substitute_type_param` can replace it with a concrete argument at
-        // call sites. Such a name is resolvable and must not be reported as
-        // undefined. Enclosing scopes push their params onto
-        // `current_type_param_bounds` (impl methods via `register_impl_method`,
-        // fn signatures via `register_fn_sig_with_name`, impl/trait bodies via
-        // `enter_impl_scope`); the in-progress function's own signature params
-        // are consulted directly for the body-checking pass, where the function
-        // is current but its param scope is reconstructed from the cached sig.
-        if self
-            .current_type_param_bounds
-            .iter()
-            .any(|frame| frame.bounds.contains_key(name))
-        {
-            return true;
-        }
-        if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sig(fn_name) {
-                if sig
-                    .type_params
-                    .iter()
-                    .any(|param| param.spelling.as_str() == name)
-                {
-                    return true;
-                }
-            }
-        }
-        // Module-qualified spellings (`mod.Trait`, `mod.Alias`, `mod.Event`)
-        // whose tables key on the unqualified short name.
-        if let Some(unqualified) = self.strip_module_prefix(name) {
-            if self.known_types.contains(unqualified)
-                || self.has_trait_def(unqualified)
-                || self.type_aliases.contains_key(unqualified)
-                || self.supervisor_children.contains_key(unqualified)
-            {
-                return true;
-            }
-        }
-        false
     }
 
     pub(super) fn resolve_type_expr(&mut self, te: &Spanned<TypeExpr>) -> Ty {
@@ -2988,22 +2806,11 @@ impl Checker {
                 path: named_path,
                 type_args,
             } => {
-                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                if let Some(replacement) = self.legacy_machine_event_replacement(name) {
-                    let key = SpanKey::in_module(&te.1, self.current_module_idx);
-                    if self
-                        .reported_undefined_named_types
-                        .insert((name.clone(), key))
-                    {
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedType,
-                            &te.1,
-                            format!("machine event type `{name}` is now `{replacement}`"),
-                            vec![format!("replace `{name}` with `{replacement}`")],
-                        );
-                    }
-                    return Ty::Error;
-                }
+                // TRANSITION(A1c4): WHY `Self` and associated-type projections
+                // are still matched on the joined spelling. WHEN generic binders
+                // and projections resolve through `Scope`, this render goes.
+                // WHAT: `Self` and `T.Item` as `Scope` resolutions.
+                let name = &named_path.to_string();
                 // Handle `Self` type
                 if name == "Self" {
                     if let Some((self_type_name, self_type_args)) = &self.current_self_type {
@@ -3169,10 +2976,12 @@ impl Checker {
                 // field, parameter or element that holds an actor is written
                 // with the actor's own name. A user declaration of the same
                 // name shadows the reservation.
-                if matches!(name.as_str(), "LocalPid" | "Pid" | "LambdaPid")
-                    && !self.local_type_defs.contains(name)
-                    && !self.source_type_defs.contains(name)
-                {
+                let resolution = self.resolve_type_path(named_path);
+                let declared = matches!(
+                    resolution,
+                    Some(super::scope::Resolution::Nominal(_) | super::scope::Resolution::Def(_))
+                );
+                if !declared && matches!(name.as_str(), "LocalPid" | "Pid" | "LambdaPid") {
                     let written_args: Vec<String> = type_args
                         .iter()
                         .flatten()
@@ -3207,10 +3016,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                if name == "Task"
-                    && !self.local_type_defs.contains("Task")
-                    && !self.source_type_defs.contains("Task")
-                {
+                if !declared && name == "Task" {
                     self.report_error(
                         TypeErrorKind::TaskNotNameable,
                         &te.1,
@@ -3260,10 +3066,7 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    "Unit"
-                        if !self.local_type_defs.contains("Unit")
-                            && !self.source_type_defs.contains("Unit") =>
-                    {
+                    "Unit" if !declared => {
                         // `Unit` is Kotlin / Swift muscle memory; Hew's unit type
                         // is the empty tuple `()`. `BuiltinType::Unit` is an
                         // internal carrier with no user-writable spelling, so a
@@ -3303,396 +3106,12 @@ impl Checker {
                         return ty.clone();
                     }
                 }
-                if let Some(crate::TypeHead::Param(parameter)) =
-                    self.resolve_type_path_head(named_path)
+                if let Some(ty) =
+                    self.named_ty_from_resolution(resolution, named_path, &args, &te.1)
                 {
-                    return Ty::named_head(crate::TypeHead::Param(parameter), args);
+                    return ty;
                 }
-                // Whole-module imports are lexical bindings, not declaration
-                // identities.  Canonicalise `lmonobox.Box` through the exact
-                // binding owner (`hew.lmonobox.Box`) before it participates in
-                // unification or becomes a generic layout argument.  Lifecycle
-                // source carriers retain their dedicated authority below so the
-                // lexical binding remains available for its import-proof check.
-                let imported_module_binding = name.split_once('.').and_then(|(binding, tail)| {
-                    self.module_import_bindings
-                        .get(&(
-                            self.current_module.clone(),
-                            self.current_module_idx,
-                            binding.to_string(),
-                        ))
-                        .filter(|owner| {
-                            !matches!(owner.as_str(), "std.failure" | "std.link_monitor")
-                        })
-                        .map(|owner| (format!("{owner}.{tail}"), binding.to_string()))
-                });
-                let (canonical_module_name, imported_module_binding) = imported_module_binding
-                    .map_or_else(
-                        || {
-                            (
-                                self.canonical_current_module_qualified_type_name(name)
-                                    .unwrap_or_else(|| name.clone()),
-                                None,
-                            )
-                        },
-                        |(canonical, binding)| (canonical, Some(binding)),
-                    );
-                let name = &canonical_module_name;
-                // Check if it's a generic type parameter
-                for ctx in self.generic_ctx.iter().rev() {
-                    if let Some(ty) = ctx.get(name) {
-                        return ty.clone();
-                    }
-                }
-                // Preserve the alias's nominal identity for impl lookup. Semantic
-                // compatibility expands it at normalize-for-use boundaries.
-                if let Some(identity) = self.resolved_alias_name(name) {
-                    if !self.type_reference_is_visible(&identity, &te.1) {
-                        return Ty::Error;
-                    }
-                    let alias = &self.type_aliases[&identity];
-                    if args.len() != alias.type_params.len() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            &te.1,
-                            format!(
-                                "type alias `{name}` expects {} type argument(s), found {}",
-                                alias.type_params.len(),
-                                args.len()
-                            ),
-                        );
-                        return Ty::Error;
-                    }
-                    if let Some(binding) = imported_module_binding {
-                        self.note_import_use(binding);
-                    } else if let Some(module) = self
-                        .unqualified_to_module
-                        .get(&(
-                            self.current_module.clone(),
-                            self.current_module_idx,
-                            name.clone(),
-                        ))
-                        .cloned()
-                    {
-                        self.note_path_use(&module);
-                    }
-                    return self.named_ty_for_key(&identity, args);
-                }
-                // A qualified lifecycle source identity is valid only when its
-                // canonical owner was imported directly by this lexical module.
-                // Whole-module aliases retain canonical identity (`f.CrashKind`
-                // -> `failure.CrashKind`) while user/transitive definitions with
-                // the same spelling remain ordinary source types.
-                let lifecycle_qualified = self.canonical_source_lifecycle_type_name(name);
-                if let Some((canonical, binding)) = lifecycle_qualified.as_ref() {
-                    if !self.in_stdlib_registration
-                        && !self.source_lifecycle_identity_is_in_scope(canonical, binding)
-                    {
-                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
-                        if self
-                            .reported_undefined_named_types
-                            .insert((name.clone(), span_key))
-                        {
-                            self.report_error_with_suggestions(
-                                TypeErrorKind::UndefinedType,
-                                &te.1,
-                                format!("unknown type `{name}`"),
-                                vec![format!("import the owning module before using `{name}`")],
-                            );
-                        }
-                        return Ty::Error;
-                    }
-                }
-                // Qualify unqualified handle types only when imported and
-                // unambiguous. Collect owned strings so this borrow of
-                // `known_types` ends before the `&mut self` scope-error call
-                // below.
-                let handle_matches: Vec<String> = self
-                    .known_types
-                    .iter()
-                    .filter(|qualified| {
-                        qualified.contains('.') && crate::short_name(qualified) == name
-                    })
-                    .cloned()
-                    .collect();
-                // A bare reference binds to the current module's own type when the
-                // name is locally defined (root program or the module being
-                // checked). Imported types must be reached through their qualifier;
-                // a bare `type_defs` hit on a non-local name is only the
-                // last-write-wins residue of a cross-module same-name collision and
-                // must not be treated as an unambiguous resolution.
-                let is_local = self.local_type_defs.contains(name.as_str())
-                    || self.source_type_defs.contains(name.as_str())
-                    // The embedded prelude's body module contains its impls,
-                    // while its declarations were registered separately. An
-                    // exact declaration owned by the active module is still
-                    // local even when it is absent from that module's AST
-                    // items. Never infer this from a bare global definition:
-                    // another module may export the same name.
-                    || (!name.contains('.')
-                        && self.current_module.as_ref().is_some_and(|module| {
-                            self.type_def_exact(&format!("{module}.{name}")).is_some()
-                        }));
-                // Fail closed under qualified-by-default: a bare reference
-                // published by more than one module is ambiguous, and one
-                // exported by some module(s) but published by none is not in
-                // scope. The decision is over PUBLISHED bare bindings (not bare
-                // exports), so a plain `import` cannot poison an explicit named
-                // import of the same bare name. The same helper gates the bare
-                // record constructor in `check_struct_init`, so a type position
-                // (`fn f(x: Gadget)`) and a construction (`Gadget { … }`) reject
-                // the ill-formed cases identically.
-                if !is_local
-                    && !name.contains('.')
-                    && self.report_bare_type_scope_error(name, &te.1)
-                {
-                    return Ty::Error;
-                }
-                // A named/glob lifecycle import must carry the same canonical
-                // source proof as a whole-module qualified import. Ordinary
-                // bare-publication tables describe only a module's spelling,
-                // so a user-backed `std.failure::{CrashNotification}` cannot
-                // mint the lifecycle ABI identity.
-                let published_lifecycle = (!is_local && !name.contains('.'))
-                    .then(|| self.source_nominal_declaration(name))
-                    .flatten()
-                    .filter(|canonical| {
-                        crate::lookup_source_owned_lifecycle_type(canonical).is_some()
-                    });
-                if let Some(canonical) = published_lifecycle {
-                    if !self.in_stdlib_registration
-                        && !self.source_lifecycle_identity_is_in_scope(&canonical, name)
-                    {
-                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
-                        if self
-                            .reported_undefined_named_types
-                            .insert((name.clone(), span_key))
-                        {
-                            self.report_error_with_suggestions(
-                                TypeErrorKind::UndefinedType,
-                                &te.1,
-                                format!("unknown type `{name}`"),
-                                vec![format!("import the owning module before using `{name}`")],
-                            );
-                        }
-                        return Ty::Error;
-                    }
-                }
-                let resolved_name = if let Some((canonical, binding)) = lifecycle_qualified {
-                    self.note_import_use(binding);
-                    canonical
-                } else if is_local {
-                    // A bare reference to a locally-defined type normally binds
-                    // to the bare `type_defs` key. But when checking a non-root
-                    // module, the bare key is last-write-wins across modules that
-                    // declare the same bare name (`pre_register_type_decl`
-                    // documents this: the qualified alias is the authority). If a
-                    // sibling module later overwrites the bare `Wrap` entry, a
-                    // bare local `Wrap` here would resolve to the WRONG module's
-                    // fields downstream (observable as `no field ... help: <other
-                    // module's field>` — #2208). Bind to this module's OWN
-                    // qualified identity (`{full_module}.{name}`) when it exists so the
-                    // local reference is immune to the cross-module bare-key
-                    // race, mirroring the `published_bare_type_qualified` branch
-                    // below. Canonical registration seeds the full qualified
-                    // key; the bare entry may remain only as a compatibility
-                    // surface and is never the owner authority here.
-                    //
-                    // KNOWN GAP (rc1-F1, route producer): a file peer-assembled
-                    // into a directory module and ALSO reached as its own
-                    // submodule is one declaration that mints `pkg.Tok` here and
-                    // `pkg.aaa.Tok` on the other route. The identity table
-                    // already answers this (`module_path_for_source` gives one
-                    // path per file, either route), but converging the checker
-                    // alone is not enough: HIR re-derives the owner from the
-                    // module graph and the MIR field-order table is keyed by
-                    // that render, so a checker-only fix trades a type mismatch
-                    // for a missing layout key. Closing it means checker, HIR
-                    // owner derivation and the MIR layout key all reading the
-                    // declaring file's minted identity together.
-                    if let Some(module) = self.current_module.as_deref() {
-                        let qualified = format!("{module}.{name}");
-                        if self.type_def_exact(&qualified).is_some() {
-                            qualified
-                        } else {
-                            name.clone()
-                        }
-                    } else {
-                        name.clone()
-                    }
-                } else if let Some(declaration) = self.source_nominal_declaration(name) {
-                    declaration
-                } else {
-                    match handle_matches.as_slice() {
-                        // Exactly one importing module exports this name: bind to
-                        // its qualified def.
-                        [qualified] => (*qualified).clone(),
-                        // Zero qualified matches: keep the bare name (builtin,
-                        // alias, or a downstream undefined-type diagnostic).
-                        _ => name.clone(),
-                    }
-                };
-                // A bare import binding can resolve to its source-canonical
-                // owner (`std.failure.CrashInfo`). Consume the import by
-                // the original binding before treating that canonical identity
-                // as a source-qualified reference; otherwise the lint would
-                // look for a fictional root `std` import and warn about the
-                // actual source-module import being unused.
-                if let Some(binding) = imported_module_binding {
-                    // `binding.Type` resolved above to its full source owner.
-                    // The lexical binding is the import-lint authority: using
-                    // the first segment of a dotted source owner such as
-                    // `hew.closableerr.CloseError` would instead credit a
-                    // nonexistent `hew` import and falsely warn that the
-                    // actual `closableerr` binding is unused.
-                    self.note_import_use(binding);
-                } else if let Some(module) = self
-                    .unqualified_to_module
-                    .get(&(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        name.clone(),
-                    ))
-                    .cloned()
-                {
-                    self.note_path_use(&module);
-                } else if resolved_name.contains('.') {
-                    self.note_path_use(&resolved_name);
-                } else if let Some(module) = self
-                    .unqualified_to_module
-                    .get(&(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        resolved_name.clone(),
-                    ))
-                    .cloned()
-                {
-                    // A bare reference that resolves through a published binding
-                    // (named / glob / aliased import) keeps the bare spelling but
-                    // still consumes the owning module — mark it used so the
-                    // unused-import lint does not false-positive on bare type
-                    // references reached via an explicit opt-in or glob.
-                    self.note_path_use(&module);
-                }
-                if !self.type_reference_is_visible(&resolved_name, &te.1) {
-                    return Ty::Error;
-                }
-                let generated_prelude_builtin = (!name.contains('.'))
-                    .then(|| self.published_bare_type_qualified(name))
-                    .flatten()
-                    .filter(|published| published == &resolved_name)
-                    .and_then(|published| {
-                        self.source_authorized_generated_enum_builtin(&published)
-                    });
-                let resolved_builtin = self
-                    .resolved_builtin_type(resolved_name.as_str())
-                    .or(generated_prelude_builtin);
-                let builtin = resolved_builtin.filter(|builtin| {
-                    // A raw bare spelling of a source-owned lifecycle type has
-                    // no authority. Real named/glob imports and the isolated
-                    // prelude bootstrap canonicalise it to `owner.Type` above.
-                    !builtin.requires_source_import()
-                        || resolved_name.contains('.')
-                        || self.in_stdlib_registration
-                });
-                // A bare name that shadows a builtin via a local `type X {}` decl
-                // normally binds to the source decl (`builtin: None`). Collection
-                // and substrate-handle builtins are the exception only while
-                // checking their imported stdlib carrier module. A root-source
-                // declaration is a distinct nominal shadow (`type Sink<T>`,
-                // `#[opaque] type Receiver {}`), never the runtime endpoint by
-                // spelling or generic arity alone.
-                // A qualified identity present in the builtin catalog is an
-                // actual compiler carrier (`stream.Stream`,
-                // `channel.Receiver`, ...). A user package declaration such
-                // as `foo.Receiver` has no exact catalog row and therefore
-                // remains source-owned even though its short spelling
-                // collides. Root bare declarations likewise remain user
-                // shadows.
-                let builtin_overrides_source_decl = self.in_stdlib_registration
-                    || builtin.is_some_and(BuiltinType::is_encoding_value)
-                    || (builtin.is_some() && crate::ty::is_reserved_type_name(&resolved_name))
-                    || self.source_authorized_generated_enum_builtin(&resolved_name) == builtin
-                        && builtin.is_some()
-                    || crate::builtin_type::has_exact_source_owned_lifecycle_identity(
-                        &resolved_name,
-                        builtin,
-                    )
-                    || (resolved_name.contains('.')
-                        && builtin.is_some_and(|kind| {
-                            kind.is_collection()
-                                || kind.is_substrate_handle()
-                                // The identity carriers declare a bodyless
-                                // surface stub in `std/builtins.hew`; a
-                                // signature written there qualifies it under
-                                // that module, and the carrier, not the stub,
-                                // is what every consumer dispatches on.
-                                || matches!(
-                                    kind,
-                                    BuiltinType::NodeId
-                                        | BuiltinType::Location
-                                        | BuiltinType::RemotePid
-                                )
-                        }));
-                // Preserve the lexical declaration decision made above. A
-                // local source type may be owner-qualified before this point,
-                // so re-testing its output spelling would let builtin-shaped
-                // declarations such as `Option` and `Result` lose authority.
-                let local_source_type_def = is_local && !builtin_overrides_source_decl;
-                // F1: a named type that resolved to nothing — not a builtin, not
-                // a registered user type / trait / alias, and not a generic type
-                // parameter (those all returned earlier) — is genuinely
-                // undefined. Before this guard the name fell through to an opaque
-                // `Ty::named`, surfacing only downstream as a confusing
-                // `type mismatch: expected `Bogus`, found `()`` (return / let
-                // position) or `E_MIR: unknown type` at the MIR boundary
-                // (parameter position). Reject it at the resolution site with a
-                // direct diagnostic and an error sentinel so unification
-                // suppresses any cascade.
-                //
-                // Gated on `type_decls_registered` so the registration pass —
-                // which resolves record / enum / machine members before every
-                // sibling type is registered — does not false-positive on legal
-                // forward references. The dedup set keeps a single user-facing
-                // error stable across the two resolution visits a function
-                // parameter annotation receives (signature registration in
-                // `collect_functions` + body checking in `resolve_param_binding_ty`).
-                // Module-qualified names (`mod.Type`) reach this fall-through
-                // when their type lives in another module and resolves through
-                // the module registry to an opaque carrier rather than a locally
-                // registered name. Verifying those would require replicating the
-                // registry's qualified-resolution path here; they are also
-                // outside this diagnostic's remit (the reported gap was bare
-                // names like `Unit` / `Bogus`). Leave them on the existing opaque
-                // path so a genuine cross-module type still resolves and a
-                // genuinely missing one keeps its current downstream diagnostic.
-                if builtin.is_none()
-                    && self.type_decls_registered
-                    && !self.suppress_undefined_type_report
-                    && !resolved_name.contains('.')
-                    && !self.named_type_is_resolvable(&resolved_name)
-                {
-                    let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
-                    if self
-                        .reported_undefined_named_types
-                        .insert((resolved_name.clone(), span_key))
-                    {
-                        self.report_error(
-                            TypeErrorKind::UndefinedType,
-                            &te.1,
-                            format!("unknown type `{name}`"),
-                        );
-                    }
-                    return Ty::Error;
-                }
-                if let Some(builtin) = builtin.filter(|_| !local_source_type_def) {
-                    if builtin == BuiltinType::CancellationToken && args.is_empty() {
-                        return Ty::CancellationToken;
-                    }
-                    Ty::named_head(crate::TypeHead::Builtin(builtin), args)
-                } else {
-                    self.named_ty_for_key(&resolved_name, args)
-                }
+                self.report_unresolved_named_type(named_path, args, &te.1)
             }
             TypeExpr::Result { ok, err } => {
                 let args = vec![

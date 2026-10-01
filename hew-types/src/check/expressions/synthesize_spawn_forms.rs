@@ -1570,7 +1570,7 @@ impl Checker {
                 self.type_defs
                     .keys()
                     .map(|id| self.defs.path(id.declaration()))
-                    .chain(self.type_aliases.keys().map(String::as_str))
+                    .chain(self.type_aliases.keys().map(|id| self.defs.path(*id)))
                     .chain(self.known_types.iter().map(String::as_str)),
             );
             self.report_error_with_suggestions(

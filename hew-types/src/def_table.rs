@@ -711,6 +711,8 @@ pub struct DefTable {
     /// Each owner's members by declared name; the first declaration of a
     /// name wins, and a duplicate is reported by the checker.
     members: HashMap<(DefId, Symbol), Vec<DefId>>,
+    /// The declared visibility of source items that are not `pub`.
+    restricted: HashMap<DefId, hew_parser::ast::Visibility>,
 }
 
 impl std::fmt::Debug for DefTable {
@@ -742,6 +744,7 @@ impl DefTable {
             root: None,
             defs: Vec::new(),
             by_occurrence: HashMap::new(),
+            restricted: HashMap::new(),
             by_path: HashMap::new(),
             default_bodies: HashMap::new(),
             builtin_declarations: HashMap::new(),
@@ -951,6 +954,35 @@ impl DefTable {
 
     fn row(&self, id: DefId) -> &DefRow {
         &self.defs[id.index()]
+    }
+
+    /// Record a source item's declared visibility.
+    pub(crate) fn set_visibility(&mut self, id: DefId, visibility: hew_parser::ast::Visibility) {
+        if visibility == hew_parser::ast::Visibility::Pub {
+            self.restricted.remove(&id);
+        } else {
+            self.restricted.insert(id, visibility);
+        }
+    }
+
+    /// A declaration's visibility; sourceless rows and members are public.
+    #[must_use]
+    pub fn visibility(&self, id: DefId) -> hew_parser::ast::Visibility {
+        self.restricted
+            .get(&id)
+            .copied()
+            .unwrap_or(hew_parser::ast::Visibility::Pub)
+    }
+
+    /// Whether two modules are in one package: the modules of one directory.
+    #[must_use]
+    pub fn same_package(&self, a: ModuleId, b: ModuleId) -> bool {
+        let package = |module: ModuleId| {
+            self.module_path(module)
+                .rsplit_once('.')
+                .map_or("", |(package, _)| package)
+        };
+        package(a) == package(b)
     }
 
     /// The declared spelling of a definition, for display.

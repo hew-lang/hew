@@ -165,7 +165,7 @@ fn multiple_reactor_calls_do_not_warn() {
 fn warning_message_mentions_scheduler_with_suggestion() {
     let output = typecheck(
         r"
-        import std.http;
+        import std.net.http;
 
         actor Worker {
             receive fn process(server: http.Server) {
@@ -204,7 +204,7 @@ fn warning_message_mentions_scheduler_with_suggestion() {
 fn warn_http_server_accept_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std.http;
+        import std.net.http;
 
         actor HttpHandler {
             receive fn serve(server: http.Server) {
@@ -228,7 +228,7 @@ fn warn_http_server_accept_inside_receive_fn() {
 fn no_blocking_suggestion_names_await() {
     let output = typecheck(
         r"
-        import std.http;
+        import std.net.http;
 
         actor Mixed {
             receive fn serve(server: http.Server) {

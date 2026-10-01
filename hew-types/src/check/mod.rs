@@ -1088,20 +1088,20 @@ impl Checker {
         }
     }
 
-    /// Bind the prelude manifest's exports (`std/prelude.hew`) in the
-    /// prelude scope, from the declarations their modules minted.
-    fn bind_prelude_exports_in_scope(&mut self) {
-        for export in crate::stdlib_authority::authority().prelude_exports() {
-            let Some(module) = self.defs.module_for_path(&export.module) else {
-                continue;
-            };
-            let namespace = self.scopes.namespace_of(module);
-            let Some(binding) = self.scopes.item(namespace, Symbol::intern(&export.name)) else {
-                continue;
-            };
-            let bound = export.alias.as_deref().unwrap_or(&export.name);
-            self.scopes.bind_prelude(Symbol::intern(bound), binding);
+    /// Bind a declaration of a compiler-registered prelude module in the
+    /// prelude scope.
+    pub(super) fn bind_prelude_item(&mut self, module: &str, name: &str) {
+        let Some(module) = self.defs.module_for_path(module) else {
+            return;
+        };
+        let name = Symbol::intern(name);
+        if let Some(binding) = self.scopes.item(self.scopes.namespace_of(module), name) {
+            self.scopes.bind_prelude(name, binding);
         }
+    }
+
+    /// Bind `std.builtins` in the prelude scope.
+    fn bind_builtins_prelude_in_scope(&mut self) {
         // `std.builtins` publishes every type and trait bare; its functions
         // are reached through the builtin call catalog.
         if let Some(builtins) = self.defs.module_for_path("std.builtins") {
@@ -1138,12 +1138,25 @@ impl Checker {
         decl: &hew_parser::ast::ImportDecl,
         span: &Span,
     ) {
-        let Some(target) = decl
-            .resolved_source_paths
-            .first()
-            .and_then(|source| self.defs.module_for_source(source))
-            .or_else(|| self.defs.module_for_path(&decl.path.to_string()))
-        else {
+        self.bind_import_to(file, decl, span, None);
+    }
+
+    /// Bind an import declaration whose module registration minted `target`;
+    /// without it, the module the declaration's resolved source or path
+    /// names.
+    pub(super) fn bind_import_to(
+        &mut self,
+        file: crate::ModuleId,
+        decl: &hew_parser::ast::ImportDecl,
+        span: &Span,
+        target: Option<crate::ModuleId>,
+    ) {
+        let Some(target) = target.or_else(|| {
+            decl.resolved_source_paths
+                .first()
+                .and_then(|source| self.defs.module_for_source(source))
+                .or_else(|| self.defs.module_for_path(&decl.path.to_string()))
+        }) else {
             return;
         };
         let site = scope::ImportSite::new(file, span);
@@ -1167,6 +1180,16 @@ impl Checker {
                 }
             }
             Some(hew_parser::ast::ImportSpec::Names(names)) => {
+                // A selection also binds its module for qualified siblings
+                // (`net.listen` beside `import std.net.{Connection}`).
+                if let Some(module_name) = decl.path.last() {
+                    self.scopes.bind_import(
+                        file,
+                        module_name.name,
+                        scope::Binding::Module(target),
+                        site,
+                    );
+                }
                 for selected in names {
                     if let Some(binding) = self.scopes.item(namespace, selected.name.name) {
                         let bound = selected.alias.unwrap_or(selected.name);
@@ -1803,6 +1826,20 @@ impl Checker {
         // Declares one row and answers its identity, which a member row takes
         // as its owner.
         let mut minted_types: Vec<crate::DefId> = Vec::new();
+        let item_visibility = match item {
+            Item::Const(decl) => decl.visibility,
+            Item::TypeDecl(decl) => decl.visibility,
+            Item::TypeAlias(decl) => decl.visibility,
+            Item::Trait(decl) => decl.visibility,
+            Item::Function(decl) => decl.visibility,
+            Item::Actor(decl) => decl.visibility,
+            Item::Supervisor(decl) => decl.visibility,
+            Item::Machine(decl) => decl.visibility,
+            Item::Record(decl) => decl.visibility,
+            Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => {
+                hew_parser::ast::Visibility::Pub
+            }
+        };
         let mut declare = |kind: Kind,
                            ordinal: usize,
                            name: Symbol,
@@ -1843,6 +1880,7 @@ impl Checker {
                                 self.scopes.declare_member(owner, name, resolution);
                             }
                             None => {
+                                self.defs.set_visibility(id, item_visibility);
                                 if let (Some(namespace_module), Some(binding)) =
                                     (namespace_module, scope::Binding::of_item(&self.defs, id))
                                 {
@@ -2407,8 +2445,18 @@ impl Checker {
         }
         let path = self.defs.path(id);
         crate::BuiltinType::from_source_declaration(path).or_else(|| {
-            self.resolved_builtin_type(path)
-                .filter(|builtin| builtin.is_encoding_value())
+            // An encoding value is its builtin only when declared by the
+            // shipped std source of its module.
+            let module = self.defs.module(id)?;
+            let owner = self.defs.module_path(module);
+            let builtin =
+                crate::BuiltinType::from_encoding_value_source(owner, self.defs.name(id).as_str())?;
+            self.defs
+                .module_source(module)
+                .is_some_and(|source| {
+                    crate::module_registry::is_canonical_stdlib_module_source(source, owner)
+                })
+                .then_some(builtin)
         })
     }
 
@@ -2524,7 +2572,7 @@ impl Checker {
         self.mint_source_declaration_identities(program);
         self.register_builtins();
         self.capture_protected_prelude_bindings();
-        self.bind_prelude_exports_in_scope();
+        self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so

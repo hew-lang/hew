@@ -3531,7 +3531,7 @@ pub struct Checker {
     pub(super) loop_labels: Vec<String>,
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
-    pub(super) type_aliases: HashMap<String, TypeAliasDef>,
+    pub(super) type_aliases: HashMap<crate::DefId, TypeAliasDef>,
     /// Source-declared methods by receiver declaration and owner.
     pub(super) dispatch: super::dispatch_table::DispatchTable,
     /// The impl method whose body is being checked, so its own signature is
@@ -3714,7 +3714,7 @@ pub struct Checker {
     /// diagnostic has already been emitted in the current check pass.  Prevents
     /// duplicate `E_VISIBILITY` errors when the same private/package type appears in
     /// multiple positions (e.g. both a parameter and the return type of one fn).
-    pub(super) reported_type_visibility_violations: HashSet<String>,
+    pub(super) reported_type_visibility_violations: HashSet<crate::DefId>,
     /// `(resolved_name, span)` pairs for which an `unknown type` diagnostic has
     /// already been emitted, so a named type that resolves to nothing is reported
     /// exactly once even though signature resolution (`collect_functions`) and

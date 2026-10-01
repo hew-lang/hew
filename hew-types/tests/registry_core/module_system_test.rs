@@ -611,10 +611,12 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
             name_span: 0..0,
             ty: (
                 TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(
-                        hew_parser::ast::Ident::new("alpha.Value"),
-                        0..0,
-                    ),
+                    path: hew_parser::ast::Path {
+                        segments: vec![
+                            (hew_parser::ast::Ident::new("alpha"), 0..0),
+                            (hew_parser::ast::Ident::new("Value"), 0..0),
+                        ],
+                    },
                     type_args: None,
                 },
                 0..0,

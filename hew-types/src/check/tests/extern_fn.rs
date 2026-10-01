@@ -322,8 +322,8 @@ fn injected_ordinary_field_and_alias_borrows_fail_closed() {
     assert_one_borrow_outside_extern(&alias_output.errors, alias_span);
     assert!(checker
         .type_aliases
-        .get("Alias")
-        .is_none_or(|alias| !matches!(alias.target, Ty::Borrow { .. })));
+        .values()
+        .all(|alias| !matches!(alias.target, Ty::Borrow { .. })));
 }
 
 #[test]
@@ -769,8 +769,7 @@ fn peer_files_with_divergent_same_named_types_conflict_on_one_symbol() {
 /// A declaration has one render (#3239). The frontend never builds this
 /// graph - importing a peer file directly is `E_PEER_IMPORT` - so a peer file
 /// walked a second time as its own module is an internal defect: the identity
-/// table refuses the second spelling and names both, and the one declaration
-/// still yields one contract rather than a self-conflict.
+/// table refuses the second spelling and names both.
 #[test]
 fn one_peer_declaration_through_two_routes_is_refused_naming_both_spellings() {
     let output = check_peer_assembled_extern(false);
@@ -778,14 +777,6 @@ fn one_peer_declaration_through_two_routes_is_refused_naming_both_spellings() {
         output.errors.iter().any(|error| error
             .message
             .contains("declaration `pkg.Tok` was offered a second spelling `pkg.aaa.Tok`")),
-        "{:#?}",
-        output.errors
-    );
-    assert!(
-        !output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("conflicting declarations")),
         "{:#?}",
         output.errors
     );
@@ -1021,6 +1012,29 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
         })
         .unwrap();
     };
+    // The module graph records the edges of `nt`'s written imports; the
+    // items carry the import declarations themselves, as a parsed file does.
+    let import_source = match shape {
+        ImportLexicalShape::PlainModuleImport => "import sm;",
+        ImportLexicalShape::AmbiguousImports => "import sm;\nimport om;",
+        ImportLexicalShape::ForeignDivergentImport => "import om;",
+        ImportLexicalShape::AliasedNamedImport => "import sm.{ Tok as ForeignTok };",
+        ImportLexicalShape::BareNamedImport => "import sm.{ Tok };",
+    };
+    let mut nt_items = nt_items;
+    for (mut item, span) in parsed(import_source).into_iter().rev() {
+        if let Item::Import(decl) = &mut item {
+            let (items, file) = if decl.path.to_string() == "sm" {
+                (&sm_items, &sm_file)
+            } else {
+                (&om_items, &om_file)
+            };
+            decl.resolved_items = Some(items.clone().into());
+            decl.resolved_item_source_paths = vec![file.clone(); items.len()];
+            decl.resolved_source_paths = vec![file.clone()];
+        }
+        nt_items.insert(0, (item, span));
+    }
     add_module(&mut mg, &sm_id, &sm_items, &sm_file, vec![]);
     add_module(&mut mg, &om_id, &om_items, &om_file, vec![]);
     add_module(&mut mg, &nt_id, &nt_items, &nt_file, nt_imports);

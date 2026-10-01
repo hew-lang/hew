@@ -41,6 +41,14 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         .cloned()
         .collect();
 
+    // A root `import bank;` names the imported module's items, as the
+    // module-graph builder resolves them.
+    let mut root_items = root.program.items.clone();
+    for (item, _) in &mut root_items {
+        if let Item::Import(decl) = item {
+            decl.resolved_items = Some(imported_items.clone().into());
+        }
+    }
     let imported_module = Module {
         id: imported_id.clone(),
         items: imported_items,
@@ -50,7 +58,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
     };
     let root_module = Module {
         id: root_id.clone(),
-        items: root.program.items.clone(),
+        items: root_items.clone(),
         imports: Vec::new(),
         source_paths: Vec::new(),
         doc: None,
@@ -62,7 +70,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
     graph.topo_order = vec![imported_id, root_id];
 
     Program {
-        items: root.program.items,
+        items: root_items,
         module_graph: Some(graph),
         ..root.program
     }
@@ -196,7 +204,8 @@ fn hir_dump_shows_qualified_identity_only_for_imported_types() {
 fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
     let program = build_program_with_imported_module(
         "pub type Widget {\n    v: i64;\n}\n",
-        "fn read(w: bank.Widget) -> i64 { w.v }\n\
+        "import bank;\n\
+         fn read(w: bank.Widget) -> i64 { w.v }\n\
          fn main() -> i64 { 0 }",
     );
     let (output, tco) = lower_with_checker(&program);

@@ -574,7 +574,7 @@ impl Checker {
             )
             .is_none() =>
             {
-                self.alias_target_for_instance(head.registry_key(), type_args)
+                self.alias_target_for_instance(*head, type_args)
                     .unwrap_or(resolved)
             }
             _ => resolved,
@@ -623,9 +623,12 @@ impl Checker {
         }
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
-        if let Ty::Named { head, .. } = &resolved {
-            let name = head.registry_key();
-            self.warn_if_blocking_handle_method(name, method, span);
+        if let Some(receiver) = match &resolved {
+            Ty::Named { head, .. } => head.nominal(),
+            _ => None,
+        } {
+            let name = self.defs.path(receiver.declaration()).to_string();
+            self.warn_if_blocking_handle_method(&name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
         // value enums. Collection clones keep their existing runtime rewrites,

@@ -530,9 +530,11 @@ impl Checker {
                         || (r.as_result().is_some() && ty.as_result().is_some())
                         || matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { head, .. }
-                                if head.builtin().is_none()
-                                    && self.head_type_def(*head).is_none()
-                                    && !self.type_aliases.contains_key(head.registry_key()))
+                        if head.builtin().is_none()
+                            && self.head_type_def(*head).is_none()
+                            && !head.nominal().is_some_and(|id| {
+                                self.type_aliases.contains_key(&id.declaration())
+                            }))
                     {
                         None
                     } else {
@@ -1456,7 +1458,9 @@ impl Checker {
             Ty::Error
         } else if self.type_def_at(surface_name).is_some()
             || self.known_types.contains(surface_name)
-            || self.type_aliases.contains_key(surface_name)
+            || self
+                .lookup_declaration(surface_name)
+                .is_some_and(|declaration| self.type_aliases.contains_key(&declaration))
             || crate::lookup_builtin_type(surface_name).is_some()
             || crate::ty::is_reserved_type_name(surface_name)
         {

@@ -604,9 +604,9 @@ impl Checker {
         import_span: Option<&Span>,
     ) {
         let importer = self.scope_site().map(|site| site.file);
-        self.register_import_publications(decl, import_span);
+        let target = self.register_import_publications(decl, import_span);
         if let Some(file) = importer {
-            self.bind_import_in_scope(file, decl, import_span.unwrap_or(&(0..0)));
+            self.bind_import_to(file, decl, import_span.unwrap_or(&(0..0)), target);
         }
     }
 
@@ -614,9 +614,14 @@ impl Checker {
         clippy::too_many_lines,
         reason = "import registration consolidates stdlib, user-module, and error paths in one place"
     )]
-    fn register_import_publications(&mut self, decl: &ImportDecl, import_span: Option<&Span>) {
+    fn register_import_publications(
+        &mut self,
+        decl: &ImportDecl,
+        import_span: Option<&Span>,
+    ) -> Option<crate::ModuleId> {
+        let mut target = None;
         if import_span.is_some_and(|span| !self.preflight_import_publication(decl, span)) {
-            return;
+            return target;
         }
         let mut resolved_module_owner: Option<String> = None;
         if let Some(items) = decl.resolved_items.as_ref() {
@@ -638,6 +643,7 @@ impl Checker {
                 .dotted(),
                 &decl.resolved_source_paths,
             );
+            target = Some(primary);
             // The identity table interns by canonical source, so a module the
             // compile already reached under another spelling answers with the
             // render it was minted under. That render is the one owner every
@@ -728,6 +734,7 @@ impl Checker {
                     let registry_module = self
                         .defs
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
+                    target = Some(registry_module);
                     if self.defs.module_has_source_declarations(registry_module) {
                         self.declare_minted_items_in_scope(&[registry_module], registry_module);
                     } else {
@@ -963,7 +970,7 @@ impl Checker {
                     }
 
                     self.handle_bearing_dirty = true;
-                    return;
+                    return target;
                 }
                 Some(format!(
                     "module file contains unsupported slice annotations in signature(s): {}. \
@@ -991,7 +998,7 @@ impl Checker {
         if let Some(ref resolved_items) = decl.resolved_items {
             if decl.path.segments.is_empty() {
                 if self.flat_file_import_already_registered(decl) {
-                    return;
+                    return target;
                 }
                 let owner = resolved_module_owner
                     .clone()
@@ -1082,6 +1089,7 @@ impl Checker {
         {
             self.errors.push(error);
         }
+        target
     }
 
     pub(super) fn unresolved_import_error(

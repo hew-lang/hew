@@ -10,7 +10,8 @@ impl Display for AppError {
     }
 }
 
-impl Error for AppError {}
+impl Error for AppError {
+}
 
 impl From<i64> for dyn Error {
     fn from(value: i64) -> dyn Error {

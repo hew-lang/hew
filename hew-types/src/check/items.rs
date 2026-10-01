@@ -2838,7 +2838,19 @@ impl Checker {
     /// Refuse a `From` impl the failure-edge rule cannot use (D547): the
     /// identity conversion, a trait-object target (erasure owns that edge)
     /// and a blanket impl over a bare type parameter.
-    fn check_from_impl(&mut self, id: &ImplDecl, type_name: Option<&str>, span: &Span) {
+    fn check_from_impl(&mut self, id: &ImplDecl, span: &Span) {
+        if !id
+            .trait_bound
+            .as_ref()
+            .is_some_and(|bound| self.trait_bound_is_from(bound))
+        {
+            return;
+        }
+        let type_name = match &id.target_type.0 {
+            TypeExpr::Named { path, .. } => Some(path.to_string()), // TRANSITION(P1): deleted by A1 commit 2
+            _ => None,
+        };
+        let type_name = type_name.as_deref();
         let reason = if matches!(id.target_type.0, TypeExpr::TraitObject(_)) {
             Some("a `From` impl cannot target a trait object; erasure into `dyn Error` needs no impl")
         } else {
@@ -2891,11 +2903,7 @@ impl Checker {
             // errors after its method symbols were deliberately withheld.
             return;
         }
-        if let (Some(bound), TypeExpr::TraitObject(_)) = (&id.trait_bound, &id.target_type.0) {
-            if self.trait_bound_is_from(bound) {
-                self.check_from_impl(id, None, span);
-            }
-        }
+        self.check_from_impl(id, span);
         if let TypeExpr::Named {
             path: named_path,
             type_args: _,
@@ -2943,9 +2951,6 @@ impl Checker {
                 }
                 self.require_supertrait_impls(type_name, &tb.path.to_string(), span);
                 // TRANSITION(P1): deleted by A1 commit 2
-                if self.trait_bound_is_from(tb) {
-                    self.check_from_impl(id, Some(type_name), span);
-                }
             }
 
             // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)

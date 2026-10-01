@@ -28,7 +28,7 @@ impl LowerCtx {
         match conversion {
             Some(hew_types::ErrorConversion::Same) => value,
             Some(hew_types::ErrorConversion::Erase(coercion)) => {
-                self.wrap_dyn_coercion(value, coercion, IntentKind::Consume, edge_span.clone())
+                self.wrap_dyn_coercion(value, *coercion, IntentKind::Consume, edge_span.clone())
             }
             Some(hew_types::ErrorConversion::From { method }) => {
                 self.lower_from_conversion(method, value, target, edge_span)

@@ -862,7 +862,8 @@ impl Display for string {
 
 /// Text is an ad-hoc error: `return error f"port {port} is out of range"`
 /// works in a `fails dyn Error` function, and the message renders as written.
-impl Error for string {}
+impl Error for string {
+}
 
 // ---------------------------------------------------------------------------
 // Time canaries

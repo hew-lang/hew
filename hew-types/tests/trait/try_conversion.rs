@@ -244,16 +244,21 @@ fn parse() -> i64 fails dyn Error {
 
 #[test]
 fn only_failure_edges_convert() {
-    // A constructed `Err` and a `handle` block value keep their exact type.
+    // A `From<Low> for Mid` exists, yet a constructed `Err` and a `handle`
+    // block value keep their exact type.
     let output = check(
         r"
 fn constructed() -> Result<i64, Mid> {
     .Err(Low.Broken)
 }
 
+fn mid_or_low() -> Result<Mid, Low> {
+    .Err(.Broken)
+}
+
 fn recovered() -> Mid {
-    let n = low() handle e { e };
-    Mid.Code(n)
+    let m: Mid = mid_or_low() handle e { e };
+    m
 }
 ",
     );

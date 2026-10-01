@@ -567,12 +567,28 @@ impl Checker {
                         );
                     } else {
                         let value_ty = self.synthesize(&value.0, &value.1);
-                        self.select_error_conversion(
-                            crate::check::coerce::FailureEdge::ReturnError,
-                            &value_ty,
-                            &error,
-                            span,
+                        let unsized_literal = matches!(
+                            self.subst.resolve(&value_ty),
+                            Ty::IntLiteral | Ty::FloatLiteral
                         );
+                        if unsized_literal && self.subst.resolve(&error).is_numeric() {
+                            // A literal into a numeric error type is the same
+                            // type at the error's width, as under any
+                            // annotation; an all-literal expression has no
+                            // effects to repeat.
+                            self.check_against(&value.0, &value.1, &error);
+                            self.error_conversions.insert(
+                                SpanKey::in_module(span, self.current_module_idx),
+                                super::ErrorConversion::Same,
+                            );
+                        } else {
+                            self.select_error_conversion(
+                                crate::check::coerce::FailureEdge::ReturnError,
+                                &value_ty,
+                                &error,
+                                span,
+                            );
+                        }
                     }
                     self.result_return_coercions.insert(
                         SpanKey::in_module(span, self.current_module_idx),

@@ -241,6 +241,10 @@ impl LowerCtx {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one swap per checker fact table; splitting it would scatter the save and restore pairs"
+    )]
     pub(super) fn with_typecheck_facts<T>(
         &mut self,
         tc_output: &TypeCheckOutput,

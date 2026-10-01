@@ -30,6 +30,8 @@ enum Action {
     /// selection's watch on a socket stream it must not read.
     Readable,
     Accept,
+    /// One line of standard input, taken from the process buffer.
+    StdinLine,
     Write {
         data: WriteData,
         written: usize,
@@ -159,6 +161,7 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                 }
             }
         }
+        Action::StdinLine => unreachable!("standard input advances under its buffer lock"),
         Action::Write { data, written } => {
             let Some(mut stream) = slot.stream() else {
                 return closed("write TCP connection");
@@ -204,6 +207,10 @@ pub(super) fn advance(operation: &Arc<HewAsyncIo>) {
         .net
         .as_ref()
         .expect("advance runs only on readiness operations");
+    if matches!(*net.action.lock_or_recover(), Action::StdinLine) {
+        super::stdin::advance(operation, &net.slot);
+        return;
+    }
     let attempt = attempt(&net.slot, &mut net.action.lock_or_recover());
     match attempt {
         Attempt::Done(result) => operation.complete(result),
@@ -231,10 +238,10 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     }
     let _ingress = crate::shutdown::admit_external_work()
         .map_err(|()| crate::reactor::cancelled_failure("register TCP I/O"))?;
-    let kind_matches = if matches!(action, Action::Accept) {
-        slot.listener().is_some()
-    } else {
-        slot.stream().is_some()
+    let kind_matches = match action {
+        Action::Accept => slot.listener().is_some(),
+        Action::StdinLine => slot.is_stdin(),
+        _ => slot.stream().is_some(),
     };
     if !kind_matches {
         return Err(IoFailure::from_io(
@@ -267,6 +274,28 @@ unsafe fn start(handle: i32, action: Action, waker: *const HewWaker) -> *const H
         )));
         return Arc::into_raw(operation);
     };
+    // SAFETY: the caller's waker contract is forwarded unchanged.
+    unsafe { start_on(slot, action, direction, waker) }
+}
+
+/// Start a standard-input line read on its slot.
+///
+/// # Safety
+/// `waker` is null or a borrowed valid `HewWaker`; its context is retained.
+pub(super) unsafe fn start_stdin_line(
+    slot: Arc<Slot>,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the caller's waker contract is forwarded unchanged.
+    unsafe { start_on(slot, Action::StdinLine, Direction::Read, waker) }
+}
+
+unsafe fn start_on(
+    slot: Arc<Slot>,
+    action: Action,
+    direction: Direction,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
     let admitted = admit(&slot, &action, direction);
     let net = NetOp {
         slot,

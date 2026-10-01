@@ -45,6 +45,9 @@ use crate::util::MutexExt;
 pub(crate) enum IoObject {
     TcpStream(TcpStream),
     TcpListener(TcpListener),
+    /// Standard input: descriptor 0 on Unix, which the slot never owns or
+    /// closes. Its one slot lives outside the table; see [`stdin_slot`].
+    Stdin,
 }
 
 /// Which waiter an operation occupies. A slot has at most one of each, so one
@@ -153,15 +156,19 @@ impl Slot {
     pub(crate) fn stream(&self) -> Option<&TcpStream> {
         match &self.object {
             IoObject::TcpStream(stream) => Some(stream),
-            IoObject::TcpListener(_) => None,
+            IoObject::TcpListener(_) | IoObject::Stdin => None,
         }
     }
 
     pub(crate) fn listener(&self) -> Option<&TcpListener> {
         match &self.object {
             IoObject::TcpListener(listener) => Some(listener),
-            IoObject::TcpStream(_) => None,
+            IoObject::TcpStream(_) | IoObject::Stdin => None,
         }
+    }
+
+    pub(crate) fn is_stdin(&self) -> bool {
+        matches!(self.object, IoObject::Stdin)
     }
 
     /// Whether another operation already waits in `direction`.
@@ -192,6 +199,9 @@ impl Slot {
             match &self.object {
                 IoObject::TcpStream(stream) => stream.set_nonblocking(true)?,
                 IoObject::TcpListener(listener) => listener.set_nonblocking(true)?,
+                // Descriptor 0's open file description is shared with the
+                // terminal and parent shell; its reads are gated on `poll`.
+                IoObject::Stdin => {}
             }
             state.nonblocking = true;
         }
@@ -204,6 +214,7 @@ impl Slot {
         match &self.object {
             IoObject::TcpStream(stream) => stream.as_raw_fd(),
             IoObject::TcpListener(listener) => listener.as_raw_fd(),
+            IoObject::Stdin => libc::STDIN_FILENO,
         }
     }
 
@@ -261,6 +272,11 @@ impl Slot {
 
     #[cfg(windows)]
     fn arm(self: &Arc<Self>, poller: &Poller, state: &mut SlotState) -> io::Result<()> {
+        if self.is_stdin() {
+            // The reader thread reports readiness through `report_stdin_ready`.
+            crate::async_io::ensure_stdin_reader();
+            return Ok(());
+        }
         let interest = state.interest();
         if interest == 0 || state.armed & interest == interest {
             return Ok(());
@@ -407,18 +423,7 @@ fn shard(handle: c_int) -> &'static Mutex<HashMap<c_int, Arc<Slot>>> {
 /// Give `object` a slot and return its handle. Handles count up and wrap to 1
 /// past `i32::MAX`, skipping any still in use.
 pub(crate) fn register(object: IoObject) -> c_int {
-    #[cfg(windows)]
-    let afd = {
-        use std::os::windows::io::AsRawSocket;
-        let socket = match &object {
-            IoObject::TcpStream(stream) => stream.as_raw_socket(),
-            IoObject::TcpListener(listener) => listener.as_raw_socket(),
-        };
-        std::cell::UnsafeCell::new(crate::io_time::AfdPoll::new(socket as usize))
-    };
     let mut object = Some(object);
-    #[cfg(windows)]
-    let mut afd = Some(afd);
     loop {
         let handle = NEXT_HANDLE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
@@ -428,15 +433,54 @@ pub(crate) fn register(object: IoObject) -> c_int {
         let mut shard = shard(handle).lock_or_recover();
         if let std::collections::hash_map::Entry::Vacant(entry) = shard.entry(handle) {
             crate::observe::record_io_handle_opened();
-            entry.insert(Arc::new(Slot {
+            entry.insert(Arc::new(new_slot(
                 handle,
-                object: object.take().expect("object is placed once"),
-                state: Mutex::new(SlotState::default()),
-                #[cfg(windows)]
-                afd: afd.take().expect("buffers are placed once"),
-            }));
+                object.take().expect("object is placed once"),
+            )));
             return handle;
         }
+    }
+}
+
+fn new_slot(handle: c_int, object: IoObject) -> Slot {
+    #[cfg(windows)]
+    let afd = {
+        use std::os::windows::io::AsRawSocket;
+        let socket = match &object {
+            IoObject::TcpStream(stream) => stream.as_raw_socket() as usize,
+            IoObject::TcpListener(listener) => listener.as_raw_socket() as usize,
+            // Never armed through AFD.
+            IoObject::Stdin => usize::MAX,
+        };
+        std::cell::UnsafeCell::new(crate::io_time::AfdPoll::new(socket))
+    };
+    Slot {
+        handle,
+        object,
+        state: Mutex::new(SlotState::default()),
+        #[cfg(windows)]
+        afd,
+    }
+}
+
+/// Standard input's handle. `register` never mints it.
+const STDIN_HANDLE: c_int = 0;
+
+/// Standard input's slot. It is never closed, so it serves every runtime
+/// generation; it is not a program-owned handle and stays out of the table
+/// and the leak count.
+static STDIN_SLOT: OnceLock<Arc<Slot>> = OnceLock::new();
+
+pub(crate) fn stdin_slot() -> Arc<Slot> {
+    Arc::clone(STDIN_SLOT.get_or_init(|| Arc::new(new_slot(STDIN_HANDLE, IoObject::Stdin))))
+}
+
+/// Hand new standard input to its waiter. The Windows reader thread is the
+/// readiness source for its slot.
+#[cfg(windows)]
+pub(crate) fn report_stdin_ready() {
+    if let Some(slot) = STDIN_SLOT.get() {
+        slot.fire(HEW_IO_READ);
     }
 }
 
@@ -466,6 +510,7 @@ pub(crate) fn slots() -> Vec<Arc<Slot>> {
                 .cloned()
                 .collect::<Vec<_>>()
         })
+        .chain(STDIN_SLOT.get().cloned())
         .collect()
 }
 
@@ -625,7 +670,12 @@ fn dispatch(event: Event) {
     let Ok(handle) = c_int::try_from(event.token) else {
         return;
     };
-    if let Some(slot) = lookup(handle) {
+    let slot = if handle == STDIN_HANDLE {
+        STDIN_SLOT.get().cloned()
+    } else {
+        lookup(handle)
+    };
+    if let Some(slot) = slot {
         slot.fire(event.events);
     }
 }

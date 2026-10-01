@@ -99,7 +99,8 @@ fn main() {
     // The forked task joins at main's scope exit, after `done_rx.recv()`.
     fork reader.pump();
     loop {
-        let line = io.read_line();
+        // End of input leaves the chat like `/quit`.
+        let line = io.read_line().unwrap_or("/quit");
         if line.contains("/quit") {
             // Sink close drains the queued protocol marker before publishing
             // EOF to the peer, so `/quit` cannot race ahead of disconnect.

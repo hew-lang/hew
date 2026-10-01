@@ -350,8 +350,6 @@ stable = [
   "hew_hostname",
   "hew_i64_to_string",
   "hew_int_to_string",
-  "hew_io_read_all",
-  "hew_io_read_line",
   "hew_io_write",
   "hew_io_write_err",
   "hew_iter_free",
@@ -551,7 +549,6 @@ stable = [
   "hew_sleep_ns",
   "hew_sleep_until_ns",
   "hew_stderr_write",
-  "hew_stdin_read_line",
   "hew_stream_await_next",
   "hew_stream_detach_await",
   "hew_stream_channel",
@@ -1286,6 +1283,7 @@ non-declarable = [
   "hew_async_io_take_bytes",
   "hew_async_io_take_count",
   "hew_async_io_take_handle",
+  "hew_async_stdin_read_line",
   "hew_async_tcp_accept",
   "hew_async_tcp_connect",
   "hew_async_tcp_connect_timeout",
@@ -3025,25 +3023,8 @@ params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# stdio — hew-runtime/src/stdio.rs. read_line/read_all return str_to_malloc
-# strings; write/write_err read their C-string operand only. The isolated-stdin
-# R1/R2/R3 witnesses live in hew-runtime/tests/os_io_string_result_retention.rs.
-[[ownership.contracts]]
-symbol = "hew_io_read_all"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_io_read_line"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
+# stdio — hew-runtime/src/stdio.rs. write/write_err read their C-string operand
+# only. Standard input is the waiting hew_async_stdin_read_line operation.
 [[ownership.contracts]]
 symbol = "hew_io_write"
 result = "none"

@@ -76,7 +76,7 @@ to.
 
 Standard input and output belong to the embedding application. Input is
 consumed one line per `read_line` call and recorded for replay; end of input
-returns an empty string. Pipes connect in-memory producers and consumers,
+returns `None`. Pipes connect in-memory producers and consumers,
 without opening operating-system handles.
 
 Regex matching uses the JavaScript engine. Engine-specific pattern features

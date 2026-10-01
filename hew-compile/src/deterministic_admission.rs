@@ -957,7 +957,7 @@ mod tests {
     #[test]
     fn selected_test_refuses_stdin_read() {
         let source =
-            "import std.io;\n#[test] fn input() { let line = io.read_line(); println(line); }";
+            "import std.io;\n#[test] fn input() { let line = io.read_line().unwrap_or(\"\"); println(line); }";
         let selection = selected_test(source, "input");
         let failure =
             check_source(source, DeterministicAdmission::Tests(vec![selection])).unwrap_err();
@@ -970,7 +970,7 @@ mod tests {
 
     #[test]
     fn dynamic_trait_call_includes_checked_implementer() {
-        let source = "import std.io;\n\ntrait Reader {\n    fn read(self) -> string;\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(self) -> string {\n        io.read_line()\n    }\n}\n\nfn inspect(value: dyn Reader) -> string {\n    value.read()\n}\n\nfn main() {\n    let erased: dyn Reader = Host { n: 1 };\n    println(inspect(erased));\n}\n";
+        let source = "import std.io;\n\ntrait Reader {\n    fn[suspends] read(self) -> string;\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(self) -> string {\n        io.read_line().unwrap_or(\"\")\n    }\n}\n\nfn inspect(value: dyn Reader) -> string {\n    value.read()\n}\n\nfn main() {\n    let erased: dyn Reader = Host { n: 1 };\n    println(inspect(erased));\n}\n";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -980,7 +980,7 @@ mod tests {
 
     #[test]
     fn static_trait_dispatch_includes_checked_implementer() {
-        let source = "import std.io;\n\ntrait Reader {\n    fn read(self) -> string;\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(self) -> string {\n        io.read_line()\n    }\n}\n\nfn inspect<T: Reader>(value: T) -> string {\n    value.read()\n}\n\nfn main() {\n    println(inspect(Host { n: 1 }));\n}\n";
+        let source = "import std.io;\n\ntrait Reader {\n    fn read(self) -> string;\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(self) -> string {\n        io.read_line().unwrap_or(\"\")\n    }\n}\n\nfn inspect<T: Reader>(value: T) -> string {\n    value.read()\n}\n\nfn main() {\n    println(inspect(Host { n: 1 }));\n}\n";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn static_trait_dispatch_excludes_unused_implementer() {
-        let source = "import std.io;\n\ntrait Reader {\n    fn read(self) -> string;\n}\n\ntype Safe {\n    n: i64;\n}\n\nimpl Safe {\n    fn read(self) -> string {\n        \"safe\"\n    }\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(self) -> string {\n        io.read_line()\n    }\n}\n\nfn inspect<T: Reader>(value: T) -> string {\n    value.read()\n}\n\nfn main() {\n    println(inspect(Safe { n: 1 }));\n}\n";
+        let source = "import std.io;\n\ntrait Reader {\n    fn read(self) -> string;\n}\n\ntype Safe {\n    n: i64;\n}\n\nimpl Safe {\n    fn read(self) -> string {\n        \"safe\"\n    }\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(self) -> string {\n        io.read_line().unwrap_or(\"\")\n    }\n}\n\nfn inspect<T: Reader>(value: T) -> string {\n    value.read()\n}\n\nfn main() {\n    println(inspect(Safe { n: 1 }));\n}\n";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 
@@ -1026,7 +1026,7 @@ mod tests {
         let path = directory.path().join("run.hew");
         std::fs::write(
             &path,
-            "import std.io;\nfn main() { let line = io.read_line(); println(line); }",
+            "import std.io;\nfn main() { let line = io.read_line().unwrap_or(\"\"); println(line); }",
         )
         .unwrap();
         let options = FrontendOptions {
@@ -1065,7 +1065,7 @@ mod tests {
     #[test]
     fn lambda_actor_delivery_cannot_hide_a_host_operation() {
         for call in ["worker(7)", "mailbox(worker)(7)"] {
-            let source = format!("import std.io; fn main() {{ let worker = actor |n: i64| {{ let line = io.read_line(); println(line); }}; let _ = {call}; stop(worker); stopped(worker); }}");
+            let source = format!("import std.io; fn main() {{ let worker = actor |n: i64| {{ let line = io.read_line().unwrap_or(\"\"); println(line); }}; let _ = {call}; stop(worker); stopped(worker); }}");
             let failure = check_source(&source, DeterministicAdmission::ProcessEntry).unwrap_err();
             assert!(
                 failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn invoked_closure_cannot_hide_stdin_read() {
         let source =
-            "import std.io;\nfn main() { let reader = || io.read_line(); println(reader()); }";
+            "import std.io;\nfn main() { let reader = || io.read_line().unwrap_or(\"\"); println(reader()); }";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -1092,13 +1092,13 @@ mod tests {
     #[test]
     fn unused_closure_does_not_admit_its_host_operation() {
         let source =
-            "import std.io;\nfn main() { let unused = || io.read_line(); println(\"safe\"); }";
+            "import std.io;\nfn main() { let unused = || io.read_line().unwrap_or(\"\"); println(\"safe\"); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 
     #[test]
     fn selected_branch_closure_reaches_host_operation() {
-        let source = "import std.io;\nfn main() { let reader = if true { || \"safe\" } else { || io.read_line() }; println(reader()); }";
+        let source = "import std.io;\nfn main() { let reader: fn[suspends]() -> string = if true { || \"safe\" } else { || io.read_line().unwrap_or(\"\") }; println(reader()); }";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -1165,7 +1165,7 @@ mod tests {
 
     #[test]
     fn collected_iterator_reaches_its_callback_host_operation() {
-        let source = "import std.io;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let result = iter.collect(iter.map(v.into_iter(), |n: i64| { let line = io.read_line(); n })); assert(result.len() == 1); }";
+        let source = "import std.process;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let result = iter.collect(iter.map(v.into_iter(), |n: i64| { let _ = process.run(\"true\"); n })); assert(result.len() == 1); }";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn uncollected_iterator_does_not_invoke_its_callback() {
-        let source = "import std.io;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let unused = iter.map(v.into_iter(), |n: i64| { let line = io.read_line(); n }); println(\"safe\"); }";
+        let source = "import std.process;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let unused = iter.map(v.into_iter(), |n: i64| { let _ = process.run(\"true\"); n }); println(\"safe\"); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 
@@ -1189,12 +1189,12 @@ mod tests {
         let path = directory.path().join("admission.hew");
         std::fs::write(
             directory.path().join("host.hew"),
-            "import std.io;\npub fn read() -> string { io.read_line() }",
+            "import std.io;\npub fn read() -> string { io.read_line().unwrap_or(\"\") }",
         )
         .expect("write imported source");
         std::fs::write(
             &path,
-            "import host;\nfn main() { let f: fn() -> string = host.read; println(f()); }",
+            "import host;\nfn main() { let f: fn[suspends]() -> string = host.read; println(f()); }",
         )
         .expect("write entry source");
         let options = FrontendOptions {

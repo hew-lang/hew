@@ -408,8 +408,7 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
     DeterministicOperation { identity: "hew_remote_call_new", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_remote_call_poll", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_remote_call_take", capability: WasmCapabilityId("distributed") },
-    DeterministicOperation { identity: "hew_io_read_line", capability: WasmCapabilityId("stdin-input") },
-    DeterministicOperation { identity: "hew_io_read_all", capability: WasmCapabilityId("stdin-input") },
+    DeterministicOperation { identity: "hew_stdin_read_line", capability: WasmCapabilityId("stdin-input") },
 ];
 
 }

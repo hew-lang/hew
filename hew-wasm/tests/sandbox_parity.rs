@@ -550,8 +550,25 @@ fn playground_sources_match_native() {
     ensure_parity_runner_built();
 
     for case in PARITY_CASES {
-        assert_case(case);
+        assert_case(case, "");
     }
+}
+
+/// Standard input reaches both engines as the same bytes: the VM serves the
+/// stdin line read that native suspends on, with line endings, an empty line
+/// and the unterminated tail intact.
+#[cfg(unix)]
+#[test]
+fn stdin_reads_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+
+    let case = ParityCase {
+        test_name: "stdin_lines",
+        source_rel: "hew-wasm/tests/fixtures/stdin_lines.hew",
+    };
+    assert_case(&case, "alpha\r\n\nbeta\r\ngamma");
 }
 
 #[cfg(unix)]
@@ -573,14 +590,14 @@ fn identity_w7_record_resource_does_not_join_runtime_admission() {
             source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox_control.hew",
         },
     ] {
-        assert_case(&case);
+        assert_case(&case, "");
     }
 }
 
-fn assert_case(case: &ParityCase) {
+fn assert_case(case: &ParityCase, stdin: &str) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);
-    let native = run_native(&source_path);
+    let native = run_native(&source_path, stdin);
     let source = std::fs::read_to_string(&source_path).unwrap_or_else(|err| {
         panic!(
             "failed to read parity source {} for {}: {err}",
@@ -607,7 +624,10 @@ fn assert_case(case: &ParityCase) {
     std::fs::write(&bytecode_path, bytecode_json)
         .unwrap_or_else(|err| panic!("failed to write bytecode for {}: {err}", case.test_name));
 
-    let sandbox = run_sandbox(&bytecode_path);
+    let stdin_path = tempdir.path().join("stdin.txt");
+    std::fs::write(&stdin_path, stdin)
+        .unwrap_or_else(|err| panic!("failed to write stdin for {}: {err}", case.test_name));
+    let sandbox = run_sandbox(&bytecode_path, &stdin_path);
     assert_exit_code_parity(case, &native, &sandbox);
     assert_stdout_parity(case, &native, &sandbox);
     assert_stderr_parity(case, &native, &sandbox);
@@ -637,6 +657,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
+        "stdin_lines" => Some("first=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
         "error_edges" => Some(
             "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",
         ),
@@ -685,7 +706,7 @@ fn assert_stdout_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     );
 }
 
-fn run_native(source_path: &Path) -> Output {
+fn run_native(source_path: &Path, stdin: &str) -> Output {
     Command::new(hew_binary())
         .arg("run")
         .arg(source_path)
@@ -693,11 +714,12 @@ fn run_native(source_path: &Path) -> Output {
         .env("HEW_STD", repo_root().join("std"))
         .env("HEW_SEED", HEW_SEED)
         .env("NO_COLOR", "1")
+        .write_stdin(stdin)
         .output()
         .unwrap_or_else(|err| panic!("failed to spawn native `hew run`: {err}"))
 }
 
-fn run_sandbox(bytecode_path: &Path) -> Output {
+fn run_sandbox(bytecode_path: &Path, stdin_path: &Path) -> Output {
     Command::new("npm")
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
@@ -708,6 +730,8 @@ fn run_sandbox(bytecode_path: &Path) -> Output {
         .arg(bytecode_path)
         .arg("--seed")
         .arg(HEW_SEED)
+        .arg("--stdin")
+        .arg(stdin_path)
         .current_dir(repo_root())
         .env("NO_COLOR", "1")
         .output()

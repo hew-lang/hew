@@ -221,7 +221,9 @@ class Halt extends Error {
 }
 
 /// Page stdin travels as a replay input and is handed out one line per read at
-/// run time, so a loop sees successive lines.
+/// run time, so a loop sees successive lines. A line keeps its terminator and
+/// the unterminated tail is returned as it is, matching native
+/// `hew_stdin_read_line`; `null` is end of input.
 class StdinReader {
   private readonly bytes: Uint8Array;
   private offset = 0;
@@ -241,25 +243,14 @@ class StdinReader {
     );
   }
 
-  readLine(): string {
+  readLine(): Uint8Array | null {
     if (this.offset >= this.bytes.length) {
-      return "";
+      return null;
     }
     const start = this.offset;
-    while (
-      this.offset < this.bytes.length &&
-      this.bytes[this.offset] !== 0x0a
-    ) {
-      this.offset += 1;
-    }
-    let end = this.offset;
-    if (this.offset < this.bytes.length) {
-      this.offset += 1;
-    }
-    if (end > start && this.bytes[end - 1] === 0x0d) {
-      end -= 1;
-    }
-    return new TextDecoder().decode(this.bytes.slice(start, end));
+    const newline = this.bytes.indexOf(0x0a, start);
+    this.offset = newline < 0 ? this.bytes.length : newline + 1;
+    return this.bytes.slice(start, this.offset);
   }
 }
 
@@ -342,7 +333,7 @@ class ExecutorV1 {
   constructor(
     private readonly pkg: PackageV1,
     private readonly trace: TraceBuilder,
-    stdin: StdinReader,
+    private readonly stdin: StdinReader,
     policy: "round_robin" | "chaos",
   ) {
     this.scheduler = new FrameScheduler(trace, policy);
@@ -356,11 +347,6 @@ class ExecutorV1 {
         this.closeValue(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
       writeStderr: (text) => this.trace.writeStderr(text, null),
-      readLine: () => {
-        const line = stdin.readLine();
-        this.trace.recordReplayInput({ kind: "stdin", data: line }, false);
-        return line;
-      },
       prng: new Mt19937(),
       regexPatterns: pkg.regex_patterns,
       enumValue: (shape, role, payload) => ({
@@ -1453,10 +1439,15 @@ class ExecutorV1 {
     ) => VmValue,
   ): void {
     const args = term.args.map((operand) => this.boundary(act, operand));
+    // A call that hands back its updated receiver names its value's shape as
+    // the pair's second member.
+    const shapeId =
+      (term.op === "runtime.call" ? term.result_member_shapes?.[1] : null) ??
+      term.result_shape;
     const shape =
-      term.result_shape === null
+      shapeId === null || shapeId === undefined
         ? null
-        : (this.pkg.variants[term.result_shape] ?? null);
+        : (this.pkg.variants[shapeId] ?? null);
     let value: VmValue;
     try {
       value = shim(this.host, args, shape);
@@ -1969,6 +1960,17 @@ class ExecutorV1 {
         const cancel = act.context.cancel!;
         act.context.cancel = (fault) =>
           cancelRequest((closeFault) => cancel(closeFault ?? fault));
+        return;
+      }
+      case "NativeIo": {
+        // Admission passed only `StdinReadLine`. The record is the raw line,
+        // so the records concatenate to the stdin the program consumed.
+        const line = this.stdin.readLine() ?? new Uint8Array();
+        this.trace.recordReplayInput(
+          { kind: "stdin", data: new TextDecoder().decode(line) },
+          false,
+        );
+        this.park(act, term)(bytesValue([...line]));
         return;
       }
       case "Sleep": {

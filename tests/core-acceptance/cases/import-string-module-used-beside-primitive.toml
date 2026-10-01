@@ -1,0 +1,11 @@
+[[case]]
+id = "import-string-module-used-beside-primitive"
+intent = "A `std.string` import used through its module qualifier counts as used, while the primitive `string` type in the same signature never does; `ownership-balance-pf` is the unused side."
+source = "cases/import-string-module-used-beside-primitive.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "run"
+
+[case.expected]
+stdout = "42\n"
+exit = 0

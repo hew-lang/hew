@@ -1986,7 +1986,7 @@ impl Worker {
         let doc = make_typed_doc(source);
         let uri = make_test_uri("/identity-trait-bound.hew");
         let call = source.find("item.describe()").unwrap() + "item.".len();
-        let declared = source.find("fn describe(value").unwrap() + "fn ".len();
+        let declared = source.find("fn describe(self) -> string;").unwrap() + "fn ".len();
         let location =
             super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
                 .expect("bounded call should resolve to its trait method");
@@ -7907,12 +7907,12 @@ fn label(colour: Colour) -> string {
         assert_v05_hover_contains("v05_display_fstring", source, offset, "x: i64");
     }
 
-    /// `label.text` field access inside the `Describable` impl body must
+    /// `self.text` field access inside the `Describable` impl body must
     /// surface `text: string` via the field-access hover path.
     #[test]
     fn v05_trait_bounds_impl_field_access_hover_pins_type() {
         let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
-        let offset = source.find("label.text").expect("label.text field access") + "label.".len();
+        let offset = source.find("self.text").expect("self.text field access") + "self.".len();
         assert_v05_hover_contains("v05_trait_bounds", source, offset, "text: string");
     }
 

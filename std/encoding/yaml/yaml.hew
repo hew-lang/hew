@@ -3,6 +3,8 @@
 //! Inspect values with checked accessors. Mutate a `var` value with `set`
 //! or `push`; supplied children remain usable and independent.
 
+import std.encoding.wire;
+
 /// The represented YAML kind, without exposing runtime tags.
 pub enum Kind {
     Null;
@@ -364,3 +366,13 @@ extern "C" {
     fn hew_yaml_from_bool(val: i32) -> Value;
     fn hew_yaml_from_null() -> Value;
 }
+
+/// Encode any data value as YAML text. Records encode as objects keyed by
+/// field name in declaration order.
+#[intrinsic("codec.yaml.encode")]
+pub fn encode<T: Serializable>(value: T) -> string {}
+
+/// Decode YAML text as `T`. A failure names the path of the value that did
+/// not fit, for example `Type: .tags[1]: expected string, found integer`.
+#[intrinsic("codec.yaml.decode")]
+pub fn decode<T: Serializable>(text: string) -> Result<T, wire.DecodeError> {}

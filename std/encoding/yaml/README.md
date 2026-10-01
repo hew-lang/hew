@@ -64,4 +64,28 @@ value. Handle checked getters and the two lookup layers explicitly. Use
 `from_string` for string construction. The shared `CanonicalValueMethods` trait
 has been removed; TOML currently retains its own independent resource API.
 
+## Typed encode and decode
+
+`yaml.encode(value)` writes any data value as YAML text, and
+`yaml.decode<T>(document)` reads it back as `Result<T, wire.DecodeError>`. A
+failed decode names the path of the value that did not fit. `yaml.decode(document)`
+without a known `T` is `E_TYPE_ANNOTATION_NEEDED`.
+
+```hew
+import std.encoding.yaml;
+
+type Config {
+    name: string;
+    retries: i64;
+}
+
+fn main() {
+    let document = yaml.encode(Config { name: "api", retries: 3 });
+    match yaml.decode<Config>(document) {
+        .Ok(config) => println(config.name), // api
+        .Err(e) => println(e),
+    }
+}
+```
+
 See the [stdlib overview](../../README.md) for other modules.

@@ -443,7 +443,7 @@ impl Checker {
                 return Ty::Error;
             }
 
-            // Static method calls on type names: e.g. Point.from_json(json)
+            // Static method calls on type names: e.g. Point.new(1, 2)
             // Look up "TypeName.method" in fn_sigs (registered by wire types
             // etc.). The surface spelling resolves to its canonical
             // declaration identity first (A316): the wire codec surface
@@ -481,47 +481,6 @@ impl Checker {
                         },
                     );
                     self.record_direct_call_target(span, target);
-                }
-                // Wire codec static deserialize methods on a `#[wire]` struct or
-                // enum. `decode` is the binary CBOR path
-                // (`Type.decode(bytes) -> Type`); `from_json`/`from_yaml` are the
-                // text path (`Type.from_json(string) -> Result<Type, string>`),
-                // lowered through the CBOR↔text bridge. Each lives in `fn_sigs`
-                // under the dotted `Type.<method>` key but records no rewrite
-                // here without this arm, so the call would lower to
-                // `MethodCallNoRewrite`. Record a dedicated codec rewrite so
-                // HIR/codegen drive the matching thunk with the correct ABI.
-                if self.wire_struct_types.contains(&canonical_static_owner)
-                    || self.wire_enum_types.contains(&canonical_static_owner)
-                {
-                    let text_dir = match method {
-                        "decode" => Some(WireCodecDirection::Decode),
-                        "from_json" => Some(WireCodecDirection::FromJson),
-                        "from_yaml" => Some(WireCodecDirection::FromYaml),
-                        _ => None,
-                    };
-                    if let Some(direction) = text_dir {
-                        // The codec `value_ty` is the produced wire type. For
-                        // `decode` the registered return type IS that type; for
-                        // `from_json`/`from_yaml` it is `Result<Self, string>`, so
-                        // peel the `Ok` payload to recover the wire type codegen
-                        // keys the thunk by.
-                        let resolved_ret = self.subst.resolve(&sig.return_type);
-                        let value_source = if direction == WireCodecDirection::Decode {
-                            resolved_ret.clone()
-                        } else {
-                            result_ok_payload(&resolved_ret).unwrap_or_else(|| resolved_ret.clone())
-                        };
-                        if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
-                            self.record_method_call_rewrite(
-                                span,
-                                MethodCallRewrite::WireCodec {
-                                    direction,
-                                    value_ty,
-                                },
-                            );
-                        }
-                    }
                 }
                 return sig.return_type;
             }
@@ -2186,60 +2145,7 @@ impl Checker {
                         // Never retry through either the type or method leaf.
                         let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
-                        // Wire codec instance serialize methods on a `#[wire]`
-                        // struct or enum. `encode` is the binary CBOR path
-                        // (`value.encode() -> bytes`); `to_json`/`to_yaml` are the
-                        // text path (`value.to_json() -> string`), lowered through
-                        // the CBOR↔text bridge. The instance method is registered
-                        // in `type_def.methods` (not `fn_sigs`), so it never
-                        // matches the `fn_sigs` branch below and would otherwise
-                        // fall through to `MethodCallNoRewrite`. Record a dedicated
-                        // codec rewrite so HIR/codegen drive the matching thunk
-                        // with the correct ABI.
-                        let wire_serialize_dir =
-                            if self.wire_struct_types.contains(&canonical_receiver_name)
-                                || self.wire_enum_types.contains(&canonical_receiver_name)
-                            {
-                                match method {
-                                    "encode" => Some(WireCodecDirection::Encode),
-                                    "to_json" => Some(WireCodecDirection::ToJson),
-                                    "to_yaml" => Some(WireCodecDirection::ToYaml),
-                                    _ => None,
-                                }
-                            } else {
-                                None
-                            };
-                        if let Some(direction) = wire_serialize_dir {
-                            // `value_ty` is the receiver wire type (the value being
-                            // serialized) regardless of the textual return type,
-                            // so codegen keys the thunk by the same type the binary
-                            // path uses. Carry the CANONICAL nominal: the wire
-                            // layout table is keyed by the declaration identity
-                            // only, and codegen's tag probe falls back to
-                            // positional keys on a miss — a bare spelling here
-                            // would silently change the encoded schema.
-                            let mut value_source = self.subst.resolve(&resolved);
-                            if let Ty::Named { head, .. } = &mut value_source {
-                                if head.registry_key() != canonical_receiver_name {
-                                    if let Some(canonical) = self
-                                        .named_ty_for_key(&canonical_receiver_name, Vec::new())
-                                        .head()
-                                    {
-                                        *head = canonical;
-                                    }
-                                }
-                            }
-                            if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
-                                self.record_method_call_rewrite(
-                                    span,
-                                    MethodCallRewrite::WireCodec {
-                                        direction,
-                                        value_ty,
-                                    },
-                                );
-                            }
-                        } else if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next"
-                        {
+                        if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next" {
                             if let Some(elem_ty) = type_args.first() {
                                 if !self.record_vec_iter_element_mode(elem_ty, span) {
                                     return Ty::Error;

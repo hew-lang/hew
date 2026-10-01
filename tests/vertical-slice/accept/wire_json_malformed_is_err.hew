@@ -2,6 +2,8 @@
 // trap. `from_json` is an untrusted-input surface (config files, HTTP bodies);
 // bad input must be a recoverable error, not a crash. The fixture EXITS 42 only
 // by taking the `Err` arm — a trap would abort (134) and fail the assertion.
+import std.encoding.json;
+
 #[wire]
 type Point {
     x: i64 @1;
@@ -9,7 +11,7 @@ type Point {
 }
 
 fn main() -> i64 {
-    match Point.from_json("{not valid json") {
+    match json.decode<Point>("{not valid json") {
         .Ok(_) => 1,
         .Err(_) => 42,
     }

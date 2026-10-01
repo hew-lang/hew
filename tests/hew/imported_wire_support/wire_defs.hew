@@ -1,6 +1,7 @@
 //! Support module for the cross-module `#[wire]` codec tests. The wire
 //! surface must be reachable through the module-qualified type identity,
 //! not only the bare declaration name this file spells.
+import std.encoding.json;
 
 #[wire]
 pub type Env {
@@ -15,5 +16,5 @@ pub enum Signal {
 }
 
 pub fn env_to_json(e: Env) -> string {
-    e.to_json()
+    json.encode(e)
 }

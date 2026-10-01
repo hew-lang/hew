@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 type Inner {
     name: string @1;
@@ -20,10 +22,15 @@ fn main() -> i64 {
     tags.push("alpha-element");
     tags.push("beta-element");
     let p = PayloadGood.Full("owned-field-a-value", tags, Inner { name: "inner-owned-name" });
-    let raw = p.encode();
-    let bad = PayloadBad.decode(raw);
-    match bad {
-        PayloadBad.Empty => 0,
-        PayloadBad.Full(_, n, _) => n,
+    let raw = cbor.encode(p);
+    match cbor.decode<PayloadBad>(raw) {
+        .Ok(bad) => match bad {
+            PayloadBad.Empty => 0,
+            PayloadBad.Full(_, n, _) => n,
+        }
+        .Err(e) => {
+            println(e);
+            0
+        }
     }
 }

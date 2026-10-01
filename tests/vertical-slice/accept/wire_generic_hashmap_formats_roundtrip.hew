@@ -2,18 +2,22 @@
 // the same typed CBOR/text thunks as #[wire] methods. Serialization borrows the
 // map, deserialization returns an ordinary mutable HashMap, and ordering stays
 // deterministic across the JSON/YAML/CBOR formats.
-import std.encoding.wire;
+import std.encoding.cbor;
+
+import std.encoding.json;
+
+import std.encoding.yaml;
 
 fn main() -> i64 {
     var values: HashMap<string, i64> = HashMap.new();
     values.insert("beta", 2);
     values.insert("alpha", 1);
-    let json = wire.to_json(values);
-    if json != "{\"alpha\":1,\"beta\":2}" {
+    let json_text = json.encode(values);
+    if json_text != "{\"alpha\":1,\"beta\":2}" {
         return 1;
     }
     values.insert("gamma", 3);
-    match wire.from_json<HashMap<string, i64>>(json) {
+    match json.decode<HashMap<string, i64>>(json_text) {
         .Ok(json_back) => {
             if json_back.len() != 2 {
                 return 2;
@@ -33,8 +37,8 @@ fn main() -> i64 {
             return 5;
         }
     }
-    let yaml = wire.to_yaml(values);
-    match wire.from_yaml<HashMap<string, i64>>(yaml) {
+    let yaml_text = yaml.encode(values);
+    match yaml.decode<HashMap<string, i64>>(yaml_text) {
         .Ok(yaml_back) => {
             if yaml_back.len() != 3 {
                 return 6;
@@ -44,8 +48,8 @@ fn main() -> i64 {
             return 7;
         }
     }
-    let binary = wire.encode(values);
-    let binary_back = wire.decode<HashMap<string, i64>>(binary);
+    let binary = cbor.encode(values);
+    let binary_back = cbor.decode<HashMap<string, i64>>(binary).expect("decode");
     if binary_back.len() != 3 {
         return 8;
     }

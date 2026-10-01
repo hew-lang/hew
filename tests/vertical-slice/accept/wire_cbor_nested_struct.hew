@@ -1,6 +1,8 @@
 // Validation: a nested `#[wire]` struct field round-trips through the CBOR body
 // codec — the outer codec recurses into the inner struct's codec, encoding it
 // as a nested CBOR map. The recovered fields sum to 42.
+import std.encoding.cbor;
+
 #[wire]
 type Inner {
     v: i64 @1;
@@ -14,6 +16,6 @@ type Outer {
 
 fn main() -> i64 {
     let h = Outer { inner: Inner { v: 40 }, tag: 2 };
-    let back = Outer.decode(h.encode());
+    let back = cbor.decode<Outer>(cbor.encode(h)).expect("decode");
     back.inner.v + back.tag
 }

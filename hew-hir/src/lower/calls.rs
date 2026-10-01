@@ -946,13 +946,14 @@ impl LowerCtx {
                     span,
                 }));
             }
-            if let Some(MethodCallRewrite::GenericWireCodec {
-                direction,
-                value_ty,
-            }) = self.method_call_rewrites.get(&rewrite_key).cloned()
+            if let Some(MethodCallRewrite::Codec { codec, value_ty }) =
+                self.method_call_rewrites.get(&rewrite_key).cloned()
             {
-                let (kind, ty) =
-                    self.lower_generic_wire_codec(args, direction, value_ty, span.clone());
+                let checked_ty = self
+                    .expr_types
+                    .get(&rewrite_key)
+                    .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                let (kind, ty) = self.lower_codec(args, codec, value_ty, checked_ty, span.clone());
                 return Err(Box::new(HirExpr {
                     node: self.ids.node(),
                     site,

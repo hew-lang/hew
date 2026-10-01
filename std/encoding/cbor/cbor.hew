@@ -1,0 +1,30 @@
+//! CBOR (RFC 8949) encoding of any data value.
+//!
+//! ```
+//! import std.encoding.cbor;
+//!
+//! type Point { x: i64; y: i64; }
+//!
+//! fn main() {
+//!     let data = cbor.encode(Point { x: 1, y: 2 });
+//!     match cbor.decode<Point>(data) {
+//!         .Ok(p) => println(p.x + p.y),   // 3
+//!         .Err(e) => println(e),
+//!     }
+//! }
+//! ```
+//!
+//! `#[wire]` records and enums encode by their `@N` tags; other records by
+//! field name.
+
+import std.encoding.wire;
+
+/// Encode any data value as CBOR bytes. Records encode as objects keyed by
+/// field name in declaration order.
+#[intrinsic("codec.cbor.encode")]
+pub fn encode<T: Serializable>(value: T) -> bytes {}
+
+/// Decode CBOR bytes as `T`. A failure names the path of the value that did
+/// not fit, for example `Type: .tags[1]: expected string, found integer`.
+#[intrinsic("codec.cbor.decode")]
+pub fn decode<T: Serializable>(data: bytes) -> Result<T, wire.DecodeError> {}

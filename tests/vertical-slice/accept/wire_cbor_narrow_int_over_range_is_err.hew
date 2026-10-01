@@ -1,0 +1,38 @@
+// Validation: decoding a CBOR integer that does not fit the target field's
+// fixed width returns a Range error rather than truncating to a fabricated
+// value the sender never sent. The bytes are well-formed CBOR - a
+// single-entry map `{1: 300}` - so the failure is at the value layer, not the
+// CBOR-parse layer.
+//
+// `Wide` encodes its field as the integer 300; `Narrow` declares the same field
+// as an `i8`, whose range is [-128, 127]. Without the range check the decoder
+// would truncate 300 to 44 and deliver it.
+import std.encoding.cbor;
+
+#[wire]
+type Wide {
+    v: i64 @1;
+}
+
+#[wire]
+type Narrow {
+    v: i8 @1;
+}
+
+fn main() -> i64 {
+    let w = Wide { v: 300 };
+    let raw = cbor.encode(w);
+    match cbor.decode<Narrow>(raw) {
+        .Ok(back) => {
+            // The old truncating behaviour would deliver the fabricated 44.
+            if back.v == 44 {
+                return 44;
+            }
+            1
+        }
+        .Err(e) => {
+            println(e);
+            42
+        }
+    }
+}

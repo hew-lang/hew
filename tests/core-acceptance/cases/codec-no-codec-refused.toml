@@ -1,0 +1,14 @@
+[[case]]
+id = "codec-no-codec-refused"
+intent = "A resource fails the encoder's Serializable bound at the call while plain records, tuples and collections of them pass; nothing reaches lowering."
+source = "cases/codec-no-codec-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 24
+column = 13
+message = "type `Handle` does not implement trait `Serializable` required by `T`"

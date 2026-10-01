@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 type Item {
     name: string @1;
@@ -20,7 +22,12 @@ fn main() -> i64 {
     xs.push(Item { name: "alpha-owned-element" });
     xs.push(Item { name: "beta-owned-element" });
     let g = BatchGood { items: xs, tail: "owned-tail-value" };
-    let raw = g.encode();
-    let bad = BatchBad.decode(raw);
-    bad.tail
+    let raw = cbor.encode(g);
+    match cbor.decode<BatchBad>(raw) {
+        .Ok(bad) => bad.tail,
+        .Err(e) => {
+            println(e);
+            0
+        }
+    }
 }

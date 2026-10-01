@@ -3,6 +3,8 @@
 // single-entry map `{tag: [field0, field1, ...]}`, while a unit variant stays a
 // bare tag. This fixture constructs `Rect(40, 2)`; the recovered fields sum to
 // 42, so a mis-tagged or mis-ordered payload changes the exit code.
+import std.encoding.cbor;
+
 #[wire]
 enum Shape {
     Dot @0;
@@ -12,7 +14,7 @@ enum Shape {
 
 fn main() -> i64 {
     let s = Shape.Rect(40, 2);
-    let back = Shape.decode(s.encode());
+    let back = cbor.decode<Shape>(cbor.encode(s)).expect("decode");
     match back {
         Shape.Dot => 0,
         Shape.Circle(r) => r,

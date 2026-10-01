@@ -5031,10 +5031,10 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_de_error( *mut c_void) -> *mut HewString",
-        "wasm32-wasip1": "fn hew_de_error( *mut c_void) -> *mut HewString"
+        "native": "fn hew_de_error_reader( *mut c_void) -> *mut c_void",
+        "wasm32-wasip1": "fn hew_de_error_reader( *mut c_void) -> *mut c_void"
       },
-      "symbol": "hew_de_error"
+      "symbol": "hew_de_error_reader"
     },
     {
       "availability": [
@@ -10818,84 +10818,6 @@
         "wasm32-wasip1": "fn hew_msg_node_free( *mut HewMsgNode)"
       },
       "symbol": "hew_msg_node_free"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_msgpack_encode_bytes( *const u8, usize, *mut usize, ) -> *mut u8"
-      },
-      "symbol": "hew_msgpack_encode_bytes"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_msgpack_encode_bytes_hew( *const BytesTriple) -> BytesTriple"
-      },
-      "symbol": "hew_msgpack_encode_bytes_hew"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_msgpack_encode_int( i64, *mut usize) -> *mut u8"
-      },
-      "symbol": "hew_msgpack_encode_int"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_msgpack_encode_int_hew( i64) -> BytesTriple"
-      },
-      "symbol": "hew_msgpack_encode_int_hew"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
-      "extent": "length-or-count",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_msgpack_encode_string( *const c_char, *mut usize, ) -> *mut u8"
-      },
-      "symbol": "hew_msgpack_encode_string"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_msgpack_encode_string_hew( *const HewString) -> BytesTriple"
-      },
-      "symbol": "hew_msgpack_encode_string_hew"
     },
     {
       "availability": [

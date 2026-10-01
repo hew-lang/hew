@@ -23,7 +23,7 @@ impl Checker {
     ) -> Ty {
         // A facade codec is a compiler operation selected per call site by
         // its value type; it has no body to take the address of.
-        if self.wire_codec_intrinsic(signature_key).is_some() {
+        if self.codec_intrinsic(signature_key).is_some() {
             self.report_error_with_suggestions(
                 TypeErrorKind::InvalidOperation,
                 span,

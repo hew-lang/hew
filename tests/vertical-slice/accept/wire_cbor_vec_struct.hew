@@ -6,6 +6,8 @@
 // layout-aware accessors, NOT the generic ones (which abort on a layout-aware
 // vec). The decoded elements' `v` fields sum to 42, so a dropped, reordered, or
 // corrupted element changes the exit code.
+import std.encoding.cbor;
+
 #[wire]
 type Inner {
     v: i64 @1;
@@ -22,7 +24,7 @@ fn main() -> i64 {
     xs.push(Inner { v: 20 });
     xs.push(Inner { v: 12 });
     let c = Container { items: xs };
-    let back = Container.decode(c.encode());
+    let back = cbor.decode<Container>(cbor.encode(c)).expect("decode");
     if back.items.len() != 3 {
         return 1;
     }

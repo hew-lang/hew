@@ -1,0 +1,34 @@
+// Validation: decoding a CBOR enum body whose payload array carries more fields
+// than the target variant declares returns a Type error rather than silently
+// dropping the surplus. The bytes are well-formed CBOR - a single-entry map
+// `{1: [10, 20]}` - so the failure is at the variant-arity layer, not the
+// CBOR-parse layer.
+//
+// `Wide.Pair` carries two payload fields; `Narrow.Pair` (same tag 1) declares
+// only one. The decoder frees the reader and partial shell before returning
+// the error.
+import std.encoding.cbor;
+
+#[wire]
+enum Wide {
+    Ping @0;
+    Pair(i64, i64) @1;
+}
+
+#[wire]
+enum Narrow {
+    Ping @0;
+    Pair(i64) @1;
+}
+
+fn main() -> i64 {
+    let w = Wide.Pair(10, 20);
+    let raw = cbor.encode(w);
+    match cbor.decode<Narrow>(raw) {
+        .Ok(_) => 1,
+        .Err(e) => {
+            println(e);
+            42
+        }
+    }
+}

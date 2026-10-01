@@ -1,13 +1,15 @@
 // Validation (FAIL CLOSED + OWNERSHIP): duplicate non-string map keys are
 // rejected. Values own strings, so the error path also proves the partially
 // reconstructed map is cleaned up exactly once rather than double-freed.
+import std.encoding.json;
+
 #[wire]
 type DuplicateMap {
     values: HashMap<i64, string> @1;
 }
 
 fn main() -> i64 {
-    match DuplicateMap.from_json("{\"values\":[[1,\"old\"],[1,\"new\"]]}") {
+    match json.decode<DuplicateMap>("{\"values\":[[1,\"old\"],[1,\"new\"]]}") {
         .Err(_) => 42,
         .Ok(_) => 1,
     }

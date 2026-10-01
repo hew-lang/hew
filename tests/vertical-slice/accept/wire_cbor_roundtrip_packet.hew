@@ -1,6 +1,8 @@
 // Validation: a #[wire] struct round-trips through the CBOR body codec.
 // Build a Packet, encode it to bytes, decode the bytes back, and exit with the
 // recovered field value (42), so a garbled round-trip changes the exit code.
+import std.encoding.cbor;
+
 #[wire]
 type Packet {
     id: i64 @1;
@@ -8,7 +10,7 @@ type Packet {
 
 fn main() -> i64 {
     let p = Packet { id: 42 };
-    let buf = p.encode();
-    let back = Packet.decode(buf);
+    let buf = cbor.encode(p);
+    let back = cbor.decode<Packet>(buf).expect("decode");
     back.id
 }

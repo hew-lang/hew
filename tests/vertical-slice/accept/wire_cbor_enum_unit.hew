@@ -2,6 +2,8 @@
 // CBOR body codec. Under the map-of-one shape a unit variant encodes as its bare
 // integer wire tag. The recovered variant selects the exit code (42 for the
 // constructed `Pending`).
+import std.encoding.cbor;
+
 #[wire]
 enum Status {
     Active @0;
@@ -11,7 +13,7 @@ enum Status {
 
 fn main() -> i64 {
     let s = Status.Pending;
-    let back = Status.decode(s.encode());
+    let back = cbor.decode<Status>(cbor.encode(s)).expect("decode");
     match back {
         Status.Active => 1,
         Status.Inactive => 2,

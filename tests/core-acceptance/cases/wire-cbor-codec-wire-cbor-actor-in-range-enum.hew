@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 enum Wide {
     A @0;
@@ -14,7 +16,7 @@ enum Narrow {
 actor Decoder {
     let seq: i64;
     receive fn decode_it(raw: bytes) -> i64 {
-        let back = Narrow.decode(raw);
+        let back = cbor.decode<Narrow>(raw).expect("decode");
         match back {
             Narrow.A => 0,
             Narrow.B(n) => n,
@@ -27,7 +29,7 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 50 {
         let w = Narrow.B(1);
-        let raw = w.encode();
+        let raw = cbor.encode(w);
         let a = spawn Decoder(seq: i);
         let r = a.decode_it(raw);
         match r {

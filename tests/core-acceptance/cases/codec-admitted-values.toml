@@ -1,0 +1,20 @@
+[[case]]
+id = "codec-admitted-values"
+intent = "The format modules round-trip a bare #[wire] type, settle a literal collection's element type before recording its codec, lower an encoder imported by name and admit a Serializable-bounded type parameter."
+source = "cases/codec-admitted-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = """
+{"name":"svc","ports":[80,443],"tag":null}
+svc 2
+[1,2,3]
+2
+- a
+- b
+[{"name":"x","ports":[],"tag":"t"}]
+[true,false]
+"""
+stderr = ""
+exit = 0

@@ -1541,7 +1541,7 @@ impl Checker {
         self.handle_bearing_dirty = true;
 
         self.register_serial_layout(td);
-        // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
+        // A wire type registers its qualified alias and has its version constraints checked.
         if let Some(ref wire) = td.wire {
             self.register_wire_methods(td);
             self.validate_wire_version_constraints(td.name.name.as_str(), wire);
@@ -1689,129 +1689,10 @@ impl Checker {
         self.handle_bearing_dirty = true;
     }
 
-    /// Register codec methods for a wire type.
-    ///
-    /// - Wire structs expose binary + JSON/YAML helpers.
-    /// - Wire enums expose JSON/YAML helpers.
+    /// Register a `#[wire]` type's module-qualified alias.
     pub(in crate::check) fn register_wire_methods(&mut self, td: &hew_parser::ast::TypeDecl) {
-        let type_name = td.name.name.as_str();
-        // ONE canonical wire identity (A316). A module declaration's wire
-        // surface is keyed by `{module}.{Name}` — the identity every resolved
-        // receiver and the codegen wire-layout lookup carry; a root
-        // declaration's bare name IS its canonical identity. Surface
-        // spellings resolve TO this key at lookup time
-        // (`canonical_nominal_name`); no bare mirror entries exist, so two
-        // same-leaf wire types from different modules never collide on a
-        // shared last-write-wins key.
-        let canonical_identity = self.current_module_identity().map_or_else(
-            || type_name.to_string(),
-            |module| format!("{module}.{type_name}"),
-        );
-        let self_ty = self.named_ty_for_key(&canonical_identity, vec![]);
-        let bytes_ty = Ty::Bytes;
-
-        let Some((is_wire_struct, is_serial_wire_enum)) =
-            self.type_def_at(type_name).map(|type_def| {
-                let is_wire_struct = type_def.kind == TypeDefKind::Struct;
-                let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
-                    && type_def
-                        .variants
-                        .values()
-                        .all(|variant| matches!(variant, VariantDef::Unit));
-                let is_payload_wire_enum = type_def.kind == TypeDefKind::Enum
-                    && type_def
-                        .variants
-                        .values()
-                        .any(|variant| !matches!(variant, VariantDef::Unit));
-                let is_serial_wire_enum = is_unit_wire_enum || is_payload_wire_enum;
-                (is_wire_struct, is_serial_wire_enum)
-            })
-        else {
-            return;
-        };
-        // Track wire structs and wire enums so the method-dispatch arms can
-        // recognise the binary `encode`/`decode` codec calls (which lower to the
-        // codec walks) without
-        // re-deriving wire-ness. Both ride the CBOR body codec: structs as a
-        // tag-keyed map, enums as the "map-of-one" shape.
-        if is_wire_struct {
-            self.wire_struct_types.insert(canonical_identity.clone());
-        }
-        if is_serial_wire_enum {
-            self.wire_enum_types.insert(canonical_identity.clone());
-        }
-
-        // Wire structs and wire enums carry the same method surface: the binary
-        // CBOR codec (`encode`/`decode`) plus the text-format helpers. The body
-        // shapes differ at codegen (struct = tag-keyed map, enum =
-        // "map-of-one"), but the registered signatures are identical.
-        let instance_methods = if is_wire_struct || is_serial_wire_enum {
-            vec![
-                ("encode", vec![], bytes_ty.clone()),
-                ("to_json", vec![], Ty::String),
-                ("to_yaml", vec![], Ty::String),
-            ]
-        } else {
-            vec![]
-        };
-
-        // Instance methods land on the DECLARATION record (the bare
-        // `type_defs` entry this module's registration just wrote), then the
-        // canonical definition is refreshed from it — the
-        // `commit_reresolved_type_def` pattern. Pre-registration mints the
-        // qualified skeleton before this runs; the later canonical refresh is
-        // what carries the codec methods onto the durable definition.
-        if let Some(type_def) = self.type_def_at_mut(type_name) {
-            for (method_name, params, return_type) in &instance_methods {
-                type_def.methods.insert(
-                    (*method_name).to_string(),
-                    FnSig {
-                        params: params.clone(),
-                        return_type: return_type.clone(),
-                        ..FnSig::default()
-                    },
-                );
-            }
-        }
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
-            self.register_qualified_type_alias(&module_owner, type_name);
-        }
-
-        // `decode` returns bare `Self` (binary CBOR is trap-on-failure); the
-        // text-format `from_json`/`from_yaml` parsers can fail on arbitrary
-        // user input (config files, HTTP bodies), so they return
-        // `Result<Self, string>` — the only honest shape for a fallible parse.
-        let from_result_ty = Ty::result(self_ty.clone(), Ty::String);
-        let static_methods = if is_wire_struct || is_serial_wire_enum {
-            vec![
-                ("decode", vec![bytes_ty], self_ty),
-                ("from_json", vec![Ty::String], from_result_ty.clone()),
-                ("from_yaml", vec![Ty::String], from_result_ty),
-            ]
-        } else {
-            vec![]
-        };
-
-        for (method_name, params, return_type) in static_methods {
-            // Static codec entry points register under the canonical identity
-            // ONLY. The call-site arm canonicalizes the receiver's surface
-            // spelling (`Env.from_json` inside the defining module, an
-            // importer's binding, an `as`-alias) to this key before lookup.
-            let sig = FnSig {
-                params,
-                return_type,
-                ..FnSig::default()
-            };
-            let key = format!("{canonical_identity}.{method_name}");
-            match self.lookup_declaration(&canonical_identity) {
-                Some(owner) => {
-                    let member = self
-                        .defs
-                        .mint_codec_member(owner, Symbol::intern(method_name));
-                    self.insert_fn_sig(&key, member, sig);
-                }
-                None => self.insert_fn_sig_at(&key, sig),
-            }
+            self.register_qualified_type_alias(&module_owner, td.name.name.as_str());
         }
     }
 

@@ -203,12 +203,16 @@ pub enum Intrinsic {
     MemDealloc,
     MemPtrOffset,
     MemPtrCopy,
-    WireEncode,
-    WireDecode,
-    WireToJson,
-    WireFromJson,
-    WireToYaml,
-    WireFromYaml,
+    CodecCborEncode,
+    CodecCborDecode,
+    CodecJsonEncode,
+    CodecJsonDecode,
+    CodecYamlEncode,
+    CodecYamlDecode,
+    CodecTomlEncode,
+    CodecTomlDecode,
+    CodecMsgpackEncode,
+    CodecMsgpackDecode,
 }
 
 impl Intrinsic {
@@ -252,13 +256,38 @@ impl Intrinsic {
             Self::MemDealloc => "mem.dealloc",
             Self::MemPtrOffset => "mem.ptr_offset",
             Self::MemPtrCopy => "mem.ptr_copy",
-            Self::WireEncode => "wire.encode",
-            Self::WireDecode => "wire.decode",
-            Self::WireToJson => "wire.to_json",
-            Self::WireFromJson => "wire.from_json",
-            Self::WireToYaml => "wire.to_yaml",
-            Self::WireFromYaml => "wire.from_yaml",
+            Self::CodecCborEncode => "codec.cbor.encode",
+            Self::CodecCborDecode => "codec.cbor.decode",
+            Self::CodecJsonEncode => "codec.json.encode",
+            Self::CodecJsonDecode => "codec.json.decode",
+            Self::CodecYamlEncode => "codec.yaml.encode",
+            Self::CodecYamlDecode => "codec.yaml.decode",
+            Self::CodecTomlEncode => "codec.toml.encode",
+            Self::CodecTomlDecode => "codec.toml.decode",
+            Self::CodecMsgpackEncode => "codec.msgpack.encode",
+            Self::CodecMsgpackDecode => "codec.msgpack.decode",
         }
+    }
+
+    /// The codec operation of a format module's `encode`/`decode`.
+    #[must_use]
+    pub fn codec(self) -> Option<crate::Codec> {
+        use crate::CodecDirection::{Decode, Encode};
+        use crate::CodecFormat as F;
+        let (format, direction) = match self {
+            Self::CodecCborEncode => (F::Cbor, Encode),
+            Self::CodecCborDecode => (F::Cbor, Decode),
+            Self::CodecJsonEncode => (F::Json, Encode),
+            Self::CodecJsonDecode => (F::Json, Decode),
+            Self::CodecYamlEncode => (F::Yaml, Encode),
+            Self::CodecYamlDecode => (F::Yaml, Decode),
+            Self::CodecTomlEncode => (F::Toml, Encode),
+            Self::CodecTomlDecode => (F::Toml, Decode),
+            Self::CodecMsgpackEncode => (F::Msgpack, Encode),
+            Self::CodecMsgpackDecode => (F::Msgpack, Decode),
+            _ => return None,
+        };
+        Some(crate::Codec { format, direction })
     }
 
     #[must_use]

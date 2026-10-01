@@ -133,10 +133,10 @@ impl Builder<'_, '_> {
                 None => Err("divergent recovery cannot produce a SIR value".into()),
             },
             HirExprKind::WireCodec {
-                direction,
+                codec,
                 operand,
                 value_ty,
-            } => self.lower_wire_codec(expr, *direction, operand, value_ty),
+            } => self.lower_wire_codec(expr, *codec, operand, value_ty),
             HirExprKind::RecordCloneCall { src, .. } => {
                 let mut loans = Vec::new();
                 let source = self.lower_borrowed_read(src, &mut loans)?;

@@ -7,7 +7,7 @@
 // the caller owns the temp and must release it. Because the temp is NOT bound
 // to a `let`, its `hew_string_drop` cannot come from the scope-exit `derive_cow_*`
 // path — it is spliced by the nested-fresh-temp collector alone. This is the
-// exact shape (`Packet.from_json(a + b)`) the collector's borrow-reader
+// exact shape (`json.decode<Packet>(a + b)`) the collector's borrow-reader
 // correction guards. This corpus preserves the input shape and raw-MIR parity;
 // focused ownership tests own the release invariant.
 fn measure(s: string) -> i64 {

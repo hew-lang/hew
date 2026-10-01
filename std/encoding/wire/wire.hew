@@ -1,88 +1,75 @@
-//! Wire format substrate for `std.encoding.wire`.
+//! Shared types of the data codecs, and the `#[wire]` schema layer.
 //!
-//! The `#[wire]` attribute, not this module, is what most code reaches for.
-//! Attach it to a `type` declaration to make it network-serializable:
+//! The format modules encode and decode: `std.encoding.json`, `yaml`, `toml`,
+//! `msgpack` and `cbor` each offer `encode(value)` and `decode<T>(document)`
+//! over any data type. A decode that fails returns this module's
+//! `DecodeError`, which names the path of the value that failed:
 //!
 //! ```
-//! #[wire]
-//! type UserCreated {
-//!     id: u64 @1;
-//!     name: string @2;
-//! }
+//! import std.encoding.json;
+//!
+//! type Config { name: string; retries: i64; }
 //!
 //! fn main() {
-//!     let e = UserCreated { id: 42, name: "ada" };
-//!     let j = e.to_json();          // {"id":42,"name":"ada"}
-//!     match UserCreated.from_json(j) {
-//!         .Ok(back) => println(back.name),   // ada
-//!         .Err(_) => println("parse failed"),
+//!     println(json.encode(Config { name: "api", retries: 3 }));   // {"name":"api","retries":3}
+//!     match json.decode<Config>("{\"name\":\"api\",\"retries\":\"x\"}") {
+//!         .Ok(config) => println(config.name),
+//!         .Err(e) => println(e),     // Type: .retries: expected integer, found string
 //!     }
 //! }
 //! ```
 //!
-//! Every field carries a `@N` tag — a stable wire identifier assigned once
-//! and never reused, even after the field is removed; reusing a tag number
-//! for a different field is a schema-compatibility break, not just a style
-//! issue. A required `Option<T>` always emits its key and encodes `None` as
-//! null; only `Option<T> @N optional` may omit the key for `None`. Missing
-//! required keys fail decoding, while missing or explicitly-null optional keys
-//! reconstruct `None`. Presence is explicit schema metadata, not inferred from
-//! the value type, and changing it is a rejected compatibility change.
-//! `e.to_json()` and `TypeName.from_json(text)` (a call on the type
-//! name itself, not `::`) round-trip a `#[wire]` type through JSON today.
-//! `HashMap` and `HashSet` may be fields of that wire type: string-keyed maps
-//! become JSON objects, other supported key types use arrays of
-//! `[key, value]` pairs (so key types are not stringified), and sets become
-//! deterministically ordered arrays. The same layouts round-trip through CBOR
-//! and YAML. Any bare `Serializable` value uses the same typed codec through
-//! this module's generic functions, for example `wire.to_json(features)` or
-//! `wire.from_json<HashMap<string, Feature>>(text)`; collections do not need
-//! collection-specific methods or a wrapper type.
-//! Check schema compatibility between two versions of a wire type with:
-//!
-//! ```text
-//! hew wire check <file.hew> --against <baseline.hew>
-//! ```
-//!
-//! Full walkthrough, including the `optional` field modifier and the
-//! `#[resource]`/`#[linear]` split for non-serializable ownership types:
-//! see the "Shipped surfaces" chapter of the language guide
-//! (`docs/hew-language-guide.md`, `#[wire]` section) and
-//! `examples/playground/types/wire_types.hew`.
-//!
-//! Nested vectors, optional elements and owned keys use ordinary value copy
-//! and cleanup rules. Strings preserve embedded NUL bytes across all formats.
-//! `Option<Option<T>>` is rejected because the null encoding cannot distinguish
-//! `None` from `Some(None)`.
-//!
-//! This file also carries the substrate this doc comment used to describe:
-//! the legacy HBF byte-layout helpers (`encode_header`, `decode_header`,
-//! `validate_header`) were removed when the CBOR envelope substrate
-//! (`hew-runtime/src/envelope.rs`) became the sole internode encoding.
-//! JSON and YAML expose their own owning value APIs; no shared opaque-value
-//! trait is required by this wire codec surface.
+//! `#[wire]` on a record or enum gives it a stable schema for remote actors:
+//! every field and variant carries a `@N` tag, assigned once and never
+//! reused. A required `Option<T>` always emits its key and encodes `None` as
+//! null; only `Option<T> @N optional` may omit the key for `None`. Check
+//! schema compatibility between two versions with
+//! `hew wire check <file.hew> --against <baseline.hew>`. See the `#[wire]`
+//! section of `docs/hew-language-guide.md`.
 
-/// Encode any admitted `Serializable` value as binary CBOR.
-#[intrinsic("wire.encode")]
-pub fn encode<T: Serializable>(value: T) -> bytes {}
+/// Why a document did not decode as the requested type. Paths start at the
+/// document root: `.field`, `[index]`, `["key"]`.
+pub enum DecodeError {
+    /// The input is not well-formed in its format. Text formats fill line and
+    /// column; binary formats leave them `None`.
+    Syntax { offset: i64; line: Option<i64>; column: Option<i64>; reason: string; }
+    /// A value has the wrong kind for its target.
+    Type { path: string; expected: string; found: string; }
+    /// A required key is absent.
+    Missing { path: string; }
+    /// A number does not fit its target type.
+    Range { path: string; value: string; target: string; }
+    /// A variant name or tag matches no variant.
+    UnknownVariant { path: string; name: string; }
+    /// A map key or set element repeats.
+    Duplicate { path: string; key: string; }
+    /// A representation override refused its representation.
+    Invalid { path: string; reason: string; }
+}
 
-/// Decode trusted binary CBOR as `T`. Malformed binary input follows the same
-/// trap-on-failure contract as `Type.decode(bytes)`.
-#[intrinsic("wire.decode")]
-pub fn decode<T: Serializable>(data: bytes) -> T {}
+fn at(path: string) -> string {
+    if path.is_empty() {
+        ""
+    } else {
+        f"{path}: "
+    }
+}
 
-/// Serialize any admitted `Serializable` value as JSON text.
-#[intrinsic("wire.to_json")]
-pub fn to_json<T: Serializable>(value: T) -> string {}
+impl Display for DecodeError {
+    fn fmt(error: DecodeError) -> string {
+        match error {
+            DecodeError.Syntax { offset, line, column, reason } => match (line, column) {
+                (.Some(line), .Some(column)) => f"Syntax: line {line}, column {column}: {reason}",
+                _ => f"Syntax: offset {offset}: {reason}",
+            }
+            DecodeError.Type { path, expected, found } => f"Type: {at(path)}expected {expected}, found {found}",
+            DecodeError.Missing { path } => f"Missing: {path}",
+            DecodeError.Range { path, value, target } => f"Range: {at(path)}{value} does not fit {target}",
+            DecodeError.UnknownVariant { path, name } => f"UnknownVariant: {at(path)}no variant named {name}",
+            DecodeError.Duplicate { path, key } => f"Duplicate: {at(path)}{key} repeats",
+            DecodeError.Invalid { path, reason } => f"Invalid: {at(path)}{reason}",
+        }
+    }
+}
 
-/// Parse JSON text as `T`, preserving typed parse failures in `Result`.
-#[intrinsic("wire.from_json")]
-pub fn from_json<T: Serializable>(text: string) -> Result<T, string> {}
-
-/// Serialize any admitted `Serializable` value as YAML text.
-#[intrinsic("wire.to_yaml")]
-pub fn to_yaml<T: Serializable>(value: T) -> string {}
-
-/// Parse YAML text as `T`, preserving typed parse failures in `Result`.
-#[intrinsic("wire.from_yaml")]
-pub fn from_yaml<T: Serializable>(text: string) -> Result<T, string> {}
+impl Error for DecodeError {}

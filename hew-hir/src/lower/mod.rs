@@ -23,9 +23,9 @@ use hew_types::env::TypeBindingId;
 use hew_types::BuiltinType;
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, CallTarget, ChildSlot, ClosureCaptureFact,
-    ClosureEscapeFact, ExecutionContextReader, MethodCallReceiverKind, MethodCallRewrite,
+    ClosureEscapeFact, Codec, ExecutionContextReader, MethodCallReceiverKind, MethodCallRewrite,
     PatternKind, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
-    UserComparisonDispatch, WireCodecDirection,
+    UserComparisonDispatch,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;

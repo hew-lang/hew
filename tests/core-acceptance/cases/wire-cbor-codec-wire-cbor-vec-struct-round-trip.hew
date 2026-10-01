@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 type Inner {
     v: i64 @1;
@@ -18,8 +20,8 @@ fn main() -> i64 {
         xs.push(Inner { v: 20 });
         xs.push(Inner { v: 12 });
         let c = Container { items: xs, seq: i };
-        let raw = c.encode();
-        let back = Container.decode(raw);
+        let raw = cbor.encode(c);
+        let back = cbor.decode<Container>(raw).expect("decode");
         total = total + back.seq;
         i = i + 1;
     }

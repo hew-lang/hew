@@ -485,7 +485,14 @@ fn lifted<F: From<Low>>() -> i64 fails F {
 }
 ",
     );
-    assert_clean(&output);
+    let [refusal] = output.errors.as_slice() else {
+        panic!("expected only the build refusal, got: {:#?}", output.errors);
+    };
+    assert!(
+        refusal.message.contains("cannot build yet"),
+        "{}",
+        refusal.message
+    );
     assert!(
         output.error_conversions.is_empty(),
         "a bound conversion is no declared impl: {:?}",

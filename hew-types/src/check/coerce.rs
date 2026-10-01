@@ -855,8 +855,15 @@ impl Checker {
             if let Some(call) = Self::bare_param(&target)
                 .and_then(|param| self.binder_from_conversion(param, &source))
             {
-                self.binder_trait_calls
-                    .insert(SpanKey::in_module(span, self.current_module_idx), call);
+                self.record_binder_trait_call(
+                    span,
+                    call,
+                    &format!(
+                        "{} converts into `{}`",
+                        edge.spelling(),
+                        target.user_facing()
+                    ),
+                );
                 return true;
             }
         }

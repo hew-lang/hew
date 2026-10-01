@@ -84,7 +84,19 @@ fn error_of(output: &TypeCheckOutput, kind: &TypeErrorKind) -> String {
 }
 
 /// The one binder call the program makes, as `(Self spelling, method name)`.
+/// The selection is complete, and refused until code generation can take
+/// `Self` from the binder's instantiation.
 fn binder_call(output: &TypeCheckOutput) -> (String, String) {
+    let refusals: Vec<_> = output.errors.iter().collect();
+    let [refusal] = refusals.as_slice() else {
+        panic!("expected only the build refusal, got: {refusals:#?}");
+    };
+    assert_eq!(refusal.kind, TypeErrorKind::InvalidOperation);
+    assert!(
+        refusal.message.contains("cannot build yet"),
+        "{}",
+        refusal.message
+    );
     let calls: Vec<_> = output.binder_trait_calls.values().collect();
     let [call] = calls.as_slice() else {
         panic!("expected one binder call, got: {calls:#?}");
@@ -175,7 +187,6 @@ fn build<T: Make>(n: i64) -> T {
 }
 ",
     );
-    assert_clean(&output);
     assert_eq!(binder_call(&output), ("T".to_string(), "make".to_string()));
 }
 
@@ -188,7 +199,6 @@ fn lift<F: From<Low>>(low: Low) -> F {
 }
 ",
     );
-    assert_clean(&output);
     assert_eq!(binder_call(&output), ("F".to_string(), "from".to_string()));
 }
 
@@ -250,4 +260,22 @@ fn read<T: Make>(t: T) -> i64 {
     );
     assert_clean(&output);
     assert!(output.binder_trait_calls.is_empty());
+}
+
+#[test]
+fn a_trait_default_names_an_associated_function_through_self() {
+    let output = check(
+        r"
+trait Remake {
+    fn remake(n: i64) -> Self;
+    fn again(self) -> Self {
+        Self.remake(2)
+    }
+}
+",
+    );
+    assert_eq!(
+        binder_call(&output),
+        ("Self".to_string(), "remake".to_string())
+    );
 }

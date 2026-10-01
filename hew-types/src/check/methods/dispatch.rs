@@ -3044,14 +3044,41 @@ impl Checker {
             },
             |(declaring_trait, method)| CallTarget::static_trait(declaring_trait, method),
         );
-        self.binder_trait_calls.insert(
-            SpanKey::in_module(span, self.current_module_idx),
+        self.record_binder_trait_call(
+            span,
             BinderTraitCall {
                 target,
                 self_param: param,
             },
+            &format!("`{}.{method}` calls", param.spelling),
         );
         self.project_assoc_types(&applied.return_type)
+    }
+
+    /// Publish a static call through a binder's bound, and refuse it: code
+    /// generation cannot yet take `Self` from the binder's instantiation.
+    ///
+    /// TRANSITION(A1c4): WHY HIR lowers a static trait call only through a
+    /// receiver value. WHEN `CallTraitMethodStatic` takes `Self` from the
+    /// binder's substitution, the refusal goes and the selection lowers.
+    /// WHAT: receiver-less static trait calls in HIR and SIR.
+    pub(in crate::check) fn record_binder_trait_call(
+        &mut self,
+        span: &Span,
+        call: BinderTraitCall,
+        lead: &str,
+    ) {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "{lead} through a bound on type parameter `{}`, which this compiler \
+                 cannot build yet",
+                call.self_param.spelling
+            ),
+        );
+        self.binder_trait_calls
+            .insert(SpanKey::in_module(span, self.current_module_idx), call);
     }
 
     /// The `From` conversion a bound on the binder `target` provides from

@@ -5662,8 +5662,7 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | Hew Type                               | JSON Representation                                         |
 | -------------------------------------- | ----------------------------------------------------------- |
 | `bool`                                 | JSON boolean                                                |
-| `u8`, `u16`, `u32`, `i8`, `i16`, `i32` | JSON number                                                 |
-| `u64`, `i64`                           | JSON string (to avoid precision loss)                       |
+| integers (`i8`..`i64`, `u8`..`u64`)    | JSON number; decode refuses a fraction or an out-of-range value |
 | `f32`, `f64`                           | JSON number (special: `"NaN"`, `"Infinity"`, `"-Infinity"`) |
 | `string`                               | JSON string                                                 |
 | `bytes`                                | JSON string (base64-encoded)                                |
@@ -5673,6 +5672,9 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | required `Option<T>` `None`            | present JSON key with `null`                                |
 | `optional Option<T>` `None`            | field omitted                                                |
 | any `Option<T>` `Some(v)`              | JSON value of `v`                                            |
+
+A JSON integer literal beyond 128 bits decodes as a float, so decoding it
+into an integer field reports a type error rather than a range error.
 
 ##### 7.3.2.2 Field Names
 

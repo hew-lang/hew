@@ -13,6 +13,8 @@ type Tree {
     children: Vec<Tree>;
 }
 
+type Span(i64, i64);
+
 enum Figure {
     Circle(f64);
     Rect { w: f64; h: f64; }
@@ -86,6 +88,14 @@ fn main() {
     }
     match wire.from_json<Vec<Figure>>("[\"Hexagon\"]") {
         .Ok(_) => println("unexpected"),
+        .Err(error) => println(error),
+    }
+    let span = Span(4, -9);
+    let text = wire.to_json(span);
+    println(text);
+    println(wire.to_json(wire.decode<Span>(wire.encode(span))) == text);
+    match wire.from_json<Span>(text) {
+        .Ok(back) => println(wire.to_json(back)),
         .Err(error) => println(error),
     }
 }

@@ -187,8 +187,8 @@ pub enum ResolvedTy {
     },
 }
 
-/// A single trait bound in a resolved trait object.
-///
+/// A single trait bound in a resolved trait object. Its identity is
+/// `trait_id`; `trait_name` is display data only.
 #[derive(Debug, Clone)]
 pub struct ResolvedTraitBound {
     /// Trait name
@@ -204,7 +204,6 @@ pub struct ResolvedTraitBound {
 impl PartialEq for ResolvedTraitBound {
     fn eq(&self, other: &Self) -> bool {
         self.trait_id == other.trait_id
-            && self.trait_name == other.trait_name
             && self.args == other.args
             && self.assoc_bindings == other.assoc_bindings
     }
@@ -222,7 +221,6 @@ impl Ord for ResolvedTraitBound {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.trait_id
             .cmp(&other.trait_id)
-            .then_with(|| self.trait_name.cmp(&other.trait_name))
             .then_with(|| self.args.cmp(&other.args))
             .then_with(|| self.assoc_bindings.cmp(&other.assoc_bindings))
     }
@@ -231,7 +229,6 @@ impl Ord for ResolvedTraitBound {
 impl std::hash::Hash for ResolvedTraitBound {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.trait_id.hash(state);
-        self.trait_name.hash(state);
         self.args.hash(state);
         self.assoc_bindings.hash(state);
     }

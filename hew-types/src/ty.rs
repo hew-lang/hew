@@ -105,9 +105,10 @@ impl fmt::Display for TypeVar {
 pub struct TraitObjectBound {
     /// Trait name
     pub trait_name: String,
-    /// The declared trait the bound names; `None` for a compiler predicate
-    /// (`Send`, `Clone`), which has no declaration. A declared trait is never
-    /// a predicate, whatever its spelling (R2).
+    /// The trait the bound names: a declared trait, or the sourceless row of a
+    /// compiler predicate (`Send`, `Clone`). A declared trait is never a
+    /// predicate, whatever its spelling (R2). `None` only for a bound whose
+    /// trait did not resolve (already reported). This is the bound's identity.
     pub trait_id: Option<crate::DefId>,
     /// Type arguments
     pub args: Vec<Ty>,
@@ -118,10 +119,27 @@ pub struct TraitObjectBound {
     pub assoc_bindings: Vec<(String, Ty)>,
 }
 
+impl TraitObjectBound {
+    /// Order a trait object's bounds canonically, so every spelling of one
+    /// set of traits is one type (R1): declared traits by identity first, then
+    /// compiler predicates, then unresolved bounds (already reported).
+    pub fn sort_canonical(bounds: &mut [Self]) {
+        bounds.sort_by_key(|bound| {
+            let rank = match bound.trait_id {
+                Some(id) if crate::DefTable::as_predicate(id).is_some() => 1,
+                Some(_) => 0,
+                None => 2,
+            };
+            (rank, bound.trait_id)
+        });
+    }
+}
+
+// The trait's identity is `trait_id`; `trait_name` is display data and never
+// takes part in equality, hashing or ordering.
 impl PartialEq for TraitObjectBound {
     fn eq(&self, other: &Self) -> bool {
         self.trait_id == other.trait_id
-            && self.trait_name == other.trait_name
             && self.args == other.args
             && self.assoc_bindings == other.assoc_bindings
     }
@@ -132,7 +150,6 @@ impl Eq for TraitObjectBound {}
 impl std::hash::Hash for TraitObjectBound {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.trait_id.hash(state);
-        self.trait_name.hash(state);
         self.args.hash(state);
         self.assoc_bindings.hash(state);
     }

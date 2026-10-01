@@ -944,7 +944,7 @@ impl Checker {
                 continue;
             }
             let subject = match &obligation.body {
-                EffectBody::Declaration(id) => format!("function `{}`", self.defs.display(*id)),
+                EffectBody::Declaration(id) => format!("function `{}`", self.defs.path(*id)),
                 _ => "closure".to_string(),
             };
             let witness = witnesses

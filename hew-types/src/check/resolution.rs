@@ -1276,15 +1276,35 @@ impl Checker {
             }
         }
 
-        let trait_id = self.trait_key_id(&trait_lookup_key);
-        if let (Some(site), Some(id)) = (self.scope_site(), trait_id) {
-            let _ = self.scopes.resolve_prefix(
+        let mut trait_id = self.trait_key_id(&trait_lookup_key);
+        if let Some(site) = self.scope_site() {
+            let resolved = self.scopes.resolve(
                 &self.env,
                 site,
                 super::scope::Namespace::Type,
                 &bound.path.segments,
             );
-            if let Some((_, name_span)) = bound.path.segments.last() {
+            // A compiler predicate (`Send`) has no trait declaration; its
+            // identity is the sourceless predicate row the scope binds.
+            if trait_id.is_none() {
+                trait_id = match resolved {
+                    Ok(super::scope::Resolution::Def(id))
+                        if crate::DefTable::as_predicate(id).is_some() =>
+                    {
+                        Some(id)
+                    }
+                    _ => None,
+                };
+            }
+            // `dyn m.Trait` uses the import that binds `m`.
+            if let (Some(_), [(module, _), _, ..]) = (trait_id, bound.path.segments.as_slice()) {
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    module.to_string(),
+                ));
+            }
+            if let (Some(id), Some((_, name_span))) = (trait_id, bound.path.segments.last()) {
                 self.scopes
                     .record_resolution(site, name_span, super::scope::Resolution::Def(id));
             }
@@ -3863,10 +3883,11 @@ impl Checker {
                 Ty::Error
             }
             TypeExpr::TraitObject(bounds) => {
-                let traits = bounds
+                let mut traits: Vec<_> = bounds
                     .iter()
                     .map(|bound| self.resolve_trait_object_bound(bound, &te.1, hole_vars, context))
                     .collect();
+                crate::ty::TraitObjectBound::sort_canonical(&mut traits);
                 Ty::TraitObject { traits }
             }
             TypeExpr::Infer => {

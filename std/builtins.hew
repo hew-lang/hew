@@ -343,18 +343,16 @@ impl<E: Display, Req> Display for ActorError<E, Req> {
 impl<E: Error, Req> Error for ActorError<E, Req> {}
 
 /// Failure to subscribe to an actor's exit through `link` or `monitor`.
-/// Both operations require a current actor to receive the notification.
+/// Both operations require a current actor to receive the notification; a
+/// target that is already dead or unreachable is not an error, it answers
+/// with an immediate exit or `DOWN`.
 pub enum LinkError {
-    Dead;
-    Partition;
     NoContext;
 }
 
 impl Display for LinkError {
     fn fmt(err: LinkError) -> string {
         match err {
-            LinkError.Dead => "Dead: the target actor has already exited",
-            LinkError.Partition => "Partition: the route to the peer is unavailable",
             LinkError.NoContext => "NoContext: the operation requires an actor context",
         }
     }

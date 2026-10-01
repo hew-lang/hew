@@ -1,4 +1,5 @@
 import std.link_monitor.{MonitorRef};
+import std.failure.{CrashNotification};
 
 actor Target {
     receive fn ping() -> i64 {
@@ -7,6 +8,7 @@ actor Target {
 }
 
 actor Watcher {
+    var exits: i64 = 0;
     receive fn observe(target: Target) -> i64 {
         link(target).expect("link live target");
         link(target).expect("duplicate link is idempotent");
@@ -20,12 +22,17 @@ actor Watcher {
         1
     }
     receive fn observe_dead(target: Target) -> i64 {
-        assert(match link(target) {
-            .Err(LinkError.Dead) => true,
-            _ => false,
-        });
-        unlink(target);
+        // A retired target is not an error: it answers with its exit.
+        link(target).expect("link a retired target");
         2
+    }
+    receive fn exits() -> i64 {
+        exits
+    }
+    #[on(link)]
+    fn on_peer_exit(note: CrashNotification) {
+        assert(note.actor_id > 0);
+        exits = exits + 1;
     }
 }
 
@@ -52,6 +59,10 @@ fn main() {
     stop(target);
     stopped(target);
     assert(watcher.observe_dead(target).expect("retired observations") == 2);
+    while watcher.exits().expect("exit count") == 0 {
+        sleep(1ms);
+    }
+    assert(watcher.exits().expect("exit count") == 1);
     stop(watcher);
     stopped(watcher);
     println("local observations own subscriptions and report context");

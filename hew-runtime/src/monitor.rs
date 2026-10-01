@@ -861,29 +861,41 @@ pub(crate) fn deliver_down_message(watcher_actor_id: u64, down_data: HewDownMess
     }
 }
 
+/// The one refusal `link` and `monitor` report: no current actor can receive
+/// the exit or `DOWN`. Every other outcome is `Ok`; a dead, retired or
+/// unreachable target answers with an immediate exit or `DOWN` instead.
+pub const HEW_OBSERVATION_NO_CONTEXT: i32 = 1;
+
+/// Abort when the 64-bit observation id space is spent: no id can name the
+/// subscription, and reusing one would deliver to the wrong watcher.
+pub(crate) fn observation_ids_exhausted() -> ! {
+    crate::set_last_error("observation id space exhausted");
+    eprintln!("hew: observation id space exhausted");
+    std::process::abort()
+}
+
 /// Create a monitor: watcher monitors target.
 ///
-/// Returns zero and writes a unique monitor id on success. Non-zero returns are
-/// one-based `LinkError` discriminants (`Dead`, `Partition`, `NoContext`).
+/// Returns zero and writes a unique monitor id; a target that already exited
+/// receives its `DOWN` at once. A null watcher is
+/// [`HEW_OBSERVATION_NO_CONTEXT`]; a null target or out pointer breaks the
+/// caller's contract and aborts.
 ///
 /// # Safety
 ///
-/// `watcher`, `target`, and `out_monitor_id` must be valid pointers.
+/// `target` and `out_monitor_id` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_monitor(
     watcher: *mut HewActor,
     target: *mut HewActor,
     out_monitor_id: *mut u64,
 ) -> i32 {
-    const LINK_ERR_DEAD: i32 = 1;
-    const LINK_ERR_NO_CONTEXT: i32 = 3;
-
-    // No current actor: nothing can receive the DOWN.
     if watcher.is_null() {
-        return LINK_ERR_NO_CONTEXT;
+        return HEW_OBSERVATION_NO_CONTEXT;
     }
     if target.is_null() || out_monitor_id.is_null() {
-        return LINK_ERR_DEAD;
+        crate::set_last_error("hew_actor_monitor: null target or out pointer");
+        std::process::abort();
     }
 
     // SAFETY: Caller guarantees both pointers are valid.
@@ -912,11 +924,9 @@ unsafe fn register_local_monitor(
 ) -> i32 {
     // Generate one shared local/remote observation ID.
     let state = monitor_state();
-    let Some(ref_id) = state.next_observation_id() else {
-        crate::set_last_error("hew_actor_monitor: monitor id space exhausted");
-        // `LinkError.Partition`: the runtime cannot register the observation.
-        return 2;
-    };
+    let ref_id = state
+        .next_observation_id()
+        .unwrap_or_else(|| observation_ids_exhausted());
 
     let monitor_entry = MonitorEntry { ref_id };
     let observation = ObservationEntry {
@@ -985,7 +995,8 @@ unsafe fn register_local_monitor(
 }
 
 /// Monitor the current actor's local target, including a retired incarnation.
-/// Status zero initializes the owned monitor ID; three means `NoContext`.
+/// Status zero initializes the owned monitor ID; [`HEW_OBSERVATION_NO_CONTEXT`]
+/// means no current actor.
 /// Negative statuses are logical fault codes, never `LinkError` discriminants.
 ///
 /// # Safety
@@ -997,7 +1008,7 @@ pub unsafe extern "C" fn hew_native_actor_monitor(
 ) -> i32 {
     let watcher = crate::actor::hew_actor_self();
     if watcher.is_null() {
-        return 3;
+        return HEW_OBSERVATION_NO_CONTEXT;
     }
     let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
     else {
@@ -1562,9 +1573,15 @@ mod tests {
             let token = (*target).local_pid_id;
             let mut id = u64::MAX;
             let previous = crate::execution_context::set_current_context(std::ptr::null_mut());
-            assert_eq!(hew_native_actor_monitor(token, &raw mut id), 3);
+            assert_eq!(
+                hew_native_actor_monitor(token, &raw mut id),
+                HEW_OBSERVATION_NO_CONTEXT
+            );
             assert_eq!(id, u64::MAX, "NoContext must not initialize an owner");
-            assert_eq!(crate::link::hew_native_actor_link(token), 3);
+            assert_eq!(
+                crate::link::hew_native_actor_link(token),
+                HEW_OBSERVATION_NO_CONTEXT
+            );
 
             let mut context = crate::execution_context::HewExecutionContext {
                 actor: watcher,
@@ -1588,7 +1605,8 @@ mod tests {
             notify_monitors_on_death(target_id, HewActorState::Crashed as i32, crash_kind);
             assert_eq!(crate::actor::hew_actor_free(target), 0);
             assert!(pin_actor_by_id(target_id).is_none());
-            assert_eq!(crate::link::hew_native_actor_link(token), 1);
+            // Linking a retired incarnation succeeds and delivers its exit.
+            assert_eq!(crate::link::hew_native_actor_link(token), 0);
             (*watcher)
                 .actor_state
                 .store(HewActorState::Runnable as i32, Ordering::Release);
@@ -1946,25 +1964,13 @@ mod tests {
         let mut actor = create_test_actor(300);
         let actor_ptr = &raw mut actor;
 
-        // These should not panic and should return 0
-        // SAFETY: Testing null pointer handling; function returns 0 for null.
+        // No current actor is the one refusal; it must not write the out id.
+        // SAFETY: a null watcher is checked before any other pointer is read.
         unsafe {
             let mut monitor_id = 99;
             assert_eq!(
                 hew_actor_monitor(std::ptr::null_mut(), actor_ptr, &raw mut monitor_id),
-                2
-            );
-            assert_eq!(
-                hew_actor_monitor(actor_ptr, std::ptr::null_mut(), &raw mut monitor_id),
-                2
-            );
-            assert_eq!(
-                hew_actor_monitor(
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    &raw mut monitor_id,
-                ),
-                2
+                HEW_OBSERVATION_NO_CONTEXT
             );
             assert_eq!(monitor_id, 99, "failure must not write the out id");
         }

@@ -174,14 +174,8 @@ unsafe extern "C-unwind" fn down_capture_sys_dispatch(
 
 /// Linking two live actors twice is idempotent — the second call does not panic.
 ///
-/// Per Q47/A24 ratification and LESSONS `ffi-ownership-contracts`: the runtime
-/// absorbs a duplicate link silently. The Hew `link()` builtin therefore always
-/// resolves to `Ok(())` when both actors are alive, regardless of whether the
-/// link was already established.
-///
-/// Note: `hew_actor_link` returns void — `AlreadyLinked` and `TargetDead` are
-/// forward-compatibility discriminants in `LinkError` for future runtime
-/// revisions; the current runtime does not surface them as return codes.
+/// The runtime absorbs a duplicate link silently: `link()` resolves to
+/// `Ok(())` whenever an actor context exists, and `NoContext` is its only error.
 #[test]
 fn link_idempotent() {
     let actor_a = TestActor::spawn(noop_dispatch);

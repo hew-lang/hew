@@ -500,8 +500,8 @@ actor MonitorProbe {
     // Scenario: remote_monitor_setup_after_drop
     //
     // The harness kills the server after READY_DROP. Once route teardown reaches the
-    // client, monitor(RemotePid) must return Err(LinkError::Partition) rather than
-    // a zero-valued or inert MonitorRef.
+    // client, monitor(RemotePid) must succeed and deliver an immediate
+    // MonitorLost DOWN rather than hand back an inert MonitorRef.
 
     // Scenario: partition_ask
     //
@@ -797,27 +797,6 @@ actor LinkSetupRaceProbe {
             DownReason.MonitorLost => -1,
             DownReason.LocalShutdown => -3,
         };
-    }
-}
-
-actor MonitorSetupProbe {
-    receive fn wait_for_partition(peer: RemotePid<KeyValue>) -> i64 {
-        var attempts: i64 = 0;
-        loop {
-            let setup: Result<MonitorRef, LinkError> = monitor(peer);
-            match setup {
-                Result.Err(LinkError.Partition) => return 0,
-                Result.Err(_) => return 2,
-                Result.Ok(monitor_ref) => {
-                    monitor_ref.close();
-                    attempts = attempts + 1;
-                    if attempts >= 100 {
-                        return 3;
-                    }
-                    sleep(100ms);
-                }
-            }
-        }
     }
 }
 
@@ -1255,7 +1234,7 @@ fn scenario_identity_display(identity: RemotePid<IdentityProbe>, scenario: strin
 }
 
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.Dead), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     let armed = probe.arm(kv, drive);
     let arm_status = match armed {
         Result.Ok(status) => status,
@@ -1339,28 +1318,53 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
     monitor_hook_scenario(kv, "remote_monitor_conn_drop", 2, -1, true)
 }
 
+// Wait until a probe's DOWN reports, or give up after ~10s.
+fn wait_for_down(probe: MonitorProbe) -> i64 {
+    var attempts: i64 = 0;
+    while attempts < 100 {
+        let status = match probe.status() {
+            Result.Ok(value) => value,
+            Result.Err(_) => return -98,
+        };
+        if status != 100 {
+            return status;
+        }
+        attempts = attempts + 1;
+        sleep(100ms);
+    }
+    100
+}
+
 fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
-    let probe = spawn MonitorSetupProbe;
+    // The first monitor observes the route teardown; a monitor set up after it
+    // is not an error and answers with an immediate MonitorLost DOWN.
+    let before = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext));
+    match before.arm(kv, 2) {
+        Result.Ok(0) => {}
+        _ => {
+            println("FAIL remote_monitor_setup_after_drop arm-before");
+            return 2;
+        }
+    }
     println("READY_DROP remote_monitor_setup_after_drop");
-    match probe.wait_for_partition(kv) {
-        Result.Ok(status) => {
-            if status == 0 {
-                println("PASS remote_monitor_setup_after_drop error=Partition");
-                0
-            } else {
-                if status == 3 {
-                    println("FAIL remote_monitor_setup_after_drop never-failed");
-                    3
-                } else {
-                    println("FAIL remote_monitor_setup_after_drop wrong-error");
-                    2
-                }
-            }
+    if wait_for_down(before) != -1 {
+        println("FAIL remote_monitor_setup_after_drop no-teardown");
+        return 3;
+    }
+    let after = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext));
+    match after.arm(kv, 2) {
+        Result.Ok(0) => {}
+        _ => {
+            println("FAIL remote_monitor_setup_after_drop refused");
+            return 4;
         }
-        Result.Err(_) => {
-            println("FAIL remote_monitor_setup_after_drop probe-error");
-            4
-        }
+    }
+    if wait_for_down(after) == -1 {
+        println("PASS remote_monitor_setup_after_drop down=MonitorLost");
+        0
+    } else {
+        println("FAIL remote_monitor_setup_after_drop no-down");
+        5
     }
 }
 
@@ -1639,7 +1643,7 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 }
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.Dead), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     match probe.arm(kv, 2) {
         Result.Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
@@ -1827,7 +1831,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
             return 6;
         }
     }
-    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.Partition));
+    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext));
     match probe.arm(local, 0) {
         Result.Ok(0) => {}
         _ => {

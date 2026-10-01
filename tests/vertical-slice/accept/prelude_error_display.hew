@@ -7,6 +7,6 @@ fn main() {
     println(f"{lookup_err}");
     let ask_err: ActorError<Never, Never> = ActorError.NodeNotRunning;
     println(f"{ask_err}");
-    let link_err = LinkError.Dead;
+    let link_err = LinkError.NoContext;
     println(f"{link_err}");
 }

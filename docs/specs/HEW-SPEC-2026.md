@@ -5132,12 +5132,11 @@ The `panic()` builtin triggers the recoverable language-panic path for testing.
 
 `link(pid) -> Result<(), LinkError>` and
 `monitor(pid) -> Result<MonitorRef, LinkError>` subscribe the caller to another
-actor's exit. Both report failure in the type system, and both share one error
-type. `LinkError` has three inhabitants — `Dead`, `Partition`, and `NoContext`
-— and they cover local and remote pids alike: a cross-node link carries a
-`PartitionPolicy`, so the remote form needs the typed failure as much as the
-local one does. `monitor` on an already-dead pid is not a failure; it delivers
-`DOWN` at once, which leaves `NoContext` as its only `Err`.
+actor's exit, for local and remote pids alike. Both share one error type with
+one inhabitant, `NoContext`. A dead, retired or unreachable target is not a
+failure: `monitor` delivers its `DOWN` at once, and `link` delivers the
+target's exit at once (for a remote pid, its `PartitionPolicy` fires), exactly
+as if the target had exited or the route had dropped after the call.
 
 Both are actor-context operations, because only an actor can receive the `DOWN`
 record or the linked exit the call subscribes to. A `link` or `monitor` written
@@ -5148,11 +5147,6 @@ time deliberately — the execution context is dynamic (§4.2), and a static
 "actor-only function" marker would colour every function that might one day
 link. Neither form succeeds silently, which is the property that matters: a
 subscription with no reader is always reported.
-
-> **Implementation status.** Local pids follow this rule. `monitor` on a
-> `RemotePid` still returns `Result<MonitorRef, MonitorError>`, whose variants
-> the distributed runtime produces. The `Dead` arm is never produced until
-> dead-target resolution lands (§5.6). Tracked in hew-lang/hew#3255.
 
 ### 5.8 Process Exit Status (normative)
 

@@ -610,6 +610,7 @@ pub enum RuntimeVariantRole {
     SendErrorDead,
     DeliveryAccepted,
     DeliveryDiscarded,
+    LinkErrorNoContext,
 }
 
 impl SemVariantShape {

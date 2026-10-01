@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "teal\ndown 1\ndead\nsend to stopped stale\nlink 0\nlinker alive\nsend stale\ndead\nmonitor stale\nlink 1\n"
+stdout = "teal\ndown 1\ndead\nsend to stopped stale\nlink 0\nlinker alive\nsend stale\ndead\nmonitor registered\ndown 2\nlink 0\n"
 exit = 0

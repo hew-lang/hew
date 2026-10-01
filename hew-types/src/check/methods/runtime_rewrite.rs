@@ -35,11 +35,11 @@ impl Checker {
     pub(super) fn record_actor_method_dispatch(
         &mut self,
         span: &Span,
-        method_id: String,
+        method: crate::DefId,
         reply_ty: Ty,
     ) -> Ty {
         let resolved_reply = self.subst.resolve(&reply_ty);
-        let dispatch = if self.receive_generator_methods.contains(&method_id) {
+        let dispatch = if self.receive_generator_methods.contains(&method) {
             // `receive_generator_methods` is checker authority for gen-ness —
             // HIR/MIR consume this discriminator directly rather than
             // re-deriving stream-producer-ness from `is_generator` or from
@@ -51,15 +51,16 @@ impl Checker {
             let elem_ty = match reply_ty.as_stream() {
                 Some(elem) => elem.clone(),
                 None => unreachable!(
-                    "receive_generator_methods `{method_id}` recorded with a non-Stream \
-                     reply type `{reply_ty:?}` — registration.rs always wraps a generator \
-                     method's fn_sigs return_type in Ty::stream(..)"
+                    "generator handler `{}` recorded with a non-Stream reply type \
+                     `{reply_ty:?}` — registration always wraps a generator \
+                     method's return type in Ty::stream(..)",
+                    self.defs.path(method)
                 ),
             };
-            ActorMethodKind::StreamProducer(method_id, elem_ty)
+            ActorMethodKind::StreamProducer(method, elem_ty)
         } else if matches!(resolved_reply, Ty::Unit) {
             ActorMethodKind::Message {
-                method_id,
+                method,
                 policy: crate::actor_delivery::SendPolicy::Reject,
             }
         } else {
@@ -99,7 +100,7 @@ impl Checker {
                 );
             }
             ActorMethodKind::Ask {
-                method_id,
+                method,
                 reply_ty: reply_ty.clone(),
                 policy: crate::actor_delivery::SendPolicy::Wait,
             }

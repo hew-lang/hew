@@ -510,12 +510,14 @@ impl Checker {
                 // `methods` declared on the same actor (also keyed
                 // `{Actor}::{name}` in `fn_sigs`) stay on the regular
                 // method-call path.
-                let method_key = format!("{name}::{method_name}");
-                let is_actor_receive_dispatch = self
-                    .type_def_at(name)
+                let actor_handler = self
+                    .head_type_def(*head)
                     .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                    && self.actor_receive_methods.contains(&method_key);
-                if is_actor_receive_dispatch {
+                    .then(|| {
+                        self.actor_member(*head, method_name, crate::DeclarationKind::ActorReceive)
+                    })
+                    .flatten();
+                if let Some(handler) = actor_handler {
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::ActorInstance {
@@ -523,7 +525,7 @@ impl Checker {
                         },
                     );
                     self.enforce_actor_method_send_args(args);
-                    return self.record_actor_method_dispatch(span, method_key, ty.clone());
+                    return self.record_actor_method_dispatch(span, handler, ty.clone());
                 }
                 self.record_method_call_receiver_kind(
                     span,

@@ -1505,10 +1505,10 @@ impl Checker {
     /// the error's text; a handler whose error the checker cannot render is
     /// refused at the submission rather than faulting with nothing to say.
     fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: crate::check::FnSigView<'_>) {
-        let mut targets: HashMap<String, crate::actor_protocol::ReceiveFailureDisplay> =
+        let mut targets: HashMap<crate::DefId, crate::actor_protocol::ReceiveFailureDisplay> =
             HashMap::new();
-        for method_id in self.receive_fails_methods.clone() {
-            let Some(sig) = resolved_fn_sigs.get(&method_id) else {
+        for handler in self.receive_fails_methods.clone() {
+            let Some(sig) = resolved_fn_sigs.of(handler) else {
                 continue;
             };
             let Some((_, error_ty)) = sig.return_type.as_result() else {
@@ -1516,13 +1516,11 @@ impl Checker {
             };
             let error_ty = self.subst.resolve(error_ty);
             if let Some(target) = self.receive_failure_display(&error_ty, resolved_fn_sigs) {
-                targets.insert(method_id, target);
+                targets.insert(handler, target);
                 continue;
             }
-            if let Some(span) = self.view_submitted_fails_methods.get(&method_id).cloned() {
-                let handler = method_id
-                    .rsplit_once("::")
-                    .map_or(method_id.as_str(), |(_, name)| name);
+            if let Some(span) = self.view_submitted_fails_methods.get(&handler).cloned() {
+                let handler = self.defs.name(handler);
                 self.report_error(
                     TypeErrorKind::BoundsNotSatisfied,
                     &span,
@@ -1537,8 +1535,7 @@ impl Checker {
         }
         for descriptor in self.actor_protocol_descriptors.values_mut() {
             for handler in &mut descriptor.handlers {
-                let key = format!("{}::{}", descriptor.actor_name, handler.name);
-                handler.failure_display = targets.get(&key).cloned();
+                handler.failure_display = targets.get(&handler.declaration).cloned();
             }
         }
     }
@@ -2643,6 +2640,7 @@ impl Checker {
         let fn_sigs_for_descriptors = std::mem::take(&mut self.fn_sigs);
         self.actor_protocol_descriptors = build_actor_protocol_descriptors(
             program,
+            &self.defs,
             FnSigView::new(
                 &fn_sigs_for_descriptors,
                 &self.fn_sig_keys,
@@ -2954,21 +2952,21 @@ impl Checker {
             .into_iter()
             .map(|(k, kind)| {
                 let resolved_kind = match kind {
-                    ActorMethodKind::Message { method_id, policy } => {
-                        ActorMethodKind::Message { method_id, policy }
+                    ActorMethodKind::Message { method, policy } => {
+                        ActorMethodKind::Message { method, policy }
                     }
                     ActorMethodKind::Ask {
-                        method_id,
+                        method,
                         reply_ty,
                         policy,
                     } => ActorMethodKind::Ask {
-                        method_id,
+                        method,
                         reply_ty: self.finalize_type_for_handoff(&reply_ty),
                         policy,
                     },
-                    ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                    ActorMethodKind::StreamProducer(method, elem_ty) => {
                         ActorMethodKind::StreamProducer(
-                            method_id,
+                            method,
                             self.finalize_type_for_handoff(&elem_ty),
                         )
                     }
@@ -4961,6 +4959,7 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
 /// derivative error here would be noise.
 fn build_actor_protocol_descriptors(
     program: &Program,
+    defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
     errors: &mut Vec<TypeError>,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
@@ -4981,9 +4980,17 @@ fn build_actor_protocol_descriptors(
         let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
             Vec::with_capacity(ad.receive_fns.len());
         let mut all_signatures_resolved = true;
+        // TRANSITION(A1c3): WHY actors are still collected by registration
+        // key. WHEN collection walks declarations, the actor is its id. WHAT:
+        // descriptors built per actor declaration.
+        let actor = defs.lookup_path(&actor_identity);
         for rf in &ad.receive_fns {
-            let key = format!("{actor_identity}::{}", rf.name);
-            let Some(sig) = fn_sigs.get(&key) else {
+            let Some((declaration, sig)) = actor
+                .and_then(|actor| {
+                    defs.member_of_kind(actor, rf.name.name, crate::DeclarationKind::ActorReceive)
+                })
+                .and_then(|declaration| Some((declaration, fn_sigs.of(declaration)?)))
+            else {
                 all_signatures_resolved = false;
                 break;
             };
@@ -5012,6 +5019,7 @@ fn build_actor_protocol_descriptors(
             // codegen through this `symbol` field.
             let symbol = format!("{actor_identity}__{}", rf.name);
             specs.push(crate::actor_protocol::ActorHandlerSpec {
+                declaration,
                 name: rf.name.to_string(),
                 param_tys,
                 return_ty,

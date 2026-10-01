@@ -2224,8 +2224,10 @@ pub struct TryWidthCastLowering {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorMethodKind {
     /// Construct an owned description without submitting it to the mailbox.
+    /// `method` is the receive handler's declaration, or a lambda actor's
+    /// `call` protocol row.
     Message {
-        method_id: String,
+        method: crate::DefId,
         policy: crate::actor_delivery::SendPolicy,
     },
     /// A completion call: dispatch to an actor receive handler and wait for
@@ -2233,7 +2235,7 @@ pub enum ActorMethodKind {
     /// destination mailbox is full — `Wait` for a bare handle, whatever the
     /// `policy(..)` view carries when the call goes through one.
     Ask {
-        method_id: String,
+        method: crate::DefId,
         reply_ty: Ty,
         policy: crate::actor_delivery::SendPolicy,
     },
@@ -2243,7 +2245,7 @@ pub enum ActorMethodKind {
     /// wherever `receive_generator_methods` names the method — HIR/MIR
     /// consume this fact directly rather than re-deriving stream-producer-ness
     /// from `is_generator` or return-type shape (`type-info-survival`).
-    StreamProducer(String, Ty),
+    StreamProducer(crate::DefId, Ty),
 }
 
 /// Checker-authoritative machine method dispatch discriminator.
@@ -3327,28 +3329,26 @@ pub struct Checker {
     /// the deferred-refresh optimisation holds (should be O(1) across N
     /// registrations, not O(N)).
     pub(super) refresh_call_count: usize,
-    /// Qualified `Actor::method` names declared with `receive gen fn`.
-    pub(super) receive_generator_methods: HashSet<String>,
+    /// Receive handlers declared `receive gen fn`.
+    pub(super) receive_generator_methods: HashSet<crate::DefId>,
     /// Receive fns declared `-> R fails E`. The declaration is the only
     /// authority for whether a handler's `Result`-shaped reply is a declared
     /// failure (which a completion call reports as `ActorError.Failed`) or an
     /// ordinary `Result` value the handler happens to return.
-    pub(super) receive_fails_methods: HashSet<String>,
-    /// `Actor::handler` ids submitted one way through a mailbox view. Their
+    pub(super) receive_fails_methods: HashSet<crate::DefId>,
+    /// Handlers submitted one way through a mailbox view. Their
     /// declared failure becomes the actor's own fault, so the checker must
     /// prove the error renders before the program is published.
-    pub(super) view_submitted_fails_methods: HashMap<String, std::ops::Range<usize>>,
+    pub(super) view_submitted_fails_methods: HashMap<crate::DefId, std::ops::Range<usize>>,
     /// Completion calls made from inside a receive fn body, as
     /// `(caller handler, callee handler, call span)`. A cycle among these is a
     /// deadlock every participant waits in, so it is reported once the whole
     /// program has been checked.
-    pub(super) completion_call_edges: Vec<(String, String, Span)>,
-    /// Qualified `Actor::method` names declared with `receive fn` (including
-    /// generator receives). Used by the actor-mailbox boundary enforcement
-    /// to distinguish receive handlers from non-receive `methods` declared
-    /// on the same actor (which are also keyed `{Actor}::{name}` in
-    /// `fn_sigs` but must NOT cross the mailbox boundary).
-    pub(super) actor_receive_methods: HashSet<String>,
+    pub(super) completion_call_edges: Vec<(crate::DefId, crate::DefId, Span)>,
+    /// Handlers declared with `receive fn` (including generator receives).
+    /// The actor-mailbox boundary admits only these, never the actor's
+    /// private `methods`.
+    pub(super) actor_receive_methods: HashSet<crate::DefId>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,

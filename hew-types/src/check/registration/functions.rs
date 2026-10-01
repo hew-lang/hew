@@ -2501,18 +2501,32 @@ impl Checker {
         };
 
         let method_name = format!("{}::{}", actor_name, rf.name);
+        // TRANSITION(A1c3): WHY the actor is still named by its registration
+        // key. WHEN actor registration passes the declaration id, the handler
+        // is its member directly. WHAT: registration by declaration.
+        let Some(handler) = self.lookup_declaration(actor_name).and_then(|actor| {
+            self.defs
+                .member_of_kind(actor, rf.name.name, crate::DeclarationKind::ActorReceive)
+        }) else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &rf.span,
+                format!("internal: receive handler `{method_name}` has no declaration"),
+            );
+            return;
+        };
         if rf.is_generator {
-            self.receive_generator_methods.insert(method_name.clone());
+            self.receive_generator_methods.insert(handler);
         }
         if matches!(
             rf.return_type.as_ref().map(|ty| &ty.0),
             Some(hew_parser::ast::TypeExpr::Fallible { .. })
         ) {
-            self.receive_fails_methods.insert(method_name.clone());
+            self.receive_fails_methods.insert(handler);
         }
-        self.actor_receive_methods.insert(method_name.clone());
+        self.actor_receive_methods.insert(handler);
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
-        self.insert_fn_sig_at(&method_name, sig);
+        self.insert_fn_sig(&method_name, handler, sig);
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).

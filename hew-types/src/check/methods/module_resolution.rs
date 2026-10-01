@@ -129,6 +129,19 @@ impl Checker {
         })
     }
 
+    /// The member `method` of the actor a head names, of declaration `kind`
+    /// (a `receive fn` or a private `fn`).
+    pub(in crate::check) fn actor_member(
+        &self,
+        head: crate::TypeHead,
+        method: &str,
+        kind: crate::DeclarationKind,
+    ) -> Option<crate::DefId> {
+        let actor = head.nominal()?.declaration();
+        self.defs
+            .member_of_kind(actor, Symbol::intern(method), kind)
+    }
+
     /// This compilation's type definitions, read by declaration.
     pub(in crate::check) fn type_def_view(&self) -> crate::check::TypeDefView<'_> {
         crate::check::TypeDefView::new(&self.defs, &self.type_defs)
@@ -608,18 +621,6 @@ impl Checker {
             || bare_name.to_string(),
             |module| format!("{module}.{bare_name}"),
         )
-    }
-
-    /// Resolve a bare actor reference to its registered checker identity.
-    ///
-    /// Resolution order (local-first, mirroring `per-module-type-identity`):
-    /// 1. the current module's own actor (`{current_full_path}.{name}`)
-    /// 2. a root/flat actor registered under the bare name
-    /// 3. a named-import binding (`unqualified_to_module`)
-    /// 4. the modules exporting an actor of that name: exactly one resolves
-    ///    to it; two or more is `Ambiguous` (never silent first-wins).
-    pub(in crate::check) fn resolve_bare_actor_identity(&self, name: &str) -> BareActorResolution {
-        self.resolve_bare_declaration_identity(name, &[TypeDefKind::Actor])
     }
 
     /// Resolve a bare `spawn` target. A supervisor is spawned exactly as an

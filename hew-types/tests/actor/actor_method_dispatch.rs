@@ -38,7 +38,7 @@ fn main() -> i32 {
         output.actor_method_dispatch.values().any(|kind| {
             matches!(
                 kind,
-                ActorMethodKind::Ask { method_id, reply_ty: Ty::Unit, .. } if method_id == "Counter::increment"
+                ActorMethodKind::Ask { method, reply_ty: Ty::Unit, .. } if output.defs.path(*method) == "Counter::increment"
             )
         }),
         "increment call should be recorded as an actor ask with a Unit reply: {:?}",
@@ -48,7 +48,7 @@ fn main() -> i32 {
         output.actor_method_dispatch.values().any(|kind| {
             matches!(
                 kind,
-                ActorMethodKind::Ask { method_id, reply_ty: Ty::I32, .. } if method_id == "Counter::print_total"
+                ActorMethodKind::Ask { method, reply_ty: Ty::I32, .. } if output.defs.path(*method) == "Counter::print_total"
             )
         }),
         "print_total call should be recorded as actor ask dispatch: {:?}",

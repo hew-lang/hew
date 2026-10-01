@@ -89,7 +89,9 @@ pub enum ActorDeliveryCall {
     },
     Resume {
         policy: SendPolicy,
-        method_id: String,
+        /// The receive handler the request names, or a lambda actor's `call`
+        /// protocol row.
+        method: crate::DefId,
         redirect: bool,
     },
 }

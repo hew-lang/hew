@@ -901,18 +901,19 @@ impl LowerCtx {
             // `handle(msg)` on a lambda actor is a completion call, not a
             // callable-value invocation: the checker records it as an ask.
             if let Some(ActorMethodKind::Ask {
-                method_id,
+                method,
                 reply_ty,
                 policy,
             }) = self
                 .actor_method_dispatch
                 .get(&rewrite_key)
                 .filter(|dispatch| {
-                    matches!(dispatch, ActorMethodKind::Ask { method_id, .. }
-                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                    matches!(dispatch, ActorMethodKind::Ask { method, .. }
+                            if self.is_lambda_actor_method(*method))
                 })
                 .cloned()
             {
+                let method_id = self.actor_method_id(method);
                 let (kind, ty) = self
                     .lower_lambda_actor_call(function, args, &method_id, &reply_ty, policy, &span);
                 return Err(Box::new(HirExpr {
@@ -926,15 +927,16 @@ impl LowerCtx {
             }
             // `mailbox(handle, ..)(msg)` submits one way: the checker
             // records the same lambda dispatch as a `Message`.
-            if let Some(ActorMethodKind::Message { method_id, policy }) = self
+            if let Some(ActorMethodKind::Message { method, policy }) = self
                 .actor_method_dispatch
                 .get(&rewrite_key)
                 .filter(|dispatch| {
-                    matches!(dispatch, ActorMethodKind::Message { method_id, .. }
-                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                    matches!(dispatch, ActorMethodKind::Message { method, .. }
+                            if self.is_lambda_actor_method(*method))
                 })
                 .cloned()
             {
+                let method_id = self.actor_method_id(method);
                 let (kind, ty) =
                     self.lower_lambda_actor_submission(function, args, &method_id, policy, &span);
                 return Err(Box::new(HirExpr {

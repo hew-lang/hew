@@ -3035,7 +3035,7 @@ impl Checker {
             }
             vec![msg_ty]
         };
-        let method_id = crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID.to_string();
+        let method = self.lambda_actor_method();
         let key = SpanKey::in_module(span, self.current_module_idx);
         let Some((policy, one_way)) = view else {
             // `handle(msg)` is the completion call: it waits for the
@@ -3044,7 +3044,7 @@ impl Checker {
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
-                    method_id,
+                    method,
                     reply_ty: reply_ty.clone(),
                     policy: crate::actor_delivery::SendPolicy::Wait,
                 },
@@ -3053,11 +3053,11 @@ impl Checker {
         };
         if !one_way {
             let completion =
-                self.completion_request_type(&method_id, &reply_ty, target, policy, &payload);
+                self.completion_request_type(method, &reply_ty, target, policy, &payload);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
-                    method_id,
+                    method,
                     reply_ty: reply_ty.clone(),
                     policy,
                 },
@@ -3079,7 +3079,7 @@ impl Checker {
             return Ty::Error;
         }
         self.actor_method_dispatch
-            .insert(key, ActorMethodKind::Message { method_id, policy });
+            .insert(key, ActorMethodKind::Message { method, policy });
         self.record_submission_suspension(span, policy.may_suspend());
         crate::actor_delivery::result_type(crate::actor_delivery::message_type(
             target.clone(),

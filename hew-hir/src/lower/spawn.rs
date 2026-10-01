@@ -220,6 +220,7 @@ impl LowerCtx {
             identity.path.clone(),
             &[(
                 hew_types::actor_protocol::ActorHandlerSpec {
+                    declaration: identity.handler,
                     name: handler_name.clone(),
                     param_tys,
                     return_ty: reply_ty.clone(),

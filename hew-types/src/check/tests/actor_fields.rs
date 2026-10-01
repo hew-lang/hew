@@ -1452,37 +1452,14 @@ fn main() -> i64 {
 
     #[test]
     fn same_leaf_nested_actor_descriptors_use_owner_specific_signatures() {
-        let program = two_module_actor_program(
+        let output = check_two_module_actors(
             "actor Worker { receive fn handle(value: i64) -> i64 { value } }",
             vec!["left".to_string(), "render".to_string()],
             "actor Worker { receive fn handle(value: bool) -> bool { value } }",
             vec!["right".to_string(), "render".to_string()],
-            "fn main() {}",
         );
-        let fn_sigs = HashMap::from([
-            (
-                "left.render.Worker::handle".to_string(),
-                FnSig {
-                    params: vec![Ty::I64],
-                    return_type: Ty::I64,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "right.render.Worker::handle".to_string(),
-                FnSig {
-                    params: vec![Ty::Bool],
-                    return_type: Ty::Bool,
-                    ..FnSig::default()
-                },
-            ),
-        ]);
-        let mut errors = Vec::new();
-
-        let fixture = crate::check::FnSigFixture::new(fn_sigs);
-        let descriptors = build_actor_protocol_descriptors(&program, fixture.view(), &mut errors);
-
-        assert!(errors.is_empty(), "descriptor build: {errors:#?}");
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let descriptors = &output.actor_protocol_descriptors;
         let left = descriptors
             .get("left.render.Worker")
             .expect("left owner descriptor");

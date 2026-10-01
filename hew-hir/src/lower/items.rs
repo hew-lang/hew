@@ -696,19 +696,19 @@ impl LowerCtx {
             .map(|(module, _actor)| module)
     }
 
-    pub(super) fn qualify_imported_actor_method_id(&self, method_id: String) -> String {
-        let Some((actor, method)) = method_id.rsplit_once("::") else {
-            return method_id;
-        };
-        if actor.contains('.') {
-            return method_id;
-        }
-        self.imported_actor_rewrites
-            .as_ref()
-            .and_then(|rewrites| rewrites.get(actor))
-            .map_or(method_id.clone(), |qualified| {
-                format!("{qualified}::{method}")
-            })
+    /// The rendered path HIR actor nodes carry for a dispatched handler (a
+    /// lambda actor's `call` protocol row renders as the shared method id).
+    ///
+    /// TRANSITION(IDENT-B1): WHY HIR actor nodes still carry the handler's
+    /// rendered path. WHEN they carry the declaration, this render goes.
+    /// WHAT: HIR actor nodes keyed by handler id.
+    pub(super) fn actor_method_id(&self, method: hew_types::DefId) -> String {
+        self.defs.path(method).to_string()
+    }
+
+    /// Whether a dispatched handler is a lambda actor's `call` protocol.
+    pub(super) fn is_lambda_actor_method(&self, method: hew_types::DefId) -> bool {
+        self.defs.kind(method) == hew_types::DeclarationKind::RequestProtocol
     }
 
     /// Qualify a bare user-record type reference to `{module_short}.{name}` when

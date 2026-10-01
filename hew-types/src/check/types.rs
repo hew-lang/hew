@@ -3859,6 +3859,9 @@ pub struct Checker {
     pub(super) defs: crate::DefTable,
     /// The spelling boundary: every module, file and prelude scope.
     pub(super) scopes: super::scope::Scopes,
+    /// Registering a compiler-embedded std source, whose spans have no file
+    /// index of their own.
+    pub(super) registering_embedded_source: bool,
     /// The table the next `check_program` mints into instead of a fresh one;
     /// set only by [`crate::Checker::check_embedded_builtins`].
     pub(super) seed_defs: Option<crate::DefTable>,
@@ -4488,6 +4491,7 @@ impl Checker {
             current_module: None,
             defs: crate::DefTable::new(),
             scopes: super::scope::Scopes::new(),
+            registering_embedded_source: false,
             seed_defs: None,
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),

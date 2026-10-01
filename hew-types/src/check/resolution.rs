@@ -2988,9 +2988,12 @@ impl Checker {
                 // field, parameter or element that holds an actor is written
                 // with the actor's own name. A user declaration of the same
                 // name shadows the reservation.
-                let resolution = self.resolve_type_path(named_path);
+                // A user declaration shadows a reserved spelling.
                 let declared = matches!(
-                    resolution,
+                    name.as_str(),
+                    "LocalPid" | "Pid" | "LambdaPid" | "Task" | "Unit"
+                ) && matches!(
+                    self.resolve_type_path(named_path),
                     Some(super::scope::Resolution::Nominal(_) | super::scope::Resolution::Def(_))
                 );
                 if !declared && matches!(name.as_str(), "LocalPid" | "Pid" | "LambdaPid") {
@@ -3118,6 +3121,7 @@ impl Checker {
                         return ty.clone();
                     }
                 }
+                let resolution = self.resolve_type_path(named_path);
                 if let Some(ty) =
                     self.named_ty_from_resolution(resolution, named_path, &args, &te.1)
                 {

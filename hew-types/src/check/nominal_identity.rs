@@ -309,9 +309,12 @@ impl Checker {
 
     /// The file the checker is currently reading, for the spelling boundary.
     pub(super) fn scope_site(&self) -> Option<super::scope::ScopeSite> {
+        let file = self.current_declaration_module()?;
+        let publish = !self.registering_embedded_source;
         Some(super::scope::ScopeSite {
-            file: self.current_declaration_module()?,
+            file,
             span_file: self.current_module_idx,
+            publish,
         })
     }
 

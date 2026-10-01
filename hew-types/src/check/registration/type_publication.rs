@@ -534,6 +534,27 @@ impl Checker {
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
+        // A compiler-embedded source has no file of its own: its spans would
+        // land on the importer's file index, so `Scope` does not publish its
+        // resolutions.
+        let embedded = !self.module_item_sources.contains_key(module_full_path)
+            && self
+                .defs
+                .module_for_path(module_full_path)
+                .and_then(|module| self.defs.module_source(module))
+                .is_none();
+        let saved = std::mem::replace(&mut self.registering_embedded_source, embedded);
+        self.register_stdlib_hew_item_bodies(module_short, module_full_path, items, import_spec);
+        self.registering_embedded_source = saved;
+    }
+
+    fn register_stdlib_hew_item_bodies(
+        &mut self,
+        module_short: &str,
+        module_full_path: &str,
+        items: &[Spanned<Item>],
+        import_spec: StdlibBarePublication<'_>,
+    ) {
         // Compiler-embedded and registry-loaded Hew source enters outside the
         // program module graph. Establish its exact declarations in the same
         // table before any semantic registration; aliases and later graph

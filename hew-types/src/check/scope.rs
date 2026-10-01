@@ -110,6 +110,10 @@ pub struct Unresolved {
 pub struct ScopeSite {
     pub file: ModuleId,
     pub span_file: u32,
+    /// Whether `span_file` is the file the spans are written in, so a
+    /// resolution may be published under it. A compiler-embedded std source
+    /// has no index of its own.
+    pub publish: bool,
 }
 
 /// One hygiene context: which context it was minted under and, for an
@@ -642,7 +646,7 @@ impl Scopes {
     }
 
     fn record(&mut self, site: ScopeSite, span: &Span, resolution: Resolution) {
-        if span.is_empty() {
+        if span.is_empty() || !site.publish {
             return;
         }
         let key = SpanKey::in_module(span, site.span_file);
@@ -781,6 +785,7 @@ mod tests {
         let site = ScopeSite {
             file: root,
             span_file: 0,
+            publish: true,
         };
         let mut env = TypeEnv::new();
         env.define("C", Ty::I64, false);
@@ -836,6 +841,7 @@ mod tests {
         let site = ScopeSite {
             file: root,
             span_file: 0,
+            publish: true,
         };
 
         let caller_v = [(Ident::new("v"), 50..51)];
@@ -923,6 +929,7 @@ mod tests {
         let site = ScopeSite {
             file: root,
             span_file: 0,
+            publish: true,
         };
 
         let path = [at("ma", 0), at("Shape", 3)];
@@ -982,7 +989,8 @@ mod tests {
                 &env,
                 ScopeSite {
                     file: root,
-                    span_file: 0
+                    span_file: 0,
+                    publish: true,
                 },
                 Namespace::Type,
                 &send
@@ -994,7 +1002,8 @@ mod tests {
                 &env,
                 ScopeSite {
                     file: other,
-                    span_file: 1
+                    span_file: 1,
+                    publish: true,
                 },
                 Namespace::Type,
                 &send
@@ -1036,6 +1045,7 @@ mod tests {
         let site = ScopeSite {
             file: root,
             span_file: 0,
+            publish: true,
         };
         let t = [at("T", 25)];
         assert_eq!(

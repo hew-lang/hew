@@ -702,8 +702,8 @@ impl Checker {
         else {
             return None;
         };
-        let name = head.registry_key();
-        let type_def = self.lookup_type_def(name)?;
+        let type_def = self.head_type_def(*head)?.clone();
+        let name = &type_def.name;
         let field_ty = type_def.fields.get(method_name)?;
         let field_ty =
             Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);

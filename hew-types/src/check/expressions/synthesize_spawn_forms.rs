@@ -362,7 +362,7 @@ impl Checker {
                             .find(|(_, _, (name, _))| name == field);
                         if let Some((kind, index, (child_name, template))) = selected {
                             let parameters = self
-                                .type_def_at(sup_head.registry_key())
+                                .head_type_def(*sup_head)
                                 .map_or_else(Vec::new, |definition| definition.type_params.clone());
                             let substitution = parameters
                                 .into_iter()
@@ -502,12 +502,9 @@ impl Checker {
             let resolved = self.subst.resolve(scrutinee_ty);
             let uninhabited = match &resolved {
                 Ty::Never => true,
-                Ty::Named { head, .. } => {
-                    self.lookup_type_def(head.registry_key())
-                        .is_some_and(|definition| {
-                            definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-                        })
-                }
+                Ty::Named { head, .. } => self.head_type_def(*head).is_some_and(|definition| {
+                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                }),
                 _ => false,
             };
             if uninhabited {
@@ -1743,7 +1740,7 @@ impl Checker {
             let ty_raw = match declared {
                 Some(declared_ty) => {
                     let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
-                        self.type_def_at(head.registry_key())
+                        self.head_type_def(*head)
                             .is_some_and(|td| td.kind == TypeDefKind::Actor)
                     } else {
                         false

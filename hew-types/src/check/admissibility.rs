@@ -1419,7 +1419,7 @@ impl Checker {
                 .iter()
                 .any(|arg| self.vec_element_contains_fn_value(arg, visiting)),
             Ty::Named { head, args } => {
-                let Some(type_def) = self.lookup_type_def(head.registry_key()) else {
+                let Some(type_def) = self.head_type_def(*head).cloned() else {
                     return false;
                 };
                 if visiting.contains(type_def.name.as_str()) {
@@ -1647,8 +1647,6 @@ impl Checker {
                     | crate::TypeHead::Unresolved(_)),
                 args,
             } => {
-                // TRANSITION(A1 commit 3): registry lookups by key.
-                let name = head.registry_key();
                 if self.registry.is_owned_handle(*head)
                     || self.is_user_opaque_type(*head)
                     || head.nominal().is_some_and(|id| self.registry.is_linear(id))
@@ -1666,7 +1664,7 @@ impl Checker {
                 {
                     return true;
                 }
-                let Some(type_def) = self.lookup_type_def(name) else {
+                let Some(type_def) = self.head_type_def(*head).cloned() else {
                     return self
                         .registry
                         .implements_marker(&resolved, MarkerTrait::Copy);

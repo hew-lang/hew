@@ -448,7 +448,7 @@ impl Checker {
         };
         let name = head.registry_key();
         let actor_name = self
-            .type_def_at(name)
+            .head_type_def(head)
             .filter(|def| def.kind == TypeDefKind::Actor)
             .map_or_else(|| name.to_string(), |def| def.name.clone());
         Some(format!("{actor_name}::{}", method.0))
@@ -1242,8 +1242,8 @@ impl Checker {
                         } if one_path.segments.len() == 1 => {
                             let type_name = resolved_val_ty.type_name();
                             match type_name {
-                                Some(tn) => {
-                                    let td = self.lookup_type_def(tn);
+                                Some(_) => {
+                                    let td = self.ty_type_def(&resolved_val_ty).cloned();
                                     match td {
                                         Some(td)
                                             if matches!(

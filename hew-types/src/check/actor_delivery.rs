@@ -563,7 +563,7 @@ impl Checker {
         let Ty::Named { head, args } = target.as_local_actor_ref()? else {
             return None;
         };
-        let declaration = self.type_def_at(head.registry_key())?;
+        let declaration = self.head_type_def(*head)?;
         let substitutions = declaration
             .type_params
             .iter()

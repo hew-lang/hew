@@ -134,6 +134,28 @@ impl Checker {
         crate::check::TypeDefView::new(&self.defs, &self.type_defs)
     }
 
+    /// The definition a type head names: a nominal's or actor's own, a
+    /// builtin's std declaration.
+    pub(in crate::check) fn head_type_def(&self, head: crate::TypeHead) -> Option<&TypeDef> {
+        match head {
+            // TRANSITION(A1c4): WHY the module registry's signature mirror
+            // still writes spellings no declaration was found for. WHEN its
+            // signatures resolve through `Scope`, `TypeHead::Unresolved` and
+            // this arm are deleted. WHAT: the mirror reads the checker's
+            // resolved signatures.
+            crate::TypeHead::Unresolved(spelling) => self.type_def_at(spelling.as_str()),
+            _ => self.type_defs.get(&head.declaration(&self.defs)?),
+        }
+    }
+
+    /// The definition the head of a named type names.
+    pub(in crate::check) fn ty_type_def(&self, ty: &Ty) -> Option<&TypeDef> {
+        match ty {
+            Ty::Named { head, .. } => self.head_type_def(*head),
+            _ => None,
+        }
+    }
+
     /// The declaration a registry key spells: the current module's
     /// declaration of a bare key, its exact declared path, then the key with a
     /// module prefix stripped.

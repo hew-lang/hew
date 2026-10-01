@@ -535,7 +535,7 @@ impl Checker {
                         || matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { head, .. }
                                 if head.builtin().is_none()
-                                    && self.type_def_at(head.registry_key()).is_none()
+                                    && self.head_type_def(*head).is_none()
                                     && !self.type_aliases.contains_key(head.registry_key()))
                     {
                         None

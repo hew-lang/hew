@@ -1508,8 +1508,7 @@ impl Checker {
             // refused (canonicalised to one bare-named decl layout; no
             // per-instantiation witness exists).
             Ty::Named { head, args } if head.builtin().is_none() => {
-                let name = head.registry_key();
-                if let Some(type_def) = self.type_def_at(name) {
+                if let Some(type_def) = self.head_type_def(*head) {
                     if matches!(type_def.kind, TypeDefKind::Machine) {
                         // Generic instantiation: no per-instantiation layout.
                         if !args.is_empty() {
@@ -1639,7 +1638,7 @@ impl Checker {
                     // recurses once per name). It carries no bare container.
                     return false;
                 }
-                let result = self.type_def_at(name).is_some_and(|td| {
+                let result = self.head_type_def(*head).is_some_and(|td| {
                     td.fields
                         .values()
                         .any(|fty| self.queue_element_holds_collection(fty, roots, visiting))

@@ -367,15 +367,12 @@ impl Checker {
                     head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
                     ..
                 } => true,
-                Ty::Named { head, .. } => {
-                    self.type_def_at(head.registry_key())
-                        .is_some_and(|definition| {
-                            matches!(
-                                definition.kind,
-                                TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
-                            )
-                        })
-                }
+                Ty::Named { head, .. } => self.head_type_def(*head).is_some_and(|definition| {
+                    matches!(
+                        definition.kind,
+                        TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                    )
+                }),
                 _ => false,
             };
             aggregate.then(|| ty.user_facing().to_string())

@@ -1151,6 +1151,7 @@ pub(crate) fn tcp_listener_with_pending_conn_for_test() -> (c_int, TcpStream) {
 
 /// Test-only: check whether a specific connection handle is currently live.
 #[cfg(any(test, feature = "clone-failure-test"))]
+#[must_use]
 pub fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
     tcp_slot(handle).is_some_and(|slot| slot.stream().is_some())
 }

@@ -12,7 +12,7 @@ fn silent(listener: net.Listener) {
 }
 
 fn ticks() {
-    for _ in 0..20 {
+    for _ in 0 .. 20 {
         sleep(20ms);
     }
 }

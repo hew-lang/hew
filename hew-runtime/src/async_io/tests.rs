@@ -628,8 +628,8 @@ fn tcp_read_rearms_after_each_result_and_preserves_eof() {
     // SAFETY: handle and waker are live across the pending operation.
     let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&first)) };
     peer.write_all(&payload).unwrap();
-    // SAFETY: the operation is live until take_read frees it.
     assert_eq!(
+        // SAFETY: the operation is live until take_read frees it.
         unsafe { drive(operation, &first) },
         AsyncIoStatus::Success as i32
     );
@@ -1092,8 +1092,8 @@ fn buffered_read_completes_at_submission_without_a_wake() {
     let signal = Arc::new(ReadySignal::default());
     // SAFETY: the operation is live until take_read frees it.
     let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
-    // SAFETY: as above.
     assert_eq!(
+        // SAFETY: as above.
         unsafe { hew_async_io_status(operation) },
         AsyncIoStatus::Success as i32
     );
@@ -1117,8 +1117,8 @@ fn spurious_readiness_rearms_and_completes_later() {
     for _ in 0..3 {
         // SAFETY: the creator reference keeps the operation live.
         unsafe { (*operation).signal_ready() };
-        // SAFETY: as above.
         assert_eq!(
+            // SAFETY: as above.
             unsafe { hew_async_io_status(operation) },
             AsyncIoStatus::Pending as i32
         );

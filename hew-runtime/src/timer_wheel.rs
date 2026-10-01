@@ -772,10 +772,6 @@ fn earliest_deadline(w: &WheelInner) -> Option<u64> {
             return Some(deadline);
         }
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "masked to the level size, which fits in usize"
-    )]
     let l1_start = (w.current_ms / L1_MS) as usize & (L1_SIZE - 1);
     for offset in 0..L1_SIZE {
         if let Some(deadline) = list_earliest(w.l1[(l1_start + offset) & (L1_SIZE - 1)]) {

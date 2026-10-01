@@ -2,6 +2,7 @@
 // round trip stays far below the old 50 ms registration floor: a wait that
 // meets `WouldBlock` arms readiness at once, and the reactor wakes at once.
 import std.net;
+
 import std.time.datetime;
 
 fn echo(listener: net.Listener) {
@@ -26,7 +27,7 @@ fn main() {
     scope {
         let server = fork echo(listener);
         let client = net.connect(address).expect("connect");
-        for _ in 0..100 {
+        for _ in 0 .. 100 {
             let start = datetime.now_nanos();
             client.send("x".to_bytes()).expect("send");
             match client.recv() {

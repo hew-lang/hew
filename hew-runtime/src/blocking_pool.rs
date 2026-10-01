@@ -701,8 +701,8 @@ mod tests {
             gate: Arc::clone(gate),
             id,
         }));
-        // SAFETY: the pool is live and the job box is transferred.
         assert_eq!(
+            // SAFETY: the pool is live and the job box is transferred.
             unsafe { hew_blocking_pool_submit(pool, gated_job, job.cast()) },
             0
         );
@@ -773,7 +773,7 @@ mod tests {
     /// order is the dequeue order.
     #[test]
     fn queued_jobs_run_first_in_first_out() {
-        let pool = new_pool(1, Duration::from_secs(60));
+        let pool = new_pool(1, Duration::from_mins(1));
         let gate = new_gate();
         for id in 0..8 {
             submit_gated(pool, &gate, id);
@@ -789,7 +789,7 @@ mod tests {
     /// An idle thread takes the next job instead of a new thread starting.
     #[test]
     fn idle_thread_is_reused_before_growing() {
-        let pool = new_pool(8, Duration::from_secs(60));
+        let pool = new_pool(8, Duration::from_mins(1));
         // SAFETY: the pool lives until stopped below.
         let handle = unsafe { &*pool };
         let gate = new_gate();

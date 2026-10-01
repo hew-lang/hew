@@ -124,7 +124,6 @@ fn main() {
     expect(event_input, "overload 3");
     expect(event_input, "accepting");
     expect_server_closed(third);
-
     first.send("hello".to_bytes()).expect("send to first session");
     match first.recv() {
         .Some(reply) => assert(reply == "hello".to_bytes()),

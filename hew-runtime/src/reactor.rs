@@ -256,7 +256,12 @@ impl Slot {
         if interest == 0 {
             return Ok(());
         }
-        poller.arm(self.fd(), self.handle as u64, interest, state.added)?;
+        poller.arm(
+            self.fd(),
+            u64::from(self.handle.unsigned_abs()),
+            interest,
+            state.added,
+        )?;
         state.added = true;
         Ok(())
     }

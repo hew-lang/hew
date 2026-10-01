@@ -69,6 +69,13 @@ const MAX_EVENTS: usize = 256;
 // ---- Linux (epoll + eventfd) ------------------------------------------------
 
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "descriptors, tokens and event counts are nonnegative kernel values; counts \
+              are bounded by MAX_EVENTS"
+)]
 mod platform {
     use super::{
         Event, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE, MAX_EVENTS, WAKE_TOKEN,
@@ -216,6 +223,13 @@ mod platform {
 // ---- FreeBSD / macOS (kqueue + EVFILT_USER) ---------------------------------
 
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "descriptors, tokens and event counts are nonnegative kernel values; counts \
+              are bounded by MAX_EVENTS"
+)]
 mod platform {
     use super::{
         Event, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE, MAX_EVENTS, WAKE_TOKEN,

@@ -263,6 +263,65 @@ path`) are deleted; a literal meets its expected type only when its path
 - Rewritten: hew-compile `mixed_file_and_package_impls_keep_declaration_owned_dispatch_in_both_import_orders`
   pins the file-import impl method's declaration path.
 
+## Commit 3, part 1: written paths through `Scope`
+
+Identity decisions that moved from spelled lookups to `Scope`:
+
+- `hew-types/src/check/resolution.rs` `resolve_type_expr_inner` named arm: a
+  written type path resolves through `Scope::resolve` (`resolve_type_path`,
+  `named_ty_from_resolution`). Deleted: `resolved_alias_name`,
+  `type_reference_is_visible`, `named_type_is_resolvable`; the spelled
+  imported-binding, lifecycle-qualification and bare-scope arms of the named
+  type path. Aliases are keyed by declaration.
+- Visibility of a module-qualified type is the declaration's own
+  (`DefTable::visibility`, recorded at mint), compared by namespace.
+- Unused imports: `Scope` records the import declaration every resolution
+  goes through; deleted `ImportKey`, `import_spans`, `used_modules` and the
+  `mark_*_used` family.
+- The prelude is bound in `Scope`: `std.builtins` types and traits, the
+  failure surface's `CrashInfo` and `CrashAction`, and the lifecycle modules
+  when no standard library is on disk.
+- `hew-hir/src/lower/impl_plan.rs`: the embedded builtins run no longer
+  re-spells cursor impl targets as `std.builtins.*`; its root is the
+  `std.builtins` module, so the bare spellings resolve to the compilation's
+  declarations.
+- `hew-types/src/check/items.rs` `check_from_impl` and `trait_bound_is_from`:
+  the bound resolves through `Scope` and each method by its occurrence.
+- Actor receive handlers are named by declaration in `ActorMethodKind`,
+  `ActorDeliveryCall::Resume`, the protocol descriptors and the receive sets;
+  the receive-failure displays join descriptors to handlers by declaration,
+  and SIR's request recovery selects the handler by id.
+
+Intentional source-level behaviour changes:
+
+- An import whose only use is a prelude name is reported unused
+  (`import std.stream;` beside `rx: Stream<i64>`).
+- A module-qualified type that names nothing is reported where it is written
+  (`unknown type `lib.Missing``); a catalog builtin still answers to its
+qualified spelling without an import (`stream.Sink<i64>`).
+- `import m.{X}` also binds `m` for qualified siblings (`m.Y`).
+- Two imports that bind one name to different declarations make a bare use
+  ambiguous.
+- A user type spelled like a lifecycle type (`CrashKind` in a user module) is
+  an ordinary declaration.
+- A machine whose transition names an unknown state reports the context
+  variant against the declared machine instead of `unknown type`.
+
+Tests rewritten or deleted:
+
+- Rewritten: `value_param_mutation::record_{sink,stream}_field_projection_is_not_flagged`
+  (prelude `Sink`/`Stream`); `extern_fn::check_import_lexical_extern` (the
+  fixture carries its import declarations); `module_system_test::qualified_param_type_carries_module_into_resolved_sig`
+  (a two-segment path, not a dotted identifier); `type_identity_carrier::qualified_user_type_annotation_keeps_module_qualifier_in_hir`
+  (the root imports `bank`); `actor_blocking_warn` (`std.net.http`, the module
+  that exists); the lifecycle spoof tests assert identity semantics instead of
+  `UndefinedType`; `actor_fields::same_leaf_nested_actor_descriptors_use_owner_specific_signatures`
+  runs the checker; the dispatch tests compare handler declarations.
+- Deleted: `handles::channel_handle_receive_fn_params_are_accepted` (no
+  `channel.Sender` type exists); the self-conflict assertion of
+  `extern_fn::one_peer_declaration_through_two_routes_is_refused_naming_both_spellings`
+  (an impossible graph).
+
 ## Open, identity-rooted
 
 - A module-private `type T` leaks into `std.builtins` generic binders when a

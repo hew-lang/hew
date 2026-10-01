@@ -3861,6 +3861,11 @@ pub struct Checker {
     pub(super) scopes: super::scope::Scopes,
     /// Registering a compiler-embedded std source, whose spans have no file
     /// index of their own.
+    ///
+    /// TRANSITION(IDENT-B1): WHY embedded std sources are registered under
+    /// the importer's file index. WHEN the embedded builtins run is deleted
+    /// and every std source has its own index, this flag goes. WHAT: one file
+    /// index per checked source.
     pub(super) registering_embedded_source: bool,
     /// The table the next `check_program` mints into instead of a fresh one;
     /// set only by [`crate::Checker::check_embedded_builtins`].

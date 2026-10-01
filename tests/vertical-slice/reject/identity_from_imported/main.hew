@@ -1,0 +1,8 @@
+// Reject: an identity `From` impl declared in an imported module is refused
+// like one declared at the root (E_FROM_INVALID). The impl's methods are
+// found by their declarations, not by the target type's spelling.
+import errs;
+
+fn main() {
+    println("unreachable");
+}

@@ -411,17 +411,19 @@ impl Checker {
         }
     }
 
-    fn dispatch_static_type_member(
+    /// A static member the checker resolves by its function signature: a
+    /// builtin type's runtime method, or an undeclared member with a `fn`
+    /// signature.
+    fn dispatch_checker_static_member(
         &mut self,
         head: &ResolvedDottedTypeHead,
-        method: &str,
+        internal_member: &str,
         args: &[CallArg],
         expected: Option<&Ty>,
         span: &Span,
     ) -> Option<Ty> {
-        let internal_member = format!("{}::{method}", head.canonical_type);
         let is_vec_from = crate::has_builtin_associated_item_identity(
-            &internal_member,
+            internal_member,
             crate::BuiltinType::Vec,
             "from",
         );
@@ -432,9 +434,9 @@ impl Checker {
         let checker_member = ((head.builtin.is_some()
             || !self
                 .impl_method_declaration_ids
-                .contains_key(&internal_member))
-            && (self.has_fn_sig(&internal_member) || is_vec_from))
-            .then_some(internal_member.clone());
+                .contains_key(internal_member))
+            && (self.has_fn_sig(internal_member) || is_vec_from))
+            .then_some(internal_member.to_string());
         if let Some(checker_member) = checker_member {
             let function = (Expr::Ident(Ident::new(&checker_member)), head.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(result) = expected.and_then(|expected| {
@@ -451,6 +453,23 @@ impl Checker {
             }
             let result = self.check_call(&function, head.type_args.as_deref(), args, span);
             self.promote_dotted_static_call_rewrite(span, &checker_member);
+            return Some(result);
+        }
+        None
+    }
+
+    fn dispatch_static_type_member(
+        &mut self,
+        head: &ResolvedDottedTypeHead,
+        method: &str,
+        args: &[CallArg],
+        expected: Option<&Ty>,
+        span: &Span,
+    ) -> Option<Ty> {
+        let internal_member = format!("{}::{method}", head.canonical_type);
+        if let Some(result) =
+            self.dispatch_checker_static_member(head, &internal_member, args, expected, span)
+        {
             return Some(result);
         }
 

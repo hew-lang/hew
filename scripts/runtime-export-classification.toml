@@ -986,9 +986,6 @@ stable-stdlib = [
   "hew_jwt_validate",
   "hew_markdown_to_html",
   "hew_markdown_to_html_safe",
-  "hew_msgpack_encode_bytes_hew",
-  "hew_msgpack_encode_int_hew",
-  "hew_msgpack_encode_string_hew",
   "hew_msgpack_from_json_hew",
   "hew_msgpack_last_error",
   "hew_msgpack_to_json_hew",
@@ -1201,7 +1198,7 @@ non-declarable = [
   "hew_de_bytes",
   "hew_de_char",
   "hew_de_duplicate",
-  "hew_de_error",
+  "hew_de_error_reader",
   "hew_de_f64",
   "hew_de_failed",
   "hew_de_free",
@@ -4508,32 +4505,8 @@ release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# msgpack — hew-std/src/msgpack.rs. Encoders borrow their scalar/string/bytes
-# input and return fresh bytes; to_json returns a fresh string.
-[[ownership.contracts]]
-symbol = "hew_msgpack_encode_bytes_hew"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_bytes_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_msgpack_encode_int_hew"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_bytes_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_msgpack_encode_string_hew"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_bytes_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
+# msgpack — hew-std/src/msgpack.rs. from_json returns fresh bytes; to_json returns a fresh
+# string.
 [[ownership.contracts]]
 symbol = "hew_msgpack_from_json_hew"
 result = "fresh"

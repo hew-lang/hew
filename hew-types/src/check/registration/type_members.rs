@@ -1541,7 +1541,7 @@ impl Checker {
         self.handle_bearing_dirty = true;
 
         self.register_serial_layout(td);
-        // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
+        // A wire type registers its qualified alias and has its version constraints checked.
         if let Some(ref wire) = td.wire {
             self.register_wire_methods(td);
             self.validate_wire_version_constraints(td.name.name.as_str(), wire);

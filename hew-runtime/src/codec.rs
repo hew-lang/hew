@@ -7,7 +7,7 @@
 //! handle, and pulls. The first failure is latched: every later pull returns
 //! a zero value and leaves the handle failed, so the walk checks
 //! `hew_de_failed` where it must stop, releases what it built, and reads the
-//! error text with `hew_de_error`. The runtime never frees anything the walk
+//! error through `hew_de_error_reader`. The runtime never frees anything the walk
 //! owns.
 //!
 //! Tables are `hew_codec::Table` globals the compiler emits; handles are
@@ -761,7 +761,7 @@ mod tests {
                     _ => break,
                 }
             }
-            let error = (hew_de_failed(r) != 0).then(|| text(hew_de_error(r)));
+            let error = reader(r).error.as_ref().map(ToString::to_string);
             hew_de_free(r);
             crate::string::hew_string_drop(input);
             (x, note_absent, error)

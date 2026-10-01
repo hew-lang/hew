@@ -5,6 +5,13 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under the repository root")
+        .to_path_buf()
+}
+
 fn lower_source(source: &str) -> hew_sir::LoweredModule {
     let parsed = hew_parser::parse(source);
     assert!(
@@ -12,7 +19,7 @@ fn lower_source(source: &str) -> hew_sir::LoweredModule {
         "parse errors: {:#?}",
         parsed.errors
     );
-    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root()]));
     let facts = checker.check_program(&parsed.program);
     assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
     let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
@@ -1102,7 +1109,9 @@ fn main() {
 #[test]
 fn wire_schema_rejects_a_field_codec_for_another_value_type() {
     let mut lowered = lower_source(
-        r#"#[wire]
+        r#"import std.encoding.cbor;
+
+#[wire]
 type WireRecordProbe {
     label: string @7;
     code: u8 @2;
@@ -1110,9 +1119,8 @@ type WireRecordProbe {
 
 fn main() {
     let message = WireRecordProbe { label: "owned", code: 7 };
-    let encoded = message.encode();
-    let decoded = WireRecordProbe.decode(encoded);
-    println(decoded.label);
+    let encoded = cbor.encode(message);
+    println(encoded.len());
 }
 "#,
     );

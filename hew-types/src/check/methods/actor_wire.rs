@@ -130,7 +130,7 @@ impl Checker {
         if ty.is_builtin(BuiltinType::HashMap) {
             return None;
         }
-        let def = self.type_def_view().of(head.clone())?;
+        let def = self.type_def_view().of(*head)?;
         let layout = ty
             .nominal_instance(&self.defs)
             .and_then(|instance| self.serial_layouts.get(&instance.nominal));

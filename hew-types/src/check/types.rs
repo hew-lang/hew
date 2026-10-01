@@ -302,10 +302,6 @@ pub enum ResultReturnKind {
 /// the checker in rule order (D547): the same type passes through, a trait
 /// object target erases, and a declared `impl From<E> for F` converts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one conversion per failure edge, recorded once; boxing buys nothing"
-)]
 pub enum ErrorConversion {
     Same,
     Erase(Box<DynCoercion>),
@@ -2970,7 +2966,7 @@ pub(super) struct DeferredMonomorphicSite {
     pub(super) source_module: Option<String>,
 }
 
-/// A `std.encoding.wire` facade call whose value type was still unsettled
+/// A format module `encode`/`decode` call whose value type was still unsettled
 /// when the call was checked. It is recorded, or refused, once inference and
 /// literal defaulting settle.
 #[derive(Debug, Clone)]

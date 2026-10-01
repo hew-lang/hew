@@ -2,7 +2,8 @@
 //!
 //! Both tests read `/proc/self/task` from inside the running Hew program to
 //! count OS threads at a known point, so the count is exact, not sampled from
-//! outside. Linux-only: `/proc/self/task` has no cross-platform equivalent
+//! outside. Blocking-pool threads are excluded: they run offloaded calls,
+//! including the file reads that take the count. Linux-only: `/proc/self/task` has no cross-platform equivalent
 //! here, and the portable alternative (a runtime-owned spawn counter) does
 //! not exist yet.
 //!
@@ -96,9 +97,22 @@ fn assert_generator_surface_ran_clean(stdout: &str, form: &str, expected_iters: 
 const GENERATOR_THREAD_FENCE_SOURCE: &str = r#"
 import std.fs;
 
+// Blocking-pool threads run offloaded calls, including the reads below; the
+// fence counts every other thread.
 fn threads() -> i64 {
     let names = fs.list_dir("/proc/self/task").expect("the task directory is readable");
-    names.len()
+    var count = 0;
+    for name in names {
+        match fs.read(f"/proc/self/task/{name}/comm") {
+            .Ok(comm) => {
+                if !comm.starts_with("hew-blocking") {
+                    count += 1;
+                }
+            }
+            .Err(_) => {}
+        }
+    }
+    count
 }
 
 gen fn counter(n: i64) -> i64 {
@@ -249,9 +263,22 @@ fn run_fork_thread_probe(n: i64) -> (i64, i64) {
         r#"
 import std.fs;
 
+// Blocking-pool threads run offloaded calls, including the reads below; the
+// fence counts every other thread.
 fn threads() -> i64 {{
     let names = fs.list_dir("/proc/self/task").expect("the task directory is readable");
-    names.len()
+    var count = 0;
+    for name in names {{
+        match fs.read(f"/proc/self/task/{{name}}/comm") {{
+            .Ok(comm) => {{
+                if !comm.starts_with("hew-blocking") {{
+                    count += 1;
+                }}
+            }}
+            .Err(_) => {{}}
+        }}
+    }}
+    count
 }}
 
 fn napper() {{

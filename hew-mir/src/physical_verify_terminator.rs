@@ -1256,7 +1256,7 @@ pub(crate) fn verify_terminator(
                 function,
                 *receiver,
                 (
-                    word.checked_sub(hew_cabi::HEW_VTABLE_PREFIX_WORDS)
+                    word.checked_sub(crate::physical::VTABLE_PREFIX_WORDS)
                         .ok_or_else(|| {
                             PhysicalError::new("dynamic dispatch reads the table prefix")
                         })?,

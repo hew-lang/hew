@@ -17,13 +17,6 @@ pub mod callable;
 pub mod host_error;
 pub mod map;
 pub mod mem;
-
-/// Words of a trait-object table before its first method slot: the
-/// `drop_in_place`, size and alignment words and the concrete value's
-/// release descriptor (`hew-runtime/src/trait_object.rs::HewVtable`). Slot
-/// `s` sits at word `HEW_VTABLE_PREFIX_WORDS + s`; physical MIR is the one
-/// compiler stage that reads this.
-pub const HEW_VTABLE_PREFIX_WORDS: u32 = 4;
 pub mod sink;
 pub mod string;
 pub mod value;

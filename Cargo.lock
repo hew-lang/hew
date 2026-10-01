@@ -1912,7 +1912,6 @@ dependencies = [
 name = "hew-mir"
 version = "0.6.0-rc5"
 dependencies = [
- "hew-cabi",
  "hew-hir",
  "hew-parser",
  "hew-sir",

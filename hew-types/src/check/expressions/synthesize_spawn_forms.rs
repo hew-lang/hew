@@ -1779,7 +1779,21 @@ impl Checker {
                         );
                         return Err(());
                     }
-                    // An unknown actor is an unresolved name (#3623).
+                    // A type that is not an actor or supervisor cannot be
+                    // spawned.
+                    super::types::BareActorResolution::Unknown
+                        if self.type_def_at(name.name.as_str()).is_some() =>
+                    {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &target.1,
+                            format!(
+                                "`{name}` is not an actor; `spawn` starts an actor or a supervisor"
+                            ),
+                        );
+                        return Err(());
+                    }
+                    // A name that resolves to nothing is unresolved (#3623).
                     super::types::BareActorResolution::Unknown => {
                         let similar = crate::error::find_similar(
                             name.name.as_str(),

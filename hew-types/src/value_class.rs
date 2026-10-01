@@ -204,7 +204,7 @@ pub enum ClassError {
     CallableCloneConflict,
     /// §1.1 `TypeParam` row: the instance service substitutes first, so an
     /// abstract parameter never reaches SIR.
-    TypeParam { name: String },
+    TypeParam { param: crate::ParamHead },
     /// The declaration carrying the marker and the member types is not in the
     /// [`ClassContext`].
     UnknownDeclaration { name: String },
@@ -227,8 +227,8 @@ impl std::fmt::Display for ClassError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CallableCloneConflict => f.write_str("callable Clone capability conflicts with captured ownership"),
-            Self::TypeParam { name } => {
-                write!(f, "abstract type parameter `{name}` has no value class")
+            Self::TypeParam { param } => {
+                write!(f, "abstract type parameter `{}` has no value class", param.spelling)
             }
             Self::UnknownDeclaration { name } => {
                 write!(f, "no declaration facts for type `{name}`")
@@ -723,11 +723,7 @@ fn classify(
         ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
         // Arrays own their element storage; copying uses the element recipe.
         ResolvedTy::Array(element, _) => collection_facts(&[classify(element, decls, walk)?]),
-        ResolvedTy::TypeParam { name } => {
-            return Err(ClassError::TypeParam {
-                name: name.spelling.to_string(),
-            })
-        }
+        ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { param: *name }),
         ResolvedTy::Named {
             head: head @ crate::TypeHead::Builtin(builtin),
             args,

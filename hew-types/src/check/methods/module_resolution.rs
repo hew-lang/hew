@@ -320,26 +320,18 @@ impl Checker {
         }
     }
 
-    /// The trait declaration a spelling names.
-    ///
-    /// TRANSITION(A1 commit 4): see [`Checker::trait_def_keys`].
-    pub(in crate::check) fn trait_key_id(&self, key: &str) -> Option<crate::DefId> {
-        self.trait_def_keys.get(key).copied()
+    /// The trait declaration `id` names, when registered.
+    pub(in crate::check) fn trait_info(&self, id: crate::DefId) -> Option<&TraitInfo> {
+        self.trait_defs.get(&id)
     }
 
-    /// The trait a spelling names.
-    pub(in crate::check) fn trait_def_at(&self, key: &str) -> Option<&TraitInfo> {
-        self.trait_defs.get(&self.trait_key_id(key)?)
-    }
-
-    /// Whether a spelling names a trait.
-    pub(in crate::check) fn has_trait_def(&self, key: &str) -> bool {
-        self.trait_def_at(key).is_some()
-    }
-
-    /// File `info` under the trait declaration at `path`, reachable by `key`.
-    /// A path that names no declaration is an internal error, never dropped.
-    pub(in crate::check) fn insert_trait_def(&mut self, key: &str, path: &str, info: TraitInfo) {
+    /// File `info` under the trait declaration at `path`. A path that names
+    /// no declaration is an internal error, never dropped.
+    pub(in crate::check) fn insert_trait_def(
+        &mut self,
+        path: &str,
+        info: TraitInfo,
+    ) -> Option<crate::DefId> {
         // A module trait a route registers before the module's declarations
         // are minted gets a sourceless row its declaration adopts.
         let declaration = self.lookup_declaration(path).or_else(|| {
@@ -348,48 +340,21 @@ impl Checker {
                     .mint_sourceless(path, crate::DeclarationKind::Trait)
             })
         });
-        match declaration {
-            Some(declaration) => {
-                self.trait_def_keys.insert(key.to_string(), declaration);
-                self.trait_def_keys
-                    .insert(self.defs.path(declaration).to_string(), declaration);
-                self.trait_defs.insert(declaration, info);
-            }
-            None => self.errors.push(crate::error::TypeError::new(
+        if let Some(declaration) = declaration {
+            self.trait_defs.insert(declaration, info);
+        } else {
+            self.errors.push(crate::error::TypeError::new(
                 crate::error::TypeErrorKind::InvalidOperation,
                 0..0,
                 format!("internal: trait `{path}` names no declaration"),
-            )),
+            ));
         }
+        declaration
     }
 
-    /// Make `key` spell the trait `source` spells.
-    pub(in crate::check) fn rebind_trait_def(&mut self, key: &str, source: &str) {
-        if let Some(declaration) = self.trait_key_id(source) {
-            self.trait_def_keys.insert(key.to_string(), declaration);
-        }
-    }
-
-    /// Make `key` spell the trait `source` spells, unless `key` already
-    /// names one.
-    pub(in crate::check) fn alias_trait_def(&mut self, key: &str, source: &str) {
-        if let Some(declaration) = self.trait_key_id(source) {
-            self.trait_def_keys
-                .entry(key.to_string())
-                .or_insert(declaration);
-        }
-    }
-
-    /// The super-trait spellings of the trait a spelling names.
-    pub(in crate::check) fn trait_supers(&self, key: &str) -> Option<&Vec<String>> {
-        self.trait_super.get(&self.trait_key_id(key)?)
-    }
-
-    /// Record the super-traits of the trait a spelling names.
-    pub(in crate::check) fn set_trait_supers(&mut self, key: &str, supers: Vec<String>) {
-        if let Some(declaration) = self.trait_key_id(key) {
-            self.trait_super.insert(declaration, supers);
-        }
+    /// The direct super-traits of trait `id`.
+    pub(in crate::check) fn trait_supers(&self, id: crate::DefId) -> &[crate::DefId] {
+        self.trait_super.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// Look up a type definition by registry key.

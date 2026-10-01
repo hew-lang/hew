@@ -863,26 +863,12 @@ impl Checker {
 
         if let Some(tps) = type_params {
             if !tps.is_empty() {
-                let type_param_bounds = tps
-                    .iter()
-                    .filter_map(|tp| {
-                        if tp.bounds.is_empty() {
-                            None
-                        } else {
-                            Some((
-                                tp.name.to_string(),
-                                tp.bounds
-                                    .iter()
-                                    .map(|bound| bound.path.to_string())
-                                    .collect(), // TRANSITION(P1): deleted by A1 commit 2
-                            ))
-                        }
-                    })
-                    .collect();
+                let bounds =
+                    self.collect_type_param_bounds(Some(&tps.to_vec()), None, &mut Vec::new());
                 self.last_lambda_generic_sig = Some(GenericLambdaSig {
                     call_sig: FnSig {
                         type_params: generic_parameters.clone(),
-                        type_param_bounds,
+                        bounds,
                         param_names: params.iter().map(|param| param.name.to_string()).collect(),
                         params: param_tys
                             .iter()

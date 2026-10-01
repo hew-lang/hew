@@ -19,11 +19,8 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&hew_parser::parse("fn main() {}").program);
         let mut builtin_methods = 0;
-        for (key, info) in checker
-            .trait_def_keys
-            .iter()
-            .map(|(key, id)| (key, &checker.trait_defs[id]))
-        {
+        for (id, info) in &checker.trait_defs {
+            let key = checker.defs.path(*id);
             if !key.starts_with("std.builtins.") {
                 continue;
             }
@@ -63,9 +60,14 @@ mod tests {
             ("Named", "std.builtins.Iterator"),
             ("Failure", "std.builtins.Error"),
         ] {
-            let edges = checker.trait_supers(subtrait).expect("supers");
-            assert_eq!(edges, &vec![expected.to_string()], "`{subtrait}` edges");
-            for method in &checker.trait_def_at(expected).expect("trait").methods {
+            let subtrait_id = checker.lookup_declaration(subtrait).expect("subtrait");
+            let expected_id = checker.lookup_declaration(expected).expect("supertrait");
+            assert_eq!(
+                checker.trait_supers(subtrait_id),
+                &[expected_id],
+                "`{subtrait}` edges"
+            );
+            for method in &checker.trait_info(expected_id).expect("trait").methods {
                 assert!(
                     output
                         .trait_method_ids
@@ -75,56 +77,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn trait_method_target_ids_fail_closed_after_canonical_miss() {
-        let mut checker = Checker {
-            current_module: Some("app".to_string()),
-            ..Checker::default()
-        };
-        checker.test_trait_def(
-            "left.Render",
-            TraitInfo {
-                source_module: None,
-                file_index: 0,
-                methods: Vec::new(),
-                associated_types: Vec::new(),
-                type_params: Vec::new(),
-            },
-        );
-        checker
-            .published_bare_trait_owners
-            .entry((
-                checker.current_module.clone(),
-                checker.current_module_idx,
-                "Render".to_string(),
-            ))
-            .or_default()
-            .insert("left.Render".to_string());
-
-        let wrong_trait = checker.defs.mint_for_test("right.Render");
-        let wrong_method = checker.defs.mint_for_test("right.Render::render");
-        checker
-            .trait_method_ids
-            .insert("Render::render".to_string(), (wrong_trait, wrong_method));
-
-        assert_eq!(
-            checker.trait_method_call_target_ids("Render", "render"),
-            None,
-            "a canonical lookup miss must not retry the first-write-wins bare key",
-        );
-
-        let canonical_trait = checker.defs.mint_for_test("left.Render");
-        let canonical_method = checker.defs.mint_for_test("left.Render::render");
-        checker.trait_method_ids.insert(
-            "left.Render::render".to_string(),
-            (canonical_trait, canonical_method),
-        );
-        assert_eq!(
-            checker.trait_method_call_target_ids("Render", "render"),
-            Some((canonical_trait, canonical_method)),
-        );
     }
 
     #[test]
@@ -308,6 +260,21 @@ mod tests {
 
     // ── HashMap admission finalization ───────────────────────────────────────
 
+    /// `param` bounded by each compiler predicate in `predicates`.
+    fn predicate_bounds(
+        param: crate::ParamHead,
+        predicates: &[crate::Predicate],
+    ) -> crate::check::ParamBounds {
+        let mut bounds = crate::check::ParamBounds::default();
+        for predicate in predicates {
+            bounds.push(
+                param.id,
+                crate::check::TraitRef::bare(crate::DefTable::predicate(*predicate)),
+            );
+        }
+        bounds
+    }
+
     /// A deferred `HashMap` admission whose key type is `Ty::Error` must be
     /// dropped silently — no new diagnostic, no cascade.
     #[test]
@@ -321,7 +288,7 @@ mod tests {
                 key_ty: Ty::Error,
                 val_ty: Ty::I64,
                 source_module: None,
-                type_param_bounds: HashMap::new(),
+                type_param_bounds: crate::check::ParamBounds::default(),
             },
         );
 
@@ -348,7 +315,7 @@ mod tests {
                 key_ty: Ty::String,
                 val_ty: Ty::Var(TypeVar::fresh()),
                 source_module: None,
-                type_param_bounds: HashMap::new(),
+                type_param_bounds: crate::check::ParamBounds::default(),
             },
         );
 
@@ -378,10 +345,10 @@ mod tests {
                 key_ty: Ty::param(crate::ParamHead::for_test("K")),
                 val_ty: Ty::param(crate::ParamHead::for_test("V")),
                 source_module: None,
-                type_param_bounds: HashMap::from([
-                    ("K".into(), vec!["Hash".into(), "Eq".into()]),
-                    ("V".into(), vec![]),
-                ]),
+                type_param_bounds: predicate_bounds(
+                    crate::ParamHead::for_test("K"),
+                    &[crate::Predicate::Hash, crate::Predicate::Eq],
+                ),
             },
         );
 
@@ -408,10 +375,10 @@ mod tests {
                 key_ty: Ty::param(crate::ParamHead::for_test("K")),
                 val_ty: Ty::param(crate::ParamHead::for_test("V")),
                 source_module: None,
-                type_param_bounds: HashMap::from([
-                    ("K".into(), vec!["Eq".into()]),
-                    ("V".into(), vec![]),
-                ]),
+                type_param_bounds: predicate_bounds(
+                    crate::ParamHead::for_test("K"),
+                    &[crate::Predicate::Eq],
+                ),
             },
         );
 
@@ -430,15 +397,10 @@ mod tests {
     #[test]
     fn record_resolved_hashmap_call_abstract_key_emits_resolved_call() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker
-            .current_type_param_bounds
-            .push(crate::check::types::TypeParamScope::new(
-                std::collections::HashMap::from([
-                    ("K".to_string(), vec!["Hash".to_string(), "Eq".to_string()]),
-                    ("V".to_string(), vec![]),
-                ]),
-                std::collections::HashMap::new(),
-            ));
+        checker.current_type_param_bounds.push(predicate_bounds(
+            crate::ParamHead::for_test("K"),
+            &[crate::Predicate::Hash, crate::Predicate::Eq],
+        ));
         let span = 80..90;
 
         checker.record_resolved_hashmap_call(
@@ -477,7 +439,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
-                type_param_bounds: HashMap::new(),
+                type_param_bounds: crate::check::ParamBounds::default(),
             },
         );
         checker.deferred_hashmap_admission.insert(
@@ -487,7 +449,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
-                type_param_bounds: HashMap::new(),
+                type_param_bounds: crate::check::ParamBounds::default(),
             },
         );
 

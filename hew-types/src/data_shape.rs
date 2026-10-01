@@ -86,7 +86,7 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         tagged: bool,
-        param: &dyn Fn(&str, MarkerTrait) -> bool,
+        param: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> Option<NotData> {
         self.data_error_within(ty, tagged, param, &mut HashSet::new())
     }
@@ -101,7 +101,7 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         tagged: bool,
-        param: &dyn Fn(&str, MarkerTrait) -> bool,
+        param: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
         visiting: &mut HashSet<ResolvedTy>,
     ) -> Option<NotData> {
         let refuse = |reason| {
@@ -143,7 +143,7 @@ impl TypeFactService {
                 .find_map(|(index, element)| member(format!("[{index}]"), element, visiting)),
             ResolvedTy::Array(element, _) => member("[]".to_string(), element, visiting),
             ResolvedTy::TypeParam { name } => {
-                if param(name.spelling.as_str(), MarkerTrait::Serializable) {
+                if param(*name, MarkerTrait::Serializable) {
                     None
                 } else {
                     refuse(NotDataReason::Unbounded)

@@ -17,25 +17,6 @@ impl Checker {
             .cloned()
     }
 
-    fn registered_fn_type_param_scope(&self, fn_name: &str, fd: &FnDecl) -> TypeParamScope {
-        let mut scope = self
-            .checking_declaration
-            .and_then(|declaration| self.fn_sigs.get(&declaration))
-            .or_else(|| self.fn_sig(fn_name))
-            .map(|sig| {
-                let mut bounds = sig.type_param_bounds.clone();
-                for param in &sig.type_params {
-                    bounds.entry(param.spelling.to_string()).or_default();
-                }
-                TypeParamScope::new(bounds, sig.type_param_assoc_bindings.clone())
-            })
-            .unwrap_or_default();
-        for param in fd.type_params.iter().flatten() {
-            scope.bounds.entry(param.name.to_string()).or_default();
-        }
-        scope
-    }
-
     pub(super) fn check_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => self.check_function(fd),
@@ -303,9 +284,9 @@ impl Checker {
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let bounds = self
             .type_def_at(sd.name.name.as_str())
-            .map_or_else(HashMap::new, |definition| definition.bounds.clone());
-        self.current_type_param_bounds
-            .push(TypeParamScope::new(bounds, HashMap::new()));
+            .map(|definition| definition.bounds.clone())
+            .unwrap_or_default();
+        self.current_type_param_bounds.push(bounds);
         // A dotted child type (`child a: bank.Account`) references the
         // module's actor; mark the import used so the program does not get a
         // spurious unused-import warning when the supervisor is the only
@@ -1071,15 +1052,6 @@ impl Checker {
         // it never accumulates across the whole program.
         self.pattern_bound_names.clear();
 
-        // Push this fn's type-param bounds onto the resolver stack so
-        // `T::Bar` projections inside `let x: T::Bar = ...` and other in-body
-        // type annotations resolve. Popped at end of body check.
-        let body_bounds = self.registered_fn_type_param_scope(fn_name, fd);
-        let pushed_body_bounds = !body_bounds.bounds.is_empty();
-        if pushed_body_bounds {
-            self.current_type_param_bounds.push(body_bounds);
-        }
-
         // If inside an actor, push a separate scope for parameters so
         // shadowing checks detect collisions with actor field names.
         let in_actor = !self.current_actor_fields.is_empty();
@@ -1220,9 +1192,6 @@ impl Checker {
         self.current_fails = prev_fails;
         self.current_return_type = None;
         self.current_function = prev_function;
-        if pushed_body_bounds {
-            self.current_type_param_bounds.pop();
-        }
         if in_actor {
             self.env.pop_scope();
         }
@@ -1283,9 +1252,9 @@ impl Checker {
                     // and reports "no method `other_method` on `Self`".  The
                     // fix mirrors the generic-bound dispatch path
                     // (methods.rs: "Type-parameter method dispatch"): that path
-                    // reads `fn_sigs[current_function].type_param_bounds["T"]`
-                    // to find which traits bound `T`, then looks up the method
-                    // in those traits.  We inject `Self → [TraitName]` into the
+                    // reads the bounds on `T` to find which traits bound it,
+                    // then looks up the method in those traits.  We inject
+                    // `Self: Trait` into the
                     // registered sig for `Trait::method` so the same path
                     // resolves sibling trait-method calls on the `Self` receiver.
                     let self_parameter = crate::ParamHead::receiver(trait_declaration);
@@ -1294,10 +1263,8 @@ impl Checker {
                         if !sig.type_params.contains(&self_parameter) {
                             sig.type_params.push(self_parameter);
                         }
-                        sig.type_param_bounds
-                            .entry("Self".to_string())
-                            .or_insert_with(Vec::new)
-                            .push(td.name.to_string());
+                        sig.bounds
+                            .push(self_parameter.id, TraitRef::bare(trait_declaration));
                     }
 
                     self.check_function_as(&fn_decl, &qualified);
@@ -1336,9 +1303,9 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
             let bounds = self
                 .type_def_at(&identity)
-                .map_or_else(HashMap::new, |definition| definition.bounds.clone());
-            self.current_type_param_bounds
-                .push(TypeParamScope::new(bounds, HashMap::new()));
+                .map(|definition| definition.bounds.clone())
+                .unwrap_or_default();
+            self.current_type_param_bounds.push(bounds);
         }
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
         let deferred_fields = self
@@ -2812,30 +2779,19 @@ impl Checker {
     /// A trait's supertraits are part of its obligation: `trait Error: Display`
     /// means `impl Error for X` promises `X` renders. Report the missing impl
     /// where the promise is made, not at some later call that needs it.
-    fn require_supertrait_impls(&mut self, type_name: &str, trait_name: &str, span: &Span) {
-        let declared_key = self.trait_defs_key_for_bound(trait_name);
-        let mut stack = self
-            .trait_supers(&declared_key)
-            .cloned()
-            .unwrap_or_default();
-        let mut visited = std::collections::HashSet::new();
-        let type_identity = self.trait_impl_type_identity(type_name);
-        while let Some(super_trait) = stack.pop() {
-            let super_key = self.trait_defs_key_for_bound(&super_trait);
-            if !visited.insert(super_key.clone()) {
+    fn require_supertrait_impls(
+        &mut self,
+        type_name: &str,
+        target: &Ty,
+        trait_id: crate::DefId,
+        span: &Span,
+    ) {
+        let trait_display = self.defs.display(trait_id).to_string();
+        for super_trait in self.trait_closure(trait_id).into_iter().skip(1) {
+            if self.has_trait_impl(target, super_trait) {
                 continue;
             }
-            if let Some(nested) = self.trait_supers(&super_key) {
-                stack.extend(nested.iter().cloned());
-            }
-            if self
-                .trait_impls_set
-                .contains(&(type_identity.clone(), super_key))
-            {
-                continue;
-            }
-            let super_display = crate::short_name(&super_trait);
-            let trait_display = crate::short_name(trait_name);
+            let super_display = self.defs.display(super_trait).to_string();
             self.report_error_with_suggestions(
                 TypeErrorKind::BoundsNotSatisfied,
                 span,
@@ -2924,20 +2880,22 @@ impl Checker {
         } = &id.target_type.0
         {
             let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                     // Resolve the whole target once, with the impl's parameters and
+                                                     // their bounds in scope: the bounds satisfy the target's declared
+                                                     // bounds (`impl<T: Clone> St<T>` for `St<T: Clone>`), and the
+                                                     // resolved type keeps the receiver's identity (a source `Option<T>`
+                                                     // is never rebuilt as the builtin).
+            let self_ty = self.resolve_impl_target(id);
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name)
                     || self.intrinsic_type_is_local_to_builtin_surface(type_name);
-                // Route through the one canonical resolver: a trait reference is
-                // "local" exactly when it resolves to a local declaration (the
-                // resolver's local-shadow step), so the orphan-rule warning keys
-                // on the same authoritative identity every other trait-reference
-                // site does — never the bare spelling in isolation.
-                let trait_is_local = self.trait_ref_is_local(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-                                                                                    // hew-compile loads the prelude's Display impls as the
-                                                                                    // std.builtins module, from the standard-library root every
-                                                                                    // `std` module resolves from (the toolchain's std or
-                                                                                    // `HEW_STD`), or source-less from the compiled-in text for an
-                                                                                    // analysis with no search path. A lookalike module has neither.
+                let trait_id = self.resolve_trait_path(&tb.path);
+                let trait_is_local = trait_id.is_some_and(|id| self.trait_is_local(id));
+                // hew-compile loads the prelude's Display impls as the
+                // std.builtins module, from the standard-library root every
+                // `std` module resolves from (the toolchain's std or
+                // `HEW_STD`), or source-less from the compiled-in text for an
+                // analysis with no search path. A lookalike module has neither.
                 let is_embedded_builtins_impl = self
                     .checking_canonical_stdlib_source("std.builtins")
                     && self.current_item_source.as_ref().is_none_or(|source| {
@@ -2963,8 +2921,9 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
                 }
-                self.require_supertrait_impls(type_name, &tb.path.to_string(), span);
-                // TRANSITION(P1): deleted by A1 commit 2
+                if let Some(trait_id) = trait_id {
+                    self.require_supertrait_impls(type_name, &self_ty, trait_id, span);
+                }
             }
 
             // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)
@@ -2980,12 +2939,6 @@ impl Checker {
                 self.generic_ctx.push(generic_bindings);
             }
 
-            // Resolve the whole target once, with the impl's parameters and
-            // their bounds in scope: the bounds satisfy the target's declared
-            // bounds (`impl<T: Clone> St<T>` for `St<T: Clone>`), and the
-            // resolved type keeps the receiver's identity (a source `Option<T>`
-            // is never rebuilt as the builtin).
-            let self_ty = self.resolve_impl_target(id);
             let prev_self_type = self.current_self_type.replace((type_name.clone(), self_ty));
             let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
 

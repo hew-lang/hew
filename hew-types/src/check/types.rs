@@ -8,9 +8,7 @@ use crate::ty::{Substitution, Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::{BuiltinType, WasmUnsupportedFeature};
 use hew_parser::ast::Symbol;
-use hew_parser::ast::{
-    ImportSpec, Literal, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
-};
+use hew_parser::ast::{ImportSpec, Literal, Span, Spanned, TraitMethod, TypeExpr, Visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// A user-written import declaration the unused-import lint reports on.
@@ -2175,12 +2173,12 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) key_ty: Ty,
     pub(super) val_ty: Ty,
     pub(super) source_module: Option<String>,
-    /// Declared bounds for every type parameter in scope at the record site,
-    /// keyed by name. Carried verbatim into `finalize_hashmap_admission`'s
-    /// replayed scope so a bare key type parameter's bounds (e.g. `K: Hash +
-    /// Eq`) survive to the deferred check and decide admission there — the
-    /// scope is the one authority; there is no separate abstract-key flag.
-    pub(super) type_param_bounds: HashMap<String, Vec<String>>,
+    /// Declared bounds for every type parameter in scope at the record site.
+    /// Carried verbatim into `finalize_hashmap_admission`'s replayed scope so
+    /// a bare key type parameter's bounds (e.g. `K: Hash + Eq`) survive to the
+    /// deferred check and decide admission there — the scope is the one
+    /// authority; there is no separate abstract-key flag.
+    pub(super) type_param_bounds: ParamBounds,
 }
 
 /// A map value or set element copy obligation deferred until inference settles.
@@ -2540,7 +2538,7 @@ pub struct TypeDef {
     pub kind: TypeDefKind,
     pub name: String,
     pub type_params: Vec<crate::ParamHead>,
-    pub bounds: HashMap<String, Vec<String>>,
+    pub bounds: ParamBounds,
     pub fields: HashMap<String, Ty>,
     /// Field names in **declaration order** (source order as written by the user).
     ///
@@ -2606,13 +2604,10 @@ pub(super) struct TraitInfo {
 #[derive(Debug, Clone)]
 pub(super) struct TraitAssociatedTypeInfo {
     pub(super) name: String,
-    /// Trait bounds declared on this associated type
-    /// (e.g. `type Out: Display` → one `TraitBound { name: "Display", .. }`).
-    /// Enforced at impl-registration time: an impl's `type Out = X` must
-    /// supply a type `X` that satisfies every bound in this list.
-    /// Stored as the full `TraitBound` (with `type_args`) so slice 2 of the
-    /// associated-types lane can read `type_args` without a schema migration.
-    pub(super) bounds: Vec<TraitBound>,
+    /// Trait bounds declared on this associated type (`type Out: Display`),
+    /// resolved where the trait declares them. Enforced at impl registration:
+    /// an impl's `type Out = X` must supply an `X` satisfying every bound.
+    pub(super) bounds: Vec<TraitRef>,
     pub(super) default: Option<Spanned<TypeExpr>>,
     /// Span of the `type Bar` declaration in the trait body.
     pub(super) span: Span,
@@ -2692,9 +2687,8 @@ pub struct ImplMethodProvenance {
 pub struct FnSig {
     pub impl_method: Option<ImplMethodProvenance>,
     pub type_params: Vec<crate::ParamHead>,
-    pub type_param_bounds: HashMap<String, Vec<String>>,
-    /// Associated-type constraints owned by this selected callable signature.
-    pub type_param_assoc_bindings: HashMap<(String, String, String), Ty>,
+    /// The trait bounds on `type_params`, associated-type bindings included.
+    pub bounds: ParamBounds,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
     /// Ownership explicitly declared for each parameter, aligned with `params`.
@@ -2779,8 +2773,7 @@ impl Default for FnSig {
         Self {
             impl_method: None,
             type_params: vec![],
-            type_param_bounds: HashMap::new(),
-            type_param_assoc_bindings: HashMap::new(),
+            bounds: ParamBounds::default(),
             param_names: vec![],
             params: vec![],
             param_ownership: vec![],
@@ -2797,21 +2790,107 @@ impl Default for FnSig {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub(super) struct TypeParamScope {
-    pub(super) bounds: HashMap<String, Vec<String>>,
-    pub(super) assoc_bindings: HashMap<(String, String, String), Ty>,
+/// The target and trait arguments of one declared `impl Trait<Args> for Target`, with
+/// the impl's own binders they may mention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TraitImplArgs {
+    /// The impl's target as written, binders included.
+    pub(super) target: Ty,
+    pub(super) args: Vec<Ty>,
+    pub(super) params: Vec<crate::ParamHead>,
 }
 
-impl TypeParamScope {
-    pub(super) fn new(
-        bounds: HashMap<String, Vec<String>>,
-        assoc_bindings: HashMap<(String, String, String), Ty>,
-    ) -> Self {
+/// A trait a generic binder is bounded by, resolved once where the bound is
+/// written: `F: From<Low>`, `I: Iterator<Item = A>`, `T: Send`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitRef {
+    /// The declared trait, or the sourceless row of a compiler predicate.
+    pub trait_id: crate::DefId,
+    /// Positional trait arguments (`Low` in `From<Low>`).
+    pub args: Vec<Ty>,
+    /// Associated-type bindings (`Item = A`), in written order.
+    pub assoc: Vec<(Symbol, Ty)>,
+}
+
+impl TraitRef {
+    /// A bound naming `trait_id` with no arguments or bindings.
+    #[must_use]
+    pub fn bare(trait_id: crate::DefId) -> Self {
         Self {
-            bounds,
-            assoc_bindings,
+            trait_id,
+            args: Vec::new(),
+            assoc: Vec::new(),
         }
+    }
+}
+
+/// The trait bounds of generic binders, by binder.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParamBounds(Vec<(crate::TypeParamId, TraitRef)>);
+
+impl ParamBounds {
+    /// Bound `param` by `bound`, once.
+    pub fn push(&mut self, param: crate::TypeParamId, bound: TraitRef) {
+        if !self
+            .0
+            .iter()
+            .any(|(existing, known)| *existing == param && *known == bound)
+        {
+            self.0.push((param, bound));
+        }
+    }
+
+    /// Add every bound of `other`.
+    pub fn extend(&mut self, other: &Self) {
+        for (param, bound) in &other.0 {
+            self.push(*param, bound.clone());
+        }
+    }
+
+    /// The bounds on `param`, in written order.
+    pub fn of(&self, param: crate::TypeParamId) -> impl Iterator<Item = &TraitRef> {
+        self.0
+            .iter()
+            .filter(move |(owner, _)| *owner == param)
+            .map(|(_, bound)| bound)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(crate::TypeParamId, TraitRef)> {
+        self.0.iter()
+    }
+
+    /// Keep only the bounds `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(crate::TypeParamId, &TraitRef) -> bool) {
+        self.0.retain(|(param, bound)| keep(*param, bound));
+    }
+
+    /// Apply `map` to every bound's types.
+    #[must_use]
+    pub fn map_types(&self, map: impl Fn(&Ty) -> Ty) -> Self {
+        Self(
+            self.0
+                .iter()
+                .map(|(param, bound)| {
+                    (
+                        *param,
+                        TraitRef {
+                            trait_id: bound.trait_id,
+                            args: bound.args.iter().map(&map).collect(),
+                            assoc: bound
+                                .assoc
+                                .iter()
+                                .map(|(name, ty)| (*name, map(ty)))
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+        )
     }
 }
 
@@ -2879,9 +2958,8 @@ pub(super) struct DeferredWireCodec {
 
 #[derive(Debug, Clone)]
 pub(super) struct DeferredBoundCheck {
-    pub(super) type_param: String,
-    pub(super) bounds: Vec<String>,
-    pub(super) assoc_bindings: Vec<(String, String, Ty)>,
+    pub(super) type_param: crate::ParamHead,
+    pub(super) bounds: Vec<TraitRef>,
     pub(super) type_arg: Ty,
     pub(super) span: Span,
 }
@@ -3296,13 +3374,7 @@ pub struct Checker {
     /// maps name → `Ty` and is consumed by many call sites that only care
     /// about substitution. Bounds are slice-2-specific. Keeping them apart
     /// avoids invalidating every existing reader.
-    pub(super) current_type_param_bounds: Vec<TypeParamScope>,
-    /// Trait bounds declared on each machine's generic type parameters, keyed
-    /// by machine name. Populated during `register_machine_decl` from
-    /// `MachineDecl.type_params`. Consulted at the use site by
-    /// `check_struct_init` (struct-state brace constructor path) where no
-    /// `FnSig` pipeline carries the bounds.
-    pub(super) machine_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
+    pub(super) current_type_param_bounds: Vec<ParamBounds>,
     /// Const-generic parameters declared on each machine, keyed by
     /// machine name. Populated during [`register_machine_decl`] from
     /// `MachineDecl::const_params`. Used at instantiation sites
@@ -3314,18 +3386,6 @@ pub struct Checker {
     /// order (the same order they appear in the `<...>` list, with
     /// type params preceding const params per the parser convention).
     pub(super) machine_const_params: HashMap<String, Vec<MachineConstParamDecl>>,
-    /// Dedup set for `enforce_machine_instantiation_bounds`. Keyed by
-    /// `(machine_name, resolved_type_args, span_key)`: the same
-    /// annotation can be walked multiple times during checking — for
-    /// example once for `FnSig` registration, once for body
-    /// resolution, and the recursive walker in `resolve_type_expr`
-    /// may also re-visit shared nested positions across overlapping
-    /// resolution paths. Without dedup, every duplicate visit emits
-    /// an identical `BoundsNotSatisfied` diagnostic. The key
-    /// combines machine name, resolved args, and span: two textually
-    /// identical instantiations at different source positions are
-    /// distinct violations and must each report once.
-    pub(super) reported_machine_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
     /// Dedup set for declaration-level generic type bounds. Keyed by
     /// `(type_name, resolved_type_args, span_key)`: type annotations,
     /// constructor synthesis, and expected-type coercion may all observe the
@@ -3366,45 +3426,23 @@ pub struct Checker {
     pub(super) checking_declaration: Option<crate::DefId>,
     /// Trait declarations by declaration identity.
     pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
-    /// The trait spellings callers use, each naming one declaration.
-    ///
-    /// TRANSITION(A1 commit 4): WHY bounds and impls still carry trait
-    /// spellings. WHEN they carry `TraitRef`s resolved through `Scope`, this
-    /// index is deleted. WHAT: every reader holds the trait's `DefId`.
-    pub(super) trait_def_keys: HashMap<String, crate::DefId>,
-    /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
-    ///
-    /// Keyed by the trait's declaration; the super-trait spellings stay
-    /// strings until bounds carry `TraitRef`s (TRANSITION(A1 commit 4)).
-    pub(super) trait_super: HashMap<crate::DefId, Vec<String>>,
-    /// A declaring module's trait import bindings:
-    /// `(declaring_module_short, name_as_spelled)` → owner-qualified SOURCE
-    /// identity (`{owner_short}.{Source}`), always a registered `trait_defs` key.
-    ///
-    /// This is what resolves a RE-EXPORTED supertrait edge. A supertrait spelled
-    /// `Base` inside a module that itself imported `Base` (`import other::{ Base }`)
-    /// names `other`'s trait, not the same-named `Base` a downstream importer may
-    /// also have in scope. The same-module qualified key (`{declaring}.Base`) only
-    /// covers a supertrait declared in the SAME module; when the super was
-    /// re-imported there is no `{declaring}.Base` def, and resolving the bare name
-    /// in the final importer's namespace binds the wrong owner (the H11 fail-open).
-    /// For `reexsub` (`import reexbase::{ Base }`) this records
-    /// `("reexsub", "Base") → "reexbase.Base"`; for an aliased re-import
-    /// (`import reexbase::{ Base as B }`) it records `("reexsub", "B") → "reexbase.Base"`,
-    /// so the alias renames the binding without losing the source identity.
-    pub(super) trait_import_bindings: HashMap<(String, String), String>,
-    /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
-    pub(super) trait_impls_set: HashSet<(String, String)>,
+    /// The direct super-traits of each trait, resolved where the trait
+    /// declares them.
+    pub(super) trait_super: HashMap<crate::DefId, Vec<crate::DefId>>,
+    /// Declared trait impls: the receiver with its type arguments erased and
+    /// the trait, to the trait arguments of each impl.
+    pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
+    /// Bound sites already reported as naming no trait or misapplying one.
+    pub(super) reported_unknown_bounds: HashSet<SpanKey>,
     /// Dedup guard so a rejected overlapping primitive/builtin trait impl emits
     /// only one `ConflictingTraitImpl` diagnostic even though
     /// `record_primitive_trait_impl_self_args` runs once per impl method. Keyed
     /// by (`canonical_constructor`, `trait_name`, `span.start`, `span.end`).
-    pub(super) conflicting_trait_impl_reported: HashSet<(String, String, usize, usize)>,
-    /// Method names provided by each concrete trait impl block, keyed by
-    /// (`type_name`, `trait_name`) as written on the impl. This preserves
-    /// provenance that is lost when impl methods are flattened onto the type's
-    /// receiver-method table.
-    pub(super) trait_impl_method_names: HashMap<(String, String), HashSet<String>>,
+    pub(super) conflicting_trait_impl_reported: HashSet<(String, crate::DefId, usize, usize)>,
+    /// Method names provided by each trait impl block, keyed like
+    /// `trait_impls`. This preserves provenance that is lost when impl
+    /// methods are flattened onto the type's receiver-method table.
+    pub(super) trait_impl_method_names: HashMap<(ResolvedTy, crate::DefId), HashSet<Symbol>>,
     /// Resolver-minted implementation method identities keyed by the exact
     /// implemented type, trait, and method selected during type checking.
     pub(super) trait_impl_method_declaration_ids:
@@ -3419,7 +3457,7 @@ pub struct Checker {
     ///
     /// Outer key: (`canonical_primitive_or_builtin_name`, `trait_name`).
     /// Inner: method name → resolved `FnSig` (receiver already filtered).
-    pub(super) primitive_trait_impls: HashMap<(String, String), HashMap<String, FnSig>>,
+    pub(super) primitive_trait_impls: HashMap<(String, crate::DefId), HashMap<String, FnSig>>,
     /// The impl's `Self` type arguments for each `impl <Trait> for
     /// <PrimitiveOrBuiltinGeneric>`, captured at registration so dispatch can
     /// bind the impl's type parameters from a concrete receiver's type
@@ -3435,7 +3473,7 @@ pub struct Checker {
     ///
     /// Key: (`canonical_primitive_or_builtin_name`, `trait_name`) — same as
     /// [`Self::primitive_trait_impls`].
-    pub(super) primitive_trait_impl_self_args: HashMap<(String, String), Vec<Ty>>,
+    pub(super) primitive_trait_impl_self_args: HashMap<(String, crate::DefId), Vec<Ty>>,
     /// Maps supervisor name to its partitioned child lists.
     ///
     /// Static children (declared with `child name: Type`) are in `statics`,
@@ -3656,22 +3694,6 @@ pub struct Checker {
     /// name from another module.
     pub(super) published_bare_type_owners:
         HashMap<ImportBindingKey, std::collections::BTreeSet<String>>,
-    /// Maps (`importer_module`, `trait_binding`) to the full set of SOURCE
-    /// trait identities (`owner.OriginalTrait`) published under that binding into
-    /// the importer's scope. The trait-namespace analogue of
-    /// `published_bare_type_owners`.
-    ///
-    /// An aliased trait import (`import m::{ Trait as T }`) records
-    /// `T -> { "m.Trait" }`. The trait-conformance check (`check_impl_method_
-    /// against_trait`) reads this to recover the SOURCE identity for an aliased
-    /// trait so it can (a) look up the trait's method signatures under the
-    /// source/qualified key (`m.Trait::method`) instead of missing on the alias
-    /// key (`T::method`) and accepting the impl unchecked, and (b) qualify bare
-    /// type names written in the trait declaration against the SOURCE owner
-    /// (`m`), not the alias. A single source identity is the well-formed case;
-    /// zero or an ambiguous set falls back to the alias-keyed behaviour.
-    pub(super) published_bare_trait_owners:
-        HashMap<ImportBindingKey, std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
     ///
     /// Every endpoint passes through `record_call_edge`, which resolves the
@@ -3869,7 +3891,7 @@ pub struct Checker {
     /// trait_name, assoc_name }` when no impl scope is active (e.g.
     /// registering a trait method signature). The carrier is collapsed at
     /// call sites where `Self` is substituted by a concrete type.
-    pub(super) current_trait_for_self_projection: Option<String>,
+    pub(super) current_trait_for_self_projection: Option<crate::DefId>,
     /// Resolved impl-side `type Bar = X` bindings, keyed by
     /// `(impl_type_name, trait_name, assoc_name)`. Populated at impl
     /// registration so that downstream projection-collapse
@@ -3878,7 +3900,8 @@ pub struct Checker {
     ///
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
-    pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), ImplAssociatedType>,
+    pub(super) impl_assoc_type_bindings:
+        HashMap<(ResolvedTy, crate::DefId, Symbol), ImplAssociatedType>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -4283,9 +4306,7 @@ impl Checker {
             registered_stdlib_hew_sources: HashSet::new(),
             generic_ctx: Vec::new(),
             current_type_param_bounds: Vec::new(),
-            machine_type_param_bounds: HashMap::new(),
             machine_const_params: HashMap::new(),
-            reported_machine_bound_violations: HashSet::new(),
             reported_type_def_bound_violations: HashSet::new(),
             reported_actor_handle_type_spans: HashSet::new(),
             reported_unknown_dyn_traits: HashSet::new(),
@@ -4304,10 +4325,9 @@ impl Checker {
             dispatch: super::dispatch_table::DispatchTable::default(),
             checking_declaration: None,
             trait_defs: HashMap::new(),
-            trait_def_keys: HashMap::new(),
             trait_super: HashMap::new(),
-            trait_import_bindings: HashMap::new(),
-            trait_impls_set: HashSet::new(),
+            trait_impls: HashMap::new(),
+            reported_unknown_bounds: HashSet::new(),
             conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
             trait_impl_method_declaration_ids: HashMap::new(),
@@ -4353,7 +4373,6 @@ impl Checker {
             declared_nominal_type_names: HashSet::new(),
             unqualified_to_module: HashMap::new(),
             published_bare_type_owners: HashMap::new(),
-            published_bare_trait_owners: HashMap::new(),
             call_graph: HashMap::new(),
             current_function: None,
             in_for_binding: false,

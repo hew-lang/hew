@@ -261,7 +261,7 @@ impl Checker {
         // A trait written in type position names the trait's declaration; a
         // handler-style trait becomes the actor handle it types.
         if let Some(id) = self
-            .lookup_declaration(&self.trait_ref_lookup_key(key))
+            .lookup_declaration(key)
             .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
         {
             return Ty::named_head(
@@ -904,7 +904,7 @@ impl Checker {
     }
 
     /// The declaration path a binding names, for diagnostics.
-    fn binding_path(&self, binding: super::scope::Binding) -> Option<String> {
+    pub(super) fn binding_path(&self, binding: super::scope::Binding) -> Option<String> {
         use super::scope::Binding;
         match binding {
             Binding::Type(id) | Binding::Actor(id) => {

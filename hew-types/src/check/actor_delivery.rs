@@ -608,7 +608,7 @@ impl Checker {
                         )
                     })
                     .collect(),
-                bounds: std::collections::HashMap::new(),
+                bounds: super::ParamBounds::default(),
                 fields: std::collections::HashMap::new(),
                 field_order: Vec::new(),
                 variants: std::collections::HashMap::new(),

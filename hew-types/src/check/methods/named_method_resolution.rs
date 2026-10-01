@@ -259,7 +259,7 @@ impl Checker {
             return Some(Ty::Error);
         }
         let return_type = self
-            .apply_instantiated_call_signature(
+            .apply_instantiated_call_signature_with_assoc(
                 &sig,
                 None,
                 args,
@@ -342,10 +342,6 @@ impl Checker {
         let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
-        let name = head.registry_key();
-        let canonical_name = self
-            .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.to_string());
         let Some(dispatch_key) = self.named_source_method_dispatch_key(receiver_ty, method) else {
             return;
         };
@@ -353,7 +349,7 @@ impl Checker {
             return;
         };
         let consumes_receiver = sig.consumes_receiver
-            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_method_consumes_receiver(receiver_ty, method)
             || self.named_type_inherent_close_consumes_receiver(*head, method, sig);
         if consumes_receiver {
             self.method_call_consumes_receiver
@@ -386,12 +382,8 @@ impl Checker {
         let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
-        let name = head.registry_key();
-        let canonical_name = self
-            .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.to_string());
         let consumes_receiver = sig.consumes_receiver
-            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_method_consumes_receiver(receiver_ty, method)
             || self.named_type_inherent_close_consumes_receiver(*head, method, sig);
         if consumes_receiver {
             self.method_call_consumes_receiver
@@ -973,33 +965,5 @@ impl Checker {
             }
             other => TyPattern::Primitive(other.user_facing().to_string()),
         }
-    }
-
-    pub(in crate::check) fn type_param_has_marker_bound(
-        &self,
-        param_name: &str,
-        marker: MarkerTrait,
-    ) -> bool {
-        let marker_name = marker.to_string();
-        for frame in self.current_type_param_bounds.iter().rev() {
-            if let Some(bounds) = frame.bounds.get(param_name) {
-                return bounds.iter().any(|bound| bound == &marker_name);
-            }
-        }
-        if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sig(fn_name) {
-                if sig
-                    .type_params
-                    .iter()
-                    .any(|param| param.spelling.as_str() == param_name)
-                {
-                    return sig
-                        .type_param_bounds
-                        .get(param_name)
-                        .is_some_and(|bounds| bounds.iter().any(|bound| bound == &marker_name));
-                }
-            }
-        }
-        false
     }
 }

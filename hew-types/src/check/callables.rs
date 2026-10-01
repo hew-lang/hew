@@ -47,8 +47,7 @@ impl Checker {
             return Ty::Error;
         }
         let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
-        let assoc_bindings = sig.type_param_assoc_bindings.clone();
-        self.enforce_type_param_bounds_with_assoc(&sig, &assoc_bindings, &arguments, span);
+        self.enforce_signature_bounds(&sig, &arguments, span);
         self.record_concrete_call_type_args(span, &arguments);
         let target = self.call_target_for_signature(signature_key);
         self.record_direct_call_target(span, target.clone());
@@ -417,13 +416,9 @@ impl Checker {
         // take; one without it promises nothing, and the instance reaches the
         // SIR verifier instead. Spec §3.8.1 puts that on the declaration, so
         // refuse here and name the bound alongside `consume`.
-        if let Ty::Named { head, args } = &ty {
-            let name = head.registry_key();
-            if args.is_empty()
-                && self.is_type_param_in_scope(name)
-                && !self.type_param_has_marker_bound(name, MarkerTrait::Clone)
-            {
-                let param = name;
+        if let Some(param) = Self::bare_param(&ty) {
+            if !self.param_carries_marker(param.id, MarkerTrait::Clone) {
+                let param = param.spelling;
                 self.report_error_with_suggestions(
                     TypeErrorKind::OwnConsumeBorrowed,
                     span,

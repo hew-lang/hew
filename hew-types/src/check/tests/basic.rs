@@ -433,43 +433,6 @@ fn contextual_variant_constructor_kind_must_match() {
 }
 
 #[test]
-fn qualified_associated_item_rejects_multiple_trait_owners() {
-    let parsed_trait = hew_parser::parse("pub trait Shared { type Item; }");
-    assert!(parsed_trait.errors.is_empty());
-    let trait_decl = parsed_trait
-        .program
-        .items
-        .iter()
-        .find_map(|(item, _)| match item {
-            Item::Trait(trait_decl) => Some(trait_decl),
-            _ => None,
-        })
-        .expect("trait fixture");
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let info = checker.trait_info_from_decl(trait_decl, None, 0);
-    checker.test_trait_def("left.Shared", info.clone());
-    checker.test_trait_def("right.Shared", info);
-    checker.published_bare_trait_owners.insert(
-        (None, 0, "Shared".to_string()),
-        ["left.Shared".to_string(), "right.Shared".to_string()]
-            .into_iter()
-            .collect(),
-    );
-    let program =
-        hew_parser::parse("fn main() { let item = <i64 as Shared>.Item; println(item); }");
-    assert!(
-        program.errors.is_empty(),
-        "fixture parse: {:?}",
-        program.errors
-    );
-    let output = checker.check_program(&program.program);
-    assert!(output
-        .errors
-        .iter()
-        .any(|error| error.kind == TypeErrorKind::AssocItemAmbiguous));
-}
-
-#[test]
 fn test_arity_mismatch_too_many_args() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.register_builtins();

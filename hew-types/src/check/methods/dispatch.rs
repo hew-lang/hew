@@ -426,10 +426,8 @@ impl Checker {
                         method,
                         span,
                     );
-                    let assoc_bindings = sig.type_param_assoc_bindings.clone();
                     let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
-                        &assoc_bindings,
                         None,
                         args,
                         span,
@@ -1358,7 +1356,7 @@ impl Checker {
                             receiver_args,
                             method,
                         ) {
-                            let applied_sig = self.apply_instantiated_call_signature(
+                            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                                 &sig,
                                 None,
                                 args,
@@ -1433,7 +1431,7 @@ impl Checker {
                             // The hand-rolled loop that used to live here skipped
                             // both, so a generic handler reported `expected T` at
                             // every call site.
-                            let applied_sig = self.apply_instantiated_call_signature(
+                            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                                 &sig,
                                 None,
                                 args,
@@ -1496,7 +1494,7 @@ impl Checker {
                         receiver_args,
                         method,
                     ) {
-                        let applied_sig = self.apply_instantiated_call_signature(
+                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                             &sig,
                             None,
                             args,
@@ -1872,7 +1870,7 @@ impl Checker {
                             self.actor_member(*head, method, crate::DeclarationKind::ActorReceive)
                         })
                         .flatten();
-                    let applied_sig = self.apply_instantiated_call_signature(
+                    let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
                         None,
                         args,
@@ -2038,7 +2036,7 @@ impl Checker {
                     //      `build(consume self)`, a `#[linear]` type's consuming
                     //      method). The resolved sig carries the consume fact.
                     let consumes_receiver = sig.consumes_receiver
-                        || self.named_type_method_consumes_receiver(name, method)
+                        || self.named_type_method_consumes_receiver(&resolved, method)
                         || self.named_type_inherent_close_consumes_receiver(
                             resolved.head().expect("named receiver has a head"),
                             method,
@@ -2285,12 +2283,8 @@ impl Checker {
                     Ty::Named {
                         head: crate::TypeHead::Param(parameter),
                         ..
-                    } => self
-                        .checking_declaration
-                        .and_then(|declaration| self.fn_sigs.get(&declaration))
-                        .filter(|sig| sig.type_params.contains(parameter))
-                        .and_then(|sig| sig.type_param_bounds.get(parameter.spelling.as_str()))
-                        .cloned(),
+                    } => Some(self.active_bounds_of(parameter.id))
+                        .filter(|bounds| !bounds.is_empty()),
                     _ => None,
                 };
                 if let (
@@ -2307,37 +2301,29 @@ impl Checker {
                     // supertrait-redeclaration case (plan §4 V14) where a bound
                     // `T: B` with `trait B: A` and both A and B declaring the same
                     // method reaches two distinct declaring traits.
-                    let mut hits: Vec<(String, String, FnSig)> = Vec::new();
-                    for bound_trait in &bounds {
-                        // Keep the source spelling for diagnostics, but resolve
-                        // the dispatch lookup through the declaration owner.
-                        // An imported alias such as `AlphaRender` is not a
-                        // declaration identity and must never reach HIR as one.
-                        let bound_trait_key = self.trait_ref_lookup_key(bound_trait);
+                    let mut hits: Vec<(crate::DefId, FnSig)> = Vec::new();
+                    for bound in &bounds {
                         let declaring =
-                            self.collect_all_declaring_traits_for_method(&bound_trait_key, method);
+                            self.collect_all_declaring_traits_for_method(bound.trait_id, method);
                         for declaring_trait in declaring {
                             // Resolve the sig from the declaring trait directly.
                             if let Some((_, sig)) =
-                                self.lookup_trait_method_with_origin(&declaring_trait, method)
+                                self.lookup_trait_method_with_origin(declaring_trait, method)
                             {
-                                hits.push((bound_trait.clone(), declaring_trait, sig));
+                                hits.push((declaring_trait, sig));
                             }
                         }
                     }
                     // Deduplicate by declaring_trait — same origin via multiple bounds is NOT ambiguous.
-                    hits.sort_by(|a, b| a.1.cmp(&b.1));
-                    hits.dedup_by_key(|h| h.1.clone());
+                    hits.sort_by_key(|hit| hit.0);
+                    hits.dedup_by_key(|hit| hit.0);
 
                     if hits.len() == 1 {
-                        let (bound_trait, declaring_trait, mut trait_sig) =
-                            hits.into_iter().next().unwrap();
+                        let (declaring_id, mut trait_sig) = hits.into_iter().next().unwrap();
+                        let declaring_trait = self.defs.path(declaring_id).to_string();
                         // Replace `Self` references with the type parameter type.
                         let self_ty = resolved.clone();
-                        let self_parameter = crate::ParamHead::receiver(
-                            self.lookup_declaration(&declaring_trait)
-                                .expect("resolved declaring trait owns Self"),
-                        );
+                        let self_parameter = crate::ParamHead::receiver(declaring_id);
                         for param_ty in &mut trait_sig.params {
                             *param_ty = param_ty.substitute_type_param(self_parameter, &self_ty);
                         }
@@ -2360,7 +2346,7 @@ impl Checker {
                                 span,
                             );
                         }
-                        let applied_sig = self.apply_instantiated_call_signature(
+                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                             &trait_sig,
                             None,
                             args,
@@ -2407,8 +2393,7 @@ impl Checker {
                         }
                         // Record the StaticTraitDispatch rewrite for HIR consumption.
                         let target = self
-                            .trait_method_call_target_ids(&declaring_trait, method)
-                            .or_else(|| self.trait_method_call_target_ids(&bound_trait, method))
+                            .trait_method_ids_of(declaring_id, method)
                             .map_or_else(
                                 || CallTarget::Unsupported {
                                     reason: format!(
@@ -2438,7 +2423,7 @@ impl Checker {
                             self.synthesize(expr, sp);
                         }
                         let declaring_traits: Vec<&str> =
-                            hits.iter().map(|h| h.1.as_str()).collect();
+                            hits.iter().map(|hit| self.defs.path(hit.0)).collect();
                         self.report_error(
                             TypeErrorKind::AmbiguousTraitMethod,
                             span,
@@ -2656,21 +2641,22 @@ impl Checker {
                 }
                 if let Some(layout_slot) = matching.pop() {
                     let bound = &traits[layout_slot.bound];
-                    let Some(mut sig) = self.lookup_trait_method(&layout_slot.trait_key, method)
+                    let Some(mut sig) = self.lookup_trait_method(layout_slot.trait_id, method)
                     else {
                         // JUSTIFIED: the layout lists only methods registered
                         // in `trait_defs`, which always resolve.
                         unreachable!(
                             "trait method `{}.{method}` is in a dyn layout but is not resolvable",
-                            layout_slot.trait_key
+                            layout_slot.trait_spelling
                         );
                     };
-                    let pid_send_dispatch =
-                        layout_slot.trait_key == "std.builtins.Pid" && method == "send";
+                    let pid_send_dispatch = self.defs.path(layout_slot.trait_id)
+                        == "std.builtins.Pid"
+                        && method == "send";
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::TraitObject {
-                            trait_name: bound.trait_name.clone(),
+                            trait_name: self.defs.path(layout_slot.trait_id).to_string(),
                         },
                     );
                     // Apply trait-type-param and associated-type substitution
@@ -2708,7 +2694,7 @@ impl Checker {
                         let resolved_ty = self.subst.resolve(&receiver_ty);
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
                     }
-                    let applied_sig = self.apply_instantiated_call_signature(
+                    let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
                         None,
                         args,

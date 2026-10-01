@@ -376,10 +376,10 @@ fn main() -> i64 {
 ",
     );
     let key = ResolvedTy::named_path(service.defs(), "Key", vec![]);
-    assert_eq!(
+    assert!(matches!(
         service.capability_plan(&key, Hash),
-        Err(ClassError::TypeParam { name: "T".into() })
-    );
+        Err(ClassError::TypeParam { param }) if param.spelling.as_str() == "T"
+    ));
     assert_eq!(
         service
             .capability_plan(&key, Eq)
@@ -395,10 +395,10 @@ fn main() -> i64 {
         }],
         ret: Box::new(ResolvedTy::Unit),
     };
-    assert_eq!(
+    assert!(matches!(
         service.capability_plan(&abstract_fn, Eq),
-        Err(ClassError::TypeParam { name: "U".into() })
-    );
+        Err(ClassError::TypeParam { param }) if param.spelling.as_str() == "U"
+    ));
 }
 
 #[test]

@@ -2896,7 +2896,7 @@ fn parse_wire_struct_preserves_since_modifier() {
     let source = "\
 #[wire]
 type Msg {
-    added: Option<String> @2 optional since 2 json(\"added\");
+    added: Option<String> @2 optional since 2;
 }
 ";
     let result = parse(source);
@@ -2909,7 +2909,6 @@ type Msg {
     let meta = &wire.field_meta[0];
     assert_eq!(meta.field_number, 2);
     assert!(meta.is_optional);
-    assert_eq!(meta.json_name.as_deref(), Some("added"));
     assert_eq!(meta.since, Some(2));
 }
 
@@ -2938,13 +2937,13 @@ type Point {
 }
 
 #[test]
-fn wire_struct_field_metadata_preserves_number_and_outer_naming_cases() {
+fn serial_case_and_field_key_parse_on_wire_types() {
     let source = "\
 #[wire]
-#[json(\"camelCase\")]
-#[yaml(\"snake_case\")]
+#[serial(case = \"camelCase\")]
 type Msg {
-    added: Option<String> @2 optional yaml(\"added_name\");
+    #[serial(key = \"addedName\")]
+    added: Option<String> @2 optional;
 }
 ";
     let result = parse(source);
@@ -2953,14 +2952,21 @@ type Msg {
     let Item::TypeDecl(decl) = &result.program.items[0].0 else {
         panic!("expected type declaration");
     };
-    let wire = decl.wire.as_ref().expect("expected wire metadata");
-    assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
-    assert_eq!(wire.yaml_case, Some(NamingCase::SnakeCase));
-
-    let meta = &wire.field_meta[0];
+    assert_eq!(decl.serial_case, Some(NamingCase::CamelCase));
+    let TypeBodyItem::Field { attributes, .. } = &decl.body[0] else {
+        panic!("expected a field");
+    };
+    assert_eq!(
+        crate::ast::SerialField::of(attributes).key.as_deref(),
+        Some("addedName")
+    );
+    let meta = &decl
+        .wire
+        .as_ref()
+        .expect("expected wire metadata")
+        .field_meta[0];
     assert_eq!(meta.field_number, 2);
     assert!(meta.is_optional);
-    assert_eq!(meta.yaml_name.as_deref(), Some("added_name"));
 }
 
 /// `#[wire] enum E { A; B; C; }` — unit-only variants attach wire metadata
@@ -2972,9 +2978,9 @@ fn parse_wire_enum_unit_variants() {
     let source = "\
 #[wire]
 enum Command {
-    Start;
-    Stop;
-    Pause;
+    Start @0;
+    Stop @1;
+    Pause @2;
 }
 ";
     let result = parse(source);
@@ -3005,8 +3011,8 @@ fn parse_wire_enum_struct_payload_variants() {
     let source = "\
 #[wire(version = 2, min_version = 1)]
 enum Packet {
-    V1 { x: i64;  }
-    V2 { y: String; z: bool;  }
+    V1 { x: i64;  } @0;
+    V2 { y: String; z: bool;  } @1;
 }
 ";
     let result = parse(source);
@@ -3038,8 +3044,8 @@ fn parse_wire_enum_tuple_payload_variants() {
     let source = "\
 #[wire]
 enum Op {
-    Push(i64);
-    Pair(String, bool);
+    Push(i64) @0;
+    Pair(String, bool) @1;
 }
 ";
     let result = parse(source);
@@ -3070,7 +3076,7 @@ fn parse_wire_enum_rejects_resource_marker_combo() {
 #[wire]
 #[resource]
 enum Bad {
-    A;
+    A @0;
 }
 ";
     let result = parse(source);
@@ -3084,17 +3090,16 @@ enum Bad {
     );
 }
 
-/// `#[wire] #[json("camelCase")] #[yaml("kebab-case")] enum E { … }` —
-/// type-level naming attributes flow into `WireMetadata`.
+/// A `#[wire]` enum takes `#[serial(case)]` and a stable tag per variant.
 #[test]
-fn parse_wire_enum_preserves_naming_cases() {
+fn parse_wire_enum_preserves_serial_case_and_variant_tags() {
     let source = "\
 #[wire]
-#[json(\"camelCase\")]
-#[yaml(\"kebab-case\")]
+#[serial(case = \"kebab-case\")]
 enum Command {
-    Start;
-    Stop;
+    Start @3;
+    Stop(i64) @7;
+    Move { x: i64; } @9;
 }
 ";
     let result = parse(source);
@@ -3103,9 +3108,120 @@ enum Command {
     let Item::TypeDecl(decl) = &result.program.items[0].0 else {
         panic!("expected type declaration");
     };
-    let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
-    assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
-    assert_eq!(wire.yaml_case, Some(NamingCase::KebabCase));
+    assert_eq!(decl.serial_case, Some(NamingCase::KebabCase));
+    let tags: Vec<_> = decl
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            TypeBodyItem::Variant(variant) => variant.tag,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tags, [3, 7, 9]);
+}
+
+/// Retired spellings and a missing variant tag are refused with the kinds
+/// `hew fmt --migrate` rewrites; the parse still records what they meant.
+#[test]
+fn legacy_serial_spellings_and_missing_variant_tags_are_refused() {
+    let source = "\
+#[wire]
+#[yaml(\"kebab-case\")]
+#[json(camelCase)]
+type Msg {
+    added: String @4 json(\"added_name\") yaml(\"other\");
+}
+
+#[wire]
+enum Command {
+    Start @0;
+    Stop @1;
+}
+";
+    let result = parse(source);
+    let kinds: Vec<_> = result
+        .errors
+        .iter()
+        .map(|error| error.kind.clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ParseDiagnosticKind::LegacySerialSpelling,
+            ParseDiagnosticKind::LegacySerialSpelling,
+            ParseDiagnosticKind::LegacySerialSpelling,
+            ParseDiagnosticKind::LegacySerialSpelling,
+            ParseDiagnosticKind::WireVariantTagMissing,
+            ParseDiagnosticKind::WireVariantTagMissing,
+        ],
+        "{:?}",
+        result.errors
+    );
+    let Item::TypeDecl(msg) = &result.program.items[0].0 else {
+        panic!("expected type declaration");
+    };
+    assert_eq!(msg.serial_case, Some(NamingCase::KebabCase));
+    let TypeBodyItem::Field { attributes, .. } = &msg.body[0] else {
+        panic!("expected a field");
+    };
+    assert_eq!(
+        crate::ast::SerialField::of(attributes).key.as_deref(),
+        Some("added_name")
+    );
+    let migrated = crate::fmt::migrate_punctuation(source).expect("migratable");
+    assert!(
+        migrated.contains("#[serial(case = \"kebab-case\")]"),
+        "{migrated}"
+    );
+    assert!(!migrated.contains("#[json"), "{migrated}");
+    assert!(
+        migrated.contains("#[serial(key = \"added_name\")]"),
+        "{migrated}"
+    );
+    assert!(
+        migrated.contains("Start @0;") && migrated.contains("Stop @1;"),
+        "{migrated}"
+    );
+    assert!(parse(&migrated).errors.is_empty());
+}
+
+#[test]
+fn serial_arguments_and_generic_wire_types_are_refused() {
+    for source in [
+        "#[serial(case = \"camel\")] type A { x: i64; }",
+        "#[serial(rename = \"x\")] type A { x: i64; }",
+        "type A { #[serial(key)] x: i64; }",
+        "type A { #[serial(case = \"camelCase\")] x: i64; }",
+    ] {
+        let result = parse(source);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.kind == ParseDiagnosticKind::AttributeArgument),
+            "{source}: {:?}",
+            result.errors
+        );
+    }
+    for source in [
+        "#[wire] type P<T> { x: T @1; }",
+        "#[wire] enum E<T> { A(T) @1; }",
+    ] {
+        let result = parse(source);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains("E_WIRE_GENERIC")),
+            "{source}: {:?}",
+            result.errors
+        );
+    }
+    assert!(parse(
+        "type A { #[serial(key = \"type\")] kind: string; #[serial(skip)] cached: Option<i64>; }"
+    )
+    .errors
+    .is_empty());
 }
 
 /// `pub #[wire] enum E { ... }` — the visibility-prefixed dispatch arm
@@ -3118,8 +3234,8 @@ fn parses_visibility_prefixed_wire_enum() {
     let source = "\
 #[wire]
 pub enum Command {
-    Start;
-    Stop;
+    Start @0;
+    Stop @1;
 }
 ";
     let result = parse(source);
@@ -3155,9 +3271,9 @@ fn parses_mixed_variant_wire_enum() {
     let source = "\
 #[wire]
 enum Mixed {
-    A;
-    B(i64);
-    C { x: String; y: i32;  }
+    A @0;
+    B(i64) @1;
+    C { x: String; y: i32;  } @2;
 }
 ";
     let result = parse(source);
@@ -3216,7 +3332,7 @@ fn wire_struct_field_metadata_preserves_since_modifier() {
     let source = "\
 #[wire]
 type Msg {
-    added: String @2 repeated since 3 yaml(\"added\");
+    added: String @2 repeated since 3;
 }
 ";
     let result = parse(source);
@@ -3228,34 +3344,7 @@ type Msg {
     let wire = decl.wire.as_ref().expect("expected wire metadata");
     let meta = &wire.field_meta[0];
     assert!(meta.is_repeated);
-    assert_eq!(meta.yaml_name.as_deref(), Some("added"));
     assert_eq!(meta.since, Some(3));
-}
-
-#[test]
-fn wire_struct_field_metadata_preserves_explicit_number_and_naming_cases_kebab() {
-    let source = "\
-#[json(\"camelCase\")]
-#[yaml(\"kebab-case\")]
-#[wire]
-type Msg {
-    added: String @4 repeated json(\"added_name\");
-}
-";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-
-    let Item::TypeDecl(decl) = &result.program.items[0].0 else {
-        panic!("expected type declaration");
-    };
-    let wire = decl.wire.as_ref().expect("expected wire metadata");
-    assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
-    assert_eq!(wire.yaml_case, Some(NamingCase::KebabCase));
-
-    let meta = &wire.field_meta[0];
-    assert_eq!(meta.field_number, 4);
-    assert!(meta.is_repeated);
-    assert_eq!(meta.json_name.as_deref(), Some("added_name"));
 }
 
 #[test]

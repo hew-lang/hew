@@ -768,6 +768,11 @@ pub enum ParseDiagnosticKind {
     SupervisorStopClauseRetired,
     /// `-> () fails E` spells out the unit a failing function omits.
     UnitFailsArrow,
+    /// A retired `#[json(..)]`/`#[yaml(..)]` attribute or `json(..)`/`yaml(..)`
+    /// wire modifier; `#[serial(..)]` replaces them.
+    LegacySerialSpelling,
+    /// A `#[wire]` enum variant without its stable `@N` tag.
+    WireVariantTagMissing,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -820,6 +825,8 @@ impl ParseDiagnosticKind {
             Self::AwaitRestartRetired => "E_AWAIT_RESTART_RETIRED",
             Self::SupervisorStopClauseRetired => "E_SUPERVISOR_STOP_CLAUSE",
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
+            Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
+            Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",

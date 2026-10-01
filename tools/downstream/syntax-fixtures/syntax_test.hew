@@ -61,9 +61,9 @@ type UserMessage {
 
 #[wire]
 enum Command {
-    Start;
-    Stop;
-    Pause;
+    Start @0;
+    Stop @1;
+    Pause @2;
 }
 
 // === Actor ===

@@ -1241,6 +1241,7 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -1721,6 +1722,7 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2292,6 +2294,7 @@ fn user_module_registers_types() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2871,6 +2874,7 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2931,6 +2935,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
             name: Ident::new("Has"),
+            tag: None,
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Tag"), 0..0),
@@ -2945,6 +2950,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2992,6 +2998,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
             name: Ident::new("Message"),
+            tag: None,
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(
@@ -3009,6 +3016,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -3515,6 +3523,7 @@ fn local_type_impl_no_orphan_warning() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -3670,6 +3679,7 @@ fn test_file_import_private_items_not_visible() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,

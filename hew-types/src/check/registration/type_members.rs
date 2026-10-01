@@ -768,16 +768,8 @@ impl Checker {
         );
         self.commit_reresolved_type_def(td.name.name.as_str(), type_def);
 
-        if let Some(ref wire) = td.wire {
-            let variant_order: Vec<String> = td
-                .body
-                .iter()
-                .filter_map(|i| match i {
-                    TypeBodyItem::Variant(v) => Some(v.name.to_string()),
-                    _ => None,
-                })
-                .collect();
-            self.register_wire_methods(td.name.name.as_str(), wire, &variant_order);
+        if td.wire.is_some() {
+            self.register_wire_methods(td);
         }
     }
 
@@ -1561,7 +1553,7 @@ impl Checker {
 
         // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
         if let Some(ref wire) = td.wire {
-            self.register_wire_methods(td.name.name.as_str(), wire, &variant_order);
+            self.register_wire_methods(td);
             self.validate_wire_version_constraints(td.name.name.as_str(), wire);
         }
     }
@@ -1706,12 +1698,8 @@ impl Checker {
     ///
     /// - Wire structs expose binary + JSON/YAML helpers.
     /// - Wire enums expose JSON/YAML helpers.
-    pub(in crate::check) fn register_wire_methods(
-        &mut self,
-        type_name: &str,
-        wire: &WireMetadata,
-        variant_order: &[String],
-    ) {
+    pub(in crate::check) fn register_wire_methods(&mut self, td: &hew_parser::ast::TypeDecl) {
+        let type_name = td.name.name.as_str();
         // ONE canonical wire identity (A316). A module declaration's wire
         // surface is keyed by `{module}.{Name}` — the identity every resolved
         // receiver and the codegen wire-layout lookup carry; a root
@@ -1741,12 +1729,7 @@ impl Checker {
                         .values()
                         .any(|variant| !matches!(variant, VariantDef::Unit));
                 let is_serial_wire_enum = is_unit_wire_enum || is_payload_wire_enum;
-                let layout_entry = Self::wire_layout_entry_from_metadata(
-                    type_def,
-                    wire,
-                    is_wire_struct,
-                    variant_order,
-                );
+                let layout_entry = Self::wire_layout_entry_from_metadata(td, is_wire_struct);
                 (is_wire_struct, is_serial_wire_enum, layout_entry)
             })
         else {
@@ -1842,78 +1825,61 @@ impl Checker {
     }
 
     pub(super) fn wire_layout_entry_from_metadata(
-        type_def: &TypeDef,
-        wire: &WireMetadata,
+        td: &hew_parser::ast::TypeDecl,
         is_wire_struct: bool,
-        variant_order: &[String],
     ) -> WireLayoutEntry {
+        let wire = td
+            .wire
+            .as_ref()
+            .expect("a wire layout comes from a #[wire] type");
+        let case = td.serial_case;
         let fields = if is_wire_struct {
+            // The parser records one `field_meta` entry per field, in body order.
+            let field_attributes = td.body.iter().filter_map(|item| match item {
+                TypeBodyItem::Field { attributes, .. } => Some(attributes.as_slice()),
+                _ => None,
+            });
             wire.field_meta
                 .iter()
-                .map(|field| WireFieldLayout {
-                    name: field.field_name.clone(),
-                    tag: field.field_number,
-                    json_name: field
-                        .json_name
-                        .clone()
-                        .unwrap_or_else(|| wire_name(&field.field_name, wire.json_case)),
-                    yaml_name: field
-                        .yaml_name
-                        .clone()
-                        .unwrap_or_else(|| wire_name(&field.field_name, wire.yaml_case)),
-                    presence: if field.is_optional {
-                        WireFieldPresence::Optional
-                    } else {
-                        WireFieldPresence::Required
-                    },
-                    repeated: field.is_repeated,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let variant_tags: HashMap<&str, u32> = wire
-            .field_meta
-            .iter()
-            .map(|field| (field.field_name.as_str(), field.field_number))
-            .collect();
-        let variant_names: Vec<String> = if variant_order.is_empty() {
-            let mut names: Vec<_> = type_def.variants.keys().cloned().collect();
-            names.sort();
-            names
-        } else {
-            variant_order
-                .iter()
-                .filter(|name| type_def.variants.contains_key(*name))
-                .cloned()
-                .collect()
-        };
-        let variants = if is_wire_struct {
-            Vec::new()
-        } else {
-            variant_names
-                .into_iter()
-                .enumerate()
-                .map(|(index, name)| {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "wire enum variant counts are bounded by source size"
-                    )]
-                    let default_tag = index as u32;
-                    let tag = variant_tags
-                        .get(name.as_str())
-                        .copied()
-                        .unwrap_or(default_tag);
-                    WireVariantLayout {
-                        json_name: wire_name(&name, wire.json_case),
-                        yaml_name: wire_name(&name, wire.yaml_case),
-                        name,
-                        tag,
+                .zip(field_attributes)
+                .map(|(field, attributes)| {
+                    let key = hew_parser::ast::SerialField::of(attributes)
+                        .key
+                        .unwrap_or_else(|| wire_name(&field.field_name, case));
+                    WireFieldLayout {
+                        name: field.field_name.clone(),
+                        tag: field.field_number,
+                        json_name: key.clone(),
+                        yaml_name: key,
+                        presence: if field.is_optional {
+                            WireFieldPresence::Optional
+                        } else {
+                            WireFieldPresence::Required
+                        },
+                        repeated: field.is_repeated,
                     }
                 })
                 .collect()
+        } else {
+            Vec::new()
         };
+        let variants = td
+            .body
+            .iter()
+            .filter_map(|item| match item {
+                TypeBodyItem::Variant(variant) => {
+                    let name = variant.name.to_string();
+                    let key = wire_name(&name, case);
+                    Some(WireVariantLayout {
+                        json_name: key.clone(),
+                        yaml_name: key,
+                        name,
+                        tag: variant.tag.expect("the parser tags every #[wire] variant"),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
 
         WireLayoutEntry {
             is_struct: is_wire_struct,
@@ -1925,52 +1891,43 @@ impl Checker {
     }
 
     fn validate_wire_text_names(&mut self, type_name: &str, layout: &WireLayoutEntry) {
-        for (format, yaml) in [("JSON", false), ("YAML", true)] {
-            let mut names = HashSet::new();
-            if layout.is_struct {
-                for field in &layout.fields {
-                    let name = if yaml {
-                        &field.yaml_name
-                    } else {
-                        &field.json_name
-                    };
-                    if !names.insert(name.as_str()) {
-                        self.wire_text_name_collision(type_name, format, "field", name);
-                    }
-                }
-            } else {
-                for variant in &layout.variants {
-                    let name = if yaml {
-                        &variant.yaml_name
-                    } else {
-                        &variant.json_name
-                    };
-                    if !names.insert(name.as_str()) {
-                        self.wire_text_name_collision(type_name, format, "variant", name);
-                    }
-                }
+        let (member, keys): (&str, Vec<&str>) = if layout.is_struct {
+            (
+                "fields",
+                layout
+                    .fields
+                    .iter()
+                    .map(|field| field.json_name.as_str())
+                    .collect(),
+            )
+        } else {
+            (
+                "variants",
+                layout
+                    .variants
+                    .iter()
+                    .map(|variant| variant.json_name.as_str())
+                    .collect(),
+            )
+        };
+        let mut seen = HashSet::new();
+        for key in keys {
+            if !seen.insert(key) {
+                self.errors.push(TypeError {
+                    severity: crate::error::Severity::Error,
+                    kind: TypeErrorKind::InvalidOperation,
+                    span: self.type_def_spans.get(type_name).cloned().unwrap_or(0..0),
+                    message: format!(
+                        "E_SERIAL_KEY_COLLISION: two {member} of `{type_name}` share the text key `{key}`"
+                    ),
+                    notes: vec![],
+                    suggestions: vec![
+                        "give one of them its own key with `#[serial(key = \"..\")]`".to_string(),
+                    ],
+                    source_module: self.current_module.clone(),
+                });
             }
         }
-    }
-
-    fn wire_text_name_collision(
-        &mut self,
-        type_name: &str,
-        format: &str,
-        member: &str,
-        name: &str,
-    ) {
-        self.errors.push(TypeError {
-            severity: crate::error::Severity::Error,
-            kind: TypeErrorKind::InvalidOperation,
-            span: self.type_def_spans.get(type_name).cloned().unwrap_or(0..0),
-            message: format!(
-                "wire {format} {member} name `{name}` is ambiguous after naming metadata"
-            ),
-            notes: vec![],
-            suggestions: vec![],
-            source_module: self.current_module.clone(),
-        });
     }
 
     /// Validate version constraints on a wire type.

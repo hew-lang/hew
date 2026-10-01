@@ -5555,9 +5555,9 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 ```hew
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 
 // Status.Pending   -> CBOR integer: 0
@@ -5678,19 +5678,20 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 
 JSON field names are determined by the following rules, in priority order:
 
-1. **Per-field override** — `json("name")` wire attribute sets the exact JSON key.
-2. **Type-level convention** — `#[json(convention)]` attribute on the `#[wire] type` declaration transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
+1. **Per-field override** — `#[serial(key = "name")]` on the field sets the exact text key.
+2. **Type-level convention** — `#[serial(case = "convention")]` on the type declaration transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
 3. **Default** — field name is used as-is (no transformation).
 
 Per-field override always wins over the type-level convention.
 
 ```hew
-#[json(camelCase)]
+#[serial(case = "camelCase")]
 #[wire]
 type User {
     user_name: string @1; // JSON: "userName"
     email_address: string @2; // JSON: "emailAddress"
-    internal_id: string @3 json("id"); // JSON: "id"  (override wins)
+    #[serial(key = "id")]
+    internal_id: string @3; // JSON: "id"  (override wins)
 }
 ```
 
@@ -5728,9 +5729,9 @@ Wire enums encode as the string name of the variant:
 ```hew
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 ```
 
@@ -5750,15 +5751,15 @@ JSON decoders SHOULD ignore unknown fields (permissive parsing). This enables fo
 
 ##### 7.3.2.5 Enum Variant Names in JSON
 
-Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or another convention) to the `#[wire] enum` declaration to transform variant names consistently.
+Enum variant names are used as-is by default. Apply `#[serial(case = "camelCase")]` (or another convention) to the enum declaration to transform variant names consistently.
 
 ```hew
-#[json(camelCase)]
+#[serial(case = "camelCase")]
 #[wire]
 enum Status {
-    PendingReview;
-    ActiveNow;
-    Completed;
+    PendingReview @0;
+    ActiveNow @1;
+    Completed @2;
 }
 ```
 
@@ -6837,7 +6838,7 @@ refuses the name it does not know rather than dropping it.
 | `#[linear]` | type declaration | Linear value: must be consumed by a `consume self` method before scope exit (§3.7.8). Not combinable with `#[resource]`. |
 | `#[opaque]` | type declaration | Opaque handle whose internal representation is not accessible (§3.10.7). |
 | `#[wire]`, `#[wire(...)]` | type declaration, enum, field | Wire contract and per-field tag/naming metadata (§7.1, §7.3). |
-| `#[json(...)]`, `#[yaml(...)]` | type declaration | Per-encoding field-naming case for a `#[wire]` type (§7.3.2, §7.3.2a). |
+| `#[serial(...)]` | type declaration, field | Text-key case (`case = ".."`) on a type; text key (`key = ".."`) or `skip` on a field (§7.3.2). On a `#[test]` fn, runs it alone. |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
 | `#[ignore]` | `#[test]` function | Discovered but not run; accepts an optional reason string. |

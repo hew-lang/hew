@@ -501,8 +501,8 @@ fn wire_layout_table_populated_from_wire_enum() {
     let output = check_source(
         r"#[wire]
 enum Status {
-    Active;
-    Inactive;
+    Active @0;
+    Inactive @1;
 }
 ",
     );
@@ -518,7 +518,8 @@ fn wire_layout_json_name_override_preserved() {
     let output = check_source(
         r#"#[wire]
 type Cfg {
-    host: string @1 json("hostname");
+    #[serial(key = "hostname")]
+    host: string @1;
 }
 "#,
     );
@@ -529,7 +530,7 @@ type Cfg {
         .get("Cfg")
         .expect("Cfg should have a wire layout entry");
     assert_eq!(entry.fields[0].json_name, "hostname");
-    assert_eq!(entry.fields[0].yaml_name, "host");
+    assert_eq!(entry.fields[0].yaml_name, "hostname");
 }
 
 #[test]
@@ -537,14 +538,16 @@ fn wire_text_name_collisions_fail_at_declaration() {
     let explicit = check_source(
         r#"#[wire]
 type Cfg {
-    a: string @1 json("x");
-    b: string @2 json("x");
+    #[serial(key = "x")]
+    a: string @1;
+    #[serial(key = "x")]
+    b: string @2;
 }
 "#,
     );
     assert!(
         explicit.errors.iter().any(|error| {
-            error.message == "wire JSON field name `x` is ambiguous after naming metadata"
+            error.message == "E_SERIAL_KEY_COLLISION: two fields of `Cfg` share the text key `x`"
         }),
         "{:?}",
         explicit.errors
@@ -552,7 +555,7 @@ type Cfg {
 
     let cased = check_source(
         r#"#[wire]
-#[json("camelCase")]
+#[serial(case = "camelCase")]
 type Cfg {
     foo_bar: string @1;
     fooBar: string @2;
@@ -561,7 +564,8 @@ type Cfg {
     );
     assert!(
         cased.errors.iter().any(|error| {
-            error.message == "wire JSON field name `fooBar` is ambiguous after naming metadata"
+            error.message
+                == "E_SERIAL_KEY_COLLISION: two fields of `Cfg` share the text key `fooBar`"
         }),
         "{:?}",
         cased.errors

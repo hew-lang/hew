@@ -509,6 +509,7 @@ fn module_graph_body_private_local_type_is_available() {
         doc_comment: None,
         wire: None,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,

@@ -2,9 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use hew_parser::ast::{
-    Item, NamingCase, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind,
-};
+use hew_parser::ast::{Item, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind};
 
 // Private schema types — mirror the information extracted from `Item::TypeDecl` with `#[wire]`.
 // These exist so the compatibility logic does not depend on parser AST types directly.
@@ -23,17 +21,6 @@ struct WireSchemaField {
     is_optional: bool,
     is_repeated: bool,
     is_deprecated: bool,
-    // Reserved for future cross-schema encoding compatibility checks.
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    json_name: Option<String>,
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    yaml_name: Option<String>,
     #[allow(
         dead_code,
         reason = "reserved for future cross-schema encoding compatibility checks"
@@ -47,17 +34,6 @@ struct WireSchema {
     kind: WireSchemaKind,
     fields: Vec<WireSchemaField>,
     variants: Vec<VariantDecl>,
-    // Reserved for future cross-schema encoding compatibility checks.
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    json_case: Option<NamingCase>,
-    #[allow(
-        dead_code,
-        reason = "reserved for future cross-schema encoding compatibility checks"
-    )]
-    yaml_case: Option<NamingCase>,
 }
 
 /// A wire schema with optional version metadata.
@@ -185,8 +161,6 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                             is_optional: fm.is_optional,
                             is_repeated: fm.is_repeated,
                             is_deprecated: fm.is_deprecated,
-                            json_name: fm.json_name,
-                            yaml_name: fm.yaml_name,
                             since: fm.since,
                         }
                     })
@@ -197,8 +171,6 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                         kind,
                         fields,
                         variants,
-                        json_case: wire.json_case,
-                        yaml_case: wire.yaml_case,
                     },
                     version,
                     min_version,
@@ -384,41 +356,49 @@ fn compare_wire_struct(
     }
 }
 
+/// Variants match by their stable `@N` tag, so reordering is compatible;
+/// a removed, added or renamed tag is not (text formats key by name).
 fn compare_wire_enum(
     wire_name: &str,
     current: &VersionedWireSchema,
     baseline: &VersionedWireSchema,
     report: &mut CompatibilityReport,
 ) {
-    for (index, (current_variant, baseline_variant)) in current
-        .schema
-        .variants
-        .iter()
-        .zip(&baseline.schema.variants)
-        .enumerate()
-    {
-        let position = index + 1;
+    for baseline_variant in &baseline.schema.variants {
+        let tag = baseline_variant.tag.unwrap_or_default();
+        let Some(current_variant) = current
+            .schema
+            .variants
+            .iter()
+            .find(|variant| variant.tag == baseline_variant.tag)
+        else {
+            report.errors.push(format!(
+                "removed variant `{wire_name}.{}` @{tag}",
+                baseline_variant.name
+            ));
+            continue;
+        };
         if current_variant.name != baseline_variant.name {
             report.errors.push(format!(
-                "changed variant order for `{wire_name}` at position {position}: `{}` -> `{}`",
+                "renamed variant @{tag} of `{wire_name}`: `{}` -> `{}`",
                 baseline_variant.name, current_variant.name
             ));
             continue;
         }
         compare_wire_enum_variant_payload(wire_name, current_variant, baseline_variant, report);
     }
-
-    if current.schema.variants.len() > baseline.schema.variants.len() {
-        for variant in &current.schema.variants[baseline.schema.variants.len()..] {
-            report
-                .errors
-                .push(format!("added variant `{wire_name}.{}`", variant.name));
-        }
-    } else if baseline.schema.variants.len() > current.schema.variants.len() {
-        for variant in &baseline.schema.variants[current.schema.variants.len()..] {
-            report
-                .errors
-                .push(format!("removed variant `{wire_name}.{}`", variant.name));
+    for variant in &current.schema.variants {
+        if !baseline
+            .schema
+            .variants
+            .iter()
+            .any(|baseline_variant| baseline_variant.tag == variant.tag)
+        {
+            report.errors.push(format!(
+                "added variant `{wire_name}.{}` @{}",
+                variant.name,
+                variant.tag.unwrap_or_default()
+            ));
         }
     }
 }

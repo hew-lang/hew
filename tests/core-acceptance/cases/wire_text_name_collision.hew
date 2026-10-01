@@ -1,5 +1,5 @@
 #[wire]
-#[json("camelCase")]
+#[serial(case = "camelCase")]
 type Cfg {
     foo_bar: string @1;
     fooBar: string @2;

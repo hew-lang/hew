@@ -3,9 +3,9 @@
 // The recovered variant selects the exit code (42 for `Pending`).
 #[wire]
 enum Status {
-    Active;
-    Inactive;
-    Pending;
+    Active @0;
+    Inactive @1;
+    Pending @2;
 }
 
 fn main() -> i64 {

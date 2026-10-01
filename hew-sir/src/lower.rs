@@ -114,8 +114,7 @@ pub enum SirLoweringStatus {
 /// Which bodies a lowering run demands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SirLoweringDemand {
-    /// Demand-driven from the module's resolved entry callable: the strict
-    /// `--sir-lower` compile route. A declaration the entry never reaches is
+    /// Demand-driven from the module's resolved entry callable. A declaration the entry never reaches is
     /// reported [`SirLoweringStatus::NotReached`] and is never admitted a
     /// header, so it costs the module no signature, shape or type-fact row.
     ///

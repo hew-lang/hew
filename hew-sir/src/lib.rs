@@ -3,9 +3,7 @@
 //! SIR is the value-oriented SSA layer between resolved HIR and the existing
 //! ownership/layout MIR ladder. Semantic places carry ownership and lifetime
 //! contracts; SIR contains no machine allocation,
-//! ABI carrier, byte-offset, or LLVM operation.  The strict `--sir-lower` lane
-//! owns a conservative subset today; each supported family moves onto
-//! SIR -> MIR and deletes its established HIR -> MIR body lowering.
+//! ABI carrier, byte-offset, or LLVM operation.
 
 mod actor;
 mod analysis;

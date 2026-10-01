@@ -564,7 +564,7 @@ pub enum HirDiagnosticKind {
     /// A binary operator was used in value position but the MIR backend has
     /// no lowering for it. Currently covers `..` and `..=` range operators
     /// outside of `for` loops or slice indexing. Closed at HIR pre-pass per
-    /// FC-P1-D (audit site `hew-mir/src/lower.rs:5336`) so users see a
+    /// FC-P1-D so users see a
     /// compile-time diagnostic instead of MIR's `NotYetImplemented`
     /// late-stage surprise. LESSONS `boundary-fail-closed`.
     BinaryOperatorUnsupportedInMir {
@@ -583,7 +583,7 @@ pub enum HirDiagnosticKind {
         result_ty: String,
     },
     /// Call expression resolves to an item that has no MIR body and no
-    /// runtime-ABI lowering. Lifted from MIR `hew-mir/src/lower.rs:4194`
+    /// runtime-ABI lowering. Lifted from MIR
     /// per the FC-P1-B audit so the diagnostic surfaces during HIR lowering
     /// instead of after the MIR producer has already begun emitting
     /// instructions for the surrounding function.
@@ -605,7 +605,7 @@ pub enum HirDiagnosticKind {
     /// Call expression with an indirect / higher-order / unresolved callee
     /// whose static type is callable (`ResolvedTy::Function` or
     /// `ResolvedTy::Closure`) but for which no MIR dispatch path exists.
-    /// Lifted from MIR `hew-mir/src/lower.rs:4236` per the FC-P1-B audit.
+    /// Lifted from MIR per the FC-P1-B audit.
     ///
     /// Predicate (intentionally narrow to avoid blocking valid programs
     /// such as closure-binding invocations `let f = |x| x + 1; f(2)`):
@@ -620,8 +620,8 @@ pub enum HirDiagnosticKind {
         callee_ty: String,
     },
     /// Supervisor spawn with init args is not supported. `spawn AppSupervisor(...)`
-    /// reaches MIR lowering (`hew-mir/src/lower.rs:8852`) as a `NotYetImplemented`
-    /// runtime-style diagnostic; raise it to a HIR fatal gate per slepp A222 so
+    /// reached MIR lowering as a `NotYetImplemented`
+    /// runtime-style diagnostic; it is raised it to a HIR fatal gate per slepp A222 so
     /// the failure surfaces at compile time with a clear cause. The checker
     /// already rejects supervisor declarations that take init params; this gate
     /// is defense-in-depth catching any future surface that could reach MIR

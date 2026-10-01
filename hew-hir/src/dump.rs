@@ -901,18 +901,13 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
         }
         HirExprKind::CoerceToDynTrait {
             value,
-            trait_name,
             concrete_type,
-            method_table,
-            vtable_entries,
         } => {
             writeln!(
                 out,
-                "{pad}  coerce-to-dyn {} <- {} (slots={}, projected={})",
-                trait_name,
+                "{pad}  coerce-to-dyn {} <- {}",
+                expr.ty.user_facing(),
                 concrete_type.user_facing(),
-                method_table.len(),
-                vtable_entries.len()
             )
             .expect("write to string");
             dump_expr(defs, out, value, indent + 4);

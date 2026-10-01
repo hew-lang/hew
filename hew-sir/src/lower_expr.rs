@@ -168,9 +168,7 @@ impl Builder<'_, '_> {
             HirExprKind::CoerceToDynTrait {
                 value,
                 concrete_type,
-                vtable_entries,
-                ..
-            } => self.lower_dyn_make(expr, value, concrete_type, vtable_entries),
+            } => self.lower_dyn_make(expr, value, concrete_type),
             HirExprKind::CallDynMethod {
                 receiver,
                 target,

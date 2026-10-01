@@ -1747,25 +1747,6 @@ impl LowerCtx {
         intent: IntentKind,
         span: Span,
     ) -> HirExpr {
-        let declared_traits: Vec<_> = coercion
-            .trait_bounds
-            .iter()
-            .map(|bound| bound.trait_id)
-            .collect();
-        if declared_traits.iter().any(Option::is_none)
-            || declared_traits != coercion.vtable_key.trait_ids
-        {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "dyn-trait coercion".to_string(),
-                    reason: "checked trait bounds disagree with their vtable identities"
-                        .to_string(),
-                },
-                span.clone(),
-                "trait-object identity did not survive the checker boundary",
-            ));
-            return self.unsupported_expr(span, "dyn-trait identity mismatch");
-        }
         let dyn_ty = coercion.target.clone();
         // The checker side table is keyed by source span and may preserve
         // the original concrete provenance when an already-erased value is
@@ -1814,10 +1795,7 @@ impl LowerCtx {
             intent,
             kind: HirExprKind::CoerceToDynTrait {
                 value: Box::new(inner),
-                trait_name: coercion.trait_name,
                 concrete_type: concrete_resolved,
-                method_table: coercion.method_table,
-                vtable_entries: coercion.vtable_entries,
             },
             span,
         }

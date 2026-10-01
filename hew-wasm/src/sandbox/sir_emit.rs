@@ -710,7 +710,7 @@ impl<'m> Walker<'m> {
                             .map(|slot| {
                                 Ok(VtableSlot {
                                     slot: slot.slot,
-                                    method: slot.method_name.clone(),
+                                    method: self.module.defs.name(slot.method).to_string(),
                                     callee: self.function_id(slot.callee)?,
                                     receiver: passing_name(slot.receiver).to_string(),
                                 })

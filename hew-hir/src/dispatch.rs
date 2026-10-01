@@ -56,9 +56,13 @@ pub struct TraitImplKey {
 /// `self_type_concrete_args`) keys on its concrete args, so
 /// `impl Describe for Wrapper<i64>` and `impl Describe for Wrapper<string>`
 /// never collide in the index.
+///
+/// A structural witness files the method that satisfies a trait method,
+/// unless a nominal impl already provides it.
 #[must_use]
 pub fn build_trait_impl_method_index(
     items: &[HirItem],
+    structural_witnesses: &[hew_types::StructuralWitness],
 ) -> HashMap<TraitImplKey, TraitImplMethodEntry> {
     let mut index: HashMap<TraitImplKey, TraitImplMethodEntry> = HashMap::new();
     let functions: HashMap<ItemId, _> = items
@@ -121,6 +125,35 @@ pub fn build_trait_impl_method_index(
                     impl_type_params: block.type_params.clone(),
                 },
             );
+        }
+    }
+    for item in items {
+        // The filler is the method the checker matched: an inherent one, or
+        // another trait's impl method of the same signature.
+        let HirItem::Impl(block) = item else { continue };
+        for (method_id, method_item) in block.method_ids.iter().zip(&block.method_item_ids) {
+            let (Some(method_id), Some(function)) = (method_id, functions.get(method_item)) else {
+                continue;
+            };
+            for witness in structural_witnesses
+                .iter()
+                .filter(|witness| witness.inherent == *method_id)
+            {
+                let key = TraitImplKey {
+                    declaring_trait: witness.declaring_trait,
+                    self_type: NominalInstance {
+                        nominal: witness.self_type,
+                        args: Vec::new(),
+                    },
+                    method: witness.method,
+                };
+                index.entry(key).or_insert_with(|| TraitImplMethodEntry {
+                    item: *method_item,
+                    method: *method_id,
+                    method_symbol: function.name.clone(),
+                    impl_type_params: block.type_params.clone(),
+                });
+            }
         }
     }
     index

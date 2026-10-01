@@ -495,7 +495,10 @@ impl<'a> CallableTable<'a> {
             admissible_order,
             templates,
             functions_by_item,
-            trait_impls: hew_hir::dispatch::build_trait_impl_method_index(&module.items),
+            trait_impls: hew_hir::dispatch::build_trait_impl_method_index(
+                &module.items,
+                &module.structural_witnesses,
+            ),
             ineligible,
         }
     }

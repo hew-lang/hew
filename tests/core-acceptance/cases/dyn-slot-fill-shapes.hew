@@ -1,0 +1,42 @@
+// Every way a type satisfies a trait fills a trait-object slot and serves a
+// bounded generic call alike: a nominal impl (over a same-named inherent
+// method), an inherited default, a generic impl, and a structural match
+// through a supertrait closure.
+trait Named { fn name(self) -> string; }
+trait Greet { fn who(self) -> string; fn greet(self) -> string { f"hi {self.who()}" } }
+trait Base { fn base(self) -> string; }
+trait Tagged: Base { fn tag(self) -> string; }
+
+type Both { id: i64; }
+impl Both { fn name(self) -> string { "inherent" } }
+impl Named for Both { fn name(self) -> string { "trait" } }
+
+type Person { n: string; }
+impl Greet for Person { fn who(self) -> string { self.n } }
+
+type Box<T> { v: T; }
+impl<T> Named for Box<T> { fn name(self) -> string { "box" } }
+
+type Widget { id: i64; }
+impl Widget {
+    fn base(self) -> string { "b" }
+    fn tag(self) -> string { f"w{self.id}" }
+    fn name(self) -> string { f"widget {self.id}" }
+}
+
+fn dyn_name(n: dyn Named) -> string { n.name() }
+fn gen_name<N: Named>(n: N) -> string { n.name() }
+fn dyn_greet(g: dyn Greet) -> string { g.greet() }
+fn dyn_tag(t: dyn Tagged) -> string { f"{t.base()}{t.tag()}" }
+fn gen_tag<T: Tagged>(t: T) -> string { f"{t.base()}{t.tag()}" }
+
+fn main() {
+    println(dyn_name(Both { id: 1 }));
+    println(gen_name(Both { id: 1 }));
+    println(dyn_greet(Person { n: "ann" }));
+    println(dyn_name(Box { v: 1 }));
+    println(dyn_name(Widget { id: 4 }));
+    println(gen_name(Widget { id: 5 }));
+    println(dyn_tag(Widget { id: 6 }));
+    println(gen_tag(Widget { id: 7 }));
+}

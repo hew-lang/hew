@@ -340,7 +340,7 @@ impl Checker {
     pub(super) fn record_dyn_slot_obligations(
         &mut self,
         traits: &[crate::ty::TraitObjectBound],
-        entries: &[super::DynVtableEntry],
+        fillers: &[(crate::DefId, crate::DefId)],
         span: &Span,
     ) {
         let Some(layout) = self.trait_object_layouts.get(traits) else {
@@ -352,20 +352,17 @@ impl Checker {
         .user_facing()
         .to_string();
         let mut obligations = Vec::new();
-        for entry in entries {
-            let Some(impl_method) = entry.impl_method else {
-                continue;
-            };
+        for &(method, impl_method) in fillers {
             let plain = layout
                 .slots
                 .iter()
-                .any(|slot| slot.method == entry.method && slot.effect == super::SlotEffect::Plain);
+                .any(|slot| slot.method == method && slot.effect == super::SlotEffect::Plain);
             if plain {
                 obligations.push(SuspensionObligation {
                     body: EffectBody::Declaration(impl_method),
                     key: SpanKey::in_module(span, self.current_module_idx),
                     slot: ObligationSlot::Dyn {
-                        method: self.defs.display(entry.method).to_string(),
+                        method: self.defs.display(method).to_string(),
                         target: target.clone(),
                     },
                     source_module: self.current_module.clone(),

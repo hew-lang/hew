@@ -20,6 +20,7 @@ pub(super) struct TraitMethodStaticSite {
 pub(super) fn closure_under_substitution(
     defs: &hew_types::DefTable,
     items: &[HirItem],
+    structural_witnesses: &[hew_types::StructuralWitness],
     call_site_type_args: &HashMap<SiteId, Vec<ResolvedTy>>,
     monomorphisations: &mut Vec<crate::monomorph::MonomorphizedFn>,
     cap: usize,
@@ -44,7 +45,7 @@ pub(super) fn closure_under_substitution(
     // built from `HirItem::Impl` metadata. Static-dispatch monomorphisation
     // resolves trait method calls through this rather than reconstructing
     // the impl symbol from a receiver display name.
-    let impl_index = crate::dispatch::build_trait_impl_method_index(items);
+    let impl_index = crate::dispatch::build_trait_impl_method_index(items, structural_witnesses);
 
     let mut seen: HashSet<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
     let mut worklist: Vec<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();

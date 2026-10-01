@@ -2975,6 +2975,7 @@ pub fn lower_program_with_mono_cap(
     closure_under_substitution(
         &ctx.defs,
         &items,
+        &type_check_output.structural_witnesses,
         &call_site_type_args,
         &mut monomorphisations,
         mono_cap,
@@ -3086,6 +3087,7 @@ pub fn lower_program_with_mono_cap(
         entry_exit_plan,
         test_entry_plans: type_check_output.test_entry_plans.clone(),
         trait_object_layouts: Arc::clone(&ctx.trait_object_layouts),
+        structural_witnesses: type_check_output.structural_witnesses.clone(),
         type_classes: ctx.type_classes,
         monomorphisations,
         call_site_type_args,

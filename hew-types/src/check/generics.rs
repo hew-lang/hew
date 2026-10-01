@@ -955,7 +955,7 @@ impl Checker {
         let trait_name: String = {
             let uq = self.strip_module_qualifier(bound);
             match uq {
-                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
+                Some(uq) if !self.has_trait_def(bound) && self.has_trait_def(uq) => uq.to_string(),
                 _ => bound.to_string(),
             }
         };
@@ -1517,9 +1517,13 @@ impl Checker {
         // Convert to owned strings immediately so the shared borrow on self ends
         // before any &mut self calls below.
         let trait_name: String = {
+            // A qualified key that names a registered trait is that trait;
+            // stripping it would select a same-leaf trait instead.
             let uq = self.strip_module_qualifier(trait_name);
             match uq {
-                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
+                Some(uq) if !self.has_trait_def(trait_name) && self.has_trait_def(uq) => {
+                    uq.to_string()
+                }
                 _ => trait_name.to_string(),
             }
         };
@@ -1611,7 +1615,47 @@ impl Checker {
             }
         }
 
+        self.record_structural_witnesses(&trait_name, &concrete_ty, &required);
         true
+    }
+
+    /// Publish the inherent method that fills each required method of
+    /// `trait_key` or one of its super-traits for `concrete_ty`.
+    fn record_structural_witnesses(
+        &mut self,
+        trait_key: &str,
+        concrete_ty: &Ty,
+        required: &[String],
+    ) {
+        let Some(self_type) = ResolvedTy::from_ty(concrete_ty)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance(&self.defs))
+            .map(|instance| instance.nominal)
+        else {
+            return;
+        };
+        for method_name in required {
+            let Some((declaring_key, _)) =
+                self.lookup_trait_method_with_origin(trait_key, method_name)
+            else {
+                continue;
+            };
+            let (Some((declaring_trait, method)), Some(inherent)) = (
+                self.trait_method_ids_for_key(&declaring_key, method_name),
+                self.inherent_impl_method_declaration(concrete_ty, method_name),
+            ) else {
+                continue;
+            };
+            let witness = StructuralWitness {
+                declaring_trait,
+                self_type,
+                method,
+                inherent,
+            };
+            if !self.structural_witnesses.contains(&witness) {
+                self.structural_witnesses.push(witness);
+            }
+        }
     }
 
     /// Look up a method on a trait, walking super-traits if needed.

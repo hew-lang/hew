@@ -50,6 +50,9 @@ pub struct HirModule {
     /// by its canonical type: the one slot list dispatch and tables read.
     pub trait_object_layouts:
         Arc<std::collections::BTreeMap<ResolvedTy, hew_types::TraitObjectLayout>>,
+    /// The checker's structural trait satisfactions; the impl index files
+    /// each where no nominal impl provides the method.
+    pub structural_witnesses: Vec<hew_types::StructuralWitness>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.
@@ -1664,23 +1667,14 @@ pub enum HirExprKind {
         left: Box<HirExpr>,
         right: Box<HirExpr>,
     },
-    /// Wrap a concrete value in a `dyn Trait` fat pointer. Emitted at
-    /// every accepted `T → dyn Trait` coercion site (the checker's
-    /// `TypeCheckOutput::dyn_trait_coercions` side table). SIR lowers
-    /// 1:1 to `SemOpKind::DynMake` against the dispatch table it interns
-    /// from `vtable_entries`.
-    ///
-    /// The carried `method_table` mirrors `DynCoercion::method_table` and
-    /// remains diagnostic payload; `vtable_entries` is the authority.
-    /// `concrete_type` is the resolved `Self` type at the coercion site
-    /// (after `materialize_literal_defaults`), which doubles as the
-    /// `(Trait, ImplType)` dedup key for the vtable static.
+    /// Wrap a concrete value in a `dyn Trait` fat pointer at an accepted
+    /// `T → dyn Trait` coercion (`TypeCheckOutput::dyn_trait_coercions`).
+    /// The expression's type is the trait object; its layout names the slots
+    /// and SIR fills each with the implementation a static call of the slot's
+    /// method on `concrete_type` reaches.
     CoerceToDynTrait {
         value: Box<HirExpr>,
-        trait_name: String,
         concrete_type: ResolvedTy,
-        method_table: Vec<(String, String)>,
-        vtable_entries: Vec<hew_types::DynVtableEntry>,
     },
     /// Dispatch a method call through a `dyn Trait` fat pointer's
     /// vtable. Emitted in place of an `HirExprKind::Call` whenever

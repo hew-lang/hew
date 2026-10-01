@@ -1,0 +1,17 @@
+pub enum Low {
+    Broken;
+}
+
+impl Display for Low {
+    fn fmt(self) -> string {
+        "Broken"
+    }
+}
+
+impl Error for Low {}
+
+impl From<Low> for Low {
+    fn from(value: Low) -> Low {
+        value
+    }
+}

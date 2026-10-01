@@ -11,38 +11,16 @@ use hew_parser::ast::Symbol;
 use hew_parser::ast::{
     ImportSpec, Literal, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// Uniquely identifies an import declaration within the checker.
-///
-/// Keying only by `short_name` causes collisions when multiple owning modules
-/// each import a module with the same short name: the second registration
-/// clobbers the first in `import_spans`, and a use in one owner suppresses
-/// the unused-import warning for the other owner.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct ImportKey {
-    /// The module that owns the `import` declaration, or `None` for
-    /// root-level (no-module-graph) programs.
-    pub(super) owner_module: Option<String>,
-    /// Stable source-file index within the module graph.
-    pub(super) owner_file: u32,
-    /// Short (last-segment) name of the imported module, e.g. `"json"`.
-    pub(super) short_name: String,
-}
-
-impl ImportKey {
-    pub(super) fn in_file(
-        owner_module: Option<String>,
-        owner_file: u32,
-        short_name: impl Into<String>,
-    ) -> Self {
-        Self {
-            owner_module,
-            owner_file,
-            short_name: short_name.into(),
-        }
-    }
+/// A user-written import declaration the unused-import lint reports on.
+#[derive(Debug, Clone)]
+pub(super) struct ReportableImport {
+    pub(super) site: super::scope::ImportSite,
+    pub(super) span: Span,
+    /// The module binding the diagnostic names (`json` for `import std.encoding.json`).
+    pub(super) name: String,
+    pub(super) source_module: Option<String>,
 }
 
 /// A lexical import binding is owned by one source file, even when several
@@ -2130,8 +2108,10 @@ pub struct TryWidthCastLowering {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorMethodKind {
     /// Construct an owned description without submitting it to the mailbox.
+    /// `method` is the receive handler's declaration, or a lambda actor's
+    /// `call` protocol row.
     Message {
-        method_id: String,
+        method: crate::DefId,
         policy: crate::actor_delivery::SendPolicy,
     },
     /// A completion call: dispatch to an actor receive handler and wait for
@@ -2139,7 +2119,7 @@ pub enum ActorMethodKind {
     /// destination mailbox is full — `Wait` for a bare handle, whatever the
     /// `policy(..)` view carries when the call goes through one.
     Ask {
-        method_id: String,
+        method: crate::DefId,
         reply_ty: Ty,
         policy: crate::actor_delivery::SendPolicy,
     },
@@ -2149,7 +2129,7 @@ pub enum ActorMethodKind {
     /// wherever `receive_generator_methods` names the method — HIR/MIR
     /// consume this fact directly rather than re-deriving stream-producer-ness
     /// from `is_generator` or return-type shape (`type-info-survival`).
-    StreamProducer(String, Ty),
+    StreamProducer(crate::DefId, Ty),
 }
 
 /// Checker-authoritative machine method dispatch discriminator.
@@ -2905,7 +2885,7 @@ pub(super) struct DeferredBoundCheck {
 /// bare name carried by `Account`'s own actor-handle type) against the
 /// local-first identity policy.
 ///
-/// Produced by `Checker::resolve_bare_actor_identity`. `Resolved` carries the
+/// Produced by `Checker::resolve_bare_spawn_target_identity`. `Resolved` carries the
 /// registered identity key — bare for root/flat actors, dotted
 /// `{module_short}.{name}` for module actors. `Ambiguous` carries the sorted
 /// candidate module list for the typed diagnostic; resolution is never
@@ -3221,28 +3201,26 @@ pub struct Checker {
     /// the deferred-refresh optimisation holds (should be O(1) across N
     /// registrations, not O(N)).
     pub(super) refresh_call_count: usize,
-    /// Qualified `Actor::method` names declared with `receive gen fn`.
-    pub(super) receive_generator_methods: HashSet<String>,
+    /// Receive handlers declared `receive gen fn`.
+    pub(super) receive_generator_methods: HashSet<crate::DefId>,
     /// Receive fns declared `-> R fails E`. The declaration is the only
     /// authority for whether a handler's `Result`-shaped reply is a declared
     /// failure (which a completion call reports as `ActorError.Failed`) or an
     /// ordinary `Result` value the handler happens to return.
-    pub(super) receive_fails_methods: HashSet<String>,
-    /// `Actor::handler` ids submitted one way through a mailbox view. Their
+    pub(super) receive_fails_methods: HashSet<crate::DefId>,
+    /// Handlers submitted one way through a mailbox view. Their
     /// declared failure becomes the actor's own fault, so the checker must
     /// prove the error renders before the program is published.
-    pub(super) view_submitted_fails_methods: HashMap<String, std::ops::Range<usize>>,
+    pub(super) view_submitted_fails_methods: HashMap<crate::DefId, std::ops::Range<usize>>,
     /// Completion calls made from inside a receive fn body, as
     /// `(caller handler, callee handler, call span)`. A cycle among these is a
     /// deadlock every participant waits in, so it is reported once the whole
     /// program has been checked.
-    pub(super) completion_call_edges: Vec<(String, String, Span)>,
-    /// Qualified `Actor::method` names declared with `receive fn` (including
-    /// generator receives). Used by the actor-mailbox boundary enforcement
-    /// to distinguish receive handlers from non-receive `methods` declared
-    /// on the same actor (which are also keyed `{Actor}::{name}` in
-    /// `fn_sigs` but must NOT cross the mailbox boundary).
-    pub(super) actor_receive_methods: HashSet<String>,
+    pub(super) completion_call_edges: Vec<(crate::DefId, crate::DefId, Span)>,
+    /// Handlers declared with `receive fn` (including generator receives).
+    /// The actor-mailbox boundary admits only these, never the actor's
+    /// private `methods`.
+    pub(super) actor_receive_methods: HashSet<crate::DefId>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
@@ -3375,7 +3353,7 @@ pub struct Checker {
     pub(super) loop_labels: Vec<String>,
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
-    pub(super) type_aliases: HashMap<String, TypeAliasDef>,
+    pub(super) type_aliases: HashMap<crate::DefId, TypeAliasDef>,
     /// Source-declared methods by receiver declaration and owner.
     pub(super) dispatch: super::dispatch_table::DispatchTable,
     /// The impl method whose body is being checked, so its own signature is
@@ -3522,18 +3500,15 @@ pub struct Checker {
     pub(super) lambda_captures: Vec<Ty>,
     /// Binding-accurate capture facts accumulated during lambda body checking.
     pub(super) lambda_capture_facts: Vec<ClosureCaptureFact>,
-    /// Tracks imported module paths with their source spans and originating module for
-    /// unused-import detection and source attribution.
-    /// Key: (`owner_module`, `short_name`), Value: (import span, source module).
-    pub(super) import_spans: HashMap<ImportKey, (Span, Option<String>)>,
+    /// User-written import declarations for unused-import detection; `Scope`
+    /// records which of them a resolution went through.
+    pub(super) reportable_imports: Vec<ReportableImport>,
     /// Compiler-assumed core of the implicit prelude, captured before user
     /// declarations or imports are registered. Ordinary prelude bindings are
     /// intentionally absent so user declarations may shadow them.
     pub(super) protected_prelude_bindings: HashMap<String, String>,
     /// First import declaration that reserved each file-local binding.
     pub(super) import_binding_spans: HashMap<ImportBindingKey, (Span, Option<String>, String)>,
-    /// Import keys that have actually been referenced in code.
-    pub(super) used_modules: RefCell<HashSet<ImportKey>>,
     /// Module short names for user (non-stdlib) imports.
     pub(super) user_modules: HashSet<String>,
     /// Qualified callable names (`module.name`) that are intentionally exported
@@ -3568,7 +3543,7 @@ pub struct Checker {
     /// diagnostic has already been emitted in the current check pass.  Prevents
     /// duplicate `E_VISIBILITY` errors when the same private/package type appears in
     /// multiple positions (e.g. both a parameter and the return type of one fn).
-    pub(super) reported_type_visibility_violations: HashSet<String>,
+    pub(super) reported_type_visibility_violations: HashSet<crate::DefId>,
     /// `(resolved_name, span)` pairs for which an `unknown type` diagnostic has
     /// already been emitted, so a named type that resolves to nothing is reported
     /// exactly once even though signature resolution (`collect_functions`) and
@@ -3759,6 +3734,14 @@ pub struct Checker {
     pub(super) defs: crate::DefTable,
     /// The spelling boundary: every module, file and prelude scope.
     pub(super) scopes: super::scope::Scopes,
+    /// Registering a compiler-embedded std source, whose spans have no file
+    /// index of their own.
+    ///
+    /// TRANSITION(IDENT-B1): WHY embedded std sources are registered under
+    /// the importer's file index. WHEN the embedded builtins run is deleted
+    /// and every std source has its own index, this flag goes. WHAT: one file
+    /// index per checked source.
+    pub(super) registering_embedded_source: bool,
     /// The table the next `check_program` mints into instead of a fresh one;
     /// set only by [`crate::Checker::check_embedded_builtins`].
     pub(super) seed_defs: Option<crate::DefTable>,
@@ -4352,10 +4335,9 @@ impl Checker {
             var_self_hole_reports: HashSet::new(),
             lambda_captures: Vec::new(),
             lambda_capture_facts: Vec::new(),
-            import_spans: HashMap::new(),
+            reportable_imports: Vec::new(),
             protected_prelude_bindings: HashMap::new(),
             import_binding_spans: HashMap::new(),
-            used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
@@ -4388,6 +4370,7 @@ impl Checker {
             current_module: None,
             defs: crate::DefTable::new(),
             scopes: super::scope::Scopes::new(),
+            registering_embedded_source: false,
             seed_defs: None,
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),

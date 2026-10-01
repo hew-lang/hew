@@ -121,7 +121,7 @@ impl Checker {
                 field,
                 &DottedTypeMemberUse::Reference { span },
             ) {
-                self.mark_resolved_nominal_owner_used(&head.canonical_type);
+                self.note_path_use(&head.canonical_type);
                 return result;
             }
         }
@@ -210,11 +210,7 @@ impl Checker {
                     if let Some(binding) = self.env.lookup_ref(&qualified_key) {
                         let ty = binding.ty.clone();
                         if self.module_binding_in_current_file(name.name.as_str()) {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                name.to_string(),
-                            ));
+                            self.note_import_use(name.name.as_str());
                         }
                         return ty;
                     }
@@ -223,11 +219,7 @@ impl Checker {
                     // falling through to the generic "undefined variable `module`" error.
                     if self.module_binding_in_current_file(name.name.as_str()) {
                         if self.has_fn_sig(&qualified_key) {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                name.to_string(),
-                            ));
+                            self.note_import_use(name.name.as_str());
                             self.reject_wasm_native_only_module_function(
                                 name.name.as_str(),
                                 field,
@@ -352,7 +344,7 @@ impl Checker {
                             .find(|(_, _, (name, _))| name == field);
                         if let Some((kind, index, (child_name, template))) = selected {
                             let parameters = self
-                                .type_def_at(sup_head.registry_key())
+                                .head_type_def(*sup_head)
                                 .map_or_else(Vec::new, |definition| definition.type_params.clone());
                             let substitution = parameters
                                 .into_iter()
@@ -492,12 +484,9 @@ impl Checker {
             let resolved = self.subst.resolve(scrutinee_ty);
             let uninhabited = match &resolved {
                 Ty::Never => true,
-                Ty::Named { head, .. } => {
-                    self.lookup_type_def(head.registry_key())
-                        .is_some_and(|definition| {
-                            definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-                        })
-                }
+                Ty::Named { head, .. } => self.head_type_def(*head).is_some_and(|definition| {
+                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                }),
                 _ => false,
             };
             if uninhabited {
@@ -1055,11 +1044,7 @@ impl Checker {
                                 .map(|_| format!("{path}::{variant}"))
                         })
                         .inspect(|_| {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                (*module_short).to_string(),
-                            ));
+                            self.note_import_use(module_short);
                         })
                 }
                 [surface_type, variant] if self.env.lookup_ref(surface_type).is_none() => self
@@ -1080,11 +1065,7 @@ impl Checker {
                     self.resolve_module_variant(module_short, surface_type, variant)
                         .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
                         .map(|_| {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                (*module_short).to_string(),
-                            ));
+                            self.note_import_use(module_short);
                             format!(
                                 "{}.{surface_type}::{variant}",
                                 self.canonical_module_import_owner(module_short)
@@ -1108,11 +1089,7 @@ impl Checker {
                     if self.env.lookup_ref(module_short).is_none()
                         && self.module_binding_in_current_file(module_short) =>
                 {
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        (*module_short).to_string(),
-                    ));
+                    self.note_import_use(module_short);
                     let Some(_) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
                             .module_type_exports_for_binding(module_short)
@@ -1170,11 +1147,7 @@ impl Checker {
                 if let Some(colon) = after_dot.find("::") {
                     let type_name = &after_dot[..colon];
                     let variant_name = &after_dot[colon + 2..];
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        module_short.to_string(),
-                    ));
+                    self.note_import_use(module_short);
                     let Some(td) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
                             .module_type_exports_for_binding(module_short)
@@ -1254,18 +1227,10 @@ impl Checker {
 
         if let Some(qualified) = qualified_owned.as_deref() {
             // `qualified` is the full owner-qualified source identity
-            // (`owner.TypeName`), and `owner` itself may be a dotted module
-            // path (`src.plain`). Splitting on the FIRST dot mistook the
-            // owner's leading path segment for the lexical import binding —
-            // `import_spans` keys a selective import by the MODULE's short
-            // name (`plain`), not its first path segment (`src`), so that
-            // mis-derived key never matched and `Plain { … }` warned
-            // "unused import" even though it constructed the imported type.
-            // `mark_module_owner_bindings_used` resolves the owner back to
-            // the correct lexical binding via `module_import_bindings`,
-            // mirroring the working annotation-position credit above.
+            // (`owner.TypeName`); constructing it uses the current file's
+            // imports of `owner`.
             if let Some((owner, _)) = qualified.rsplit_once('.') {
-                self.mark_module_owner_bindings_used(owner);
+                self.note_path_use(owner);
             }
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
@@ -1587,7 +1552,7 @@ impl Checker {
                 self.type_defs
                     .keys()
                     .map(|id| self.defs.path(id.declaration()))
-                    .chain(self.type_aliases.keys().map(String::as_str))
+                    .chain(self.type_aliases.keys().map(|id| self.defs.path(*id)))
                     .chain(self.known_types.iter().map(String::as_str)),
             );
             self.report_error_with_suggestions(
@@ -1733,7 +1698,7 @@ impl Checker {
             let ty_raw = match declared {
                 Some(declared_ty) => {
                     let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
-                        self.type_def_at(head.registry_key())
+                        self.head_type_def(*head)
                             .is_some_and(|td| td.kind == TypeDefKind::Actor)
                     } else {
                         false
@@ -1864,11 +1829,7 @@ impl Checker {
                             // keeping a single clear diagnostic.
                             return Err(());
                         };
-                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                            self.current_module.clone(),
-                            self.current_module_idx,
-                            module.to_string(),
-                        ));
+                        self.note_import_use(module.name.as_str());
                         // Keep the exact source identity recovered through the
                         // lexical module binding. The surface spelling may be
                         // an alias or share its leaf with another module.
@@ -1985,7 +1946,9 @@ impl Checker {
             .iter()
             .map(|module| format!("{module}.{name}"))
             .collect();
-        self.mark_ambiguous_import_owners_used(&candidate_identities);
+        for candidate in &candidate_identities {
+            self.note_path_use(candidate);
+        }
         let candidates_list = candidate_modules
             .iter()
             .map(|m| format!("`{m}.{name}`"))

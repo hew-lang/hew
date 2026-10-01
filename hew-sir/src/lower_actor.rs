@@ -1486,7 +1486,7 @@ impl Builder<'_, '_> {
         match operation {
             ActorDeliveryCall::Resume {
                 policy,
-                method_id,
+                method,
                 redirect,
             } => {
                 let mut request_ty = self.ty(&receiver.ty);
@@ -1538,8 +1538,9 @@ impl Builder<'_, '_> {
                     .handlers
                     .iter()
                     .find(|handler| {
-                        self.service.module.defs.path(handler.declaration) == method_id
-                            || method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID
+                        handler.declaration == *method
+                            || self.service.module.defs.kind(*method)
+                                == hew_types::DeclarationKind::RequestProtocol
                     })
                     .ok_or("request recovery lacks its checked handler")?;
                 let source_ty = request_ty.to_ty();

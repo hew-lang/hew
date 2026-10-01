@@ -78,9 +78,9 @@ pub use self::types::FnSigFixture;
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
-    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
-    IndexContext, IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration,
-    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext,
+    IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo,
+    TraitInfo, TypeParamScope,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -984,7 +984,7 @@ impl Checker {
                         span,
                     );
                 }
-                for (item_index, (item, _)) in module.items.iter().enumerate() {
+                for (item_index, (item, span)) in module.items.iter().enumerate() {
                     let Item::Import(decl) = item else {
                         continue;
                     };
@@ -994,7 +994,7 @@ impl Checker {
                         .and_then(|source| self.defs.module_for_source(source))
                         .or(assembler);
                     if let Some(file) = file {
-                        self.bind_import_in_scope(file, decl);
+                        self.bind_import_in_scope(file, decl, span);
                     }
                 }
             }
@@ -1040,13 +1040,83 @@ impl Checker {
         }
     }
 
+    /// Bind the items of modules whose declarations an earlier run minted
+    /// (the embedded builtin run checks over a fork of the compilation's
+    /// table) in `namespace`, as minting would have.
+    pub(super) fn declare_minted_items_in_scope(
+        &mut self,
+        files: &[crate::ModuleId],
+        namespace: crate::ModuleId,
+    ) {
+        for &file in files {
+            if file != namespace {
+                self.scopes.join_namespace(file, namespace);
+            }
+        }
+        let rows: Vec<_> = self
+            .defs
+            .ids()
+            .filter(|id| {
+                self.defs
+                    .module(*id)
+                    .is_some_and(|module| files.contains(&module))
+            })
+            .collect();
+        for id in rows {
+            let name = self.defs.name(id);
+            match self.defs.owner(id) {
+                Some(owner) => {
+                    let resolution = scope::Binding::of_item(&self.defs, id)
+                        .map_or(scope::Resolution::Member(id), scope::Binding::resolution);
+                    self.scopes.declare_member(owner, name, resolution);
+                }
+                None => {
+                    if self.scopes.item(namespace, name).is_none() {
+                        if let Some(binding) = scope::Binding::of_item(&self.defs, id) {
+                            self.scopes.declare_item(namespace, name, binding);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bind a declaration of a compiler-registered prelude module in the
+    /// prelude scope.
+    pub(super) fn bind_prelude_item(&mut self, module: &str, name: &str) {
+        let Some(module) = self.defs.module_for_path(module) else {
+            return;
+        };
+        let name = Symbol::intern(name);
+        if let Some(binding) = self.scopes.item(self.scopes.namespace_of(module), name) {
+            self.scopes.bind_prelude(name, binding);
+        }
+    }
+
+    /// Bind `std.builtins` in the prelude scope.
+    fn bind_builtins_prelude_in_scope(&mut self) {
+        // `std.builtins` publishes every type and trait bare; its functions
+        // are reached through the builtin call catalog.
+        if let Some(builtins) = self.defs.module_for_path("std.builtins") {
+            for (name, binding) in self.scopes.items(self.scopes.namespace_of(builtins)) {
+                if matches!(
+                    binding,
+                    scope::Binding::Type(_) | scope::Binding::Actor(_) | scope::Binding::Trait(_)
+                ) && self.scopes.prelude_binding(name).is_none()
+                {
+                    self.scopes.bind_prelude(name, binding);
+                }
+            }
+        }
+    }
+
     fn bind_root_imports_in_scope(&mut self, program: &Program) {
         let Some(root) = self.defs.root_module() else {
             return;
         };
-        for (item, _) in &program.items {
+        for (item, span) in &program.items {
             if let Item::Import(decl) = item {
-                self.bind_import_in_scope(root, decl);
+                self.bind_import_in_scope(root, decl, span);
             }
         }
     }
@@ -1055,18 +1125,39 @@ impl Checker {
     /// binds the module under its alias or last segment, a selection binds
     /// each selected item under its alias or name, and a file import binds
     /// every item of the imported file.
-    fn bind_import_in_scope(&mut self, file: crate::ModuleId, decl: &hew_parser::ast::ImportDecl) {
-        let Some(target) = decl
-            .resolved_source_paths
-            .first()
-            .and_then(|source| self.defs.module_for_source(source))
-            .or_else(|| self.defs.module_for_path(&decl.path.to_string()))
-        else {
+    pub(super) fn bind_import_in_scope(
+        &mut self,
+        file: crate::ModuleId,
+        decl: &hew_parser::ast::ImportDecl,
+        span: &Span,
+    ) {
+        self.bind_import_to(file, decl, span, None);
+    }
+
+    /// Bind an import declaration whose module registration minted `target`;
+    /// without it, the module the declaration's resolved source or path
+    /// names.
+    pub(super) fn bind_import_to(
+        &mut self,
+        file: crate::ModuleId,
+        decl: &hew_parser::ast::ImportDecl,
+        span: &Span,
+        target: Option<crate::ModuleId>,
+    ) {
+        let Some(target) = target.or_else(|| {
+            decl.resolved_source_paths
+                .first()
+                .and_then(|source| self.defs.module_for_source(source))
+                .or_else(|| self.defs.module_for_path(&decl.path.to_string()))
+        }) else {
             return;
         };
+        let site = scope::ImportSite::new(file, span);
+        self.scopes.record_import_target(target, site);
+        let namespace = self.scopes.namespace_of(target);
         if decl.path.segments.is_empty() {
-            for (name, binding) in self.scopes.items(target) {
-                self.scopes.bind_import(file, name, binding);
+            for (name, binding) in self.scopes.items(namespace) {
+                self.scopes.bind_import(file, name, binding, site);
             }
             return;
         }
@@ -1077,14 +1168,25 @@ impl Checker {
                         file,
                         binding_name.name,
                         scope::Binding::Module(target),
+                        site,
                     );
                 }
             }
             Some(hew_parser::ast::ImportSpec::Names(names)) => {
+                // A selection also binds its module for qualified siblings
+                // (`net.listen` beside `import std.net.{Connection}`).
+                if let Some(module_name) = decl.path.last() {
+                    self.scopes.bind_import(
+                        file,
+                        module_name.name,
+                        scope::Binding::Module(target),
+                        site,
+                    );
+                }
                 for selected in names {
-                    if let Some(binding) = self.scopes.item(target, selected.name.name) {
+                    if let Some(binding) = self.scopes.item(namespace, selected.name.name) {
                         let bound = selected.alias.unwrap_or(selected.name);
-                        self.scopes.bind_import(file, bound.name, binding);
+                        self.scopes.bind_import(file, bound.name, binding, site);
                     }
                 }
             }
@@ -1403,10 +1505,10 @@ impl Checker {
     /// the error's text; a handler whose error the checker cannot render is
     /// refused at the submission rather than faulting with nothing to say.
     fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: crate::check::FnSigView<'_>) {
-        let mut targets: HashMap<String, crate::actor_protocol::ReceiveFailureDisplay> =
+        let mut targets: HashMap<crate::DefId, crate::actor_protocol::ReceiveFailureDisplay> =
             HashMap::new();
-        for method_id in self.receive_fails_methods.clone() {
-            let Some(sig) = resolved_fn_sigs.get(&method_id) else {
+        for handler in self.receive_fails_methods.clone() {
+            let Some(sig) = resolved_fn_sigs.of(handler) else {
                 continue;
             };
             let Some((_, error_ty)) = sig.return_type.as_result() else {
@@ -1414,13 +1516,11 @@ impl Checker {
             };
             let error_ty = self.subst.resolve(error_ty);
             if let Some(target) = self.receive_failure_display(&error_ty, resolved_fn_sigs) {
-                targets.insert(method_id, target);
+                targets.insert(handler, target);
                 continue;
             }
-            if let Some(span) = self.view_submitted_fails_methods.get(&method_id).cloned() {
-                let handler = method_id
-                    .rsplit_once("::")
-                    .map_or(method_id.as_str(), |(_, name)| name);
+            if let Some(span) = self.view_submitted_fails_methods.get(&handler).cloned() {
+                let handler = self.defs.name(handler);
                 self.report_error(
                     TypeErrorKind::BoundsNotSatisfied,
                     &span,
@@ -1435,8 +1535,7 @@ impl Checker {
         }
         for descriptor in self.actor_protocol_descriptors.values_mut() {
             for handler in &mut descriptor.handlers {
-                let key = format!("{}::{}", descriptor.actor_name, handler.name);
-                handler.failure_display = targets.get(&key).cloned();
+                handler.failure_display = targets.get(&handler.declaration).cloned();
             }
         }
     }
@@ -1684,6 +1783,9 @@ impl Checker {
             NominalNamespace::FlattenedFile => Some(leaf.to_string()),
             NominalNamespace::Owned => None,
         };
+        if let (Item::Import(decl), Some(file)) = (item, module) {
+            self.bind_import_in_scope(file, decl, span);
+        }
         let machine_event_owner = if let Item::TypeDecl(decl) = item {
             if let hew_parser::ast::DeclarationOrigin::MachineEventType {
                 machine_start,
@@ -1714,6 +1816,20 @@ impl Checker {
         // Declares one row and answers its identity, which a member row takes
         // as its owner.
         let mut minted_types: Vec<crate::DefId> = Vec::new();
+        let item_visibility = match item {
+            Item::Const(decl) => decl.visibility,
+            Item::TypeDecl(decl) => decl.visibility,
+            Item::TypeAlias(decl) => decl.visibility,
+            Item::Trait(decl) => decl.visibility,
+            Item::Function(decl) => decl.visibility,
+            Item::Actor(decl) => decl.visibility,
+            Item::Supervisor(decl) => decl.visibility,
+            Item::Machine(decl) => decl.visibility,
+            Item::Record(decl) => decl.visibility,
+            Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => {
+                hew_parser::ast::Visibility::Pub
+            }
+        };
         let mut declare = |kind: Kind,
                            ordinal: usize,
                            name: Symbol,
@@ -1745,20 +1861,18 @@ impl Checker {
                         if matches!(kind, Kind::Type | Kind::Record | Kind::MachineEventType) {
                             minted_types.push(id);
                         }
-                        match owner {
-                            Some(owner) => {
-                                let resolution = scope::Binding::of_item(&self.defs, id)
-                                    .map_or(scope::Resolution::Member(id), |binding| {
-                                        binding.resolution()
-                                    });
-                                self.scopes.declare_member(owner, name, resolution);
-                            }
-                            None => {
-                                if let (Some(namespace_module), Some(binding)) =
-                                    (namespace_module, scope::Binding::of_item(&self.defs, id))
-                                {
-                                    self.scopes.declare_item(namespace_module, name, binding);
-                                }
+                        if let Some(owner) = owner {
+                            let resolution = scope::Binding::of_item(&self.defs, id)
+                                .map_or(scope::Resolution::Member(id), |binding| {
+                                    binding.resolution()
+                                });
+                            self.scopes.declare_member(owner, name, resolution);
+                        } else {
+                            self.defs.set_visibility(id, item_visibility);
+                            if let (Some(namespace_module), Some(binding)) =
+                                (namespace_module, scope::Binding::of_item(&self.defs, id))
+                            {
+                                self.scopes.declare_item(namespace_module, name, binding);
                             }
                         }
                         self.nominal_namespace_claims
@@ -2318,8 +2432,18 @@ impl Checker {
         }
         let path = self.defs.path(id);
         crate::BuiltinType::from_source_declaration(path).or_else(|| {
-            self.resolved_builtin_type(path)
-                .filter(|builtin| builtin.is_encoding_value())
+            // An encoding value is its builtin only when declared by the
+            // shipped std source of its module.
+            let module = self.defs.module(id)?;
+            let owner = self.defs.module_path(module);
+            let builtin =
+                crate::BuiltinType::from_encoding_value_source(owner, self.defs.name(id).as_str())?;
+            self.defs
+                .module_source(module)
+                .is_some_and(|source| {
+                    crate::module_registry::is_canonical_stdlib_module_source(source, owner)
+                })
+                .then_some(builtin)
         })
     }
 
@@ -2435,6 +2559,7 @@ impl Checker {
         self.mint_source_declaration_identities(program);
         self.register_builtins();
         self.capture_protected_prelude_bindings();
+        self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so
@@ -2512,6 +2637,7 @@ impl Checker {
         let fn_sigs_for_descriptors = std::mem::take(&mut self.fn_sigs);
         self.actor_protocol_descriptors = build_actor_protocol_descriptors(
             program,
+            &self.defs,
             FnSigView::new(
                 &fn_sigs_for_descriptors,
                 &self.fn_sig_keys,
@@ -2712,24 +2838,24 @@ impl Checker {
         // Emit unused import warnings. A REPL fragment imports modules it will
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {
-            for (key, (import_span, stored_module)) in &self.import_spans {
-                if self.is_canonical_prelude_manifest_import(stored_module.as_deref()) {
+            for import in &self.reportable_imports {
+                if self.is_canonical_prelude_manifest_import(import.source_module.as_deref()) {
                     continue;
                 }
                 // A compiler-injected import carries an empty span; the
                 // programmer has no line to remove.
-                if import_span.start == import_span.end {
+                if import.span.is_empty() {
                     continue;
                 }
-                if !self.used_modules.borrow().contains(key) {
+                if !self.scopes.import_used(import.site) {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedImport,
-                        span: import_span.clone(),
-                        message: format!("unused import: `{}`", key.short_name),
+                        span: import.span.clone(),
+                        message: format!("unused import: `{}`", import.name),
                         notes: vec![],
                         suggestions: vec!["remove this import".to_string()],
-                        source_module: stored_module.clone(),
+                        source_module: import.source_module.clone(),
                     });
                 }
             }
@@ -2823,21 +2949,21 @@ impl Checker {
             .into_iter()
             .map(|(k, kind)| {
                 let resolved_kind = match kind {
-                    ActorMethodKind::Message { method_id, policy } => {
-                        ActorMethodKind::Message { method_id, policy }
+                    ActorMethodKind::Message { method, policy } => {
+                        ActorMethodKind::Message { method, policy }
                     }
                     ActorMethodKind::Ask {
-                        method_id,
+                        method,
                         reply_ty,
                         policy,
                     } => ActorMethodKind::Ask {
-                        method_id,
+                        method,
                         reply_ty: self.finalize_type_for_handoff(&reply_ty),
                         policy,
                     },
-                    ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                    ActorMethodKind::StreamProducer(method, elem_ty) => {
                         ActorMethodKind::StreamProducer(
-                            method_id,
+                            method,
                             self.finalize_type_for_handoff(&elem_ty),
                         )
                     }
@@ -4816,9 +4942,51 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
     actors
 }
 
+/// The handler specs of one actor's receive functions, or `None` when any
+/// signature did not resolve.
+fn actor_handler_specs(
+    defs: &crate::DefTable,
+    fn_sigs: crate::check::types::FnSigView<'_>,
+    actor_identity: &str,
+    ad: &ActorDecl,
+) -> Option<Vec<crate::actor_protocol::ActorHandlerSpec>> {
+    let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
+        Vec::with_capacity(ad.receive_fns.len());
+    // TRANSITION(A1c3): WHY actors are still collected by registration
+    // key. WHEN collection walks declarations, the actor is its id. WHAT:
+    // descriptors built per actor declaration.
+    let actor = defs.lookup_path(actor_identity);
+    for rf in &ad.receive_fns {
+        let declaration =
+            defs.member_of_kind(actor?, rf.name.name, crate::DeclarationKind::ActorReceive)?;
+        let sig = fn_sigs.of(declaration)?;
+        let param_tys = sig
+            .params
+            .iter()
+            .map(crate::ResolvedTy::from_ty)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let return_ty = crate::ResolvedTy::from_ty(&sig.return_type).ok()?;
+        // Symbol mangling is owned by MIR/codegen; for slice 1 we record
+        // a stable surface-derived symbol string so the descriptor row
+        // is self-describing. Downstream consumers may continue to
+        // derive their own emit name today; subsequent Q87 slices route
+        // codegen through this `symbol` field.
+        let symbol = format!("{actor_identity}__{}", rf.name);
+        specs.push(crate::actor_protocol::ActorHandlerSpec {
+            declaration,
+            name: rf.name.to_string(),
+            param_tys,
+            return_ty,
+            symbol,
+        });
+    }
+    Some(specs)
+}
+
 /// Build [`ActorProtocolDescriptor`]s for every actor in the program, using
 /// each `receive fn`'s resolved type signature (param types + return type)
-/// drawn from `fn_sigs` keyed `"Actor::handler"`.
+/// drawn from `fn_sigs` by handler declaration.
 ///
 /// On collision: emits a `TypeErrorKind::ActorProtocolCollision` diagnostic
 /// against the second-colliding handler's span and **omits** the actor from
@@ -4831,6 +4999,7 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
 /// derivative error here would be noise.
 fn build_actor_protocol_descriptors(
     program: &Program,
+    defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
     errors: &mut Vec<TypeError>,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
@@ -4848,53 +5017,11 @@ fn build_actor_protocol_descriptors(
         if ad.receive_fns.is_empty() {
             continue;
         }
-        let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
-            Vec::with_capacity(ad.receive_fns.len());
-        let mut all_signatures_resolved = true;
-        for rf in &ad.receive_fns {
-            let key = format!("{actor_identity}::{}", rf.name);
-            let Some(sig) = fn_sigs.get(&key) else {
-                all_signatures_resolved = false;
-                break;
-            };
-            let mut param_tys: Vec<crate::ResolvedTy> = Vec::with_capacity(sig.params.len());
-            let mut any_unresolved = false;
-            for p in &sig.params {
-                if let Ok(rt) = crate::ResolvedTy::from_ty(p) {
-                    param_tys.push(rt);
-                } else {
-                    any_unresolved = true;
-                    break;
-                }
-            }
-            if any_unresolved {
-                all_signatures_resolved = false;
-                break;
-            }
-            let Ok(return_ty) = crate::ResolvedTy::from_ty(&sig.return_type) else {
-                all_signatures_resolved = false;
-                break;
-            };
-            // Symbol mangling is owned by MIR/codegen; for slice 1 we record
-            // a stable surface-derived symbol string so the descriptor row
-            // is self-describing. Downstream consumers may continue to
-            // derive their own emit name today; subsequent Q87 slices route
-            // codegen through this `symbol` field.
-            let symbol = format!("{actor_identity}__{}", rf.name);
-            specs.push(crate::actor_protocol::ActorHandlerSpec {
-                name: rf.name.to_string(),
-                param_tys,
-                return_ty,
-                symbol,
-            });
-        }
-        if !all_signatures_resolved {
-            // A handler signature failed to resolve; the underlying type
-            // error is already in `errors`. Skip publishing a partial
-            // descriptor — fail-closed downstream is preferable to a
-            // half-populated protocol.
+        // A handler signature that failed to resolve already reported its
+        // type error; a partial descriptor is never published.
+        let Some(specs) = actor_handler_specs(defs, fn_sigs, &actor_identity, ad) else {
             continue;
-        }
+        };
 
         // The descriptor is a source declaration fact, so its identity is the
         // actor's full owner path. Surface aliases remain resolver bindings and

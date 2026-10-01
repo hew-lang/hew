@@ -1,0 +1,10 @@
+// Control for `reject/identity_from_imported`: a converting `From` impl in an
+// imported module is accepted and carries `return error` across the edge.
+import errs;
+
+fn main() {
+    match errs.check(7) {
+        .Ok(value) => println(f"ok {value}"),
+        .Err(error) => println(f"{error}"),
+    }
+}

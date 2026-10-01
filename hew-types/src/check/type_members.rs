@@ -151,11 +151,7 @@ impl Checker {
                     return None;
                 }
                 self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    module_short.to_string(),
-                ));
+                self.note_import_use(module_short.name.as_str());
                 let canonical = format!(
                     "{}.{}",
                     self.canonical_module_import_owner(module_short.name.as_str()),
@@ -196,11 +192,7 @@ impl Checker {
                     return None;
                 }
                 self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    module.to_string(),
-                ));
+                self.note_import_use(module.name.as_str());
                 Some(format!(
                     "{}.{}",
                     self.canonical_module_import_owner(module.name.as_str()),

@@ -690,6 +690,7 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         // name the carriers themselves.
         "std.builtins.NodeId" => return Some(BuiltinType::NodeId),
         "std.builtins.Location" => return Some(BuiltinType::Location),
+        "std.builtins.RemotePid" => return Some(BuiltinType::RemotePid),
         _ => {}
     }
     if let Some(kind) = builtin_types()

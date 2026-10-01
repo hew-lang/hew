@@ -58,6 +58,8 @@ pub struct ActorProtocolDescriptor {
 /// shape consumers need to issue a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorHandlerDescriptor {
+    /// The handler's `receive fn` declaration.
+    pub declaration: crate::DefId,
     /// Surface name (`"increment"`).
     pub name: String,
     /// Deterministic 32-bit `msg_id`; see module-level docs for the algorithm.
@@ -144,6 +146,8 @@ pub struct ActorProtocolCollision {
 /// builder needs that is not derived from the handler name itself.
 #[derive(Debug, Clone)]
 pub struct ActorHandlerSpec {
+    /// The handler's `receive fn` declaration.
+    pub declaration: crate::DefId,
     pub name: String,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
@@ -183,6 +187,7 @@ impl ActorProtocolDescriptor {
             }
             seen.push((msg_id, built.len()));
             built.push(ActorHandlerDescriptor {
+                declaration: spec.declaration,
                 name: spec.name.clone(),
                 msg_id,
                 param_tys: spec.param_tys.clone(),
@@ -228,6 +233,7 @@ impl ActorProtocolDescriptor {
             }
             seen.push((*msg_id, built.len()));
             built.push(ActorHandlerDescriptor {
+                declaration: spec.declaration,
                 name: spec.name.clone(),
                 msg_id: *msg_id,
                 param_tys: spec.param_tys.clone(),
@@ -259,6 +265,7 @@ mod tests {
 
     fn unit_spec(name: &str) -> ActorHandlerSpec {
         ActorHandlerSpec {
+            declaration: crate::DefId::for_test(format!("Test::{name}")),
             name: name.to_string(),
             param_tys: vec![],
             return_ty: ResolvedTy::Unit,

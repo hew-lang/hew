@@ -111,7 +111,9 @@ impl Checker {
             || matches!(resolved_expected, Ty::TraitObject { .. })
             || matches!(
                 &resolved_expected,
-                Ty::Named { head, .. } if self.type_aliases.contains_key(head.registry_key())
+                Ty::Named { head, .. } if head.nominal().is_some_and(|id| {
+                    self.type_aliases.contains_key(&id.declaration())
+                })
             )
         {
             return resolved_expected;
@@ -428,7 +430,7 @@ impl Checker {
         iterable.start..iterable.start
     }
 
-    fn stream_source_actor_method_name(&mut self, iterable: &Expr) -> Option<String> {
+    fn stream_source_actor_handler(&mut self, iterable: &Expr) -> Option<crate::DefId> {
         let Expr::MethodCall {
             receiver, method, ..
         } = iterable
@@ -446,12 +448,9 @@ impl Checker {
         let Ty::Named { head, .. } = actor_ty else {
             return None;
         };
-        let name = head.registry_key();
-        let actor_name = self
-            .type_def_at(name)
-            .filter(|def| def.kind == TypeDefKind::Actor)
-            .map_or_else(|| name.to_string(), |def| def.name.clone());
-        Some(format!("{actor_name}::{}", method.0))
+        let method = method.0.name.as_str();
+        self.actor_member(head, method, crate::DeclarationKind::ActorReceive)
+            .or_else(|| self.actor_member(head, method, crate::DeclarationKind::ActorMethod))
     }
 
     /// Determine the type of the last statement in a block (the statement that
@@ -1242,8 +1241,8 @@ impl Checker {
                         } if one_path.segments.len() == 1 => {
                             let type_name = resolved_val_ty.type_name();
                             match type_name {
-                                Some(tn) => {
-                                    let td = self.lookup_type_def(tn);
+                                Some(_) => {
+                                    let td = self.ty_type_def(&resolved_val_ty).cloned();
                                     match td {
                                         Some(td)
                                             if matches!(
@@ -1950,12 +1949,11 @@ impl Checker {
                                 "`for` over a stream requires a resolved element type".to_string(),
                             );
                             Ty::Error
-                        } else if let Some(method_name) =
-                            self.stream_source_actor_method_name(&iterable.0)
+                        } else if let Some(handler) = self.stream_source_actor_handler(&iterable.0)
                         {
                             // SAFETY: args is non-empty (checked above)
                             let inner = inner_opt.unwrap();
-                            if self.receive_generator_methods.contains(&method_name) {
+                            if self.receive_generator_methods.contains(&handler) {
                                 let resolved_inner = self.subst.resolve(&inner);
                                 if resolved_inner.has_inference_var() {
                                     self.report_error(
@@ -1973,7 +1971,8 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     &iterable.1,
                                     format!(
-                                        "`for` over actor method `{method_name}` requires a `receive gen fn`"
+                                        "`for` over actor method `{}` requires a `receive gen fn`",
+                                        self.defs.path(handler)
                                     ),
                                 );
                                 Ty::Error

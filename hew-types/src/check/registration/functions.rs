@@ -848,10 +848,8 @@ impl Checker {
             }
             Item::Trait(td) => {
                 if let Some(supers) = &td.super_traits {
-                    let owner = self.current_module.as_deref();
                     for super_trait in supers {
-                        self.mark_imported_trait_used(owner, &super_trait.path.to_string());
-                        // TRANSITION(P1): deleted by A1 commit 2
+                        self.note_trait_use(&super_trait.path.to_string());
                     }
                 }
                 // A generic trait's own params (`trait Foo<T>`) are in scope for
@@ -873,8 +871,8 @@ impl Checker {
             }
             Item::Import(id) => {
                 // Always track the import span. For non-root modules the span is a byte
-                // offset into the sub-module's own source file; the stored `source_module`
-                // in `import_spans` tells the diagnostic renderer which file owns the span.
+                // offset into the sub-module's own source file; the reportable import's
+                // `source_module` tells the diagnostic renderer which file owns the span.
                 self.register_import(id, Some(span));
             }
             Item::Const(_)
@@ -2503,18 +2501,32 @@ impl Checker {
         };
 
         let method_name = format!("{}::{}", actor_name, rf.name);
+        // TRANSITION(A1c3): WHY the actor is still named by its registration
+        // key. WHEN actor registration passes the declaration id, the handler
+        // is its member directly. WHAT: registration by declaration.
+        let Some(handler) = self.lookup_declaration(actor_name).and_then(|actor| {
+            self.defs
+                .member_of_kind(actor, rf.name.name, crate::DeclarationKind::ActorReceive)
+        }) else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &rf.span,
+                format!("internal: receive handler `{method_name}` has no declaration"),
+            );
+            return;
+        };
         if rf.is_generator {
-            self.receive_generator_methods.insert(method_name.clone());
+            self.receive_generator_methods.insert(handler);
         }
         if matches!(
             rf.return_type.as_ref().map(|ty| &ty.0),
             Some(hew_parser::ast::TypeExpr::Fallible { .. })
         ) {
-            self.receive_fails_methods.insert(method_name.clone());
+            self.receive_fails_methods.insert(handler);
         }
-        self.actor_receive_methods.insert(method_name.clone());
+        self.actor_receive_methods.insert(handler);
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
-        self.insert_fn_sig_at(&method_name, sig);
+        self.insert_fn_sig(&method_name, handler, sig);
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).

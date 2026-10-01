@@ -25,8 +25,8 @@ impl LowerCtx {
         // handle: `job.run(3)` addresses the handle in the field, so the
         // field read is the delivery receiver.
         let lowered_receiver = if matches!(&dispatch,
-                ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. }
-                    if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                ActorMethodKind::Ask { method: handler, .. } | ActorMethodKind::Message { method: handler, .. }
+                    if self.is_lambda_actor_method(*handler))
         {
             match self.method_call_rewrites.get(&key).cloned() {
                 Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => self.make_expr(
@@ -68,8 +68,11 @@ impl LowerCtx {
             this.actor_message_arg_intent(&arg.1)
         });
         match dispatch {
-            ActorMethodKind::Message { method_id, policy } => {
-                let method_id = self.qualify_imported_actor_method_id(method_id);
+            ActorMethodKind::Message {
+                method: handler,
+                policy,
+            } => {
+                let method_id = self.actor_method_id(handler);
                 let Some(ty) = self.checker_expr_ty_if_present(&span) else {
                     return (
                         HirExprKind::Unsupported("message submission has no checked type".into()),
@@ -112,11 +115,11 @@ impl LowerCtx {
                 )
             }
             ActorMethodKind::Ask {
-                method_id,
+                method: handler,
                 reply_ty,
                 policy,
             } => {
-                let method_id = self.qualify_imported_actor_method_id(method_id);
+                let method_id = self.actor_method_id(handler);
                 let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id) else {
                     return (
                         HirExprKind::Unsupported("actor ask has no checked result".to_string()),
@@ -171,8 +174,8 @@ impl LowerCtx {
                     }
                 }
             }
-            ActorMethodKind::StreamProducer(method_id, elem_ty) => {
-                let method_id = self.qualify_imported_actor_method_id(method_id);
+            ActorMethodKind::StreamProducer(handler, elem_ty) => {
+                let method_id = self.actor_method_id(handler);
                 match ResolvedTy::from_ty(&elem_ty) {
                     Ok(elem_ty) => {
                         let stream_ty = ResolvedTy::named_builtin(

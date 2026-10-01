@@ -3827,7 +3827,7 @@ fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckO
 /// literal (`Light.On`, never `.step(...)` or a constructed payload), must
 /// credit the import binding exactly as the Call-path dispatch does — the
 /// Reference-path dispatch was the one caller of `dispatch_dotted_type_member`
-/// that never called `mark_resolved_nominal_owner_used` (#3175).
+/// that never counted the use (#3175).
 #[test]
 fn selective_import_used_only_as_bare_state_literal_is_not_unused() {
     let (_, output) = check_qualified_machine_state_root(

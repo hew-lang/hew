@@ -62,7 +62,10 @@ impl Checker {
             method,
         )
         .or_else(|| {
-            let target = self.alias_target_for_instance(type_name, type_args)?;
+            let target = self
+                .type_aliases
+                .get(&self.lookup_declaration(type_name)?)?
+                .instantiate(type_args)?;
             crate::method_resolution::lookup_method_sig(
                 &self.defs,
                 &self.type_defs,
@@ -507,12 +510,14 @@ impl Checker {
                 // `methods` declared on the same actor (also keyed
                 // `{Actor}::{name}` in `fn_sigs`) stay on the regular
                 // method-call path.
-                let method_key = format!("{name}::{method_name}");
-                let is_actor_receive_dispatch = self
-                    .type_def_at(name)
+                let actor_handler = self
+                    .head_type_def(*head)
                     .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                    && self.actor_receive_methods.contains(&method_key);
-                if is_actor_receive_dispatch {
+                    .then(|| {
+                        self.actor_member(*head, method_name, crate::DeclarationKind::ActorReceive)
+                    })
+                    .flatten();
+                if let Some(handler) = actor_handler {
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::ActorInstance {
@@ -520,7 +525,7 @@ impl Checker {
                         },
                     );
                     self.enforce_actor_method_send_args(args);
-                    return self.record_actor_method_dispatch(span, method_key, ty.clone());
+                    return self.record_actor_method_dispatch(span, handler, ty.clone());
                 }
                 self.record_method_call_receiver_kind(
                     span,
@@ -722,8 +727,8 @@ impl Checker {
         else {
             return None;
         };
-        let name = head.registry_key();
-        let type_def = self.lookup_type_def(name)?;
+        let type_def = self.head_type_def(*head)?.clone();
+        let name = &type_def.name;
         let field_ty = type_def.fields.get(method_name)?;
         let field_ty =
             Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);

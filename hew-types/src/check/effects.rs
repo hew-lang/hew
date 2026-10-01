@@ -423,8 +423,7 @@ impl Checker {
         let Ty::Named { head, args } = self.subst.resolve(receiver_ty) else {
             return None;
         };
-        let name = head.registry_key();
-        let definition = self.lookup_type_def(name)?;
+        let definition = self.head_type_def(head)?;
         Some(Self::instantiate_type_def_member(
             definition.fields.get(field)?,
             &definition.type_params,

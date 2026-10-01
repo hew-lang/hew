@@ -1341,8 +1341,7 @@ impl Checker {
         let Ty::Named { head, args } = ty else {
             return false;
         };
-        let name = head.registry_key();
-        self.alias_target_for_instance(name, args)
+        self.alias_target_for_instance(*head, args)
             .is_some_and(|target| self.type_implements_trait_for_ty(&target, trait_name))
     }
 

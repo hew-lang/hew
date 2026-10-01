@@ -1246,7 +1246,7 @@ impl Checker {
         // are canonical AsyncIo operations. They park on the reactor even
         // when called from a receive handler, so warning for them would direct
         // programmers away from the supported scheduler-safe spelling.
-        if matches!((type_name, method), ("http.Server", "accept")) {
+        if matches!((type_name, method), ("std.net.http.Server", "accept")) {
             self.warn_if_blocking_in_receive_fn(&format!("{type_name}.{method}"), span);
         }
     }
@@ -1288,11 +1288,7 @@ impl Checker {
             return None;
         }
         if self.module_binding_in_current_file(module_name) {
-            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                self.current_module.clone(),
-                self.current_module_idx,
-                module_name.to_string(),
-            ));
+            self.note_import_use(module_name);
         }
         // Export gate: only `pub` functions are reachable across the module
         // boundary, mirroring the dot-form path. A `package fn` accessible
@@ -1960,7 +1956,7 @@ impl Checker {
             // this call-form constructor is its own resolution path. Credit
             // the lexical binding the same way, via the resolved owner.
             if let Some((owner, _)) = type_name.rsplit_once('.') {
-                self.mark_module_owner_bindings_used(owner);
+                self.note_path_use(owner);
             }
             let type_param_count = type_params.len();
             if type_param_count == 0 {
@@ -2473,7 +2469,7 @@ impl Checker {
                 ))
                 .cloned()
             {
-                self.mark_module_owner_bindings_used(&module);
+                self.note_path_use(&module);
             }
             // `Node.register` hands the actor's own handle to the node
             // registry; codegen calls `hew_actor_pid` on it. An actor is the
@@ -2874,7 +2870,9 @@ impl Checker {
             return false;
         }
         let candidates: Vec<String> = owners.iter().cloned().collect();
-        self.mark_ambiguous_import_owners_used(&candidates);
+        for candidate in &candidates {
+            self.note_path_use(candidate);
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousType,
             span,
@@ -3037,7 +3035,7 @@ impl Checker {
             }
             vec![msg_ty]
         };
-        let method_id = crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID.to_string();
+        let method = self.lambda_actor_method();
         let key = SpanKey::in_module(span, self.current_module_idx);
         let Some((policy, one_way)) = view else {
             // `handle(msg)` is the completion call: it waits for the
@@ -3046,7 +3044,7 @@ impl Checker {
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
-                    method_id,
+                    method,
                     reply_ty: reply_ty.clone(),
                     policy: crate::actor_delivery::SendPolicy::Wait,
                 },
@@ -3055,11 +3053,11 @@ impl Checker {
         };
         if !one_way {
             let completion =
-                self.completion_request_type(&method_id, &reply_ty, target, policy, &payload);
+                self.completion_request_type(method, &reply_ty, target, policy, &payload);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
-                    method_id,
+                    method,
                     reply_ty: reply_ty.clone(),
                     policy,
                 },
@@ -3081,7 +3079,7 @@ impl Checker {
             return Ty::Error;
         }
         self.actor_method_dispatch
-            .insert(key, ActorMethodKind::Message { method_id, policy });
+            .insert(key, ActorMethodKind::Message { method, policy });
         self.record_submission_suspension(span, policy.may_suspend());
         crate::actor_delivery::result_type(crate::actor_delivery::message_type(
             target.clone(),

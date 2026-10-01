@@ -663,12 +663,9 @@ impl Checker {
     fn is_uninhabited(&self, ty: &Ty) -> bool {
         match self.subst.resolve(ty) {
             Ty::Never => true,
-            Ty::Named { head, .. } => {
-                self.lookup_type_def(head.registry_key())
-                    .is_some_and(|definition| {
-                        definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-                    })
-            }
+            Ty::Named { head, .. } => self.head_type_def(head).is_some_and(|definition| {
+                definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+            }),
             _ => false,
         }
     }

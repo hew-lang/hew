@@ -301,7 +301,7 @@ impl Checker {
                         let super_names: Vec<String> = supers
                             .iter()
                             .map(|s| {
-                                self.mark_imported_trait_used(None, &s.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                                self.note_trait_use(&s.path.to_string());
                                 s.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
                             })
                             .collect();
@@ -380,7 +380,7 @@ impl Checker {
         let target = self.resolve_type_expr_tracking_holes(&decl.ty, &mut holes);
         self.generic_ctx.pop();
         self.type_aliases.insert(
-            identity.clone(),
+            declaration,
             TypeAliasDef {
                 declaration,
                 type_params,

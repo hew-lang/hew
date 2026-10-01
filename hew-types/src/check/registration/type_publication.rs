@@ -254,6 +254,7 @@ impl Checker {
             _ => unreachable!("matched canonical lifecycle owner"),
         };
         for source_name in lifecycle_names {
+            self.bind_prelude_item(owner, source_name);
             self.canonical_lifecycle_import_authority.insert((
                 None,
                 (*source_name).to_string(),
@@ -290,9 +291,14 @@ impl Checker {
                 self.register_type_alias_decl(decl, span);
             }
         }
-        for (name, alias) in self.type_aliases.clone() {
-            if self.alias_expansion_is_recursive(&name) {
-                let span = self.type_def_spans.get(&name).cloned().unwrap_or_default();
+        for (declaration, alias) in self.type_aliases.clone() {
+            if self.alias_expansion_is_recursive(declaration) {
+                let name = self.defs.path(declaration).to_string();
+                let span = self
+                    .defs
+                    .site(declaration)
+                    .map(crate::def_table::DeclarationOccurrence::span)
+                    .unwrap_or_default();
                 let mut error = TypeError::new(TypeErrorKind::InvalidOperation, span,
                     format!("type alias `{name}` is recursive: aliases cannot refer to themselves, directly or through a chain"));
                 error.source_module = alias.source_module;
@@ -517,11 +523,32 @@ impl Checker {
     /// Register type declarations, trait declarations, and impl blocks from
     /// stdlib modules that have Hew source files. This makes trait methods
     /// (e.g. bench.Suite.add) visible to the type checker.
+    pub(in crate::check) fn register_stdlib_hew_items(
+        &mut self,
+        module_short: &str,
+        module_full_path: &str,
+        items: &[Spanned<Item>],
+        import_spec: StdlibBarePublication<'_>,
+    ) {
+        // A compiler-embedded source has no file of its own: its spans would
+        // land on the importer's file index, so `Scope` does not publish its
+        // resolutions.
+        let embedded = !self.module_item_sources.contains_key(module_full_path)
+            && self
+                .defs
+                .module_for_path(module_full_path)
+                .and_then(|module| self.defs.module_source(module))
+                .is_none();
+        let saved = std::mem::replace(&mut self.registering_embedded_source, embedded);
+        self.register_stdlib_hew_item_bodies(module_short, module_full_path, items, import_spec);
+        self.registering_embedded_source = saved;
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "three-pass registration loop with local_type_defs scoping"
     )]
-    pub(in crate::check) fn register_stdlib_hew_items(
+    fn register_stdlib_hew_item_bodies(
         &mut self,
         module_short: &str,
         module_full_path: &str,
@@ -541,7 +568,20 @@ impl Checker {
         let importer_source = self.current_item_source.clone();
         let importer_file = self.current_module_idx;
         if self.defs.module_has_source_declarations(identity_module) {
+            let mut files: Vec<crate::ModuleId> = item_sources
+                .iter()
+                .filter_map(|source| self.defs.module_for_source(source))
+                .collect();
+            files.push(identity_module);
+            self.declare_minted_items_in_scope(&files, identity_module);
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
+                if let Item::Import(decl) = item {
+                    let file = item_sources
+                        .get(item_ordinal)
+                        .and_then(|source| self.defs.module_for_source(source))
+                        .unwrap_or(identity_module);
+                    self.bind_import_in_scope(file, decl, span);
+                }
                 self.declare_item_type_parameter_scopes(
                     item_sources
                         .get(item_ordinal)
@@ -583,7 +623,7 @@ impl Checker {
                 // visible to the eager trait-use path. Pass `None` for the import
                 // span deliberately: this import statement lives in a stdlib source
                 // file, so its span indexes that file — not the user document the
-                // diagnostics are reported against. Recording it in `import_spans`
+                // diagnostics are reported against. Reporting it as an import
                 // would make it a user-facing unused-import lint candidate whose
                 // span cannot be resolved to any user source, mis-attributing a
                 // stdlib-internal offset to the user's document.
@@ -754,10 +794,7 @@ impl Checker {
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
                         for super_trait in supers {
-                            self.mark_imported_trait_used_for_module_aliases(
-                                module_short,
-                                &super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            );
+                            self.note_trait_use(&super_trait.path.to_string());
                         }
                     }
                     // Record visibility for all traits (both pub and non-pub) so a
@@ -1004,10 +1041,7 @@ impl Checker {
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.mark_imported_trait_used_for_module_aliases(
-                            module_short,
-                            &tb.path.to_string(),
-                        ); // TRANSITION(P1): deleted by A1 commit 2
+                        self.note_trait_use(&tb.path.to_string());
                         self.record_trait_impl_methods(
                             type_name,
                             &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
@@ -1675,10 +1709,7 @@ impl Checker {
                             self.current_module.replace(module_full_path.to_string());
                         self.current_module_idx = declaring_file_idx;
                         for super_trait in supers {
-                            self.mark_imported_trait_used(
-                                Some(module_full_path),
-                                &super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            );
+                            self.note_trait_use(&super_trait.path.to_string());
                         }
                         self.current_module = saved_importer_module;
                         self.current_module_idx = importer_file_idx;
@@ -1783,10 +1814,7 @@ impl Checker {
                         let super_keys: Vec<String> = supers
                             .iter()
                             .map(|s| {
-                                self.mark_imported_trait_used(
-                                    Some(module_full_path),
-                                    &s.path.to_string(),
-                                ); // TRANSITION(P1): deleted by A1 commit 2
+                                self.note_trait_use(&s.path.to_string());
                                 self.resolve_super_trait_edge(module_full_path, &s.path.to_string())
                                 // TRANSITION(P1): deleted by A1 commit 2
                             })

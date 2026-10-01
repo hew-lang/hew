@@ -129,9 +129,44 @@ impl Checker {
         })
     }
 
+    /// The member `method` of the actor a head names, of declaration `kind`
+    /// (a `receive fn` or a private `fn`).
+    pub(in crate::check) fn actor_member(
+        &self,
+        head: crate::TypeHead,
+        method: &str,
+        kind: crate::DeclarationKind,
+    ) -> Option<crate::DefId> {
+        let actor = head.nominal()?.declaration();
+        self.defs
+            .member_of_kind(actor, Symbol::intern(method), kind)
+    }
+
     /// This compilation's type definitions, read by declaration.
     pub(in crate::check) fn type_def_view(&self) -> crate::check::TypeDefView<'_> {
         crate::check::TypeDefView::new(&self.defs, &self.type_defs)
+    }
+
+    /// The definition a type head names: a nominal's or actor's own, a
+    /// builtin's std declaration.
+    pub(in crate::check) fn head_type_def(&self, head: crate::TypeHead) -> Option<&TypeDef> {
+        match head {
+            // TRANSITION(A1c4): WHY the module registry's signature mirror
+            // still writes spellings no declaration was found for. WHEN its
+            // signatures resolve through `Scope`, `TypeHead::Unresolved` and
+            // this arm are deleted. WHAT: the mirror reads the checker's
+            // resolved signatures.
+            crate::TypeHead::Unresolved(spelling) => self.type_def_at(spelling.as_str()),
+            _ => self.type_defs.get(&head.declaration(&self.defs)?),
+        }
+    }
+
+    /// The definition the head of a named type names.
+    pub(in crate::check) fn ty_type_def(&self, ty: &Ty) -> Option<&TypeDef> {
+        match ty {
+            Ty::Named { head, .. } => self.head_type_def(*head),
+            _ => None,
+        }
     }
 
     /// The declaration a registry key spells: the current module's
@@ -470,7 +505,7 @@ impl Checker {
     /// declaration authored in the current scope wins before an import, and a
     /// bare import resolves only when that exact binding published one source
     /// identity. There is deliberately no scan over globally loaded exports.
-    pub(in crate::check) fn resolve_supervisor_child_type(&self, raw: &str) -> Option<String> {
+    pub(in crate::check) fn resolve_supervisor_child_type(&mut self, raw: &str) -> Option<String> {
         if let Some((module_short, type_name)) = raw.split_once('.') {
             return self
                 .resolve_module_type(module_short, type_name)
@@ -518,19 +553,23 @@ impl Checker {
         }
 
         if let Some(identity) = self.published_bare_type_qualified(raw) {
-            if let Some(owner) = self.unqualified_to_module.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                raw.to_string(),
-            )) {
-                self.mark_module_owner_bindings_used(owner);
+            if let Some(owner) = self
+                .unqualified_to_module
+                .get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    raw.to_string(),
+                ))
+                .cloned()
+            {
+                self.note_path_use(&owner);
             }
             return Some(identity);
         }
         None
     }
 
-    pub(in crate::check) fn canonical_supervisor_child_type(&self, raw: &str) -> String {
+    pub(in crate::check) fn canonical_supervisor_child_type(&mut self, raw: &str) -> String {
         self.resolve_supervisor_child_type(raw)
             .unwrap_or_else(|| raw.to_string())
     }
@@ -582,18 +621,6 @@ impl Checker {
             || bare_name.to_string(),
             |module| format!("{module}.{bare_name}"),
         )
-    }
-
-    /// Resolve a bare actor reference to its registered checker identity.
-    ///
-    /// Resolution order (local-first, mirroring `per-module-type-identity`):
-    /// 1. the current module's own actor (`{current_full_path}.{name}`)
-    /// 2. a root/flat actor registered under the bare name
-    /// 3. a named-import binding (`unqualified_to_module`)
-    /// 4. the modules exporting an actor of that name: exactly one resolves
-    ///    to it; two or more is `Ambiguous` (never silent first-wins).
-    pub(in crate::check) fn resolve_bare_actor_identity(&self, name: &str) -> BareActorResolution {
-        self.resolve_bare_declaration_identity(name, &[TypeDefKind::Actor])
     }
 
     /// Resolve a bare `spawn` target. A supervisor is spawned exactly as an

@@ -76,11 +76,7 @@ impl Checker {
                 // The implicit `use std::text::regex` injected by the CLI is the
                 // provider of this type; mark it as used so the unused-import
                 // check doesn't fire a false-positive warning.
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    "regex",
-                ));
+                self.note_import_use("regex");
                 // Validate the pattern using the same regex engine the runtime
                 // uses. An invalid pattern is a compile-time hard error.
                 if let Err(err) = regex::Regex::new(pattern) {
@@ -471,9 +467,11 @@ impl Checker {
                         || (r.as_result().is_some() && ty.as_result().is_some())
                         || matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { head, .. }
-                                if head.builtin().is_none()
-                                    && self.type_def_at(head.registry_key()).is_none()
-                                    && !self.type_aliases.contains_key(head.registry_key()))
+                        if head.builtin().is_none()
+                            && self.head_type_def(*head).is_none()
+                            && !head.nominal().is_some_and(|id| {
+                                self.type_aliases.contains_key(&id.declaration())
+                            }))
                     {
                         None
                     } else {
@@ -1346,7 +1344,7 @@ impl Checker {
             {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
                 if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
-                    self.mark_module_owner_bindings_used(source_owner);
+                    self.note_path_use(source_owner);
                 }
             }
             self.record_call_edge(&fn_sig_key);
@@ -1396,7 +1394,9 @@ impl Checker {
             Ty::Error
         } else if self.type_def_at(surface_name).is_some()
             || self.known_types.contains(surface_name)
-            || self.type_aliases.contains_key(surface_name)
+            || self
+                .lookup_declaration(surface_name)
+                .is_some_and(|declaration| self.type_aliases.contains_key(&declaration))
             || crate::lookup_builtin_type(surface_name).is_some()
             || crate::ty::is_reserved_type_name(surface_name)
         {

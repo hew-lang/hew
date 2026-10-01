@@ -174,7 +174,7 @@ impl Checker {
                 span,
             },
         )?;
-        self.mark_resolved_nominal_owner_used(&head.canonical_type);
+        self.note_path_use(&head.canonical_type);
 
         Some(result)
     }
@@ -201,7 +201,7 @@ impl Checker {
                     span,
                 },
             ) {
-                self.mark_resolved_nominal_owner_used(&head.canonical_type);
+                self.note_path_use(&head.canonical_type);
                 return result;
             }
             let source_member = format!("{}.{method}", head.canonical_type);
@@ -262,11 +262,7 @@ impl Checker {
                     },
                 );
                 if self.module_binding_in_current_file(name.name.as_str()) {
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        name.to_string(),
-                    ));
+                    self.note_import_use(name.name.as_str());
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
                 // method contains "::" → treat as a qualified variant constructor rather than a
@@ -537,7 +533,7 @@ impl Checker {
             )
             .is_none() =>
             {
-                self.alias_target_for_instance(head.registry_key(), type_args)
+                self.alias_target_for_instance(*head, type_args)
                     .unwrap_or(resolved)
             }
             _ => resolved,
@@ -586,9 +582,12 @@ impl Checker {
         }
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
-        if let Ty::Named { head, .. } = &resolved {
-            let name = head.registry_key();
-            self.warn_if_blocking_handle_method(name, method, span);
+        if let Some(receiver) = match &resolved {
+            Ty::Named { head, .. } => head.nominal(),
+            _ => None,
+        } {
+            let name = self.defs.path(receiver.declaration()).to_string();
+            self.warn_if_blocking_handle_method(&name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
         // value enums. Collection clones keep their existing runtime rewrites,
@@ -1273,23 +1272,9 @@ impl Checker {
                 };
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
-                let has_user_send_handler = if method == "send" {
-                    resolved.as_local_actor_ref().and_then(|inner| {
-                        if let Ty::Named { head, .. } = inner { let name = head.registry_key();
-                            Some(name.to_string())
-                        } else {
-                            None
-                        }
-                    }).is_some_and(|actor_name| {
-                        self.actor_receive_methods.contains(&format!("{actor_name}::send"))
-                            || matches!(
-                                self.resolve_bare_actor_identity(&actor_name),
-                                BareActorResolution::Resolved(ref id) if self.actor_receive_methods.contains(&format!("{id}::send"))
-                            )
-                    })
-                } else {
-                    false
-                };
+                let has_user_send_handler = method == "send"
+                    && matches!(resolved.as_local_actor_ref(), Some(Ty::Named { head, .. })
+                        if self.actor_member(*head, method, crate::DeclarationKind::ActorReceive).is_some());
                 // A concrete actor-handle `.send(msg)` call with no user
                 // `receive fn send` handler has no lowerable local-
                 // mailbox delivery path (#2367). Declaring `impl
@@ -1375,31 +1360,15 @@ impl Checker {
                     args: actor_type_args,
                 } = inner
                 {
-                    let actor_name = head.registry_key();
-                    // An annotation-derived `Account` actor-handle type carries
-                    // the actor's bare name directly; resolve it to the
-                    // registered actor identity (current module's actor, root actor, or a
-                    // unique module export) before keying `fn_sigs`. Spawn-
-                    // derived handles already carry the dotted identity.
-                    let actor_identity = if self.has_fn_sig(&format!("{actor_name}::{method}")) {
-                        actor_name.to_string()
-                    } else if let BareActorResolution::Resolved(identity) =
-                        self.resolve_bare_actor_identity(actor_name)
-                    {
-                        identity
-                    } else {
-                        actor_name.to_string()
-                    };
-                    let method_key = format!("{actor_identity}::{method}");
-                    // A plain (non-receive) `fn` on the actor lands in `fn_sigs` under the
-                    // same `{identity}::{method}` key as a `receive fn` handler (see
-                    // `register_actor_base`), but only `register_receive_fn` adds to
-                    // `actor_receive_methods`. A key present in the former but absent from
-                    // the latter names an internal method with no mailbox-handler shape —
-                    // MIR has no `ActorHandlerLayout` row for it (#2366). Reject here,
-                    // fail-closed, instead of deferring to a MIR NotYetImplemented.
-                    if self.has_fn_sig(&method_key)
-                        && !self.actor_receive_methods.contains(&method_key)
+                    let handler =
+                        self.actor_member(*head, method, crate::DeclarationKind::ActorReceive);
+                    // A private actor `fn` has no mailbox-handler shape; MIR has
+                    // no `ActorHandlerLayout` row for it (#2366). Refuse it here,
+                    // fail-closed.
+                    if handler.is_none()
+                        && self
+                            .actor_member(*head, method, crate::DeclarationKind::ActorMethod)
+                            .is_some()
                     {
                         for arg in args {
                             let (expr, sp) = arg.expr();
@@ -1415,51 +1384,60 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    if let Some(sig) =
-                        self.lookup_named_method_sig(&actor_identity, actor_type_args, method)
-                    {
-                        // Route through the one application authority rather
-                        // than checking args against `sig.params` directly: a
-                        // generic `receive fn keep<T>(..)` needs its type
-                        // parameters freshened and inferred from the arguments,
-                        // and its instantiation recorded so structural-equality
-                        // obligations raised in the handler body are discharged.
-                        // The hand-rolled loop that used to live here skipped
-                        // both, so a generic handler reported `expected T` at
-                        // every call site.
-                        let applied_sig = self.apply_instantiated_call_signature(
-                            &sig,
-                            None,
-                            args,
-                            span,
-                            SignatureArgApplication::FunctionLike {
-                                param_names: &sig.param_names,
-                                arity_context: format!("method `{method}`"),
-                            },
-                            true,
-                            Some(GenericCallee::Method {
-                                type_name: &actor_identity,
-                                method,
-                                owner_type_args: actor_type_args,
-                            }),
-                        );
-                        // Every argument crosses the mailbox boundary. This is
-                        // the funnel-compatible pairing (it reads the per-arg
-                        // types the application just published) used by the bare
-                        // actor-instance dispatch arm.
-                        self.enforce_actor_method_send_args(args);
-                        self.record_method_call_receiver_kind(
-                            span,
-                            MethodCallReceiverKind::ActorInstance {
-                                actor_name: actor_identity.clone(),
-                            },
-                        );
-                        let call_ty = self.record_actor_method_dispatch(
-                            span,
-                            method_key,
-                            applied_sig.return_type.clone(),
-                        );
-                        return call_ty;
+                    // TRANSITION(A1c3): WHY the shared method resolution still
+                    // reads signatures by the actor's rendered key. WHEN it reads
+                    // the handler's declaration, this render goes. WHAT:
+                    // `lookup_named_method_sig` by declaration.
+                    let actor_identity = head
+                        .nominal()
+                        .map(|actor| self.defs.path(actor.declaration()).to_string());
+                    if let (Some(handler), Some(actor_identity)) = (handler, actor_identity) {
+                        if let Some(sig) =
+                            self.lookup_named_method_sig(&actor_identity, actor_type_args, method)
+                        {
+                            // Route through the one application authority rather
+                            // than checking args against `sig.params` directly: a
+                            // generic `receive fn keep<T>(..)` needs its type
+                            // parameters freshened and inferred from the arguments,
+                            // and its instantiation recorded so structural-equality
+                            // obligations raised in the handler body are discharged.
+                            // The hand-rolled loop that used to live here skipped
+                            // both, so a generic handler reported `expected T` at
+                            // every call site.
+                            let applied_sig = self.apply_instantiated_call_signature(
+                                &sig,
+                                None,
+                                args,
+                                span,
+                                SignatureArgApplication::FunctionLike {
+                                    param_names: &sig.param_names,
+                                    arity_context: format!("method `{method}`"),
+                                },
+                                true,
+                                Some(GenericCallee::Method {
+                                    type_name: &actor_identity,
+                                    method,
+                                    owner_type_args: actor_type_args,
+                                }),
+                            );
+                            // Every argument crosses the mailbox boundary. This is
+                            // the funnel-compatible pairing (it reads the per-arg
+                            // types the application just published) used by the bare
+                            // actor-instance dispatch arm.
+                            self.enforce_actor_method_send_args(args);
+                            self.record_method_call_receiver_kind(
+                                span,
+                                MethodCallReceiverKind::ActorInstance {
+                                    actor_name: actor_identity.clone(),
+                                },
+                            );
+                            let call_ty = self.record_actor_method_dispatch(
+                                span,
+                                handler,
+                                applied_sig.return_type.clone(),
+                            );
+                            return call_ty;
+                        }
                     }
                 }
                 for arg in args {
@@ -1855,12 +1833,13 @@ impl Checker {
                             span,
                         );
                     }
-                    let is_actor_receive_dispatch = self
-                        .type_def_at(name)
+                    let actor_handler = self
+                        .head_type_def(*head)
                         .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                        && self
-                            .actor_receive_methods
-                            .contains(&format!("{name}::{method}"));
+                        .then(|| {
+                            self.actor_member(*head, method, crate::DeclarationKind::ActorReceive)
+                        })
+                        .flatten();
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
                         None,
@@ -1893,7 +1872,7 @@ impl Checker {
                     // `methods {}` declared on the same actor (also keyed
                     // `{Actor}::{method}` in `fn_sigs`) are NOT in
                     // `actor_receive_methods`, so they stay on the direct path.
-                    if is_actor_receive_dispatch {
+                    if let Some(handler) = actor_handler {
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::ActorInstance {
@@ -1904,14 +1883,13 @@ impl Checker {
                         // per-arg alias-vs-copy decision so the fail-closed
                         // codegen consumer does not have to guess.
                         self.enforce_actor_method_send_args(args);
-                        let method_key = format!("{name}::{method}");
                         // Record the dispatch discriminator (Fire vs Ask). This
                         // also marks the span as already-rewritten below, so the
                         // synchronous `RewriteToFunction` path is skipped and the
                         // call lowers to `ActorSend` / `ActorAsk` in HIR.
                         let call_ty = self.record_actor_method_dispatch(
                             span,
-                            method_key,
+                            handler,
                             applied_sig.return_type.clone(),
                         );
                         return call_ty;

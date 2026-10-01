@@ -1,3 +1,0 @@
-fn unresolvable() {
-    Missing(42);
-}

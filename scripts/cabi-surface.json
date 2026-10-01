@@ -21828,19 +21828,6 @@
     },
     {
       "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_wasm_register_actor_meta( *const c_void)"
-      },
-      "symbol": "hew_wasm_register_actor_meta"
-    },
-    {
-      "availability": [
         "native",
         "wasm32-wasip1"
       ],

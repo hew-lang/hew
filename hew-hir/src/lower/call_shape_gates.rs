@@ -5,10 +5,10 @@ use super::*;
 // ── FC-P1-B: Call-shape gates (HIR-level) ───────────────────────────────────
 //
 // Hoists MIR's two call-shape fail-closed diagnostics into HIR:
-//   - `CallableUnsupportedInMir` (lifted from `hew-mir/src/lower.rs:4194`):
+//   - `CallableUnsupportedInMir` (lifted from MIR):
 //     `BindingRef { Item(_) }` callees whose name is not in the module's
 //     callable set.
-//   - `IndirectCallUnsupported` (lifted from `hew-mir/src/lower.rs:4236`):
+//   - `IndirectCallUnsupported` (lifted from MIR):
 //     `BindingRef { Unresolved }` callees with callable static type
 //     (`Function` / `Closure`) — narrowed deliberately so closure-binding
 //     calls (`let f = |x| x + 1; f(2)` → `Binding(_)`) and direct module-fn
@@ -446,7 +446,7 @@ pub(super) fn scan_expr_for_call_shape(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             scan_expr_for_call_shape(conn, callable, diagnostics);
         }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             scan_expr_for_call_shape(child, callable, diagnostics);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {

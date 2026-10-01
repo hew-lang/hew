@@ -149,6 +149,18 @@ fn fault_releases(
             types.insert(value.id, value.ty.clone());
         });
     }
+    // One function releases the same few types many times over, and each
+    // answer walks the type's whole published shape.
+    let mut answers: std::collections::HashMap<hew_types::ResolvedTy, bool> =
+        std::collections::HashMap::new();
+    let mut may_fault = |ty: &hew_types::ResolvedTy| -> bool {
+        if let Some(answer) = answers.get(ty) {
+            return *answer;
+        }
+        let answer = release_may_fault(ty);
+        answers.insert(ty.clone(), answer);
+        answer
+    };
     let mut releases = BTreeSet::new();
     for block in &function.blocks {
         for op in &block.ops {
@@ -159,7 +171,7 @@ fn fault_releases(
                 SemOpKind::DestroyValue { value } => types.get(&value.value),
                 _ => None,
             };
-            if ty.is_some_and(release_may_fault) {
+            if ty.is_some_and(&mut may_fault) {
                 releases.insert(op.id);
             }
         }
@@ -174,7 +186,7 @@ fn fault_releases(
                 .then_some(args)
                 .and_then(|args| args.first())
                 .and_then(|arg| types.get(&arg.operand.value));
-            if receiver.is_some_and(release_may_fault) {
+            if receiver.is_some_and(&mut may_fault) {
                 releases.insert(*id);
             }
         }

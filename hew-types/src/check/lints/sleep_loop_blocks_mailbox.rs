@@ -313,7 +313,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
-        | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
         | Expr::ForkChild { expr: operand, .. } => {
             find_in_expr(ctx, levels, &operand.0, out);
@@ -419,7 +418,6 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::PostfixTry(_)
             | Expr::Range { .. }
             | Expr::Await(_)
-            | Expr::AwaitRestart(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
@@ -468,7 +466,6 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::PostfixTry(_)
         | Expr::Range { .. }
         | Expr::Await(_)
-        | Expr::AwaitRestart(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -721,7 +718,6 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
-        | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
         | Expr::ForkChild { expr: operand, .. } => bounded_expr_has_sleep(&operand.0),
         Expr::Cast { expr, .. } | Expr::FieldAccess { object: expr, .. } => {
@@ -980,7 +976,6 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
-        | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
         | Expr::ForkChild { expr: operand, .. } => expr_assigns_identifier(&operand.0, name),
         Expr::Cast { expr, .. } | Expr::FieldAccess { object: expr, .. } => {

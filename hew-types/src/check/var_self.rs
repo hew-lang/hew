@@ -93,7 +93,6 @@ impl Checker {
             }
             Expr::Index { .. } => "this index".to_string(),
             Expr::Await(_)
-            | Expr::AwaitRestart(_)
             | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }

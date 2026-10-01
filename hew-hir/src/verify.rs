@@ -419,7 +419,6 @@ impl Verifier {
             HirExprKind::ConnAwaitRead { conn, .. } => {
                 self.expr(conn);
             }
-            HirExprKind::AwaitRestart { child } => self.expr(child),
             HirExprKind::ListenerAwaitAccept { listener, .. } => {
                 self.expr(listener);
             }

@@ -446,10 +446,8 @@ pub struct TypeCheckOutput {
     /// resolves those later. There is no "no entry → guess" third state for a
     /// concrete accepted expression.
     ///
-    /// In Phase 1 (W4.047) this is a transitional *shadow* of `expr_types`:
-    /// HIR lowering still drives off `expr_types` and only asserts agreement
-    /// (zero behaviour change). Phase 2 promotes this to the primary read path;
-    /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
+    /// HIR lowering reads this map as its primary expression-type source; the
+    /// `Ty`-typed `expr_types` map remains only for analysis and LSP readers.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Resolved source annotations, keyed by their defining file and span.
     pub declaration_type_parameters:
@@ -4080,15 +4078,6 @@ pub struct Checker {
     /// routinely referenced by a later REPL input, so emitting those warnings
     /// is noise rather than signal. Set only by the eval paths.
     pub(super) repl_fragment: bool,
-    /// Whether the checker is running behind the syntax migrator.
-    ///
-    /// The migrator rewrites a source using the checker's own resolution, so
-    /// it can only fix a legacy spelling the checker was willing to resolve.
-    /// When `true`, both bare-variant rules (`E_BARE_VARIANT_EXPR` and
-    /// `E_BARE_VARIANT_PATTERN`) report at warning severity instead of error,
-    /// which is what lets `hew fmt --migrate` rewrite a source that `hew check`
-    /// now refuses. Set only by the migration frontend entry point.
-    pub(super) migration_mode: bool,
     /// Whether the checker is currently type-checking a stdlib (or built-in
     /// library) source body.
     ///
@@ -4598,7 +4587,6 @@ impl Checker {
             impl_assoc_type_bindings: HashMap::new(),
             wasm_target: false,
             repl_fragment: false,
-            migration_mode: false,
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
@@ -4682,14 +4670,6 @@ impl Checker {
     /// [`Checker::repl_fragment`].
     pub fn set_repl_fragment(&mut self) {
         self.repl_fragment = true;
-    }
-
-    /// Mark the checker as running behind the syntax migrator, downgrading the
-    /// graduated bare-variant expression rule to a warning so the migrator can
-    /// still resolve and rewrite a legacy source. See
-    /// [`Checker::migration_mode`].
-    pub fn set_migration_mode(&mut self) {
-        self.migration_mode = true;
     }
 
     /// Mark the checker as currently processing a stdlib or built-in library

@@ -528,7 +528,7 @@ impl LowerCtx {
         // the checker must also publish the module-qualified rewrite carrying
         // the exact callee symbol. Without that fact, lowering the field access
         // as an ordinary value call would leave an admitted HIR `Call` whose
-        // legacy MIR consumer can re-infer a target from strings.
+        // consumer would have to re-infer a target from strings.
         if matches!(
             &function.0,
             Expr::FieldAccess { object, .. } if matches!(object.0, Expr::Ident(_))

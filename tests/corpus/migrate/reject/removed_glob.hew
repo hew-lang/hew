@@ -1,0 +1,5 @@
+import std::*;
+
+fn main() {
+    println(1);
+}

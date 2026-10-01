@@ -891,6 +891,10 @@ pub struct FmtArgs {
     /// Recursively migrate every Hew source below this directory.
     #[arg(long, value_name = "DIR", conflicts_with_all = ["stdin", "files"])]
     pub root: Option<PathBuf>,
+    /// Leave this file, or every source below this directory, out of the
+    /// migration (repeatable).
+    #[arg(long, value_name = "PATH", requires = "migrate")]
+    pub exclude: Vec<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

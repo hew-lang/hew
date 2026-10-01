@@ -1,7 +1,7 @@
 // Reject: source-owned lifecycle types require a published import binding.
 // Omitting one must fail in checker resolution, never in HIR/MIR layout.
 actor Watcher {
-    #[on(exit)]
+    #[on(link)]
     fn on_peer_exit(note: CrashNotification) {
         let _id = note.actor_id;
         let _kind = note.kind;

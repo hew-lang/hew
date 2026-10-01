@@ -735,12 +735,6 @@ pub enum TypeErrorKind {
     BinaryOperandTypes,
     /// Range bounds have no common integer type.
     RangeBoundTypes,
-    /// A former actor lifecycle spelling was used; only migration mode may
-    /// inspect it as a warning and no executable operation is published.
-    ActorLifecycleRetired,
-    /// A lifecycle method on an actor handle was retired in favour of a free
-    /// function, unless an authored receive handler owns that method name.
-    ActorHandleMethodRetired,
     /// An actor attempted to wait for its own terminal release.
     ActorWaitsOnSelf,
     /// A selected test root cannot be invoked by the test dispatcher.
@@ -1532,8 +1526,6 @@ impl TypeErrorKind {
             Self::ClosureShapeMismatch => "E_CLOSURE_SHAPE_MISMATCH",
             Self::BinaryOperandTypes => "E_BINARY_OPERAND_TYPES",
             Self::RangeBoundTypes => "E_RANGE_BOUND_TYPES",
-            Self::ActorLifecycleRetired => "E_ACTOR_LIFECYCLE_RETIRED",
-            Self::ActorHandleMethodRetired => "E_ACTOR_HANDLE_METHOD_RETIRED",
             Self::ActorWaitsOnSelf => "E_ACTOR_WAITS_ON_SELF",
             Self::TestSignature => "E_TEST_SIGNATURE",
             Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",

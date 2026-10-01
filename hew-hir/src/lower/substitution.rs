@@ -347,7 +347,7 @@ pub(super) fn collect_call_sites_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_call_sites_in_expr(conn, out, trait_out);
         }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             collect_call_sites_in_expr(child, out, trait_out);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {

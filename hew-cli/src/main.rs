@@ -2039,11 +2039,7 @@ fn cmd_fmt(a: &args::FmtArgs) {
     };
 
     if a.migrate {
-        let root = a
-            .files
-            .is_empty()
-            .then(|| a.root.as_deref().unwrap_or_else(|| Path::new(".")));
-        match migrate_in_snapshot(&files, root, a.check) {
+        match migrate_files(&files, &a.exclude, a.check) {
             Ok(false) => {}
             Ok(true) | Err(()) => std::process::exit(1),
         }
@@ -2241,809 +2237,152 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "snapshot migration prepares, checks, and commits files as one transaction"
-)]
-fn migrate_in_snapshot(files: &[PathBuf], root: Option<&Path>, check: bool) -> Result<bool, ()> {
-    let snapshot = tempfile::tempdir().map_err(|error| {
-        eprintln!("Error: cannot create migration check snapshot: {error}");
-    })?;
-    let mut mapped_files = Vec::with_capacity(files.len());
-
-    if let Some(root) = root {
-        let snapshot_root = snapshot.path().join("root");
-        copy_migration_snapshot_tree(root, &snapshot_root, snapshot.path()).map_err(|error| {
-            eprintln!("Error: cannot create migration check snapshot: {error}");
-        })?;
-        for file in files {
-            let relative = file.strip_prefix(root).map_err(|error| {
+/// Rewrite each file's retired syntax to its current spelling.
+///
+/// The rewrite is syntactic, so each file migrates on its own: nothing is
+/// type-checked, and a deliberately invalid program migrates like any other.
+/// Files at or below an `exclude` path are left out. Every selected file is
+/// migrated in memory first; a refusal, or a file that changed on disk while
+/// it was being migrated, leaves every file unwritten. `check` previews the
+/// same report without writing. Each file is replaced atomically; an I/O
+/// failure stops the run and names what was and was not written. A second
+/// run changes nothing.
+fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<bool, ()> {
+    let excluded_roots = exclude
+        .iter()
+        .map(|path| {
+            std::fs::canonicalize(path).map_err(|error| {
                 eprintln!(
-                    "Error: cannot map {} into migration check snapshot: {error}",
-                    file.display()
+                    "Error: cannot resolve exclusion {}: {error}",
+                    path.display()
                 );
-            })?;
-            mapped_files.push((file.clone(), snapshot_root.join(relative)));
-        }
-    } else {
-        let mut snapshot_parents: std::collections::BTreeMap<PathBuf, PathBuf> =
-            std::collections::BTreeMap::new();
-        for file in files {
-            let parent = file
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            let snapshot_parent = if let Some(mapped) = snapshot_parents.get(parent) {
-                mapped.clone()
-            } else {
-                let mapped = snapshot
-                    .path()
-                    .join(format!("input-{}", snapshot_parents.len()));
-                copy_migration_snapshot_tree(parent, &mapped, snapshot.path()).map_err(
-                    |error| {
-                        eprintln!("Error: cannot create migration check snapshot: {error}");
-                    },
-                )?;
-                snapshot_parents.insert(parent.to_path_buf(), mapped.clone());
-                mapped
-            };
-            let Some(file_name) = file.file_name() else {
-                eprintln!(
-                    "Error: migration input has no file name: {}",
-                    file.display()
-                );
-                return Err(());
-            };
-            mapped_files.push((file.clone(), snapshot_parent.join(file_name)));
-        }
-    }
-
-    // Punctuation is parsed before type checking. Rewrite every snapshot file
-    // first so imported modules use the same grammar during checker-selected
-    // lifecycle and variant migration. Refusals leave the original tree alone.
-    let mut punctuation = Vec::with_capacity(mapped_files.len());
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut excluded = 0usize;
+    let mut unchanged = 0usize;
+    let mut changed = Vec::new();
     let mut refused = false;
-    for (original, mapped) in &mapped_files {
-        let file = original.display().to_string();
-        let source = std::fs::read_to_string(mapped).map_err(|error| {
-            eprintln!("Error: cannot read migration snapshot for {file}: {error}");
+    for file in files {
+        let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+        if excluded_roots
+            .iter()
+            .any(|root| canonical.starts_with(root))
+        {
+            excluded += 1;
+            continue;
+        }
+        let original = std::fs::read(file).map_err(|error| {
+            eprintln!("Error: cannot read {}: {error}", file.display());
         })?;
-        match hew_parser::fmt::migrate_punctuation(&source) {
-            Ok(formatted) => punctuation.push((mapped, formatted)),
+        let Ok(source) = std::str::from_utf8(&original) else {
+            eprintln!(
+                "Error: migration refused {}: not UTF-8 text",
+                file.display()
+            );
+            refused = true;
+            continue;
+        };
+        match hew_parser::fmt::migrate_syntax(source) {
+            Ok(migrated) if migrated.as_bytes() == original => unchanged += 1,
+            Ok(migrated) => changed.push((file, original, migrated)),
             Err(error) => {
                 refused = true;
                 for site in error.refusals {
                     eprintln!(
-                        "Error: migration refused {file}:{}-{}: {}",
-                        site.span.start, site.span.end, site.reason
+                        "Error: migration refused {}:{}-{}: {}",
+                        file.display(),
+                        site.span.start,
+                        site.span.end,
+                        site.reason
                     );
                 }
             }
         }
     }
+    let summary = |verb: &str| {
+        eprintln!(
+            "migration: {} {verb}, {unchanged} unchanged, {excluded} excluded",
+            changed.len()
+        );
+    };
     if refused {
+        summary("migratable");
+        eprintln!("no files were written");
         return Err(());
     }
-    for (mapped, formatted) in punctuation {
-        std::fs::write(mapped, formatted).map_err(|error| {
-            eprintln!(
-                "Error: cannot write migration snapshot {}: {error}",
-                mapped.display()
-            );
-        })?;
+    if check {
+        for (file, _, _) in &changed {
+            eprintln!("{}: needs migration", file.display());
+        }
+        summary("to migrate");
+        return Ok(!changed.is_empty());
     }
-
-    let mut regenerated = Vec::with_capacity(mapped_files.len());
-    for (original, mapped) in &mapped_files {
-        let file = original.display().to_string();
-        let source = std::fs::read_to_string(mapped).map_err(|error| {
-            eprintln!("Error: cannot read migration snapshot for {file}: {error}");
-        })?;
-        let migrated = migrate_source_file(mapped, &file, &source)?;
-        let Some(formatted) = format_for_display(&file, &migrated) else {
-            return Err(());
-        };
-        regenerated.push((mapped, source, formatted));
-    }
-
-    let outputs = mapped_files
+    let stale = changed
         .iter()
-        .zip(&regenerated)
-        .map(|((original, _), (mapped, _, formatted))| {
-            (
-                mapped.as_path(),
-                original.to_str().unwrap_or_default(),
-                formatted.as_str(),
-            )
-        })
+        .filter(|(file, original, _)| std::fs::read(file).ok().as_ref() != Some(original))
+        .map(|(file, _, _)| file.display().to_string())
         .collect::<Vec<_>>();
-    if !recheck_migrated_sources(&outputs) {
+    if !stale.is_empty() {
+        for file in &stale {
+            eprintln!("Error: {file} changed while it was being migrated");
+        }
+        eprintln!("no files were written; run the migration again");
         return Err(());
     }
-
-    for (mapped, source, formatted) in regenerated {
-        if formatted != source {
-            std::fs::write(mapped, formatted).map_err(|error| {
-                eprintln!(
-                    "Error: cannot write migration check snapshot {}: {error}",
-                    mapped.display()
-                );
-            })?;
-        }
-    }
-
-    let mut needs_changes = false;
-    for (original, mapped) in mapped_files {
-        let original_bytes = std::fs::read(&original).map_err(|error| {
-            eprintln!("Error: cannot read {}: {error}", original.display());
-        })?;
-        let regenerated_bytes = std::fs::read(&mapped).map_err(|error| {
-            eprintln!(
-                "Error: cannot read migration check snapshot {}: {error}",
-                mapped.display()
-            );
-        })?;
-        if original_bytes != regenerated_bytes {
-            if check {
-                eprintln!("{}: needs formatting", original.display());
-            } else {
-                std::fs::write(&original, regenerated_bytes).map_err(|error| {
-                    eprintln!("Error: cannot write {}: {error}", original.display());
-                })?;
-                eprintln!("Formatted {}", original.display());
-            }
-            needs_changes = true;
-        }
-    }
-    Ok(check && needs_changes)
+    write_migrations(&changed)?;
+    summary("migrated");
+    Ok(false)
 }
 
-fn copy_migration_snapshot_tree(
-    source: &Path,
-    destination: &Path,
-    snapshot_root: &Path,
-) -> Result<(), String> {
-    std::fs::create_dir_all(destination)
-        .map_err(|error| format!("cannot create `{}`: {error}", destination.display()))?;
-    let entries = std::fs::read_dir(source)
-        .map_err(|error| format!("cannot read `{}`: {error}", source.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
-        let path = entry.path();
-        let target = destination.join(entry.file_name());
-        if path.is_dir() {
-            if path
-                .canonicalize()
-                .is_ok_and(|canonical| canonical.starts_with(snapshot_root))
-            {
-                continue;
-            }
-            if !skip_format_directory(&path) {
-                copy_migration_snapshot_tree(&path, &target, snapshot_root)?;
-            }
-            continue;
+/// Write each migrated file in order. An I/O failure stops at that file and
+/// names the files already migrated and those still to do.
+fn write_migrations(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
+    for (index, (file, _, migrated)) in changed.iter().enumerate() {
+        if let Err(error) = replace_file(file, migrated) {
+            eprintln!("Error: cannot write {}: {error}", file.display());
+            let names = |files: &[(&PathBuf, Vec<u8>, String)]| {
+                files
+                    .iter()
+                    .map(|(file, _, _)| file.display().to_string())
+                    .collect::<Vec<_>>()
+            };
+            eprintln!(
+                "migrated before the failure: {}",
+                list_or_none(&names(&changed[..index]))
+            );
+            eprintln!("not migrated: {}", list_or_none(&names(&changed[index..])));
+            eprintln!(
+                "fix the cause and run the migration again; migrated files are left as they are"
+            );
+            return Err(());
         }
-        let is_hew_source = path.extension().is_some_and(|extension| extension == "hew");
-        let is_project_metadata = matches!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some("hew.toml" | "hew.lock")
-        );
-        if is_hew_source || is_project_metadata {
-            std::fs::copy(&path, &target).map_err(|error| {
-                format!(
-                    "cannot copy `{}` to `{}`: {error}",
-                    path.display(),
-                    target.display()
-                )
-            })?;
-        }
+        eprintln!("Migrated {}", file.display());
     }
     Ok(())
 }
 
-fn actor_lifecycle_migration(
-    source: &str,
-    error: &hew_types::error::TypeError,
-) -> Result<Option<hew_parser::fmt::SelectedMigration>, String> {
-    use hew_types::error::TypeErrorKind;
-    if !matches!(
-        error.kind,
-        TypeErrorKind::ActorLifecycleRetired | TypeErrorKind::ActorHandleMethodRetired
-    ) {
-        return Ok(None);
-    }
-    let text = source
-        .get(error.span.clone())
-        .ok_or("retired actor operation has no source span")?;
-    let trimmed = text.trim();
-    let replacement = if trimmed.starts_with("#[on(") && trimmed.ends_with(")]") {
-        if !trimmed.contains("exit") {
-            return Err("retired hook does not name `exit`".into());
-        }
-        trimmed.replacen("exit", "link", 1)
-    } else if let Some(inner) = trimmed
-        .strip_prefix("closed(")
-        .and_then(|call| call.strip_suffix(')'))
-    {
-        format!("stopped({inner})")
-    } else if let Some(inner) = trimmed
-        .strip_prefix("close(")
-        .or_else(|| trimmed.strip_prefix("supervisor_stop("))
-        .and_then(|call| call.strip_suffix(')'))
-    {
-        if inner.trim().is_empty() {
-            return Err("retired lifecycle call has no handle".into());
-        }
-        let handle = format!("__hew_migrated_actor_{}", error.span.start);
-        format!("{{ let {handle} = {inner}; stop({handle}); stopped({handle}); }}")
-    } else if let Some(call) = trimmed.strip_suffix(')') {
-        let call = call.trim_end();
-        let call = call
-            .strip_suffix('(')
-            .ok_or("retired actor method is not a zero-argument call")?;
-        let (receiver, method) = call
-            .rsplit_once('.')
-            .ok_or("retired actor method has no receiver")?;
-        match method.trim() {
-            "stop" => format!("stop({receiver})"),
-            "close" => {
-                let handle = format!("__hew_migrated_actor_{}", error.span.start);
-                format!("{{ let {handle} = {receiver}; stop({handle}); stopped({handle}); }}")
-            }
-            _ => return Err("retired actor method is not `stop` or `close`".into()),
-        }
+fn list_or_none(files: &[String]) -> String {
+    if files.is_empty() {
+        "none".to_string()
     } else {
-        return Err("retired actor operation has no supported edit".into());
-    };
-    Ok(Some(hew_parser::fmt::SelectedMigration {
-        span: error.span.clone(),
-        replacement,
-    }))
-}
-
-fn actor_parser_migration(
-    source: &str,
-    error: &hew_parser::ParseError,
-) -> Result<Option<hew_parser::fmt::SelectedMigration>, String> {
-    use hew_parser::ParseDiagnosticKind;
-    match &error.kind {
-        ParseDiagnosticKind::SupervisorStopClauseRetired => {
-            let clause = source
-                .get(error.span.clone())
-                .ok_or("retired supervisor clause has no source span")?;
-            let replacement = if clause.trim() == "shutdown: infinity" {
-                String::new()
-            } else if clause.trim() == "shutdown: brutal_kill" {
-                "stop: 0s".to_string()
-            } else if let Some(value) = clause.trim().strip_prefix("shutdown:") {
-                format!("stop:{value}")
-            } else {
-                return Err("retired supervisor clause is not `shutdown:`".into());
-            };
-            Ok(Some(hew_parser::fmt::SelectedMigration {
-                span: error.span.clone(),
-                replacement,
-            }))
-        }
-        ParseDiagnosticKind::AwaitRestartRetired => {
-            let tokens = hew_lexer::lex(source);
-            let mut index = tokens
-                .iter()
-                .position(|(_, span)| span.start >= error.span.end)
-                .ok_or("`await_restart` has no role operand")?;
-            if !matches!(tokens[index].0, hew_lexer::Token::Identifier(_)) {
-                return Err("`await_restart` needs a supervised role path".into());
-            }
-            let start = tokens[index].1.start;
-            let mut end = tokens[index].1.end;
-            index += 1;
-            let role_segment = |span: &hew_lexer::Span| {
-                source.get(span.start..span.end).is_some_and(|word| {
-                    let mut chars = word.chars();
-                    chars
-                        .next()
-                        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-                        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                })
-            };
-            while index < tokens.len() {
-                match tokens[index].0 {
-                    hew_lexer::Token::Dot
-                        if index + 1 < tokens.len() && role_segment(&tokens[index + 1].1) =>
-                    {
-                        end = tokens[index + 1].1.end;
-                        index += 2;
-                    }
-                    hew_lexer::Token::LeftBracket => {
-                        let mut depth = 1usize;
-                        index += 1;
-                        while index < tokens.len() && depth != 0 {
-                            match tokens[index].0 {
-                                hew_lexer::Token::LeftBracket => depth += 1,
-                                hew_lexer::Token::RightBracket => depth -= 1,
-                                _ => {}
-                            }
-                            end = tokens[index].1.end;
-                            index += 1;
-                        }
-                        if depth != 0 {
-                            return Err("`await_restart` has an unfinished role index".into());
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            let role = source
-                .get(start..end)
-                .ok_or("`await_restart` role has no source span")?;
-            let binding = format!("__hew_migrated_role_{}", error.span.start);
-            Ok(Some(hew_parser::fmt::SelectedMigration {
-                span: error.span.start..end,
-                replacement: format!(
-                    "{{ let {binding} = {role}; restarted({binding}); {binding} }}"
-                ),
-            }))
-        }
-        _ => Ok(None),
+        files.join(", ")
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one source migration reconciles checker-selected edits before writing any output"
-)]
-fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
-    let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
-    let label = file_path.display().to_string();
-    let initial = hew_compile::run_source_frontend_for_migration(source, &label, &options);
-    let source = migrate_machine_event_spellings(
-        source,
-        &hew_parser::parse(source).program.items,
-        initial.program.module_graph.as_ref(),
-    );
-    let state = hew_compile::run_source_frontend_for_migration(&source, &label, &options);
-    // A directory-module entry or peer is checked through its whole module, so
-    // the root program is not this file. Every per-file fact below comes from
-    // this file's own parse or from the checker facts attributed to it.
-    let own = hew_parser::parse(&source);
-    let state = match &state.stopped {
-        None => state,
-        Some(failure) => {
-            compile::render_frontend_diagnostics(&failure.diagnostics);
-            let mut listed_site = false;
-            for diagnostic in &failure.diagnostics {
-                let (span, reason) = match &diagnostic.kind {
-                    hew_compile::FrontendDiagnosticKind::Parse(error)
-                        if error.severity == hew_parser::Severity::Error =>
-                    {
-                        (&error.span, error.message.as_str())
-                    }
-                    hew_compile::FrontendDiagnosticKind::Type(error)
-                        if error.severity == hew_types::error::Severity::Error =>
-                    {
-                        (&error.span, error.message.as_str())
-                    }
-                    hew_compile::FrontendDiagnosticKind::Hir(error) => {
-                        (&error.span, error.note.as_str())
-                    }
-                    _ => continue,
-                };
-                let site_file = diagnostic.filename.as_deref().unwrap_or(file);
-                eprintln!(
-                    "Error: migration refused {site_file}:{}-{}: type checking failed: {reason}",
-                    span.start, span.end
-                );
-                listed_site = true;
-            }
-            if !listed_site {
-                eprintln!("Error: migration refused {file}: type checking failed: {failure}");
-            }
-            eprintln!("{file}: migration requires a successfully type-checked source file");
-            return Err(());
-        }
-    };
-
-    let Some(typecheck) = state
-        .typecheck_result
-        .as_ref()
-        .and_then(|result| result.tco.as_ref())
-    else {
-        eprintln!("{file}: migration requires checker output");
-        return Err(());
-    };
-
-    // The checker tags a diagnostic with the module it came from: the dotted
-    // module for an item of a module's primary file, the file's own path for a
-    // directory-module peer, none for the root. A std source migrated in place
-    // is also loaded as its own std module (`std/option.hew` is `std.option`).
-    // Accept exactly the tags that name this file, so the spans index it.
-    let own_path = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
-    let mut own_modules: Vec<String> = state
-        .program
-        .module_graph
-        .iter()
-        .flat_map(|graph| graph.modules.values())
-        .filter(|module| {
-            !module.id.segments.is_empty() && module.source_paths.first() == Some(&own_path)
-        })
-        .map(|module| module.id.dotted())
-        .collect();
-    own_modules.push(own_path.display().to_string());
-    // Span keys carry the file's span index; the root compilation unit is 0
-    // and has no path entry.
-    let own_index = state
-        .program
-        .module_graph
-        .as_ref()
-        .and_then(|graph| graph.file_span_indices().path_index(&own_path))
-        .unwrap_or(0);
-    let tokens = hew_lexer::lex(&source);
-    let mut variants = Vec::new();
-    let mut selected = Vec::new();
-    let mut refusals = Vec::new();
-    for error in &own.errors {
-        match actor_parser_migration(&source, error) {
-            Ok(Some(edit)) => selected.push(edit),
-            Err(reason) => refusals.push(format!(
-                "{}:{}-{}: {reason}",
-                file, error.span.start, error.span.end
-            )),
-            Ok(None) => {}
-        }
-    }
-    for error in &typecheck.warnings {
-        if error
-            .source_module
-            .as_ref()
-            .is_some_and(|module| !own_modules.contains(module))
-        {
-            continue;
-        }
-        match actor_lifecycle_migration(&source, error) {
-            Ok(Some(edit)) => {
-                selected.push(edit);
-                continue;
-            }
-            Err(reason) => {
-                refusals.push(format!(
-                    "{}:{}-{}: {reason}",
-                    file, error.span.start, error.span.end
-                ));
-                continue;
-            }
-            Ok(None) => {}
-        }
-        let is_expression = matches!(error.kind, hew_types::error::TypeErrorKind::BareVariantExpr);
-        let is_pattern = matches!(
-            error.kind,
-            hew_types::error::TypeErrorKind::BareVariantPattern
-        );
-        if !is_expression && !is_pattern {
-            continue;
-        }
-        let Some((name, span)) = tokens.iter().find_map(|(token, span)| {
-            (span.start >= error.span.start && span.end <= error.span.end).then(|| match token {
-                hew_lexer::Token::Identifier(name) => {
-                    Some(((*name).to_string(), span.start..span.end))
-                }
-                _ => None,
-            })?
-        }) else {
-            // `hew_lexer::lex` emits an entire f-string interpolation
-            // (`f"...{expr}..."`) as one `InterpolatedString` token; the
-            // identifier inside `{}` never appears as its own top-level
-            // `Identifier` token, so a bare-variant warning whose span falls
-            // inside one is a token-lookup miss, not a genuine
-            // checker/lexer disagreement. The automatic migration does not
-            // rewrite inside f-string interpolations yet, so skip this
-            // occurrence rather than refusing the whole file (#3243).
-            let inside_interpolated_string = tokens.iter().any(|(token, span)| {
-                matches!(token, hew_lexer::Token::InterpolatedString(_))
-                    && span.start <= error.span.start
-                    && error.span.end <= span.end
-            });
-            if inside_interpolated_string {
-                eprintln!(
-                    "{}:{}-{}: skipping bare-variant migration inside an f-string \
-                     interpolation (not yet supported by the automatic migration)",
-                    file, error.span.start, error.span.end
-                );
-                continue;
-            }
-            refusals.push(format!(
-                "{}:{}-{}: checker-selected variant has no identifier token",
-                file, error.span.start, error.span.end
-            ));
-            continue;
-        };
-
-        // The checker's fix-it is the one authority for the replacement: the
-        // contextual `.Variant` where an expected type selects the enum, the
-        // owner-qualified `Type.Variant` where nothing does.
-        let prefix = format!("replace `{name}` with `");
-        let Some(replacement) = error.suggestions.iter().find_map(|suggestion| {
-            suggestion
-                .strip_prefix(&prefix)
-                .and_then(|rest| rest.strip_suffix('`'))
-                .map(str::to_string)
-        }) else {
-            refusals.push(format!(
-                "{}:{}-{}: checker offered no replacement for `{name}`",
-                file, span.start, span.end
-            ));
-            continue;
-        };
-        variants.push(hew_parser::fmt::VariantMigration {
-            span,
-            name,
-            replacement,
-        });
-    }
-
-    let selected_variant_spans = variants
-        .iter()
-        .map(|variant| (variant.span.start, variant.span.end))
-        .collect::<std::collections::HashSet<_>>();
-    // A machine names its own states bare inside its declaration (§3.11.3),
-    // so tokens there are never unmigrated variants.
-    let machine_spans = own
-        .program
-        .items
-        .iter()
-        .filter(|(item, _)| matches!(item, hew_parser::ast::Item::Machine(_)))
-        .map(|(_, span)| span.clone())
-        .collect::<Vec<_>>();
-    refusals.extend(unlisted_bare_variant_refusals(
-        typecheck,
-        own_index,
-        &tokens,
-        &selected_variant_spans,
-        &machine_spans,
-        file,
-    ));
-
-    if !refusals.is_empty() {
-        for refusal in refusals {
-            eprintln!("Error: migration refused {refusal}");
-        }
-        return Err(());
-    }
-
-    match hew_parser::fmt::migrate_legacy_syntax_with_selected(&source, &variants, &selected) {
-        Ok(migrated) => Ok(migrated),
-        Err(error) => {
-            for refusal in error.refusals {
-                eprintln!(
-                    "Error: migration refused {file}:{}-{}: {}",
-                    refusal.span.start, refusal.span.end, refusal.reason
-                );
-            }
-            Err(())
-        }
-    }
-}
-
-/// Replace the former flat machine companion only when a loaded declaration
-/// proves its owner. Lexer tokens keep strings and comments intact; an
-/// authored declaration with the same flat spelling wins and is left alone.
-fn migrate_machine_event_spellings(
-    source: &str,
-    items: &[hew_parser::ast::Spanned<hew_parser::ast::Item>],
-    graph: Option<&hew_parser::module::ModuleGraph>,
-) -> String {
-    use hew_parser::ast::{ImportSpec, Item};
-
-    let mut machines = std::collections::HashSet::new();
-    let mut authored = std::collections::HashSet::new();
-    let mut collect = |items: &[hew_parser::ast::Spanned<Item>]| {
-        for (item, _) in items {
-            match item {
-                Item::Machine(machine) => {
-                    machines.insert(machine.name.to_string());
-                }
-                Item::TypeDecl(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                Item::Trait(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                Item::Record(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                Item::TypeAlias(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                Item::Const(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                Item::Function(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                Item::Actor(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                Item::Supervisor(decl) => {
-                    authored.insert(decl.name.to_string());
-                }
-                _ => {}
-            }
-        }
-    };
-    collect(items);
-    if let Some(graph) = graph {
-        for module in graph.modules.values() {
-            collect(&module.items);
-        }
-    }
-
-    let mut edits = Vec::new();
-    for (token, span) in hew_lexer::lex(source) {
-        let hew_lexer::Token::Identifier(name) = token else {
-            continue;
-        };
-        let Some(machine) = name.strip_suffix("Event") else {
-            continue;
-        };
-        if !machines.contains(machine) || authored.contains(name) {
-            continue;
-        }
-        let import = items.iter().find_map(|(item, item_span)| {
-            (item_span.start <= span.start && span.end <= item_span.end)
-                .then_some((item, item_span))
-        });
-        let replacement = if let Some((Item::Import(import), import_span)) = import {
-            match &import.spec {
-                Some(ImportSpec::Names(names))
-                    if names
-                        .iter()
-                        .any(|item| item.name.name.as_str() == name && item.alias.is_some()) =>
-                {
-                    continue
-                }
-                Some(ImportSpec::Names(names))
-                    if names.iter().any(|item| item.name.name.as_str() == machine) =>
-                {
-                    if let Some(offset) = source[import_span.start..span.start].rfind(',') {
-                        edits.push((import_span.start + offset..span.end, String::new()));
-                    } else if let Some(offset) = source[span.end..import_span.end].find(',') {
-                        edits.push((span.start..span.end + offset + 1, String::new()));
-                    } else {
-                        continue;
-                    }
-                    continue;
-                }
-                Some(ImportSpec::Names(_)) => machine.to_string(),
-                _ => continue,
-            }
-        } else {
-            format!("{machine}.Event")
-        };
-        edits.push((span.start..span.end, replacement));
-    }
-    edits.sort_by_key(|(span, _)| (span.start, span.end));
-    let mut migrated = source.to_string();
-    for (span, replacement) in edits.into_iter().rev() {
-        migrated.replace_range(span, &replacement);
-    }
-    migrated
-}
-
-/// Check every migrated source as it would be written, with the whole
-/// migrated set visible to import resolution, and name each file whose
-/// output no longer parses and type-checks. A migration is only reported as
-/// done when this passes.
-fn recheck_migrated_sources(outputs: &[(&Path, &str, &str)]) -> bool {
-    let mut documents = hew_compile::DocumentSet::new();
-    for (path, _, formatted) in outputs {
-        let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        documents.insert(key, *formatted);
-    }
-    let mut options = compile::frontend_options_for_check(&compile::CompileOptions::default());
-    options.documents = documents;
-    let mut clean = true;
-    let mut checked_modules = std::collections::HashSet::new();
-    for (path, file, _) in outputs {
-        // One directory module is one check, however many of its files moved.
-        if let Some(entry) = hew_compile::directory_module_entry(path) {
-            if !checked_modules.insert(entry) {
-                continue;
-            }
-        }
-        if let Err(failure) = hew_compile::check_file(&path.display().to_string(), &options) {
-            compile::render_frontend_diagnostics(&failure.diagnostics);
-            eprintln!("Error: migration refused {file}: the migrated source does not type-check");
-            clean = false;
-        }
-    }
-    clean
-}
-
-fn unlisted_bare_variant_refusals(
-    typecheck: &hew_types::check::TypeCheckOutput,
-    own_index: u32,
-    tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
-    selected: &std::collections::HashSet<(usize, usize)>,
-    machine_spans: &[std::ops::Range<usize>],
-    file: &str,
-) -> Vec<String> {
-    let in_machine = |span: &hew_lexer::Span| {
-        machine_spans
-            .iter()
-            .any(|machine| machine.start <= span.start && span.end <= machine.end)
-    };
-    let mut refusals = Vec::new();
-    let mut refused = std::collections::HashSet::new();
-
-    for (expression_span, ty) in &typecheck.expr_types {
-        if expression_span.module_idx != own_index {
-            continue;
-        }
-        let Some(type_def) = typecheck.types().of_ty(ty) else {
-            continue;
-        };
-        for (index, (token, span)) in tokens.iter().enumerate() {
-            let hew_lexer::Token::Identifier(name) = token else {
-                continue;
-            };
-            if span.start < expression_span.start
-                || span.end > expression_span.end
-                || !type_def.variants.contains_key(*name)
-                || selected.contains(&(span.start, span.end))
-                || in_machine(span)
-                || token_has_variant_qualifier(tokens, index)
-                || !refused.insert((span.start, span.end))
-            {
-                continue;
-            }
-            refusals.push(format!(
-                "{file}:{}-{}: checker resolved bare variant `{name}` without a migration warning",
-                span.start, span.end
-            ));
-        }
-    }
-
-    for (pattern_span, resolution) in &typecheck.pattern_resolutions {
-        if pattern_span.module_idx != own_index {
-            continue;
-        }
-        let Some(variant_match) = &resolution.variant_match else {
-            continue;
-        };
-        for (index, (token, span)) in tokens.iter().enumerate() {
-            if span.start < pattern_span.start || span.end > pattern_span.end {
-                continue;
-            }
-            let hew_lexer::Token::Identifier(name) = token else {
-                continue;
-            };
-            if *name != variant_match.variant_name.as_str()
-                || selected.contains(&(span.start, span.end))
-                || in_machine(span)
-                || token_has_variant_qualifier(tokens, index)
-                || !refused.insert((span.start, span.end))
-            {
-                continue;
-            }
-            refusals.push(format!(
-                "{file}:{}-{}: checker resolved bare variant `{name}` without a migration warning",
-                span.start, span.end
-            ));
-        }
-    }
-
-    refusals
-}
-
-fn token_has_variant_qualifier(
-    tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
-    index: usize,
-) -> bool {
-    index.checked_sub(1).is_some_and(|previous| {
-        matches!(
-            tokens[previous].0,
-            hew_lexer::Token::Dot | hew_lexer::Token::DoubleColon
-        )
-    })
+/// Replace `path` with `contents` through a temporary file beside the file it
+/// names, so a failed write never leaves a truncated source. The file keeps
+/// its permissions, and a symbolic link keeps pointing at the migrated file.
+fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path)?;
+    let directory = target.parent().unwrap_or_else(|| Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(directory)?;
+    staged.write_all(contents.as_bytes())?;
+    staged
+        .as_file()
+        .set_permissions(std::fs::metadata(&target)?.permissions())?;
+    staged.persist(&target).map_err(|error| error.error)?;
+    Ok(())
 }
 
 fn format_for_display(input_name: &str, source: &str) -> Option<String> {

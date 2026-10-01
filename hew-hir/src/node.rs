@@ -1468,20 +1468,6 @@ pub enum HirExprKind {
         /// The `T` from `Task<T>`.
         output_ty: ResolvedTy,
     },
-    /// `await_restart <supervised-child>` — suspend the current actor until the
-    /// named static supervised child's slot is Live again (it restarted), then
-    /// resume with the same stable `ChildRef<ChildType>`. The inner
-    /// `child` expression is the supervised-child accessor (a `FieldAccess`
-    /// whose `SiteId` keys `HirModule.supervisor_child_slots` with the
-    /// `(supervisor, slot)` discriminator). MIR lowers this to
-    /// `SuspendKind::RestartWait`, parking on the supervisor restart observer;
-    /// a permanently-Dead child fails closed (resumes immediately) rather than
-    /// hanging. The supervisor analogue of `AwaitTask`.
-    AwaitRestart {
-        /// The lowered supervised-child accessor. Its `site` carries the
-        /// `(supervisor, slot)` discriminator via `supervisor_child_slots`.
-        child: Box<HirExpr>,
-    },
     /// `await conn.read()` / `await conn.read_string()` — a non-blocking
     /// suspending socket read (NEW-1). Produced by HIR lowering when an `await`
     /// wraps a `net.Connection::read`/`read_string` method call. A suspendable

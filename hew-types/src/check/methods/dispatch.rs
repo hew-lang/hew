@@ -443,7 +443,7 @@ impl Checker {
                 return Ty::Error;
             }
 
-            // Static method calls on type names: e.g. Point.from_json(json)
+            // Static method calls on type names: e.g. Point.new(1, 2)
             // Look up "TypeName.method" in fn_sigs (registered by wire types
             // etc.). The surface spelling resolves to its canonical
             // declaration identity first (A316): the wire codec surface

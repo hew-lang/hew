@@ -3322,3 +3322,37 @@ fn imported_type_without_the_implemented_method_still_fails() {
         error.message
     );
 }
+
+/// R6: a trait object renders when `Display` is in its bounds' supertrait
+/// closure (`dyn Error` through `Error: Display`).
+#[test]
+fn dyn_error_is_display_through_its_supertrait_closure() {
+    let output = check_source(
+        r#"
+type Boom { code: i64; }
+impl Display for Boom { fn fmt(val: Boom) -> string { f"boom {val.code}" } }
+impl Error for Boom {}
+fn show(e: dyn Error) -> string { f"got {e}" }
+fn shout(e: dyn Error) { println(e); }
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+/// Control: a trait object whose closure lacks `Display` does not render.
+#[test]
+fn dyn_without_display_in_its_closure_is_not_display() {
+    let output = check_source(
+        r#"
+trait Tick { fn tick(self) -> i64; }
+fn show(t: dyn Tick) -> string { f"{t}" }
+fn shout(t: dyn Tick) { println(t); }
+"#,
+    );
+    let messages: Vec<_> = output.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages.iter().all(|m| m.contains("does not implement")),
+        "{messages:?}"
+    );
+}

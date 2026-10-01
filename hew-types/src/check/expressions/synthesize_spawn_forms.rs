@@ -1779,9 +1779,22 @@ impl Checker {
                         );
                         return Err(());
                     }
-                    // Unknown actor: keep the bare name so the pre-existing
-                    // unknown-actor diagnostics downstream fire unchanged.
-                    super::types::BareActorResolution::Unknown => Some(name.to_string()),
+                    // An unknown actor is an unresolved name (#3623).
+                    super::types::BareActorResolution::Unknown => {
+                        let similar = crate::error::find_similar(
+                            name.name.as_str(),
+                            self.type_defs
+                                .keys()
+                                .map(|id| self.defs.path(id.declaration())),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &target.1,
+                            format!("undefined actor `{name}`"),
+                            similar,
+                        );
+                        return Err(());
+                    }
                 }
             }
             // Handle module-qualified actor: spawn module.ActorName(args)

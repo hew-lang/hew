@@ -4598,6 +4598,14 @@ Operations with no portable readiness, such as file system calls, name
 resolution and blocking C libraries, are `#[offload]` extern functions
 (§3.9.1). Standard input, sockets and timers wait on readiness instead.
 
+Writes to standard output and standard error (`print`, `println`, `io.write`,
+`io.write_err`) never wait for the terminal or pipe. Each copies its bytes into
+one ordered queue shared by both streams and returns; the runtime writes the
+queue in program order, so output from one task, and output ordered by a
+message between tasks, appears in that order on either stream. A runtime fault
+report joins the same queue, and the queue is written out before the process
+exits or starts a child that inherits its output.
+
 ### 4.8 Interaction with Actor Messages
 
 An actor processes one receive handler at a time. Forked work cannot mutate

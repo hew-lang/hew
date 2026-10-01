@@ -35,7 +35,6 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
-use std::io::Write;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -186,14 +185,7 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
     };
     let code = crate::exit_status::to_process_exit_byte(i64::from(code));
 
-    if let Err(error) = std::io::stdout().flush() {
-        eprintln!("hew_exit: failed to flush stdout before exit: {error}");
-        std::process::abort();
-    }
-    if let Err(error) = std::io::stderr().flush() {
-        eprintln!("hew_exit: failed to flush stderr before exit: {error}");
-        std::process::abort();
-    }
+    crate::output::flush();
 
     crate::test_report::finish(code);
     terminate(code);
@@ -574,6 +566,7 @@ pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;
 pub mod mem;
+pub(crate) mod output;
 pub mod print;
 pub mod random;
 pub mod rc;

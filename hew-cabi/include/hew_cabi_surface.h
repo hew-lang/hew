@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1593u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1589u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1593] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1589] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -4496,26 +4496,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1593] = {
      "\"fn hew_print_value( u8, u64, bool)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_println_bool",
-     "{\"native\": \"fn hew_println_bool( u8)\", \"wasm32-wasip1\": \"fn "
-     "hew_println_bool( u8)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_println_f64",
-     "{\"native\": \"fn hew_println_f64( f64)\", \"wasm32-wasip1\": \"fn "
-     "hew_println_f64( f64)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_println_int",
-     "{\"native\": \"fn hew_println_int( i64)\", \"wasm32-wasip1\": \"fn "
-     "hew_println_int( i64)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_println_str",
-     "{\"native\": \"fn hew_println_str( *const HewString)\", "
-     "\"wasm32-wasip1\": \"fn hew_println_str( *const HewString)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_drop",
      "{\"native\": \"fn hew_process_drop( *mut HewProcess)\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",

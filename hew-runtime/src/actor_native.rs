@@ -146,6 +146,7 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
     } else {
         crate::exit_status::hew_runtime_exit_status()
     };
+    crate::output::flush();
     crate::test_report::finish(status);
     status
 }

@@ -513,6 +513,7 @@ pub(crate) fn to_process_exit_byte(code: i64) -> i32 {
 #[no_mangle]
 pub extern "C" fn hew_process_exit_byte(code: i32) -> i32 {
     let status = to_process_exit_byte_impl(i64::from(code));
+    crate::output::flush();
     crate::test_report::finish(status);
     status
 }

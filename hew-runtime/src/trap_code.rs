@@ -211,8 +211,7 @@ pub(crate) unsafe fn fault_trap_bridge(code: c_int, reported: bool) {
         if !reported {
             crate::fault::report_trap_code(code);
         }
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        let _ = std::io::Write::flush(&mut std::io::stderr());
+        crate::output::flush();
         crate::test_report::finish(1);
         // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8);
         // the trap code in the reported line is the runtime's internal tag and

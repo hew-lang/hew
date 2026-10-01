@@ -1253,7 +1253,7 @@ fn register() {
 
 fn register() {
     let remote: RemotePid<Worker>;
-    let result: Result<MonitorRef, MonitorError> = monitor(remote);
+    let result: Result<MonitorRef, LinkError> = monitor(remote);
     match result {
         .Ok(m) => {
             m.close();
@@ -1490,7 +1490,7 @@ fn main() {}
         let output = check_native(remote_monitor_returns_typed_result_source());
         assert!(
             output.errors.is_empty(),
-            "monitor(RemotePid) should return Result<MonitorRef, MonitorError>; got: {:?}",
+            "monitor(RemotePid) should return Result<MonitorRef, LinkError>; got: {:?}",
             output.errors
         );
     }

@@ -44,10 +44,7 @@ fn accept_thread_stop_reports_panic_and_consumes_handle() {
 }
 
 #[test]
-fn monitor_and_link_setup_statuses_match_hew_error_discriminants() {
-    assert_eq!(MONITOR_ERR_NODE_NOT_RUNNING, 1);
-    assert_eq!(MONITOR_ERR_LOCAL_SHUTDOWN, 6);
-    assert_eq!(MONITOR_ERR_RESOURCE_EXHAUSTED, 11);
+fn observation_setup_statuses_match_link_error_discriminants() {
     assert_eq!(LINK_ERR_DEAD, 1);
     assert_eq!(LINK_ERR_PARTITION, 2);
     assert_eq!(LINK_ERR_NO_CURRENT_ACTOR, 3);

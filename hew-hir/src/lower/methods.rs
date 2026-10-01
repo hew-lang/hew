@@ -149,7 +149,6 @@ impl LowerCtx {
                                 evaluation_order,
                                 reply_ty: reply_ty.clone(),
                                 policy,
-                                deadline_ns: None,
                             },
                             result_ty,
                         )

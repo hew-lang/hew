@@ -1545,7 +1545,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     protocol.actor,
                     protocol.message,
                     protocol.policy,
-                    protocol.deadline_ns,
                     protocol.sealed,
                     transfers,
                 )?;

@@ -513,7 +513,6 @@ export interface ActorProtocol {
   actor: number;
   message: number;
   policy: "reject" | "wait" | "drop_newest" | "replace_latest";
-  deadline_ns: number | null;
   sealed: boolean;
 }
 

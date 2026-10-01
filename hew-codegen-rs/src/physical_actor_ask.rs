@@ -9,7 +9,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         actor: ActorId,
         message: u32,
         policy: hew_types::actor_delivery::SendPolicy,
-        deadline_ns: Option<i64>,
         sealed: bool,
         args: &[ArgumentTransfer],
         result: StorageId,
@@ -20,20 +19,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("ask requires a resumable invocation".into())
         })?;
-        let operation =
-            self.emit_actor_call_start(actor, message, policy, deadline_ns, sealed, args)?;
+        let operation = self.emit_actor_call_start(actor, message, policy, sealed, args)?;
         let ArgumentTransfer::Borrow(target) = args[0] else {
             return Err(CodegenError::FailClosed(
                 "ask must borrow its target".into(),
             ));
         };
-        // A deadline is an independent progress path, so this call alone
-        // cannot prove a closed actor dependency cycle.
-        let wait_edge = if deadline_ns.is_some() {
-            self.ctx.ptr_type(AddressSpace::default()).const_null()
-        } else {
-            self.new_actor_wait_edge(self.load_actor_target(target, "ask.wait.target")?.into(), 0)?
-        };
+        let wait_edge =
+            self.new_actor_wait_edge(self.load_actor_target(target, "ask.wait.target")?.into(), 0)?;
         let poll = self.ctx.append_basic_block(self.value, "ask.poll");
         let inspect = self.ctx.append_basic_block(self.value, "ask.inspect");
         let pending = self.ctx.append_basic_block(self.value, "ask.pending");
@@ -115,7 +108,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         actor: ActorId,
         message: u32,
         policy: hew_types::actor_delivery::SendPolicy,
-        deadline_ns: Option<i64>,
         sealed: bool,
         args: &[ArgumentTransfer],
     ) -> CodegenResult<PointerValue<'ctx>> {
@@ -264,14 +256,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             size_ty.const_int(reply_size, false).into(),
             drop_reply.into(),
             waker.into(),
-            self.ctx
-                .i64_type()
-                .const_int(deadline_ns.unwrap_or(0) as u64, true)
-                .into(),
-            self.ctx
-                .i32_type()
-                .const_int(u64::from(deadline_ns.is_some()), false)
-                .into(),
+            // A source ask carries no deadline; the runtime timer serves the
+            // remote-local route only.
+            self.ctx.i64_type().const_zero().into(),
+            self.ctx.i32_type().const_zero().into(),
             self.ctx
                 .i32_type()
                 .const_int(

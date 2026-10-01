@@ -864,7 +864,7 @@ pub(crate) fn deliver_down_message(watcher_actor_id: u64, down_data: HewDownMess
 /// Create a monitor: watcher monitors target.
 ///
 /// Returns zero and writes a unique monitor id on success. Non-zero returns are
-/// one-based `MonitorError` discriminants.
+/// one-based `LinkError` discriminants (`Dead`, `Partition`, `NoContext`).
 ///
 /// # Safety
 ///
@@ -875,10 +875,10 @@ pub unsafe extern "C" fn hew_actor_monitor(
     target: *mut HewActor,
     out_monitor_id: *mut u64,
 ) -> i32 {
-    const INVALID_TARGET: i32 = 2;
+    const LINK_ERR_DEAD: i32 = 1;
 
     if watcher.is_null() || target.is_null() || out_monitor_id.is_null() {
-        return INVALID_TARGET;
+        return LINK_ERR_DEAD;
     }
 
     // SAFETY: Caller guarantees both pointers are valid.
@@ -909,7 +909,8 @@ unsafe fn register_local_monitor(
     let state = monitor_state();
     let Some(ref_id) = state.next_observation_id() else {
         crate::set_last_error("hew_actor_monitor: monitor id space exhausted");
-        return 11;
+        // `LinkError.Partition`: the runtime cannot register the observation.
+        return 2;
     };
 
     let monitor_entry = MonitorEntry { ref_id };

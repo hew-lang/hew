@@ -59,7 +59,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
-            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::Iterator
             | BuiltinType::Unit
@@ -1469,17 +1468,6 @@ impl Ty {
     pub fn link_error() -> Ty {
         crate::builtin_enums::monomorphic_builtin_enum_ty("LinkError")
             .expect("generated builtin enum catalog must contain LinkError")
-    }
-
-    /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
-    #[must_use]
-    pub fn monitor_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("MonitorError")
-            .expect("generated builtin enum catalog must contain MonitorError")
     }
 
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.

@@ -10,7 +10,6 @@ fn monomorphic_builtin_specs_retain_exact_owner_identity() {
     for expected in [
         "std.builtins.LookupError",
         "std.builtins.LinkError",
-        "std.link_monitor.MonitorError",
         "std.failure.CrashAction",
         "std.failure.CrashKind",
     ] {

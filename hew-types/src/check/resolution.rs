@@ -453,7 +453,7 @@ impl Checker {
     /// Why the checker canonicalizes here instead of trusting a context-free
     /// suffix compare (issue #2651): a bare name and a module-qualified name
     /// sharing a final segment may name the SAME definition (a prelude stdlib
-    /// type reached bare — `MonitorError` ↔ `link_monitor.MonitorError` — or a
+    /// type reached bare — `MonitorRef` ↔ `link_monitor.MonitorRef` — or a
     /// single-publisher import) or DIFFERENT ones (a root-local `Widget` vs an
     /// imported `widgeti8.Widget`). Only the checker's resolution tables can
     /// tell them apart; mapping both compared names to this identity before an
@@ -568,7 +568,7 @@ impl Checker {
         // name that arrived from another module's frame — e.g. a callee's return
         // type `Result<Vec<Box>, _>` spelled bare in the defining module
         // `nestbox`, compared in the importer against `nestbox.Box`, or a prelude
-        // stdlib type reached bare (`MonitorError` → `link_monitor.MonitorError`).
+        // stdlib type reached bare (`MonitorRef` → `link_monitor.MonitorRef`).
         // Ambiguous (>1 owner) or none → leave bare and let the exact / builtin
         // compare fail closed (a genuinely ambiguous bare reference is a
         // resolution error, not something to silently pick a winner for).

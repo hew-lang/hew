@@ -489,6 +489,17 @@ const PARITY_CASES: &[ParityCase] = &[
         test_name: "dyn_subtrait_display",
         source_rel: "tests/core-acceptance/cases/dyn-subtrait-display.hew",
     },
+    ParityCase {
+        // A fallible `main` that returns `Err` writes its rendered `error:`
+        // line to stderr and exits 1 in both executors.
+        test_name: "entry_result_err",
+        source_rel: "tests/core-acceptance/cases/entry-result-err.hew",
+    },
+    ParityCase {
+        // `?` on a `fails` call ends `main` through the same adapter.
+        test_name: "error_trait_fallible_main",
+        source_rel: "tests/core-acceptance/cases/error-trait-fallible-main.hew",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -599,7 +610,19 @@ fn assert_case(case: &ParityCase) {
     let sandbox = run_sandbox(&bytecode_path);
     assert_exit_code_parity(case, &native, &sandbox);
     assert_stdout_parity(case, &native, &sandbox);
+    assert_stderr_parity(case, &native, &sandbox);
     assert_exact_stdout(case, &native);
+}
+
+fn assert_stderr_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
+    assert_eq!(
+        String::from_utf8_lossy(&sandbox.stderr),
+        String::from_utf8_lossy(&native.stderr),
+        "{} stderr mismatch\nnative:\n{}\nsandbox:\n{}",
+        case.test_name,
+        describe_output(native),
+        describe_output(sandbox)
+    );
 }
 
 fn assert_exact_stdout(case: &ParityCase, native: &Output) {

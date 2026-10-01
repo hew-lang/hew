@@ -355,6 +355,7 @@ class ExecutorV1 {
       releaseValue: (value) =>
         this.closeValue(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
+      writeStderr: (text) => this.trace.writeStderr(text, null),
       readLine: () => {
         const line = stdin.readLine();
         this.trace.recordReplayInput({ kind: "stdin", data: line }, false);
@@ -2894,11 +2895,9 @@ class ExecutorV1 {
     let closing = false;
     const owner = this.current.context.actor;
     let receiver: ActorInstance | null = null;
-    let cancelTimer = () => {};
     const finish: ActorMessage["complete"] = (value, error, drained) => {
       const alreadySettled = settled;
       settled = true;
-      cancelTimer();
       if (alreadySettled || complete(value, error) === false) {
         // The finishing receiver still owns a reply that its caller no
         // longer accepts. Its next turn must wait for this release.
@@ -2927,7 +2926,6 @@ class ExecutorV1 {
       closeWaiters.push(done);
       if (closing) return;
       closing = true;
-      cancelTimer();
       this.closeValueAsync(
         { kind: "record", typeId: "", fields: payload },
         null,
@@ -2947,11 +2945,6 @@ class ExecutorV1 {
         complete(null, reason, fault);
       });
     };
-    if (protocol.deadline_ns != null)
-      cancelTimer = this.scheduler.after(BigInt(protocol.deadline_ns), () => {
-        if (admitted) finish(null, "TimedOut");
-        else reject("TimedOut");
-      });
     const attempt = () => {
       if (settled || closing) return;
       const role = "id" in target ? this.roles.get(target.id) : undefined;
@@ -3024,7 +3017,6 @@ class ExecutorV1 {
     return (done) => {
       const wasSettled = settled;
       settled = true;
-      cancelTimer();
       if (admitted || (wasSettled && !closing)) done(null);
       else closeRequest(done);
     };

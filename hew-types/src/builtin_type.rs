@@ -76,7 +76,6 @@ pub enum BuiltinType {
     NodeError,
     LookupError,
     LinkError,
-    MonitorError,
     MonitorRef,
     Iterator,
     Unit,
@@ -234,7 +233,6 @@ builtin_types! {
     NodeError => "NodeError",
     LookupError => "LookupError",
     LinkError => "LinkError",
-    MonitorError => "MonitorError",
     MonitorRef => "MonitorRef",
     Iterator => "Iterator",
     Unit => "Unit",
@@ -412,8 +410,7 @@ impl BuiltinType {
             | Self::SendError
             | Self::NodeError
             | Self::LookupError
-            | Self::LinkError
-            | Self::MonitorError => BuiltinTypeMarker::BitCopy,
+            | Self::LinkError => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
@@ -465,7 +462,6 @@ impl BuiltinType {
                 | Self::DownTarget
                 | Self::DownReason
                 | Self::DownNotification
-                | Self::MonitorError
                 | Self::MonitorRef
         )
     }
@@ -525,7 +521,6 @@ impl BuiltinType {
             | Self::NodeError
             | Self::LookupError
             | Self::LinkError
-            | Self::MonitorError
             | Self::MonitorRef
             | Self::Iterator
             | Self::Unit
@@ -588,7 +583,6 @@ impl BuiltinType {
             Self::DownTarget => Some("std.link_monitor.DownTarget"),
             Self::DownReason => Some("std.link_monitor.DownReason"),
             Self::DownNotification => Some("std.link_monitor.DownNotification"),
-            Self::MonitorError => Some("std.link_monitor.MonitorError"),
             Self::MonitorRef => Some("std.link_monitor.MonitorRef"),
             _ => None,
         }
@@ -645,7 +639,6 @@ impl BuiltinType {
                 | Self::NodeError
                 | Self::LookupError
                 | Self::LinkError
-                | Self::MonitorError
         )
     }
 
@@ -692,9 +685,6 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         "stream.Sink" | "std.stream.Sink" => return Some(BuiltinType::Sink),
         "link_monitor.MonitorRef" | "std.link_monitor.MonitorRef" => {
             return Some(BuiltinType::MonitorRef);
-        }
-        "link_monitor.MonitorError" | "std.link_monitor.MonitorError" => {
-            return Some(BuiltinType::MonitorError);
         }
         // The identity carriers' bodyless surface stubs in `std/builtins.hew`
         // name the carriers themselves.
@@ -775,7 +765,6 @@ pub const SOURCE_OWNED_LIFECYCLE_OWNERS: &[SourceOwnedLifecycleOwner] = &[
             BuiltinType::DownTarget,
             BuiltinType::DownReason,
             BuiltinType::DownNotification,
-            BuiltinType::MonitorError,
             BuiltinType::MonitorRef,
         ],
     },
@@ -895,18 +884,18 @@ mod tests {
     fn lookup_rejects_user_names() {
         assert_eq!(lookup_builtin_type("UserOption"), None);
         assert_eq!(lookup_builtin_type("user.Option"), None);
-        assert_eq!(lookup_builtin_type("user.MonitorError"), None);
+        assert_eq!(lookup_builtin_type("user.MonitorRef"), None);
     }
 
     #[test]
     fn lookup_accepts_exact_renamed_monitor_carriers() {
         assert_eq!(
-            lookup_builtin_type("link_monitor.MonitorError"),
-            Some(BuiltinType::MonitorError)
+            lookup_builtin_type("link_monitor.MonitorRef"),
+            Some(BuiltinType::MonitorRef)
         );
         assert_eq!(
-            lookup_builtin_type("std.link_monitor.MonitorError"),
-            Some(BuiltinType::MonitorError)
+            lookup_builtin_type("std.link_monitor.MonitorRef"),
+            Some(BuiltinType::MonitorRef)
         );
     }
 

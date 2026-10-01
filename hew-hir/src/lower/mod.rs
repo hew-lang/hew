@@ -301,7 +301,6 @@ const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
 pub(crate) const SYNTHETIC_HASHMAP_ITER_ITEM: ItemId = ItemId(u32::MAX - 1006);
 const SYNTHETIC_CRASH_ACTION_ITEM: ItemId = ItemId(u32::MAX - 1007);
 const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
-const SYNTHETIC_MONITOR_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1009);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../../std/builtins.hew");
 
 /// One compiler-owned cursor record admitted at the HIR layout boundary.
@@ -540,10 +539,6 @@ const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
     ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
     ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
-    (
-        "std.link_monitor.MonitorError",
-        SYNTHETIC_MONITOR_ERROR_ITEM,
-    ),
 ];
 
 const fn const_str_eq(left: &str, right: &str) -> bool {

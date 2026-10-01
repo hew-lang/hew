@@ -1863,7 +1863,6 @@ mod tests {
                 | BuiltinType::NodeError
                 | BuiltinType::LookupError
                 | BuiltinType::LinkError
-                | BuiltinType::MonitorError
                 | BuiltinType::ActorHandle
                 // A lambda actor's handle is a pid under another spelling.
                 | BuiltinType::ActorFn

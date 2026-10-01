@@ -1872,7 +1872,6 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
             "actor": protocol.actor.0,
             "message": protocol.message,
             "policy": send_policy_name(protocol.policy),
-            "deadline_ns": protocol.deadline_ns,
             "sealed": protocol.sealed,
         })
     }
@@ -2059,7 +2058,6 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
             actor,
             message,
             policy,
-            deadline_ns,
             sealed,
         } => (
             "Ask",
@@ -2067,7 +2065,6 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
                 "actor": actor.0,
                 "message": message,
                 "policy": send_policy_name(*policy),
-                "deadline_ns": deadline_ns,
                 "sealed": sealed,
             }),
         ),

@@ -4,7 +4,7 @@
 // two-process fixture covers a linked crash, whose report names actor ids.
 import std.os;
 
-import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorError, MonitorRef, PartitionPolicy,};
+import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorRef, PartitionPolicy,};
 
 extern "C" {
     fn hew_actor_self_stop();
@@ -57,16 +57,16 @@ impl ActorMsg for Store {
 }
 
 // The held registration is read through a borrow, so the seat keeps it live.
-fn setup_code(setup: Result<MonitorRef, MonitorError>) -> i64 {
+fn setup_code(setup: Result<MonitorRef, LinkError>) -> i64 {
     match setup {
         .Ok(_) => 0,
-        .Err(MonitorError.StaleRef) => 1,
+        .Err(LinkError.Dead) => 1,
         .Err(_) => 2,
     }
 }
 
 actor Watcher {
-    var active: Result<MonitorRef, MonitorError>;
+    var active: Result<MonitorRef, LinkError>;
     var outcome: i64 = 0;
     // 0 = registered, 1 = stale, 2 = refused otherwise.
     receive fn arm(target: RemotePid<Store>) -> i64 {
@@ -146,7 +146,7 @@ fn main() -> i64 {
     println(get(target, "colour"));
 
     // A clean exit reaches a monitor as the DOWN of a remote location.
-    let watcher = spawn Watcher(active: .Err(MonitorError.NodeNotRunning));
+    let watcher = spawn Watcher(active: .Err(LinkError.Partition));
     match watcher.arm(target) {
         .Ok(0) => {}
         .Ok(_) => return 5,
@@ -218,7 +218,7 @@ fn main() -> i64 {
         .Ok(_) => println("send delivered"),
     }
     println(get(old, "colour"));
-    let late_watcher = spawn Watcher(active: .Err(MonitorError.NodeNotRunning));
+    let late_watcher = spawn Watcher(active: .Err(LinkError.Partition));
     match late_watcher.arm(old) {
         .Ok(0) => println("monitor registered"),
         .Ok(1) => println("monitor stale"),

@@ -213,8 +213,8 @@ pub enum RuntimeCallFamily {
     /// `monitor(RemotePid<T>)` →
     /// `hew_node_monitor_location(target, out_monitor_id) -> i32`.
     /// Zero returns success and writes the distributed-monitor id; non-zero is
-    /// one plus the `MonitorError` discriminant. Codegen assembles
-    /// `Result<MonitorRef, MonitorError>`. The current node is resolved
+    /// one plus the `LinkError` discriminant. Codegen assembles
+    /// `Result<MonitorRef, LinkError>`. The current node is resolved
     /// internally, so the single runtime argument is a pointer to the carried
     /// full `Location`; non-consuming.
     NodeMonitor,

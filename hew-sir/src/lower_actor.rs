@@ -624,7 +624,6 @@ enum ActorRequestPreparation {
     Ready {
         protocol: crate::ActorCallProtocol,
         policy: hew_types::actor_delivery::SendPolicy,
-        deadline_ns: Option<i64>,
         inputs: Vec<crate::BoundaryOperand>,
     },
     Diverged(ValueId),
@@ -688,7 +687,6 @@ impl Builder<'_, '_> {
             evaluation_order,
             reply_ty: _,
             policy,
-            deadline_ns,
         } = &expression.kind
         else {
             unreachable!()
@@ -772,11 +770,9 @@ impl Builder<'_, '_> {
                 target: target_ty,
                 result: output,
                 policy: *policy,
-                deadline_ns: *deadline_ns,
                 sealed: false,
             },
             policy: *policy,
-            deadline_ns: *deadline_ns,
             inputs,
         })
     }
@@ -787,14 +783,12 @@ impl Builder<'_, '_> {
             ActorRequestPreparation::Ready {
                 protocol,
                 policy,
-                deadline_ns,
                 inputs,
             } => self.finish_actor_ask(
                 expression,
                 protocol.actor,
                 protocol.message,
                 policy,
-                deadline_ns,
                 false,
                 inputs,
             ),
@@ -843,7 +837,6 @@ impl Builder<'_, '_> {
         actor: crate::ActorId,
         message: u32,
         policy: hew_types::actor_delivery::SendPolicy,
-        deadline_ns: Option<i64>,
         sealed: bool,
         inputs: Vec<crate::BoundaryOperand>,
     ) -> Result<ValueId, String> {
@@ -868,7 +861,6 @@ impl Builder<'_, '_> {
                 actor,
                 message,
                 policy,
-                deadline_ns,
                 sealed,
             },
             inputs,
@@ -1600,7 +1592,7 @@ impl Builder<'_, '_> {
                         decision: crate::BoundaryDecision::Move,
                     },
                 ];
-                self.finish_actor_ask(expression, actor, message, *policy, None, true, inputs)
+                self.finish_actor_ask(expression, actor, message, *policy, true, inputs)
             }
             ActorDeliveryCall::Policy { .. } => {
                 let (target, _) = self.delivery_target(receiver)?;

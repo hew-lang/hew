@@ -957,7 +957,6 @@ pub enum PhysicalTerminator {
         /// Admission behaviour when the destination mailbox is full: `Wait`
         /// parks the caller, `Reject` refuses the call.
         policy: hew_types::actor_delivery::SendPolicy,
-        deadline_ns: Option<i64>,
         sealed: bool,
         args: Vec<ArgumentTransfer>,
         result: StorageId,

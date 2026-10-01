@@ -23,6 +23,8 @@
 //! }
 //! ```
 
+import std.encoding.wire;
+
 /// Encode a JSON string to MessagePack binary.
 ///
 /// Returns `Err(reason)` on invalid JSON or serialization failure. The codec's
@@ -59,60 +61,19 @@ pub fn to_json(data: bytes) -> Result<string, string> {
     }
 }
 
-/// Encode an integer as a MessagePack varint without panicking.
-pub fn encode_int(val: i64) -> Result<bytes, string> {
-    let data = unsafe {
-        hew_msgpack_encode_int_hew(val)
-    };
-    let reason = unsafe {
-        hew_msgpack_last_error()
-    };
-    if reason.len() > 0 {
-        .Err(reason)
-    } else {
-        .Ok(data)
-    }
-}
+/// Encode any data value as MessagePack bytes. Records encode as objects keyed by
+/// field name in declaration order.
+#[intrinsic("codec.msgpack.encode")]
+pub fn encode<T: Serializable>(value: T) -> bytes {}
 
-/// Encode a string as MessagePack str without panicking.
-pub fn encode_string(s: string) -> Result<bytes, string> {
-    let data = unsafe {
-        hew_msgpack_encode_string_hew(s)
-    };
-    let reason = unsafe {
-        hew_msgpack_last_error()
-    };
-    if reason.len() > 0 {
-        .Err(reason)
-    } else {
-        .Ok(data)
-    }
-}
-
-/// Encode binary data as a MessagePack bin without panicking.
-///
-/// An empty input is a value, not a missing argument: it encodes to an empty
-/// bin8 rather than to an empty result that reads as a failure.
-pub fn encode_bytes(data: bytes) -> Result<bytes, string> {
-    let encoded = unsafe {
-        hew_msgpack_encode_bytes_hew(data)
-    };
-    let reason = unsafe {
-        hew_msgpack_last_error()
-    };
-    if reason.len() > 0 {
-        .Err(reason)
-    } else {
-        .Ok(encoded)
-    }
-}
+/// Decode MessagePack bytes as `T`. A failure names the path of the value that did
+/// not fit, for example `Type: .tags[1]: expected string, found integer`.
+#[intrinsic("codec.msgpack.decode")]
+pub fn decode<T: Serializable>(data: bytes) -> Result<T, wire.DecodeError> {}
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_msgpack_from_json_hew(json: string) -> bytes;
     fn hew_msgpack_to_json_hew(data: bytes) -> string;
     fn hew_msgpack_last_error() -> string;
-    fn hew_msgpack_encode_int_hew(val: i64) -> bytes;
-    fn hew_msgpack_encode_string_hew(s: string) -> bytes;
-    fn hew_msgpack_encode_bytes_hew(data: bytes) -> bytes;
 }

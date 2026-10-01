@@ -377,9 +377,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                         .or_default()
                         .extend(semantic_value_callees(module, ty, *capability));
                 }
-                hew_sir::SemTerminator::WireCodec {
-                    direction, plan, ..
-                } if !direction.is_serialize() => {
+                hew_sir::SemTerminator::WireCodec { codec, plan, .. } if !codec.is_serialize() => {
                     plan.visit_types(&mut |ty| {
                         let (intrinsic, dependencies) =
                             semantic_release_dependencies(module, ty, None);
@@ -561,11 +559,11 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .extend(super::capability::callees(module, ty, *capability)?);
                 }
                 PhysicalTerminator::WireCodec {
-                    direction,
+                    codec,
                     plan,
                     recipes,
                     ..
-                } if !direction.is_serialize() => {
+                } if !codec.is_serialize() => {
                     if recipes.values().any(|recipe| {
                         recipe
                             .destroy

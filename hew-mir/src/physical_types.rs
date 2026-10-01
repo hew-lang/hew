@@ -926,12 +926,14 @@ impl PhysicalRuntimeAction {
     }
 }
 
-/// Physical Result storage with its SIR-selected success and error cases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhysicalWireTextResult {
+/// Physical Result storage with its SIR-selected success and error cases,
+/// and the `wire.DecodeError` type a failure decodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalWireDecodeResult {
     pub glue: PhysicalVariantId,
     pub ok: u32,
     pub error: u32,
+    pub error_ty: ResolvedTy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1140,10 +1142,10 @@ pub enum PhysicalTerminator {
     /// Execute the exact selected value callback with borrowed slots. Success
     /// initializes the scalar result; failure owns a fault on the cleanup edge.
     WireCodec {
-        direction: hew_types::WireCodecDirection,
+        codec: hew_types::Codec,
         plan: std::sync::Arc<hew_sir::SemWirePlans>,
         recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
-        text_result: Option<PhysicalWireTextResult>,
+        decode_result: Option<PhysicalWireDecodeResult>,
         input: ArgumentTransfer,
         result: StorageId,
         normal: PhysicalEdge,

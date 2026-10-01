@@ -2032,9 +2032,9 @@ pub enum SemTerminator {
     /// owned result exists only on success; logical failure enters cleanup.
     WireCodec {
         id: OpId,
-        direction: hew_types::WireCodecDirection,
+        codec: hew_types::Codec,
         plan: std::sync::Arc<crate::SemWirePlans>,
-        text_result: Option<crate::SemWireTextResult>,
+        decode_result: Option<crate::SemWireDecodeResult>,
         args: Vec<BoundaryOperand>,
         result: CallResult,
         normal: Edge,

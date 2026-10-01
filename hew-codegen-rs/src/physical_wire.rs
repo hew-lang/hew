@@ -5,12 +5,7 @@
 use super::collection_callbacks::CollectionCallbacks;
 use super::*;
 use hew_mir::physical::{SemWireKind, SemWirePayload, SemWirePlan, SemWirePlans, SemWireTable};
-use hew_types::{WireCodecDirection, WireTextFormat};
-
-/// `hew_codec::Format` codes the runtime's `hew_ser_new`/`hew_de_new` take.
-const FORMAT_CBOR: u64 = 0;
-const FORMAT_JSON: u64 = 1;
-const FORMAT_YAML: u64 = 2;
+use hew_types::Codec;
 
 fn wire_symbol(ty: &ResolvedTy, decode: bool) -> String {
     format!(
@@ -1703,14 +1698,6 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
     }
 }
 
-fn format_code(direction: WireCodecDirection) -> u64 {
-    match direction.text_format() {
-        None => FORMAT_CBOR,
-        Some(WireTextFormat::Json) => FORMAT_JSON,
-        Some(WireTextFormat::Yaml) => FORMAT_YAML,
-    }
-}
-
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
     #[expect(
         clippy::too_many_arguments,
@@ -1722,10 +1709,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     )]
     pub(super) fn emit_wire_codec(
         &self,
-        direction: WireCodecDirection,
+        codec: Codec,
         plans: &SemWirePlans,
         recipes: &BTreeMap<ResolvedTy, PhysicalValueRecipe>,
-        text_result: Option<hew_mir::physical::PhysicalWireTextResult>,
+        decode_result: Option<&hew_mir::physical::PhysicalWireDecodeResult>,
         input: ArgumentTransfer,
         result: StorageId,
         normal: &PhysicalEdge,
@@ -1746,14 +1733,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &plans.root,
             recipes,
             self.value_callbacks,
-            !direction.is_serialize(),
+            !codec.is_serialize(),
         )?;
         let format = self
             .ctx
             .i32_type()
-            .const_int(format_code(direction), false)
+            .const_int(codec.format.code(), false)
             .into();
-        if direction.is_serialize() {
+        if codec.is_serialize() {
             let sink = runtime_value(&values, "hew_ser_new", pointer.into(), &[format])?;
             self.builder
                 .build_call(
@@ -1762,7 +1749,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "",
                 )
                 .llvm_ctx("encode borrowed codec value")?;
-            if direction.text_format().is_none() {
+            if !codec.format.is_text() {
                 runtime(
                     &values,
                     "hew_ser_finish_bytes",
@@ -1846,28 +1833,47 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.store_active_fault_value(fault, status)?;
         self.emit_edge(unwind)?;
         self.builder.position_at_end(malformed);
-        let error = runtime_value(&values, "hew_de_error", pointer.into(), &[reader])?;
+        let cases = decode_result.ok_or_else(|| {
+            CodegenError::FailClosed("codec decode lacks its Result cases".into())
+        })?;
+        // The reader's error replays as a `wire.DecodeError` value, decoded
+        // through that type's own plan into the `Err` case.
+        let error_reader =
+            runtime_value(&values, "hew_de_error_reader", pointer.into(), &[reader])?;
         runtime(&values, "hew_de_free", None, &[reader])?;
-        if let Some(cases) = text_result {
-            self.write_variant_value(
-                self.slots[result.0 as usize],
-                cases.error,
-                &[error],
-                cases.glue,
-            )?;
-            self.emit_result_edge(Some(result), normal)?;
-        } else {
-            let code = hew_runtime::internal::types::HEW_TRAP_WIRE_DECODE_FAILED;
-            let constructor = external_fault_new(self.ctx, self.llvm)?;
-            let fault = self.runtime_call_value(
-                constructor,
-                &[self.ctx.i32_type().const_int(code as u64, true).into()],
-                "wire.decode.fault",
-            )?;
-            runtime(&values, "hew_string_drop", None, &[error])?;
-            self.store_active_fault(fault, code)?;
-            self.emit_edge(unwind)?;
-        }
+        let error_callback = emit_callback(
+            self.module,
+            self.ctx,
+            self.llvm,
+            plans,
+            &cases.error_ty,
+            recipes,
+            self.value_callbacks,
+            true,
+        )?;
+        let error_layout =
+            self.module.target.layout(&cases.error_ty).ok_or_else(|| {
+                CodegenError::FailClosed("codec decode error lacks layout".into())
+            })?;
+        let error_ty = llvm_type(self.ctx, &error_layout.repr)?;
+        let error_slot = values.entry_scratch(error_ty, "wire.decode.error")?;
+        self.runtime_call_value(
+            error_callback,
+            &[error_reader.into(), error_slot.into(), fault_out.into()],
+            "wire.decode.error.status",
+        )?;
+        runtime(&values, "hew_de_free", None, &[error_reader])?;
+        let error = self
+            .builder
+            .build_load(error_ty, error_slot, "wire.decode.error.value")
+            .llvm_ctx("take decoded error owner")?;
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            cases.error,
+            &[error],
+            cases.glue,
+        )?;
+        self.emit_result_edge(Some(result), normal)?;
         self.builder.position_at_end(success);
         runtime(&values, "hew_de_free", None, &[reader])?;
         let value = self
@@ -1878,16 +1884,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "wire.complete.value",
             )
             .llvm_ctx("take decoded value owner")?;
-        if let Some(cases) = text_result {
-            self.write_variant_value(
-                self.slots[result.0 as usize],
-                cases.ok,
-                &[value],
-                cases.glue,
-            )?;
-        } else {
-            self.store(result, value)?;
-        }
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            cases.ok,
+            &[value],
+            cases.glue,
+        )?;
         self.emit_result_edge(Some(result), normal)
     }
 }

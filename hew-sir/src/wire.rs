@@ -254,10 +254,12 @@ impl SemWirePlans {
     }
 }
 
-/// Declaration-order Result cases selected for a text decoder's source result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SemWireTextResult {
+/// Declaration-order Result cases selected for a decode's source result, and
+/// the `wire.DecodeError` type a failure decodes from the reader's error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemWireDecodeResult {
     pub shape: VariantShapeId,
     pub ok: u32,
     pub error: u32,
+    pub error_ty: ResolvedTy,
 }

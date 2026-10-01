@@ -9,7 +9,7 @@ use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
     Ty, TyPattern, VariantMatch,
 };
-use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
+use hew_types::{TryConversionKind, VecElementToken};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
@@ -1859,14 +1859,12 @@ pub enum HirExprKind {
     /// All directions borrow their operand. `value_ty` is the exact checked
     /// value encoded or decoded, including generic collection arguments.
     ///
-    /// SIR resolves a shared wire schema from the checker layout table. Native
-    /// callbacks use the physical value layouts and cleanup glue for both
-    /// directions; text formats transcode through the same CBOR representation.
-    /// Binary decode failure raises `WireDecodeFailed`. Text decode returns
-    /// `Result<value_ty, string>` for malformed input and propagates callback
-    /// faults through ordinary cleanup.
+    /// SIR resolves the serial plan from the checker layout table. An encode
+    /// produces the format's document. A decode produces
+    /// `Result<value_ty, wire.DecodeError>` for any malformed input and
+    /// propagates callback faults through ordinary cleanup.
     WireCodec {
-        direction: WireCodecDirection,
+        codec: hew_types::Codec,
         operand: Box<HirExpr>,
         value_ty: ResolvedTy,
     },

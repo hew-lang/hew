@@ -1039,11 +1039,11 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             dump_expr(defs, out, receiver, indent + 4);
         }
         HirExprKind::WireCodec {
-            direction,
+            codec,
             operand,
             value_ty,
         } => {
-            writeln!(out, "{pad}  wire-codec {direction:?} value_ty={value_ty:?}")
+            writeln!(out, "{pad}  wire-codec {codec:?} value_ty={value_ty:?}")
                 .expect("write to string");
             dump_expr(defs, out, operand, indent + 4);
         }

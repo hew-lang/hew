@@ -11,9 +11,8 @@
 //! still answers on one worker while every other task waits on the network.
 //!
 //! Stopping `Service` cancels the blocked fourth accept and closes the
-//! listener. Established sessions belong to their connections, not to the
-//! acceptor, so they keep serving until their peers finish; a restarted
-//! acceptor would not drop them either.
+//! listener. The sessions here are not supervised children, so they keep
+//! serving until their peers finish.
 
 import std.net;
 
@@ -138,7 +137,8 @@ fn main() {
     stopped(service);
     println("supervisor stopped");
 
-    // The sessions outlive the acceptor and finish when their peers do.
+    // The sessions are not children of the service; they finish when their
+    // peers do.
     second.send("still here".to_bytes()).expect("send to second session");
     match second.recv() {
         .Some(reply) => assert(reply == "still here".to_bytes()),

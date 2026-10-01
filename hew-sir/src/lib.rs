@@ -86,4 +86,7 @@ pub use verify::{
 
 pub use hew_hir::HirSelectionOrder as TaskSelectionOrder;
 
-pub use wire::{SemWireField, SemWireKind, SemWirePlan, SemWireTextResult, SemWireVariant};
+pub use wire::{
+    SemWireKind, SemWireMember, SemWirePayload, SemWirePlan, SemWirePlans, SemWireTable,
+    SemWireTextResult,
+};

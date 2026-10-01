@@ -1,5 +1,6 @@
 //! One checked semantic plan supplies every wire codec direction.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use hew_types::{BuiltinType, ResolvedTy, WireCodecDirection};
@@ -7,31 +8,51 @@ use hew_types::{BuiltinType, ResolvedTy, WireCodecDirection};
 use super::{Builder, InstanceService};
 use crate::{
     AggregateShapeRef, BlockArg, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, Edge,
-    OpId, Operand, OwnKind, SemTerminator, SemWireField, SemWireKind, SemWirePlan, SemWireVariant,
-    ValueDef, ValueId,
+    OpId, Operand, OwnKind, SemTerminator, SemWireKind, SemWireMember, SemWirePayload, SemWirePlan,
+    SemWirePlans, SemWireTable, ValueDef, ValueId,
 };
 
 impl InstanceService<'_> {
+    /// The plans of every type a codec of `root` walks. The checker admitted
+    /// the type (`TypeFactService::data_error`); a shape this cannot plan is a
+    /// broken stage contract.
+    pub(super) fn wire_plans(&mut self, root: &ResolvedTy) -> Result<Arc<SemWirePlans>, String> {
+        if let Some(plans) = self.wire_plans.get(root) {
+            return Ok(Arc::clone(plans));
+        }
+        let mut plans = BTreeMap::new();
+        let mut work = vec![root.clone()];
+        while let Some(ty) = work.pop() {
+            if plans.contains_key(&ty) {
+                continue;
+            }
+            let plan = self.wire_plan(&ty)?;
+            work.extend(plan.children().into_iter().cloned());
+            plans.insert(ty, plan);
+        }
+        let plans = Arc::new(SemWirePlans {
+            root: root.clone(),
+            plans,
+        });
+        self.wire_plans.insert(root.clone(), Arc::clone(&plans));
+        Ok(plans)
+    }
+
+    fn serial_table(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<&hew_types::data_shape::SerialLayout, String> {
+        ty.nominal_instance(&self.module.defs)
+            .and_then(|instance| self.checked_facts.context().serial_layout(instance.nominal))
+            .ok_or_else(|| format!("`{}` has no checked serial layout", ty.user_facing()))
+    }
+
     #[expect(
         clippy::too_many_lines,
-        reason = "the exhaustive schema walk keeps every admitted value shape together"
+        reason = "one exhaustive match keeps every planned shape together"
     )]
-    pub(super) fn wire_plan(
-        &mut self,
-        ty: &ResolvedTy,
-        path: &mut Vec<ResolvedTy>,
-    ) -> Result<Arc<SemWirePlan>, String> {
-        if let Some(plan) = self.wire_plans.get(ty) {
-            return Ok(Arc::clone(plan));
-        }
-        if path.contains(ty) || path.len() >= 128 {
-            return Err(format!(
-                "wire schema for `{}` exceeds the finite codec depth",
-                ty.user_facing()
-            ));
-        }
+    fn wire_plan(&mut self, ty: &ResolvedTy) -> Result<SemWirePlan, String> {
         self.require_type_facts(ty)?;
-        path.push(ty.clone());
         let kind = match ty {
             ResolvedTy::I8
             | ResolvedTy::I16
@@ -50,147 +71,177 @@ impl InstanceService<'_> {
             | ResolvedTy::Duration
             | ResolvedTy::String
             | ResolvedTy::Bytes => SemWireKind::Scalar,
+            ResolvedTy::Unit => SemWireKind::Unit,
+            ResolvedTy::Tuple(elements) => {
+                self.require_aggregate_shape(ty)?;
+                SemWireKind::Tuple(elements.clone())
+            }
+            ResolvedTy::Array(element, len) => SemWireKind::Array {
+                element: (**element).clone(),
+                len: *len,
+            },
             ResolvedTy::Named {
                 head: hew_types::TypeHead::Builtin(builtin),
                 args,
                 ..
             } => match (builtin, args.as_slice()) {
-                (BuiltinType::Vec, [element]) => {
-                    SemWireKind::Vector(self.wire_plan(element, path)?)
-                }
+                (BuiltinType::Vec, [element]) => SemWireKind::Vector(element.clone()),
                 (BuiltinType::HashSet, [element]) => {
                     self.require_key_capabilities(element)?;
-                    SemWireKind::Set(self.wire_plan(element, path)?)
+                    SemWireKind::Set(element.clone())
                 }
                 (BuiltinType::HashMap, [key, value]) => {
                     self.require_key_capabilities(key)?;
                     SemWireKind::Map {
-                        key: self.wire_plan(key, path)?,
-                        value: self.wire_plan(value, path)?,
+                        key: key.clone(),
+                        value: value.clone(),
                     }
                 }
                 (BuiltinType::Option, [value]) => {
-                    if matches!(
-                        value,
-                        ResolvedTy::Named {
-                            head: hew_types::TypeHead::Builtin(BuiltinType::Option),
-                            ..
-                        }
-                    ) {
-                        return Err("Option<Option<_>> is ambiguous under the null encoding".into());
-                    }
                     let shape = self.require_variant_shape(ty)?;
                     let variants = &self.variant_shapes[shape.0 as usize].variants;
                     let none = variants
                         .iter()
                         .position(|v| v.fields.is_empty())
-                        .ok_or("wire Option has no empty case")?;
+                        .ok_or("codec Option has no empty case")?;
                     let some = variants
                         .iter()
                         .position(|v| v.fields.len() == 1 && v.fields[0].ty == *value)
-                        .ok_or("wire Option has no exact payload case")?;
+                        .ok_or("codec Option has no exact payload case")?;
                     SemWireKind::Option {
                         shape,
                         none: u32::try_from(none).map_err(|_| "Option index exceeds u32")?,
                         some: u32::try_from(some).map_err(|_| "Option index exceeds u32")?,
-                        value: self.wire_plan(value, path)?,
+                        value: value.clone(),
+                    }
+                }
+                (BuiltinType::Result, [_, _]) => {
+                    let shape = self.require_variant_shape(ty)?;
+                    let variants = self.variant_shapes[shape.0 as usize].variants.clone();
+                    let table = SemWireTable {
+                        tagged: false,
+                        members: variants
+                            .iter()
+                            .map(|variant| SemWireMember {
+                                key: variant.name.clone(),
+                                tag: 0,
+                                flags: hew_codec::Member::PAYLOAD,
+                            })
+                            .collect(),
+                    };
+                    SemWireKind::Enum {
+                        shape,
+                        table,
+                        variants: variants
+                            .iter()
+                            .map(|variant| payload(variant, None))
+                            .collect(),
                     }
                 }
                 _ => {
                     return Err(format!(
-                        "`{}` is outside the checked wire value surface",
+                        "`{}` is outside the checked data shape",
                         ty.user_facing()
                     ))
                 }
             },
             ResolvedTy::Named {
                 head:
-                    head @ (hew_types::TypeHead::Nominal(_)
+                    hew_types::TypeHead::Nominal(_)
                     | hew_types::TypeHead::Param(_)
-                    | hew_types::TypeHead::Unresolved(_)),
+                    | hew_types::TypeHead::Unresolved(_),
                 is_opaque: false,
                 ..
             } => {
-                let name = head.registry_key();
-                let layout = self
-                    .module
-                    .wire_layouts
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("`{name}` has no checked wire layout"))?;
-                if layout.is_struct {
-                    let AggregateShapeRef::Record(shape) = self.require_aggregate_shape(ty)? else {
-                        return Err("wire record has no exact aggregate identity".into());
-                    };
-                    let fields = self.aggregate_shapes[shape.0 as usize].fields.clone();
-                    if fields.len() != layout.fields.len() {
-                        return Err("wire and record field inventories disagree".into());
+                let layout = self.serial_table(ty)?.clone();
+                if let Ok(AggregateShapeRef::Record(shape)) = self.require_aggregate_shape(ty) {
+                    let fields = self.aggregate_shapes[shape.0 as usize]
+                        .fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect::<Vec<_>>();
+                    let table = (!layout.positional).then(|| table(layout.tagged, &layout.members));
+                    if table
+                        .as_ref()
+                        .is_some_and(|table| table.members.len() != fields.len())
+                    {
+                        return Err("record fields and serial layout disagree".into());
                     }
-                    let mut plans = Vec::with_capacity(fields.len());
-                    for (index, field) in fields.iter().enumerate() {
-                        let wire = layout
-                            .fields
-                            .iter()
-                            .find(|wire| wire.name == field.name)
-                            .ok_or("wire record field has no checked tag")?;
-                        plans.push(SemWireField {
-                            index: u32::try_from(index)
-                                .map_err(|_| "wire field index exceeds u32")?,
-                            tag: wire.tag,
-                            json_name: wire.json_name.clone(),
-                            yaml_name: wire.yaml_name.clone(),
-                            presence: wire.presence,
-                            value: self.wire_plan(&field.ty, path)?,
-                        });
-                    }
-                    plans.sort_by_key(|field| field.tag);
                     SemWireKind::Record {
                         shape,
-                        fields: plans,
+                        table,
+                        fields,
                     }
                 } else {
                     let shape = self.require_variant_shape(ty)?;
                     let variants = self.variant_shapes[shape.0 as usize].variants.clone();
-                    let mut plans = Vec::with_capacity(variants.len());
-                    for (index, variant) in variants.iter().enumerate() {
-                        let wire = layout
-                            .variants
-                            .iter()
-                            .find(|wire| wire.name == variant.name)
-                            .ok_or("wire enum case has no checked tag")?;
-                        plans.push(SemWireVariant {
-                            index: u32::try_from(index)
-                                .map_err(|_| "wire variant index exceeds u32")?,
-                            tag: wire.tag,
-                            json_name: wire.json_name.clone(),
-                            yaml_name: wire.yaml_name.clone(),
-                            fields: variant
-                                .fields
-                                .iter()
-                                .map(|field| self.wire_plan(&field.ty, path))
-                                .collect::<Result<_, _>>()?,
-                        });
+                    if variants.len() != layout.members.len() {
+                        return Err("enum variants and serial layout disagree".into());
                     }
                     SemWireKind::Enum {
                         shape,
-                        variants: plans,
+                        table: table(layout.tagged, &layout.members),
+                        variants: variants
+                            .iter()
+                            .zip(&layout.members)
+                            .map(|(variant, member)| payload(variant, Some(member)))
+                            .collect(),
                     }
                 }
             }
             _ => {
                 return Err(format!(
-                    "`{}` is outside the checked wire value surface",
+                    "`{}` is outside the checked data shape",
                     ty.user_facing()
                 ))
             }
         };
-        path.pop();
-        let plan = Arc::new(SemWirePlan {
+        Ok(SemWirePlan {
             ty: ty.clone(),
             kind,
-        });
-        self.wire_plans.insert(ty.clone(), Arc::clone(&plan));
-        Ok(plan)
+        })
+    }
+}
+
+fn table(tagged: bool, members: &[hew_types::data_shape::SerialMember]) -> SemWireTable {
+    SemWireTable {
+        tagged,
+        members: members
+            .iter()
+            .map(|member| SemWireMember {
+                key: member.key.clone(),
+                tag: member.tag,
+                flags: member.flags,
+            })
+            .collect(),
+    }
+}
+
+/// A variant's payload: one value directly, several as a sequence, named
+/// fields as a record keyed by their text keys.
+fn payload(
+    variant: &crate::SemVariant,
+    member: Option<&hew_types::data_shape::SerialMember>,
+) -> SemWirePayload {
+    let types = variant
+        .fields
+        .iter()
+        .map(|field| field.ty.clone())
+        .collect::<Vec<_>>();
+    match (variant.kind, types.as_slice()) {
+        (_, []) => SemWirePayload::Unit,
+        (crate::SemVariantKind::Struct, _) => SemWirePayload::Record {
+            table: member.map_or_else(
+                || SemWireTable {
+                    tagged: false,
+                    members: Vec::new(),
+                },
+                |member| table(false, &member.fields),
+            ),
+            fields: types,
+        },
+        (_, [single]) => SemWirePayload::Single(single.clone()),
+        _ => SemWirePayload::Tuple(types),
     }
 }
 
@@ -203,7 +254,7 @@ impl Builder<'_, '_> {
         value_ty: &ResolvedTy,
     ) -> Result<ValueId, String> {
         let value_ty = self.ty(value_ty);
-        let plan = self.service.wire_plan(&value_ty, &mut Vec::new())?;
+        let plan = self.service.wire_plans(&value_ty)?;
         let result_ty = self.ty(&expr.ty);
         self.service.require_type_facts(&result_ty)?;
         let text_result = if matches!(
@@ -211,22 +262,17 @@ impl Builder<'_, '_> {
             WireCodecDirection::FromJson | WireCodecDirection::FromYaml
         ) {
             let shape = self.service.require_variant_shape(&result_ty)?;
-            let variants = &self.service.variant_shapes[shape.0 as usize].variants;
-            let case = |name: &str, ty: &ResolvedTy| -> Result<u32, String> {
-                let index = variants
-                    .iter()
-                    .position(|variant| {
-                        variant.name == name
-                            && variant.fields.len() == 1
-                            && variant.fields[0].ty == *ty
-                    })
-                    .ok_or_else(|| format!("wire text result lacks its exact `{name}` case"))?;
-                u32::try_from(index).map_err(|_| "wire Result index exceeds u32".into())
+            let tags = &self.service.variant_shapes[shape.0 as usize].runtime_tags;
+            let case = |role: crate::RuntimeVariantRole| -> Result<u32, String> {
+                tags.iter()
+                    .find(|(found, _)| *found == role)
+                    .map(|(_, tag)| *tag)
+                    .ok_or_else(|| "codec text result is not an exact Result".to_string())
             };
             Some(crate::SemWireTextResult {
                 shape,
-                ok: case("Ok", &value_ty)?,
-                error: case("Err", &ResolvedTy::String)?,
+                ok: case(crate::RuntimeVariantRole::ResultOk)?,
+                error: case(crate::RuntimeVariantRole::ResultErr)?,
             })
         } else {
             None

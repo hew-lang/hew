@@ -2922,6 +2922,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "impl checking walks each method against its trait in one pass"
+    )]
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.

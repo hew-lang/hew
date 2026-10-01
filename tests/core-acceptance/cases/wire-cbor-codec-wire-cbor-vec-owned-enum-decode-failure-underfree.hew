@@ -1,7 +1,7 @@
 #[wire]
 enum Payload {
-    Empty;
-    Full(string);
+    Empty @0;
+    Full(string) @1;
 }
 
 #[wire]

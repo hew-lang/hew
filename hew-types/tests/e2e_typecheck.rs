@@ -5891,8 +5891,8 @@ fn remote_ask_requires_explicit_wire_schema() {
         .errors
         .iter()
         .find(|e| {
-            e.message
-                .contains("remote actor `Echo` cannot carry `Ping`")
+            e.message.contains("remote actor `Echo` (`Ping`)")
+                && e.message.contains("without `#[wire]` tags")
         })
         .unwrap_or_else(|| panic!("plain record must be refused; got: {:#?}", plain.errors));
     assert!(
@@ -5910,6 +5910,19 @@ fn remote_ask_requires_explicit_wire_schema() {
         wire.errors.is_empty(),
         "a tagged #[wire] message crosses the node: {:#?}",
         wire.errors
+    );
+
+    // Every record a remote payload reaches is tagged; the refusal names the field.
+    let nested = typecheck_inline(&remote_ask_source(
+        "type Inner {\n    v: i64;\n}\n#[wire]\ntype Ping {\n    seq: i64 @1;\n    inner: Inner @2;\n}\n",
+    ));
+    assert!(
+        nested
+            .errors
+            .iter()
+            .any(|e| e.message.contains("reaches `Inner` at `.inner`")),
+        "a #[wire] message reaching a plain record must be refused at the field: {:#?}",
+        nested.errors
     );
 }
 

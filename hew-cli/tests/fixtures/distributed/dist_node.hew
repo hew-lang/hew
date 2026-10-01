@@ -48,23 +48,23 @@ type KvPut {
 
 #[wire]
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut) @0;
+    GetKey(string) @1;
     // Cross-node monitor scenarios: fire-and-forget commands that drive the
     // remote actor to a terminal state so a monitoring client observes the
     // cross-node DOWN with the right reason.
-    StopSelf;
-    CrashSelf;
+    StopSelf @2;
+    CrashSelf @3;
     // scenario_partition_ask phase A: hold the reply past the client's ask
     // deadline so the pending ask is deterministically resolvable ONLY by the
     // armed partition probe (no reply, no socket drop — the route stays live).
-    Stall;
+    Stall @4;
 }
 
 #[wire]
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack @0;
+    Value(string) @1;
 }
 
 // ── #[wire] cross-process body types ─────────────────────────────────────────
@@ -84,8 +84,8 @@ type WirePoint {
 // carry EXPLICIT @N tags — that is the explicit-tag body this scenario proves.
 #[wire]
 enum WireCmd {
-    Ping;
-    Move(WirePoint);
+    Ping @0;
+    Move(WirePoint) @1;
 }
 
 // WireResult is the #[wire] struct reply: `tag` is which variant the server saw
@@ -170,12 +170,12 @@ type DistIdentity {
 
 #[wire]
 enum IdentityReq {
-    Inspect;
+    Inspect @0;
 }
 
 #[wire]
 enum IdentityResp {
-    Value(DistIdentity);
+    Value(DistIdentity) @0;
 }
 
 actor IdentityProbe {

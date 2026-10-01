@@ -1285,7 +1285,6 @@ mod tests {
             items,
             diagnostic_source_modules: HashMap::new(),
             root_item_ids: HashSet::default(),
-            wire_layouts: Arc::new(HashMap::new()),
             type_classes: TypeClassTable::default(),
             monomorphisations: Vec::new(),
             call_site_type_args: HashMap::new(),

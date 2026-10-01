@@ -1126,11 +1126,13 @@ fn main() {
         .map(|block| &mut block.terminator)
     {
         if let SemTerminator::WireCodec { plan, .. } = term {
-            let plan = std::sync::Arc::make_mut(plan);
-            let hew_sir::SemWireKind::Record { fields, .. } = &mut plan.kind else {
+            let plans = std::sync::Arc::make_mut(plan);
+            let root = plans.root.clone();
+            let record = plans.plans.get_mut(&root).expect("root plan");
+            let hew_sir::SemWireKind::Record { fields, .. } = &mut record.kind else {
                 panic!("record codec");
             };
-            std::sync::Arc::make_mut(&mut fields[0].value).ty = ResolvedTy::String;
+            fields[1] = ResolvedTy::String;
             changed = true;
             break;
         }
@@ -1140,6 +1142,6 @@ fn main() {
         .iter()
         .any(|diagnostic| matches!(
             &diagnostic.kind, SirDiagnosticKind::InvalidOperation { reason, .. }
-                if reason.contains("wire child type disagrees with checked shape")
+                if reason.contains("disagrees with its checked shape")
         )));
 }

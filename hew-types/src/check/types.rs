@@ -302,6 +302,10 @@ pub enum ResultReturnKind {
 /// the checker in rule order (D547): the same type passes through, a trait
 /// object target erases, and a declared `impl From<E> for F` converts.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one conversion per failure edge, recorded once; boxing buys nothing"
+)]
 pub enum ErrorConversion {
     Same,
     Erase(Box<DynCoercion>),
@@ -516,12 +520,6 @@ pub struct TypeCheckOutput {
     /// consume a single authoritative contract instead of re-resolving C
     /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
-    /// Wire layout metadata keyed by canonical type name.
-    ///
-    /// Populated by `register_wire_methods` for every accepted `#[wire]` type
-    /// so downstream lowering phases consume checker-owned field tags, names,
-    /// casing, and version metadata instead of recovering it from source text.
-    pub wire_layouts: WireLayoutTable,
     /// Checker-owned width-conversion method lowering decisions keyed by
     /// method-call span.
     ///
@@ -966,63 +964,6 @@ pub struct TypeCheckOutput {
     /// declaration the checker resolved it to.
     pub import_fn_name_aliases: HashMap<ImportBindingKey, String>,
 }
-
-/// Whether a wire struct field's enclosing map key may be absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireFieldPresence {
-    /// The map key must be emitted and must be present while decoding.
-    Required,
-    /// `None` omits the map key and an absent key reconstructs `None`.
-    Optional,
-}
-
-/// Wire layout metadata for a single field, carried from AST through the
-/// compilation pipeline so lowering passes never infer presence from the value
-/// type. `Option<T>` describes the value's null shape; [`WireFieldPresence`]
-/// independently describes whether the enclosing map key may be absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireFieldLayout {
-    /// Source-level field name.
-    pub name: String,
-    /// Numeric wire tag (`@N`), the compatibility authority.
-    pub tag: u32,
-    /// Final JSON key selected by the checker.
-    pub json_name: String,
-    /// Final YAML key selected by the checker.
-    pub yaml_name: String,
-    /// Whether the enclosing map key is required or optional.
-    pub presence: WireFieldPresence,
-    /// Whether this field is repeated (maps to `Vec<T>`).
-    pub repeated: bool,
-}
-
-/// Checker-selected wire names and tag for one enum variant.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireVariantLayout {
-    pub name: String,
-    pub tag: u32,
-    pub json_name: String,
-    pub yaml_name: String,
-}
-
-/// Wire layout metadata for a single type (struct or enum).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireLayoutEntry {
-    /// True for `#[wire] type`, false for `#[wire] enum`.
-    pub is_struct: bool,
-    /// Wire schema version (from `#[wire(version = N)]`).
-    pub version: Option<u32>,
-    /// Minimum compatible reader version.
-    pub min_version: Option<u32>,
-    /// Ordered fields (structs). Empty for enums.
-    pub fields: Vec<WireFieldLayout>,
-    /// Enum variant tags and final text names.
-    /// Empty for structs.
-    pub variants: Vec<WireVariantLayout>,
-}
-
-/// All wire types registered during type-checking, keyed by canonical type name.
-pub type WireLayoutTable = HashMap<String, WireLayoutEntry>;
 
 /// Checker-owned capture record for one binding referenced by a closure body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2077,10 +2018,9 @@ pub enum MethodCallRewrite {
     /// `value.encode() -> bytes` (instance) or `Type.decode(bytes) -> Type`
     /// (static).
     ///
-    /// The CBOR round-trip is implemented by the `__hew_cbor_serialize_<key>` /
-    /// `__hew_cbor_deserialize_<key>` C-ABI thunk pair codegen emits
-    /// (`hew-codegen-rs/src/llvm.rs`). A struct rides a tag-keyed CBOR map; an
-    /// enum rides the "map-of-one" shape. These thunks have a non-Hew
+    /// The CBOR round-trip is the codec walk codegen emits
+    /// (`hew-codegen-rs/src/physical_wire.rs`). A struct rides a tag-keyed CBOR
+    /// map; an enum rides the "map-of-one" shape. These thunks have a non-Hew
     /// ABI (an out-length / out-struct-size pointer parameter and a malloc'd
     /// result the caller adopts), so the call cannot lower through the generic
     /// `RewriteToFunction` path — it gets a dedicated HIR node that codegen
@@ -3277,8 +3217,8 @@ pub struct Checker {
     /// idempotent (last write wins, which is fine since the inner type is the
     /// same variable every time).
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
-    /// Checker-side accumulator for [`TypeCheckOutput::wire_layouts`].
-    pub(super) wire_layouts: WireLayoutTable,
+    /// Text keys, tags and flags of every data record and enum.
+    pub(super) serial_layouts: HashMap<crate::NominalId, crate::data_shape::SerialLayout>,
     /// Checker-side accumulator for [`TypeCheckOutput::resolved_calls`].
     ///
     /// **Stage A:** never populated by production code paths. Reserved
@@ -3391,8 +3331,7 @@ pub struct Checker {
     pub(super) opaque_type_ids: HashSet<crate::NominalId>,
     /// `#[wire]` struct type names that carry the binary CBOR codec methods
     /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
-    /// — which lower to the `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*`
-    /// thunks — from a same-named user method, without re-deriving wire-ness in
+    /// — which lower to codec walks — from a same-named user method, without re-deriving wire-ness in
     /// the method-dispatch arms. Populated by `register_wire_methods` for wire
     /// structs.
     pub(super) wire_struct_types: HashSet<String>,
@@ -4418,7 +4357,7 @@ impl Checker {
             eq_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
             method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
+            serial_layouts: HashMap::new(),
             resolved_calls: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),

@@ -12,12 +12,11 @@
 //! `free_cstring: C-string header sentinel missing` when the receiving actor's
 //! handler touches such a field.
 //!
-//! The body codec that turns such a value into portable bytes is CBOR
-//! (`cbor_serial`): codegen emits, per cross-node message type, a
-//! `__hew_cbor_serialize_<T>` / `__hew_cbor_deserialize_<T>` thunk pair that
-//! walks the value's layout *in codegen* (the single source of truth for field
-//! order and offsets) and calls the `hew_cbor_*` primitives to build / read the
-//! CBOR bytes. The same thunk pair serves the `.encode()` / `.decode()` path.
+//! The body codec that turns such a value into portable bytes is CBOR through
+//! the `codec` event ABI: codegen emits, per cross-node message type, an
+//! encode / decode adapter pair that walks the value's layout *in codegen* (the
+//! single source of truth for field order and offsets) and drives the
+//! `hew_ser_*` / `hew_de_*` events that `hew-codec` writes and reads.
 //!
 //! ## What this module is
 //!
@@ -27,8 +26,8 @@
 //! deserialize thunk (and, for asks, the reply serialize/deserialize thunk)
 //! under the key `(dispatch, msg_type)` so a frame can only ever select the
 //! codec of the actor type it was addressed to. Registration is format-agnostic
-//! — it stores the codegen-emitted CBOR thunk pointers — so the byte format
-//! authority stays entirely in `cbor_serial`.
+//! — it stores the codegen-emitted adapter pointers — so the byte format
+//! authority stays entirely in `hew-codec`.
 //!
 //! ## Ownership across the boundary
 //!
@@ -43,14 +42,14 @@
 use std::os::raw::c_void;
 use std::sync::Mutex;
 
-/// Free a buffer returned by a serialize thunk (`hew_cbor_ser_finish`).
+/// Free a buffer returned by a serialize adapter (`hew_ser_finish_raw`).
 ///
 /// # Safety
-/// `ptr` must be null or a buffer from `hew_cbor_ser_finish`.
+/// `ptr` must be null or a buffer from `hew_ser_finish_raw`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_ser_free_bytes(ptr: *mut u8) {
     if !ptr.is_null() {
-        // SAFETY: ptr came from the sized-block allocator in hew_cbor_ser_finish.
+        // SAFETY: ptr came from the sized-block allocator in hew_ser_finish_raw.
         unsafe { crate::mem::buf_free(ptr.cast::<c_void>()) };
     }
 }
@@ -61,7 +60,7 @@ pub unsafe extern "C" fn hew_ser_free_bytes(ptr: *mut u8) {
 //
 // The receive path (`node_inbound_router` / `handle_inbound_ask`) holds only the
 // inbound `msg_type` and the wire bytes. It must find the right
-// `__hew_cbor_deserialize_<T>` thunk to rebuild the value into the receiving
+// decode adapter to rebuild the value into the receiving
 // node's address space before handing it to the local mailbox / ask path.
 // Codegen registers each decode (and the matching reply-encode) thunk at program
 // start keyed by the same SipHash-derived `msg_type` discriminant the send path
@@ -400,11 +399,11 @@ mod tests {
     unsafe extern "C" fn ser_a(value_ptr: *const c_void, out_len: *mut usize) -> *mut u8 {
         // SAFETY: the test passes a pointer to an i64.
         let v = unsafe { *value_ptr.cast::<i64>() };
-        let buf = crate::cbor_serial::hew_cbor_ser_new();
-        // SAFETY: buf is a live builder handle.
-        unsafe { crate::cbor_serial::hew_cbor_ser_i64(buf, v) };
+        let buf = crate::codec::hew_ser_new(0);
+        // SAFETY: buf is a live sink.
+        unsafe { crate::codec::hew_ser_i64(buf, v) };
         // SAFETY: buf consumed; out_len writable.
-        unsafe { crate::cbor_serial::hew_cbor_ser_finish(buf, out_len) }
+        unsafe { crate::codec::hew_ser_finish_raw(buf, out_len) }
     }
 
     /// Codec A deserialize: reconstruct a single `i64` into a sized-block slot.
@@ -414,13 +413,13 @@ mod tests {
         out_struct_size: *mut usize,
     ) -> *mut c_void {
         // SAFETY: data valid for len bytes (test contract).
-        let reader = unsafe { crate::cbor_serial::hew_cbor_de_new(data, len) };
+        let reader = unsafe { crate::codec::hew_de_new_raw(0, data, len) };
         // SAFETY: reader live.
-        let v = unsafe { crate::cbor_serial::hew_cbor_de_i64(reader) };
+        let v = unsafe { crate::codec::hew_de_int(reader, 64, 1) };
         // SAFETY: reader live.
-        let failed = unsafe { crate::cbor_serial::hew_cbor_de_failed(reader) };
+        let failed = unsafe { crate::codec::hew_de_failed(reader) };
         // SAFETY: reader live, consumed here.
-        unsafe { crate::cbor_serial::hew_cbor_de_free(reader) };
+        unsafe { crate::codec::hew_de_free(reader) };
         if failed != 0 {
             return std::ptr::null_mut();
         }
@@ -442,11 +441,18 @@ mod tests {
     unsafe extern "C" fn ser_b(value_ptr: *const c_void, out_len: *mut usize) -> *mut u8 {
         // SAFETY: the test passes a pointer to a `*const c_char`.
         let s = unsafe { *value_ptr.cast::<*const c_char>() };
-        let buf = crate::cbor_serial::hew_cbor_ser_new();
-        // SAFETY: buf live; s is a valid C string.
-        unsafe { crate::cbor_serial::hew_cbor_ser_string(buf, s) };
+        // SAFETY: s is a valid C string.
+        let text = unsafe { core::ffi::CStr::from_ptr(s) }
+            .to_str()
+            .unwrap_or_default();
+        let managed = hew_cabi::string::string_from_str(text);
+        let buf = crate::codec::hew_ser_new(0);
+        // SAFETY: buf live; managed is a live string.
+        unsafe { crate::codec::hew_ser_str(buf, managed) };
+        // SAFETY: the test owns the managed string.
+        unsafe { crate::string::hew_string_drop(managed) };
         // SAFETY: buf consumed; out_len writable.
-        unsafe { crate::cbor_serial::hew_cbor_ser_finish(buf, out_len) }
+        unsafe { crate::codec::hew_ser_finish_raw(buf, out_len) }
     }
 
     /// Codec B deserialize: reconstruct an owned `string` into a sized-block slot
@@ -457,18 +463,22 @@ mod tests {
         out_struct_size: *mut usize,
     ) -> *mut c_void {
         // SAFETY: data valid for len bytes (test contract).
-        let reader = unsafe { crate::cbor_serial::hew_cbor_de_new(data, len) };
+        let reader = unsafe { crate::codec::hew_de_new_raw(0, data, len) };
         // SAFETY: reader live.
-        let s = unsafe { crate::cbor_serial::hew_cbor_de_string(reader) };
+        let managed = unsafe { crate::codec::hew_de_str(reader) };
         // SAFETY: reader live.
-        let failed = unsafe { crate::cbor_serial::hew_cbor_de_failed(reader) };
+        let failed = unsafe { crate::codec::hew_de_failed(reader) };
         // SAFETY: reader live, consumed here.
-        unsafe { crate::cbor_serial::hew_cbor_de_free(reader) };
+        unsafe { crate::codec::hew_de_free(reader) };
         if failed != 0 {
-            // SAFETY: drop the empty owned string the reader handed back.
-            unsafe { crate::cabi::free_cstring(s) };
             return std::ptr::null_mut();
         }
+        // SAFETY: the reader handed back a live managed string.
+        let text = unsafe { hew_cabi::string::string_as_str(managed) }.to_owned();
+        // SAFETY: the test owns the managed string.
+        unsafe { crate::string::hew_string_drop(managed) };
+        // SAFETY: text is valid for its length.
+        let s = unsafe { hew_cabi::cabi::malloc_cstring(text.as_ptr(), text.len()) };
         // SAFETY: malloc for a `*mut c_char` slot.
         let slot =
             crate::mem::buf_try_alloc(std::mem::size_of::<*mut c_char>()).cast::<*mut c_char>();
@@ -494,7 +504,7 @@ mod tests {
         assert!(!bytes.is_null());
         // SAFETY: bytes valid for len.
         let v = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
-        // SAFETY: bytes came from hew_cbor_ser_finish.
+        // SAFETY: bytes came from hew_ser_finish_raw.
         unsafe { hew_ser_free_bytes(bytes) };
         v
     }
@@ -509,7 +519,7 @@ mod tests {
         assert!(!bytes.is_null());
         // SAFETY: bytes valid for len.
         let v = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
-        // SAFETY: bytes came from hew_cbor_ser_finish.
+        // SAFETY: bytes came from hew_ser_finish_raw.
         unsafe { hew_ser_free_bytes(bytes) };
         v
     }

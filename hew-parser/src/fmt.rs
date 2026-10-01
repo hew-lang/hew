@@ -156,6 +156,8 @@ pub fn migrate_syntax(source: &str) -> Result<String, MigrationError> {
                         | ParseDiagnosticKind::LegacyPathSeparator
                         | ParseDiagnosticKind::LegacyTurbofish
                         | ParseDiagnosticKind::UnitFailsArrow
+                        | ParseDiagnosticKind::LegacySerialSpelling
+                        | ParseDiagnosticKind::WireVariantTagMissing
                 )
         })
         .map(|error| MigrationRefusal {
@@ -1052,6 +1054,7 @@ impl<'a> Formatter<'a> {
             return false;
         };
         let mut tokens = hew_lexer::Lexer::new(rest).peekable();
+        let mut legacy_serial = false;
         loop {
             match tokens.peek() {
                 // A doc comment prints in place with the other comments.
@@ -1077,6 +1080,10 @@ impl<'a> Formatter<'a> {
                     }
                     self.flush_comments_before(start);
                     let text = self.attribute_text(&(start..end));
+                    let Some(text) = Self::migrate_serial_attribute(text, &mut legacy_serial)
+                    else {
+                        continue;
+                    };
                     self.write_indent();
                     self.write(&text);
                     self.newline();
@@ -1089,6 +1096,31 @@ impl<'a> Formatter<'a> {
                 None => return true,
             }
         }
+    }
+
+    /// Rewrite a retired `#[json(..)]`/`#[yaml(..)]` naming attribute: the
+    /// first becomes `#[serial(case = "..")]`, as the parser reads it, and
+    /// any later one is dropped. Every other attribute prints unchanged.
+    fn migrate_serial_attribute(text: String, seen: &mut bool) -> Option<String> {
+        let tokens = hew_lexer::lex(&text);
+        let is_legacy = matches!(
+            tokens.get(1),
+            Some((hew_lexer::Token::Identifier("json" | "yaml"), _))
+        );
+        if !is_legacy {
+            return Some(text);
+        }
+        if std::mem::replace(seen, true) {
+            return None;
+        }
+        let case = tokens.iter().find_map(|(token, _)| match token {
+            hew_lexer::Token::Identifier(word) => NamingCase::parse_legacy(word),
+            hew_lexer::Token::StringLit(word) => {
+                NamingCase::parse_legacy(crate::parser::unquote_str(word))
+            }
+            _ => None,
+        })?;
+        Some(format!("#[serial(case = \"{}\")]", case.as_str()))
     }
 
     /// The attribute at `span` with canonical spacing and its source
@@ -1411,6 +1443,7 @@ impl<'a> Formatter<'a> {
             self.write(lang_item);
             self.write("\")]\n");
         }
+        self.format_serial_case_attr(decl.serial_case);
     }
 
     fn format_type_body_method(
@@ -1468,9 +1501,17 @@ impl<'a> Formatter<'a> {
         match decl.kind {
             TypeDeclKind::Struct => {
                 for (i, item) in decl.body.iter().enumerate() {
-                    if let TypeBodyItem::Field { name, ty, span, .. } = item {
+                    if let TypeBodyItem::Field {
+                        name,
+                        ty,
+                        attributes,
+                        span,
+                        ..
+                    } = item
+                    {
                         self.flush_comments_before(span.start);
                         self.prev_source_pos = span.start;
+                        self.format_attributes(attributes);
                         self.write_indent();
                         self.write_ident(*name);
                         self.write(": ");
@@ -1484,8 +1525,6 @@ impl<'a> Formatter<'a> {
                                 meta.is_deprecated,
                                 meta.is_repeated,
                                 meta.since,
-                                meta.json_name.as_deref(),
-                                meta.yaml_name.as_deref(),
                             );
                         }
                         self.write(";");
@@ -1539,9 +1578,7 @@ impl<'a> Formatter<'a> {
             self.write(lang_item);
             self.write("\")]\n");
         }
-        // Emit type-level naming attributes
-        self.format_naming_attr("json", wire.json_case);
-        self.format_naming_attr("yaml", wire.yaml_case);
+        self.format_serial_case_attr(decl.serial_case);
         self.write_indent();
         if wire.version.is_some() || wire.min_version.is_some() {
             self.write("#[wire(");
@@ -1562,22 +1599,10 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_naming_attr(&mut self, attr_name: &str, case: Option<NamingCase>) {
+    fn format_serial_case_attr(&mut self, case: Option<NamingCase>) {
         if let Some(case) = case {
             self.write_indent();
-            let s = case.as_str();
-            let needs_quotes = s.contains('-');
-            self.write("#[");
-            self.write(attr_name);
-            self.write("(");
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(s);
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(")]\n");
+            writeln!(self.output, "#[serial(case = \"{}\")]", case.as_str()).unwrap();
         }
     }
 
@@ -1587,8 +1612,6 @@ impl<'a> Formatter<'a> {
         is_deprecated: bool,
         is_repeated: bool,
         since: Option<u32>,
-        json_name: Option<&str>,
-        yaml_name: Option<&str>,
     ) {
         if is_optional {
             self.write(" optional");
@@ -1602,16 +1625,6 @@ impl<'a> Formatter<'a> {
         if let Some(version) = since {
             self.write(" since ");
             self.write(&version.to_string());
-        }
-        if let Some(name) = json_name {
-            self.write(" json(\"");
-            self.write(name);
-            self.write("\")");
-        }
-        if let Some(name) = yaml_name {
-            self.write(" yaml(\"");
-            self.write(name);
-            self.write("\")");
         }
     }
 
@@ -1639,7 +1652,10 @@ impl<'a> Formatter<'a> {
                 self.write("}");
             }
         }
-        if !matches!(v.kind, VariantKind::Struct(_)) {
+        if let Some(tag) = v.tag {
+            write!(self.output, " @{tag}").unwrap();
+        }
+        if !matches!(v.kind, VariantKind::Struct(_)) || v.tag.is_some() {
             self.write(";");
         }
         self.newline();
@@ -1758,6 +1774,15 @@ impl<'a> Formatter<'a> {
         }
         self.format_type_expr(&decl.target_type.0);
         self.format_opt_where_clause(decl.where_clause.as_ref());
+        // An empty body (`impl Error for E {}`) stays on one line unless a
+        // comment sits inside it.
+        let body_comment = self.next_comment < self.comments.len()
+            && self.comments[self.next_comment].span.start
+                < self.find_block_close(self.prev_source_pos, span_end);
+        if decl.type_aliases.is_empty() && decl.methods.is_empty() && !body_comment {
+            self.write(" {}\n");
+            return;
+        }
         self.write(" {\n");
         self.indent += 1;
         // Aliases and methods print in source order; the AST keeps them in
@@ -2653,11 +2678,13 @@ impl<'a> Formatter<'a> {
                             // AST. Emit them bare only when lexing preserves a
                             // single identifier or the same integer value.
                             let tokens = hew_lexer::lex(value);
-                            let bare = match tokens.as_slice() {
-                                [(hew_lexer::Token::Identifier(name), _)] => *name == value,
-                                [(hew_lexer::Token::Integer(integer), _)] => *integer == value,
-                                _ => false,
-                            };
+                            // A serial key is data, always a string literal.
+                            let bare = attr.name != "serial"
+                                && match tokens.as_slice() {
+                                    [(hew_lexer::Token::Identifier(name), _)] => *name == value,
+                                    [(hew_lexer::Token::Integer(integer), _)] => *integer == value,
+                                    _ => false,
+                                };
                             if bare {
                                 self.write(value);
                             } else {
@@ -5922,23 +5949,23 @@ enum Colour {
         let src = "\
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 ";
         assert_eq!(roundtrip(src), src);
     }
 
     #[test]
-    fn wire_enum_with_json_case_roundtrips() {
+    fn wire_enum_with_serial_case_roundtrips() {
         let src = "\
-#[json(camelCase)]
+#[serial(case = \"camelCase\")]
 #[wire]
 enum Status {
-    PendingReview;
-    ActiveNow;
-    Completed;
+    PendingReview @0;
+    ActiveNow @1;
+    Completed @2;
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -5949,7 +5976,8 @@ enum Status {
         let src = "\
 #[wire]
 type Msg {
-    added: String @2 repeated since 3 yaml(\"added\");
+    #[serial(key = \"addedName\")]
+    added: String @2 repeated since 3;
 }
 ";
         assert_eq!(roundtrip(src), src);

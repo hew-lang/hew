@@ -18,15 +18,15 @@ type Entry {
 
 #[wire]
 enum StoreReq {
-    Put(Entry);
-    Get(string);
-    Stop;
+    Put(Entry) @0;
+    Get(string) @1;
+    Stop @2;
 }
 
 #[wire]
 enum StoreResp {
-    Ack;
-    Value(string);
+    Ack @0;
+    Value(string) @1;
 }
 
 actor Store {

@@ -7,7 +7,7 @@ use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::RcIntrinsicOp;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
-    Ty, TyPattern, VariantMatch, WireLayoutTable,
+    Ty, TyPattern, VariantMatch,
 };
 use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
 
@@ -46,8 +46,6 @@ pub struct HirModule {
     /// Checker-selected test entries in dispatcher ordinal order. Each entry
     /// retains its own typed process-exit action.
     pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
-    /// Checker-authored wire layout metadata keyed by canonical type name.
-    pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.

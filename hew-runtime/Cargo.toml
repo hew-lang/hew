@@ -67,14 +67,14 @@ clone-failure-test = []
 composition-test = []
 
 [dependencies]
-# CBOR body codec (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
+# CBOR envelope framing (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
 ciborium = "0.2"
 # Serde derive support for the CBOR envelope types (W1+).
 serde.workspace = true
-# Serialization formats (CBOR, JSON, YAML, TOML, MessagePack) and the
-# decode error model; `wire_native` bridges the generated walks onto it.
+# Serialization formats (CBOR, JSON, YAML, TOML, MessagePack) behind the
+# `codec` event ABI that compiled codec walks call.
 hew-codec = { path = "../hew-codec" }
-# Test reports and the legacy wire-text descriptor.
+# Test reports.
 serde_json.workspace = true
 # Core dependencies — always linked (collections, print, string, etc.)
 hew-cabi = { path = "../hew-cabi" }

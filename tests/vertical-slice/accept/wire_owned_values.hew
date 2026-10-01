@@ -1,23 +1,22 @@
 import std.encoding.wire;
 // Decode-only construction demands nested value glue and byte-key callbacks.
 // All three formats preserve complete UTF-8, optional elements and byte keys.
-#[json(camelCase)]
-#[yaml("kebab-case")]
+#[serial(case = "camelCase")]
 #[wire]
 enum DispatchMode {
-    Idle;
-    SendNow(string, Vec<string>);
+    Idle @0;
+    SendNow(string, Vec<string>) @1;
 }
 
-#[json(camelCase)]
-#[yaml("kebab-case")]
+#[serial(case = "camelCase")]
 #[wire]
 type Settings {
     display_labels: Vec<Option<string>> @7;
     rows: Vec<Vec<string>> @2;
     binary_keys: HashMap<bytes, Vec<string>> @5;
     delivery: DispatchMode @9;
-    comment: Option<string> @12 optional json("remark") yaml("note");
+    #[serial(key = "remark")]
+    comment: Option<string> @12 optional;
 }
 
 fn valid(settings: Settings) -> bool {

@@ -302,7 +302,7 @@ fn wire_check_rejects_min_version_higher_than_baseline() {
 #[test]
 fn wire_check_rejects_struct_to_enum_kind_change() {
     let output = run_wire_check(
-        "#[wire]\nenum Msg {\n    Ok;\n    Err;\n}\n",
+        "#[wire]\nenum Msg {\n    Ok @0;\n    Err @1;\n}\n",
         "#[wire]\ntype Msg {\n    id: String @1;\n}\n",
     );
 
@@ -353,7 +353,7 @@ fn wire_check_rejects_removed_wire_struct_with_required_fields() {
 fn wire_check_rejects_removed_wire_enum() {
     let output = run_wire_check(
         "",
-        "#[wire]\nenum Status {\n    Active;\n    Inactive;\n}\n",
+        "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n}\n",
     );
 
     assert!(!output.status.success());
@@ -371,8 +371,8 @@ fn wire_check_rejects_removed_wire_enum() {
 #[test]
 fn wire_check_rejects_wire_enum_variant_addition() {
     let output = run_wire_check(
-        "#[wire]\nenum Status {\n    Active;\n    Inactive;\n    Pending;\n}\n",
-        "#[wire]\nenum Status {\n    Active;\n    Inactive;\n}\n",
+        "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n    Pending @2;\n}\n",
+        "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n}\n",
     );
 
     assert!(!output.status.success());
@@ -387,8 +387,8 @@ fn wire_check_rejects_wire_enum_variant_addition() {
 #[test]
 fn wire_check_rejects_wire_enum_variant_removal() {
     let output = run_wire_check(
-        "#[wire]\nenum Status {\n    Active;\n}\n",
-        "#[wire]\nenum Status {\n    Active;\n    Inactive;\n}\n",
+        "#[wire]\nenum Status {\n    Active @0;\n}\n",
+        "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n}\n",
     );
 
     assert!(!output.status.success());
@@ -403,8 +403,8 @@ fn wire_check_rejects_wire_enum_variant_removal() {
 #[test]
 fn wire_check_rejects_wire_enum_variant_payload_shape_change() {
     let output = run_wire_check(
-        "#[wire]\nenum Cmd {\n    Start(String);\n}\n",
-        "#[wire]\nenum Cmd {\n    Start;\n}\n",
+        "#[wire]\nenum Cmd {\n    Start(String) @0;\n}\n",
+        "#[wire]\nenum Cmd {\n    Start @0;\n}\n",
     );
 
     assert!(!output.status.success());
@@ -419,8 +419,8 @@ fn wire_check_rejects_wire_enum_variant_payload_shape_change() {
 #[test]
 fn wire_check_rejects_wire_enum_tuple_payload_type_change() {
     let output = run_wire_check(
-        "#[wire]\nenum Cmd {\n    Data(i32);\n}\n",
-        "#[wire]\nenum Cmd {\n    Data(String);\n}\n",
+        "#[wire]\nenum Cmd {\n    Data(i32) @0;\n}\n",
+        "#[wire]\nenum Cmd {\n    Data(String) @0;\n}\n",
     );
 
     assert!(!output.status.success());
@@ -435,8 +435,8 @@ fn wire_check_rejects_wire_enum_tuple_payload_type_change() {
 #[test]
 fn wire_check_rejects_wire_enum_struct_variant_field_type_change() {
     let output = run_wire_check(
-        "#[wire]\nenum Cmd {\n    Data { value: i32;  }\n}\n",
-        "#[wire]\nenum Cmd {\n    Data { value: String;  }\n}\n",
+        "#[wire]\nenum Cmd {\n    Data { value: i32;  } @0;\n}\n",
+        "#[wire]\nenum Cmd {\n    Data { value: String;  } @0;\n}\n",
     );
 
     assert!(!output.status.success());
@@ -492,17 +492,27 @@ fn wire_check_warns_new_wire_struct_with_deprecated_field() {
 
 // ── Baseline existing tests (kept in place) ───────────────────────────────────
 
+/// Variants match by stable tag, so reordering the declaration is compatible.
 #[test]
-fn wire_check_rejects_reordered_wire_enum_variants() {
+fn wire_check_accepts_reordered_wire_enum_variants_with_stable_tags() {
+    assert_wire_check_ok(
+        "#[wire]\nenum Command {\n    Start @0;\n    Stop @2;\n    Pause @1;\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Pause @1;\n    Stop @2;\n}\n",
+    );
+}
+
+/// Giving a tag to a different variant changes what the tag decodes as.
+#[test]
+fn wire_check_rejects_a_variant_tag_reassigned_to_another_name() {
     let output = run_wire_check(
-        "#[wire]\nenum Command {\n    Start;\n    Pause;\n    Stop;\n}\n",
-        "#[wire]\nenum Command {\n    Start;\n    Stop;\n    Pause;\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Pause @1;\n    Stop @2;\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Stop @1;\n    Pause @2;\n}\n",
     );
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("changed variant order for `Command` at position 2"),
+        stderr.contains("renamed variant @1 of `Command`: `Stop` -> `Pause`"),
         "{stderr}",
     );
 }
@@ -510,8 +520,8 @@ fn wire_check_rejects_reordered_wire_enum_variants() {
 #[test]
 fn wire_check_rejects_wire_enum_payload_changes() {
     let output = run_wire_check(
-        "#[wire]\nenum Command {\n    Start;\n    Data(String);\n}\n",
-        "#[wire]\nenum Command {\n    Start;\n    Data(String, u32);\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Data(String) @1;\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Data(String, u32) @1;\n}\n",
     );
 
     assert!(!output.status.success());
@@ -525,8 +535,8 @@ fn wire_check_rejects_wire_enum_payload_changes() {
 #[test]
 fn wire_check_rejects_wire_enum_struct_variant_field_renames() {
     let output = run_wire_check(
-        "#[wire]\nenum Command {\n    Data { new_value: String;  }\n}\n",
-        "#[wire]\nenum Command {\n    Data { value: String;  }\n}\n",
+        "#[wire]\nenum Command {\n    Data { new_value: String;  } @0;\n}\n",
+        "#[wire]\nenum Command {\n    Data { value: String;  } @0;\n}\n",
     );
 
     assert!(!output.status.success());

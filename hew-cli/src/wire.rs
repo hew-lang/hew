@@ -350,41 +350,49 @@ fn compare_wire_struct(
     }
 }
 
+/// Variants match by their stable `@N` tag, so reordering is compatible;
+/// a removed, added or renamed tag is not (text formats key by name).
 fn compare_wire_enum(
     wire_name: &str,
     current: &VersionedWireSchema,
     baseline: &VersionedWireSchema,
     report: &mut CompatibilityReport,
 ) {
-    for (index, (current_variant, baseline_variant)) in current
-        .schema
-        .variants
-        .iter()
-        .zip(&baseline.schema.variants)
-        .enumerate()
-    {
-        let position = index + 1;
+    for baseline_variant in &baseline.schema.variants {
+        let tag = baseline_variant.tag.unwrap_or_default();
+        let Some(current_variant) = current
+            .schema
+            .variants
+            .iter()
+            .find(|variant| variant.tag == baseline_variant.tag)
+        else {
+            report.errors.push(format!(
+                "removed variant `{wire_name}.{}` @{tag}",
+                baseline_variant.name
+            ));
+            continue;
+        };
         if current_variant.name != baseline_variant.name {
             report.errors.push(format!(
-                "changed variant order for `{wire_name}` at position {position}: `{}` -> `{}`",
+                "renamed variant @{tag} of `{wire_name}`: `{}` -> `{}`",
                 baseline_variant.name, current_variant.name
             ));
             continue;
         }
         compare_wire_enum_variant_payload(wire_name, current_variant, baseline_variant, report);
     }
-
-    if current.schema.variants.len() > baseline.schema.variants.len() {
-        for variant in &current.schema.variants[baseline.schema.variants.len()..] {
-            report
-                .errors
-                .push(format!("added variant `{wire_name}.{}`", variant.name));
-        }
-    } else if baseline.schema.variants.len() > current.schema.variants.len() {
-        for variant in &baseline.schema.variants[current.schema.variants.len()..] {
-            report
-                .errors
-                .push(format!("removed variant `{wire_name}.{}`", variant.name));
+    for variant in &current.schema.variants {
+        if !baseline
+            .schema
+            .variants
+            .iter()
+            .any(|baseline_variant| baseline_variant.tag == variant.tag)
+        {
+            report.errors.push(format!(
+                "added variant `{wire_name}.{}` @{}",
+                variant.name,
+                variant.tag.unwrap_or_default()
+            ));
         }
     }
 }

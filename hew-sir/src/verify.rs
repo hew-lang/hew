@@ -5380,7 +5380,7 @@ fn verify_terminator_shape(
                 invalid_operation(function, *id, reason, diagnostics);
             }
             let input_ty = if direction.is_serialize() {
-                plan.ty.clone()
+                plan.root.clone()
             } else if direction.is_text() {
                 ResolvedTy::String
             } else {
@@ -5391,12 +5391,12 @@ fn verify_terminator_shape(
                 crate::CallResult::Value(value) => {
                     let ty_matches = match direction {
                         hew_types::WireCodecDirection::Encode => value.ty == ResolvedTy::Bytes,
-                        hew_types::WireCodecDirection::Decode => value.ty == plan.ty,
+                        hew_types::WireCodecDirection::Decode => value.ty == plan.root,
                         hew_types::WireCodecDirection::ToJson
                         | hew_types::WireCodecDirection::ToYaml => value.ty == ResolvedTy::String,
                         hew_types::WireCodecDirection::FromJson
                         | hew_types::WireCodecDirection::FromYaml => {
-                            matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
+                            matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.root.clone(), ResolvedTy::String])
                         }
                     };
                     ty_matches && normal.args.iter().any(|arg| arg.value == value.id)
@@ -5418,7 +5418,7 @@ fn verify_terminator_shape(
                             && shape.variants.get(cases.ok as usize).is_some_and(|case| {
                                 case.name == "Ok"
                                     && case.fields.len() == 1
-                                    && case.fields[0].ty == plan.ty
+                                    && case.fields[0].ty == plan.root
                             })
                             && shape
                                 .variants

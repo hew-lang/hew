@@ -681,7 +681,8 @@ pub(crate) mod resume;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Owned I/O operations behind waiting calls. wasm32 compiles only standard
+/// input; the module documents the split.
 pub mod async_io;
 pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]

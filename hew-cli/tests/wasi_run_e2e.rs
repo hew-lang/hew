@@ -1145,3 +1145,77 @@ fn wasi_run_timeout_terminates_a_non_terminating_program() {
         "expected explicit timeout diagnostic\nstderr:\n{stderr}",
     );
 }
+
+/// Standard input reads are waiting calls natively; under WASI the read
+/// completes at submission. Both must hand out the same lines, keep an empty
+/// line distinct from end of input, and return the unterminated tail.
+#[test]
+fn stdin_lines_and_read_all_match_on_native_and_wasi() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let dir = tempdir();
+    let source = dir.path().join("stdin_lines.hew");
+    fs::write(
+        &source,
+        r#"import std.io;
+
+fn main() {
+    let first = io.read_line();
+    let second = io.read_line();
+    println(f"first={first.unwrap_or("<none>")}");
+    println(f"second={second.unwrap_or("<none>")}");
+    let rest = io.read_all();
+    println(f"rest=[{rest}]");
+    let after = io.read_line();
+    println(f"after={after.unwrap_or("<none>")}");
+}
+"#,
+    )
+    .expect("write stdin source");
+    let source = source.to_str().expect("source path must be valid UTF-8");
+
+    let run = |args: &[&str], input: &[u8]| {
+        let mut child = support::hew_command()
+            .args(args)
+            .current_dir(repo_root())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn hew");
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(input)
+            .expect("write stdin");
+        let output = child.wait_with_output().expect("wait for hew");
+        assert!(
+            output.status.success(),
+            "{args:?} failed\n{}",
+            support::describe_output(&output)
+        );
+        String::from_utf8(output.stdout).expect("UTF-8 stdout")
+    };
+    let cases: [(&[u8], &str); 2] = [
+        (
+            b"alpha\r\n\ngamma\ndelta",
+            "first=alpha\nsecond=\nrest=[gamma\ndelta]\nafter=<none>\n",
+        ),
+        (b"", "first=<none>\nsecond=<none>\nrest=[]\nafter=<none>\n"),
+    ];
+
+    require_codegen();
+    for (input, expected) in cases {
+        assert_eq!(run(&["run", source], input), expected, "native");
+    }
+    require_wasi_runner();
+    for (input, expected) in cases {
+        assert_eq!(
+            run(&["run", source, "--target", "wasm32-wasi"], input),
+            expected,
+            "wasm32-wasi"
+        );
+    }
+}

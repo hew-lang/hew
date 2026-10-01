@@ -11,12 +11,15 @@
 //! reactor slot. Descriptor 0 stays blocking: `O_NONBLOCK` would change the
 //! open file description the terminal and parent shell share. On Windows one
 //! reader thread fills the buffer, bounded to [`BUFFER_LIMIT`], and reports
-//! readiness on the same slot.
+//! readiness on the same slot. WASI runs one thread with nothing else to
+//! schedule while it waits, so there the read blocks at submission and the
+//! operation is returned complete.
 
 use std::io;
 use std::sync::{Arc, Mutex};
 
 use super::{HewAsyncIo, IoFailure, IoValue};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::reactor::{Direction, Slot};
 use crate::util::MutexExt;
 use crate::wake::HewWaker;
@@ -107,6 +110,26 @@ fn attempt(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
             ensure_reader();
             return None;
         }
+        #[cfg(target_arch = "wasm32")]
+        if let Err(error) = fill_blocking(buffer) {
+            buffer.error = Some(error);
+        }
+    }
+}
+
+/// Read once from standard input, waiting for it.
+#[cfg(target_arch = "wasm32")]
+fn fill_blocking(buffer: &mut Buffer) -> io::Result<()> {
+    use std::io::Read;
+    let mut chunk = vec![0; READ_CHUNK];
+    loop {
+        match std::io::stdin().read(&mut chunk) {
+            Ok(0) => buffer.eof = true,
+            Ok(count) => buffer.data.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+        return Ok(());
     }
 }
 
@@ -210,6 +233,7 @@ fn reader_loop() {
 /// Take a line or wait for input. The buffer lock is held from the attempt
 /// until the operation waits on the slot, so input that arrives in between
 /// finds the waiter.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
     let mut buffer = STDIN.lock_or_recover();
     let result = match attempt(&mut buffer) {
@@ -230,10 +254,28 @@ pub(super) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
 ///
 /// # Safety
 /// `waker` is null or a borrowed valid `HewWaker`; its context is retained.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_async_stdin_read_line(waker: *const HewWaker) -> *const HewAsyncIo {
     // SAFETY: the caller supplies the borrowed readiness descriptor.
     unsafe { super::net::start_stdin_line(crate::reactor::stdin_slot(), waker) }
+}
+
+/// Read one line of standard input at submission; the operation returned is
+/// already complete. The result contract matches the native entry.
+///
+/// # Safety
+/// `waker` is null or a borrowed valid `HewWaker`; its context is retained.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_stdin_read_line(waker: *const HewWaker) -> *const HewAsyncIo {
+    // SAFETY: the caller lends the descriptor through construction.
+    let operation = unsafe { HewAsyncIo::new(waker) };
+    let Some(result) = attempt(&mut STDIN.lock_or_recover()) else {
+        unreachable!("a blocking fill ends in a line, end of input or an error")
+    };
+    operation.complete(result);
+    Arc::into_raw(operation)
 }
 
 #[cfg(test)]

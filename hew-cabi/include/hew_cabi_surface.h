@@ -788,50 +788,65 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1596] = {
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_cancel",
-     "{\"native\": \"fn hew_async_io_cancel( *const HewAsyncIo) -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_async_io_cancel( *const HewAsyncIo) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_async_io_cancel( *const HewAsyncIo) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_cleanup_status",
      "{\"native\": \"fn hew_async_io_cleanup_status( *const HewAsyncIo, *const "
-     "HewWaker, ) -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewWaker, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_async_io_cleanup_status( *const HewAsyncIo, *const HewWaker, ) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_errno",
-     "{\"native\": \"fn hew_async_io_errno( *const HewAsyncIo) -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_async_io_errno( *const HewAsyncIo) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_async_io_errno( *const HewAsyncIo) -> i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_error",
      "{\"native\": \"fn hew_async_io_error( *const HewAsyncIo) -> *mut "
-     "HewString\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewString\", \"wasm32-wasip1\": \"fn hew_async_io_error( *const "
+     "HewAsyncIo) -> *mut HewString\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_error_kind",
-     "{\"native\": \"fn hew_async_io_error_kind( *const HewAsyncIo) -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_async_io_error_kind( *const HewAsyncIo) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_async_io_error_kind( *const HewAsyncIo) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_free",
-     "{\"native\": \"fn hew_async_io_free( *const HewAsyncIo)\"}", "native",
-     "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_async_io_free( *const HewAsyncIo)\", "
+     "\"wasm32-wasip1\": \"fn hew_async_io_free( *const HewAsyncIo)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_restore_error",
      "{\"native\": \"fn hew_async_io_restore_error( *const HewAsyncIo) -> "
-     "i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "i32\", \"wasm32-wasip1\": \"fn hew_async_io_restore_error( *const "
+     "HewAsyncIo) -> i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_status",
-     "{\"native\": \"fn hew_async_io_status( *const HewAsyncIo) -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_async_io_status( *const HewAsyncIo) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_async_io_status( *const HewAsyncIo) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_take_bytes",
      "{\"native\": \"fn hew_async_io_take_bytes( *const HewAsyncIo, *mut "
-     "BytesTriple, ) -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "BytesTriple, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_async_io_take_bytes( *const HewAsyncIo, *mut BytesTriple, ) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_take_count",
      "{\"native\": \"fn hew_async_io_take_count( *const HewAsyncIo, *mut i64, "
-     ") -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     ") -> i32\", \"wasm32-wasip1\": \"fn hew_async_io_take_count( *const "
+     "HewAsyncIo, *mut i64, ) -> i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_take_handle",
      "{\"native\": \"fn hew_async_io_take_handle( *const HewAsyncIo, *mut i64, "
      ") -> i32\"}",
@@ -839,9 +854,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1596] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_stdin_read_line",
      "{\"native\": \"fn hew_async_stdin_read_line( *const HewWaker) -> *const "
-     "HewAsyncIo\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewAsyncIo\", \"wasm32-wasip1\": \"fn hew_async_stdin_read_line( *const "
+     "HewWaker) -> *const HewAsyncIo\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_tcp_accept",
      "{\"native\": \"fn hew_async_tcp_accept( i32, *const HewWaker, ) -> "
      "*const HewAsyncIo\"}",

@@ -190,6 +190,54 @@ impl LowerCtx {
         self.lower_display_dispatch_for_type(value, dispatch_ty, span)
     }
 
+    /// Render a trait object through the `Display::fmt` slot of its
+    /// supertrait closure (R6), read from the checker's layout.
+    fn lower_dyn_display(
+        &mut self,
+        value: HirExpr,
+        ty: &ResolvedTy,
+        display_method: hew_types::DefId,
+        span: Span,
+    ) -> HirExpr {
+        let layout = std::sync::Arc::clone(&self.trait_object_layouts);
+        let Some((slot, entry)) = layout.get(ty).and_then(|layout| {
+            let slot = layout.slot_of(display_method)?;
+            Some((slot, &layout.slots[slot as usize]))
+        }) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Display::fmt".to_string(),
+                    reason: format!("`{}` has no published `fmt` slot", ty.user_facing()),
+                },
+                span.clone(),
+                "the checker admitted a trait object as Display without a layout slot",
+            ));
+            return self.unsupported_expr(span, "f-string display dispatch: no dyn fmt slot");
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::String,
+            intent: IntentKind::Read,
+            kind: HirExprKind::CallDynMethod {
+                receiver: Box::new(value),
+                target: hew_types::CallTarget::DynamicVtable {
+                    declaring_trait: entry.declaring_trait,
+                    method: display_method,
+                    slot,
+                },
+                trait_name: self.defs.display(entry.declaring_trait).to_string(),
+                method_name: self.defs.display(display_method).to_string(),
+                slot,
+                args: Vec::new(),
+                evaluation_order: Vec::new(),
+                ret_ty: ResolvedTy::String,
+                signature: Box::new(entry.signature.clone()),
+            },
+            span,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "display lowering keeps all fail-closed dispatch cases in one authority"
@@ -343,6 +391,9 @@ impl LowerCtx {
                 // re-derived here.
                 let type_param_name = *name;
                 self.build_display_static_dispatch(value, display_target, type_param_name, span)
+            }
+            ResolvedTy::TraitObject { .. } => {
+                self.lower_dyn_display(value, &ty, display_method, span)
             }
             _ => {
                 // Same invariant as the named-type arm: the checker should

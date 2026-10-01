@@ -498,9 +498,7 @@ pub(crate) fn require_dyn_trait_ids(dyn_ty: &ResolvedTy) -> Result<(), String> {
 
 /// One dispatchable slot of a demanded trait-object table.
 ///
-/// `slot` is the checker's index (`3 + position` in the trait object's
-/// layout, past the runtime's `drop_in_place`/`size_of`/`align_of` prefix).
-/// SIR never recomputes it.
+/// `slot` is the checker's 0-based layout index; SIR never recomputes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemVtableSlot {
     pub slot: u32,
@@ -528,7 +526,7 @@ pub struct SemVtable {
     pub id: SemVtableId,
     pub dyn_ty: ResolvedTy,
     pub concrete_ty: ResolvedTy,
-    /// Slots in emitted order; `slots[i].slot == 3 + i`.
+    /// Slots in layout order; `slots[i].slot == i`.
     pub slots: Vec<SemVtableSlot>,
 }
 
@@ -2032,9 +2030,9 @@ pub enum SemTerminator {
     /// owned result exists only on success; logical failure enters cleanup.
     WireCodec {
         id: OpId,
-        direction: hew_types::WireCodecDirection,
+        codec: hew_types::Codec,
         plan: std::sync::Arc<crate::SemWirePlans>,
-        text_result: Option<crate::SemWireTextResult>,
+        decode_result: Option<crate::SemWireDecodeResult>,
         args: Vec<BoundaryOperand>,
         result: CallResult,
         normal: Edge,

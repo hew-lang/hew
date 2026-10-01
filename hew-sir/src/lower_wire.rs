@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use hew_types::{BuiltinType, ResolvedTy, WireCodecDirection};
+use hew_types::{BuiltinType, Codec, ResolvedTy};
 
 use super::{Builder, InstanceService};
 use crate::{
@@ -249,18 +249,35 @@ impl Builder<'_, '_> {
     pub(super) fn lower_wire_codec(
         &mut self,
         expr: &hew_hir::HirExpr,
-        direction: WireCodecDirection,
+        codec: Codec,
         input: &hew_hir::HirExpr,
         value_ty: &ResolvedTy,
     ) -> Result<ValueId, String> {
         let value_ty = self.ty(value_ty);
-        let plan = self.service.wire_plans(&value_ty)?;
+        let mut plan = self.service.wire_plans(&value_ty)?;
         let result_ty = self.ty(&expr.ty);
         self.service.require_type_facts(&result_ty)?;
-        let text_result = if matches!(
-            direction,
-            WireCodecDirection::FromJson | WireCodecDirection::FromYaml
-        ) {
+        let decode_result = if codec.is_serialize() {
+            None
+        } else {
+            // A failure decodes the reader's error through the plan of the
+            // checked `Err` type, `wire.DecodeError`.
+            let ResolvedTy::Named { args, .. } = &result_ty else {
+                return Err("codec decode result is not a Result".to_string());
+            };
+            let error_ty = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| "codec decode result lacks its error type".to_string())?;
+            let error_plans = self.service.wire_plans(&error_ty)?;
+            let mut merged = (*plan).clone();
+            merged.plans.extend(
+                error_plans
+                    .plans
+                    .iter()
+                    .map(|(ty, p)| (ty.clone(), p.clone())),
+            );
+            plan = Arc::new(merged);
             let shape = self.service.require_variant_shape(&result_ty)?;
             let tags = &self.service.variant_shapes[shape.0 as usize].runtime_tags;
             let case = |role: crate::RuntimeVariantRole| -> Result<u32, String> {
@@ -269,13 +286,12 @@ impl Builder<'_, '_> {
                     .map(|(_, tag)| *tag)
                     .ok_or_else(|| "codec text result is not an exact Result".to_string())
             };
-            Some(crate::SemWireTextResult {
+            Some(crate::SemWireDecodeResult {
                 shape,
                 ok: case(crate::RuntimeVariantRole::ResultOk)?,
                 error: case(crate::RuntimeVariantRole::ResultErr)?,
+                error_ty,
             })
-        } else {
-            None
         };
         let before = self
             .owned_live
@@ -298,9 +314,9 @@ impl Builder<'_, '_> {
         self.ops += 1;
         self.set_terminator(SemTerminator::WireCodec {
             id,
-            direction,
+            codec,
             plan,
-            text_result,
+            decode_result,
             args: vec![BoundaryOperand {
                 operand,
                 decision: BoundaryDecision::Borrow,

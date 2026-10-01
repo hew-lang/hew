@@ -1,30 +1,59 @@
 # std.encoding.wire
 
-> The legacy HBF byte-layout helpers (`encode_header`, `decode_header`,
-> `validate_header`) were removed when the CBOR-native wire format replaced the
-> HBF era. This module now holds the generic typed codec facade plus the
-> opaque `Value` contract described below. See
-> [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../../../docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md)
-> §5 S1 for history.
+Shared types of the data codecs, and the `#[wire]` tagged-schema layer. The
+format modules encode and decode; this module holds what they share. See
+[`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../../../docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md)
+§2 for which module to reach for.
 
-`std.encoding.wire` exposes one generic codec surface for every admitted
-`Serializable` value:
+## Encoding and decoding
 
-The fragment assumes a caller-defined `Feature` type and `features` value.
+`std.encoding.cbor`, `json`, `yaml`, `toml` and `msgpack` each offer
+`encode<T: Serializable>(value: T)` and
+`decode<T: Serializable>(document) -> Result<T, wire.DecodeError>`. Text
+formats read and write `string`; `cbor` and `msgpack` read and write `bytes`.
+The earlier `wire.encode`, `wire.to_json`, `wire.from_json` facade and the
+per-type `.encode()` / `.to_json()` / `Type.decode` methods are gone.
 
-```hew,ignore
-import std.encoding.wire;
+```hew
+import std.encoding.json;
 
-let json = wire.to_json(features);
-let back = wire.from_json<HashMap<string, Feature>>(json);
-let bytes = wire.encode(features);
-let decoded = wire.decode<HashMap<string, Feature>>(bytes);
+type Config {
+    name: string;
+    retries: i64;
+}
+
+fn main() {
+    println(json.encode(Config { name: "api", retries: 3 })); // {"name":"api","retries":3}
+    match json.decode<Config>("{\"name\":\"api\",\"retries\":\"x\"}") {
+        .Ok(config) => println(config.name),
+        .Err(e) => println(e), // Type: .retries: expected integer, found string
+    }
+}
 ```
 
-`to_json`/`from_json` and `to_yaml`/`from_yaml` reuse the same typed CBOR
-descriptor and compiler-emitted thunks as `#[wire]` methods and actor
-transport. `from_json` and `from_yaml` are fallible; binary `decode` retains the
-existing trusted-input, trap-on-malformed-data contract of `Type.decode`.
+## DecodeError
+
+A failed decode returns `wire.DecodeError`, a variant per failure kind. Paths
+start at the document root: `.field`, `[index]`, `["key"]`.
+
+| Variant                                   | Meaning                                                                           |
+| ----------------------------------------- | --------------------------------------------------------------------------------- |
+| `Syntax { offset, line, column, reason }` | The input is not well-formed; binary formats leave `line` and `column` as `None`. |
+| `Type { path, expected, found }`          | A value has the wrong kind for its target.                                        |
+| `Missing { path }`                        | A required key is absent.                                                         |
+| `Range { path, value, target }`           | A number does not fit its target type.                                            |
+| `UnknownVariant { path, name }`           | A variant name or tag matches no variant.                                         |
+| `Duplicate { path, key }`                 | A map key or set element repeats.                                                 |
+| `Invalid { path, reason }`                | A representation override refused its representation.                             |
+
+`DecodeError` implements `Display`.
+
+## `#[wire]` schemas
+
+`#[wire]` on a record or enum gives it a stable schema for remote actors: every
+field and variant carries a `@N` tag, assigned once and never reused. CBOR
+encodes by tag; text formats encode by field name, or by `#[serial]`
+overrides.
 
 ## Field presence
 
@@ -32,41 +61,8 @@ Presence is independent of `Option<T>`'s null/value encoding. Required `T` and
 required `Option<T>` fields always emit their map key and reject absence;
 required `Option<T>::None` uses a present null. A field declared
 `Option<T> @N optional` omits its key for `None`, emits it for `Some`, and
-reconstructs `None` from either an absent key or an explicit null. The JSON and
-YAML bridges use the same matrix and reject descriptors that lack explicit
-presence metadata. Unknown fields remain tolerated. `Option<Option<T>>` remains
-outside the wire-body floor because null cannot preserve all of its states.
-
-The module also holds the canonical opaque `Value` contract shared by the
-stdlib encoding modules.
-
-## Why `Value` stays opaque
-
-Issue #1247 settled the stdlib `Value` surface on opaque handles. JSON, TOML,
-and YAML can align on methods and tag numbering without exposing the backing
-runtime representation, so callers do not couple themselves to per-encoding
-layout details.
-
-## Why `view()` is deferred
-
-A future structural `view()` seam needs explicit codegen support. Per #1247's
-opaque-handle decision, this package cannot introduce an ad-hoc exposed view
-type without also teaching the compiler/runtime boundary how to materialize it
-without leaking internals.
-
-## Canonical tag numbering
-
-The shared prefix is:
-
-- `0 = null`
-- `1 = bool`
-- `2 = int/i64`
-- `3 = float/f64`
-- `4 = string`
-- `5 = array`
-- `6 = object`
-
-Encoding-specific variants start at `7+`. TOML uses `7` for datetime-like
-values. MessagePack currently bridges through JSON (`from_json` / `to_json`),
-so it follows the same canonical ordering when it crosses the opaque `Value`
-surface indirectly.
+reconstructs `None` from either an absent key or an explicit null. Unknown
+fields remain tolerated. `Option<Option<T>>` is outside the wire-body floor
+because null cannot preserve all of its states. TOML has no null, so
+`toml.encode` and `toml.decode` refuse a `#[wire]` record with a required
+`Option` field (`E_FORMAT_CANNOT_REPRESENT`); mark it `optional`.

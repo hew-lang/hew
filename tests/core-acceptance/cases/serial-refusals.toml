@@ -18,18 +18,18 @@ severity = "error"
 code = "InvalidOperation"
 line = 26
 column = 12
-message = "E_SERIAL_SKIP: `#[serial(skip)]` field `count` must be an `Option`"
+message = "E_SERIAL_SKIP: `#[serial(skip)]` field `count` must be an `Option`: a skipped field decodes as `None`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
 line = 30
 column = 13
-message = "type `Holder` does not implement trait `Serializable`"
+message = "type `Holder` does not implement trait `Serializable` required by `T`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
 line = 31
 column = 13
-message = "type `Twice` does not implement trait `Serializable`"
+message = "type `Twice` does not implement trait `Serializable` required by `T`"

@@ -1243,7 +1243,7 @@ pub(crate) fn verify_terminator(
         }
         PhysicalTerminator::DynCall {
             receiver,
-            slot,
+            word,
             method,
             signature,
             args,
@@ -1255,7 +1255,13 @@ pub(crate) fn verify_terminator(
                 module,
                 function,
                 *receiver,
-                (*slot, *method),
+                (
+                    word.checked_sub(crate::physical::VTABLE_PREFIX_WORDS)
+                        .ok_or_else(|| {
+                            PhysicalError::new("dynamic dispatch reads the table prefix")
+                        })?,
+                    *method,
+                ),
                 signature,
                 args,
                 *result,
@@ -1527,10 +1533,10 @@ pub(crate) fn verify_terminator(
             Ok(())
         }
         PhysicalTerminator::WireCodec {
-            direction,
+            codec,
             plan,
             recipes,
-            text_result,
+            decode_result,
             input,
             result,
             normal,
@@ -1540,12 +1546,10 @@ pub(crate) fn verify_terminator(
             let ArgumentTransfer::Borrow(source) = input else {
                 return Err(PhysicalError::new("wire codec input must borrow its slot"));
             };
-            let input_ty = if direction.is_serialize() {
+            let input_ty = if codec.is_serialize() {
                 plan.root.clone()
-            } else if direction.is_text() {
-                ResolvedTy::String
             } else {
-                ResolvedTy::Bytes
+                codec.document_ty()
             };
             if slot(*source)?.ty != input_ty {
                 return Err(PhysicalError::new(
@@ -1553,29 +1557,23 @@ pub(crate) fn verify_terminator(
                 ));
             }
             let output = &slot(*result)?.ty;
-            let valid_result = match direction {
-                hew_types::WireCodecDirection::Encode => *output == ResolvedTy::Bytes,
-                hew_types::WireCodecDirection::Decode => *output == plan.root,
-                hew_types::WireCodecDirection::ToJson | hew_types::WireCodecDirection::ToYaml => {
-                    *output == ResolvedTy::String
-                }
-                hew_types::WireCodecDirection::FromJson
-                | hew_types::WireCodecDirection::FromYaml => {
-                    matches!(output, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.root.clone(), ResolvedTy::String])
-                }
+            let valid_result = if codec.is_serialize() {
+                *output == codec.document_ty()
+            } else {
+                matches!(output, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.first() == Some(&plan.root))
             };
             if !valid_result {
                 return Err(PhysicalError::new(
                     "wire codec result type differs from its direction",
                 ));
             }
-            if let Some(cases) = text_result {
+            if let Some(cases) = decode_result {
                 let glue = module
                     .variant_glue
                     .get(cases.glue.0 as usize)
                     .filter(|glue| glue.ty == *output)
                     .ok_or_else(|| {
-                        PhysicalError::new("wire text Result has no exact physical glue")
+                        PhysicalError::new("codec decode Result has no exact physical glue")
                     })?;
                 if cases.ok == cases.error
                     || glue.variants.len() != 2
@@ -1583,21 +1581,16 @@ pub(crate) fn verify_terminator(
                         case.fields.len() == 1 && case.fields[0].ty == plan.root
                     })
                     || !glue.variants.get(cases.error as usize).is_some_and(|case| {
-                        case.fields.len() == 1 && case.fields[0].ty == ResolvedTy::String
+                        case.fields.len() == 1 && case.fields[0].ty == cases.error_ty
                     })
+                    || !plan.plans.contains_key(&cases.error_ty)
                 {
                     return Err(PhysicalError::new(
-                        "wire text Result cases disagree with payloads",
+                        "codec decode Result cases disagree with payloads",
                     ));
                 }
             }
-            if text_result.is_some()
-                != matches!(
-                    direction,
-                    hew_types::WireCodecDirection::FromJson
-                        | hew_types::WireCodecDirection::FromYaml
-                )
-            {
+            if decode_result.is_some() == codec.is_serialize() {
                 return Err(PhysicalError::new(
                     "wire Result cases differ from codec direction",
                 ));

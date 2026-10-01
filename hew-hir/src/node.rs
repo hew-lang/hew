@@ -9,7 +9,7 @@ use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
     Ty, TyPattern, VariantMatch,
 };
-use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
+use hew_types::{TryConversionKind, VecElementToken};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
@@ -46,6 +46,10 @@ pub struct HirModule {
     /// Checker-selected test entries in dispatcher ordinal order. Each entry
     /// retains its own typed process-exit action.
     pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
+    /// The checker's layout of every trait object the program names, keyed
+    /// by its canonical type: the one slot list dispatch and tables read.
+    pub trait_object_layouts:
+        Arc<std::collections::BTreeMap<ResolvedTy, hew_types::TraitObjectLayout>>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.
@@ -1859,14 +1863,12 @@ pub enum HirExprKind {
     /// All directions borrow their operand. `value_ty` is the exact checked
     /// value encoded or decoded, including generic collection arguments.
     ///
-    /// SIR resolves a shared wire schema from the checker layout table. Native
-    /// callbacks use the physical value layouts and cleanup glue for both
-    /// directions; text formats transcode through the same CBOR representation.
-    /// Binary decode failure raises `WireDecodeFailed`. Text decode returns
-    /// `Result<value_ty, string>` for malformed input and propagates callback
-    /// faults through ordinary cleanup.
+    /// SIR resolves the serial plan from the checker layout table. An encode
+    /// produces the format's document. A decode produces
+    /// `Result<value_ty, wire.DecodeError>` for any malformed input and
+    /// propagates callback faults through ordinary cleanup.
     WireCodec {
-        direction: WireCodecDirection,
+        codec: hew_types::Codec,
         operand: Box<HirExpr>,
         value_ty: ResolvedTy,
     },

@@ -117,7 +117,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalTerminator::DynCall {
                 receiver,
-                slot,
+                word,
                 method: _,
                 signature,
                 args,
@@ -126,7 +126,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind,
             } => self.emit_dyn_call(
                 *receiver,
-                *slot,
+                *word,
                 signature,
                 args,
                 *result,
@@ -212,19 +212,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind.as_ref(),
             ),
             PhysicalTerminator::WireCodec {
-                direction,
+                codec,
                 plan,
                 recipes,
-                text_result,
+                decode_result,
                 input,
                 result,
                 normal,
                 unwind,
             } => self.emit_wire_codec(
-                *direction,
+                *codec,
                 plan,
                 recipes,
-                *text_result,
+                decode_result.as_ref(),
                 *input,
                 *result,
                 normal,

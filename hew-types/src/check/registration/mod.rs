@@ -258,14 +258,18 @@ const FAILURE_HEW: &str = include_str!("../../../../std/failure.hew");
 ///   These are ordinary typed Hew declarations whose exact canonical source
 ///   identity selects a closed runtime operation; the raw status/out ABI is
 ///   not exposed to source programs.
-/// - `std.encoding.wire` — the generic codec facade. Every call carries a
-///   checker-recorded `GenericWireCodec` rewrite; the declarations have no
-///   body to fall back to.
+/// - `std.encoding.{cbor,json,yaml,toml,msgpack}` — each format's generic
+///   `encode`/`decode`. Every call carries a checker-recorded `Codec`
+///   rewrite; the declarations have no body to fall back to.
 const INTRINSIC_FLOOR_MODULES: &[&str] = &[
     "std.math",
     "std.mem",
     "std.encoding.utf8",
-    "std.encoding.wire",
+    "std.encoding.cbor",
+    "std.encoding.json",
+    "std.encoding.yaml",
+    "std.encoding.toml",
+    "std.encoding.msgpack",
     "std.stream",
 ];
 

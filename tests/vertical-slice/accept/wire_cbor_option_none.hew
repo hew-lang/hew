@@ -2,6 +2,8 @@
 // codec as CBOR null, decoding back to `None` (not a fabricated `Some`). The
 // `None` arm returns 42, so a round-trip that mis-decodes the absent value
 // changes the exit code.
+import std.encoding.cbor;
+
 #[wire]
 type Holder {
     maybe: Option<i64> @1;
@@ -9,7 +11,7 @@ type Holder {
 
 fn main() -> i64 {
     let h = Holder { maybe: .None };
-    let back = Holder.decode(h.encode());
+    let back = cbor.decode<Holder>(cbor.encode(h)).expect("decode");
     match back.maybe {
         .Some(v) => v,
         .None => 42,

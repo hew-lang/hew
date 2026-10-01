@@ -10,12 +10,18 @@
 
 import tests.hew.imported_wire_support.wire_defs.{Env, Signal, env_to_json};
 
+import std.encoding.cbor;
+
+import std.encoding.json;
+
+import std.encoding.yaml;
+
 #[test]
 fn imported_wire_struct_json_round_trip() {
     let e = Env { name: "svc", port: 8080 };
-    let j = e.to_json();
+    let j = json.encode(e);
     assert(j == "{\"name\":\"svc\",\"port\":8080}");
-    match Env.from_json(j) {
+    match json.decode<Env>(j) {
         .Ok(back) => {
             assert(back.name == "svc");
             assert(back.port == 8080);
@@ -27,10 +33,10 @@ fn imported_wire_struct_json_round_trip() {
 #[test]
 fn imported_wire_struct_binary_and_yaml_round_trips() {
     let e = Env { name: "bin", port: 9 };
-    let back = Env.decode(e.encode());
+    let back = cbor.decode<Env>(cbor.encode(e)).expect("decode");
     assert(back.name == "bin");
     assert(back.port == 9);
-    match Env.from_yaml(back.to_yaml()) {
+    match yaml.decode<Env>(yaml.encode(back)) {
         .Ok(again) => assert(again.port == 9),
         .Err(msg) => panic(f"from_yaml failed: {msg}"),
     }
@@ -45,7 +51,7 @@ fn defining_module_helper_serializes_when_module_is_imported() {
 #[test]
 fn imported_wire_enum_json_round_trip() {
     let s = Signal.Busy(4);
-    match Signal.from_json(s.to_json()) {
+    match json.decode<Signal>(json.encode(s)) {
         .Ok(back) => {
             let tag = match back {
                 Signal.Busy(n) => n,

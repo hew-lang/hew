@@ -540,7 +540,7 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                     module.defs.path(slot.method)
                 ));
             }
-            let expected_slot = 3 + u32::try_from(position).expect("SIR vtable slot exceeds u32");
+            let expected_slot = u32::try_from(position).expect("SIR vtable slot exceeds u32");
             if slot.slot != expected_slot {
                 refuse(format!(
                     "slot {} for `{}` is out of emitted order; expected {expected_slot}",
@@ -866,11 +866,8 @@ fn verify_required_value_capabilities(
                 );
             }
         }
-        if let SemTerminator::WireCodec {
-            direction, plan, ..
-        } = &block.terminator
-        {
-            if !direction.is_serialize() {
+        if let SemTerminator::WireCodec { codec, plan, .. } = &block.terminator {
+            if !codec.is_serialize() {
                 plan.visit_decode_capabilities(&mut |ty, capability| {
                     required.push((ty.clone(), capability));
                 });
@@ -5368,9 +5365,9 @@ fn verify_terminator_shape(
         ),
         SemTerminator::WireCodec {
             id,
-            direction,
+            codec,
             plan,
-            text_result,
+            decode_result,
             args,
             result,
             normal,
@@ -5379,36 +5376,25 @@ fn verify_terminator_shape(
             if let Err(reason) = plan.verify(variants.aggregate_shapes, variants.shapes) {
                 invalid_operation(function, *id, reason, diagnostics);
             }
-            let input_ty = if direction.is_serialize() {
+            let input_ty = if codec.is_serialize() {
                 plan.root.clone()
-            } else if direction.is_text() {
-                ResolvedTy::String
             } else {
-                ResolvedTy::Bytes
+                codec.document_ty()
             };
             let valid_input = matches!(args.as_slice(), [arg] if arg.decision == crate::BoundaryDecision::Borrow && types.get(&arg.operand.value) == Some(&input_ty));
             let valid_result = match result {
                 crate::CallResult::Value(value) => {
-                    let ty_matches = match direction {
-                        hew_types::WireCodecDirection::Encode => value.ty == ResolvedTy::Bytes,
-                        hew_types::WireCodecDirection::Decode => value.ty == plan.root,
-                        hew_types::WireCodecDirection::ToJson
-                        | hew_types::WireCodecDirection::ToYaml => value.ty == ResolvedTy::String,
-                        hew_types::WireCodecDirection::FromJson
-                        | hew_types::WireCodecDirection::FromYaml => {
-                            matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.root.clone(), ResolvedTy::String])
-                        }
+                    let ty_matches = if codec.is_serialize() {
+                        value.ty == codec.document_ty()
+                    } else {
+                        matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.first() == Some(&plan.root))
                     };
                     ty_matches && normal.args.iter().any(|arg| arg.value == value.id)
                 }
                 _ => false,
             };
-            let text_decode = matches!(
-                direction,
-                hew_types::WireCodecDirection::FromJson | hew_types::WireCodecDirection::FromYaml
-            );
-            let text_cases_valid = match (text_result, result) {
-                (Some(cases), crate::CallResult::Value(value)) if text_decode => variants
+            let text_cases_valid = match (decode_result, result) {
+                (Some(cases), crate::CallResult::Value(value)) if !codec.is_serialize() => variants
                     .shapes
                     .get(cases.shape.0 as usize)
                     .is_some_and(|shape| {
@@ -5416,20 +5402,18 @@ fn verify_terminator_shape(
                             && cases.ok != cases.error
                             && shape.variants.len() == 2
                             && shape.variants.get(cases.ok as usize).is_some_and(|case| {
-                                case.name == "Ok"
-                                    && case.fields.len() == 1
-                                    && case.fields[0].ty == plan.root
+                                case.fields.len() == 1 && case.fields[0].ty == plan.root
                             })
                             && shape
                                 .variants
                                 .get(cases.error as usize)
                                 .is_some_and(|case| {
-                                    case.name == "Err"
-                                        && case.fields.len() == 1
-                                        && case.fields[0].ty == ResolvedTy::String
+                                    case.fields.len() == 1
+                                        && case.fields[0].ty == cases.error_ty
+                                        && plan.plans.contains_key(&cases.error_ty)
                                 })
                     }),
-                (None, _) => !text_decode,
+                (None, _) => codec.is_serialize(),
                 _ => false,
             };
             if !valid_input

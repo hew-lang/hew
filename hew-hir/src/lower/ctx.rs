@@ -71,6 +71,7 @@ impl LowerCtx {
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             error_conversions: tc_output.error_conversions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
+            trait_object_layouts: std::sync::Arc::new(tc_output.trait_object_layouts.clone()),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             type_facts: tc_output.type_facts.clone(),

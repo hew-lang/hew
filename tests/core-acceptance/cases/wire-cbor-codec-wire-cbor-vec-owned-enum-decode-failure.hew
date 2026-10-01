@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 enum Payload {
     Empty @0;
@@ -22,7 +24,12 @@ fn main() -> i64 {
     xs.push(Payload.Empty);
     xs.push(Payload.Full("second-owned-element"));
     let g = BagGood { items: xs, tail: "owned-tail-value" };
-    let raw = g.encode();
-    let bad = BagBad.decode(raw);
-    bad.tail
+    let raw = cbor.encode(g);
+    match cbor.decode<BagBad>(raw) {
+        .Ok(bad) => bad.tail,
+        .Err(e) => {
+            println(e);
+            0
+        }
+    }
 }

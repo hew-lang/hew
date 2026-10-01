@@ -257,7 +257,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_dyn_call(
         &self,
         receiver: ArgumentTransfer,
-        slot: u32,
+        word: u32,
         signature: &hew_mir::physical::PhysicalCallSignature,
         transfers: &[ArgumentTransfer],
         result: Option<StorageId>,
@@ -293,10 +293,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("read the dispatch table pointer")?
             .into_pointer_value();
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        // Semantic method identities retain their three-word logical prefix;
-        // the physical prefix also transports the concrete release descriptor.
-        let physical_slot = slot + 1;
-        let slots = pointer.array_type(physical_slot + 1);
+        let slots = pointer.array_type(word + 1);
         let entry = unsafe {
             self.builder
                 .build_in_bounds_gep(
@@ -304,9 +301,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     table,
                     &[
                         self.ctx.i32_type().const_zero(),
-                        self.ctx
-                            .i32_type()
-                            .const_int(u64::from(physical_slot), false),
+                        self.ctx.i32_type().const_int(u64::from(word), false),
                     ],
                     "dyn.slot",
                 )

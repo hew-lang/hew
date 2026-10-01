@@ -80,7 +80,7 @@ impl Checker {
 
 /// Peel the `Ok` payload type out of a `Result<T, E>` `Ty`. Returns `None` for a
 /// non-`Result` type or a malformed (wrong-arity) one. Used to recover the wire
-/// type from a `from_json`/`from_yaml` `Result<Self, string>` return so the codec
+/// type from a `decode` `Result<T, wire.DecodeError>` return so the codec
 /// rewrite carries the produced wire type, not the `Result` wrapper.
 fn result_ok_payload(ty: &Ty) -> Option<Ty> {
     if let Ty::Named {

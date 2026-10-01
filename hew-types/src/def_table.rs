@@ -51,9 +51,6 @@ pub enum DeclarationKind {
     MachineTransition,
     /// An enum variant, a member of its enum.
     Variant,
-    /// A compiler-provided codec entry point of a wire type (`decode`,
-    /// `from_json`): a sourceless member of the type.
-    CodecMethod,
     /// A sourceless builtin receiver anchor (`i64`, `Vec`).
     BuiltinType,
     /// A trait default body materialized for one concrete receiver.
@@ -914,26 +911,6 @@ impl DefTable {
             path: path.to_string(),
         });
         self.by_path.insert(path.to_string(), id);
-        id
-    }
-
-    /// Mint (or return) the compiler-provided codec entry point `name` of a
-    /// wire type (`decode`, `from_json`): a sourceless member of `owner`,
-    /// like a materialized trait default, with no source body.
-    pub(crate) fn mint_codec_member(&mut self, owner: DefId, name: Symbol) -> DefId {
-        if let Some(member) = self.member_of_kind(owner, name, DeclarationKind::CodecMethod) {
-            return member;
-        }
-        let path = format!("{}::<codec {name}>", self.path(owner));
-        let id = self.push_row(DefRow {
-            name,
-            kind: DeclarationKind::CodecMethod,
-            module: self.module(owner),
-            owner: Some(owner),
-            site: None,
-            path: path.clone(),
-        });
-        self.by_path.insert(path, id);
         id
     }
 

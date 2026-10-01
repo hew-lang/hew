@@ -2530,8 +2530,8 @@ impl Checker {
                 self.record_unrendered_assertion_operands(args);
             }
 
-            // A codec imported by name (`import std.encoding.wire.{to_json}`)
-            // is the same compiler operation as `wire.to_json(..)`.
+            // A codec imported by name (`import std.encoding.json.{encode}`)
+            // is the same compiler operation as `json.encode(..)`.
             self.record_generic_wire_codec_rewrite(
                 &resolved_fn_name,
                 &applied_sig.params,

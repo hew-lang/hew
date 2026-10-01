@@ -41,7 +41,7 @@ pub struct DynSlot {
     pub method: DefId,
     pub receiver: DynReceiver,
     /// Caller-side signature with the trait object's type arguments and
-    /// associated-type bindings substituted; `params[0]` is the receiver.
+    /// associated-type bindings substituted; the receiver is not a parameter.
     pub signature: FnSig,
     pub effect: SlotEffect,
 }

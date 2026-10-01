@@ -2,6 +2,12 @@
 // #[wire] value. String-keyed maps use JSON objects, non-string-keyed maps use
 // [key, value] pairs, and sets use canonical arrays. Decoding reconstructs
 // ordinary mutable collections.
+import std.encoding.cbor;
+
+import std.encoding.json;
+
+import std.encoding.yaml;
+
 #[wire]
 type Feature {
     enabled: bool @1;
@@ -27,7 +33,7 @@ fn main() -> i64 {
     ids.insert(1);
     ids.insert(2);
     let registry = Registry { features: features, codes: codes, ids: ids };
-    let binary_back = Registry.decode(registry.encode());
+    let binary_back = cbor.decode<Registry>(cbor.encode(registry)).expect("decode");
     if binary_back.features.len() != 2 {
         return 12;
     }
@@ -37,8 +43,8 @@ fn main() -> i64 {
     if binary_back.ids.len() != 3 {
         return 14;
     }
-    let yaml = registry.to_yaml();
-    match Registry.from_yaml(yaml) {
+    let yaml_text = yaml.encode(registry);
+    match yaml.decode<Registry>(yaml_text) {
         .Ok(yaml_back) => {
             if yaml_back.features.len() != 2 {
                 return 15;
@@ -54,11 +60,11 @@ fn main() -> i64 {
             return 18;
         }
     }
-    let json = registry.to_json();
-    if json != "{\"features\":{\"alpha\":{\"enabled\":true,\"note\":\"now\"},\"beta\":{\"enabled\":false,\"note\":\"later\"}},\"codes\":[[1,\"one\"],[2,\"two\"]],\"ids\":[1,2,3]}" {
+    let json_text = json.encode(registry);
+    if json_text != "{\"features\":{\"alpha\":{\"enabled\":true,\"note\":\"now\"},\"beta\":{\"enabled\":false,\"note\":\"later\"}},\"codes\":[[1,\"one\"],[2,\"two\"]],\"ids\":[1,2,3]}" {
         return 1;
     }
-    match Registry.from_json(json) {
+    match json.decode<Registry>(json_text) {
         .Ok(back) => {
             if back.features.len() != 2 {
                 return 2;

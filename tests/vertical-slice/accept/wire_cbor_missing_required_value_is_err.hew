@@ -1,0 +1,25 @@
+// Validation (FAIL CLOSED): an optional None encodes as an empty map. Decoding
+// those exact bytes as a required scalar returns a Missing error naming the
+// key, and the partial destination is cleaned.
+import std.encoding.cbor;
+
+#[wire]
+type OptionalSource {
+    value: Option<i64> @1 optional;
+}
+
+#[wire]
+type RequiredValue {
+    value: i64 @1;
+}
+
+fn main() -> i64 {
+    let raw = cbor.encode(OptionalSource { value: .None });
+    match cbor.decode<RequiredValue>(raw) {
+        .Ok(_) => 1,
+        .Err(e) => {
+            println(e);
+            42
+        }
+    }
+}

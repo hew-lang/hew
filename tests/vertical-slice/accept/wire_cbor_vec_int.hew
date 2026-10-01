@@ -1,6 +1,8 @@
 // Validation: a `Vec<i64>` field round-trips through the CBOR body codec as a
 // CBOR array, preserving order and every element. The decoded elements sum to
 // 42, so a dropped or reordered element changes the exit code.
+import std.encoding.cbor;
+
 #[wire]
 type ListHolder {
     items: Vec<i64> @1;
@@ -12,7 +14,7 @@ fn main() -> i64 {
     xs.push(20);
     xs.push(12);
     let h = ListHolder { items: xs };
-    let back = ListHolder.decode(h.encode());
+    let back = cbor.decode<ListHolder>(cbor.encode(h)).expect("decode");
     if back.items.len() != 3 {
         return 1;
     }

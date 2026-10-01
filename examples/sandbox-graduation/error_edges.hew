@@ -15,8 +15,7 @@ impl Display for ParseError {
     }
 }
 
-impl Error for ParseError {
-}
+impl Error for ParseError {}
 
 enum ConfigError {
     Parse(ParseError);
@@ -34,8 +33,7 @@ impl Display for ConfigError {
     }
 }
 
-impl Error for ConfigError {
-}
+impl Error for ConfigError {}
 
 impl From<ParseError> for ConfigError {
     fn from(value: ParseError) -> ConfigError {

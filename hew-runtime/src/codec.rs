@@ -7,7 +7,7 @@
 //! handle, and pulls. The first failure is latched: every later pull returns
 //! a zero value and leaves the handle failed, so the walk checks
 //! `hew_de_failed` where it must stop, releases what it built, and reads the
-//! error text with `hew_de_error`. The runtime never frees anything the walk
+//! error through `hew_de_error_reader`. The runtime never frees anything the walk
 //! owns.
 //!
 //! Tables are `hew_codec::Table` globals the compiler emits; handles are
@@ -19,7 +19,7 @@
 
 use core::ffi::c_void;
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
-use hew_codec::{DecodeError, Format, Sink, Source, Table};
+use hew_codec::{DecodeError, Format, Sink, Source, Table, Value};
 
 use crate::bytes::{hew_bytes_new, BytesTriple};
 
@@ -400,19 +400,86 @@ pub unsafe extern "C" fn hew_de_failed(r: *mut c_void) -> i32 {
     i32::from(unsafe { reader(r) }.error.is_some())
 }
 
-/// The latched error as text, or null when the reader is healthy.
+/// A reader that replays the latched error as a `wire.DecodeError` value:
+/// a map of one variant name to its fields, as a text format reads a struct
+/// variant. The walk decodes it through the declared type's own plan.
 ///
 /// # Safety
-/// `r` is a live reader.
+/// `r` is a live, failed reader.
 #[no_mangle]
-pub unsafe extern "C" fn hew_de_error(r: *mut c_void) -> *mut HewString {
+pub unsafe extern "C" fn hew_de_error_reader(r: *mut c_void) -> *mut c_void {
     // SAFETY: per contract.
-    unsafe { reader(r) }
+    let error = unsafe { reader(r) }
         .error
-        .as_ref()
-        .map_or(core::ptr::null_mut(), |error| {
-            string_from_str(&error.to_string())
-        })
+        .take()
+        .expect("hew codec: the error reader needs a failed reader");
+    Box::into_raw(Box::new(Reader {
+        source: Some(Source::from_value(Format::Json, error_value(error))),
+        error: None,
+    }))
+    .cast()
+}
+
+fn error_value(error: DecodeError) -> Value {
+    let text = Value::Str;
+    let position = |at: Option<usize>| at.map_or(Value::Null, |at| Value::Int(at as i128));
+    let (variant, fields): (&str, Vec<(&str, Value)>) = match error {
+        DecodeError::Syntax {
+            offset,
+            line,
+            column,
+            reason,
+        } => (
+            "Syntax",
+            vec![
+                ("offset", Value::Int(offset as i128)),
+                ("line", position(line)),
+                ("column", position(column)),
+                ("reason", text(reason)),
+            ],
+        ),
+        DecodeError::Type {
+            path,
+            expected,
+            found,
+        } => (
+            "Type",
+            vec![
+                ("path", text(path)),
+                ("expected", text(expected)),
+                ("found", text(found)),
+            ],
+        ),
+        DecodeError::Missing { path } => ("Missing", vec![("path", text(path))]),
+        DecodeError::Range {
+            path,
+            value,
+            target,
+        } => (
+            "Range",
+            vec![
+                ("path", text(path)),
+                ("value", text(value)),
+                ("target", text(target)),
+            ],
+        ),
+        DecodeError::UnknownVariant { path, name } => (
+            "UnknownVariant",
+            vec![("path", text(path)), ("name", text(name))],
+        ),
+        DecodeError::Duplicate { path, key } => {
+            ("Duplicate", vec![("path", text(path)), ("key", text(key))])
+        }
+        DecodeError::Invalid { path, reason } => (
+            "Invalid",
+            vec![("path", text(path)), ("reason", text(reason))],
+        ),
+    };
+    let fields = fields
+        .into_iter()
+        .map(|(key, value)| (Value::Str(key.to_string()), value))
+        .collect();
+    Value::Map(vec![(Value::Str(variant.to_string()), Value::Map(fields))])
 }
 
 /// Latch a duplicate the walk found by the value's own equality.
@@ -694,7 +761,7 @@ mod tests {
                     _ => break,
                 }
             }
-            let error = (hew_de_failed(r) != 0).then(|| text(hew_de_error(r)));
+            let error = reader(r).error.as_ref().map(ToString::to_string);
             hew_de_free(r);
             crate::string::hew_string_drop(input);
             (x, note_absent, error)

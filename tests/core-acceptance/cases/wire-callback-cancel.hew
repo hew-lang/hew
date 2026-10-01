@@ -1,4 +1,4 @@
-import std.encoding.wire;
+import std.encoding.json;
 
 #[wire]
 type Key {
@@ -17,7 +17,7 @@ impl Hash for Key {
 }
 
 fn decode() -> i64 {
-    let decoded = wire.from_json<HashMap<Key, Vec<string>>>("[[{\"id\":0},[\"kept\"]],[{\"id\":99},[\"pending\"]]]").expect("decode");
+    let decoded = json.decode<HashMap<Key, Vec<string>>>("[[{\"id\":0},[\"kept\"]],[{\"id\":99},[\"pending\"]]]").expect("decode");
     decoded.len()
 }
 

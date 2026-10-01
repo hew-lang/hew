@@ -4232,6 +4232,8 @@ surface lives under [`examples/v05/surfaces/`](../examples/v05/surfaces)
 ### `#[wire]` — network-serializable schema types
 
 ```hew
+import std.encoding.json;
+
 #[wire]
 type UserCreated {
     id: u64 @1;
@@ -4240,9 +4242,9 @@ type UserCreated {
 
 fn main() {
     let e = UserCreated { id: 42, name: "ada" };
-    let j = e.to_json();
+    let j = json.encode(e);
     println(j); // {"id":42,"name":"ada"}
-    match UserCreated.from_json(j) {
+    match json.decode<UserCreated>(j) {
         .Ok(back) => println(back.name), // ada
         .Err(_) => println("parse failed"),
     }
@@ -4265,16 +4267,19 @@ its inhabitants. Unknown numeric CBOR tags and unknown JSON/YAML names remain
 tolerated. Changing an existing field between required and `optional` changes
 wire behaviour, so `hew wire check` rejects the change in either direction.
 
-`e.to_json()` and `TypeName.from_json(text)` round-trip a wire type through
-JSON; the latter is a call on the type name itself rather than a source
-spelling. Bare values that implement `Serializable`, including admitted
-`HashMap` and `HashSet` shapes, use the generic `std.encoding.wire` facade.
-A value is `Serializable` when it is a scalar, a `#[wire]` type, or a `Vec`,
-`HashMap`, `HashSet` or `Option` of serializable values; a plain type, a
-tuple or a resource is refused where the facade is called:
+`json.encode(e)` and `json.decode<T>(text)` round-trip a wire type through
+JSON. Every format module (`cbor`, `json`, `yaml`, `toml`, `msgpack`) offers the
+same pair, and `decode` returns `Result<T, wire.DecodeError>` whose error names
+the path of the value that did not fit; the type is named at the call, and an
+unannotated `json.decode(text)` is `E_TYPE_ANNOTATION_NEEDED`. Bare values that
+implement `Serializable`, including admitted `HashMap` and `HashSet` shapes, use
+the same functions. A value is `Serializable` when it is a scalar, a `#[wire]`
+type, or a `Vec`, `HashMap`, `HashSet` or `Option` of serializable values; a
+plain type, a tuple or a resource is refused where the codec is called:
 
 ```hew
-import std.encoding.wire;
+import std.encoding.cbor;
+import std.encoding.json;
 
 #[wire]
 type Feature {
@@ -4284,24 +4289,25 @@ type Feature {
 fn main() {
     var features: HashMap<string, Feature> = HashMap.new();
     features.insert("preview", Feature { enabled: true });
-    let json = wire.to_json(features);
-    let parsed = wire.from_json<HashMap<string, Feature>>(json) handle error {
+    let text = json.encode(features);
+    let parsed = json.decode<HashMap<string, Feature>>(text) handle error {
         println(f"decode failed: {error}");
         return;
     };
     println(parsed.len());
-    let cbor = wire.encode(features);
-    let decoded = wire.decode<HashMap<string, Feature>>(cbor);
+    let bytes = cbor.encode(features);
+    let decoded = cbor.decode<HashMap<string, Feature>>(bytes).expect("decode");
     println(decoded.len());
 }
 ```
 
-`wire.to_yaml` and `wire.from_yaml<T>` provide the equivalent YAML surface.
-These functions use the same typed codec descriptor and compiler-emitted
-thunks as `#[wire]` methods and actor transport; collections do not need
-format-specific methods or a wrapper record. Text parsing returns
-`Result<T, string>`. Binary `decode<T>` retains the trusted-input,
-trap-on-malformed-data contract of `TypeName.decode(bytes)`.
+`yaml`, `toml` and `msgpack` provide the equivalent surface. TOML has no null
+and its documents are tables, so `toml.encode` and `toml.decode` refuse a
+non-record root or a `#[wire]` record with a required `Option` field at compile
+time (`E_FORMAT_CANNOT_REPRESENT`); mark the field `optional`. Each codec call
+uses the same typed descriptor and compiler-emitted thunks as actor transport;
+collections need no format-specific methods or wrapper record. A malformed
+document returns `Err` rather than trapping.
 
 The runtime envelope used for actor-to-actor message transport is CBOR; the
 text surfaces are for cross-service and file I/O. Use `hew wire check

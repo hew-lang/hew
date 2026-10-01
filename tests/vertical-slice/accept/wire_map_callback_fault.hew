@@ -1,4 +1,6 @@
 // A codec parse error is an Err; a selected key callback fault still unwinds.
+import std.encoding.json;
+
 #[wire]
 type Key {
     label: string @1;
@@ -19,7 +21,7 @@ type Registry {
 
 fn main() -> i64 {
     let caller = "caller remains owned".to_upper();
-    match Registry.from_json("{\"entries\":[[{\"label\":\"first\",\"divisor\":1},[\"kept\"]],[{\"label\":\"fault\",\"divisor\":0},[\"released\"]]]}") {
+    match json.decode<Registry>("{\"entries\":[[{\"label\":\"first\",\"divisor\":1},[\"kept\"]],[{\"label\":\"fault\",\"divisor\":0},[\"released\"]]]}") {
         .Ok(_) => println("unexpected value"),
         .Err(_) => println("unexpected parse error"),
     }

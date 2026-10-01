@@ -823,14 +823,13 @@ impl LowerCtx {
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
                 self.lower_record_fn_field_call(receiver, method, args, &field_ty, span)
             }
-            Some(MethodCallRewrite::WireCodec {
-                direction,
-                value_ty,
-            }) => self.lower_wire_codec(receiver, args, direction, value_ty, span),
-            Some(MethodCallRewrite::GenericWireCodec {
-                direction,
-                value_ty,
-            }) => self.lower_generic_wire_codec(args, direction, value_ty, span),
+            Some(MethodCallRewrite::Codec { codec, value_ty }) => {
+                let checked_ty = self
+                    .expr_types
+                    .get(&key)
+                    .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                self.lower_codec(args, codec, value_ty, checked_ty, span)
+            }
             Some(MethodCallRewrite::RemoteActorSend) => {
                 self.try_register_enum_instantiation(&span);
                 let ret_ty = self

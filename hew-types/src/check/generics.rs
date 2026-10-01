@@ -5,10 +5,6 @@
 use super::*;
 use crate::method_resolution::lookup_method_sig as shared_lookup_method_sig;
 
-/// Slots before the first trait method: the runtime's fixed
-/// `drop_in_place`/`size_of`/`align_of` prefix.
-pub(super) const DYN_VTABLE_PREFIX: u32 = 3;
-
 /// One method of a trait object's dispatch layout.
 #[derive(Clone, Debug)]
 pub(super) struct DynLayoutSlot {
@@ -1763,9 +1759,8 @@ impl Checker {
     ///
     /// This is the one slot numbering: the coercion site fills the vtable in
     /// this order and every dispatch site reads its slot from the same list.
-    /// A published slot index is `DYN_VTABLE_PREFIX + position`, past the
-    /// runtime's fixed `drop_in_place`/`size_of`/`align_of` prefix
-    /// (`hew-runtime/src/trait_object.rs`).
+    /// A published slot index is the 0-based position; physical MIR alone
+    /// places it past the runtime table's prefix.
     ///
     /// A method without a declaration identity cannot be told apart from
     /// another trait's method of the same name, so it is reported at `span`
@@ -1843,7 +1838,7 @@ impl Checker {
             }
             let position = u32::try_from(layout.len()).expect("trait-object layout exceeds u32");
             layout.push(DynLayoutSlot {
-                slot: DYN_VTABLE_PREFIX + position,
+                slot: position,
                 trait_key: key.to_string(),
                 trait_spelling: spelling.to_string(),
                 method_name: method.name.to_string(),

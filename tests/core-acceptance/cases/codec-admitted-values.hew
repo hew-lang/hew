@@ -1,9 +1,11 @@
-// The generic wire facade encodes and decodes a bare `#[wire]` type, a literal
-// collection whose element type settles only after defaulting, a codec
+// The format modules encode and decode a bare `#[wire]` type, a literal
+// collection whose element type settles only after defaulting, an encoder
 // imported by name and a type parameter bounded by `Serializable`.
-import std.encoding.wire;
+import std.encoding.cbor;
 
-import std.encoding.wire.{to_yaml};
+import std.encoding.json;
+
+import std.encoding.yaml.{encode};
 
 #[wire]
 type Config {
@@ -13,22 +15,22 @@ type Config {
 }
 
 fn show<T: Serializable>(values: Vec<T>) -> string {
-    wire.to_json(values)
+    json.encode(values)
 }
 
 fn main() {
     let config = Config { name: "svc", ports: [80, 443], tag: .None };
-    let text = wire.to_json(config);
+    let text = json.encode(config);
     println(text);
-    match wire.from_json<Config>(text) {
+    match json.decode<Config>(text) {
         .Ok(back) => println(f"{back.name} {back.ports.len()}"),
         .Err(reason) => println(f"decode failed: {reason}"),
     }
-    println(wire.to_json([1, 2, 3]));
-    let packed = wire.encode([4, 5]);
-    let unpacked: Vec<i64> = wire.decode(packed);
+    println(json.encode([1, 2, 3]));
+    let packed = cbor.encode([4, 5]);
+    let unpacked: Vec<i64> = cbor.decode(packed).expect("decode");
     println(f"{unpacked.len()}");
-    print(to_yaml(["a", "b"]));
+    print(encode(["a", "b"]));
     println(show([Config { name: "x", ports: [], tag: .Some("t") }]));
     println(show([true, false]));
 }

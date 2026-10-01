@@ -280,10 +280,6 @@ pub enum ResultReturnKind {
 /// the checker in rule order (D547): the same type passes through, a trait
 /// object target erases, and a declared `impl From<E> for F` converts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one conversion per failure edge, recorded once; boxing buys nothing"
-)]
 pub enum ErrorConversion {
     Same,
     Erase(Box<DynCoercion>),
@@ -790,8 +786,7 @@ pub struct TypeCheckOutput {
     pub error_conversions: HashMap<SpanKey, ErrorConversion>,
     /// Per-method-call-site resolution for `obj.method()` where `obj` has
     /// resolved type `Ty::TraitObject`. Each entry pins the originating trait,
-    /// the method name, and the vtable slot index (`3 + layout position` —
-    /// see [`DynMethodCall::slot`] for the prefix-triple convention).
+    /// the method name, and the 0-based layout slot.
     ///
     /// Populated alongside [`MethodCallReceiverKind::TraitObject`] at every
     /// accepted method-call on a trait-object receiver. Downstream HIR / MIR
@@ -1239,18 +1234,8 @@ pub struct DynCoercion {
 /// vtable slot; HIR lowering reads it to choose `HirExprKind::CallDynMethod`
 /// over the `method_call_rewrites` direct-call path.
 ///
-/// The slot convention follows
-/// `hew-runtime/src/trait_object.rs::HewVtable`:
-///
-/// | Slot | Contents              |
-/// |------|-----------------------|
-/// | 0    | `drop_in_place`       |
-/// | 1    | `size_of` (data)      |
-/// | 2    | `align_of` (data)     |
-/// | 3..N | trait method slots, in the trait object's layout order |
-///
-/// `slot` is therefore `3 + position` in the whole trait object's layout
-/// (`Checker::dyn_layout`), the numbering the coercion site fills.
+/// `slot` is the 0-based position in the trait object's layout; physical
+/// MIR alone places it past the runtime table's prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynMethodCall {
     /// Full checker-selected dispatch identity.  HIR carries this verbatim;
@@ -1262,10 +1247,7 @@ pub struct DynMethodCall {
     pub trait_name: String,
     /// Trait method name as declared in the trait body.
     pub method_name: String,
-    /// Vtable slot index: `3 + position` in the trait object's layout.
-    // TRANSITION(D1b): WHY the SIR/MIR vtable builders still number slots
-    // past the runtime prefix; WHEN D1b switches both sides to the 0-based
-    // `TraitObjectLayout::slot_of`; WHAT the prefix moves into physical MIR.
+    /// The 0-based slot: `TraitObjectLayout::slot_of` the target method.
     pub slot: u32,
     /// The slot's declared effect, read from the trait object's layout.
     pub effect: super::SlotEffect,
@@ -1992,36 +1974,12 @@ pub enum MethodCallRewrite {
     RecordFnFieldCall {
         field_ty: crate::resolved_ty::ResolvedTy,
     },
-    /// Binary wire codec call on a `#[wire]` struct or enum:
-    /// `value.encode() -> bytes` (instance) or `Type.decode(bytes) -> Type`
-    /// (static).
-    ///
-    /// The CBOR round-trip is the codec walk codegen emits
-    /// (`hew-codegen-rs/src/physical_wire.rs`). A struct rides a tag-keyed CBOR
-    /// map; an enum rides the "map-of-one" shape. These thunks have a non-Hew
-    /// ABI (an out-length / out-struct-size pointer parameter and a malloc'd
-    /// result the caller adopts), so the call cannot lower through the generic
-    /// `RewriteToFunction` path — it gets a dedicated HIR node that codegen
-    /// wires to the thunk with the correct ABI.
-    ///
-    /// `value_ty` is the checker-resolved wire type (the receiver type for
-    /// `encode`, the produced type for `decode`); codegen derives the thunk key
-    /// from it via the same `mangle_resolved_ty` encoder the actor cross-node
-    /// path uses, so every site referencing one wire type shares a single CBOR
-    /// thunk pair.
-    ///
-    /// The binary directions (`Encode`/`Decode`) drive the CBOR codec; the text
-    /// directions (`ToJson`/`FromJson`/`ToYaml`/`FromYaml`) drive the CBOR↔text
-    /// bridge (reuse the binary walk + a generic transcode).
-    WireCodec {
-        direction: WireCodecDirection,
-        value_ty: crate::resolved_ty::ResolvedTy,
-    },
-    /// Generic `std.encoding.wire` free-function facade. This carries the same
-    /// typed thunk identity as `WireCodec`, but its sole value/text/bytes
-    /// operand is the function argument rather than a method receiver.
-    GenericWireCodec {
-        direction: WireCodecDirection,
+    /// A `std.encoding.{cbor,json,yaml,toml,msgpack}` `encode`/`decode` call.
+    /// `value_ty` is the checker-resolved data type: the argument of an
+    /// encode, the `Ok` payload of a decode. HIR lowers the call to one
+    /// codec walk over the checked serial plan of `value_ty`.
+    Codec {
+        codec: Codec,
         value_ty: crate::resolved_ty::ResolvedTy,
     },
     /// User-record `clone` call: `clone p` or `p.clone()` where `p` has a
@@ -2084,69 +2042,67 @@ pub enum MathGenericOp {
     Max,
 }
 
-/// Direction of a [`MethodCallRewrite::WireCodec`] call.
-///
-/// The binary directions (`Encode`/`Decode`) drive the CBOR body codec; the
-/// text directions (`ToJson`/`FromJson`/`ToYaml`/`FromYaml`) drive the
-/// CBOR↔text BRIDGE: a text serialize reuses the binary CBOR walk to build the
-/// value tree, then transcodes that tree to JSON/YAML text via a compiler-
-/// emitted tag↔name descriptor; a text deserialize parses the text, transcodes
-/// the tree back to CBOR, then reuses the binary CBOR decode walk. There is no
-/// parallel per-format struct/enum walk — the text codec is the binary codec
-/// plus a generic transcode (RATIFIED, Q203).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireCodecDirection {
-    /// `value.encode() -> bytes`: serialize the receiver to CBOR bytes.
-    Encode,
-    /// `Type.decode(bytes) -> Type`: deserialize CBOR bytes back to the type.
-    Decode,
-    /// `value.to_json() -> string`: serialize the receiver to JSON text.
-    ToJson,
-    /// `Type.from_json(string) -> Result<Type, string>`: parse JSON text.
-    FromJson,
-    /// `value.to_yaml() -> string`: serialize the receiver to YAML text.
-    ToYaml,
-    /// `Type.from_yaml(string) -> Result<Type, string>`: parse YAML text.
-    FromYaml,
+/// A codec format: the `hew_codec::Format` the runtime's `hew_ser_new` and
+/// `hew_de_new` select by [`CodecFormat::code`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CodecFormat {
+    Cbor,
+    Json,
+    Yaml,
+    Toml,
+    Msgpack,
 }
 
-impl WireCodecDirection {
-    /// True for the serialize directions (`value -> text/bytes`): `Encode`,
-    /// `ToJson`, `ToYaml`.
+impl CodecFormat {
+    /// The runtime format code (`hew-runtime/src/codec.rs`, `format`).
     #[must_use]
-    pub fn is_serialize(self) -> bool {
-        matches!(self, Self::Encode | Self::ToJson | Self::ToYaml)
-    }
-
-    /// True for the text-format directions (JSON/YAML); false for the binary
-    /// CBOR directions (`Encode`/`Decode`).
-    #[must_use]
-    pub fn is_text(self) -> bool {
-        matches!(
-            self,
-            Self::ToJson | Self::FromJson | Self::ToYaml | Self::FromYaml
-        )
-    }
-
-    /// The text format of a text direction, or `None` for the binary CBOR
-    /// directions.
-    #[must_use]
-    pub fn text_format(self) -> Option<WireTextFormat> {
+    pub fn code(self) -> u64 {
         match self {
-            Self::ToJson | Self::FromJson => Some(WireTextFormat::Json),
-            Self::ToYaml | Self::FromYaml => Some(WireTextFormat::Yaml),
-            Self::Encode | Self::Decode => None,
+            Self::Cbor => 0,
+            Self::Json => 1,
+            Self::Yaml => 2,
+            Self::Toml => 3,
+            Self::Msgpack => 4,
         }
     }
+
+    /// Text formats read and write `string`; binary formats `bytes`.
+    #[must_use]
+    pub fn is_text(self) -> bool {
+        matches!(self, Self::Json | Self::Yaml | Self::Toml)
+    }
 }
 
-/// The two text wire formats the bridge transcodes between CBOR and text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireTextFormat {
-    /// JSON (`to_json`/`from_json`).
-    Json,
-    /// YAML (`to_yaml`/`from_yaml`).
-    Yaml,
+/// One codec operation: a format and a direction. An encode produces the
+/// format's document (`string` or `bytes`); a decode produces
+/// `Result<T, wire.DecodeError>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Codec {
+    pub format: CodecFormat,
+    pub direction: CodecDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CodecDirection {
+    Encode,
+    Decode,
+}
+
+impl Codec {
+    #[must_use]
+    pub fn is_serialize(self) -> bool {
+        self.direction == CodecDirection::Encode
+    }
+
+    /// The document type: `string` for text formats, `bytes` otherwise.
+    #[must_use]
+    pub fn document_ty(self) -> crate::resolved_ty::ResolvedTy {
+        if self.format.is_text() {
+            crate::resolved_ty::ResolvedTy::String
+        } else {
+            crate::resolved_ty::ResolvedTy::Bytes
+        }
+    }
 }
 
 /// Which `Vec<T>` pipeline method a
@@ -2976,7 +2932,7 @@ pub(super) struct DeferredMonomorphicSite {
     pub(super) source_module: Option<String>,
 }
 
-/// A `std.encoding.wire` facade call whose value type was still unsettled
+/// A format module `encode`/`decode` call whose value type was still unsettled
 /// when the call was checked. It is recorded, or refused, once inference and
 /// literal defaulting settle.
 #[derive(Debug, Clone)]
@@ -2984,7 +2940,7 @@ pub(super) struct DeferredWireCodec {
     pub(super) key: SpanKey,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
-    pub(super) direction: WireCodecDirection,
+    pub(super) codec: Codec,
     pub(super) value_ty: Ty,
 }
 
@@ -3309,18 +3265,6 @@ pub struct Checker {
     /// record types the user attempts to clone — these are ALWAYS non-cloneable
     /// because a shallow copy aliases the runtime handle.
     pub(super) opaque_type_ids: HashSet<crate::NominalId>,
-    /// `#[wire]` struct type names that carry the binary CBOR codec methods
-    /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
-    /// — which lower to codec walks — from a same-named user method, without re-deriving wire-ness in
-    /// the method-dispatch arms. Populated by `register_wire_methods` for wire
-    /// structs.
-    pub(super) wire_struct_types: HashSet<String>,
-    /// `#[wire]` enum type names that carry the binary CBOR codec methods
-    /// (`encode`/`decode`). The enum body uses the "map-of-one"
-    /// shape (`{tag: [payload]}`, unit variants = the bare tag). Parallel to
-    /// `wire_struct_types` so the method-dispatch arms recognise the codec call
-    /// for an enum receiver as well as a struct.
-    pub(super) wire_enum_types: HashSet<String>,
     /// Set on every type registration; cleared once `ensure_handle_bearing_fresh`
     /// runs the fixpoint refresh. Converts O(N²) per-registration rescans to a
     /// single pass before the first lookup — see `ensure_handle_bearing_fresh`.
@@ -4385,8 +4329,6 @@ impl Checker {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: HashSet::new(),
             opaque_type_ids: HashSet::new(),
-            wire_struct_types: HashSet::new(),
-            wire_enum_types: HashSet::new(),
             handle_bearing_dirty: false,
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),

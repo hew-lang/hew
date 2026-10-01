@@ -103,12 +103,7 @@ impl Checker {
             }
         }
         // R6: a trait object is Display when Display is in its bounds'
-        // supertrait closure; the value renders through that slot.
-        // TRANSITION(D1b): WHY HIR's Display arm has no trait-object shape, so
-        // `f"{e}"` over `dyn Error` checks clean and then reports a HIR
-        // boundary violation; WHEN D1b lowers the interpolant to the closure's
-        // `fmt` slot; WHAT the checker then publishes that slot's dyn call at
-        // the interpolant and HIR reads it.
+        // supertrait closure; HIR renders it through that layout slot.
         if let Ty::TraitObject { traits } = &resolved {
             let display_id = self
                 .lang_items

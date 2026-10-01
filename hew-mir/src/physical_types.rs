@@ -419,6 +419,13 @@ pub struct PhysicalVtableSlot {
     pub signature: PhysicalCallSignature,
 }
 
+/// Words of a trait-object table before its first method slot: the
+/// `drop_in_place`, size and alignment words and the concrete value's
+/// release descriptor (`hew-runtime/src/trait_object.rs::HewVtable`).
+/// Physical MIR is the one compiler stage that places a layout slot past
+/// them; the compiler builds for wasm32, where `hew-cabi` does not.
+pub const VTABLE_PREFIX_WORDS: u32 = 4;
+
 /// Realized dispatch table for one erasure of a concrete type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVtable {
@@ -926,12 +933,14 @@ impl PhysicalRuntimeAction {
     }
 }
 
-/// Physical Result storage with its SIR-selected success and error cases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhysicalWireTextResult {
+/// Physical Result storage with its SIR-selected success and error cases,
+/// and the `wire.DecodeError` type a failure decodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalWireDecodeResult {
     pub glue: PhysicalVariantId,
     pub ok: u32,
     pub error: u32,
+    pub error_ty: ResolvedTy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1090,9 +1099,12 @@ pub enum PhysicalTerminator {
         unwind: Option<PhysicalEdge>,
     },
     /// Load one slot from the receiver's vtable and call through it.
+    /// `word` is `VTABLE_PREFIX_WORDS + slot`.
     DynCall {
         receiver: ArgumentTransfer,
-        slot: u32,
+        /// The table word holding the slot: the layout slot past the
+        /// runtime prefix.
+        word: u32,
         /// Exact method declaration expected at the selected slot.
         method: hew_types::DefId,
         signature: PhysicalCallSignature,
@@ -1140,10 +1152,10 @@ pub enum PhysicalTerminator {
     /// Execute the exact selected value callback with borrowed slots. Success
     /// initializes the scalar result; failure owns a fault on the cleanup edge.
     WireCodec {
-        direction: hew_types::WireCodecDirection,
+        codec: hew_types::Codec,
         plan: std::sync::Arc<hew_sir::SemWirePlans>,
         recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
-        text_result: Option<PhysicalWireTextResult>,
+        decode_result: Option<PhysicalWireDecodeResult>,
         input: ArgumentTransfer,
         result: StorageId,
         normal: PhysicalEdge,

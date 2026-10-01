@@ -122,7 +122,9 @@ fn dyn_index_selects_index_at_beside_another_at() {
             tail.kind
         );
     };
-    // `Index` publishes `get` then `at`; `Other.at` follows them.
+    // Bounds are ordered by trait identity, not spelling order: the root's
+    // `Other` precedes std `Index`, so `Other.at` takes the first slot and
+    // `Index` publishes `get` then `at` after it.
     assert_eq!(output.module.defs.path(*method), "std.builtins.Index::at");
-    assert_eq!(*slot, 4);
+    assert_eq!(*slot, 5);
 }

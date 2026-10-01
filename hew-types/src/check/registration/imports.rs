@@ -1550,9 +1550,7 @@ impl Checker {
                 }
                 Item::Impl(id) => {
                     if let TypeExpr::Named {
-                        path: named_path,
-                        type_args: target_type_args,
-                        ..
+                        path: named_path, ..
                     } = &id.target_type.0
                     {
                         let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
@@ -1583,8 +1581,8 @@ impl Checker {
                         // `Ty::Named { name: "E" }`, which is exactly the
                         // placeholder the dispatch-time binding zips against
                         // the receiver's concrete args.
-                        let self_type_args: Vec<Ty> =
-                            self.resolve_impl_target_type_args(id, target_type_args.as_ref());
+                        let self_ty = self.resolve_impl_target(id);
+                        let self_type_args = Self::impl_target_args(&self_ty);
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                         });
@@ -1596,9 +1594,8 @@ impl Checker {
                         // shared `Box::render` dispatch key the generic
                         // declaration owns instead of taking only its own
                         // mangled key.
-                        let prev_self_type = self
-                            .current_self_type
-                            .replace((type_name.clone(), self_type_args.clone()));
+                        let prev_self_type =
+                            self.current_self_type.replace((type_name.clone(), self_ty));
                         for method in &id.methods {
                             if !method.visibility.is_pub() {
                                 continue;

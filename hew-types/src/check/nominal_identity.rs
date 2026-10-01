@@ -272,20 +272,6 @@ impl Checker {
                 args,
             );
         }
-        // A spelling two modules claim has no unique registry row; the
-        // current file's own Scope binding names the declaration.
-        // TRANSITION(A1c3): obsolete when impl registration carries the
-        // impl target's resolved type instead of its spelling.
-        if let Some(super::scope::Resolution::Nominal(id)) = self
-            .current_declaration_module()
-            .and_then(|module| {
-                self.scopes
-                    .item(self.scopes.namespace_of(module), crate::Symbol::intern(key))
-            })
-            .map(super::scope::Binding::resolution)
-        {
-            return Ty::named_head(self.head_of_declaration(id), args);
-        }
         Ty::Named {
             head: crate::TypeHead::Unresolved(crate::Symbol::intern(key)),
             args,

@@ -589,27 +589,28 @@ impl Checker {
         self.impl_alias_scopes.pop();
     }
 
-    /// Resolve an impl target's type arguments (`Filter<I, A>`) with the
-    /// impl's own type parameters in scope, so `A` names the impl's binder
-    /// rather than a same-spelled type that another module declares.
-    pub(super) fn resolve_impl_target_type_args(
-        &mut self,
-        id: &ImplDecl,
-        type_args: Option<&Vec<Spanned<TypeExpr>>>,
-    ) -> Vec<Ty> {
+    /// Resolve an impl's written target (`Filter<I, A>`) through `Scope` with
+    /// the impl's own type parameters in scope, so `A` names the impl's binder
+    /// and the head names the declaration the file sees, never a same-spelled
+    /// type another module declares.
+    pub(in crate::check) fn resolve_impl_target(&mut self, id: &ImplDecl) -> Ty {
         let bounds = self.collect_type_param_scope_with_bounds(
             id.type_params.as_ref(),
             id.where_clause.as_ref(),
         );
         self.current_type_param_bounds
             .push(TypeParamScope::new(bounds, HashMap::new()));
-        let resolved = type_args.map_or_else(Vec::new, |args| {
-            args.iter()
-                .map(|type_arg| self.resolve_type_expr(type_arg))
-                .collect()
-        });
+        let resolved = self.resolve_type_expr(&id.target_type);
         self.current_type_param_bounds.pop();
         resolved
+    }
+
+    /// The type arguments an impl's resolved target carries.
+    pub(super) fn impl_target_args(target: &Ty) -> Vec<Ty> {
+        match target {
+            Ty::Named { args, .. } => args.clone(),
+            _ => Vec::new(),
+        }
     }
 
     /// Enforce trait-side bounds on each impl-side associated-type binding.

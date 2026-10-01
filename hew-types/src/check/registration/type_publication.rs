@@ -963,8 +963,7 @@ impl Checker {
                     continue;
                 }
                 if let TypeExpr::Named {
-                    path: named_path,
-                    type_args,
+                    path: named_path, ..
                 } = &id.target_type.0
                 {
                     let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
@@ -972,9 +971,9 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args: Vec<Ty> =
-                        self.resolve_impl_target_type_args(id, type_args.as_ref());
-                    self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
+                    let self_ty = self.resolve_impl_target(id);
+                    let self_type_args = Self::impl_target_args(&self_ty);
+                    self.current_self_type = Some((type_name.clone(), self_ty));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -1906,16 +1905,15 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     if let TypeExpr::Named {
-                        path: named_path,
-                        type_args,
+                        path: named_path, ..
                     } = &id.target_type.0
                     {
                         let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                                                                  // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
-                        let self_type_args: Vec<Ty> =
-                            self.resolve_impl_target_type_args(id, type_args.as_ref());
-                        self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
+                        let self_ty = self.resolve_impl_target(id);
+                        let self_type_args = Self::impl_target_args(&self_ty);
+                        self.current_self_type = Some((type_name.clone(), self_ty));
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 

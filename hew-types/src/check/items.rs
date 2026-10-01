@@ -1173,10 +1173,15 @@ impl Checker {
         // still flags the missing return value.
         let empty_builtin_self_stub = fd.body.stmts.is_empty()
             && fd.body.trailing_expr.is_none()
-            && self
-                .current_self_type
-                .as_ref()
-                .is_some_and(|(name, _)| Ty::is_named_builtin(name));
+            && self.current_self_type.as_ref().is_some_and(|(_, self_ty)| {
+                matches!(
+                    self_ty,
+                    Ty::Named {
+                        head: crate::TypeHead::Builtin(_),
+                        ..
+                    }
+                )
+            });
         if !empty_builtin_self_stub && !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
             self.expect_type(
                 &expected_ret,
@@ -2975,40 +2980,13 @@ impl Checker {
                 self.generic_ctx.push(generic_bindings);
             }
 
-            // Resolve the whole target through the source-aware resolver once,
-            // while impl generic parameters are in scope. Besides supplying
-            // the arguments used to recognize `Self`, this preserves nominal
-            // identity for the receiver binding: a source-defined `Option<T>`
-            // must not later be reconstructed as builtin `Option<T>`, while a
-            // builtin `Vec<T>` must retain its builtin discriminator.
-            // The impl's own parameter bounds are what satisfy the target
-            // type's declared bounds, so resolve the target inside that scope
-            // rather than before it: `impl<T: Clone> St<T>` for a
-            // `St<T: Clone>` proves its argument from the impl header.
-            let target_bounds = self.collect_type_param_scope_with_bounds(
-                id.type_params.as_ref(),
-                id.where_clause.as_ref(),
-            );
-            let pushed_target_bounds = !target_bounds.is_empty();
-            if pushed_target_bounds {
-                self.current_type_param_bounds.push(TypeParamScope::new(
-                    target_bounds,
-                    std::collections::HashMap::new(),
-                ));
-            }
-            let resolved_self_binding_ty = self.resolve_type_expr(&id.target_type);
-            if pushed_target_bounds {
-                self.current_type_param_bounds.pop();
-            }
-            let prev_self_type = self.current_self_type.take();
-            let self_type_args = match &resolved_self_binding_ty {
-                Ty::Named { args, .. } => args.clone(),
-                _ => Vec::new(),
-            };
-            self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
-            let prev_self_binding_ty = self
-                .current_self_binding_ty
-                .replace(resolved_self_binding_ty);
+            // Resolve the whole target once, with the impl's parameters and
+            // their bounds in scope: the bounds satisfy the target's declared
+            // bounds (`impl<T: Clone> St<T>` for `St<T: Clone>`), and the
+            // resolved type keeps the receiver's identity (a source `Option<T>`
+            // is never rebuilt as the builtin).
+            let self_ty = self.resolve_impl_target(id);
+            let prev_self_type = self.current_self_type.replace((type_name.clone(), self_ty));
             let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
 
             for method in &id.methods {
@@ -3029,7 +3007,6 @@ impl Checker {
 
             // Restore previous self type
             self.current_self_type = prev_self_type;
-            self.current_self_binding_ty = prev_self_binding_ty;
             if scope_pushed {
                 self.exit_impl_scope();
             }
@@ -3057,25 +3034,11 @@ impl Checker {
     fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
         let is_receiver = index == 0 && param.is_receiver;
         if is_receiver {
-            if let Some(receiver_ty) = self.current_self_binding_ty.clone() {
-                return (receiver_ty, true);
+            if let Some((_, self_ty)) = &self.current_self_type {
+                return (self_ty.clone(), true);
             }
         }
-
-        let ty = self.resolve_type_expr(&param.ty);
-        if !is_receiver {
-            return (ty, false);
-        }
-        let Some((self_name, self_args)) = &self.current_self_type else {
-            return (ty, true);
-        };
-
-        // Trait declarations and other receiver contexts outside an impl do
-        // not have a source-resolved impl target to reuse. Preserve the
-        // existing primitive/nominal fallback for those contexts.
-        let receiver_ty = Ty::from_name(self_name)
-            .unwrap_or_else(|| self.named_ty_for_key(self_name, self_args.clone()));
-        (receiver_ty, true)
+        (self.resolve_type_expr(&param.ty), is_receiver)
     }
 }
 

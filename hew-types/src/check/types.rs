@@ -3798,21 +3798,15 @@ pub struct Checker {
     pub(super) source_type_defs: HashSet<String>,
     /// Tracks which traits are defined locally (in the current compilation unit).
     pub(super) local_trait_defs: HashSet<String>,
-    /// The type name and args of the current impl block target (for resolving `Self`).
-    pub(super) current_self_type: Option<(String, Vec<Ty>)>,
+    /// The current impl block's target: its registry spelling and the type
+    /// its written target resolves to through `Scope` (`Self`).
+    pub(super) current_self_type: Option<(String, Ty)>,
     /// The surface spelling of the active `impl` target when it differs from
     /// the identity the target resolves to (`json.Value` for
     /// `std.encoding.json.Value`). HIR derives an impl block's emitted symbol
     /// from the spelling the source wrote, so the declaration must stay
     /// reachable under it while every checker table keys the identity.
     pub(super) current_impl_surface_target: Option<String>,
-    /// Source-resolved type of the current impl target.
-    ///
-    /// Unlike `current_self_type`, this retains the resolver's nominal identity
-    /// decision, including whether a generic named type is a builtin or a
-    /// source declaration shadowing a builtin spelling. Receiver parameters
-    /// consume this value instead of rebuilding their type from a name.
-    pub(super) current_self_binding_ty: Option<Ty>,
     /// The actor type currently being checked (for `this` keyword resolution).
     pub(super) current_actor_type: Option<Ty>,
     /// Handler-local checker bindings that name one authored actor field.
@@ -4388,7 +4382,6 @@ impl Checker {
             local_trait_defs: HashSet::new(),
             current_self_type: None,
             current_impl_surface_target: None,
-            current_self_binding_ty: None,
             current_actor_type: None,
             actor_field_binding_ids: HashMap::new(),
             current_actor_fields: Vec::new(),

@@ -470,8 +470,7 @@ impl Checker {
                 }
                 // Register impl methods with Type::method naming
                 if let TypeExpr::Named {
-                    path: named_path,
-                    type_args,
+                    path: named_path, ..
                 } = &id.target_type.0
                 {
                     let target_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
@@ -494,9 +493,9 @@ impl Checker {
 
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args: Vec<Ty> =
-                        self.resolve_impl_target_type_args(id, type_args.as_ref());
-                    self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
+                    let self_ty = self.resolve_impl_target(id);
+                    let self_type_args = Self::impl_target_args(&self_ty);
+                    self.current_self_type = Some((type_name.clone(), self_ty));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -695,8 +694,11 @@ impl Checker {
                                         )
                                     // TRANSITION(P1): deleted by A1 commit 2
                                     {
+                                        let receiver = self.current_impl_target().expect(
+                                            "impl registration publishes its resolved target",
+                                        );
                                         self.file_dispatch_method(
-                                            type_name,
+                                            &receiver,
                                             id.type_params
                                                 .as_ref()
                                                 .is_some_and(|params| !params.is_empty()),
@@ -809,18 +811,25 @@ impl Checker {
                         self.exit_primary_sig_scope(method_sig_scope);
                         let method_name = method.name;
                         let type_name = td.name;
-                        if let Some(member) = self
+                        if let Some((owner, member)) = self
                             .lookup_declaration(&self.declaration_identity(type_name.name.as_str()))
                             .and_then(|owner| {
-                                self.defs.member_of_kind(
-                                    owner,
-                                    method_name.name,
-                                    crate::DeclarationKind::TypeMethod,
-                                )
+                                self.defs
+                                    .member_of_kind(
+                                        owner,
+                                        method_name.name,
+                                        crate::DeclarationKind::TypeMethod,
+                                    )
+                                    .map(|member| (owner, member))
                             })
                         {
                             self.file_dispatch_method(
-                                type_name.name.as_str(),
+                                &Ty::named_head(
+                                    self.head_of_declaration(
+                                        crate::NominalId::from_minted_declaration(owner),
+                                    ),
+                                    Vec::new(),
+                                ),
                                 true,
                                 crate::check::dispatch_table::MethodOwner::Inherent,
                                 method_name.name,
@@ -1554,9 +1563,10 @@ impl Checker {
             {
                 self.current_self_type
                     .as_ref()
-                    .is_none_or(|(_, self_args)| {
+                    .map(|(_, self_ty)| Self::impl_target_args(self_ty))
+                    .is_none_or(|self_args| {
                         args.len() == self_args.len()
-                            && args.iter().zip(self_args).all(|(actual, expected)| {
+                            && args.iter().zip(&self_args).all(|(actual, expected)| {
                                 self.subst.resolve(actual) == self.subst.resolve(expected)
                             })
                     })
@@ -1678,9 +1688,12 @@ impl Checker {
         else {
             return FnSig::default();
         };
+        let receiver = self
+            .current_impl_target()
+            .expect("impl registration publishes its resolved target");
         if let Some(owner) = self.impl_method_owner(trait_bound) {
             self.file_dispatch_method(
-                type_name,
+                &receiver,
                 impl_type_params.is_some_and(|params| !params.is_empty()),
                 owner,
                 method.name.name,
@@ -1696,14 +1709,6 @@ impl Checker {
         // still needs the checker-owned identity for static dispatch and must
         // not reconstruct it from the trait's leaf spelling.
         if let Some(bound) = trait_bound {
-            let type_identity = self.trait_impl_type_identity(type_name);
-            let receiver_args = self
-                .current_self_type
-                .as_ref()
-                .map(|(_, args)| args.clone())
-                .unwrap_or_default();
-            let receiver = Ty::from_name(&type_identity)
-                .unwrap_or_else(|| self.named_ty_for_key(&type_identity, receiver_args));
             let impl_parameters = self.source_parameter_heads(
                 impl_type_params.map_or(&[], Vec::as_slice),
                 &method.fn_span,
@@ -1912,10 +1917,7 @@ impl Checker {
                         .canonical_nominal_name(type_name)
                         .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
                 ),
-                receiver_args: self
-                    .current_self_type
-                    .as_ref()
-                    .map_or_else(Vec::new, |(_, args)| args.clone()),
+                receiver_args: Self::impl_target_args(&receiver),
                 receiver_parameters: all_type_params
                     .iter()
                     .take(impl_type_params.map_or(0, Vec::len))
@@ -2067,29 +2069,20 @@ impl Checker {
     /// for a concrete specialisation (`impl Show for Box<i64>`).
     pub(super) fn file_dispatch_method(
         &mut self,
-        type_name: &str,
+        receiver: &Ty,
         impl_is_generic: bool,
         owner: crate::check::dispatch_table::MethodOwner,
         name: Symbol,
         method: crate::DefId,
     ) {
-        let args = self
-            .current_self_type
-            .as_ref()
-            .filter(|(self_type, _)| self_type == type_name)
-            .map(|(_, args)| args.clone())
-            .unwrap_or_default();
-        let instance_of = |checker: &Self, args: Vec<Ty>| {
-            ResolvedTy::from_ty(&checker.named_ty_for_key(type_name, args))
-                .ok()
-                .and_then(|ty| ty.impl_receiver_instance(&checker.defs))
+        let receiver = match receiver {
+            Ty::Named { head, .. } if impl_is_generic => Ty::named_head(*head, Vec::new()),
+            receiver => receiver.clone(),
         };
-        let instance = if impl_is_generic || args.is_empty() {
-            instance_of(self, Vec::new())
-        } else {
-            instance_of(self, args)
-        };
-        let Some(instance) = instance else {
+        let Some(instance) = ResolvedTy::from_ty(&receiver)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance(&self.defs))
+        else {
             return;
         };
         if impl_is_generic || instance.args.is_empty() {
@@ -2099,6 +2092,13 @@ impl Checker {
             self.dispatch
                 .insert_specialized(instance, owner, name, method);
         }
+    }
+
+    /// The type the active impl block's target resolved to.
+    pub(in crate::check) fn current_impl_target(&self) -> Option<Ty> {
+        self.current_self_type
+            .as_ref()
+            .map(|(_, self_ty)| self_ty.clone())
     }
 
     /// The dispatch owner of an impl's methods.
@@ -2179,8 +2179,9 @@ impl Checker {
         let concrete_receiver_args = self
             .current_self_type
             .as_ref()
-            .filter(|(self_type_name, args)| self_type_name == type_name && !args.is_empty())
-            .map(|(_, args)| args.clone());
+            .filter(|(self_type_name, _)| self_type_name == type_name)
+            .map(|(_, self_ty)| Self::impl_target_args(self_ty))
+            .filter(|args| !args.is_empty());
         let Some(self_type_args) = concrete_receiver_args.filter(|_| is_concrete_specialised_impl)
         else {
             return ImplMethodDeclarationKeys {
@@ -2272,7 +2273,7 @@ impl Checker {
             .current_self_type
             .as_ref()
             .filter(|(self_type_name, _)| self_type_name == type_name)
-            .map(|(_, args)| args)
+            .map(|(_, self_ty)| Self::impl_target_args(self_ty))
             .filter(|args| !args.is_empty())
             .map(|args| {
                 args.iter()

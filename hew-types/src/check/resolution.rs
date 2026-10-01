@@ -2825,8 +2825,8 @@ impl Checker {
                 let name = &named_path.to_string();
                 // Handle `Self` type
                 if name == "Self" {
-                    if let Some((self_type_name, self_type_args)) = &self.current_self_type {
-                        return self.named_ty_for_key(self_type_name, self_type_args.clone());
+                    if let Some((_, self_ty)) = &self.current_self_type {
+                        return self_ty.clone();
                     }
                     // Outside an impl, `Self` is the declaring trait's abstract
                     // receiver binder.

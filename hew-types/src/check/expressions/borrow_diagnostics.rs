@@ -645,7 +645,11 @@ impl Checker {
     }
 
     pub(in crate::check) fn reject_owned_handle_field_accessors(&mut self, fd: &FnDecl) {
-        let Some(type_name) = self.current_self_binding_ty.as_ref().and_then(Ty::head) else {
+        let Some(type_name) = self
+            .current_self_type
+            .as_ref()
+            .and_then(|(_, self_ty)| self_ty.head())
+        else {
             return;
         };
         if !self.struct_is_handle_bearing(type_name) {

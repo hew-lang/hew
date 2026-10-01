@@ -32,11 +32,8 @@ fn main() {
     let worker = role.worker;
     for _ in 0 .. 2 {
         worker.put(42).expect("mutate current incarnation");
-        {
-            let __hew_migrated_actor_806 = role;
-            stop(__hew_migrated_actor_806);
-            stopped(__hew_migrated_actor_806);
-        };
+        stop(role);
+        stopped(role);
         let _ = {
             let __hew_migrated_role_835 = root.persistent;
             restarted(__hew_migrated_role_835);
@@ -45,11 +42,8 @@ fn main() {
         assert(worker.get().expect("role reaches replacement") == 0);
     }
     let retiring = root.recoverable;
-    {
-        let __hew_migrated_actor_983 = retiring;
-        stop(__hew_migrated_actor_983);
-        stopped(__hew_migrated_actor_983);
-    };
+    stop(retiring);
+    stopped(retiring);
     stopped(retiring);
     let _ = {
         let __hew_migrated_role_1034 = root.recoverable;
@@ -57,11 +51,8 @@ fn main() {
         __hew_migrated_role_1034
     };
     assert(retiring.worker.get().is_err());
-    {
-        let __hew_migrated_actor_1114 = root.short_lived;
-        stop(__hew_migrated_actor_1114);
-        stopped(__hew_migrated_actor_1114);
-    };
+    stop(root.short_lived);
+    stopped(root.short_lived);
     stopped(root.short_lived);
     let _ = {
         let __hew_migrated_role_1181 = root.short_lived;
@@ -70,11 +61,8 @@ fn main() {
     };
     assert(root.short_lived.worker.get().is_err());
     assert(worker.get().expect("permanent child stays live") == 0);
-    {
-        let __hew_migrated_actor_1337 = root;
-        stop(__hew_migrated_actor_1337);
-        stopped(__hew_migrated_actor_1337);
-    };
+    stop(root);
+    stopped(root);
     stopped(role);
     assert(worker.get().is_err());
     println("nested role lifecycle observes one incarnation");

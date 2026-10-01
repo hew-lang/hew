@@ -44,14 +44,8 @@ fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
     worker.run(audit).expect("recovered replacement fault");
-    {
-        let __hew_migrated_actor_1171 = worker;
-        stop(__hew_migrated_actor_1171);
-        stopped(__hew_migrated_actor_1171);
-    };
-    {
-        let __hew_migrated_actor_1190 = audit;
-        stop(__hew_migrated_actor_1190);
-        stopped(__hew_migrated_actor_1190);
-    };
+    stop(worker);
+    stopped(worker);
+    stop(audit);
+    stopped(audit);
 }

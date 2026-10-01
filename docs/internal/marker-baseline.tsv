@@ -1,0 +1,355 @@
+file	rule	hash	nth	excerpt
+hew-analysis/src/hover.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-analysis/src/hover.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-analysis/src/hover.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-analysis/src/hover.rs	done-id	58a85318b1	0	bound.path, // TRANSITION(P1): deleted by A1 commit 2
+hew-analysis/src/hover.rs	done-id	5ba27db21a	0	bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+hew-analysis/src/hover.rs	done-id	aa472e4198	1	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-analysis/src/references.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-analysis/src/symbols.rs	done-id	baf3c84ce5	0	Some(tb) => format!("impl {} for ...", tb.path), // TRANSITION(P1): deleted by A
+hew-analysis/src/symbols.rs	done-id	a50cbd65af	0	let name = i.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-cli/src/doc/extract.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-cli/src/doc/extract.rs	done-id	e08ba0c6dd	0	format!("{}{args}", b.path) // TRANSITION(P1): deleted by A1 commit 2
+hew-cli/src/eval/session.rs	done-id	46d1eba47f	0	format!("import {}", import.path) // TRANSITION(P1): deleted by A1 commit 2
+hew-cli/src/wire.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-compile/src/lib.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/builtin_type_classes.rs	no-real-fix	196af1c287	0	/// WHY: `Sink<T>` and `Stream<T>` have no source `#[resource]` declaration
+hew-hir/src/lower/closures.rs	no-id	dcbdcafe7a	0	/// SHIM — `ResolvedTy::Unit` for missing param / return annotations.
+hew-hir/src/lower/closures.rs	no-when	dcbdcafe7a	0	/// SHIM — `ResolvedTy::Unit` for missing param / return annotations.
+hew-hir/src/lower/closures.rs	no-real-fix	dcbdcafe7a	0	/// SHIM — `ResolvedTy::Unit` for missing param / return annotations.
+hew-hir/src/lower/closures.rs	no-real-fix	d76ea0e3ac	0	/// - WHY: HIR has no type-inference machinery; the slice-2 type
+hew-hir/src/lower/expr.rs	done-id	016550e9fc	0	))), // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/expr.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/expr.rs	done-id	016550e9fc	1	))), // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/expr.rs	done-id	d8cfdfc67d	0	Expr::Ident(Ident::new(&qualified)), // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/expr.rs	done-id	5b0c43296d	0	path: Path::single(Ident::new(&contextual_name), span.clone()), // TRANSITION(P1
+hew-hir/src/lower/expr.rs	done-id	6232b60c41	0	Expr::Ident(Ident::new(&contextual_name)) // TRANSITION(P1): deleted by A1 commi
+hew-hir/src/lower/gates.rs	todo-no-id	2c0fa0accc	0	// TODO: When `scope{}` and `fork` are surface syntax, add checks here
+hew-hir/src/lower/gates.rs	todo-no-id	468820b970	0	// TODO: Add checks for:
+hew-hir/src/lower/impl_plan.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/impl_plan.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/impl_plan.rs	done-id	aa472e4198	1	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/impl_plan.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/impl_plan.rs	done-id	aa472e4198	2	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/impl_plan.rs	done-id	befd596360	0	// facts carry indexes that table (TRANSITION(P2): see
+hew-hir/src/lower/impl_plan.rs	no-when	befd596360	0	// facts carry indexes that table (TRANSITION(P2): see
+hew-hir/src/lower/impl_plan.rs	done-id	18859eae46	0	let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/items.rs	done-id	cde3650738	0	let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 c
+hew-hir/src/lower/items.rs	done-id	0f78d3ad0f	0	.map_or(String::new(), |tb| tb.path.to_string()); // TRANSITION(P1): deleted by 
+hew-hir/src/lower/items.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/items.rs	done-id	bd625e27e9	0	trait_name: decl.trait_bound.as_ref().map(|b| b.path.to_string()), // TRANSITION
+hew-hir/src/lower/mod.rs	todo-no-id	a529daf09b	0	/// TODO: if more fail-closed diagnostic kinds are added, consider a
+hew-hir/src/lower/mod.rs	unknown-id	7d8a56e79f	0	/// TRANSITION(B1): signatures by the keys the checker published.
+hew-hir/src/lower/mod.rs	no-when	7d8a56e79f	0	/// TRANSITION(B1): signatures by the keys the checker published.
+hew-hir/src/lower/patterns.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/patterns.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/patterns.rs	done-id	1a0a405173	0	) // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/patterns.rs	done-id	1a0a405173	1	) // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/patterns.rs	done-id	3d311260b5	2	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/patterns.rs	done-id	1a0a405173	2	) // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/patterns.rs	done-id	1a0a405173	3	) // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/private_refs.rs	done-id	429e9bc992	0	let pred_ty_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 com
+hew-hir/src/lower/program.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/program.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/program.rs	done-id	aa472e4198	1	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/program.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/program.rs	done-id	aa472e4198	2	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/program.rs	done-id	7b771bec19	0	source.name = Ident::new(canonical_name); // TRANSITION(P1): deleted by A1 commi
+hew-hir/src/lower/program.rs	done-id	8f0e373eee	0	source.name = Ident::new(&canonical_name); // TRANSITION(P1): deleted by A1 comm
+hew-hir/src/lower/program.rs	done-id	aa472e4198	3	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/stmt.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/lower/var_self.rs	done-id	18859eae46	0	let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-hir/src/node.rs	todo-no-id	d221ed406a	0	/// codegen fail-closed match arms (semantic-invariant TODO markers).
+hew-lexer/src/lib.rs	no-real-fix	6290fe29bc	0	// WHY: nothing generates docs/syntax-data.json's `version` field — it
+hew-lexer/src/lib.rs	no-real-fix	90e9d672f9	0	// WHY: hand-maintained editor grammars silently drift from the real
+hew-lsp/src/server/hierarchy.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-lsp/src/server/hierarchy.rs	done-id	a01bf68150	0	hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION
+hew-lsp/src/server/hierarchy.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-lsp/src/server/hierarchy.rs	done-id	3d311260b5	2	// TRANSITION(P1): deleted by A1 commit 2
+hew-lsp/src/server/hierarchy.rs	done-id	a01bf68150	1	hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION
+hew-lsp/src/server/hierarchy.rs	done-id	3d311260b5	3	// TRANSITION(P1): deleted by A1 commit 2
+hew-lsp/src/server/hierarchy.rs	done-id	a01bf68150	2	hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION
+hew-lsp/src/server/navigation.rs	no-id	00098eb008	0	/// SHIM: `O(#disk_files)` per rename; acceptable because rename is
+hew-lsp/src/server/navigation.rs	no-when	00098eb008	0	/// SHIM: `O(#disk_files)` per rename; acceptable because rename is
+hew-lsp/src/server/navigation.rs	no-real-fix	00098eb008	0	/// SHIM: `O(#disk_files)` per rename; acceptable because rename is
+hew-lsp/src/server/navigation.rs	no-id	5817845247	0	/// SHIM: `O(#workspace_files)` per goto-def miss. Replace the file scan with a
+hew-lsp/src/server/navigation.rs	no-when	5817845247	0	/// SHIM: `O(#workspace_files)` per goto-def miss. Replace the file scan with a
+hew-lsp/src/server/navigation.rs	no-real-fix	5817845247	0	/// SHIM: `O(#workspace_files)` per goto-def miss. Replace the file scan with a
+hew-lsp/src/server/navigation.rs	no-id	c91fb0620c	0	/// SHIM: `O(#files × #tokens)` per call. Replace the scan with an inverted inde
+hew-lsp/src/server/navigation.rs	no-when	c91fb0620c	0	/// SHIM: `O(#files × #tokens)` per call. Replace the scan with an inverted inde
+hew-lsp/src/server/navigation.rs	no-real-fix	c91fb0620c	0	/// SHIM: `O(#files × #tokens)` per call. Replace the scan with an inverted inde
+hew-observe/src/events.rs	no-id	e9268bef38	0	// SHIM: pending native-M3 producer-side emission. These are intentionally
+hew-observe/src/events.rs	no-when	e9268bef38	0	// SHIM: pending native-M3 producer-side emission. These are intentionally
+hew-observe/src/events.rs	no-real-fix	e9268bef38	0	// SHIM: pending native-M3 producer-side emission. These are intentionally
+hew-observe/src/events.rs	no-id	1f59f23b83	0	// SHIM: pending native-M3 producer-side emission. D24-2 cancellation token
+hew-observe/src/events.rs	no-when	1f59f23b83	0	// SHIM: pending native-M3 producer-side emission. D24-2 cancellation token
+hew-observe/src/events.rs	no-real-fix	1f59f23b83	0	// SHIM: pending native-M3 producer-side emission. D24-2 cancellation token
+hew-observe/src/events.rs	no-id	c962d050a2	0	// SHIM: pending native-M3 producer-side emission. Auto-injected lock
+hew-observe/src/events.rs	no-when	c962d050a2	0	// SHIM: pending native-M3 producer-side emission. Auto-injected lock
+hew-observe/src/events.rs	no-real-fix	c962d050a2	0	// SHIM: pending native-M3 producer-side emission. Auto-injected lock
+hew-observe/src/events.rs	no-id	f23192ddf5	0	// SHIM: pending native-M3 producer-side emission. WHY: partition
+hew-runtime/src/actor/free.rs	no-id	0a712554d4	0	// SHIM: WHY: the registry stores `&'static str`; the leak-on-insert keeps
+hew-runtime/src/actor/free.rs	no-real-fix	0a712554d4	0	// SHIM: WHY: the registry stores `&'static str`; the leak-on-insert keeps
+hew-runtime/src/actor/free.rs	no-real-fix	0a712554d4	1	// SHIM: WHY: the registry stores `&'static str`; the leak-on-insert keeps
+hew-runtime/src/actor/free.rs	no-id	65f642231e	0	/// SHIM: WHY: Codegen cannot conditionally emit calls based on Rust feature fla
+hew-runtime/src/actor/free.rs	no-real-fix	65f642231e	0	/// SHIM: WHY: Codegen cannot conditionally emit calls based on Rust feature fla
+hew-runtime/src/actor/free.rs	no-real-fix	65f642231e	1	/// SHIM: WHY: Codegen cannot conditionally emit calls based on Rust feature fla
+hew-runtime/src/actor/free.rs	no-id	c9bf85095b	0	/// SHIM: WHY: Codegen emits unconditional calls; profiler feature determines
+hew-runtime/src/actor/free.rs	no-real-fix	c9bf85095b	0	/// SHIM: WHY: Codegen emits unconditional calls; profiler feature determines
+hew-runtime/src/actor/free.rs	no-real-fix	c9bf85095b	1	/// SHIM: WHY: Codegen emits unconditional calls; profiler feature determines
+hew-runtime/src/actor/mod.rs	no-real-fix	7a72ac3efe	0	// WHY: the exhaustion boundary is 2^48 allocations away; a test cannot reach it
+hew-runtime/src/cluster.rs	no-id	54bc62713e	0	/// # SHIM note
+hew-runtime/src/cluster.rs	no-when	54bc62713e	0	/// # SHIM note
+hew-runtime/src/cluster.rs	no-real-fix	54bc62713e	0	/// # SHIM note
+hew-runtime/src/cluster.rs	no-id	dd0041244b	0	// SHIM: record last-seen for the intermediary; actual forwarding
+hew-runtime/src/coro_exec.rs	no-real-fix	f75f6ad2b4	0	/// WHY: The `Barrier`-aligned probe is too short to guarantee a concurrent
+hew-runtime/src/duplex.rs	no-real-fix	bdf2ee65ff	0	// WHY: force_partition is called in duplex unit tests and through the
+hew-runtime/src/duplex.rs	no-real-fix	caee7ea69a	0	// WHY: see the matching comment on HewDuplex::force_partition above.
+hew-runtime/src/env.rs	no-real-fix	a8f7efe370	0	// WHY: this test mutates the process-wide TMPDIR env var, which
+hew-runtime/src/lifetime/live_actors.rs	no-id	f5a84b471a	0	//! SHIM: no bench suite exists to validate a 5% regression threshold. When
+hew-runtime/src/lifetime/live_actors.rs	no-when	f5a84b471a	0	//! SHIM: no bench suite exists to validate a 5% regression threshold. When
+hew-runtime/src/lifetime/live_actors.rs	no-real-fix	f5a84b471a	0	//! SHIM: no bench suite exists to validate a 5% regression threshold. When
+hew-runtime/src/log_core.rs	no-real-fix	dec5a40ccd	0	/// WHY: the wire string is a space-separated list of `key=value` tokens
+hew-runtime/src/parse_error_slot.rs	no-id	21fbe228f7	0	//! SHIM: uses an actor-ID-keyed global map rather than attaching the error
+hew-runtime/src/parse_error_slot.rs	no-when	21fbe228f7	0	//! SHIM: uses an actor-ID-keyed global map rather than attaching the error
+hew-runtime/src/parse_error_slot.rs	no-real-fix	21fbe228f7	0	//! SHIM: uses an actor-ID-keyed global map rather than attaching the error
+hew-runtime/src/profiler/actor_registry.rs	no-id	87fef41e4e	0	/// # SHIM
+hew-runtime/src/profiler/actor_registry.rs	no-real-fix	87fef41e4e	0	/// # SHIM
+hew-runtime/src/profiler/actor_registry.rs	no-real-fix	c34aa72f0f	0	/// WHY: `HewActor` is `#[repr(C)]` — adding a field would break the codegen
+hew-runtime/src/profiler/actor_registry.rs	no-id	87fef41e4e	1	/// # SHIM
+hew-runtime/src/profiler/actor_registry.rs	no-real-fix	87fef41e4e	1	/// # SHIM
+hew-runtime/src/profiler/actor_registry.rs	no-real-fix	56b0b3c0f7	0	/// WHY: WASM uses a flat `msg_type → name` map in bridge.rs (last-registered wi
+hew-runtime/src/profiler/actor_registry.rs	no-id	abc6c2cf09	0	/// SHIM: WHY: `HewTraceEvent` cannot carry a dispatch-fn pointer without an ABI
+hew-runtime/src/profiler/actor_registry.rs	no-real-fix	abc6c2cf09	0	/// SHIM: WHY: `HewTraceEvent` cannot carry a dispatch-fn pointer without an ABI
+hew-runtime/src/profiler/actor_registry.rs	no-real-fix	abc6c2cf09	1	/// SHIM: WHY: `HewTraceEvent` cannot carry a dispatch-fn pointer without an ABI
+hew-runtime/src/quic_mesh.rs	todo-unknown-id	e96025ce1b	0	//! NATIVE-TODO(post-A3): unify Noise and mesh identities once the runtime
+hew-runtime/src/quic_mesh.rs	todo-unknown-id	719e5d9208	0	// NATIVE-TODO(A3): replace with x509-cert crate or webpki SPKI extraction.
+hew-runtime/src/quic_mesh.rs	todo-unknown-id	aecf0d2523	0	/// NATIVE-TODO(A5): replace bounded `VecDeque` with `lru::LruCache<(ActorId, La
+hew-runtime/src/quic_mesh.rs	todo-unknown-id	6b6934ab0a	0	// NATIVE-TODO(A5): restructure cache to separate metadata
+hew-runtime/src/scheduler.rs	no-id	468ca664dc	0	// SHIM: JIT reload must clear handler_names here; see #1234 Commit 1 rebase.
+hew-runtime/src/scheduler.rs	no-real-fix	468ca664dc	0	// SHIM: JIT reload must clear handler_names here; see #1234 Commit 1 rebase.
+hew-runtime/src/scheduler.rs	no-real-fix	9dc9c6419a	0	// WHY: The `handler_names` side-table added by #1234 Commit 1 is part of
+hew-runtime/src/shutdown.rs	no-real-fix	30f570ae1f	0	// WHY: Phase 3 join safety depends on this. If the drain converged
+hew-runtime/src/sim_transport.rs	todo-unknown-id	57990eda85	0	//! that belongs in a follow-on slice (see `// TODO(sim-transport delay)`).
+hew-runtime/src/sim_transport.rs	todo-unknown-id	c89523a7a2	0	// TODO(sim-transport delay): wire `_min_delay_ms` / `_max_delay_ms`
+hew-runtime/src/sim_transport.rs	todo-unknown-id	91936209a4	0	let _ = timeout_ms; // TODO(sim-transport): wire timeout for reconnect tests.
+hew-runtime/src/tracing.rs	no-id	eab140ba72	0	// SHIM: WHY — `hew_connmgr_add` (accept site) and `reader_loop` (recv site)
+hew-runtime/src/tracing.rs	no-real-fix	eab140ba72	0	// SHIM: WHY — `hew_connmgr_add` (accept site) and `reader_loop` (recv site)
+hew-runtime/src/tracing.rs	no-id	f1be27c27c	0	// SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
+hew-runtime/src/tracing.rs	no-real-fix	f1be27c27c	0	// SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
+hew-runtime/src/tracing.rs	no-real-fix	f1be27c27c	1	// SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
+hew-std/src/http/server.rs	no-real-fix	d7bcaae116	0	/// WHY: `tiny_http::Request::as_reader()` returns a `&mut dyn Read` whose
+hew-std/src/http/server.rs	no-real-fix	da57b2046b	0	// WHY: the body read happens on a worker thread because tiny_http's
+hew-std/src/tls.rs	no-real-fix	3ba235b24b	0	/// WHY: a detached reader can keep calling into the runtime
+hew-std/src/tls.rs	no-real-fix	12b4769ea6	0	/// WHY: `hew_tls_close` joins the reader, so this flag is guaranteed to be
+hew-std/src/tls.rs	no-real-fix	500d82c323	0	/// WHY: `rustls::StreamOwned::read` blocks until data arrives or the connection
+hew-std/src/websocket.rs	no-real-fix	473c5424f0	0	/// WHY: tungstenite's `WebSocket` is single-owner with a blocking `read()`
+hew-types/build_support/runtime_declarations.rs	done-id	18859eae46	0	let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/build_support/runtime_declarations.rs	done-id	18859eae46	1	let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/admissibility.rs	no-when	24f8fdd144	0	// TRANSITION(A1 commit 3): registry lookups by key.
+hew-types/src/check/coerce.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/exhaustiveness.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/exhaustiveness.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/expressions/synthesize.rs	done-id	ebf4b32418	0	&path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/expressions/synthesize.rs	done-id	af5c7b2db4	0	let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 c
+hew-types/src/check/expressions/synthesize_control.rs	done-id	19f75b4461	0	path: Path::single(Ident::new(&qualified_name), span.clone()), // TRANSITION(P1)
+hew-types/src/check/expressions/synthesize_control.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/expressions/synthesize_spawn_forms.rs	done-id	99bd74753b	0	.collect(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/expressions/variants_forms.rs	done-id	b8467501bc	0	// TRANSITION(P2): the path lookups are deleted by A1 commit 3, when
+hew-types/src/check/items.rs	done-id	c5439a1416	0	let identity = self.resolve_supervisor_child_type(&child.actor_type.to_string())
+hew-types/src/check/items.rs	done-id	f13c64888c	0	let target = (Expr::Ident(Ident::new(&identity)), child.span.clone()); // TRANSI
+hew-types/src/check/items.rs	done-id	18a72f6471	0	self.canonical_supervisor_child_type(&c.actor_type.to_string()), // TRANSITION(P
+hew-types/src/check/items.rs	done-id	101732aa9b	0	self.canonical_supervisor_child_type(&child.actor_type.to_string()); // TRANSITI
+hew-types/src/check/items.rs	done-id	00053f48e4	0	&& self.trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string())) //
+hew-types/src/check/items.rs	done-id	0336746533	0	TypeExpr::Named { path, .. } => Some(path.to_string()), // TRANSITION(P1): delet
+hew-types/src/check/items.rs	done-id	73d5b2f53f	0	let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit
+hew-types/src/check/items.rs	done-id	c42431a270	0	let trait_is_local = self.trait_ref_is_local(&tb.path.to_string()); // TRANSITIO
+hew-types/src/check/items.rs	done-id	3498d6c785	0	tb.path // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/items.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/machine_effects.rs	done-id	a01bf68150	0	hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION
+hew-types/src/check/methods/actor_wire.rs	todo-no-id	e7f5bf44f5	0	`P.Msg: Serializable` associated-type projection bound yet (TODO A640)",
+hew-types/src/check/methods/dispatch.rs	todo-unknown-id	b5fad77ffc	0	// TODO(A640): replace this fail-closed branch with
+hew-types/src/check/methods/module_resolution.rs	no-when	df754514e1	0	/// TRANSITION(A1 commit 3): deleted when every caller holds the head or
+hew-types/src/check/methods/module_resolution.rs	no-when	5c19268ace	0	/// TRANSITION(A1 commit 3): see [`Self::type_def_key`].
+hew-types/src/check/methods/module_resolution.rs	no-when	b97ca5c905	0	/// TRANSITION(A1 commit 4): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
+hew-types/src/check/methods/module_resolution.rs	no-when	6c5f477509	0	/// TRANSITION(A1 commit 4): a binding is a `Scope` import once callers
+hew-types/src/check/methods/module_resolution.rs	no-when	4b267261e8	0	/// TRANSITION(A1 commit 4): registration passes the declaration id.
+hew-types/src/check/methods/module_resolution.rs	no-when	56ed1e582e	0	/// TRANSITION(A1 commit 4): see [`Checker::trait_def_keys`].
+hew-types/src/check/methods/module_resolution.rs	no-when	4b267261e8	1	/// TRANSITION(A1 commit 4): registration passes the declaration id.
+hew-types/src/check/nominal_identity.rs	no-when	b7c2427aa8	0	/// TRANSITION(A1 commit 3): deleted when the registries are keyed by
+hew-types/src/check/nominal_identity.rs	no-when	407a94478f	0	/// TRANSITION(A1 commit 3): see [`Self::nominal_head_for_key`].
+hew-types/src/check/nominal_identity.rs	done-id	51fd9e3bc4	0	/// the same declarations (TRANSITION(P2): deleted with that run, B1).
+hew-types/src/check/patterns.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	c9571dd0a1	0	(path.segments.len() > 1).then_some(path), // TRANSITION(P1): deleted by A1 comm
+hew-types/src/check/patterns.rs	done-id	1d3b3f5121	0	matches!(pattern, Pattern::NominalPath { .. }) && nominal_path.is_none(); // TRA
+hew-types/src/check/patterns.rs	done-id	1642325924	0	// below. // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	2	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	3	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	4	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	5	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	6	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	7	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/patterns.rs	done-id	3d311260b5	8	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/builtins.rs	done-id	0cfc2f8519	0	.map(|s| format!("std.builtins.{}", s.path)) // TRANSITION(P1): deleted by A1 co
+hew-types/src/check/registration/functions.rs	done-id	c553ef658c	0	trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	4b4d47f142	0	param.name, // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	c553ef658c	1	trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	58a85318b1	0	bound.path, // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	18b50d40d9	0	let target_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 comm
+hew-types/src/check/registration/functions.rs	done-id	d358014707	0	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	d358014707	1	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	d358014707	2	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	0afc33140e	0	self.record_trait_impl(type_name, &tb.path.to_string()); // TRANSITION(P1): dele
+hew-types/src/check/registration/functions.rs	done-id	0f9cce50c9	0	let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITI
+hew-types/src/check/registration/functions.rs	done-id	334fc3fa2e	0	self.register_trait_method_sig(&tb.path.to_string(), &m, span); // TRANSITION(P1
+hew-types/src/check/registration/functions.rs	done-id	b54dfcf9fe	0	let trait_method_key = format!("{}::{}", tb.path, m.name); // TRANSITION(P1): de
+hew-types/src/check/registration/functions.rs	done-id	2c5fdf0728	0	), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	d358014707	3	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	todo-unknown-id	694684700d	0	// is a no-op here. TODO(A-4): if records gain methods, register
+hew-types/src/check/registration/functions.rs	done-id	23da5da452	0	.is_some_and(|trait_bound| trait_bound.path.to_string() == "Drop") // TRANSITION
+hew-types/src/check/registration/functions.rs	done-id	0d2f6d8174	0	); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	0d2f6d8174	1	); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	aa472e4198	1	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	59e47652bd	0	let trait_key = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANS
+hew-types/src/check/registration/functions.rs	done-id	aa472e4198	2	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	3d311260b5	2	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	99d7d99a58	0	let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	3d311260b5	3	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	84e02c7b0f	0	bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	64140d9c33	0	let params = self.trait_type_param_names(&bound.path.to_string()); // TRANSITION
+hew-types/src/check/registration/functions.rs	done-id	3d311260b5	4	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	702d97ea59	0	.trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string())) // TRANSI
+hew-types/src/check/registration/functions.rs	done-id	3d311260b5	5	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	5ba27db21a	0	bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/functions.rs	done-id	1fe5bfbd56	0	self.trait_defs_key_for_bound(&bound.path.to_string()) // TRANSITION(P1): delete
+hew-types/src/check/registration/imports.rs	done-id	7931cdd8ec	0	let module_name = decl.path.to_string(); // TRANSITION(P1): deleted by A1 commit
+hew-types/src/check/registration/imports.rs	done-id	3dc2e71931	0	decl.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/imports.rs	done-id	1630a0ffc2	0	let module_path = decl.path.to_string(); // TRANSITION(P1): deleted by A1 commit
+hew-types/src/check/registration/imports.rs	done-id	449f1e8f8d	0	.unwrap_or_else(|| decl.path.to_string()); // TRANSITION(P1): deleted by A1 comm
+hew-types/src/check/registration/imports.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/imports.rs	done-id	73d5b2f53f	0	let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit
+hew-types/src/check/registration/imports.rs	done-id	d358014707	0	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/imports.rs	done-id	d358014707	1	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/imports.rs	done-id	8ba451e0b3	0	self.mark_imported_trait_used(None, &tb.path.to_string()); // TRANSITION(P1): de
+hew-types/src/check/registration/imports.rs	done-id	d358014707	2	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/imports.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/imports.rs	done-id	25b1f16ce1	0	let imported_owner = decl.path.to_string(); // TRANSITION(P1): deleted by A1 com
+hew-types/src/check/registration/traits.rs	done-id	ac6779b608	0	&self.canonical_supervisor_child_type(&c.actor_type.to_string()), // TRANSITION(
+hew-types/src/check/registration/traits.rs	done-id	d7f25f83a7	0	let tb_key = self.trait_ref_lookup_key(&tb.path.to_string()); // TRANSITION(P1):
+hew-types/src/check/registration/traits.rs	done-id	0f9cce50c9	0	let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITI
+hew-types/src/check/registration/traits.rs	done-id	0b497908e6	0	let tb_name = tb.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/traits.rs	done-id	1df2fa4490	0	let bound_name = &bound.path.to_string(); // TRANSITION(P1): deleted by A1 commi
+hew-types/src/check/registration/traits.rs	done-id	1959da03e8	0	.map(|bound| self.trait_ref_lookup_key(&bound.path.to_string())) // TRANSITION(P
+hew-types/src/check/registration/traits.rs	done-id	3881af7015	0	let trait_name = &trait_bound.path.to_string(); // TRANSITION(P1): deleted by A1
+hew-types/src/check/registration/traits.rs	done-id	aa6624042e	0	let trait_name = trait_bound.path.to_string(); // TRANSITION(P1): deleted by A1 
+hew-types/src/check/registration/type_members.rs	done-id	b154c684b3	0	self.mark_imported_trait_used(None, &s.path.to_string()); // TRANSITION(P1): del
+hew-types/src/check/registration/type_members.rs	done-id	ce6b83287f	0	s.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	99d7d99a58	0	let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	0f9cce50c9	0	let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITI
+hew-types/src/check/registration/type_publication.rs	done-id	2cc3c3cd8b	0	&super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	no-id	a09d93c2d0	0	// SHIM (visibility): non-pub consts are not registered, so a
+hew-types/src/check/registration/type_publication.rs	no-real-fix	a09d93c2d0	0	// SHIM (visibility): non-pub consts are not registered, so a
+hew-types/src/check/registration/type_publication.rs	done-id	73d5b2f53f	0	let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit
+hew-types/src/check/registration/type_publication.rs	done-id	d358014707	0	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	d358014707	1	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	0d2f6d8174	0	); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	d358014707	2	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	2cc3c3cd8b	1	&super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	0d2f6d8174	1	); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	73d5b2f53f	1	let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit
+hew-types/src/check/registration/type_publication.rs	done-id	d358014707	3	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	d358014707	4	&tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/registration/type_publication.rs	done-id	3d311260b5	2	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	e1c584aa3c	0	bound.path // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	1fb972c37d	0	bound.path, binding.name // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	a25e119088	0	let trait_lookup_key = self.trait_ref_lookup_key(&bound.path.to_string()); // TR
+hew-types/src/check/resolution.rs	done-id	84e02c7b0f	0	bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	943b96bd6c	0	format!("unknown trait `{}` in `dyn` type", bound.path), // TRANSITION(P1): dele
+hew-types/src/check/resolution.rs	done-id	04751cc63b	0	if trait_name == &bound.path.to_string() && prev == &missing // TRANSITION(P1): 
+hew-types/src/check/resolution.rs	done-id	c553ef658c	0	trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	58a85318b1	0	bound.path, // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	58a85318b1	1	bound.path, // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	f43bee4674	0	assoc_name // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	c553ef658c	1	trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/resolution.rs	done-id	73d5b2f53f	0	let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit
+hew-types/src/check/resolution.rs	done-id	af5c7b2db4	0	let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 c
+hew-types/src/check/resolution.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/statements.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/statements.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/statements.rs	done-id	3d311260b5	2	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/check/type_members.rs	done-id	f880732386	0	Expr::Ident(Ident::new(&constructor_name)), // TRANSITION(P1): deleted by A1 com
+hew-types/src/check/type_members.rs	done-id	57a6b9f0c2	0	let function = (Expr::Ident(Ident::new(&checker_member)), head.span.clone()); //
+hew-types/src/check/types.rs	no-real-fix	e6749637ef	0	/// WHY: the catalog previously conjured `CompilerIntrinsic` entries without
+hew-types/src/check/types.rs	unknown-id	1fafaec18f	0	/// TRANSITION(B1, B3): see [`Self::type_defs_by_path`].
+hew-types/src/check/types.rs	no-when	1fafaec18f	0	/// TRANSITION(B1, B3): see [`Self::type_defs_by_path`].
+hew-types/src/check/types.rs	unknown-id	06b267e45d	0	/// TRANSITION(B1, B3): deleted when HIR and tooling read definitions by
+hew-types/src/check/types.rs	no-when	06b267e45d	0	/// TRANSITION(B1, B3): deleted when HIR and tooling read definitions by
+hew-types/src/check/types.rs	unknown-id	fdc816ec0f	0	/// TRANSITION(B1, B3): deleted when HIR and tooling read signatures by
+hew-types/src/check/types.rs	no-when	fdc816ec0f	0	/// TRANSITION(B1, B3): deleted when HIR and tooling read signatures by
+hew-types/src/check/types.rs	unknown-id	7ab56ab4a6	0	/// TRANSITION(A2): deleted when the class and fact tables are keyed by
+hew-types/src/check/types.rs	no-when	7ab56ab4a6	0	/// TRANSITION(A2): deleted when the class and fact tables are keyed by
+hew-types/src/check/types.rs	no-when	b42a6e096b	0	/// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
+hew-types/src/check/types.rs	unknown-id	a207cba27d	0	/// TRANSITION(B1, B3): see [`TypeCheckOutput::fn_sigs_by_path`].
+hew-types/src/check/types.rs	no-when	a207cba27d	0	/// TRANSITION(B1, B3): see [`TypeCheckOutput::fn_sigs_by_path`].
+hew-types/src/check/types.rs	no-when	b42a6e096b	1	/// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
+hew-types/src/check/types.rs	no-when	cb96c584d1	0	/// TRANSITION(A1 commit 3): see [`TypeCheckOutput::builtin_fn_sigs`].
+hew-types/src/def_table.rs	done-id	4d8c6c8e58	0	/// TRANSITION(P2): read only by the second checker run over the embedded
+hew-types/src/def_table.rs	no-when	4d8c6c8e58	0	/// TRANSITION(P2): read only by the second checker run over the embedded
+hew-types/src/def_table.rs	done-id	e527b662cf	0	/// TRANSITION(P2): deleted by A1 commit 2, when `TypeHead::Builtin` carries
+hew-types/src/def_table.rs	done-id	fa843e9884	0	/// TRANSITION(P2): deleted by A1 commit 3, when every consumer holds the
+hew-types/src/def_table.rs	done-id	69c072cb93	0	/// TRANSITION(P2): rendered from the stored path until A1 renders it from
+hew-types/src/def_table.rs	no-when	69c072cb93	0	/// TRANSITION(P2): rendered from the stored path until A1 renders it from
+hew-types/src/def_table.rs	done-id	8829439cc7	0	/// TRANSITION(P2): WHY HIR type-checks the injected builtin impls with a
+hew-types/src/def_table.rs	done-id	8e86c66736	0	/// TRANSITION(P2): deleted by A1 commit 3, when the request type carries
+hew-types/src/def_table.rs	done-id	42a9b93c5d	0	/// TRANSITION(P2): deleted by A1 commit 3.
+hew-types/src/def_table.rs	done-id	70da113aea	0	/// TRANSITION(P2): deleted by A1 commit 2.
+hew-types/src/env.rs	unknown-id	0bf100666e	0	/// TRANSITION(A1): a caller that still holds only a spelling binds it in the
+hew-types/src/env.rs	no-when	0bf100666e	0	/// TRANSITION(A1): a caller that still holds only a spelling binds it in the
+hew-types/src/method_resolution.rs	no-when	88999fb28c	0	// TRANSITION(A1 commit 3): the catalog move hands method lookup the
+hew-types/src/module_registry.rs	done-id	87e8182dbd	0	let imported_owner = import.path.to_string(); // TRANSITION(P1): deleted by A1 c
+hew-types/src/resolved_ty.rs	no-when	085069a870	0	// TRANSITION(A1 commit 3): the declaration is read through its
+hew-types/src/resolved_ty.rs	done-id	e078d33269	0	// TRANSITION(P2): deleted by A1 commit 2.
+hew-types/src/resolved_ty.rs	unknown-id	36fb5ce763	0	/// TRANSITION(A1): deleted by B1/B2, when HIR and SIR consume the heads the
+hew-types/src/resolved_ty.rs	unknown-id	99a4623b16	0	/// TRANSITION(A1): see [`Self::named_path`].
+hew-types/src/resolved_ty.rs	no-when	99a4623b16	0	/// TRANSITION(A1): see [`Self::named_path`].
+hew-types/src/resolved_ty.rs	unknown-id	99a4623b16	1	/// TRANSITION(A1): see [`Self::named_path`].
+hew-types/src/resolved_ty.rs	no-when	99a4623b16	1	/// TRANSITION(A1): see [`Self::named_path`].
+hew-types/src/runtime_call/value_kinds.rs	no-when	26a3e8848a	0	// TRANSITION(A1 commit 3): the contract type is matched by its
+hew-types/src/runtime_call/value_kinds.rs	no-when	0e2d852f1b	0	/// TRANSITION(A1 commit 3): matched by the contract's canonical path.
+hew-types/src/stdlib.rs	no-id	b7fd5289ad	0	// SHIM: This hardcoded mapping should eventually move to `hew.toml` metadata
+hew-types/src/stdlib.rs	no-when	b7fd5289ad	0	// SHIM: This hardcoded mapping should eventually move to `hew.toml` metadata
+hew-types/src/stdlib.rs	no-real-fix	b7fd5289ad	0	// SHIM: This hardcoded mapping should eventually move to `hew.toml` metadata
+hew-types/src/stdlib_authority.rs	done-id	ae7fabe0b5	0	TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by 
+hew-types/src/stdlib_authority.rs	done-id	8f7e3e15f9	0	let module = import.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	aa472e4198	0	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	12a441917e	0	.map(|bound| bound.path.to_string()) // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	aa472e4198	1	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	3d311260b5	1	// TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	93d841d4ca	0	trait_name: path.trait_path.to_string().into_boxed_str(), // TRANSITION(P1): del
+hew-types/src/stdlib_loader.rs	done-id	aa472e4198	2	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	c553ef658c	0	trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	f08c491c05	0	} if crate::short_name(&path.to_string()) == wrapper_simple_name // TRANSITION(P
+hew-types/src/stdlib_loader.rs	done-id	aa472e4198	3	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/stdlib_loader.rs	done-id	99d7d99a58	0	let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/src/ty.rs	unknown-id	0db76c333f	0	/// TRANSITION(A1 commit 3, A2): deleted when every type is resolved
+hew-types/src/ty.rs	no-when	0db76c333f	0	/// TRANSITION(A1 commit 3, A2): deleted when every type is resolved
+hew-types/src/ty.rs	no-when	fdfbfc4429	0	/// TRANSITION(A1 commit 3): deleted when the registries are keyed by the
+hew-types/src/ty.rs	no-when	e0799a88e3	0	/// TRANSITION(A1 commit 3): the actor arm is deleted when every such
+hew-types/src/ty.rs	unknown-id	855e4536e9	0	/// TRANSITION(A2): see [`TypeHead::Unresolved`].
+hew-types/src/ty.rs	no-when	855e4536e9	0	/// TRANSITION(A2): see [`TypeHead::Unresolved`].
+hew-types/src/type_facts.rs	no-real-fix	6895a7d221	0	// WHY: §6.3 makes it "the bound list contains `Send`", and that is
+hew-types/src/vec_authority.rs	done-id	99d7d99a58	0	let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+hew-types/tests/registry_core/iterator_lazy_wrappers.rs	done-id	285421c3ff	0	.is_some_and(|tb| tb.path.to_string() == "Iterator"); // TRANSITION(P1): deleted
+hew-types/tests/registry_core/veciter_intoiterator_surface.rs	done-id	463dc72457	0	.is_some_and(|tb| tb.path.to_string() == "Iterator") // TRANSITION(P1): deleted 
+hew-types/tests/registry_core/veciter_intoiterator_surface.rs	done-id	9c54ba4b3c	0	.is_some_and(|tb| tb.path.to_string() == "IntoIterator") // TRANSITION(P1): dele
+hew-types/tests/registry_core/veciter_intoiterator_surface.rs	done-id	9c54ba4b3c	1	.is_some_and(|tb| tb.path.to_string() == "IntoIterator") // TRANSITION(P1): dele
+hew-types/tests/trait/iterator_trait_surface.rs	done-id	e2ad1d66cf	0	|tb| tb.path.to_string() == "Iterator" // TRANSITION(P1): deleted by A1 commit 2
+hew-wasm/src/lib.rs	no-real-fix	01f3d2aa38	0	/// WHY: Without HIR lowering the browser checker would silently accept
+std/text/template/template.hew	no-id	497bb6b37a	0	// SHIM (flat parallel-vec design):

@@ -52,14 +52,8 @@ fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
     worker.run(audit).expect("task result cleanup");
-    {
-        let __hew_migrated_actor_1082 = worker;
-        stop(__hew_migrated_actor_1082);
-        stopped(__hew_migrated_actor_1082);
-    };
-    {
-        let __hew_migrated_actor_1101 = audit;
-        stop(__hew_migrated_actor_1101);
-        stopped(__hew_migrated_actor_1101);
-    };
+    stop(worker);
+    stopped(worker);
+    stop(audit);
+    stopped(audit);
 }

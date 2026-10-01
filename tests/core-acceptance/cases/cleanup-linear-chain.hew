@@ -88,9 +88,6 @@ fn main() {
     let value63 = gate.pass(value62).expect("reply");
     let value64 = gate.pass(value63).expect("reply");
     println(value64.f0);
-    {
-        let __hew_migrated_actor_4217 = gate;
-        stop(__hew_migrated_actor_4217);
-        stopped(__hew_migrated_actor_4217);
-    };
+    stop(gate);
+    stopped(gate);
 }

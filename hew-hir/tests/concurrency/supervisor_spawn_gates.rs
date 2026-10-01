@@ -4,7 +4,7 @@
 //! closed gate per slepp A222: the checker already rejects supervisor
 //! declarations that take init params, but this defense-in-depth HIR gate
 //! catches any future surface that could reach MIR
-//! (`hew-mir/src/lower.rs:8852`) before the checker guard does.
+//! before the checker guard does.
 
 use hew_hir::HirDiagnosticKind;
 use hew_parser::ast::{Item, Program};

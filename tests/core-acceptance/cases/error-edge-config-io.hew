@@ -1,6 +1,7 @@
 // The failure edge applies a declared `From` at `?`, and `.context` erases
 // into `dyn Error` for the report `main` prints.
 import std.fs;
+
 import std.string;
 
 enum ConfigError {
@@ -17,7 +18,8 @@ impl Display for ConfigError {
     }
 }
 
-impl Error for ConfigError {}
+impl Error for ConfigError {
+}
 
 impl From<fs.IoError> for ConfigError {
     fn from(value: fs.IoError) -> ConfigError {

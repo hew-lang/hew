@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1611u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1608u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1608] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -8014,10 +8014,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
      "!\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_wasm_register_actor_meta",
-     "{\"native\": \"fn hew_wasm_register_actor_meta( *const c_void)\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_weak_clone_rc",
      "{\"native\": \"fn hew_weak_clone_rc( *mut u8) -> *mut u8\", "
      "\"wasm32-wasip1\": \"fn hew_weak_clone_rc( *mut u8) -> *mut u8\"}",
@@ -8043,13 +8039,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
      "\"wasm32-wasip1\": \"fn hew_weak_upgrade_rc( *mut u8) -> *mut u8\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_wire_cbor_to_text",
-     "{\"native\": \"fn hew_wire_cbor_to_text( *const u8, usize, *const "
-     "c_char, c_int, ) -> *mut c_char\", \"wasm32-wasip1\": \"fn "
-     "hew_wire_cbor_to_text( *const u8, usize, *const c_char, c_int, ) -> *mut "
-     "c_char\"}",
-     "native,wasm32-wasip1", "non-declarable", "nul-terminated",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_wire_decode_begin",
      "{\"native\": \"fn hew_wire_decode_begin( *const c_void, i32, *const "
      "c_char, *mut *mut c_void, *mut *mut HewString, ) -> i32\", "
@@ -8064,13 +8053,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
      "c_void, *mut *mut HewString, ) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_wire_text_to_cbor",
-     "{\"native\": \"fn hew_wire_text_to_cbor( *const c_char, *const c_char, "
-     "c_int, *mut usize, *mut *mut c_char, ) -> *mut u8\", \"wasm32-wasip1\": "
-     "\"fn hew_wire_text_to_cbor( *const c_char, *const c_char, c_int, *mut "
-     "usize, *mut *mut c_char, ) -> *mut u8\"}",
-     "native,wasm32-wasip1", "non-declarable", "nul-terminated",
-     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_attach_native",
      "{\"native\": \"fn hew_ws_attach_native( *mut HewWsConn, "
      "NativeActorToken, AttachCallback, AttachCallback, ) -> i32\"}",

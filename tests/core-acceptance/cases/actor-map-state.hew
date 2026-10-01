@@ -33,10 +33,7 @@ fn main() {
     assert(store.get("name").expect("missing") == "missing");
     assert(original.len() == 1);
     assert(original.get("kept").unwrap_or("missing") == "original");
-    {
-        let __hew_migrated_actor_1248 = store;
-        stop(__hew_migrated_actor_1248);
-        stopped(__hew_migrated_actor_1248);
-    };
+    stop(store);
+    stopped(store);
     println("actor map updates preserve state ownership");
 }

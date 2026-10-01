@@ -304,7 +304,7 @@ pub enum ResultReturnKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorConversion {
     Same,
-    Erase(DynCoercion),
+    Erase(Box<DynCoercion>),
     /// Call the selected `From.from` impl method on the error payload.
     From {
         method: crate::DefId,
@@ -444,10 +444,8 @@ pub struct TypeCheckOutput {
     /// resolves those later. There is no "no entry → guess" third state for a
     /// concrete accepted expression.
     ///
-    /// In Phase 1 (W4.047) this is a transitional *shadow* of `expr_types`:
-    /// HIR lowering still drives off `expr_types` and only asserts agreement
-    /// (zero behaviour change). Phase 2 promotes this to the primary read path;
-    /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
+    /// HIR lowering reads this map as its primary expression-type source; the
+    /// `Ty`-typed `expr_types` map remains only for analysis and LSP readers.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Resolved source annotations, keyed by their defining file and span.
     pub declaration_type_parameters:

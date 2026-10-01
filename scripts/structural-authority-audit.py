@@ -28,7 +28,6 @@ COMPILER_ROOTS = (
     "hew-codegen-rs/src",
 )
 ALL_GROUPS = {
-    "legacy-heap-reader",
     "checker-hir-publication",
     "mir-ownership-sink",
     # RC1 authority carriers.  These inventories deliberately name parsed
@@ -952,8 +951,6 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
     for match in calls:
         callee = single_meta(match, "F")
         leaf = callee.split("::")[-1]
-        if leaf == "ty_owns_heap":
-            findings.add(finding("legacy-heap-reader", "heap-reader-call", match))
         if leaf == "classify" and callee.rsplit("::", 1)[0].split("::")[-1] in {
             "ValueOwnership",
             "OwnershipDecision",
@@ -1115,12 +1112,6 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-3" if path.startswith("hew-mir/") else "stage-2"
     if group == "mir-ownership-sink":
         return "stage-4"
-    if group == "legacy-heap-reader":
-        return (
-            "stage-5"
-            if path.startswith("hew-codegen-rs/") or path.endswith("model.rs")
-            else "stage-4"
-        )
     if group == "signature-application":
         return "stage-1"
     if group == "hir-ast-boundary":

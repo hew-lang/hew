@@ -66,10 +66,7 @@ fn main() {
         __hew_migrated_role_1172
     };
     println(group.holder.poke(false).expect("fresh"));
-    {
-        let __hew_migrated_actor_1259 = group;
-        stop(__hew_migrated_actor_1259);
-        stopped(__hew_migrated_actor_1259);
-    };
+    stop(group);
+    stopped(group);
     println("done");
 }

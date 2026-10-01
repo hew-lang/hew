@@ -48,11 +48,8 @@ fn main() {
         sleep(2ms);
     }
     assert(fired);
-    {
-        let __hew_migrated_actor_964 = direct;
-        stop(__hew_migrated_actor_964);
-        stopped(__hew_migrated_actor_964);
-    };
+    stop(direct);
+    stopped(direct);
     let tree = spawn Timers;
     let role = tree.ticker;
     wait_for_ticks(role);
@@ -63,10 +60,7 @@ fn main() {
         __hew_migrated_role_1099
     };
     wait_for_ticks(role);
-    {
-        let __hew_migrated_actor_1156 = tree;
-        stop(__hew_migrated_actor_1156);
-        stopped(__hew_migrated_actor_1156);
-    };
+    stop(tree);
+    stopped(tree);
     println("periodic direct and restarted child");
 }

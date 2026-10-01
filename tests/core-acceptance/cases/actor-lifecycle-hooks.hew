@@ -36,10 +36,7 @@ fn main() {
         .Ok(count) => println(count),
         .Err(_) => panic("bump failed"),
     }
-    {
-        let __hew_migrated_actor_791 = keeper;
-        stop(__hew_migrated_actor_791);
-        stopped(__hew_migrated_actor_791);
-    };
+    stop(keeper);
+    stopped(keeper);
     println("closed");
 }

@@ -1,0 +1,75 @@
+// A literal at `return error` takes the numeric error type's width, and `?`
+// inside a generic function applies the `From` of each instantiation.
+enum Low {
+    Broken;
+}
+
+impl Display for Low {
+    fn fmt(self) -> string {
+        "Broken"
+    }
+}
+
+impl Error for Low {
+}
+
+enum Mid {
+    Wrapped(Low);
+}
+
+impl Display for Mid {
+    fn fmt(self) -> string {
+        match self {
+            .Wrapped(e) => f"Wrapped: {e}",
+        }
+    }
+}
+
+impl Error for Mid {
+}
+
+impl From<Low> for Mid {
+    fn from(value: Low) -> Mid {
+        .Wrapped(value)
+    }
+}
+
+fn narrow(n: i64) -> i64 fails i32 {
+    if n > 0 {
+        return error 5;
+    }
+    n
+}
+
+fn byte() -> i64 fails u8 {
+    return error 200;
+}
+
+fn relay<T>(consume r: Result<T, Low>) -> T fails Mid {
+    let v = r?;
+    v
+}
+
+fn low_text() -> Result<string, Low> {
+    .Err(.Broken)
+}
+
+fn main() {
+    match narrow(1) {
+        .Ok(n) => println(f"ok {n}"),
+        .Err(e) => println(f"i32 {e}"),
+    }
+    match byte() {
+        .Ok(n) => println(f"ok {n}"),
+        .Err(e) => println(f"u8 {e}"),
+    }
+    match relay(low_text()) {
+        .Ok(s) => println(s),
+        .Err(e) => println(f"relay: {e}"),
+    }
+    let ok: Result<i64, Low> = .Ok(5);
+    match relay(ok) {
+        .Ok(n) => println(f"relay ok {n}"),
+        .Err(e) => println(f"relay: {e}"),
+    }
+}

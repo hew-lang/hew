@@ -33,10 +33,7 @@ fn main() {
         __hew_migrated_role_628
     };
     assert(worker.ping().is_err());
-    {
-        let __hew_migrated_actor_695 = root;
-        stop(__hew_migrated_actor_695);
-        stopped(__hew_migrated_actor_695);
-    };
+    stop(root);
+    stopped(root);
     println("zero budget performs no restart");
 }

@@ -25,25 +25,13 @@ fn main() {
     assert(role is group.first);
     assert(!(role is group.second));
     assert(!(role is other.first));
-    {
-        let __hew_migrated_actor_622 = first;
-        stop(__hew_migrated_actor_622);
-        stopped(__hew_migrated_actor_622);
-    };
-    {
-        let __hew_migrated_actor_640 = second;
-        stop(__hew_migrated_actor_640);
-        stopped(__hew_migrated_actor_640);
-    };
-    {
-        let __hew_migrated_actor_659 = group;
-        stop(__hew_migrated_actor_659);
-        stopped(__hew_migrated_actor_659);
-    };
-    {
-        let __hew_migrated_actor_677 = other;
-        stop(__hew_migrated_actor_677);
-        stopped(__hew_migrated_actor_677);
-    };
+    stop(first);
+    stopped(first);
+    stop(second);
+    stopped(second);
+    stop(group);
+    stopped(group);
+    stop(other);
+    stopped(other);
     println("identity preserved");
 }

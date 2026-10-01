@@ -80,25 +80,13 @@ fn main() {
     assert(restarted.history[0] == seed.history[0]);
     assert(record_role.count().expect("fresh record") == 0);
     assert(words.worker.count().expect("unchanged text instance") == 1);
-    {
-        let __hew_migrated_actor_2458 = batches;
-        stop(__hew_migrated_actor_2458);
-        stopped(__hew_migrated_actor_2458);
-    };
-    {
-        let __hew_migrated_actor_2478 = records;
-        stop(__hew_migrated_actor_2478);
-        stopped(__hew_migrated_actor_2478);
-    };
-    {
-        let __hew_migrated_actor_2498 = words;
-        stop(__hew_migrated_actor_2498);
-        stopped(__hew_migrated_actor_2498);
-    };
-    {
-        let __hew_migrated_actor_2516 = numbers;
-        stop(__hew_migrated_actor_2516);
-        stopped(__hew_migrated_actor_2516);
-    };
+    stop(batches);
+    stopped(batches);
+    stop(records);
+    stopped(records);
+    stop(words);
+    stopped(words);
+    stop(numbers);
+    stopped(numbers);
     println("generic supervisor config, roles and restarts");
 }

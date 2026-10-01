@@ -33,9 +33,6 @@ fn main() {
     }
     let elapsed = datetime.now_ms() - started;
     println(elapsed >= 50000 && elapsed < 52000);
-    {
-        let __hew_migrated_actor_737 = app;
-        stop(__hew_migrated_actor_737);
-        stopped(__hew_migrated_actor_737);
-    };
+    stop(app);
+    stopped(app);
 }

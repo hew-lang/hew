@@ -765,11 +765,6 @@ is_separately_gated_or_reject_fixture() {
         # main_entry_exit.rs asserts the entry-bound diagnostic on this source.
         return 0
         ;;
-    hew-lsp/tests/fixtures/v05_async_await.hew)
-        # The LSP test in hew-lsp/src/server/mod.rs asserts the retired
-        # `async fn` spelling still produces its diagnostics.
-        return 0
-        ;;
     hew-sandbox-vm/fixtures/09-compile-type-error/main.hew | hew-sandbox-vm/fixtures/29-mixed-scalar-compare-rejected/main.hew)
         # The VM fixture manifest expects a compile error for each source.
         return 0

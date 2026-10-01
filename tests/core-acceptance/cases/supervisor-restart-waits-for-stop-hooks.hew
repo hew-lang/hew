@@ -55,15 +55,9 @@ fn main() {
         .Ok(value) => println(f"right {value}"),
         .Err(_) => println("right failed"),
     }
-    {
-        let __hew_migrated_actor_1406 = app;
-        stop(__hew_migrated_actor_1406);
-        stopped(__hew_migrated_actor_1406);
-    };
+    stop(app);
+    stopped(app);
     println("stopped");
-    {
-        let __hew_migrated_actor_1456 = audit;
-        stop(__hew_migrated_actor_1456);
-        stopped(__hew_migrated_actor_1456);
-    };
+    stop(audit);
+    stopped(audit);
 }

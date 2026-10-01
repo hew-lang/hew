@@ -100,9 +100,7 @@ impl LowerCtx {
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
             call_type_args: tc_output.call_type_args.clone(),
-            lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
-            assign_target_shapes: tc_output.assign_target_shapes.clone(),
             checked_indexed_place_operations: tc_output.indexed_place_operations.clone(),
             indexed_place_operations: HashMap::new(),
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
@@ -241,6 +239,10 @@ impl LowerCtx {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one swap per checker fact table; splitting it would scatter the save and restore pairs"
+    )]
     pub(super) fn with_typecheck_facts<T>(
         &mut self,
         tc_output: &TypeCheckOutput,

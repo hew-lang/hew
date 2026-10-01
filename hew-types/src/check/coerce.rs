@@ -876,7 +876,7 @@ impl Checker {
                 let concrete = source.materialize_literal_defaults();
                 concrete_type_name_for_dyn(&concrete)
                     .and_then(|name| self.build_dyn_trait_coercion(traits, &name, &concrete, span))
-                    .map(ErrorConversion::Erase)
+                    .map(|coercion| ErrorConversion::Erase(Box::new(coercion)))
             } else {
                 self.declared_from_impl(&target, &source)
                     .map(|method| ErrorConversion::From { method })

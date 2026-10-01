@@ -10,7 +10,6 @@ use super::generics::DynLayoutSlot;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
-use crate::resolved_ty::ResolvedTy;
 use crate::DefId;
 
 /// How a slot's receiver crosses the trait-object boundary, as the trait

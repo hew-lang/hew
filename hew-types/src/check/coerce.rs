@@ -774,6 +774,7 @@ impl Checker {
             assoc_bindings: assoc_bindings.clone(),
         };
 
+        self.record_dyn_slot_obligations(traits, &vtable_entries, span);
         let target_ty = self.finalize_type_for_handoff(&Ty::TraitObject {
             traits: traits.to_vec(),
         });

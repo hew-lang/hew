@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::{HewAsyncIo, IoFailure};
 use crate::timer_wheel::{
-    hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, HewTimerHandle, HewTimerWheel,
+    hew_timer_wheel_remove, timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
 };
 use crate::util::MutexExt;
 
@@ -78,9 +78,13 @@ impl HewAsyncIo {
         let delay = u64::try_from(duration.as_millis())
             .unwrap_or(u64::MAX)
             .max(1);
+        // Anchor to the clock, not the wheel cursor, which rests at its last
+        // tick while the reactor sleeps; a delay from it would fire early.
+        // SAFETY: hew_now_ms has no preconditions on native targets.
+        let deadline_ms = unsafe { crate::clock::hew_now_ms() }.saturating_add(delay);
         // SAFETY: wheel is live and the callback receives one owned payload.
         let timer =
-            unsafe { hew_timer_wheel_schedule_handle(wheel, delay, expired, payload.cast()) };
+            unsafe { timer_wheel_schedule_at_handle(wheel, deadline_ms, expired, payload.cast()) };
         if timer.entry.is_null() {
             // SAFETY: failed registration did not accept the payload.
             drop(unsafe { Box::from_raw(payload) });

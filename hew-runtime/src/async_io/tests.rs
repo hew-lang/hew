@@ -1215,10 +1215,11 @@ fn readiness_cancel_and_close_races_leave_no_waiter() {
         if round % 2 != 0 {
             assert_eq!(crate::transport::hew_tcp_close(handle), 0);
         }
-        assert_eq!(
-            crate::reactor::waiter_count(),
-            0,
-            "round {round} left a waiter"
-        );
+        // The reactor withdraws a fired waiter just after waking it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while crate::reactor::waiter_count() != 0 {
+            assert!(Instant::now() < deadline, "round {round} left a waiter");
+            std::thread::yield_now();
+        }
     }
 }

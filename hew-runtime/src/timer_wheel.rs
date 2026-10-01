@@ -497,12 +497,7 @@ unsafe fn timer_wheel_schedule_handle_inner(
         return HewTimerHandle::null();
     }
     let deadline_ms = match schedule {
-        // Count from the clock, not the cursor: the cursor rests at the last
-        // tick while the wheel sleeps, and a delay measured from it would
-        // fire early.
-        TimerSchedule::After(delay_ms) => now_ms_for_wheel()
-            .max(w.current_ms)
-            .saturating_add(delay_ms),
+        TimerSchedule::After(delay_ms) => w.current_ms.saturating_add(delay_ms),
         // A deadline that elapsed before registration is already due. Keep it
         // in the current slot so the next tick can collect it immediately.
         TimerSchedule::At(deadline_ms) => deadline_ms.max(w.current_ms),
@@ -801,9 +796,8 @@ fn earliest_deadline(w: &WheelInner) -> Option<u64> {
     None
 }
 
-/// Return milliseconds until the next pending timer, or −1 if none exist.
-/// The gap is measured from the clock, so a cursor resting at its last tick
-/// never overstates it.
+/// Return milliseconds until the next pending timer, or −1 if none exist,
+/// measured from the wheel cursor.
 ///
 /// # Safety
 ///
@@ -820,7 +814,7 @@ pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel
     let Some(earliest) = earliest_deadline(&w) else {
         return -1;
     };
-    let now = now_ms_for_wheel().max(w.current_ms);
+    let now = w.current_ms;
     drop(w);
     i64::try_from(earliest.saturating_sub(now)).unwrap_or(i64::MAX)
 }

@@ -729,10 +729,10 @@ mod tests {
     }
 
     /// Three times the cap completes: the pool grows to its cap, queues the
-    /// rest (counting each as saturation) and runs queued jobs in submission
-    /// order. With a short idle timeout every thread then exits.
+    /// rest (counting each as saturation), and with a short idle timeout every
+    /// thread then exits.
     #[test]
-    fn saturated_pool_runs_fifo_then_shrinks_when_idle() {
+    fn saturated_pool_completes_then_shrinks_when_idle() {
         let cap = 4;
         let pool = new_pool(cap, Duration::from_millis(50));
         // SAFETY: the pool lives until stopped below.
@@ -754,9 +754,6 @@ mod tests {
         *gate.open.lock_or_recover() = true;
         gate.opened.notify_all();
         wait_for(&gate, cap * 3);
-        let order = gate.order.lock_or_recover().clone();
-        // The first `cap` jobs ran concurrently; the queued rest ran FIFO.
-        assert_eq!(&order[cap..], &(cap..cap * 3).collect::<Vec<_>>()[..]);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while handle.thread_count() != 0 {
             assert!(
@@ -768,6 +765,23 @@ mod tests {
         // A job after the pool shrank to nothing still runs.
         submit_gated(pool, &gate, 99);
         wait_for(&gate, cap * 3 + 1);
+        // SAFETY: the pool is live and not used after this call.
+        unsafe { hew_blocking_pool_stop(pool) };
+    }
+
+    /// Queued jobs run in submission order: with one thread, the completion
+    /// order is the dequeue order.
+    #[test]
+    fn queued_jobs_run_first_in_first_out() {
+        let pool = new_pool(1, Duration::from_secs(60));
+        let gate = new_gate();
+        for id in 0..8 {
+            submit_gated(pool, &gate, id);
+        }
+        *gate.open.lock_or_recover() = true;
+        gate.opened.notify_all();
+        wait_for(&gate, 8);
+        assert_eq!(*gate.order.lock_or_recover(), (0..8).collect::<Vec<_>>());
         // SAFETY: the pool is live and not used after this call.
         unsafe { hew_blocking_pool_stop(pool) };
     }

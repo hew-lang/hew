@@ -638,7 +638,7 @@ fn dispatch(event: Event) {
     let slot = unsafe { Arc::from_raw(event.token as usize as *const Slot) };
     AFD_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
     // SAFETY: the completion has been dequeued; the kernel is done writing.
-    let events = unsafe { (*slot.afd.get()).report() };
+    let events = unsafe { (*slot.afd.get()).report() } | event.events;
     slot.fire(events);
 }
 

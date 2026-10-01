@@ -1,194 +1,7 @@
-//! Result methods and helper functions.
+//! Result methods.
 //!
-//! The `impl Result<T, E>` block below is the method surface every program sees
-//! without an import (`map`, `map_err`, `and_then` and the rest). The
-//! free functions are older type-specific helpers reached through
-//! `import std.result`.
-//!
-//! # Examples
-//!
-//! ```
-//! import std.result;
-//!
-//! fn main() {
-//!     let x: Result<i64, i64> = .Ok(42);
-//!     println(result.is_ok_int(x));          // true
-//!     println(result.unwrap_or_int(x, 0));   // 42
-//!
-//!     let y: Result<i64, i64> = .Err(1);
-//!     println(result.is_err_int(y));          // true
-//!     println(result.unwrap_or_int(y, -1));   // -1
-//! }
-//! ```
+//! Every program sees these methods without an import, like `.len()`.
 
-// ── Predicates ──────────────────────────────────────────────────────
-/// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_int(r: Result<i64, i64>) -> bool {
-    match r {
-        .Ok(_) => true,
-        .Err(_) => false,
-    }
-}
-
-/// Returns `true` if the result contains an `Err` value.
-pub fn is_err_int(r: Result<i64, i64>) -> bool {
-    match r {
-        .Ok(_) => false,
-        .Err(_) => true,
-    }
-}
-
-// ── Unwrap ──────────────────────────────────────────────────────────
-/// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_int(r: Result<i64, i64>) -> i64 {
-    match r {
-        .Ok(v) => v,
-        .Err(e) => {
-            panic(f"result: unwrap called on Err({e})");
-            0
-        }
-    }
-}
-
-/// Unwrap the `Err` value.  Panics if the result is `Ok`.
-pub fn unwrap_err_int(r: Result<i64, i64>) -> i64 {
-    match r {
-        .Ok(v) => {
-            panic(f"result: unwrap_err called on Ok({v})");
-            0
-        }
-        .Err(e) => e,
-    }
-}
-
-/// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_int(r: Result<i64, i64>, fallback: i64) -> i64 {
-    match r {
-        .Ok(v) => v,
-        .Err(_) => fallback,
-    }
-}
-
-// ── Map ─────────────────────────────────────────────────────────────
-/// Apply `f` to the contained `Ok` value, or return `Err` unchanged.
-pub fn map_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
-    match r {
-        .Ok(v) => .Ok(f(v)),
-        .Err(e) => .Err(e),
-    }
-}
-
-/// Apply `f` to the contained `Err` value, or return `Ok` unchanged.
-pub fn map_err_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
-    match r {
-        .Ok(v) => .Ok(v),
-        .Err(e) => .Err(f(e)),
-    }
-}
-
-// ── Contains ────────────────────────────────────────────────────────
-/// Returns `true` if the result is `Ok` and contains `needle`.
-pub fn contains_int(r: Result<i64, i64>, needle: i64) -> bool {
-    match r {
-        .Ok(v) => v == needle,
-        .Err(_) => false,
-    }
-}
-
-// ── string variants ────────────────────────────────────────────────
-/// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_str(r: Result<string, string>) -> bool {
-    match r {
-        .Ok(_) => true,
-        .Err(_) => false,
-    }
-}
-
-/// Returns `true` if the result contains an `Err` value.
-pub fn is_err_str(r: Result<string, string>) -> bool {
-    match r {
-        .Ok(_) => false,
-        .Err(_) => true,
-    }
-}
-
-/// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_str(r: Result<string, string>) -> string {
-    match r {
-        .Ok(v) => v,
-        .Err(e) => {
-            panic(f"result: unwrap called on Err({e})");
-            ""
-        }
-    }
-}
-
-/// Unwrap the `Err` value.  Panics if the result is `Ok`.
-pub fn unwrap_err_str(r: Result<string, string>) -> string {
-    match r {
-        .Ok(v) => {
-            panic(f"result: unwrap_err called on Ok({v})");
-            ""
-        }
-        .Err(e) => e,
-    }
-}
-
-/// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_str(r: Result<string, string>, fallback: string) -> string {
-    match r {
-        .Ok(v) => v,
-        .Err(_) => fallback,
-    }
-}
-
-/// Returns `true` if the result is `Ok` and contains `needle`.
-pub fn contains_str(r: Result<string, string>, needle: string) -> bool {
-    match r {
-        .Ok(v) => v == needle,
-        .Err(_) => false,
-    }
-}
-
-// ── Float variants ─────────────────────────────────────────────────
-/// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_f64(r: Result<f64, string>) -> bool {
-    match r {
-        .Ok(_) => true,
-        .Err(_) => false,
-    }
-}
-
-/// Returns `true` if the result contains an `Err` value.
-pub fn is_err_f64(r: Result<f64, string>) -> bool {
-    match r {
-        .Ok(_) => false,
-        .Err(_) => true,
-    }
-}
-
-/// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_f64(r: Result<f64, string>) -> f64 {
-    match r {
-        .Ok(v) => v,
-        .Err(e) => {
-            panic(f"result: unwrap called on Err({e})");
-            0.0
-        }
-    }
-}
-
-/// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_f64(r: Result<f64, string>, fallback: f64) -> f64 {
-    match r {
-        .Ok(v) => v,
-        .Err(_) => fallback,
-    }
-}
-
-// ── Methods ─────────────────────────────────────────────────────────
-//
-// Every program sees these methods without an import, like `.len()`.
 impl<T, E> Result<T, E> {
     /// Returns `true` if the result contains an `Ok` value.
     pub fn is_ok(self) -> bool {
@@ -202,13 +15,6 @@ impl<T, E> Result<T, E> {
         match self {
             .Ok(_) => false,
             .Err(_) => true,
-        }
-    }
-    /// Unwrap the `Ok` value. Panics with `reason` if the result is `Err`.
-    pub fn expect(consume self, reason: string) -> T {
-        match self {
-            .Ok(v) => v,
-            .Err(_) => panic(f"expect failed: {reason}"),
         }
     }
     /// Unwrap the `Ok` value, or return `fallback` if `Err`.
@@ -267,6 +73,19 @@ impl<T, E> Result<T, E> {
         match self {
             .Ok(v) => .Ok(v),
             .Err(e) => f(e),
+        }
+    }
+}
+
+// Methods that print the error.
+impl<T, E: Display> Result<T, E> {
+    /// Unwrap the `Ok` value. On `Err(e)` the program traps with
+    /// `{reason}: {e}`: the reason says why success was expected, and the
+    /// error says what happened instead.
+    pub fn expect(consume self, reason: string) -> T {
+        match self {
+            .Ok(v) => v,
+            .Err(e) => panic(f"{reason}: {e}"),
         }
     }
 }

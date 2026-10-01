@@ -496,7 +496,6 @@ pub enum SuspendKind {
         /// Admission behaviour for this call when the destination mailbox is
         /// full: `Wait` parks the caller, `Reject` refuses the call.
         policy: hew_types::actor_delivery::SendPolicy,
-        deadline_ns: Option<i64>,
         /// The input is the sealed request owner instead of fresh arguments.
         sealed: bool,
     },

@@ -1,6 +1,6 @@
-// A value without a codec is refused where the facade is called: a plain type
-// inside a collection, a resource and a tuple have no wire encoding, and a
-// plain type carries no per-type codec methods.
+// A value that is not data is refused where the facade is called: a resource,
+// and a collection or tuple reaching one. Plain records, tuples and
+// collections of them are data. A plain type carries no per-type codec method.
 import std.encoding.wire;
 
 type Plain {

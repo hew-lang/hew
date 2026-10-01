@@ -28,7 +28,7 @@ import std.os;
 
 import std.fs;
 
-import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorError, MonitorRef, PartitionPolicy,};
+import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorRef, PartitionPolicy,};
 
 // hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
 // registered name to a DIFFERENT actor. `Node::unregister` is not yet a Hew
@@ -48,23 +48,23 @@ type KvPut {
 
 #[wire]
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut) @0;
+    GetKey(string) @1;
     // Cross-node monitor scenarios: fire-and-forget commands that drive the
     // remote actor to a terminal state so a monitoring client observes the
     // cross-node DOWN with the right reason.
-    StopSelf;
-    CrashSelf;
+    StopSelf @2;
+    CrashSelf @3;
     // scenario_partition_ask phase A: hold the reply past the client's ask
     // deadline so the pending ask is deterministically resolvable ONLY by the
     // armed partition probe (no reply, no socket drop — the route stays live).
-    Stall;
+    Stall @4;
 }
 
 #[wire]
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack @0;
+    Value(string) @1;
 }
 
 // ── #[wire] cross-process body types ─────────────────────────────────────────
@@ -84,8 +84,8 @@ type WirePoint {
 // carry EXPLICIT @N tags — that is the explicit-tag body this scenario proves.
 #[wire]
 enum WireCmd {
-    Ping;
-    Move(WirePoint);
+    Ping @0;
+    Move(WirePoint) @1;
 }
 
 // WireResult is the #[wire] struct reply: `tag` is which variant the server saw
@@ -170,12 +170,12 @@ type DistIdentity {
 
 #[wire]
 enum IdentityReq {
-    Inspect;
+    Inspect @0;
 }
 
 #[wire]
 enum IdentityResp {
-    Value(DistIdentity);
+    Value(DistIdentity) @0;
 }
 
 actor IdentityProbe {
@@ -334,7 +334,7 @@ actor Linker {
 
 // The registration id of a held monitor. The state seat keeps the MonitorRef
 // live, so the id is read through a borrow rather than moved out of the seat.
-fn registration_id(setup: Result<MonitorRef, MonitorError>) -> u64 {
+fn registration_id(setup: Result<MonitorRef, LinkError>) -> u64 {
     match setup {
         Result.Ok(monitor_ref) => monitor_ref.id().value,
         Result.Err(_) => 0,
@@ -349,7 +349,7 @@ fn local_registration_id(setup: Result<MonitorRef, LinkError>) -> u64 {
 }
 
 actor MonitorProbe {
-    var active_monitor: Result<MonitorRef, MonitorError>;
+    var active_monitor: Result<MonitorRef, LinkError>;
     var expected_monitor_id: u64 = 0;
     var down_count: i64 = 0;
     var down_reason: i64 = 100;
@@ -500,7 +500,7 @@ actor MonitorProbe {
     // Scenario: remote_monitor_setup_after_drop
     //
     // The harness kills the server after READY_DROP. Once route teardown reaches the
-    // client, monitor(RemotePid) must return Err(MonitorError::Partition) rather than
+    // client, monitor(RemotePid) must return Err(LinkError::Partition) rather than
     // a zero-valued or inert MonitorRef.
 
     // Scenario: partition_ask
@@ -748,8 +748,7 @@ actor SetupRaceStopper {
 
 actor LinkSetupRaceProbe {
     // `monitor()` on a LOCAL pid (the linker below is `spawn`ed, not remote)
-    // returns Result<MonitorRef, LinkError>, not the remote-delivery
-    // MonitorError vocabulary MonitorProbe uses for its RemotePid target.
+    // returns the same Result<MonitorRef, LinkError> as the RemotePid form.
     var active_monitor: Result<MonitorRef, LinkError>;
     var expected_monitor_id: u64 = 0;
     var down_count: i64 = 0;
@@ -805,9 +804,9 @@ actor MonitorSetupProbe {
     receive fn wait_for_partition(peer: RemotePid<KeyValue>) -> i64 {
         var attempts: i64 = 0;
         loop {
-            let setup: Result<MonitorRef, MonitorError> = monitor(peer);
+            let setup: Result<MonitorRef, LinkError> = monitor(peer);
             match setup {
-                Result.Err(MonitorError.Partition) => return 0,
+                Result.Err(LinkError.Partition) => return 0,
                 Result.Err(_) => return 2,
                 Result.Ok(monitor_ref) => {
                     monitor_ref.close();
@@ -824,7 +823,7 @@ actor MonitorSetupProbe {
 
 actor MonitorCloseProbe {
     receive fn register_and_close(peer: RemotePid<KeyValue>) -> i64 {
-        let setup: Result<MonitorRef, MonitorError> = monitor(peer);
+        let setup: Result<MonitorRef, LinkError> = monitor(peer);
         match setup {
             Result.Err(_) => 1,
             Result.Ok(monitor_ref) => {
@@ -844,7 +843,7 @@ actor MonitorLeakProbe {
         var completed: i64 = 0;
         var previous_id: u64 = 0;
         while completed < iterations {
-            let setup: Result<MonitorRef, MonitorError> = monitor(peer);
+            let setup: Result<MonitorRef, LinkError> = monitor(peer);
             match setup {
                 Result.Err(_) => return -1,
                 Result.Ok(monitor_ref) => {
@@ -1256,7 +1255,7 @@ fn scenario_identity_display(identity: RemotePid<IdentityProbe>, scenario: strin
 }
 
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: .Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.Dead), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     let armed = probe.arm(kv, drive);
     let arm_status = match armed {
         Result.Ok(status) => status,
@@ -1484,7 +1483,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
             }
             Result.Err(e) => {
                 let timed_out = match e {
-                    ActorError.Timeout => true,
+                    ActorError.TimedOut => true,
                     _ => elapsed_ms >= fast_fail_ceiling_ms,
                 };
                 if timed_out {
@@ -1640,7 +1639,7 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 }
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: .Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.Dead), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     match probe.arm(kv, 2) {
         Result.Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
@@ -1828,7 +1827,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
             return 6;
         }
     }
-    let probe = spawn MonitorProbe(active_monitor: .Err(MonitorError.NodeNotRunning));
+    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.Partition));
     match probe.arm(local, 0) {
         Result.Ok(0) => {}
         _ => {

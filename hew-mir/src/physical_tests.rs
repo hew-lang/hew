@@ -841,11 +841,13 @@ fn main() {
         .flat_map(|function| &mut function.blocks)
     {
         if let PhysicalTerminator::WireCodec { plan, .. } = &mut block.terminator {
-            let plan = std::sync::Arc::make_mut(plan);
-            let SemWireKind::Record { fields, .. } = &mut plan.kind else {
+            let plans = std::sync::Arc::make_mut(plan);
+            let root = plans.root.clone();
+            let record = plans.plans.get_mut(&root).expect("root plan");
+            let SemWireKind::Record { fields, .. } = &mut record.kind else {
                 panic!("record codec");
             };
-            fields[0].index = 0;
+            fields.swap(0, 1);
             changed = true;
             break;
         }
@@ -854,7 +856,7 @@ fn main() {
     assert!(verify_physical_module(&physical)
         .unwrap_err()
         .message
-        .contains("wire schema selects a different physical value shape"));
+        .contains("codec plan selects a different physical value shape"));
 }
 
 #[test]

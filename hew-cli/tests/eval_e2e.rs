@@ -3252,15 +3252,14 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
     // so no "unused variable" noise should appear.
     let input = concat!(
         "import std.string;\n",
-        "import std.option;\n",
         "import std.iter;\n",
         "fn stdlib_demo() -> string {\n",
         "    let s = string.from_int(42);\n",
-        "    let opt = option.map_int(.Some(20), |v: i64| v + 22);\n",
+        "    let opt = Option.Some(20).map(|v: i64| v + 22);\n",
         "    let v: Vec<string> = [\"a\", \"bb\"];\n",
         "    let mapped = iter.map(v.into_iter(), |x: string| string.from_int(x.len()));\n",
         "    let lens: Vec<string> = iter.collect(mapped);\n",
-        "    f\"{s}:{option.unwrap_int(opt)}:{lens[0]},{lens[1]}\"\n",
+        "    f\"{s}:{opt.unwrap_or(0)}:{lens[0]},{lens[1]}\"\n",
         "}\n",
         "stdlib_demo()\n",
     );

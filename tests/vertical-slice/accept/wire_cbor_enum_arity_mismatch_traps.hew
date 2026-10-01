@@ -12,14 +12,14 @@
 // discipline every other malformed shape follows.
 #[wire]
 enum Wide {
-    Ping;
-    Pair(i64, i64);
+    Ping @0;
+    Pair(i64, i64) @1;
 }
 
 #[wire]
 enum Narrow {
-    Ping;
-    Pair(i64);
+    Ping @0;
+    Pair(i64) @1;
 }
 
 fn main() -> i64 {

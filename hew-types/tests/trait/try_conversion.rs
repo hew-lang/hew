@@ -400,3 +400,77 @@ fn main() -> Result<(), i64> {
         error.suggestions
     );
 }
+
+#[test]
+fn explicit_from_call_with_two_impls_is_ambiguous() {
+    let output = check(
+        r"
+fn pick() -> Mid {
+    Mid.from(3)
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| err.kind == TypeErrorKind::AmbiguousTraitMethod
+                && err.message.contains("more than once")),
+        "{:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_from_impl_converts_each_instantiation() {
+    let output = typecheck(
+        r#"
+type Wrap<E> {
+    inner: E;
+}
+
+enum App {
+    Wrapped(string);
+}
+
+impl Display for App {
+    fn fmt(self) -> string {
+        match self {
+            .Wrapped(t) => t,
+        }
+    }
+}
+
+impl Error for App {}
+
+impl<E: Display> From<Wrap<E>> for App {
+    fn from(value: Wrap<E>) -> App {
+        .Wrapped(f"{value.inner}")
+    }
+}
+
+fn wrapped() -> Result<i64, Wrap<i64>> {
+    .Err(Wrap { inner: 42 })
+}
+
+fn edge() -> i64 fails App {
+    let n = wrapped()?;
+    n
+}
+"#,
+    );
+    assert_clean(&output);
+    assert_eq!(from_methods(&output).len(), 1);
+}
+
+#[test]
+fn return_error_names_a_variant_of_the_error_type() {
+    let output = check(
+        r"
+fn missing() -> i64 fails Mid {
+    return error .Code(4);
+}
+",
+    );
+    assert_clean(&output);
+}

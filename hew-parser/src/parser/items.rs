@@ -857,6 +857,7 @@ impl Parser<'_> {
             .iter()
             .find(|a| a.name == "lang_item")
             .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+        let serial_case = self.parse_serial_case(attrs);
 
         let kind = match self.peek() {
             Some(Token::Type) => {
@@ -930,6 +931,7 @@ impl Parser<'_> {
             is_opaque,
             consuming_methods,
             lang_item,
+            serial_case,
         })
     }
 
@@ -1089,7 +1091,6 @@ impl Parser<'_> {
                     Some((TypeBodyItem::Method(method), has_consuming_self))
                 } else {
                     self.validate_attributes_for(&attributes, AttrPosition::Field);
-                    // Field with optional attributes (e.g. #[encode(rename = "x")])
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
@@ -1139,7 +1140,15 @@ impl Parser<'_> {
                     VariantKind::Unit
                 };
 
-                if matches!(kind, VariantKind::Struct(_)) {
+                let tag = if self.eat(&Token::At) {
+                    self.parse_wire_field_number_after_marker(
+                        super::wire::WireFieldParseMode::Struct,
+                    )
+                    .ok()
+                } else {
+                    None
+                };
+                if matches!(kind, VariantKind::Struct(_)) && tag.is_none() {
                     self.refuse_mark_after_body();
                 } else {
                     self.expect_member_terminator("variant");
@@ -1150,6 +1159,7 @@ impl Parser<'_> {
                     TypeBodyItem::Variant(VariantDecl {
                         name,
                         kind,
+                        tag,
                         doc_comment,
                         span: item_start..item_end,
                     }),

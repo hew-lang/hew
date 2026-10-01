@@ -610,11 +610,9 @@ impl Checker {
                     resolved_arg.user_facing()
                 )]
             } else if self.bound_marker(bound) == Some(MarkerTrait::Serializable) {
-                vec![
-                    "only scalars, `Vec`, `HashMap`, `HashSet` and `Option` of serializable \
-                     values, and `#[wire]` types with tagged fields have a wire encoding"
-                        .to_string(),
-                ]
+                self.not_serializable_explanation(resolved_arg)
+                    .into_iter()
+                    .collect()
             } else {
                 self.diagnose_bound_failure_suggestions(resolved_arg, bound)
             };

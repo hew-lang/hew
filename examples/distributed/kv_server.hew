@@ -23,14 +23,14 @@ type KvPut {
 
 #[wire]
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut) @0;
+    GetKey(string) @1;
 }
 
 #[wire]
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack @0;
+    Value(string) @1;
 }
 
 actor KeyValue {

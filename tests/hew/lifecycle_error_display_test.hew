@@ -1,9 +1,9 @@
-//! Display coverage for std.concurrency.lifecycle.Error.
+//! Display coverage for std.concurrency.lifecycle.LifecycleError.
 
-import std.concurrency.lifecycle.{Error};
+import std.concurrency.lifecycle.{LifecycleError};
 
 #[test]
-fn test_lifecycle_error_display_prints_the_carried_code() {
-    let err = Error.Code(7);
-    assert(to_string(err) == "lifecycle error (code 7)");
+fn test_lifecycle_error_display_names_the_variant_and_reason() {
+    assert(to_string(LifecycleError.StartFailed("no config")) == "StartFailed: no config");
+    assert(to_string(LifecycleError.Crashed("disk full")) == "Crashed: disk full");
 }

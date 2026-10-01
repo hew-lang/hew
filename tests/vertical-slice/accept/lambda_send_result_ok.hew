@@ -28,7 +28,7 @@ fn main() -> i64 {
             ActorError.Failed(_) => 2,
             ActorError.Trapped => 3,
             ActorError.Dead => 4,
-            ActorError.Timeout => 5,
+            ActorError.TimedOut => 5,
             ActorError.NodeNotRunning => 6,
             ActorError.RoutingFailed => 8,
             ActorError.EncodeFailed => 9,

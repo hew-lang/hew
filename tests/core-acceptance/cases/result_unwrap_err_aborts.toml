@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): expect failed: r is present\n"
+stderr = "hew: failure: UserPanic (212): r is present: false\n"
 exit = 1

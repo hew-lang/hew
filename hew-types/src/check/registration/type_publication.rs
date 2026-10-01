@@ -249,7 +249,6 @@ impl Checker {
                 "DownTarget",
                 "DownReason",
                 "DownNotification",
-                "MonitorError",
                 "MonitorRef",
             ],
             _ => unreachable!("matched canonical lifecycle owner"),

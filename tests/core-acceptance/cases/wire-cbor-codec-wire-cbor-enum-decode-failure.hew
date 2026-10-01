@@ -5,14 +5,14 @@ type Inner {
 
 #[wire]
 enum PayloadGood {
-    Empty;
-    Full(string, Vec<string>, Inner);
+    Empty @0;
+    Full(string, Vec<string>, Inner) @1;
 }
 
 #[wire]
 enum PayloadBad {
-    Empty;
-    Full(string, i64, Inner);
+    Empty @0;
+    Full(string, i64, Inner) @1;
 }
 
 fn main() -> i64 {

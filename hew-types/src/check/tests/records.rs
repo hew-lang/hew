@@ -39,6 +39,7 @@ mod cross_module_same_name {
             wire: None,
             is_indirect: false,
             resource_marker: hew_parser::ast::ResourceMarker::None,
+            serial_case: None,
             is_opaque: false,
             consuming_methods: vec![],
             lang_item: None,

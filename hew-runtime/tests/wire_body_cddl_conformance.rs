@@ -1,42 +1,57 @@
 //! CDDL conformance gate for the internode `#[wire]` CBOR body.
 //!
-//! `schemas/wire-body.cddl` claims to describe the bytes the codegen serializer
-//! emits for each `#[wire]` type. This test makes that claim *checked*: it drives
-//! the runtime's CBOR serializer primitives in the exact sequence the codegen
-//! emitter calls them (`hew_cbor_ser_begin_map`, then per-field
-//! `hew_cbor_ser_key_u64` and the value primitives — see `emit_ser_value_cbor` /
-//! `emit_ser_enum_cbor` in `hew-codegen-rs/src/llvm.rs`), then feeds the finished
-//! bytes through a real RFC 8610 CDDL validator (`cddl`) against the rules in
-//! `wire-body.cddl`.
+//! `schemas/wire-body.cddl` claims to describe the bytes a compiled codec walk
+//! emits for each `#[wire]` type. This test makes that claim *checked*: it
+//! drives the runtime's event ABI (`hew_ser_*` over a static tagged table) in
+//! the sequence the codegen walk calls it, then feeds the finished bytes
+//! through a real RFC 8610 CDDL validator (`cddl`) against the rules in
+//! `wire-body.cddl`. The cross-process round-trip in
+//! `distributed_two_process_e2e.rs` proves the full compiled-binary path.
 //!
-//! Driving the same FFI primitives the emitter calls produces byte-identical
-//! output to a compiled `#[wire]` send — the emitter's whole job is to sequence
-//! these primitives — so this is a genuine conformance check on the wire body,
-//! not a hand-mirrored structural guess that could silently drift from the CDDL.
-//! The cross-process round-trip in `distributed_two_process_e2e.rs::
-//! wire_cbor_cross_process_round_trip` proves the full compiled-binary path.
-//!
-//! Fail-closed (CLAUDE.md §2, `serializer-fail-closed`): the CDDL check here is
-//! ADDITIVE. A non-conforming body still fails closed at the runtime decoder
-//! regardless of the validator — the negative cases below assert both that the
-//! CDDL rejects a malformed body AND that a malformed body decodes to a
-//! fail-closed result (never a fabricated value).
+//! Fail-closed: the CDDL check is additive. A non-conforming body still fails
+//! closed at the runtime decoder; the negative cases below assert both that
+//! the CDDL rejects a malformed body and that the decoder refuses it.
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::ffi::CString;
+use std::ffi::c_void;
 use std::path::PathBuf;
 
-use hew_runtime::cbor_serial::{
-    hew_cbor_de_enum_begin, hew_cbor_de_failed, hew_cbor_de_free, hew_cbor_de_new,
-    hew_cbor_ser_begin_array, hew_cbor_ser_begin_map, hew_cbor_ser_end_array, hew_cbor_ser_end_map,
-    hew_cbor_ser_finish, hew_cbor_ser_i64, hew_cbor_ser_key_u64, hew_cbor_ser_new,
-    hew_cbor_ser_null, hew_cbor_ser_string, hew_cbor_ser_u64,
+use hew_codec::{Member, Table};
+use hew_runtime::codec::{
+    hew_de_failed, hew_de_free, hew_de_new_raw, hew_de_variant, hew_ser_field, hew_ser_finish_raw,
+    hew_ser_i64, hew_ser_new, hew_ser_null, hew_ser_record_begin, hew_ser_record_end, hew_ser_str,
+    hew_ser_variant, hew_ser_variant_end,
 };
 use hew_runtime::xnode_serial::hew_ser_free_bytes;
 
-/// The committed CDDL schema text. Loaded from the file so the test validates
-/// against the SAME schema that ships, not an inline copy that could drift.
+const CBOR: i32 = 0;
+
+static POINT_MEMBERS: [Member<'static>; 2] = [Member::new("x", 1, 0), Member::new("y", 2, 0)];
+/// `#[wire] type WirePoint { x: i64 @1; y: i64 @2; }`
+static POINT: Table<'static> = Table::new(&POINT_MEMBERS, true);
+
+static PRESENCE_MEMBERS: [Member<'static>; 3] = [
+    Member::new("value", 1, 0),
+    Member::new("required_option", 2, 0),
+    Member::new(
+        "optional_option",
+        3,
+        Member::ACCEPT_ABSENT | Member::OMIT_NULL,
+    ),
+];
+static PRESENCE: Table<'static> = Table::new(&PRESENCE_MEMBERS, true);
+
+static CMD_MEMBERS: [Member<'static>; 2] = [
+    Member::new("Ping", 0, 0),
+    Member::new("Move", 1, Member::PAYLOAD),
+];
+/// `#[wire] enum WireCmd { Ping @0; Move(WirePoint) @1; }`
+static CMD: Table<'static> = Table::new(&CMD_MEMBERS, true);
+
+static GREETING_MEMBERS: [Member<'static>; 1] = [Member::new("name", 1, 0)];
+static GREETING: Table<'static> = Table::new(&GREETING_MEMBERS, true);
+
 fn wire_body_cddl() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("schemas")
@@ -44,299 +59,150 @@ fn wire_body_cddl() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// Finish a serializer buffer into an owned `Vec<u8>`, freeing the FFI buffer.
-/// Panics on a fail-closed (null) finish — a well-formed encode must produce
-/// bytes.
-///
-/// # Safety
-/// `buf` must be a live handle from `hew_cbor_ser_new` whose container frames are
-/// balanced, and must not have been finished or aborted already.
-unsafe fn finish_to_vec(buf: *mut std::ffi::c_void) -> Vec<u8> {
-    let mut len: usize = 0;
-    // SAFETY: `buf` is a live, balanced handle per this fn's contract; `len` is a
-    // valid writable `*mut usize`.
-    let ptr = unsafe { hew_cbor_ser_finish(buf, &raw mut len) };
-    assert!(
-        !ptr.is_null(),
-        "serializer finished null (fail-closed) on a well-formed encode"
-    );
-    assert!(len > 0, "serializer produced zero-length output");
-    // SAFETY: `hew_cbor_ser_finish` returned a non-null buffer of exactly `len`
-    // bytes (asserted above).
+/// Run `walk` against a fresh CBOR sink and return the finished body.
+fn encode(walk: impl FnOnce(*mut c_void)) -> Vec<u8> {
+    let sink = hew_ser_new(CBOR);
+    walk(sink);
+    let mut len = 0usize;
+    // SAFETY: the walk left one complete value; `len` is writable.
+    let ptr = unsafe { hew_ser_finish_raw(sink, &raw mut len) };
+    // SAFETY: the runtime returned `len` initialized bytes.
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
-    // SAFETY: `ptr` came from `hew_cbor_ser_finish` and is freed exactly once here.
+    // SAFETY: freed exactly once.
     unsafe { hew_ser_free_bytes(ptr) };
     bytes
 }
 
-/// Validate `bytes` against a single named CDDL rule, returning the validator's
-/// result. The rule is selected by prepending a one-line root alias so the
-/// validator entry rule is unambiguous.
+/// # Safety
+/// `sink` is live.
+unsafe fn point(sink: *mut c_void, x: i64, y: i64) {
+    // SAFETY: per contract; the table is static.
+    unsafe {
+        hew_ser_record_begin(sink, &raw const POINT);
+        hew_ser_field(sink, 0);
+        hew_ser_i64(sink, x);
+        hew_ser_field(sink, 1);
+        hew_ser_i64(sink, y);
+        hew_ser_record_end(sink);
+    }
+}
+
 fn validate_against_rule(rule: &str, bytes: &[u8]) -> Result<(), String> {
-    // The `cddl` validator uses the first rule as the root unless told otherwise;
-    // prepend a root that aliases the rule under test so we validate exactly it.
     let schema = format!("start = {rule}\n\n{}", wire_body_cddl());
     cddl::validate_cbor_from_slice(&schema, bytes, None).map_err(|e| format!("{e:?}"))
 }
 
-/// `#[wire] type WirePoint { x: i64 @1, y: i64 @2 }` body, encoded exactly as
-/// `emit_ser_value_cbor` would: `begin_map`, key 1 → i64, key 2 → i64, `end_map`.
 #[test]
 fn wire_struct_body_conforms_to_cddl() {
-    let buf = hew_cbor_ser_new();
-    // SAFETY: `buf` is a live handle from `hew_cbor_ser_new`, balanced
-    // begin_map/end_map, and is consumed exactly once by `finish_to_vec`.
-    unsafe {
-        hew_cbor_ser_begin_map(buf);
-        hew_cbor_ser_key_u64(buf, 1);
-        hew_cbor_ser_i64(buf, 3);
-        hew_cbor_ser_key_u64(buf, 2);
-        hew_cbor_ser_i64(buf, 4);
-        hew_cbor_ser_end_map(buf);
+    // SAFETY: the sink is live for the walk.
+    let bytes = encode(|sink| unsafe { point(sink, 3, 4) });
+    for rule in ["wire-point-body", "wire-struct-body", "wire-body"] {
+        validate_against_rule(rule, &bytes).unwrap_or_else(|e| panic!("{rule}: {e}"));
     }
-    // SAFETY: `buf` is the same live handle, not yet finished elsewhere.
-    let bytes = unsafe { finish_to_vec(buf) };
-
-    validate_against_rule("wire-point-body", &bytes)
-        .expect("WirePoint body must validate against wire-point-body");
-    // The generic open-map rule must also accept it (forward-compat shape).
-    validate_against_rule("wire-struct-body", &bytes)
-        .expect("WirePoint body must validate against wire-struct-body");
-    // And the top-level body rule.
-    validate_against_rule("wire-body", &bytes)
-        .expect("WirePoint body must validate against wire-body");
 }
 
-/// The refined presence schema admits required Option null with an omitted
-/// optional key, and separately admits a present optional Some value.
+/// Required `Option` None is a present null; optional None omits its key.
 #[test]
 fn wire_struct_presence_matrix_conforms_to_cddl() {
     for optional_some in [false, true] {
-        let buf = hew_cbor_ser_new();
-        // SAFETY: test-controlled serializer with balanced map framing.
-        unsafe {
-            hew_cbor_ser_begin_map(buf);
-            hew_cbor_ser_key_u64(buf, 1);
-            hew_cbor_ser_i64(buf, 7);
-            hew_cbor_ser_key_u64(buf, 2);
-            hew_cbor_ser_null(buf);
+        // SAFETY: the sink is live for the walk; the table is static.
+        let bytes = encode(|sink| unsafe {
+            hew_ser_record_begin(sink, &raw const PRESENCE);
+            hew_ser_field(sink, 0);
+            hew_ser_i64(sink, 7);
+            hew_ser_field(sink, 1);
+            hew_ser_null(sink);
+            hew_ser_field(sink, 2);
             if optional_some {
-                hew_cbor_ser_key_u64(buf, 3);
-                hew_cbor_ser_i64(buf, 42);
+                hew_ser_i64(sink, 42);
+            } else {
+                hew_ser_null(sink);
             }
-            hew_cbor_ser_end_map(buf);
-        }
-        // SAFETY: `buf` is live and consumed exactly once here.
-        let bytes = unsafe { finish_to_vec(buf) };
+            hew_ser_record_end(sink);
+        });
         validate_against_rule("wire-presence-body", &bytes)
             .expect("required/null/optional presence body must conform");
+        assert_eq!(bytes.len() > 5, optional_some, "{bytes:?}");
     }
 }
 
-/// `#[wire] enum WireCmd { Ping; Move(WirePoint); }` unit variant `Ping`
-/// (ordinal 0) → bare uint `0`, exactly as `emit_ser_enum_cbor`'s unit arm
-/// (`hew_cbor_ser_u64(tag)`).
 #[test]
 fn wire_enum_unit_body_conforms_to_cddl() {
-    let buf = hew_cbor_ser_new();
-    // SAFETY: `buf` is a live handle from `hew_cbor_ser_new`; a unit enum body is
-    // a single bare uint, consumed once by `finish_to_vec`.
-    unsafe {
-        hew_cbor_ser_u64(buf, 0);
+    // SAFETY: the sink is live for the walk; the table is static.
+    let bytes = encode(|sink| unsafe {
+        hew_ser_variant(sink, &raw const CMD, 0);
+        hew_ser_variant_end(sink);
+    });
+    assert_eq!(bytes, [0x00]);
+    for rule in [
+        "wire-enum-unit",
+        "wire-enum-body",
+        "wire-cmd-body",
+        "wire-body",
+    ] {
+        validate_against_rule(rule, &bytes).unwrap_or_else(|e| panic!("{rule}: {e}"));
     }
-    // SAFETY: `buf` is the same live handle, not yet finished elsewhere.
-    let bytes = unsafe { finish_to_vec(buf) };
-
-    validate_against_rule("wire-enum-unit", &bytes)
-        .expect("Ping unit body must validate against wire-enum-unit");
-    validate_against_rule("wire-enum-body", &bytes)
-        .expect("Ping unit body must validate against wire-enum-body");
-    validate_against_rule("wire-body", &bytes)
-        .expect("Ping unit body must validate against wire-body");
 }
 
-/// `WireCmd::Move(WirePoint { x: 3, y: 4 })` payload variant (ordinal 1) →
-/// `{ 1 => [ {1: 3, 2: 4} ] }`, exactly as `emit_ser_enum_cbor`'s payload arm
-/// (`begin_map`, `key_u64(tag)`, `begin_array`, <field encodes>, `end_array`,
-/// `end_map`).
+/// `WireCmd.Move(WirePoint { x: 3, y: 4 })` → `{ 1 => {1: 3, 2: 4} }`.
 #[test]
 fn wire_enum_payload_body_conforms_to_cddl() {
-    let buf = hew_cbor_ser_new();
-    // SAFETY: `buf` is a live handle from `hew_cbor_ser_new`; every begin_* is
-    // matched by an end_* (outer map / payload array / nested struct map) and the
-    // handle is consumed exactly once by `finish_to_vec`.
-    unsafe {
-        hew_cbor_ser_begin_map(buf);
-        hew_cbor_ser_key_u64(buf, 1); // variant tag 1 (Move)
-        hew_cbor_ser_begin_array(buf); // positional payload array
-                                       // payload field 0: the nested WirePoint struct body
-        hew_cbor_ser_begin_map(buf);
-        hew_cbor_ser_key_u64(buf, 1);
-        hew_cbor_ser_i64(buf, 3);
-        hew_cbor_ser_key_u64(buf, 2);
-        hew_cbor_ser_i64(buf, 4);
-        hew_cbor_ser_end_map(buf);
-        hew_cbor_ser_end_array(buf);
-        hew_cbor_ser_end_map(buf);
+    // SAFETY: the sink is live for the walk; the table is static.
+    let bytes = encode(|sink| unsafe {
+        hew_ser_variant(sink, &raw const CMD, 1);
+        point(sink, 3, 4);
+        hew_ser_variant_end(sink);
+    });
+    for rule in [
+        "wire-enum-payload",
+        "wire-enum-body",
+        "wire-cmd-body",
+        "wire-body",
+    ] {
+        validate_against_rule(rule, &bytes).unwrap_or_else(|e| panic!("{rule}: {e}"));
     }
-    // SAFETY: `buf` is the same live handle, not yet finished elsewhere.
-    let bytes = unsafe { finish_to_vec(buf) };
-
-    validate_against_rule("wire-enum-payload", &bytes)
-        .expect("Move payload body must validate against wire-enum-payload");
-    validate_against_rule("wire-enum-body", &bytes)
-        .expect("Move payload body must validate against wire-enum-body");
-    validate_against_rule("wire-body", &bytes)
-        .expect("Move payload body must validate against wire-body");
 }
 
-/// A `#[wire] type WireGreeting { name: string @1 }` body exercises the
-/// text-leaf rule (`hew_cbor_ser_string`).
 #[test]
 fn wire_struct_string_field_conforms_to_cddl() {
-    let buf = hew_cbor_ser_new();
-    let name = CString::new("hew").unwrap();
-    // SAFETY: `buf` is a live handle; `name` is a valid NUL-terminated C string
-    // that outlives the call; begin_map/end_map are balanced.
-    unsafe {
-        hew_cbor_ser_begin_map(buf);
-        hew_cbor_ser_key_u64(buf, 1);
-        hew_cbor_ser_string(buf, name.as_ptr());
-        hew_cbor_ser_end_map(buf);
-    }
-    // SAFETY: `buf` is the same live handle, not yet finished elsewhere.
-    let bytes = unsafe { finish_to_vec(buf) };
-
+    let name = hew_cabi::string::string_from_str("hew");
+    // SAFETY: the sink is live for the walk; `name` is a live managed string.
+    let bytes = encode(|sink| unsafe {
+        hew_ser_record_begin(sink, &raw const GREETING);
+        hew_ser_field(sink, 0);
+        hew_ser_str(sink, name);
+        hew_ser_record_end(sink);
+    });
+    // SAFETY: the test owns `name`.
+    unsafe { hew_runtime::string::hew_string_drop(name) };
     validate_against_rule("wire-struct-body", &bytes)
         .expect("string-field struct body must validate against wire-struct-body");
 }
 
 // ── Fail-closed (negative) axis ──────────────────────────────────────────────
 
-/// A body that does not match the struct map shape (a bare text string) is
-/// rejected by the CDDL struct rule. The CDDL is a real contract: it says no to
-/// a shape the emitter never produces for a struct body.
 #[test]
 fn non_conforming_struct_body_is_rejected_by_cddl() {
-    // A bare CBOR text string — never a valid struct body (which is a map).
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(
-        &ciborium::value::Value::Text("not a struct".into()),
-        &mut bytes,
-    )
-    .unwrap();
-
-    let result = validate_against_rule("wire-struct-body", &bytes);
-    assert!(
-        result.is_err(),
-        "a bare text string must NOT validate as a struct body; got Ok"
-    );
+    // `"not a struct"` as CBOR text.
+    let mut bytes = vec![0x6c];
+    bytes.extend_from_slice(b"not a struct");
+    assert!(validate_against_rule("wire-struct-body", &bytes).is_err());
 }
 
-/// An enum body shaped as a MULTI-entry map (two keys) is not a well-formed
-/// map-of-one; the CDDL enum-payload rule rejects it. This is the same shape the
-/// runtime reader `hew_cbor_de_enum_begin` fails closed on — the test below
-/// asserts that runtime fail-closed behaviour directly.
+/// `{1: [], 2: []}` is not a map-of-one: the CDDL rejects it and so does the
+/// runtime decoder, which never fabricates a variant.
 #[test]
-fn multi_entry_enum_body_is_rejected_by_cddl() {
-    let mut bytes = Vec::new();
-    let bad = ciborium::value::Value::Map(vec![
-        (
-            ciborium::value::Value::Integer(1.into()),
-            ciborium::value::Value::Array(vec![]),
-        ),
-        (
-            ciborium::value::Value::Integer(2.into()),
-            ciborium::value::Value::Array(vec![]),
-        ),
-    ]);
-    ciborium::ser::into_writer(&bad, &mut bytes).unwrap();
-
-    let result = validate_against_rule("wire-enum-payload", &bytes);
-    assert!(
-        result.is_err(),
-        "a two-entry map must NOT validate as a map-of-one enum body; got Ok"
-    );
-}
-
-/// The runtime decoder fails CLOSED on the same malformed enum bodies the CDDL
-/// rejects: a multi-entry map and a single entry whose value is not an array
-/// both make `hew_cbor_de_enum_begin` set the reader's `failed` flag and return
-/// 0 — it never fabricates a variant. This is the load-bearing guarantee: the
-/// CDDL check is additive, the runtime reader is the trust boundary, and they
-/// agree on what is malformed.
-///
-/// The `failed` flag (`hew_cbor_de_failed == 1`) is the structural sentinel that
-/// distinguishes "decoder failed closed" from "decoded a real tag-0 unit variant
-/// (e.g. `Ping`)": a clean tag-0 decode leaves `failed == 0`; these malformed
-/// inputs latch `failed == 1`. Asserting the flag (not just `tag == 0`) ensures
-/// this test has real teeth — it would catch a decoder that silently decoded a
-/// well-formed variant-0 body instead of failing closed.
-#[test]
-fn malformed_enum_body_fails_closed_at_runtime_decoder() {
-    // Multi-entry map: `{1: [], 2: []}` — not a map-of-one.
-    let mut multi = Vec::new();
-    ciborium::ser::into_writer(
-        &ciborium::value::Value::Map(vec![
-            (
-                ciborium::value::Value::Integer(1.into()),
-                ciborium::value::Value::Array(vec![]),
-            ),
-            (
-                ciborium::value::Value::Integer(2.into()),
-                ciborium::value::Value::Array(vec![]),
-            ),
-        ]),
-        &mut multi,
-    )
-    .unwrap();
-    // SAFETY: `multi` is a live slice valid for its length; `hew_cbor_de_new`
-    // borrows it only for the duration of parsing.
-    let reader = unsafe { hew_cbor_de_new(multi.as_ptr(), multi.len()) };
-    assert!(!reader.is_null(), "decoder handle for multi-entry body");
-    // SAFETY: `reader` is the live handle just created; `hew_cbor_de_enum_begin`
-    // and `hew_cbor_de_failed` each take a live handle for the reader's lifetime.
-    let tag = unsafe { hew_cbor_de_enum_begin(reader) };
-    assert_eq!(tag, 0, "multi-entry enum body must fail closed to tag 0");
-    // The `failed` flag distinguishes "failed closed" from "decoded a real tag-0
-    // variant": a malformed body MUST latch failed == 1.
-    // SAFETY: `reader` is a live handle for the same decoder object just used
-    // for `hew_cbor_de_enum_begin` above; it has not been freed yet.
-    let failed = unsafe { hew_cbor_de_failed(reader) };
-    assert_eq!(
-        failed, 1,
-        "multi-entry enum body must set the failed flag (not just return tag 0)"
-    );
-    // SAFETY: `reader` is the same handle, freed exactly once.
-    unsafe { hew_cbor_de_free(reader) };
-
-    // Single entry whose value is NOT an array: `{1: 7}`.
-    let mut not_array = Vec::new();
-    ciborium::ser::into_writer(
-        &ciborium::value::Value::Map(vec![(
-            ciborium::value::Value::Integer(1.into()),
-            ciborium::value::Value::Integer(7.into()),
-        )]),
-        &mut not_array,
-    )
-    .unwrap();
-    // SAFETY: `not_array` is a live slice valid for its length.
-    let reader2 = unsafe { hew_cbor_de_new(not_array.as_ptr(), not_array.len()) };
-    assert!(!reader2.is_null(), "decoder handle for non-array body");
-    // SAFETY: `reader2` is the live handle just created.
-    let tag2 = unsafe { hew_cbor_de_enum_begin(reader2) };
-    assert_eq!(
-        tag2, 0,
-        "single-entry-non-array enum body must fail closed to tag 0"
-    );
-    // Again, the structural sentinel is the `failed` flag, not the sentinel tag value.
-    // SAFETY: `reader2` is a live handle for the same decoder object just used
-    // for `hew_cbor_de_enum_begin` above; it has not been freed yet.
-    let failed2 = unsafe { hew_cbor_de_failed(reader2) };
-    assert_eq!(
-        failed2, 1,
-        "single-entry-non-array enum body must set the failed flag"
-    );
-    // SAFETY: `reader2` is the same handle, freed exactly once.
-    unsafe { hew_cbor_de_free(reader2) };
+fn multi_entry_enum_body_is_refused_by_cddl_and_decoder() {
+    let multi = [0xa2, 0x01, 0x80, 0x02, 0x80];
+    assert!(validate_against_rule("wire-enum-payload", &multi).is_err());
+    // A tag the schema does not name is refused too.
+    for body in [&multi[..], &[0x09][..]] {
+        // SAFETY: `body` is a live slice; the table is static.
+        unsafe {
+            let reader = hew_de_new_raw(CBOR, body.as_ptr(), body.len());
+            assert_eq!(hew_de_variant(reader, &raw const CMD), -1, "{body:?}");
+            assert_eq!(hew_de_failed(reader), 1, "{body:?}");
+            hew_de_free(reader);
+        }
+    }
 }

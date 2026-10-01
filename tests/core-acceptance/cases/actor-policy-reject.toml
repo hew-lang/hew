@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "submitted: accepted\nrejected: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n"
+stdout = "submitted: accepted\nrejected: Full: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n"
 exit = 0

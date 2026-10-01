@@ -651,7 +651,7 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             unwind,
             ..
         } => (
-            format!("wire.codec{{{direction:?}, {}}}", plan.ty.user_facing()),
+            format!("wire.codec{{{direction:?}, {}}}", plan.root.user_facing()),
             args,
             result,
             Some(normal),

@@ -659,6 +659,7 @@ mod non_root_module_inference_scope {
             wire: None,
             is_indirect: false,
             resource_marker: hew_parser::ast::ResourceMarker::None,
+            serial_case: None,
             is_opaque: false,
             consuming_methods: Vec::new(),
             lang_item: None,

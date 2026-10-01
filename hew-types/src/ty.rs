@@ -59,14 +59,12 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
-            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue,
         )
@@ -1474,20 +1472,6 @@ impl Ty {
         crate::actor_delivery::nominal(crate::KnownDecl::Never, Vec::new())
     }
 
-    /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
-    /// and `await stream.recv() | after d`.  A unit enum with one variant
-    /// (`Timeout`) distinguishing deadline expiry from a closed channel
-    /// (`Ok(None)`).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
-    #[must_use]
-    pub fn timeout_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("TimeoutError")
-            .expect("generated builtin enum catalog must contain TimeoutError")
-    }
-
     /// Construct `LinkError` — error type for `link(handle)` calls.
     ///
     /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
@@ -1501,17 +1485,6 @@ impl Ty {
     pub fn link_error() -> Ty {
         crate::builtin_enums::monomorphic_builtin_enum_ty("LinkError")
             .expect("generated builtin enum catalog must contain LinkError")
-    }
-
-    /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
-    #[must_use]
-    pub fn monitor_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("MonitorError")
-            .expect("generated builtin enum catalog must contain MonitorError")
     }
 
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.

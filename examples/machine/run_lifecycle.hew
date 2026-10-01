@@ -1,5 +1,5 @@
 // Runnable fixture: generic stdlib Lifecycle<T> state machine.
-import std.concurrency.lifecycle.{Lifecycle};
+import std.concurrency.lifecycle.{Lifecycle, LifecycleError};
 
 fn main() {
     var service: Lifecycle<i64> = .Created;
@@ -16,7 +16,7 @@ fn main() {
     println(crashing.state_name());
     crashing.step(Lifecycle.Event.Initialise);
     println(crashing.state_name());
-    let err = Error.Code(7);
+    let err = LifecycleError.StartFailed("bind refused");
     crashing.step(Lifecycle.Event.Crashed { error: err });
     println(crashing.state_name());
 }

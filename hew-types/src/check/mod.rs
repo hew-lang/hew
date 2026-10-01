@@ -895,8 +895,12 @@ impl Checker {
                 mod_id,
                 &module.source_paths,
             );
-            self.defs
+            let minted = self
+                .defs
                 .mint_module(&canonical.dotted(), &module.source_paths);
+            if let Some(leaf) = mod_id.segments.last() {
+                self.scopes.bind_own_leaf(minted, *leaf);
+            }
         }
         // Second pass — per-file identities for directory modules' peer
         // files (rc1-F1 stage C): a peer file's declarations carry the

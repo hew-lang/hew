@@ -241,6 +241,10 @@ pub struct Scopes {
     resolutions: HashMap<SpanKey, Resolution>,
     /// Import declarations a resolution went through.
     used_imports: std::collections::HashSet<ImportSite>,
+    /// The leaf a module's own source may qualify its items with
+    /// (`selfqualtype.Meter` inside `hew.selfqualtype`). Imports and items
+    /// shadow it.
+    own_leaves: HashMap<ModuleId, Symbol>,
 }
 
 impl Scopes {
@@ -299,6 +303,12 @@ impl Scopes {
             .or_default()
             .insert(name, binding);
         previous.filter(|previous| *previous != binding)
+    }
+
+    /// Let `namespace`'s own source qualify its items by `leaf`, the last
+    /// segment of the module path it was imported under.
+    pub fn bind_own_leaf(&mut self, namespace: ModuleId, leaf: Symbol) {
+        self.own_leaves.insert(namespace, leaf);
     }
 
     /// The item `name` binds in `namespace`.
@@ -684,6 +694,10 @@ impl Scopes {
                     .and_then(|file| file.imports.get(&head.name))
                     .map(|(binding, import)| (*binding, Some(*import)))
             })
+            .or_else(|| {
+                (self.own_leaves.get(&own) == Some(&head.name))
+                    .then_some((Binding::Module(own), None))
+            })
             .or_else(|| self.prelude.get(&head.name).map(|binding| (*binding, None)));
         match namespace {
             Namespace::Value => {
@@ -799,6 +813,68 @@ mod tests {
         assert_eq!(
             scopes.resolve(&env, site, Namespace::Value, &[at("C", 30)]),
             Ok(Resolution::Local(local))
+        );
+    }
+
+    /// A module's own source may qualify its items with the leaf it was
+    /// imported under; an import of another module under that leaf wins.
+    #[test]
+    fn own_leaf_qualifies_items_until_an_import_shadows_it() {
+        let mut defs = DefTable::new();
+        let mut scopes = Scopes::new();
+        let meters = defs.mint_module(
+            "hew.meters",
+            &[std::path::PathBuf::from("/nonexistent/meters.hew")],
+        );
+        let other = defs.mint_module("other", &[std::path::PathBuf::from("/nonexistent/o.hew")]);
+        let meter = declare(
+            &mut defs,
+            &mut scopes,
+            meters,
+            0..10,
+            DeclarationKind::Type,
+            "Meter",
+            "hew.meters.Meter",
+        );
+        declare(
+            &mut defs,
+            &mut scopes,
+            other,
+            0..10,
+            DeclarationKind::Type,
+            "Meter",
+            "other.Meter",
+        );
+        let env = TypeEnv::new();
+        let site = ScopeSite {
+            file: meters,
+            span_file: 0,
+            publish: false,
+        };
+        let path = [at("meters", 0), at("Meter", 7)];
+        assert!(
+            scopes.resolve(&env, site, Namespace::Type, &path).is_err(),
+            "without the binding the leaf names nothing"
+        );
+        scopes.bind_own_leaf(meters, Symbol::intern("meters"));
+        assert_eq!(
+            scopes.resolve(&env, site, Namespace::Type, &path),
+            Ok(Resolution::Nominal(NominalId::from_minted_declaration(
+                meter
+            )))
+        );
+        scopes.bind_import(
+            meters,
+            Symbol::intern("meters"),
+            Binding::Module(other),
+            ImportSite::new(meters, &(0..1)),
+        );
+        assert_ne!(
+            scopes.resolve(&env, site, Namespace::Type, &path),
+            Ok(Resolution::Nominal(NominalId::from_minted_declaration(
+                meter
+            ))),
+            "an import under the same leaf shadows the module's own leaf"
         );
     }
 

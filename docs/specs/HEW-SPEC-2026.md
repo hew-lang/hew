@@ -3406,7 +3406,7 @@ Signatures the rules fix:
 | `observe.barrier()` | `-> Result<(), ObserveError>` |
 | `http.Server.accept()` | `-> Result<Request, NetError>` |
 | `Request.respond*(…)` | `-> Result<(), NetError>` |
-| `wire.from_json(text)` | `-> Result<T, wire.DecodeError>` |
+| `json.decode<T>(text)` | `-> Result<T, wire.DecodeError>` |
 
 **No error is reported by a side channel.** A module does not expose a
 `*_message(e) -> string` function beside its error type — `Display` is the one
@@ -5775,7 +5775,7 @@ enum Status {
 
 `std.encoding.yaml` is shipped for parsing, constructing, inspecting, and
 stringifying YAML values. Wire types can also serialize to and from YAML using
-the helper surface below.
+`yaml.encode` and `yaml.decode<T>` (the codec surface below).
 
 YAML follows the JSON mapping and the same required/optional presence table in
 §7.3.1.4. Missing required fields and null for bare required fields are errors;
@@ -5796,6 +5796,10 @@ Encoders select format based on context:
 Explicit format selection:
 
 ```hew
+import std.encoding.cbor;
+import std.encoding.json;
+import std.encoding.yaml;
+
 #[wire]
 type MyMessage {
     id: u64 @1;
@@ -5804,9 +5808,9 @@ type MyMessage {
 
 fn main() {
     let msg = MyMessage { id: 1, text: "hello" };
-    let binary = msg.encode(); // CBOR bytes
-    let json_str = msg.to_json(); // JSON string
-    let yaml_str = msg.to_yaml(); // YAML string
+    let binary = cbor.encode(msg); // CBOR bytes
+    let json_str = json.encode(msg); // JSON string
+    let yaml_str = yaml.encode(msg); // YAML string
     println(f"{binary.len()} {json_str} {yaml_str}");
 }
 ```
@@ -5814,6 +5818,10 @@ fn main() {
 Decoding:
 
 ```hew
+import std.encoding.cbor;
+import std.encoding.json;
+import std.encoding.yaml;
+
 #[wire]
 type MyMessage {
     id: u64 @1;
@@ -5822,26 +5830,28 @@ type MyMessage {
 
 fn main() {
     let msg = MyMessage { id: 1, text: "hello" };
-    let binary = msg.encode();
-    let json_str = msg.to_json();
-    let yaml_str = msg.to_yaml();
-    let msg1 = MyMessage.decode(binary);
-    let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
-    let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
-    println(f"{msg1.id} {msg2.expect("json").id} {msg3.expect("yaml").id}");
+    let msg1 = cbor.decode<MyMessage>(cbor.encode(msg)); // Result<MyMessage, wire.DecodeError>
+    let msg2 = json.decode<MyMessage>(json.encode(msg));
+    let msg3 = yaml.decode<MyMessage>(yaml.encode(msg));
+    println(f"{msg1.expect("cbor").id} {msg2.expect("json").id} {msg3.expect("yaml").id}");
 }
 ```
 
-Current shipped helper surface, as registered by the type checker:
+Codec surface:
 
-- `#[wire] type` instance methods: `encode() -> bytes`, `to_json() -> string`,
-  `to_yaml() -> string`
-- `#[wire] type` static methods: `MyMessage.decode(bytes) -> MyMessage`,
-  `MyMessage.from_json(string) -> Result<MyMessage, string>`,
-  `MyMessage.from_yaml(string) -> Result<MyMessage, string>`
-- unit-only `#[wire] enum` helpers are JSON/YAML-only:
-  `to_json()`, `to_yaml()`, `from_json(string) -> Result<Self, string>`,
-  `from_yaml(string) -> Result<Self, string>`
+- Each of `std.encoding.cbor`, `json`, `yaml`, `toml` and `msgpack` offers
+  `encode<T: Serializable>(value: T)` and
+  `decode<T: Serializable>(document) -> Result<T, wire.DecodeError>`. The
+  document is `string` for the text formats and `bytes` for `cbor` and
+  `msgpack`.
+- `T` must be named by the call or its context; an unsettled value type is
+  `E_TYPE_ANNOTATION_NEEDED`.
+- A `#[wire]` type has no codec methods of its own; `#[wire]` supplies the
+  `@N` schema every format module reads.
+- `wire.DecodeError` names the path of the value that failed. A malformed
+  document returns `Err`; it does not trap.
+- `toml.encode` and `toml.decode` refuse a non-record root and a `#[wire]`
+  record with a required `Option` field (`E_FORMAT_CANNOT_REPRESENT`).
 
 ---
 

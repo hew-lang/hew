@@ -217,18 +217,21 @@ module under `std.encoding.*`. Hew does **not** expose the runtime
 CBOR envelope to user code as a general-purpose serialisation surface.
 That envelope is an internal trust boundary, not a user API.
 
-The opaque `Value` contract shared by the structural encoders is
-described in [`std/encoding/wire/README.md`](../../std/encoding/wire/README.md)
-and was settled by issue #1247.
+Every format module offers `encode(value)` and `decode<T>(document)` over
+any data type. A failed decode returns `wire.DecodeError`, which names the
+path of the value that did not fit. The shared error and the `#[wire]`
+tagged-schema layer are described in
+[`std/encoding/wire/README.md`](../../std/encoding/wire/README.md).
 
 ### Module inventory and honest status
 
 | Module | Status | What's there today |
 | --- | --- | --- |
-| `std.encoding.json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
+| `std.encoding.cbor` | **Real.** `encode` / `decode<T>` of any data value; `#[wire]` types encode by `@N` tag. | `std/encoding/cbor/`. |
+| `std.encoding.json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser, the opaque `Value` surface and `encode` / `decode<T>`. |
 | `std.encoding.yaml` | **Real.** Full parser/serialiser. | `std/encoding/yaml/` (~2.4k LOC). |
 | `std.encoding.toml` | **Real.** Parser/generator + datetime variant. | `std/encoding/toml/` (~1.2k LOC). |
-| `std.encoding.msgpack` | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface. | `std/encoding/msgpack/` (~1k LOC). |
+| `std.encoding.msgpack` | **Real.** `encode` / `decode<T>` of any data value, plus `from_json` / `to_json` bridging JSON text. | `std/encoding/msgpack/`. |
 | `std.encoding.protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler. | `std/encoding/protobuf/` (~1.5k LOC). |
 | `std.encoding.xml` | **Real, scoped.** Parse/serialise. | `std/encoding/xml/` (~850 LOC). |
 | `std.encoding.csv` | **Real, scoped.** | `std/encoding/csv/`. |
@@ -236,7 +239,7 @@ and was settled by issue #1247.
 | `std.encoding.base64` | **Real.** | `std/encoding/base64/`. |
 | `std.encoding.hex` | **Real.** | `std/encoding/hex/`. |
 | `std.encoding.compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
-| `std.encoding.wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
+| `std.encoding.wire` | **Substrate.** Holds the shared `DecodeError` and the `#[wire]` tagged-schema layer. The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.
@@ -253,13 +256,15 @@ Each module's README states its own scope. The doctrine here is about
 - **Talking to a non-Hew consumer that wants to read your message
   types:** see §3 — this is consumer-interop, deferred.
 
-### Anti-pattern: do not use `std.encoding.wire` directly
+### Anti-pattern: do not look for codecs in `std.encoding.wire`
 
 `std.encoding.wire` held low-level HBF byte-layout helpers
-(`encode_header` and friends) that reflected the pre-v0.5 format.
-Those helpers were deleted when the CBOR-native wire format replaced HBF (see §5 S1). The module now holds
-only the opaque `Value` contract. User or stdlib code that needs wire
-bytes must use the format-specific module (`json`, `msgpack`, etc.).
+(`encode_header` and friends) that reflected the pre-v0.5 format, and
+later a generic `wire.to_json` / `wire.encode` facade. Both are gone: the
+format modules encode and decode, and `wire` holds the shared `DecodeError`
+and the tagged-schema layer. Code that needs wire bytes or text calls
+`encode` / `decode<T>` on the format-specific module (`json`, `cbor`,
+`msgpack`, etc.).
 
 ---
 

@@ -222,7 +222,9 @@ pub(super) fn analyze_document(
         state.stopped.as_ref(),
     );
 
-    let type_output = state.typecheck_result.take().and_then(|result| result.tco);
+    let mut type_output = state.typecheck_result.take().and_then(|result| result.tco);
+    // HIR and semantic diagnostics below read the checker's own indices; only
+    // the stored copy that position queries use is re-keyed afterwards.
     let module_sources = build_module_source_map(&state.program, documents);
     // HIR lowering and ownership-SIR verification run only on a program the
     // checker accepted: a module already rejected upstream is not worth
@@ -277,6 +279,16 @@ pub(super) fn analyze_document(
             .entry(editor_uri(&target))
             .or_default()
             .extend(diagnostics);
+    }
+
+    let document_file = state.program.module_graph.as_ref().and_then(|graph| {
+        let path = root_path
+            .canonicalize()
+            .unwrap_or_else(|_| root_path.clone());
+        graph.file_span_indices().path_index(&path)
+    });
+    if let (Some(tco), Some(file)) = (type_output.as_mut(), document_file) {
+        hew_analysis::identity::focus_file(tco, file);
     }
 
     DocumentState {
@@ -1096,6 +1108,32 @@ pub(super) mod tests {
                     .count()
             });
         assert_eq!(peer_errors, 1, "{:?}", document.diagnostics_by_uri);
+    }
+
+    /// Position queries on an open module entry still read that file's own
+    /// checker facts once the module is analysed as a whole.
+    #[test]
+    fn hover_on_a_directory_module_entry_reads_its_own_facts() {
+        const ENTRY: &str = "pub type Config {\n    timeout: i64;\n}\n\npub fn describe(config: Config) -> i64 {\n    let limit = config.timeout;\n    limit + doubled(config)\n}\n";
+        const PEER: &str = "pub fn doubled(config: Config) -> i64 {\n    config.timeout * 2\n}\n";
+        let root = make_temp_workspace_dir(&[("forge/forge.hew", ENTRY), ("forge/ado.hew", PEER)]);
+        let entry_uri = Url::from_file_path(root.join("forge/forge.hew")).expect("absolute path");
+
+        let document = analyze_document(&entry_uri, ENTRY, &DashMap::new(), &[]);
+        let hover = surface_hover(&document, ENTRY, "\n    limit");
+        assert!(hover.contains("i64"), "hover on `limit`: {hover:?}");
+    }
+
+    #[test]
+    fn hover_on_a_directory_module_peer_reads_its_own_facts() {
+        const ENTRY: &str = "pub type Config {\n    timeout: i64;\n}\n\npub fn describe(config: Config) -> i64 {\n    doubled(config)\n}\n";
+        const PEER: &str = "pub fn doubled(config: Config) -> i64 {\n    let twice = config.timeout * 2;\n    twice\n}\n";
+        let root = make_temp_workspace_dir(&[("forge/forge.hew", ENTRY), ("forge/ado.hew", PEER)]);
+        let peer_uri = Url::from_file_path(root.join("forge/ado.hew")).expect("absolute path");
+
+        let document = analyze_document(&peer_uri, PEER, &DashMap::new(), &[]);
+        let hover = surface_hover(&document, PEER, "\n    twice");
+        assert!(hover.contains("i64"), "hover on `twice`: {hover:?}");
     }
 
     #[test]

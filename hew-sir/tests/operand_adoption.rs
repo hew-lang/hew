@@ -34,7 +34,7 @@ fn compiled(source: &str) -> SemModule {
         verify_module(&module)
     );
     canonicalize_module_constant_cfg(&mut module).expect("canonical SIR");
-    transfer_module_dead_local_reads(&mut module).expect("transferred SIR");
+    transfer_module_dead_local_reads(&mut module);
     module
 }
 

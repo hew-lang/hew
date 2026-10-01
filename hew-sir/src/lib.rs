@@ -61,7 +61,7 @@ pub use model::{
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, transfer_module_dead_local_reads, CfgCanonicalizationReport,
-    DeadLocalTransferReport, SirOptimizationError,
+    DeadLocalTransferReport,
 };
 pub use ownership::{
     aggregate_field_recipes, aggregate_field_types, call_boundary_types_match,

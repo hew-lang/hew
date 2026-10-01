@@ -492,7 +492,7 @@ impl Checker {
     /// declaration authored in the current scope wins before an import, and a
     /// bare import resolves only when that exact binding published one source
     /// identity. There is deliberately no scan over globally loaded exports.
-    pub(in crate::check) fn resolve_supervisor_child_type(&self, raw: &str) -> Option<String> {
+    pub(in crate::check) fn resolve_supervisor_child_type(&mut self, raw: &str) -> Option<String> {
         if let Some((module_short, type_name)) = raw.split_once('.') {
             return self
                 .resolve_module_type(module_short, type_name)
@@ -540,19 +540,23 @@ impl Checker {
         }
 
         if let Some(identity) = self.published_bare_type_qualified(raw) {
-            if let Some(owner) = self.unqualified_to_module.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                raw.to_string(),
-            )) {
-                self.mark_module_owner_bindings_used(owner);
+            if let Some(owner) = self
+                .unqualified_to_module
+                .get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    raw.to_string(),
+                ))
+                .cloned()
+            {
+                self.note_path_use(&owner);
             }
             return Some(identity);
         }
         None
     }
 
-    pub(in crate::check) fn canonical_supervisor_child_type(&self, raw: &str) -> String {
+    pub(in crate::check) fn canonical_supervisor_child_type(&mut self, raw: &str) -> String {
         self.resolve_supervisor_child_type(raw)
             .unwrap_or_else(|| raw.to_string())
     }

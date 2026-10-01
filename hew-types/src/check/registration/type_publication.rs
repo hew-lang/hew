@@ -554,7 +554,7 @@ impl Checker {
                         .get(item_ordinal)
                         .and_then(|source| self.defs.module_for_source(source))
                         .unwrap_or(identity_module);
-                    self.bind_import_in_scope(file, decl);
+                    self.bind_import_in_scope(file, decl, span);
                 }
                 self.declare_item_type_parameter_scopes(
                     item_sources
@@ -768,10 +768,7 @@ impl Checker {
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
                         for super_trait in supers {
-                            self.mark_imported_trait_used_for_module_aliases(
-                                module_short,
-                                &super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            );
+                            self.note_trait_use(&super_trait.path.to_string());
                         }
                     }
                     // Record visibility for all traits (both pub and non-pub) so a
@@ -1018,10 +1015,7 @@ impl Checker {
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.mark_imported_trait_used_for_module_aliases(
-                            module_short,
-                            &tb.path.to_string(),
-                        ); // TRANSITION(P1): deleted by A1 commit 2
+                        self.note_trait_use(&tb.path.to_string());
                         self.record_trait_impl_methods(
                             type_name,
                             &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
@@ -1689,10 +1683,7 @@ impl Checker {
                             self.current_module.replace(module_full_path.to_string());
                         self.current_module_idx = declaring_file_idx;
                         for super_trait in supers {
-                            self.mark_imported_trait_used(
-                                Some(module_full_path),
-                                &super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            );
+                            self.note_trait_use(&super_trait.path.to_string());
                         }
                         self.current_module = saved_importer_module;
                         self.current_module_idx = importer_file_idx;
@@ -1797,10 +1788,7 @@ impl Checker {
                         let super_keys: Vec<String> = supers
                             .iter()
                             .map(|s| {
-                                self.mark_imported_trait_used(
-                                    Some(module_full_path),
-                                    &s.path.to_string(),
-                                ); // TRANSITION(P1): deleted by A1 commit 2
+                                self.note_trait_use(&s.path.to_string());
                                 self.resolve_super_trait_edge(module_full_path, &s.path.to_string())
                                 // TRANSITION(P1): deleted by A1 commit 2
                             })

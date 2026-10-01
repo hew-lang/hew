@@ -19,114 +19,65 @@ use hew_parser::ast::WireMetadata;
 use hew_parser::module::ModulePath;
 
 impl Checker {
-    pub(super) fn mark_import_module_used_for_owner(
-        &self,
-        owner: Option<&str>,
-        imported_module: &str,
-    ) {
-        for ((scope, file, binding), source) in &self.module_import_bindings {
-            if scope.as_deref() == owner
-                && *file == self.current_module_idx
-                && (binding == imported_module || source == imported_module)
-            {
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    owner.map(str::to_string),
-                    *file,
-                    binding.clone(),
-                ));
-            }
-        }
-    }
-
-    pub(super) fn mark_loaded_trait_owner_import_used(
-        &self,
-        module: Option<&str>,
-        trait_name: &str,
-    ) {
-        let candidate_owners = [
-            module.map(str::to_string),
-            self.current_module.clone(),
-            None::<String>,
-        ];
-        let mut used = self.used_modules.borrow_mut();
-        for key in self.import_spans.keys() {
-            if !candidate_owners
-                .iter()
-                .any(|owner| owner.as_ref() == key.owner_module.as_ref())
-            {
-                continue;
-            }
-            let qualified = format!("{}.{}", key.short_name, trait_name);
-            if self.has_trait_def(&qualified) {
-                used.insert(key.clone());
-            }
-        }
-    }
-
-    pub(super) fn mark_imported_trait_used(&self, module: Option<&str>, trait_name: &str) {
-        if let Some((imported_module, _)) = trait_name.split_once('.') {
-            if self.modules.contains(imported_module) {
-                self.mark_import_module_used_for_owner(module, imported_module);
-                if self.current_module.as_deref() != module {
-                    self.mark_import_module_used_for_owner(
-                        self.current_module.as_deref(),
-                        imported_module,
-                    );
-                }
-            }
+    /// Report `import` declarations no resolution went through.
+    fn record_reportable_import(&mut self, name: &str, span: &Span) {
+        let Some(site) = self.scope_site() else {
             return;
-        }
+        };
+        self.reportable_imports
+            .push(super::types::ReportableImport {
+                site: super::scope::ImportSite::new(site.file, span),
+                span: span.clone(),
+                name: name.to_string(),
+                source_module: self.current_module.clone(),
+            });
+    }
 
-        if let Some(source_key) = self.trait_import_bindings.get(&(
-            module.unwrap_or_default().to_string(),
-            trait_name.to_string(),
-        )) {
-            if let Some((imported_module, _)) = source_key.rsplit_once('.') {
-                if Some(imported_module) == module {
-                    return;
-                }
-                self.mark_import_module_used_for_owner(module, imported_module);
-                if self.current_module.as_deref() != module {
-                    self.mark_import_module_used_for_owner(
-                        self.current_module.as_deref(),
-                        imported_module,
-                    );
-                }
-            }
-        } else if let Some(imported_module) = self.unqualified_to_module.get(&(
-            module.map(str::to_string),
-            self.current_module_idx,
-            trait_name.to_string(),
-        )) {
-            self.mark_import_module_used_for_owner(module, imported_module.as_str());
-            if self.current_module.as_deref() != module {
-                self.mark_import_module_used_for_owner(
-                    self.current_module.as_deref(),
-                    imported_module.as_str(),
-                );
-            }
-        } else {
-            self.mark_loaded_trait_owner_import_used(module, trait_name);
+    /// Count a use of the import binding `name` in the current file.
+    ///
+    /// TRANSITION(A1c3): WHY record-literal and module-member paths still
+    /// arrive as dotted strings. WHEN they resolve through `Scope`, the
+    /// resolution marks the import and this is deleted. WHAT: the struct
+    /// literal and member checkers take the written `Path`.
+    pub(in crate::check) fn note_import_use(&mut self, name: impl ToString) {
+        if let Some(site) = self.scope_site() {
+            self.scopes
+                .mark_import_binding_used(site.file, Symbol::intern(&name.to_string()));
         }
     }
 
-    pub(super) fn mark_imported_trait_used_for_module_aliases(
-        &self,
-        module_short: &str,
-        trait_name: &str,
-    ) {
-        self.mark_imported_trait_used(Some(module_short), trait_name);
-
-        let owner_aliases: Vec<String> = self
-            .import_spans
-            .keys()
-            .filter_map(|key| key.owner_module.as_deref())
-            .filter(|owner| owner.rsplit("::").next() == Some(module_short))
-            .map(str::to_string)
-            .collect();
-        for owner in owner_aliases {
-            self.mark_imported_trait_used(Some(&owner), trait_name);
+    /// Count a use of the module or declaration a rendered path names as a
+    /// use of the current file's imports of its module.
+    ///
+    /// TRANSITION(A1c3): see [`Self::note_import_use`].
+    pub(in crate::check) fn note_path_use(&mut self, path: &str) {
+        let module = self.defs.module_for_path(path).or_else(|| {
+            self.lookup_declaration(path)
+                .and_then(|declaration| self.defs.module(declaration))
+        });
+        if let (Some(site), Some(module)) = (self.scope_site(), module) {
+            self.scopes.mark_module_used(site.file, module);
         }
+    }
+
+    /// Count a use of the trait a bound spells.
+    ///
+    /// TRANSITION(A1c4): WHY bounds are still spelled. WHEN bounds carry
+    /// `TraitRef`s, callers pass the trait id to
+    /// [`Self::mark_trait_import_used`]. WHAT: bound resolution through `Scope`.
+    pub(in crate::check) fn note_trait_use(&mut self, trait_name: &str) {
+        if let Some(trait_id) = self.trait_key_id(&self.trait_ref_lookup_key(trait_name)) {
+            self.mark_trait_import_used(trait_id);
+        }
+    }
+
+    /// Count the use of a trait no written path names (dispatch through it,
+    /// a supertrait edge) as a use of the imports of its module.
+    pub(in crate::check) fn mark_trait_import_used(&mut self, trait_id: crate::DefId) {
+        let (Some(site), Some(module)) = (self.scope_site(), self.defs.module(trait_id)) else {
+            return;
+        };
+        self.scopes.mark_module_used(site.file, module);
     }
 
     /// Seed lifecycle import bindings from module-graph edges before type
@@ -655,7 +606,7 @@ impl Checker {
         let importer = self.scope_site().map(|site| site.file);
         self.register_import_publications(decl, import_span);
         if let Some(file) = importer {
-            self.bind_import_in_scope(file, decl);
+            self.bind_import_in_scope(file, decl, import_span.unwrap_or(&(0..0)));
         }
     }
 
@@ -888,14 +839,7 @@ impl Checker {
                         canonical_owner.clone(),
                     );
                     if let Some(span) = import_span {
-                        self.import_spans.insert(
-                            ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                short.to_string(),
-                            ),
-                            (span.clone(), self.current_module.clone()),
-                        );
+                        self.record_reportable_import(&short.to_string(), span);
                     }
                     for (method, c_symbol) in &clean_names {
                         // Prefer the wrapper function's own signature (registered under
@@ -1100,14 +1044,7 @@ impl Checker {
                     full_dot_path.clone(),
                 );
                 if let Some(span) = import_span {
-                    self.import_spans.insert(
-                        ImportKey::in_file(
-                            self.current_module.clone(),
-                            self.current_module_idx,
-                            short.clone(),
-                        ),
-                        (span.clone(), self.current_module.clone()),
-                    );
+                    self.record_reportable_import(&short, span);
                 }
                 // Dedup pure-Hew modules (e.g. `std::fs`) that may be transitively
                 // imported by multiple stdlib sub-modules.  Without this guard,
@@ -1505,7 +1442,7 @@ impl Checker {
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
                         for super_trait in supers {
-                            self.mark_imported_trait_used(None, &super_trait.path.to_string());
+                            self.note_trait_use(&super_trait.path.to_string());
                             // TRANSITION(P1): deleted by A1 commit 2
                         }
                     }
@@ -1685,7 +1622,7 @@ impl Checker {
                         self.current_self_type = prev_self_type;
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
-                            self.mark_imported_trait_used(None, &tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                            self.note_trait_use(&tb.path.to_string());
                             self.record_trait_impl_methods(
                                 type_name,
                                 &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2

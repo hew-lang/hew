@@ -313,7 +313,7 @@ impl Checker {
                         let super_names: Vec<String> = supers
                             .iter()
                             .map(|s| {
-                                self.mark_imported_trait_used(None, &s.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                                self.note_trait_use(&s.path.to_string());
                                 s.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
                             })
                             .collect();

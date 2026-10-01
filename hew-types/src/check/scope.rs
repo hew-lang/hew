@@ -188,7 +188,28 @@ struct FileScope {
     /// The module whose items this file sees unqualified: its own for a
     /// single-file module, the assembler for a directory module's peer file.
     namespace: Option<ModuleId>,
-    imports: HashMap<Symbol, Binding>,
+    imports: HashMap<Symbol, (Binding, ImportSite)>,
+    /// The module each import declaration of this file names.
+    import_targets: Vec<(ModuleId, ImportSite)>,
+}
+
+/// One import declaration: the file it is written in and its source span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImportSite {
+    pub file: ModuleId,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl ImportSite {
+    #[must_use]
+    pub fn new(file: ModuleId, span: &Span) -> Self {
+        Self {
+            file,
+            start: span.start,
+            end: span.end,
+        }
+    }
 }
 
 /// A generic declaration's lexical region in its defining source file.
@@ -211,6 +232,8 @@ pub struct Scopes {
     source_type_params: Vec<GenericScope>,
     contexts: SyntaxContexts,
     resolutions: HashMap<SpanKey, Resolution>,
+    /// Import declarations a resolution went through.
+    used_imports: std::collections::HashSet<ImportSite>,
 }
 
 impl Scopes {
@@ -308,12 +331,60 @@ impl Scopes {
     }
 
     /// Bind an import in one file's scope.
-    pub fn bind_import(&mut self, file: ModuleId, name: Symbol, binding: Binding) {
+    pub fn bind_import(
+        &mut self,
+        file: ModuleId,
+        name: Symbol,
+        binding: Binding,
+        site: ImportSite,
+    ) {
         self.files
             .entry(file)
             .or_default()
             .imports
-            .insert(name, binding);
+            .insert(name, (binding, site));
+    }
+
+    /// Record the module an import declaration names.
+    pub fn record_import_target(&mut self, target: ModuleId, site: ImportSite) {
+        let targets = &mut self.files.entry(site.file).or_default().import_targets;
+        if !targets.contains(&(target, site)) {
+            targets.push((target, site));
+        }
+    }
+
+    /// Count a use of `module` that no written path names (a trait method
+    /// reached through dispatch, an implicit literal import) as a use of
+    /// every import of it in `file`.
+    pub fn mark_module_used(&mut self, file: ModuleId, module: ModuleId) {
+        let module = self.namespace_of(module);
+        let Some(scope) = self.files.get(&file) else {
+            return;
+        };
+        let used: Vec<ImportSite> = scope
+            .import_targets
+            .iter()
+            .filter(|(target, _)| self.namespace_of(*target) == module)
+            .map(|(_, site)| *site)
+            .collect();
+        self.used_imports.extend(used);
+    }
+
+    /// Count a use of the import binding `name` in `file`.
+    pub fn mark_import_binding_used(&mut self, file: ModuleId, name: Symbol) {
+        if let Some((_, site)) = self
+            .files
+            .get(&file)
+            .and_then(|scope| scope.imports.get(&name))
+        {
+            self.used_imports.insert(*site);
+        }
+    }
+
+    /// Whether a resolution went through the import declaration at `site`.
+    #[must_use]
+    pub fn import_used(&self, site: ImportSite) -> bool {
+        self.used_imports.contains(&site)
     }
 
     /// The prelude binding of `name`.
@@ -501,13 +572,17 @@ impl Scopes {
                 span: 0..0,
             });
         };
-        let Some(mut current) = self.resolve_head(env, site, namespace, *head, head_span) else {
+        let Some((mut current, import)) = self.resolve_head(env, site, namespace, *head, head_span)
+        else {
             return Err(Unresolved {
                 segment: 0,
                 name: *head,
                 span: head_span.clone(),
             });
         };
+        if let Some(import) = import {
+            self.used_imports.insert(import);
+        }
         self.record(site, head_span, current);
         let mut index = 1;
         while let Some((segment, span)) = path.get(index) {
@@ -537,6 +612,8 @@ impl Scopes {
         self.resolutions.insert(key, resolution);
     }
 
+    /// The resolution of a head identifier, with the import declaration it
+    /// went through when an import bound it.
     fn resolve_head(
         &self,
         env: &TypeEnv,
@@ -544,7 +621,7 @@ impl Scopes {
         namespace: Namespace,
         head: Ident,
         span: &Span,
-    ) -> Option<Resolution> {
+    ) -> Option<(Resolution, Option<ImportSite>)> {
         let module = self.contexts.def_module(head.ctx, site.file);
         let file = self.files.get(&module);
         let own = file.and_then(|file| file.namespace).unwrap_or(module);
@@ -552,8 +629,12 @@ impl Scopes {
             .items
             .get(&own)
             .and_then(|items| items.get(&head.name))
-            .or_else(|| file.and_then(|file| file.imports.get(&head.name)))
-            .or_else(|| self.prelude.get(&head.name));
+            .map(|binding| (*binding, None))
+            .or_else(|| {
+                file.and_then(|file| file.imports.get(&head.name))
+                    .map(|(binding, import)| (*binding, Some(*import)))
+            })
+            .or_else(|| self.prelude.get(&head.name).map(|binding| (*binding, None)));
         match namespace {
             Namespace::Value => {
                 if let Some((depth, binding)) = env.lookup_ref_with_depth(head) {
@@ -561,20 +642,20 @@ impl Scopes {
                     // checking, but their source identity is the declaration.
                     // A nested lexical binding still shadows that declaration.
                     if depth == 0 {
-                        if let Some(Binding::Const(id)) = item {
-                            return Some(Resolution::Def(*id));
+                        if let Some((Binding::Const(id), import)) = item {
+                            return Some((Resolution::Def(id), import));
                         }
                     }
-                    return Some(Resolution::Local(binding.id));
+                    return Some((Resolution::Local(binding.id), None));
                 }
             }
             Namespace::Type => {
                 if let Some(parameter) = self.source_type_parameter(module, span, head) {
-                    return Some(Resolution::Param(parameter));
+                    return Some((Resolution::Param(parameter), None));
                 }
             }
         }
-        item.map(|binding| binding.resolution())
+        item.map(|(binding, import)| (binding.resolution(), import))
     }
 
     fn resolve_member(&self, current: Resolution, name: Symbol) -> Option<Resolution> {
@@ -780,8 +861,18 @@ mod tests {
         );
         let shape_nominal = NominalId::from_minted_declaration(shape);
         scopes.declare_variants(shape_nominal, &[Symbol::intern("Circle")]);
-        scopes.bind_import(root, Symbol::intern("ma"), Binding::Module(ma));
-        scopes.bind_import(ma, Symbol::intern("mb"), Binding::Module(mb));
+        scopes.bind_import(
+            root,
+            Symbol::intern("ma"),
+            Binding::Module(ma),
+            ImportSite::new(root, &(0..1)),
+        );
+        scopes.bind_import(
+            ma,
+            Symbol::intern("mb"),
+            Binding::Module(mb),
+            ImportSite::new(ma, &(0..1)),
+        );
         let env = TypeEnv::new();
         let site = ScopeSite {
             file: root,

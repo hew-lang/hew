@@ -292,11 +292,7 @@ impl Checker {
             );
             return Err(());
         }
-        self.used_modules.borrow_mut().insert(ImportKey::in_file(
-            self.current_module.clone(),
-            self.current_module_idx,
-            binding,
-        ));
+        self.note_import_use(binding);
         Ok(Some(format!("{canonical}{suffix}")))
     }
 
@@ -1037,7 +1033,9 @@ impl Checker {
         if published_identities.len() > 1 {
             let mut candidates: Vec<String> = published_identities.clone();
             candidates.sort();
-            self.mark_ambiguous_import_owners_used(&candidates);
+            for candidate in &candidates {
+                self.note_path_use(candidate);
+            }
             self.report_error_with_suggestions(
                 TypeErrorKind::AmbiguousType,
                 span,
@@ -1077,71 +1075,6 @@ impl Checker {
             return true;
         }
         false
-    }
-
-    /// Treat a rejected ambiguity as a use of every import that introduced the
-    /// competing exact owner. The identity comparison happens here before
-    /// translating to the import table's user-facing leaf spelling.
-    pub(super) fn mark_ambiguous_import_owners_used(&self, candidates: &[String]) {
-        let imported_leaves: HashSet<String> = candidates
-            .iter()
-            .filter_map(|identity| identity.rsplit_once('.').map(|(owner, _)| owner))
-            .filter_map(|owner| owner.rsplit('.').next())
-            .map(str::to_string)
-            .collect();
-        let used_keys: Vec<ImportKey> = self
-            .import_spans
-            .keys()
-            .filter(|key| {
-                key.owner_module == self.current_module && imported_leaves.contains(&key.short_name)
-            })
-            .cloned()
-            .collect();
-        self.used_modules.borrow_mut().extend(used_keys);
-    }
-
-    /// Credit every lexical import binding that names this exact source module.
-    /// `unqualified_to_module` and resolved nominal types intentionally carry
-    /// full declaration owners (`hew.alpha`), whereas the unused-import table
-    /// is keyed by the user's binding (`alpha`, or an explicit module alias).
-    /// Bridge those representations through `module_import_bindings`; never
-    /// recover an owner from a leaf segment.
-    pub(super) fn mark_module_owner_bindings_used(&self, source_owner: &str) {
-        let bindings: Vec<ImportKey> = self
-            .module_import_bindings
-            .iter()
-            .filter(|((importer, file, _), owner)| {
-                importer == &self.current_module
-                    && *file == self.current_module_idx
-                    && *owner == source_owner
-            })
-            .map(|((importer, file, binding), _)| {
-                ImportKey::in_file(importer.clone(), *file, binding.clone())
-            })
-            .filter(|key| self.import_spans.contains_key(key))
-            .collect();
-        self.used_modules.borrow_mut().extend(bindings);
-    }
-
-    /// Credit the lexical binding whose exact source owner prefixes a resolved
-    /// nominal identity. Full owners may themselves be dotted package paths,
-    /// so `split_once('.')` is neither sufficient nor sound here.
-    pub(super) fn mark_resolved_nominal_owner_used(&self, resolved_name: &str) {
-        let owners: Vec<String> = self
-            .module_import_bindings
-            .iter()
-            .filter(|((importer, file, _), owner)| {
-                importer == &self.current_module
-                    && *file == self.current_module_idx
-                    && resolved_name
-                        .strip_prefix(owner.as_str())
-                        .is_some_and(|suffix| suffix.starts_with('.'))
-            })
-            .map(|(_, owner)| owner.clone())
-            .collect();
-        for owner in owners {
-            self.mark_module_owner_bindings_used(&owner);
-        }
     }
 
     #[expect(
@@ -3431,17 +3364,17 @@ impl Checker {
                         return Ty::Error;
                     }
                     if let Some(binding) = imported_module_binding {
-                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                        self.note_import_use(binding);
+                    } else if let Some(module) = self
+                        .unqualified_to_module
+                        .get(&(
                             self.current_module.clone(),
                             self.current_module_idx,
-                            binding,
-                        ));
-                    } else if let Some(module) = self.unqualified_to_module.get(&(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        name.clone(),
-                    )) {
-                        self.mark_module_owner_bindings_used(module);
+                            name.clone(),
+                        ))
+                        .cloned()
+                    {
+                        self.note_path_use(&module);
                     }
                     return self.named_ty_for_key(&identity, args);
                 }
@@ -3546,11 +3479,7 @@ impl Checker {
                     }
                 }
                 let resolved_name = if let Some((canonical, binding)) = lifecycle_qualified {
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        binding,
-                    ));
+                    self.note_import_use(binding);
                     canonical
                 } else if is_local {
                     // A bare reference to a locally-defined type normally binds
@@ -3616,30 +3545,34 @@ impl Checker {
                     // `hew.closableerr.CloseError` would instead credit a
                     // nonexistent `hew` import and falsely warn that the
                     // actual `closableerr` binding is unused.
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                    self.note_import_use(binding);
+                } else if let Some(module) = self
+                    .unqualified_to_module
+                    .get(&(
                         self.current_module.clone(),
                         self.current_module_idx,
-                        binding,
-                    ));
-                } else if let Some(module) = self.unqualified_to_module.get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    name.clone(),
-                )) {
-                    self.mark_module_owner_bindings_used(module);
+                        name.clone(),
+                    ))
+                    .cloned()
+                {
+                    self.note_path_use(&module);
                 } else if resolved_name.contains('.') {
-                    self.mark_resolved_nominal_owner_used(&resolved_name);
-                } else if let Some(module) = self.unqualified_to_module.get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    resolved_name.clone(),
-                )) {
+                    self.note_path_use(&resolved_name);
+                } else if let Some(module) = self
+                    .unqualified_to_module
+                    .get(&(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        resolved_name.clone(),
+                    ))
+                    .cloned()
+                {
                     // A bare reference that resolves through a published binding
                     // (named / glob / aliased import) keeps the bare spelling but
                     // still consumes the owning module — mark it used so the
                     // unused-import lint does not false-positive on bare type
                     // references reached via an explicit opt-in or glob.
-                    self.mark_module_owner_bindings_used(module);
+                    self.note_path_use(&module);
                 }
                 if !self.type_reference_is_visible(&resolved_name, &te.1) {
                     return Ty::Error;

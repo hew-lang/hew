@@ -848,10 +848,8 @@ impl Checker {
             }
             Item::Trait(td) => {
                 if let Some(supers) = &td.super_traits {
-                    let owner = self.current_module.as_deref();
                     for super_trait in supers {
-                        self.mark_imported_trait_used(owner, &super_trait.path.to_string());
-                        // TRANSITION(P1): deleted by A1 commit 2
+                        self.note_trait_use(&super_trait.path.to_string());
                     }
                 }
                 // A generic trait's own params (`trait Foo<T>`) are in scope for
@@ -873,8 +871,8 @@ impl Checker {
             }
             Item::Import(id) => {
                 // Always track the import span. For non-root modules the span is a byte
-                // offset into the sub-module's own source file; the stored `source_module`
-                // in `import_spans` tells the diagnostic renderer which file owns the span.
+                // offset into the sub-module's own source file; the reportable import's
+                // `source_module` tells the diagnostic renderer which file owns the span.
                 self.register_import(id, Some(span));
             }
             Item::Const(_)

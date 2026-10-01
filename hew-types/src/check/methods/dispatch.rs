@@ -174,7 +174,7 @@ impl Checker {
                 span,
             },
         )?;
-        self.mark_resolved_nominal_owner_used(&head.canonical_type);
+        self.note_path_use(&head.canonical_type);
 
         Some(result)
     }
@@ -201,7 +201,7 @@ impl Checker {
                     span,
                 },
             ) {
-                self.mark_resolved_nominal_owner_used(&head.canonical_type);
+                self.note_path_use(&head.canonical_type);
                 return result;
             }
             let source_member = format!("{}.{method}", head.canonical_type);
@@ -262,11 +262,7 @@ impl Checker {
                     },
                 );
                 if self.module_binding_in_current_file(name.name.as_str()) {
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        name.to_string(),
-                    ));
+                    self.note_import_use(name);
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
                 // method contains "::" → treat as a qualified variant constructor rather than a

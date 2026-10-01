@@ -76,9 +76,9 @@ pub use self::types::FnSigFixture;
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
-    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
-    IndexContext, IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration,
-    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext,
+    IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo,
+    TraitInfo, TypeParamScope,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -991,7 +991,7 @@ impl Checker {
                         span,
                     );
                 }
-                for (item_index, (item, _)) in module.items.iter().enumerate() {
+                for (item_index, (item, span)) in module.items.iter().enumerate() {
                     let Item::Import(decl) = item else {
                         continue;
                     };
@@ -1001,7 +1001,7 @@ impl Checker {
                         .and_then(|source| self.defs.module_for_source(source))
                         .or(assembler);
                     if let Some(file) = file {
-                        self.bind_import_in_scope(file, decl);
+                        self.bind_import_in_scope(file, decl, span);
                     }
                 }
             }
@@ -1121,9 +1121,9 @@ impl Checker {
         let Some(root) = self.defs.root_module() else {
             return;
         };
-        for (item, _) in &program.items {
+        for (item, span) in &program.items {
             if let Item::Import(decl) = item {
-                self.bind_import_in_scope(root, decl);
+                self.bind_import_in_scope(root, decl, span);
             }
         }
     }
@@ -1136,6 +1136,7 @@ impl Checker {
         &mut self,
         file: crate::ModuleId,
         decl: &hew_parser::ast::ImportDecl,
+        span: &Span,
     ) {
         let Some(target) = decl
             .resolved_source_paths
@@ -1145,9 +1146,12 @@ impl Checker {
         else {
             return;
         };
+        let site = scope::ImportSite::new(file, span);
+        self.scopes.record_import_target(target, site);
+        let namespace = self.scopes.namespace_of(target);
         if decl.path.segments.is_empty() {
-            for (name, binding) in self.scopes.items(target) {
-                self.scopes.bind_import(file, name, binding);
+            for (name, binding) in self.scopes.items(namespace) {
+                self.scopes.bind_import(file, name, binding, site);
             }
             return;
         }
@@ -1158,14 +1162,15 @@ impl Checker {
                         file,
                         binding_name.name,
                         scope::Binding::Module(target),
+                        site,
                     );
                 }
             }
             Some(hew_parser::ast::ImportSpec::Names(names)) => {
                 for selected in names {
-                    if let Some(binding) = self.scopes.item(target, selected.name.name) {
+                    if let Some(binding) = self.scopes.item(namespace, selected.name.name) {
                         let bound = selected.alias.unwrap_or(selected.name);
-                        self.scopes.bind_import(file, bound.name, binding);
+                        self.scopes.bind_import(file, bound.name, binding, site);
                     }
                 }
             }
@@ -1766,7 +1771,7 @@ impl Checker {
             NominalNamespace::Owned => None,
         };
         if let (Item::Import(decl), Some(file)) = (item, module) {
-            self.bind_import_in_scope(file, decl);
+            self.bind_import_in_scope(file, decl, span);
         }
         let machine_event_owner = if let Item::TypeDecl(decl) = item {
             if let hew_parser::ast::DeclarationOrigin::MachineEventType {
@@ -2797,24 +2802,24 @@ impl Checker {
         // Emit unused import warnings. A REPL fragment imports modules it will
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {
-            for (key, (import_span, stored_module)) in &self.import_spans {
-                if self.is_canonical_prelude_manifest_import(stored_module.as_deref()) {
+            for import in &self.reportable_imports {
+                if self.is_canonical_prelude_manifest_import(import.source_module.as_deref()) {
                     continue;
                 }
                 // A compiler-injected import carries an empty span; the
                 // programmer has no line to remove.
-                if import_span.start == import_span.end {
+                if import.span.is_empty() {
                     continue;
                 }
-                if !self.used_modules.borrow().contains(key) {
+                if !self.scopes.import_used(import.site) {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedImport,
-                        span: import_span.clone(),
-                        message: format!("unused import: `{}`", key.short_name),
+                        span: import.span.clone(),
+                        message: format!("unused import: `{}`", import.name),
                         notes: vec![],
                         suggestions: vec!["remove this import".to_string()],
-                        source_module: stored_module.clone(),
+                        source_module: import.source_module.clone(),
                     });
                 }
             }

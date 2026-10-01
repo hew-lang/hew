@@ -11,38 +11,16 @@ use hew_parser::ast::Symbol;
 use hew_parser::ast::{
     ImportSpec, Literal, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// Uniquely identifies an import declaration within the checker.
-///
-/// Keying only by `short_name` causes collisions when multiple owning modules
-/// each import a module with the same short name: the second registration
-/// clobbers the first in `import_spans`, and a use in one owner suppresses
-/// the unused-import warning for the other owner.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct ImportKey {
-    /// The module that owns the `import` declaration, or `None` for
-    /// root-level (no-module-graph) programs.
-    pub(super) owner_module: Option<String>,
-    /// Stable source-file index within the module graph.
-    pub(super) owner_file: u32,
-    /// Short (last-segment) name of the imported module, e.g. `"json"`.
-    pub(super) short_name: String,
-}
-
-impl ImportKey {
-    pub(super) fn in_file(
-        owner_module: Option<String>,
-        owner_file: u32,
-        short_name: impl Into<String>,
-    ) -> Self {
-        Self {
-            owner_module,
-            owner_file,
-            short_name: short_name.into(),
-        }
-    }
+/// A user-written import declaration the unused-import lint reports on.
+#[derive(Debug, Clone)]
+pub(super) struct ReportableImport {
+    pub(super) site: super::scope::ImportSite,
+    pub(super) span: Span,
+    /// The module binding the diagnostic names (`json` for `import std.encoding.json`).
+    pub(super) name: String,
+    pub(super) source_module: Option<String>,
 }
 
 /// A lexical import binding is owned by one source file, even when several
@@ -3693,18 +3671,15 @@ pub struct Checker {
     pub(super) lambda_captures: Vec<Ty>,
     /// Binding-accurate capture facts accumulated during lambda body checking.
     pub(super) lambda_capture_facts: Vec<ClosureCaptureFact>,
-    /// Tracks imported module paths with their source spans and originating module for
-    /// unused-import detection and source attribution.
-    /// Key: (`owner_module`, `short_name`), Value: (import span, source module).
-    pub(super) import_spans: HashMap<ImportKey, (Span, Option<String>)>,
+    /// User-written import declarations for unused-import detection; `Scope`
+    /// records which of them a resolution went through.
+    pub(super) reportable_imports: Vec<ReportableImport>,
     /// Compiler-assumed core of the implicit prelude, captured before user
     /// declarations or imports are registered. Ordinary prelude bindings are
     /// intentionally absent so user declarations may shadow them.
     pub(super) protected_prelude_bindings: HashMap<String, String>,
     /// First import declaration that reserved each file-local binding.
     pub(super) import_binding_spans: HashMap<ImportBindingKey, (Span, Option<String>, String)>,
-    /// Import keys that have actually been referenced in code.
-    pub(super) used_modules: RefCell<HashSet<ImportKey>>,
     /// Module short names for user (non-stdlib) imports.
     pub(super) user_modules: HashSet<String>,
     /// Qualified callable names (`module.name`) that are intentionally exported
@@ -4532,10 +4507,9 @@ impl Checker {
             var_self_hole_reports: HashSet::new(),
             lambda_captures: Vec::new(),
             lambda_capture_facts: Vec::new(),
-            import_spans: HashMap::new(),
+            reportable_imports: Vec::new(),
             protected_prelude_bindings: HashMap::new(),
             import_binding_spans: HashMap::new(),
-            used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),

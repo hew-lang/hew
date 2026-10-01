@@ -391,7 +391,9 @@ else needs `impl Display for {rendered}`)"
             return false;
         }
         let candidates: Vec<String> = owners.iter().cloned().collect();
-        self.mark_ambiguous_import_owners_used(&candidates);
+        for candidate in &candidates {
+            self.note_path_use(candidate);
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousType,
             span,
@@ -877,11 +879,7 @@ else needs `impl Display for {rendered}`)"
             );
             return Ty::Error;
         }
-        self.used_modules.borrow_mut().insert(ImportKey::in_file(
-            self.current_module.clone(),
-            self.current_module_idx,
-            module_short.to_string(),
-        ));
+        self.note_import_use(module_short);
         let Some(td) = self.resolve_module_type(module_short, type_name) else {
             let similar = self
                 .module_type_exports_for_binding(module_short)

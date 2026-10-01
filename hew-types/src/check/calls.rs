@@ -1288,11 +1288,7 @@ impl Checker {
             return None;
         }
         if self.module_binding_in_current_file(module_name) {
-            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                self.current_module.clone(),
-                self.current_module_idx,
-                module_name.to_string(),
-            ));
+            self.note_import_use(module_name);
         }
         // Export gate: only `pub` functions are reachable across the module
         // boundary, mirroring the dot-form path. A `package fn` accessible
@@ -1960,7 +1956,7 @@ impl Checker {
             // this call-form constructor is its own resolution path. Credit
             // the lexical binding the same way, via the resolved owner.
             if let Some((owner, _)) = type_name.rsplit_once('.') {
-                self.mark_module_owner_bindings_used(owner);
+                self.note_path_use(owner);
             }
             let type_param_count = type_params.len();
             if type_param_count == 0 {
@@ -2495,7 +2491,7 @@ impl Checker {
                 ))
                 .cloned()
             {
-                self.mark_module_owner_bindings_used(&module);
+                self.note_path_use(&module);
             }
             // `Node.register` hands the actor's own handle to the node
             // registry; codegen calls `hew_actor_pid` on it. An actor is the
@@ -2896,7 +2892,9 @@ impl Checker {
             return false;
         }
         let candidates: Vec<String> = owners.iter().cloned().collect();
-        self.mark_ambiguous_import_owners_used(&candidates);
+        for candidate in &candidates {
+            self.note_path_use(candidate);
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousType,
             span,

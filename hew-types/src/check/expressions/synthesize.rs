@@ -77,11 +77,7 @@ impl Checker {
                 // The implicit `use std::text::regex` injected by the CLI is the
                 // provider of this type; mark it as used so the unused-import
                 // check doesn't fire a false-positive warning.
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    "regex",
-                ));
+                self.note_import_use("regex");
                 // Validate the pattern using the same regex engine the runtime
                 // uses. An invalid pattern is a compile-time hard error.
                 if let Err(err) = regex::Regex::new(pattern) {
@@ -1402,7 +1398,7 @@ impl Checker {
             {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
                 if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
-                    self.mark_module_owner_bindings_used(source_owner);
+                    self.note_path_use(source_owner);
                 }
             }
             self.record_call_edge(&fn_sig_key);

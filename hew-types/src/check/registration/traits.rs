@@ -92,12 +92,10 @@ impl Checker {
                 .iter()
                 .map(|arg| self.resolve_type_expr(arg))
                 .collect();
+            let child_type = self.canonical_supervisor_child_type(&c.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             let entry = (
                 c.name.to_string(),
-                self.named_ty_for_key(
-                    &self.canonical_supervisor_child_type(&c.actor_type.to_string()), // TRANSITION(P1): deleted by A1 commit 2
-                    type_args,
-                ),
+                self.named_ty_for_key(&child_type, type_args),
             );
             if c.is_pool {
                 pools.push(entry);
@@ -1597,7 +1595,7 @@ impl Checker {
         let trait_name = &trait_bound.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         let identity = self.resolve_trait_conformance_identity(trait_name);
         let trait_key = self.trait_defs_key_for_identity(&identity);
-        self.mark_imported_trait_used(self.current_module.as_deref(), trait_name);
+        self.note_trait_use(trait_name);
         if let Some(declaration) = self.lookup_declaration(&trait_key) {
             self.trait_bindings.insert(
                 (

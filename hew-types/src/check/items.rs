@@ -314,11 +314,7 @@ impl Checker {
             if let [(module, _), _, ..] = child.actor_type.segments.as_slice() {
                 let module = module.name.as_str();
                 if self.modules.contains(module) {
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        module.to_string(),
-                    ));
+                    self.note_import_use(module);
                 }
             }
         }

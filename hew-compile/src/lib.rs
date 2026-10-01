@@ -4150,7 +4150,7 @@ mod tests {
         assert_eq!(output.test_entry_plans.len(), 1);
         assert_eq!(
             output.defs.path(output.test_entry_plans[0].entry),
-            "std.concurrency.lifecycle_i64_happy_path_state_names"
+            "std.concurrency.lifecycle.lifecycle_i64_happy_path_state_names"
         );
         assert!(output.entry_exit_plan.is_none());
         Session::new(SessionTarget::native(), DiagnosticPolicy::default())

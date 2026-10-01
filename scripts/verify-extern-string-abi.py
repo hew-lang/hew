@@ -8,10 +8,12 @@ either slot as a C character buffer reads the allocation header as text, so the
 mismatch is a runtime fault rather than a link error: nothing else in the build
 compares the two sides.
 
-The three TCP entry points are the one exception: codegen rewrites them to the
-`hew_checked_tcp_*` / `hew_async_tcp_*` adapters, which take the managed handle
-and copy it for the raw transport call. Every other declaration, intercepted by
-a runtime-call family or not, reaches its Rust definition with the managed
+The three TCP entry points and the standard input line read are the
+exceptions: codegen rewrites the TCP calls to the `hew_checked_tcp_*` /
+`hew_async_tcp_*` adapters, which take the managed handle and copy it for the
+raw transport call, and the stdin read to its waiting operation, whose result
+is taken as managed bytes. Every other declaration, intercepted by a
+runtime-call family or not, reaches its Rust definition with the managed
 carrier.
 """
 
@@ -32,6 +34,7 @@ ADAPTED = {
     "hew_tcp_listen": "hew_checked_tcp_listen",
     "hew_tcp_connect": "hew_checked_tcp_connect / hew_async_tcp_connect",
     "hew_tcp_connect_timeout": "hew_checked_tcp_connect_timeout / hew_async_tcp_connect_timeout",
+    "hew_stdin_read_line": "hew_async_stdin_read_line / hew_async_io_take_bytes",
 }
 
 EXTERN_BLOCK = re.compile(r'extern\s+"C"\s*\{')

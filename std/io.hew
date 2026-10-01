@@ -28,7 +28,9 @@ import std.encoding.utf8;
 /// A read that a deadline or an enclosing scope cancels consumes nothing:
 /// the next read returns the line that was pending.
 pub fn read_line() -> Option<string> {
-    var line = unsafe { hew_stdin_read_line() };
+    var line = unsafe {
+        hew_stdin_read_line()
+    };
     if line.is_empty() {
         return .None;
     }
@@ -65,10 +67,14 @@ pub fn write_err(s: string) {
 ///
 /// Waits like `read_line`. Invalid UTF-8 becomes U+FFFD.
 pub fn read_all() -> string {
-    var all = unsafe { hew_stdin_read_line() };
+    var all = unsafe {
+        hew_stdin_read_line()
+    };
     var reading = !all.is_empty();
     while reading {
-        let more = unsafe { hew_stdin_read_line() };
+        let more = unsafe {
+            hew_stdin_read_line()
+        };
         reading = !more.is_empty();
         all.append(more);
     }

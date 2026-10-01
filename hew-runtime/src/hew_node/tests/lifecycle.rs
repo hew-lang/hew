@@ -44,13 +44,6 @@ fn accept_thread_stop_reports_panic_and_consumes_handle() {
 }
 
 #[test]
-fn observation_setup_statuses_match_link_error_discriminants() {
-    assert_eq!(LINK_ERR_DEAD, 1);
-    assert_eq!(LINK_ERR_PARTITION, 2);
-    assert_eq!(LINK_ERR_NO_CURRENT_ACTOR, 3);
-}
-
-#[test]
 fn quarantine_insert_blocks_then_evict_clears() {
     let _guard = crate::runtime_test_guard();
     // Insert quarantines the peer at the dead incarnation; a same-or-lower

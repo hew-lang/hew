@@ -1909,8 +1909,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )
     }
 
-    /// Status `0` is `Ok`, carrying the registration id a monitor wrote; a
-    /// positive status is one plus the error's declaration index.
+    /// Status `0` is `Ok`, carrying the registration id a monitor wrote; the
+    /// one positive status is `NoContext`, chosen by its runtime role.
     pub(super) fn emit_observation_result(
         &self,
         result: Option<StorageId>,
@@ -1974,14 +1974,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(complete)
             .llvm_ctx("complete successful observation")?;
         self.builder.position_at_end(failure);
-        let tag = self
-            .builder
-            .build_int_sub(
-                status,
-                self.ctx.i32_type().const_int(1, false),
-                "observation.error.tag",
-            )
-            .llvm_ctx("decode LinkError status")?;
+        let no_context = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *error_ty)
+            .and_then(|glue| glue.runtime_tag(hew_mir::RuntimeVariantRole::LinkErrorNoContext))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("LinkError lacks its NoContext runtime role".into())
+            })?;
+        let tag = self.ctx.i32_type().const_int(u64::from(no_context), false);
         let error = self.actor_unit_variant(error_ty, tag)?;
         self.write_variant_value(self.slots[result.0 as usize], 1, &[error], glue.id)?;
         self.builder

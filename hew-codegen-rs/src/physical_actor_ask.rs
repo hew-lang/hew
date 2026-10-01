@@ -630,21 +630,72 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("materialize admission error")?;
         }
         self.builder.position_at_end(error);
-        let translate = coro::external(
-            self.llvm,
-            "hew_ask_error_translate_for_public_result",
-            self.ctx
-                .i32_type()
-                .fn_type(&[self.ctx.i32_type().into()], false),
-        )?;
-        let tag = call_value(&self.builder, translate, &[status.into()], "ask.error.tag")?
-            .into_int_value();
-        let error_value = self.actor_unit_variant(error_ty, tag)?;
-        self.write_variant_value(self.slots[result.0 as usize], 1, &[error_value], glue.id)?;
-        self.builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish ask error")?;
+        self.emit_ask_status_error(status, result, error_ty, glue.id, done)?;
         self.builder.position_at_end(done);
+        Ok(())
+    }
+
+    /// Materialize `Err(ActorError.<role>)` from a runtime ask status. Each
+    /// status selects its variant by the runtime's role and the std
+    /// declaration's tag for that role, never by position; a status the
+    /// runtime does not define aborts.
+    fn emit_ask_status_error(
+        &self,
+        status: IntValue<'ctx>,
+        result: StorageId,
+        error_ty: &ResolvedTy,
+        glue_id: hew_mir::physical::PhysicalVariantId,
+        done: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> CodegenResult<()> {
+        let error_glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *error_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("ActorError lacks its variant recipe".into())
+            })?;
+        let entry = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::FailClosed("ask error lacks its block".into()))?;
+        let unknown = self.ctx.append_basic_block(self.value, "ask.error.unknown");
+        let mut cases = Vec::new();
+        for status_case in hew_runtime::internal::types::AskError::ALL {
+            let Some(role) = status_case.public_role() else {
+                continue;
+            };
+            let tag = error_glue
+                .runtime_tag(actor_error_variant_role(role))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!("ActorError lacks the {role:?} role"))
+                })?;
+            let block = self.ctx.append_basic_block(self.value, "ask.error.case");
+            self.builder.position_at_end(block);
+            let tag = self.ctx.i32_type().const_int(u64::from(tag), false);
+            let error_value = self.actor_unit_variant(error_ty, tag)?;
+            self.write_variant_value(self.slots[result.0 as usize], 1, &[error_value], glue_id)?;
+            self.builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish ask error")?;
+            let code = self
+                .ctx
+                .i32_type()
+                .const_int(u64::from(status_case as u32), false);
+            cases.push((code, block));
+        }
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_switch(status, unknown, &cases)
+            .llvm_ctx("select the ActorError role")?;
+        self.builder.position_at_end(unknown);
+        let abort = coro::external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
+        self.builder
+            .build_call(abort, &[], "")
+            .llvm_ctx("refuse an undefined ask status")?;
+        self.builder
+            .build_unreachable()
+            .llvm_ctx("end an undefined ask status")?;
         Ok(())
     }
 
@@ -732,5 +783,46 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("finish the declared reply arm")?;
         }
         Ok(())
+    }
+}
+
+/// The SIR role naming the std `ActorError` variant a runtime role reports.
+pub(super) const fn actor_error_variant_role(
+    role: hew_runtime::internal::types::ActorErrorRole,
+) -> hew_mir::RuntimeVariantRole {
+    use hew_mir::RuntimeVariantRole as Variant;
+    use hew_runtime::internal::types::ActorErrorRole as Role;
+    match role {
+        Role::Trapped => Variant::ActorErrorTrapped,
+        Role::Dead => Variant::ActorErrorDead,
+        Role::TimedOut => Variant::ActorErrorTimedOut,
+        Role::NodeNotRunning => Variant::ActorErrorNodeNotRunning,
+        Role::RoutingFailed => Variant::ActorErrorRoutingFailed,
+        Role::EncodeFailed => Variant::ActorErrorEncodeFailed,
+        Role::ConnectionDropped => Variant::ActorErrorConnectionDropped,
+        Role::Partition => Variant::ActorErrorPartition,
+    }
+}
+
+#[cfg(test)]
+mod actor_error_role_tests {
+    use hew_runtime::internal::types::AskError;
+
+    /// Every runtime ask failure reaches the `ActorError` role of the same
+    /// name; SIR then joins that role to the std variant by name, so the tag
+    /// follows the declaration rather than a position.
+    #[test]
+    fn every_ask_failure_selects_its_named_actor_error_role() {
+        for status in AskError::ALL {
+            let Some(role) = status.public_role() else {
+                assert_eq!(status, AskError::None, "only success has no role");
+                continue;
+            };
+            assert_eq!(
+                format!("{:?}", super::actor_error_variant_role(role)),
+                format!("ActorError{role:?}"),
+                "{status:?} drifted from its ActorError role"
+            );
+        }
     }
 }

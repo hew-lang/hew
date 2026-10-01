@@ -145,29 +145,35 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
     }
 }
 
-/// Subscribe the current actor using the source `LinkError` status vocabulary:
-/// zero is success; one is Dead; two is Partition; three is `NoContext`.
+/// Link the current actor to a local target. Status zero is `Ok`; a target
+/// that already exited, including a retired incarnation, answers with its exit
+/// signal at once. [`crate::monitor::HEW_OBSERVATION_NO_CONTEXT`] means no
+/// current actor; a negative status is a logical fault code.
 #[no_mangle]
 pub extern "C" fn hew_native_actor_link(target: HewLocalPidId) -> i32 {
     let current = crate::actor::hew_actor_self();
     if current.is_null() {
-        return 3;
+        return crate::monitor::HEW_OBSERVATION_NO_CONTEXT;
     }
-    let Some(target_id) = resolve_current_actor(target) else {
-        return 1;
-    };
-    let Some(target) = pin_actor_by_id(target_id) else {
-        return 1;
+    let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    else {
+        return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
     };
     // SAFETY: the current activation owns its actor allocation.
     let current = unsafe { &*current };
     if current.id == target_id {
         return 0;
     }
-    match register_link(current, target.actor()) {
-        (None, None) => 0,
-        _ => 1,
+    let Some(target) = pin_actor_by_id(target_id) else {
+        // A clean free retires an incarnation without a terminal sweep; its
+        // identity still answers with a normal exit (error code zero).
+        send_exit_signal(current.id, target_id, 0);
+        return 0;
+    };
+    if let (_, Some(reason)) = register_link(current, target.actor()) {
+        send_exit_signal(current.id, target_id, reason);
     }
+    0
 }
 
 /// Remove the current actor's local subscription; repeated removal is harmless.

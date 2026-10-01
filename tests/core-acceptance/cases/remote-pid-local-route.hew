@@ -60,15 +60,14 @@ impl ActorMsg for Store {
 fn setup_code(setup: Result<MonitorRef, LinkError>) -> i64 {
     match setup {
         .Ok(_) => 0,
-        .Err(LinkError.Dead) => 1,
-        .Err(_) => 2,
+        .Err(LinkError.NoContext) => 2,
     }
 }
 
 actor Watcher {
     var active: Result<MonitorRef, LinkError>;
     var outcome: i64 = 0;
-    // 0 = registered, 1 = stale, 2 = refused otherwise.
+    // 0 = registered, 2 = refused for want of a context.
     receive fn arm(target: RemotePid<Store>) -> i64 {
         active = monitor(target);
         setup_code(active)
@@ -90,12 +89,10 @@ actor Watcher {
 }
 
 actor Linker {
-    // 0 = linked, 1 = Dead, 2 = Partition, 3 = NoContext.
+    // 0 = linked, 3 = NoContext.
     receive fn link_to(target: RemotePid<Store>) -> i64 {
         match link_remote(target, PartitionPolicy.MonitorLost) {
             .Ok(_) => 0,
-            .Err(LinkError.Dead) => 1,
-            .Err(LinkError.Partition) => 2,
             .Err(LinkError.NoContext) => 3,
         }
     }
@@ -146,7 +143,7 @@ fn main() -> i64 {
     println(get(target, "colour"));
 
     // A clean exit reaches a monitor as the DOWN of a remote location.
-    let watcher = spawn Watcher(active: .Err(LinkError.Partition));
+    let watcher = spawn Watcher(active: .Err(LinkError.NoContext));
     match watcher.arm(target) {
         .Ok(0) => {}
         .Ok(_) => return 5,
@@ -218,13 +215,24 @@ fn main() -> i64 {
         .Ok(_) => println("send delivered"),
     }
     println(get(old, "colour"));
-    let late_watcher = spawn Watcher(active: .Err(LinkError.Partition));
+    // A stale pid is not an error: the monitor answers with a lost DOWN.
+    let late_watcher = spawn Watcher(active: .Err(LinkError.NoContext));
     match late_watcher.arm(old) {
         .Ok(0) => println("monitor registered"),
-        .Ok(1) => println("monitor stale"),
         .Ok(_) => println("monitor refused"),
         .Err(_) => return 15,
     }
+    var late: i64 = 0;
+    while late == 0 {
+        late = match late_watcher.outcome() {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        if late == 0 {
+            sleep(1ms);
+        }
+    }
+    println(f"down {late}");
     let late_linker = spawn Linker;
     match late_linker.link_to(old) {
         .Ok(status) => println(f"link {status}"),

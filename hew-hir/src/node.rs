@@ -1466,55 +1466,6 @@ pub enum HirExprKind {
         /// The `T` from `Task<T>`.
         output_ty: ResolvedTy,
     },
-    /// `await conn.read()` / `await conn.read_string()` — a non-blocking
-    /// suspending socket read (NEW-1). Produced by HIR lowering when an `await`
-    /// wraps a `net.Connection::read`/`read_string` method call. A suspendable
-    /// caller (actor handler / closure / task entry) lowers this to
-    /// `Terminator::SuspendingRead` (suspend, free the worker, resume with the
-    /// bytes); a `Default` caller keeps the blocking `hew_tcp_read` call.
-    ///
-    /// `read_string` is `await conn.read()` + `hew_bytes_to_string`, so the HIR
-    /// node carries only the bytes read; the string conversion wraps it. A raw
-    /// `read()` may carry a literal deadline and then resolves to
-    /// `Result<bytes, NetError>` with MIR/codegen binding `Err(TimedOut)` if the
-    /// timer wins.
-    ConnAwaitRead {
-        /// The connection receiver expression (`conn`).
-        conn: Box<HirExpr>,
-        /// `true` when the source was `read_string()` (the bytes are converted
-        /// to a string after the suspending read); `false` for raw `read()`.
-        to_string: bool,
-        /// NEW-6c `await conn.read() | after d` deadline, in nanoseconds. `None`
-        /// preserves the plain-read bytes result and unconditional read-slot wake.
-        deadline_ns: Option<i64>,
-    },
-    /// `await listener.accept()` — a non-blocking suspending listener accept
-    /// (NEW-2). Produced by HIR lowering when an `await` wraps a
-    /// `net.Listener::accept` method call. A suspendable caller (actor handler /
-    /// closure / task entry) lowers this to `Terminator::SuspendingAccept`
-    /// (suspend, free the worker, resume with the accepted `Connection`); a
-    /// `Default` caller keeps the blocking `hew_tcp_accept` call. The
-    /// listener-readiness sibling of [`HirExprKind::ConnAwaitRead`].
-    ListenerAwaitAccept {
-        /// The listener receiver expression (`listener`).
-        listener: Box<HirExpr>,
-        /// NEW-6d `await ln.accept() | after d` deadline, in nanoseconds. `None`
-        /// preserves the plain-accept `Connection` result and unconditional read-slot
-        /// wake. `Some(ns)` produces `Result<Connection, NetError>` with
-        /// `NetError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
-        deadline_ns: Option<i64>,
-    },
-    /// `await stream.recv() | after d` — a suspending stream recv with a
-    /// deadline (NEW-6b).  Produced by [`super::lower::lower_await_deadline`]
-    /// when the inner expression is a `Stream<T>::recv()` call.
-    ///
-    /// `HirExpr::ty` is `Result<Option<T>, TimeoutError>`.
-    StreamRecvAwait {
-        /// The stream handle expression.
-        stream: Box<HirExpr>,
-        /// Deadline in nanoseconds.
-        deadline_ns: Option<i64>,
-    },
     /// Sealed `select{}` expression.
     ///
     /// The HIR shape carries the per-arm sealed-form discriminator and

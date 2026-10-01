@@ -8,6 +8,13 @@
       "type": "trace.started"
     },
     {
+      "phase": "run",
+      "seq": 1,
+      "span": null,
+      "text": "hew: failure: DivideByZero (202)\n",
+      "type": "io.stderr"
+    },
+    {
       "failure": {
         "hew_fault": {
           "code": 202,
@@ -19,14 +26,14 @@
         "trap_kind": "divide_by_zero"
       },
       "phase": "run",
-      "seq": 1,
+      "seq": 2,
       "span": null,
       "type": "runtime.failure"
     },
     {
       "message": "trap",
       "phase": "run",
-      "seq": 2,
+      "seq": 3,
       "span": null,
       "type": "trace.ended"
     }
@@ -59,7 +66,9 @@
     ],
     "sandbox_rejections": [],
     "status": "trap",
-    "stderr": [],
+    "stderr": [
+      "hew: failure: DivideByZero (202)\n"
+    ],
     "stdout": [],
     "step_count": 6,
     "virtual_clock": {

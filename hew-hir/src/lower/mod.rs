@@ -290,9 +290,8 @@ const SYNTHETIC_NODE_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1010);
 /// `link()` in value position. Declared in `std/builtins.hew` and — like
 /// `SendError` — invisible to the user-enum walk in
 /// `lower_program` (builtins.hew is loaded out-of-band, not via `module_graph`).
-/// Surface it through the same builtin-enum path so
-/// `Err(LinkError::AlreadyLinked)` / `Err(LinkError::TargetDead)` match arms
-/// resolve via `machine_ctor_registry`.
+/// Surface it through the same builtin-enum path so an
+/// `Err(LinkError.NoContext)` match arm resolves via `machine_ctor_registry`.
 const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
 /// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
 /// `for (k, v) in m` desugar target. Like `VecIter`, it is declared in

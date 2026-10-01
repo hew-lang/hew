@@ -2834,14 +2834,12 @@ impl Checker {
 
     /// Whether `bound` names the prelude `From` trait, by the same trait
     /// identity impl registration files the impl's methods under.
-    fn trait_bound_is_from(&self, bound: &TraitBound) -> bool {
+    fn trait_bound_is_from(&mut self, bound: &TraitBound) -> bool {
         let from = self
             .lang_items
             .get(crate::LangItem::From.key())
             .map(|binding| binding.trait_id);
-        from.is_some()
-            && self.trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string())) // TRANSITION(P1): deleted by A1 commit 2
-                == from
+        from.is_some() && self.resolve_trait_path(&bound.path) == from
     }
 
     /// Refuse a `From` impl the failure-edge rule cannot use (D547): the
@@ -2855,25 +2853,14 @@ impl Checker {
         {
             return;
         }
-        let type_name = match &id.target_type.0 {
-            TypeExpr::Named { path, .. } => Some(path.to_string()), // TRANSITION(P1): deleted by A1 commit 2
-            _ => None,
-        };
-        let type_name = type_name.as_deref();
         let reason = if matches!(id.target_type.0, TypeExpr::TraitObject(_)) {
             Some("a `From` impl cannot target a trait object; erasure into `dyn Error` needs no impl")
         } else {
-            let row = type_name.and_then(|type_name| {
-                id.methods.iter().find_map(|method| {
-                    let declaration = self.impl_method_declaration_id(
-                        type_name,
-                        method,
-                        id.trait_bound.as_ref(),
-                    )?;
-                    self.from_impls
-                        .iter()
-                        .position(|row| row.method == declaration)
-                })
+            let row = id.methods.iter().find_map(|method| {
+                let declaration = self.impl_method_declaration(method)?;
+                self.from_impls
+                    .iter()
+                    .position(|row| row.method == declaration)
             });
             row.and_then(|index| {
                 let row = &self.from_impls[index];

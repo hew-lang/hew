@@ -609,6 +609,44 @@ impl Checker {
         self.scopes.record_resolution(site, callee_span, resolution);
     }
 
+    /// The trait or predicate a written bound path names, resolved through
+    /// `Scope`.
+    pub(super) fn resolve_trait_path(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<crate::DefId> {
+        let site = self.scope_site()?;
+        match self.scopes.resolve(
+            &self.env,
+            site,
+            super::scope::Namespace::Type,
+            &path.segments,
+        ) {
+            Ok(super::scope::Resolution::Def(id))
+                if self.defs.kind(id) == crate::DeclarationKind::Trait =>
+            {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
+    /// The declaration impl registration minted for one impl method, by its
+    /// source occurrence.
+    pub(super) fn impl_method_declaration(
+        &self,
+        method: &hew_parser::ast::FnDecl,
+    ) -> Option<crate::DefId> {
+        self.defs
+            .declaration(crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                self.current_declaration_module(),
+                &method.fn_span,
+                self.current_item_ordinal,
+                crate::DeclarationKind::ImplMethod,
+                0,
+            ))
+    }
+
     /// The head a written type path names, resolved through `Scope`.
     pub(super) fn resolve_type_path_head(
         &mut self,
@@ -621,16 +659,15 @@ impl Checker {
             super::scope::Namespace::Type,
             &path.segments,
         ) {
-            Ok(super::scope::Resolution::Nominal(id)) => {
-                Some(self.known_declaration(id).map_or_else(
-                    || {
-                        crate::TypeHead::Nominal(crate::NominalHead::new(
-                            id,
-                            self.defs.path(id.declaration()),
-                        ))
-                    },
-                    crate::KnownDecl::head,
-                ))
+            Ok(super::scope::Resolution::Nominal(id)) => Some(self.head_of_declaration(id)),
+            // A trait written in type position names the trait's declaration.
+            Ok(super::scope::Resolution::Def(id))
+                if self.defs.kind(id) == crate::DeclarationKind::Trait =>
+            {
+                Some(crate::TypeHead::Nominal(crate::NominalHead::new(
+                    crate::NominalId::from_minted_declaration(id),
+                    self.defs.path(id),
+                )))
             }
             Ok(super::scope::Resolution::Param(id)) => Some(crate::TypeHead::param(
                 crate::ParamHead::new(id, path.segments[0].0.name),

@@ -1047,6 +1047,76 @@ impl Checker {
         }
     }
 
+    /// Bind the items of modules whose declarations an earlier run minted
+    /// (the embedded builtin run checks over a fork of the compilation's
+    /// table) in `namespace`, as minting would have.
+    pub(super) fn declare_minted_items_in_scope(
+        &mut self,
+        files: &[crate::ModuleId],
+        namespace: crate::ModuleId,
+    ) {
+        for &file in files {
+            if file != namespace {
+                self.scopes.join_namespace(file, namespace);
+            }
+        }
+        let rows: Vec<_> = self
+            .defs
+            .ids()
+            .filter(|id| {
+                self.defs
+                    .module(*id)
+                    .is_some_and(|module| files.contains(&module))
+            })
+            .collect();
+        for id in rows {
+            let name = self.defs.name(id);
+            match self.defs.owner(id) {
+                Some(owner) => {
+                    let resolution = scope::Binding::of_item(&self.defs, id)
+                        .map_or(scope::Resolution::Member(id), scope::Binding::resolution);
+                    self.scopes.declare_member(owner, name, resolution);
+                }
+                None => {
+                    if self.scopes.item(namespace, name).is_none() {
+                        if let Some(binding) = scope::Binding::of_item(&self.defs, id) {
+                            self.scopes.declare_item(namespace, name, binding);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bind the prelude manifest's exports (`std/prelude.hew`) in the
+    /// prelude scope, from the declarations their modules minted.
+    fn bind_prelude_exports_in_scope(&mut self) {
+        for export in crate::stdlib_authority::authority().prelude_exports() {
+            let Some(module) = self.defs.module_for_path(&export.module) else {
+                continue;
+            };
+            let namespace = self.scopes.namespace_of(module);
+            let Some(binding) = self.scopes.item(namespace, Symbol::intern(&export.name)) else {
+                continue;
+            };
+            let bound = export.alias.as_deref().unwrap_or(&export.name);
+            self.scopes.bind_prelude(Symbol::intern(bound), binding);
+        }
+        // `std.builtins` publishes every type and trait bare; its functions
+        // are reached through the builtin call catalog.
+        if let Some(builtins) = self.defs.module_for_path("std.builtins") {
+            for (name, binding) in self.scopes.items(self.scopes.namespace_of(builtins)) {
+                if matches!(
+                    binding,
+                    scope::Binding::Type(_) | scope::Binding::Actor(_) | scope::Binding::Trait(_)
+                ) && self.scopes.prelude_binding(name).is_none()
+                {
+                    self.scopes.bind_prelude(name, binding);
+                }
+            }
+        }
+    }
+
     fn bind_root_imports_in_scope(&mut self, program: &Program) {
         let Some(root) = self.defs.root_module() else {
             return;
@@ -1062,7 +1132,11 @@ impl Checker {
     /// binds the module under its alias or last segment, a selection binds
     /// each selected item under its alias or name, and a file import binds
     /// every item of the imported file.
-    fn bind_import_in_scope(&mut self, file: crate::ModuleId, decl: &hew_parser::ast::ImportDecl) {
+    pub(super) fn bind_import_in_scope(
+        &mut self,
+        file: crate::ModuleId,
+        decl: &hew_parser::ast::ImportDecl,
+    ) {
         let Some(target) = decl
             .resolved_source_paths
             .first()
@@ -1691,6 +1765,9 @@ impl Checker {
             NominalNamespace::FlattenedFile => Some(leaf.to_string()),
             NominalNamespace::Owned => None,
         };
+        if let (Item::Import(decl), Some(file)) = (item, module) {
+            self.bind_import_in_scope(file, decl);
+        }
         let machine_event_owner = if let Item::TypeDecl(decl) = item {
             if let hew_parser::ast::DeclarationOrigin::MachineEventType {
                 machine_start,
@@ -2442,6 +2519,7 @@ impl Checker {
         self.mint_source_declaration_identities(program);
         self.register_builtins();
         self.capture_protected_prelude_bindings();
+        self.bind_prelude_exports_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so

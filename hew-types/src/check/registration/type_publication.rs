@@ -542,7 +542,20 @@ impl Checker {
         let importer_source = self.current_item_source.clone();
         let importer_file = self.current_module_idx;
         if self.defs.module_has_source_declarations(identity_module) {
+            let mut files: Vec<crate::ModuleId> = item_sources
+                .iter()
+                .filter_map(|source| self.defs.module_for_source(source))
+                .collect();
+            files.push(identity_module);
+            self.declare_minted_items_in_scope(&files, identity_module);
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
+                if let Item::Import(decl) = item {
+                    let file = item_sources
+                        .get(item_ordinal)
+                        .and_then(|source| self.defs.module_for_source(source))
+                        .unwrap_or(identity_module);
+                    self.bind_import_in_scope(file, decl);
+                }
                 self.declare_item_type_parameter_scopes(
                     item_sources
                         .get(item_ordinal)

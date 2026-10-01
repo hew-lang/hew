@@ -316,6 +316,12 @@ impl Scopes {
             .insert(name, binding);
     }
 
+    /// The prelude binding of `name`.
+    #[must_use]
+    pub fn prelude_binding(&self, name: Symbol) -> Option<Binding> {
+        self.prelude.get(&name).copied()
+    }
+
     /// Bind a name in the prelude.
     pub fn bind_prelude(&mut self, name: Symbol, binding: Binding) {
         self.prelude.insert(name, binding);
@@ -575,7 +581,7 @@ impl Scopes {
         match current {
             Resolution::Module(module) => self
                 .items
-                .get(&module)
+                .get(&self.namespace_of(module))
                 .and_then(|items| items.get(&name))
                 .map(|binding| binding.resolution()),
             Resolution::Nominal(nominal) => self

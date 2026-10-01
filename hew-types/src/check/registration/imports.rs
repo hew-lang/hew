@@ -645,15 +645,25 @@ impl Checker {
         valid
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "import registration consolidates stdlib, user-module, and error paths in one place"
-    )]
+    /// Register an import's publications and bind it in the importing
+    /// file's scope once its module identity is minted.
     pub(in crate::check) fn register_import(
         &mut self,
         decl: &ImportDecl,
         import_span: Option<&Span>,
     ) {
+        let importer = self.scope_site().map(|site| site.file);
+        self.register_import_publications(decl, import_span);
+        if let Some(file) = importer {
+            self.bind_import_in_scope(file, decl);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "import registration consolidates stdlib, user-module, and error paths in one place"
+    )]
+    fn register_import_publications(&mut self, decl: &ImportDecl, import_span: Option<&Span>) {
         if import_span.is_some_and(|span| !self.preflight_import_publication(decl, span)) {
             return;
         }
@@ -695,7 +705,16 @@ impl Checker {
             // distinct declarations.
             let namespace =
                 crate::check::NominalNamespace::for_import(decl.path.segments.is_empty());
-            if !self.defs.module_has_source_declarations(primary) {
+            if self.defs.module_has_source_declarations(primary) {
+                let mut files: Vec<crate::ModuleId> = decl
+                    .resolved_item_source_paths
+                    .iter()
+                    .chain(&decl.resolved_source_paths)
+                    .filter_map(|source| self.defs.module_for_source(source))
+                    .collect();
+                files.push(primary);
+                self.declare_minted_items_in_scope(&files, primary);
+            } else {
                 for (index, (item, span)) in items.iter().enumerate() {
                     let module = decl
                         .resolved_item_source_paths
@@ -758,7 +777,9 @@ impl Checker {
                     let registry_module = self
                         .defs
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
-                    if !self.defs.module_has_source_declarations(registry_module) {
+                    if self.defs.module_has_source_declarations(registry_module) {
+                        self.declare_minted_items_in_scope(&[registry_module], registry_module);
+                    } else {
                         for (ordinal, (item, span)) in registry_source_items.iter().enumerate() {
                             self.mint_item_declaration_identities(
                                 Some(registry_module),

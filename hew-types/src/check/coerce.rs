@@ -210,7 +210,7 @@ impl Checker {
     /// Does the concrete actor type `actor_name` satisfy the handler trait
     /// `trait_name` by virtue of its `receive fn`s?
     ///
-    /// Active-mode handler traits (`ConnectionHandler`, `WebSocketHandler`)
+    /// Active-mode handler traits (`TlsHandler`, `WebSocketHandler`)
     /// are satisfied *structurally by an actor's receive functions*, not by an
     /// explicit `impl Trait for Actor` block: the actor declares
     /// `receive fn on_data(bytes)` / `receive fn on_close()` and the runtime
@@ -271,7 +271,7 @@ impl Checker {
 
     /// Is `trait_name` an active-mode *handler* trait — one whose methods take
     /// no `self` receiver and are therefore satisfied structurally by an actor's
-    /// `receive fn`s (e.g. `ConnectionHandler`, `WebSocketHandler`), rather than
+    /// `receive fn`s (e.g. `TlsHandler`, `WebSocketHandler`), rather than
     /// by a vtable-dispatched `impl`?
     ///
     /// The parser names every receiver parameter `self` (and types it `Self`),
@@ -468,7 +468,7 @@ impl Checker {
             //
             // The active-mode `conn.attach(this)` surface needs a concrete
             // actor handle (`EchoConn`) to satisfy an extern that takes the
-            // handler-trait handle (`ConnectionHandler`). An actor handle is an
+            // handler-trait handle (`TlsHandler`). An actor handle is an
             // opaque actor-ref pointer (`*mut HewActor`); its nominal
             // identity is purely a compile-time tag used for
             // `.send`/`.ask` message typing and (for handler traits) for
@@ -509,7 +509,7 @@ impl Checker {
                     //    `actor_satisfies_handler_trait`. `attach` codegen
                     //    synthesises the `on_data`/`on_close` `msg_id`s from the
                     //    actor's receive-fn protocol descriptor; an explicit
-                    //    `impl ConnectionHandler for X {}` with no matching
+                    //    `impl TlsHandler for X {}` with no matching
                     //    `receive fn`s carries nothing codegen can lower, so
                     //    gating on `type_implements_trait` would admit a
                     //    coercion that later fails closed with a late

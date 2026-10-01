@@ -2496,7 +2496,7 @@ impl Checker {
         // The descriptor maps each `receive fn` to its stable, hash-derived
         // `msg_id` (`SipHash-1-3("Actor::handler")`). Body checking needs this
         // map available because the active-mode `conn.attach(this)` coercion
-        // (`Actor`'s own actor-handle type → `ConnectionHandler`'s) consults
+        // (`Actor`'s own actor-handle type → `TlsHandler`'s) consults
         // `actor_satisfies_handler_trait`, which reads
         // `self.actor_protocol_descriptors` to confirm an actor's `receive fn`s
         // structurally satisfy the handler trait. Building it after body

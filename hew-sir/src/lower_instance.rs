@@ -34,6 +34,8 @@ impl<'a> InstanceService<'a> {
             closure_sources: Vec::new(),
             vtables: Vec::new(),
             vtables_by_erasure: HashMap::new(),
+            offloads: Vec::new(),
+            offloads_by_declaration: HashMap::new(),
             entry_adapters: HashMap::new(),
             test_entries: Vec::new(),
             used_templates: std::collections::HashSet::new(),
@@ -567,6 +569,23 @@ impl<'a> InstanceService<'a> {
     /// static call of the slot's method on `concrete_ty` reaches, so a
     /// nominal impl, a default method, a generic impl and a structural
     /// witness fill a slot exactly as they serve a bounded generic call.
+    /// The module-local identity of one `#[offload]` extern declaration.
+    pub(super) fn request_offload(
+        &mut self,
+        signature: &crate::ExternSignature,
+    ) -> Result<crate::OffloadId, String> {
+        if let Some(id) = self.offloads_by_declaration.get(&signature.declaration) {
+            return Ok(*id);
+        }
+        let id = crate::OffloadId(
+            u32::try_from(self.offloads.len()).map_err(|_| "offload count exceeds u32")?,
+        );
+        self.offloads.push(signature.clone());
+        self.offloads_by_declaration
+            .insert(signature.declaration, id);
+        Ok(id)
+    }
+
     pub(super) fn request_vtable(
         &mut self,
         layout_ty: &ResolvedTy,
@@ -1666,7 +1685,8 @@ impl<'a> InstanceService<'a> {
             bytes_literals,
             regex_patterns,
             value_capabilities,
-            defs: std::sync::Arc::clone(&self.module.defs),
+            defs: std::sync::Arc::clone(&module.defs),
+            offloads: self.offloads,
         }
     }
 

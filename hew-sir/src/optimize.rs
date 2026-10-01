@@ -54,13 +54,21 @@ pub fn canonicalize_module_constant_cfg(
         actors,
         supervisors,
         vtables,
+        offloads,
         functions,
         ..
     } = module;
     // The callables are not touched by a CFG rewrite, so one index over them
     // serves every body.
-    let context =
-        crate::verify::callable_context(defs, callables, closures, actors, supervisors, vtables);
+    let context = crate::verify::callable_context(
+        defs,
+        callables,
+        closures,
+        actors,
+        supervisors,
+        vtables,
+        offloads,
+    );
     let mut reports = Vec::with_capacity(functions.len());
     for function in functions {
         let report = canonicalize_verified_function(

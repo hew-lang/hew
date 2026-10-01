@@ -338,6 +338,9 @@ pub struct HirExternFn {
     pub provenance: ExternProvenance,
     /// Typed runtime authority declared on this stdlib extern, if any.
     pub runtime_capability: Option<hew_types::ExternRuntimeCapability>,
+    /// The checker validated `#[offload]` on this declaration: a call parks
+    /// its task while the C function runs on the blocking pool.
+    pub offload: bool,
     pub span: Span,
 }
 

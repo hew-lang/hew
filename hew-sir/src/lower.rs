@@ -554,6 +554,8 @@ struct InstanceService<'a> {
     /// Dispatch tables demanded by the erasure sites this module lowered.
     vtables: Vec<crate::SemVtable>,
     vtables_by_erasure: HashMap<(ResolvedTy, ResolvedTy), crate::SemVtableId>,
+    offloads: Vec<crate::ExternSignature>,
+    offloads_by_declaration: HashMap<hew_types::DefId, crate::OffloadId>,
     entry_adapters: HashMap<CallableId, EntryAdapter>,
     test_entries: Vec<crate::SemTestEntry>,
     /// Only template headers that back a requested concrete SIR instance are

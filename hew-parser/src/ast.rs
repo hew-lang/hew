@@ -1705,6 +1705,14 @@ pub struct ExternFnDecl {
     pub span: Span,
 }
 
+impl ExternFnDecl {
+    /// `#[offload]`: a call parks its task and runs on the blocking pool.
+    #[must_use]
+    pub fn is_offload(&self) -> bool {
+        self.attributes.iter().any(|attr| attr.name == "offload")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActorDecl {
     #[serde(default)]

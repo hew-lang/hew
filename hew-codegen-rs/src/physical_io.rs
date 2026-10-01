@@ -18,7 +18,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "native I/O input must be borrowed".into(),
                 ));
             };
-            if matches!(operation, AsyncIoOp::FileWriteBytes | AsyncIoOp::TcpWrite) && index == 1 {
+            if operation == AsyncIoOp::TcpWrite && index == 1 {
                 arguments.push(self.slots[source.0 as usize].into());
             } else {
                 arguments.push(self.load(*source, "io.input")?.into());
@@ -110,11 +110,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let (symbol, output) = match operation.resume() {
             AsyncIoResume::Bytes => ("hew_async_io_take_bytes", self.slots[result.0 as usize]),
-            AsyncIoResume::WriteStatus => {
-                // The ordinary wrapper returns status rather than the byte count.
-                // Freeing the request discards its successful count.
-                return self.store(result, self.ctx.i32_type().const_zero().into());
-            }
             AsyncIoResume::WriteCount => {
                 let output = self
                     .builder
@@ -178,31 +173,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one request owns readiness, cancellation, quiescence and result transfer"
-    )]
-    pub(super) fn emit_native_io(
+    /// Park until a submitted request leaves `Pending` or the task is
+    /// cancelled. Returns the completed and cancelled blocks, unpositioned;
+    /// the cancelled block has not yet cancelled the request.
+    pub(super) fn wait_for_request(
         &self,
-        operation: AsyncIoOp,
-        args: &[ArgumentTransfer],
-        result: StorageId,
-        normal: &PhysicalEdge,
-        cancel: &PhysicalEdge,
-    ) -> CodegenResult<()> {
+        request: PointerValue<'ctx>,
+    ) -> CodegenResult<(BasicBlock<'ctx>, BasicBlock<'ctx>)> {
         let frame = self.frame.as_ref().ok_or_else(|| {
-            CodegenError::FailClosed("native I/O requires a resumable body".into())
+            CodegenError::FailClosed("a waiting call requires a resumable body".into())
         })?;
-        let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
-        let request = self.submit_native_io(operation, args, waker)?;
         let poll = self.ctx.append_basic_block(self.value, "io.poll");
         let inspect = self.ctx.append_basic_block(self.value, "io.inspect");
         let pending = self.ctx.append_basic_block(self.value, "io.pending");
         let cancelled = self.ctx.append_basic_block(self.value, "io.cancelled");
         let completed = self.ctx.append_basic_block(self.value, "io.completed");
-        let success = self.ctx.append_basic_block(self.value, "io.success");
-        let error = self.ctx.append_basic_block(self.value, "io.error");
-        let resume = self.ctx.append_basic_block(self.value, "io.resume");
         let invalid = self.ctx.append_basic_block(self.value, "io.invalid");
         self.builder
             .build_unconditional_branch(poll)
@@ -244,6 +229,30 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
+        Ok((completed, cancelled))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one request owns readiness, cancellation, quiescence and result transfer"
+    )]
+    pub(super) fn emit_native_io(
+        &self,
+        operation: AsyncIoOp,
+        args: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        cancel: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("native I/O requires a resumable body".into())
+        })?;
+        let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
+        let request = self.submit_native_io(operation, args, waker)?;
+        let (completed, cancelled) = self.wait_for_request(request)?;
+        let success = self.ctx.append_basic_block(self.value, "io.success");
+        let error = self.ctx.append_basic_block(self.value, "io.error");
+        let resume = self.ctx.append_basic_block(self.value, "io.resume");
         self.builder.position_at_end(cancelled);
         self.state_value("hew_async_io_cancel", request)?;
         self.drain_native_io(operation, request, waker)?;
@@ -293,7 +302,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let result_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?;
         let failed = match operation.resume() {
             AsyncIoResume::Bytes => result_ty.const_zero(),
-            AsyncIoResume::WriteStatus | AsyncIoResume::WriteCount | AsyncIoResume::Connection => {
+            AsyncIoResume::WriteCount | AsyncIoResume::Connection => {
                 result_ty.into_int_type().const_all_ones().into()
             }
         };

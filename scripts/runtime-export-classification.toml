@@ -888,9 +888,7 @@ stable-stdlib = [
   "hew_deflate_compress_hew",
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
-  "hew_dns_lookup_host_timed",
   "hew_dns_resolve",
-  "hew_dns_resolve_timed",
   "hew_ed25519_generate_pkcs8_hew",
   "hew_ed25519_public_key_from_pkcs8_hew",
   "hew_ed25519_sign_hew",
@@ -1272,9 +1270,6 @@ non-declarable = [
   "hew_actor_wait_new",
   "hew_actor_wait_poll",
   "hew_actor_wait_take_fault",
-  "hew_async_file_read",
-  "hew_async_file_write",
-  "hew_async_file_write_string",
   "hew_async_io_cancel",
   "hew_async_io_cleanup_status",
   "hew_async_io_free",
@@ -1283,6 +1278,8 @@ non-declarable = [
   "hew_async_io_take_bytes",
   "hew_async_io_take_count",
   "hew_async_io_take_handle",
+  "hew_async_io_take_offload",
+  "hew_async_offload",
   "hew_async_stdin_read_line",
   "hew_async_tcp_accept",
   "hew_async_tcp_connect",
@@ -4360,24 +4357,9 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_dns_lookup_host_timed"
-result = "fresh"
-params = ["borrow", "borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
 symbol = "hew_dns_resolve"
 result = "fresh"
 params = ["borrow"]
-release-symbol = "hew_vec_free"
-discharge-depth = "deep"
-
-[[ownership.contracts]]
-symbol = "hew_dns_resolve_timed"
-result = "fresh"
-params = ["borrow", "borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "deep"
 

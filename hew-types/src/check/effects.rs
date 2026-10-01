@@ -766,9 +766,11 @@ impl Checker {
             Some(CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. }) => {
                 family.is_async_suspending().is_some()
             }
+            Some(CallTarget::Extern { declaration, .. }) => {
+                self.extern_table.is_offload(*declaration)
+            }
             Some(
                 CallTarget::RecordConstructor(_)
-                | CallTarget::Extern { .. }
                 | CallTarget::Builtin { .. }
                 | CallTarget::RuntimeCollection(_),
             ) => false,

@@ -590,6 +590,16 @@ impl Checker {
             };
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.insert_fn_sig(&key, declaration, sig);
+            if f.is_offload() {
+                self.pending_offloads
+                    .push(crate::check::types::PendingOffload {
+                        declaration,
+                        span: f.span.clone(),
+                        source_module: self.current_module.clone(),
+                        variadic: f.is_variadic,
+                        consumes: consuming_params.iter().any(|consumes| *consumes),
+                    });
+            }
             if !self
                 .source_extern_declarations
                 .iter()
@@ -609,6 +619,97 @@ impl Checker {
             }
 
             self.record_root_value_binding(f.name.name.as_str());
+        }
+    }
+
+    /// Validate every `#[offload]` declaration and publish the valid ones.
+    ///
+    /// The pool job owns a copy of each argument and the result until it
+    /// finishes, because a cancelled caller resumes at once and releases its
+    /// own values. A value with a single owner, or an `#[opaque]` handle whose
+    /// lifetime a caller-side owner ends, cannot be copied into the job.
+    pub(in crate::check) fn validate_offload_declarations(&mut self) {
+        for pending in std::mem::take(&mut self.pending_offloads) {
+            let name = self.defs.path(pending.declaration).to_string();
+            let mut refusals = Vec::new();
+            if pending.variadic {
+                refusals.push("is variadic".to_string());
+            }
+            if pending.consumes {
+                refusals.push("has a `consume` parameter".to_string());
+            }
+            if let Some(signature) = self.fn_sigs.get(&pending.declaration) {
+                for (index, ty) in signature.params.iter().enumerate() {
+                    if let Some(reason) = self.offload_refusal(ty) {
+                        refusals.push(format!(
+                            "parameter {index} is `{}`, which {reason}",
+                            ty.user_facing()
+                        ));
+                    }
+                }
+                let result = &signature.return_type;
+                if *result != Ty::Unit {
+                    if let Some(reason) = self.offload_refusal(result) {
+                        refusals.push(format!(
+                            "returns `{}`, which {reason}",
+                            result.user_facing()
+                        ));
+                    }
+                }
+            }
+            if refusals.is_empty() {
+                self.extern_table.mark_offload(pending.declaration);
+                continue;
+            }
+            for refusal in refusals {
+                let mut error = TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    pending.span.clone(),
+                    format!("`#[offload]` extern fn `{name}` {refusal} [E_OFFLOAD_SIGNATURE]"),
+                );
+                error.notes.push((
+                    pending.span.clone(),
+                    "an offloaded call runs on the blocking pool with its own copy of every \
+                     argument; a cancelled caller resumes at once"
+                        .to_string(),
+                    pending.source_module.clone(),
+                ));
+                error.source_module.clone_from(&pending.source_module);
+                self.errors.push(error);
+            }
+        }
+    }
+
+    /// Why the pool job cannot own a value of `ty`, if it cannot.
+    fn offload_refusal(&self, ty: &Ty) -> Option<&'static str> {
+        if self.contains_opaque_handle(ty) {
+            return Some(
+                "is an `#[opaque]` handle that its caller-side owner may release while the job runs",
+            );
+        }
+        let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+            return Some("has no checked value class");
+        };
+        let declarations = self.class_declarations();
+        let context = crate::value_class::ClassContext::new(&declarations);
+        match crate::value_class::classify_ty(&resolved, &context) {
+            Ok((_, crate::type_facts::CloneKind::None)) => {
+                Some("has a single owner and cannot be copied into the job")
+            }
+            Ok(_) => None,
+            Err(_) => Some("has no checked value class"),
+        }
+    }
+
+    fn contains_opaque_handle(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named { head, args } => {
+                matches!(head, crate::TypeHead::Nominal(nominal)
+                    if self.opaque_type_ids.contains(&nominal.id))
+                    || args.iter().any(|arg| self.contains_opaque_handle(arg))
+            }
+            Ty::Pointer { pointee, .. } => self.contains_opaque_handle(pointee),
+            _ => false,
         }
     }
 

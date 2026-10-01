@@ -386,6 +386,23 @@ pub struct PhysicalValueRecipe {
     pub destroy: Option<DestroyAction>,
 }
 
+/// One value an `#[offload]` job's environment owns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalOffloadSlot {
+    pub layout: PhysicalLayout,
+    pub recipe: PhysicalValueRecipe,
+}
+
+/// One `#[offload]` extern: the C endpoint the pool job calls and the
+/// arguments and result its environment stores, in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalOffload {
+    pub symbol: String,
+    pub params: Vec<PhysicalOffloadSlot>,
+    pub result: Option<PhysicalOffloadSlot>,
+    pub result_abi: PhysicalExternResultAbi,
+}
+
 /// One exact closure body and its already selected concrete environment type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalClosure {
@@ -1033,6 +1050,17 @@ pub enum PhysicalTerminator {
         normal: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    /// Hand an `#[offload]` extern call to the blocking pool and suspend.
+    /// Every input moves into the job's environment; cancellation resumes
+    /// at once and leaves the environment for the job to release.
+    Offload {
+        function: hew_sir::OffloadId,
+        args: Vec<ArgumentTransfer>,
+        result: Option<StorageId>,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     /// Submit once, suspend without blocking, and drain resource loans before exit.
     NativeIo {
         operation: hew_types::runtime_call::AsyncIoOp,
@@ -1236,6 +1264,8 @@ pub struct PhysicalModule {
     pub target: PhysicalTarget,
     pub closures: Vec<PhysicalClosure>,
     pub vtables: Vec<PhysicalVtable>,
+    /// `#[offload]` externs, indexed by [`hew_sir::OffloadId`].
+    pub offloads: Vec<PhysicalOffload>,
     pub environment_glue: Vec<PhysicalEnvironmentGlue>,
     pub aggregate_glue: Vec<PhysicalAggregateGlue>,
     pub variant_glue: Vec<PhysicalVariantGlue>,

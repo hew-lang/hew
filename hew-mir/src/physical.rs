@@ -94,8 +94,8 @@ use hew_sir::{
     SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
 pub use hew_sir::{
-    BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OwnKind, ResourceCarrier,
-    ResourceRelease, SemParamPassing, TaskScopeId, TrapKind,
+    BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OffloadId, OwnKind,
+    ResourceCarrier, ResourceRelease, SemParamPassing, TaskScopeId, TrapKind,
 };
 use hew_types::runtime_call::{
     collection_type_arguments, shared_handle_payload, MapValueOp, SetValueOp,

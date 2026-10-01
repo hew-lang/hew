@@ -14,6 +14,7 @@ fn files(path: string, bytes: bytes) {
     let _ = fs.read_bytes(path);
     let _ = fs.write(path, "text");
     let _ = fs.write_bytes(path, bytes);
+    let _ = fs.exists(path);
 }
 fn sockets(listener: net.Listener, conn: net.Connection, bytes: bytes) {
     let _ = listener.accept();
@@ -39,13 +40,7 @@ fn canonical_io_wrappers_propagate_checked_native_operation_effects() {
     let state = run_file_frontend_to_typecheck(input.to_str().unwrap(), &options)
         .unwrap_or_else(|error| panic!("{error:#?}"));
     let output = state.typecheck_result.tco.expect("checked source output");
-    for op in [
-        AsyncIoOp::FileReadBytes,
-        AsyncIoOp::FileWriteString,
-        AsyncIoOp::FileWriteBytes,
-        AsyncIoOp::TcpRead,
-        AsyncIoOp::TcpAccept,
-    ] {
+    for op in [AsyncIoOp::TcpRead, AsyncIoOp::TcpAccept] {
         assert!(
             output
                 .direct_call_targets
@@ -54,7 +49,13 @@ fn canonical_io_wrappers_propagate_checked_native_operation_effects() {
             "missing {op:?}"
         );
     }
+    // File operations are `#[offload]` externs, not native I/O operations.
+    assert!(output.direct_call_targets.values().any(|target| matches!(
+        target,
+        CallTarget::Extern { declaration, .. } if output.extern_contracts.is_offload(*declaration)
+    )));
     for call in [
+        "fs.exists(path)",
         "fs.read(path)",
         "fs.read_bytes(path)",
         "fs.write(path, \"text\")",

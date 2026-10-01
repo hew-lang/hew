@@ -32,17 +32,17 @@ mod deadline;
 mod file;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
+mod offload;
 mod stdin;
 #[cfg(not(target_arch = "wasm32"))]
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
-#[cfg(not(target_arch = "wasm32"))]
-pub use file::{hew_async_file_read, hew_async_file_write, hew_async_file_write_string};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use file::{start_sink_write, start_stream_read};
 #[cfg(not(target_arch = "wasm32"))]
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use net::{start_tcp_readable, start_tcp_stream_write};
+pub use offload::hew_async_offload;
 #[cfg(windows)]
 pub(crate) use stdin::ensure_reader as ensure_stdin_reader;
 pub use stdin::hew_async_stdin_read_line;
@@ -116,6 +116,8 @@ pub(crate) enum IoValue {
     #[cfg(not(target_arch = "wasm32"))]
     Connection(AcceptedConnection),
     StdinLine(stdin::Line),
+    /// An `#[offload]` call's environment holding its result.
+    Offload(offload::OffloadEnv),
 }
 
 enum State {
@@ -619,6 +621,44 @@ pub unsafe extern "C" fn hew_async_io_take_handle(
     AsyncIoStatus::Success as i32
 }
 
+/// Move an `#[offload]` call's result into `out` and release its arguments.
+/// The output is untouched unless this returns `AsyncIoStatus::Success`.
+///
+/// # Safety
+/// `operation` is live and came from `hew_async_offload`; `out` is writable for
+/// `size` bytes, and `offset`/`size` locate the result in its environment.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_io_take_offload(
+    operation: *const HewAsyncIo,
+    out: *mut u8,
+    offset: usize,
+    size: usize,
+) -> i32 {
+    // SAFETY: the caller provides a live operation, or null.
+    let Some(operation) = (unsafe { operation.as_ref() }) else {
+        return AsyncIoStatus::Error as i32;
+    };
+    let taken = {
+        let mut state = operation.state.lock_or_recover();
+        if !matches!(&*state, State::Ready(Ok(IoValue::Offload(_)))) {
+            return if state.status() == AsyncIoStatus::Success {
+                AsyncIoStatus::Error as i32
+            } else {
+                state.status() as i32
+            };
+        }
+        std::mem::replace(&mut *state, State::Taken)
+    };
+    let State::Ready(Ok(IoValue::Offload(mut env))) = taken else {
+        unreachable!("offload result was checked under the state lock")
+    };
+    // SAFETY: forwarded from this function's contract.
+    unsafe { env.take_result(out, offset, size) };
+    // Releasing the arguments runs generated destructors: outside the lock.
+    drop(env);
+    AsyncIoStatus::Success as i32
+}
+
 /// Restore ordinary I/O error metadata on the resumed execution thread.
 /// Success clears stale errors; pending/cancelled operations leave the channel
 /// unchanged. Call immediately before continuing the existing source wrapper,
@@ -639,6 +679,7 @@ pub unsafe extern "C" fn hew_async_io_restore_error(operation: *const HewAsyncIo
             error.errno,
             error.kind,
         ),
+        State::Ready(Ok(IoValue::Offload(env))) => env.error.restore(),
         State::Ready(Ok(_)) | State::Taken => {
             let _ = crate::stream_error::take_last_error();
         }

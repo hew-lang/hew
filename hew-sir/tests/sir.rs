@@ -118,6 +118,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),

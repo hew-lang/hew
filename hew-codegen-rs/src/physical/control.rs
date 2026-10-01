@@ -76,6 +76,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 ..
             } => self.emit_native_io(*operation, args, *result, normal, cancel),
+            PhysicalTerminator::Offload {
+                function,
+                args,
+                result,
+                normal,
+                cancel,
+                ..
+            } => self.emit_offload(*function, args, *result, normal, cancel),
             PhysicalTerminator::Sleep {
                 duration,
                 normal,

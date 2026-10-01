@@ -513,12 +513,7 @@ deterministic_functions = [
   "std.net.dns.resolve_timed",
   "std.net.dns.lookup_host_timed",
 ]
-deterministic_endpoints = [
-  "hew_dns_resolve",
-  "hew_dns_lookup_host",
-  "hew_dns_resolve_timed",
-  "hew_dns_lookup_host_timed",
-]
+deterministic_endpoints = ["hew_dns_resolve", "hew_dns_lookup_host"]
 enum_variant = "Dns"
 label = "std.net.dns resolver operations"
 prose_label = "`std.net.dns.resolve`, `dns.lookup_host`"

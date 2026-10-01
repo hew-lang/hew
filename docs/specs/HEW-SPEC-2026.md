@@ -3019,6 +3019,38 @@ Hew function (D450). Forwarding a value reached through one of the current
 function's own borrowed parameters into an `extern` call that consumes it is
 the same `E_OWN_CONSUME_BORROWED` diagnosis, fixed the same way.
 
+**Blocking calls (`#[offload]`).** A C function that can block in the
+operating system, with no readiness to wait on, is declared `#[offload]`. A
+call still reads as an ordinary call; it parks the calling task while the
+function runs on the runtime's blocking pool, so the worker keeps running other
+tasks and actors (§4.7).
+
+```hew,ignore
+extern "C" {
+    #[offload]
+    fn sqlite_exec_text(path: string, sql: string) -> string;
+}
+
+fn report(path: string) -> string {
+    scope within 2s {
+        unsafe { sqlite_exec_text(path, "select count(*) from orders") }
+    } handle failure {
+        "timed out"
+    }
+}
+```
+
+The pool job owns a copy of every argument and its result until it finishes.
+Cancelling the caller, for example by a `scope within` deadline, resumes it at
+once; the call already running in C finishes on the pool, and its result is
+released there. Cancellation abandons the result, not the effect. Because the
+job must own its inputs, every parameter and the result must be a value the
+compiler can copy into the job: scalars, `string`, `bytes`, and collections and
+records of those. `consume` parameters, variadic functions, `#[opaque]` handles
+and single-owner types are refused with `E_OFFLOAD_SIGNATURE`. The runtime's
+I/O error slot set by the function travels back to the caller with the result;
+other thread-local state of the C library does not.
+
 #### 3.9.2 C-Compatible Struct Layout
 
 > **Not yet implemented.** `#[repr(C)]` is not recognised. Annotating a type
@@ -4561,6 +4593,10 @@ Waiting never holds a scheduler thread. A call that waits on a socket, a timer
 or offloaded work suspends only its own task; the worker runs other tasks and
 actors meanwhile. Cancelling the waiting task abandons the result, not an
 effect the operating system has already begun.
+
+Operations with no portable readiness, such as file system calls, name
+resolution and blocking C libraries, are `#[offload]` extern functions
+(§3.9.1). Standard input, sockets and timers wait on readiness instead.
 
 ### 4.8 Interaction with Actor Messages
 
@@ -6857,6 +6893,7 @@ refuses the name it does not know rather than dropping it.
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
+| `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |
 | `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
 
 Testing attribute arguments are positional. `test`, `serial` and `real_time`

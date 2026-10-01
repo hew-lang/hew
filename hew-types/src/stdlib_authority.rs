@@ -317,7 +317,6 @@ pub struct ExternRuntimeCapabilityEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternRuntimeCapability {
-    BlockingOffload,
     Metrics,
 }
 
@@ -325,7 +324,6 @@ impl ExternRuntimeCapability {
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
-            Self::BlockingOffload => "blocking_offload",
             Self::Metrics => "metrics",
         }
     }
@@ -333,7 +331,6 @@ impl ExternRuntimeCapability {
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
-            "blocking_offload" => Some(Self::BlockingOffload),
             "metrics" => Some(Self::Metrics),
             _ => None,
         }
@@ -1169,20 +1166,6 @@ mod tests {
                 .contains_key("failure::CrashAction"),
             "failure enum orders must be collected"
         );
-        for symbol in [
-            "net::hew_tcp_connect",
-            "net::hew_tcp_connect_timeout",
-            "net::dns::hew_dns_resolve",
-            "net::dns::hew_dns_lookup_host",
-            "net::dns::hew_dns_resolve_timed",
-            "net::dns::hew_dns_lookup_host_timed",
-        ] {
-            assert_eq!(
-                authority.extern_runtime_capabilities()[symbol].capability,
-                ExternRuntimeCapability::BlockingOffload,
-                "missing blocking-offload capability on {symbol}"
-            );
-        }
         assert_eq!(
             authority.extern_runtime_capabilities()["metrics::hew_metric_counter_register"]
                 .capability,
@@ -1216,7 +1199,7 @@ pub fn println_i64(value: i64) {}
 extern "C" {
     #[abi(ret = bytes_triple, bytes_param = ptr, drop = cow_null_tolerant)]
     fn hew_bytes();
-    #[runtime_capability("blocking_offload")]
+    #[runtime_capability("metrics")]
     fn hew_connect();
 }
 "#,
@@ -1256,7 +1239,7 @@ extern "C" {
         );
         assert_eq!(
             authority.extern_runtime_capabilities()["builtins::hew_connect"].capability,
-            ExternRuntimeCapability::BlockingOffload
+            ExternRuntimeCapability::Metrics
         );
         assert_eq!(
             authority.enum_variant_orders()["builtins::Maybe"].variants,
@@ -1278,15 +1261,11 @@ extern "C" {
             .expect("embedded stdlib authority sources must load");
 
         assert_eq!(
-            authority.extern_runtime_capability("std.net", "hew_tcp_connect"),
-            Some(ExternRuntimeCapability::BlockingOffload)
+            authority.extern_runtime_capability("std.metrics", "hew_metric_counter_register"),
+            Some(ExternRuntimeCapability::Metrics)
         );
         assert_eq!(
-            authority.extern_runtime_capability("std.net.dns", "hew_dns_resolve"),
-            Some(ExternRuntimeCapability::BlockingOffload)
-        );
-        assert_eq!(
-            authority.extern_runtime_capability("user.net", "hew_tcp_connect"),
+            authority.extern_runtime_capability("user.metrics", "hew_metric_counter_register"),
             None
         );
     }
@@ -1449,7 +1428,7 @@ extern "C" {
         let source = AuthoritySource::embedded(
             StdlibRoot::Net,
             "std/net/net.hew",
-            r#"#[runtime_capability("blocking_offload")] pub fn connect() {}"#,
+            r#"#[runtime_capability("metrics")] pub fn connect() {}"#,
         );
         let error = load_stdlib_authority(&[source])
             .expect_err("runtime capabilities must only decorate extern declarations");
@@ -1469,7 +1448,7 @@ extern "C" {
             "src/main.hew",
             r#"
 extern "C" {
-    #[runtime_capability("blocking_offload")]
+    #[runtime_capability("metrics")]
     fn connect();
 }
 "#,

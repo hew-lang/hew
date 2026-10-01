@@ -164,6 +164,17 @@ pub(super) struct SourceExternDeclaration {
     pub(super) consuming_params: Vec<bool>,
 }
 
+/// An `#[offload]` extern declaration awaiting signature validation, which
+/// runs once every declared type has its class facts.
+#[derive(Debug, Clone)]
+pub(super) struct PendingOffload {
+    pub(super) declaration: crate::DefId,
+    pub(super) span: Span,
+    pub(super) source_module: Option<String>,
+    pub(super) variadic: bool,
+    pub(super) consumes: bool,
+}
+
 /// One `#[extern_symbol]` method's declared C-boundary signature.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExternMethodSignature {
@@ -3029,6 +3040,7 @@ pub struct Checker {
     /// Source extern declarations retained until the output boundary, where
     /// they are joined to the generated FFI ownership graph.
     pub(super) source_extern_declarations: Vec<SourceExternDeclaration>,
+    pub(super) pending_offloads: Vec<PendingOffload>,
     /// Direct resolved import targets for the module whose declarations are
     /// currently being registered. Cleared between module-graph nodes.
     pub(super) current_module_direct_imports: BTreeSet<String>,
@@ -4205,6 +4217,7 @@ impl Checker {
             method_call_discharges_receiver: HashSet::new(),
             method_call_preserves_receiver_identity: HashSet::new(),
             source_extern_declarations: Vec::new(),
+            pending_offloads: Vec::new(),
             current_module_direct_imports: BTreeSet::new(),
             current_module_direct_import_bindings: Vec::new(),
             actor_handler_state_guards: HashMap::new(),

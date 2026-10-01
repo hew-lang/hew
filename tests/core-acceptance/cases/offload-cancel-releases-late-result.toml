@@ -1,0 +1,10 @@
+[[case]]
+id = "offload-cancel-releases-late-result"
+intent = "A deadline resumes the caller of a blocked #[offload] call at once; the job keeps its own argument copy and releases its late result exactly once."
+source = "cases/offload-cancel-releases-late-result.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "deadline\ncaller still owns true\n"
+exit = 0

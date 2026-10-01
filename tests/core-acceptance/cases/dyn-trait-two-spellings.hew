@@ -1,0 +1,13 @@
+// One trait reached through a qualified path and a named import is one
+// trait-object type: each spelling's value flows into the other's parameter.
+import dyn_trait_spellings.shapes;
+import dyn_trait_spellings.shapes.{Shape, Square};
+
+fn named(s: dyn Shape) -> i64 { s.area() }
+fn qualified(s: dyn shapes.Shape) -> i64 { s.area() }
+
+fn main() {
+    let x: dyn Shape = Square { side: 3 };
+    let y: dyn shapes.Shape = Square { side: 2 };
+    println(named(y) + qualified(x));
+}

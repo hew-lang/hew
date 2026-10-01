@@ -1,0 +1,11 @@
+// Two traits that share a leaf name in different modules are different
+// trait-object types.
+import dyn_trait_spellings.shapes;
+import dyn_trait_spellings.other;
+
+fn other_area(s: dyn other.Shape) -> i64 { s.area() }
+
+fn main() {
+    let x: dyn shapes.Shape = shapes.Square { side: 3 };
+    println(other_area(x));
+}

@@ -2518,6 +2518,28 @@ impl Checker {
         );
     }
 
+    /// R11: a `receive fn`'s message crosses an actor boundary, and a trait
+    /// object is not Send: its concrete type is erased, so nothing proves it
+    /// owns no actor-local state.
+    fn reject_dyn_message_type(&mut self, ty: &Ty, span: &Span) {
+        if !ty.contains_trait_object() {
+            return;
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::InvalidSend,
+            span,
+            format!(
+                "E_DYN_NOT_SEND: `{}` cannot cross an actor boundary: a trait object is not Send",
+                ty.user_facing()
+            ),
+            vec![
+                "declare an enum of the failures or values the handler can produce, \
+                 such as `fails StoreError`"
+                    .to_string(),
+            ],
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "receive body checking establishes actor and callable contexts"
@@ -2576,6 +2598,7 @@ impl Checker {
             self.check_shadowing(p.name.name.as_str(), &p.name_span);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
+            self.reject_dyn_message_type(&ty, &p.ty.1);
             self.env
                 .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);
@@ -2599,6 +2622,9 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation))
         };
+        if let Some((_, return_span)) = &rf.return_type {
+            self.reject_dyn_message_type(&declared_ret, return_span);
+        }
         // A `fails` handler spells failure exactly as every `fails` fn does:
         // `return error e`, `?`, and a bare success tail the compiler wraps.
         // The body is checked against the success type, and the declared

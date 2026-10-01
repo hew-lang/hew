@@ -1,0 +1,8 @@
+// An impl from an imported module whose body suspends cannot fill a plain
+// dyn slot: its body is in the effect graph like a root impl's.
+import dyn_slot_import.clocks.{Ticker, Slow};
+
+fn main() {
+    let t: dyn Ticker = Slow { n: 1 };
+    println(t.tick());
+}

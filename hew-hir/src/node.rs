@@ -46,6 +46,10 @@ pub struct HirModule {
     /// Checker-selected test entries in dispatcher ordinal order. Each entry
     /// retains its own typed process-exit action.
     pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
+    /// The checker's layout of every trait object the program names, keyed
+    /// by its canonical type: the one slot list dispatch and tables read.
+    pub trait_object_layouts:
+        Arc<std::collections::BTreeMap<ResolvedTy, hew_types::TraitObjectLayout>>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.

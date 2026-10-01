@@ -419,6 +419,13 @@ pub struct PhysicalVtableSlot {
     pub signature: PhysicalCallSignature,
 }
 
+/// Words of a trait-object table before its first method slot: the
+/// `drop_in_place`, size and alignment words and the concrete value's
+/// release descriptor (`hew-runtime/src/trait_object.rs::HewVtable`).
+/// Physical MIR is the one compiler stage that places a layout slot past
+/// them; the compiler builds for wasm32, where `hew-cabi` does not.
+pub const VTABLE_PREFIX_WORDS: u32 = 4;
+
 /// Realized dispatch table for one erasure of a concrete type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVtable {
@@ -1090,9 +1097,12 @@ pub enum PhysicalTerminator {
         unwind: Option<PhysicalEdge>,
     },
     /// Load one slot from the receiver's vtable and call through it.
+    /// `word` is `VTABLE_PREFIX_WORDS + slot`.
     DynCall {
         receiver: ArgumentTransfer,
-        slot: u32,
+        /// The table word holding the slot: the layout slot past the
+        /// runtime prefix.
+        word: u32,
         /// Exact method declaration expected at the selected slot.
         method: hew_types::DefId,
         signature: PhysicalCallSignature,

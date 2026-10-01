@@ -368,7 +368,7 @@ impl FunctionLowerer<'_> {
         };
         Ok(PhysicalTerminator::DynCall {
             receiver: self.argument_transfer(receiver.operand.value, receiver.decision)?,
-            slot: *slot,
+            word: crate::physical::VTABLE_PREFIX_WORDS + *slot,
             method: *method,
             signature: PhysicalCallSignature {
                 params: self.call_params(signature)?,

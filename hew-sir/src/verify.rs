@@ -540,7 +540,7 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                     module.defs.path(slot.method)
                 ));
             }
-            let expected_slot = 3 + u32::try_from(position).expect("SIR vtable slot exceeds u32");
+            let expected_slot = u32::try_from(position).expect("SIR vtable slot exceeds u32");
             if slot.slot != expected_slot {
                 refuse(format!(
                     "slot {} for `{}` is out of emitted order; expected {expected_slot}",

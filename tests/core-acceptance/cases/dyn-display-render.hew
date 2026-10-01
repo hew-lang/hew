@@ -1,0 +1,27 @@
+type Note { text: string; }
+impl Display for Note { fn fmt(val: Note) -> string { f"note {val.text}" } }
+
+type Boom { code: i64; }
+impl Display for Boom { fn fmt(val: Boom) -> string { f"boom {val.code}" } }
+impl Error for Boom {}
+
+fn fail() -> Result<i64, dyn Error> { .Err(Boom { code: 7 }) }
+
+fn show(d: dyn Display) {
+    defer { println(d.fmt()); }
+    println(f"[{d}]");
+    println(d);
+}
+
+fn main() {
+    show(Note { text: "hi" });
+    let n: dyn Display = 42;
+    println(n);
+    match fail() {
+        .Ok(v) => println(v),
+        .Err(e) => {
+            println(f"got {e}");
+            println(e);
+        }
+    }
+}

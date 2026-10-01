@@ -812,8 +812,7 @@ pub struct TypeCheckOutput {
     pub error_conversions: HashMap<SpanKey, ErrorConversion>,
     /// Per-method-call-site resolution for `obj.method()` where `obj` has
     /// resolved type `Ty::TraitObject`. Each entry pins the originating trait,
-    /// the method name, and the vtable slot index (`3 + layout position` —
-    /// see [`DynMethodCall::slot`] for the prefix-triple convention).
+    /// the method name, and the 0-based layout slot.
     ///
     /// Populated alongside [`MethodCallReceiverKind::TraitObject`] at every
     /// accepted method-call on a trait-object receiver. Downstream HIR / MIR
@@ -1261,18 +1260,8 @@ pub struct DynCoercion {
 /// vtable slot; HIR lowering reads it to choose `HirExprKind::CallDynMethod`
 /// over the `method_call_rewrites` direct-call path.
 ///
-/// The slot convention follows
-/// `hew-runtime/src/trait_object.rs::HewVtable`:
-///
-/// | Slot | Contents              |
-/// |------|-----------------------|
-/// | 0    | `drop_in_place`       |
-/// | 1    | `size_of` (data)      |
-/// | 2    | `align_of` (data)     |
-/// | 3..N | trait method slots, in the trait object's layout order |
-///
-/// `slot` is therefore `3 + position` in the whole trait object's layout
-/// (`Checker::dyn_layout`), the numbering the coercion site fills.
+/// `slot` is the 0-based position in the trait object's layout; physical
+/// MIR alone places it past the runtime table's prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynMethodCall {
     /// Full checker-selected dispatch identity.  HIR carries this verbatim;
@@ -1284,10 +1273,7 @@ pub struct DynMethodCall {
     pub trait_name: String,
     /// Trait method name as declared in the trait body.
     pub method_name: String,
-    /// Vtable slot index: `3 + position` in the trait object's layout.
-    // TRANSITION(D1b): WHY the SIR/MIR vtable builders still number slots
-    // past the runtime prefix; WHEN D1b switches both sides to the 0-based
-    // `TraitObjectLayout::slot_of`; WHAT the prefix moves into physical MIR.
+    /// The 0-based slot: `TraitObjectLayout::slot_of` the target method.
     pub slot: u32,
     /// The slot's declared effect, read from the trait object's layout.
     pub effect: super::SlotEffect,

@@ -1,0 +1,11 @@
+[[case]]
+id = "dyn-display-render"
+intent = "A trait object whose supertrait closure has Display renders through that closure's `fmt` slot in an interpolation, in `println` and in a deferred body, for `dyn Display` and for `dyn Error`."
+source = "cases/dyn-display-render.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+kind = "run"
+
+[case.expected]
+stdout = "[note hi]\nnote hi\nnote hi\n42\ngot boom 7\nboom 7\n"
+exit = 0

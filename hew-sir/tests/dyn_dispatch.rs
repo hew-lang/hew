@@ -106,7 +106,7 @@ fn dispatch_to_a_slot_holding_another_method_is_refused() {
         errors.iter().any(|error| matches!(
             &error.kind,
             SirDiagnosticKind::InvalidOperation { reason, .. }
-                if reason.contains("names slot 3, which `Both` fills with")
+                if reason.contains("names slot 0, which `Both` fills with")
         )),
         "{errors:?}"
     );

@@ -1,0 +1,11 @@
+[[case]]
+id = "dyn-slot-plain-in-defer"
+intent = "A plain trait method dispatched through a trait object in a deferred body runs: every body that fills the slot is proven non-suspending; dyn-slot-suspends-defer-reject is the control."
+source = "cases/dyn-slot-plain-in-defer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+kind = "run"
+
+[case.expected]
+stdout = "2\n1\n"
+exit = 0

@@ -1243,7 +1243,7 @@ pub(crate) fn verify_terminator(
         }
         PhysicalTerminator::DynCall {
             receiver,
-            slot,
+            word,
             method,
             signature,
             args,
@@ -1255,7 +1255,13 @@ pub(crate) fn verify_terminator(
                 module,
                 function,
                 *receiver,
-                (*slot, *method),
+                (
+                    word.checked_sub(crate::physical::VTABLE_PREFIX_WORDS)
+                        .ok_or_else(|| {
+                            PhysicalError::new("dynamic dispatch reads the table prefix")
+                        })?,
+                    *method,
+                ),
                 signature,
                 args,
                 *result,

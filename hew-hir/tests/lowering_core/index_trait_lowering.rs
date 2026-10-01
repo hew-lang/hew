@@ -126,5 +126,5 @@ fn dyn_index_selects_index_at_beside_another_at() {
     // `Other` precedes std `Index`, so `Other.at` takes the first slot and
     // `Index` publishes `get` then `at` after it.
     assert_eq!(output.module.defs.path(*method), "std.builtins.Index::at");
-    assert_eq!(*slot, 5);
+    assert_eq!(*slot, 2);
 }

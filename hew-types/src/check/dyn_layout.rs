@@ -61,7 +61,7 @@ impl TraitObjectLayout {
     #[must_use]
     pub fn slot_of(&self, method: DefId) -> Option<u32> {
         let index = self.slots.iter().position(|slot| slot.method == method)?;
-        Some(u32::try_from(index).expect("trait-object layout exceeds u32"))
+        u32::try_from(index).ok()
     }
 }
 
@@ -94,6 +94,31 @@ impl Checker {
         }
         self.trait_object_layouts
             .insert(traits.to_vec(), TraitObjectLayout { closure, slots });
+    }
+
+    /// The canonical trait-object type an erasure targets. Its type
+    /// arguments must be known at the erasure.
+    pub(super) fn dyn_coercion_target(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        span: &Span,
+    ) -> Option<ResolvedTy> {
+        let target = self.finalize_type_for_handoff(&Ty::TraitObject {
+            traits: traits.to_vec(),
+        });
+        if let Ok(resolved) = ResolvedTy::from_ty(&target) {
+            return Some(resolved);
+        }
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "cannot erase into `{}`: its type arguments are not known here; \
+                 annotate the trait object's type",
+                target.user_facing()
+            ),
+        );
+        None
     }
 
     /// The effect of the slot that dispatches `method` on a trait object of

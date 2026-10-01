@@ -1,0 +1,32 @@
+// A send to a peer that never reads waits for buffer space without holding a
+// worker, and a scope deadline cancels it. The cancelled write had borrowed
+// the payload; the payload and the connection are released exactly once.
+import std.net;
+
+fn send_within(conn: net.Connection, payload: bytes) -> string {
+    scope within 200ms {
+        match conn.send(payload) {
+            .Ok(()) => "sent",
+            .Err(_) => "refused",
+        }
+    } handle failure {
+        match failure {
+            .Deadline { message } => "deadline",
+            .Fault { message } => "fault",
+        }
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let conn = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
+    let peer = listener.accept();
+    // Larger than the loopback send and receive buffers on every platform.
+    let payload = "0123456789abcdef".repeat(1024 * 1024).to_bytes();
+    println(send_within(conn, payload));
+    // The peer still has not read; drop it and the client together.
+    peer.close();
+    conn.close();
+    listener.close();
+    println("released");
+}

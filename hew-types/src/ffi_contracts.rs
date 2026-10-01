@@ -505,12 +505,6 @@ mod tests {
             ExternResultOwnership::Fresh,
             "a TCP spelling alone must not turn a disposer into a resource producer"
         );
-
-        assert_eq!(
-            extern_param_ownership("hew_tcp_attach_native", 0),
-            Some(ExternParamOwnership::Consume),
-            "active-mode attach transfers the connection's sole close authority to the reactor"
-        );
     }
 
     #[test]

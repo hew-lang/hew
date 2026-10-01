@@ -45,12 +45,12 @@ impl ConnectJob {
         );
         for address in addresses {
             if !self.operation.is_pending() {
-                return Err(super::connect_deadline::timeout_failure());
+                return Err(connect_timed_out());
             }
             let result = if let Some(deadline) = self.deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Err(super::connect_deadline::timeout_failure());
+                    return Err(connect_timed_out());
                 }
                 TcpStream::connect_timeout(&address, remaining)
             } else {
@@ -69,6 +69,10 @@ impl ConnectJob {
         }
         Err(IoFailure::from_io("connect TCP", &last_error))
     }
+}
+
+fn connect_timed_out() -> IoFailure {
+    super::deadline::timed_out("connect TCP")
 }
 
 unsafe extern "C" fn run_connect_job(context: *mut c_void) {
@@ -98,7 +102,7 @@ unsafe fn submit(
         (Some(pool), Ok(address)) => {
             let deadline = timeout.map(|duration| Instant::now() + duration);
             if let Some(timeout) = timeout {
-                operation.set_connect_timeout(timeout);
+                operation.set_deadline(timeout, connect_timed_out);
             }
             if operation.is_pending() {
                 let job = Box::into_raw(Box::new(ConnectJob {

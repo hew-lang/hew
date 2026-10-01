@@ -1,13 +1,16 @@
 //! Owned native I/O operations for suspendable Hew code.
 //!
-//! Producers own their inputs and one `Arc` until they finish. A coroutine owns
-//! the returned reference and takes a result only on its resume edge. No worker
-//! retains a pointer into the coroutine frame. Completion and cancellation use
-//! one locked state transition; a losing producer drops its result normally.
-//! Wakers are retained heap targets and run only after the state lock is released.
+//! A coroutine owns the returned reference and takes a result only on its
+//! resume edge. Pool producers own their inputs and one `Arc` until they
+//! finish. A readiness operation runs its syscall on the owning task's worker:
+//! it tries at submission, and after the reactor reports readiness it tries
+//! again from `hew_async_io_status`. Completion and cancellation use one locked
+//! state transition; a losing producer drops its result normally. Wakers are
+//! retained heap targets and run only after the state lock is released.
 
 use std::io;
 use std::ptr;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use hew_cabi::string::{string_from_str, HewString};
@@ -17,7 +20,7 @@ use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
 
 mod connect;
-mod connect_deadline;
+mod deadline;
 mod file;
 mod net;
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
@@ -90,7 +93,7 @@ pub(crate) enum IoValue {
 }
 
 enum State {
-    Pending(Option<OwnedWaker>),
+    Pending(Option<Arc<OwnedWaker>>),
     Ready(Result<IoValue, IoFailure>),
     Cancelled,
     Taken,
@@ -111,9 +114,10 @@ impl State {
 /// Opaque resource held across a suspended I/O call.
 pub struct HewAsyncIo {
     state: Mutex<State>,
-    reactor: bool,
+    /// The socket, action and readiness flag of a readiness operation.
+    net: Option<net::NetOp>,
     cleanup: Mutex<Cleanup>,
-    connect_deadline: Mutex<Option<connect_deadline::ConnectDeadline>>,
+    deadline: Mutex<Option<deadline::Deadline>>,
 }
 
 #[derive(Default)]
@@ -177,18 +181,59 @@ impl HewAsyncIo {
     /// A non-null descriptor obeys the shared `HewWaker` lifetime contract.
     unsafe fn new(waker: *const HewWaker) -> Arc<Self> {
         // SAFETY: the caller lends the descriptor through construction.
-        unsafe { Self::with_source(waker, false) }
+        unsafe { Self::with_net(waker, None) }
     }
 
-    unsafe fn with_source(waker: *const HewWaker, reactor: bool) -> Arc<Self> {
+    unsafe fn with_net(waker: *const HewWaker, net: Option<net::NetOp>) -> Arc<Self> {
         // SAFETY: the caller lends a live descriptor for this call, or null.
-        let owned = unsafe { waker.as_ref().map(|waker| OwnedWaker::retain(waker)) };
+        let owned = unsafe {
+            waker
+                .as_ref()
+                .map(|waker| Arc::new(OwnedWaker::retain(waker)))
+        };
         Arc::new(Self {
             state: Mutex::new(State::Pending(owned)),
-            reactor,
+            net,
             cleanup: Mutex::new(Cleanup::default()),
-            connect_deadline: Mutex::new(None),
+            deadline: Mutex::new(None),
         })
+    }
+
+    /// Record the reactor's readiness report and wake the owning task, whose
+    /// next status poll performs the syscall. Runs on the reactor thread.
+    pub(crate) fn signal_ready(&self) {
+        let Some(net) = &self.net else {
+            return;
+        };
+        net.ready.store(true, Ordering::SeqCst);
+        let waker = match &*self.state.lock_or_recover() {
+            State::Pending(waker) => waker.clone(),
+            _ => None,
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// Run the pending syscall on this worker if readiness was reported.
+    ///
+    /// # Safety
+    /// `operation` is a live creator-owned reference.
+    unsafe fn advance_if_ready(operation: *const Self) {
+        // SAFETY: the caller lends a live reference.
+        let this = unsafe { &*operation };
+        let Some(net) = &this.net else {
+            return;
+        };
+        if net.ready.swap(false, Ordering::SeqCst) && this.is_pending() {
+            // SAFETY: the creator reference keeps the allocation live; this
+            // adds the reference the slot may retain as its waiter.
+            let operation = unsafe {
+                Arc::increment_strong_count(operation);
+                Arc::from_raw(operation)
+            };
+            net::advance(&operation);
+        }
     }
 
     pub(crate) fn is_pending(&self) -> bool {
@@ -217,9 +262,14 @@ impl HewAsyncIo {
             };
             waker
         };
-        self.clear_connect_deadline();
+        self.clear_deadline();
         if let Some(waker) = waker {
             waker.wake();
+        }
+        // Withdraw after the wake, so shutdown's idle probe never sees neither
+        // a waiter nor a runnable task.
+        if let Some(net) = &self.net {
+            net.slot.forget(self);
         }
     }
 
@@ -243,9 +293,9 @@ impl HewAsyncIo {
                 (false, None)
             }
         };
-        self.clear_connect_deadline();
-        if self.reactor {
-            crate::reactor::reactor_detach_async_io(self);
+        self.clear_deadline();
+        if let Some(net) = &self.net {
+            net.slot.forget(self);
         }
         // Releasing a readiness target can call user-supplied runtime callbacks.
         // Never run those callbacks while holding the operation state lock.
@@ -278,10 +328,14 @@ impl HewAsyncIo {
 /// `operation` must be null or a live creator-owned operation reference.
 #[no_mangle]
 pub unsafe extern "C" fn hew_async_io_status(operation: *const HewAsyncIo) -> i32 {
-    // SAFETY: validity is the caller's contract; null is a defined error.
-    unsafe { operation.as_ref() }.map_or(AsyncIoStatus::Error as i32, |operation| {
-        operation.state.lock_or_recover().status() as i32
-    })
+    if operation.is_null() {
+        return AsyncIoStatus::Error as i32;
+    }
+    // SAFETY: validity is the caller's contract.
+    unsafe {
+        HewAsyncIo::advance_if_ready(operation);
+        (*operation).state.lock_or_recover().status() as i32
+    }
 }
 
 /// Observe producer quiescence, optionally registering a retained cleanup wake.
@@ -394,10 +448,13 @@ pub unsafe extern "C" fn hew_async_io_take_bytes(
 /// # Safety
 /// `operation` is the live result of a stream-read submission.
 pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Option<Vec<u8>>) {
-    // SAFETY: the caller lends a live operation reference.
-    let Some(operation) = (unsafe { operation.as_ref() }) else {
+    if operation.is_null() {
         return (3, None);
-    };
+    }
+    // SAFETY: the caller lends a live operation reference.
+    unsafe { HewAsyncIo::advance_if_ready(operation) };
+    // SAFETY: as above.
+    let operation = unsafe { &*operation };
     let mut state = operation.state.lock_or_recover();
     if matches!(*state, State::Pending(_)) {
         return (0, None);

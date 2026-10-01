@@ -90,23 +90,6 @@ pub enum NetError {
     Other(i64);
 }
 
-/// Failure to transfer a TCP connection into active mode.
-///
-/// A refused attach has already closed the consumed connection. The caller
-/// receives no connection back and must not attempt a second close.
-pub enum AttachError {
-    /// The runtime refused the active-mode registration.
-    Refused;
-}
-
-impl Display for AttachError {
-    fn fmt(err: AttachError) -> string {
-        match err {
-            AttachError.Refused => "the runtime refused the active-mode registration",
-        }
-    }
-}
-
 // WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
 /// Map an OS errno integer to a structured `NetError` variant.
 ///
@@ -439,57 +422,6 @@ trait ConnectionMethods {
     fn set_write_timeout(self, ms: i64) -> Result<(), NetError>;
 }
 
-// ── Connection handler trait (active mode) ────────────────────────────
-/// Trait for actors that handle a TCP connection in active mode.
-///
-/// Implement this on an actor (declare matching `receive fn on_data(bytes)` /
-/// `receive fn on_close()`) and call `conn.attach(self)` to have the runtime
-/// deliver socket data as actor messages. The actor never calls `recv`: the
-/// runtime owns the entire connection after the consuming attach and closes it
-/// on terminal readiness or actor teardown. No `Connection` remains available
-/// for outbound writes. Use `split` for a bidirectional actor protocol.
-///
-/// Pass the connection as a handler-local parameter to the code that calls
-/// `attach`; do not store it in actor state first. Consuming moves are enforced
-/// within one handler, but field bindings are reconstructed for each handler
-/// activation and currently do not carry a prior handler's move state.
-///
-/// Declared `pub` so the type checker can recognise that a concrete actor's
-/// `receive fn`s structurally satisfy this handler trait at the
-/// Actor-handle narrowing `Actor` → `ConnectionHandler` coercion site (the
-/// `conn.attach(self)` surface).
-///
-/// # Example
-///
-/// ```hew,no_run
-/// import std.net;
-///
-/// actor InboundLogger {
-///     receive fn on_data(data: bytes) {
-///         println(f"received {data.len()} bytes");
-///     }
-///     receive fn on_close() {
-///         println("client disconnected");
-///     }
-/// }
-///
-/// fn main() {
-///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-///     let handler: InboundLogger = spawn InboundLogger;
-///     match conn.attach(handler) {
-///         .Ok(()) => {}
-///         .Err(net.AttachError.Refused) => println("attach refused"),
-///     }
-/// }
-/// ```
-pub trait ConnectionHandler {
-    /// Called when a chunk of bytes arrives from the peer.
-    fn on_data(data: bytes);
-
-    /// Called once when the connection closes or errors.
-    fn on_close();
-}
-
 impl ConnectionMethods for Connection {
     /// Receive the next chunk; `None` is EOF, a failure traps.
     fn recv(conn: Connection) -> Option<bytes> {
@@ -580,16 +512,6 @@ impl Connection {
         unsafe {
             hew_tcp_close(self)
         };
-    }
-    /// Attach this connection to an actor for active-mode delivery.
-    ///
-    /// The runtime takes over the connection's lifecycle on success, so this
-    /// is a terminal transfer just like `close` and `split`. On
-    /// refusal the runtime closes the consumed connection before returning
-    /// `Err(AttachError.Refused)`.
-    #[runtime(family = TcpAttachLocal, symbol = hew_tcp_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable", receiver = connection, data = on_data, close = on_close, result = status_result, error_type = "std.net.AttachError", error_variant = Refused)]
-    fn attach(consume self, handler: ConnectionHandler) -> Result<(), AttachError> {
-        .Err(AttachError.Refused)
     }
     /// Consume the connection and give its two directions separate owners:
     /// a `Stream<bytes>` for inbound data and a `Sink<bytes>` for outbound.
@@ -753,12 +675,6 @@ extern "C" {
     fn hew_tcp_write(conn: Connection, data: bytes) -> i32;
     // shutdown(Write): 0 on success, -1 with the OS errno recorded.
     fn hew_tcp_shutdown_write(conn: Connection) -> i32;
-    // `conn.attach(handler)` does not call a Hew-declared extern: the checker
-    // rewrites each call site to `hew_tcp_attach_local`, which codegen
-    // intercepts to synthesise the handler `msg_id`s and emit the runtime attach
-    // ABI directly. No extern declaration here would match that 4-arg ABI, so
-    // none is declared.
-    fn hew_tcp_detach(conn: Connection);
     fn hew_tcp_listener_close(consume listener: Listener) -> i32;
     fn hew_tcp_close(consume conn: Connection) -> i32;
     fn hew_tcp_set_read_timeout(conn: Connection, ms: i32) -> i32;

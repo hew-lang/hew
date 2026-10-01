@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1619u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1608u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1608] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -1756,11 +1756,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "{\"native\": \"fn hew_compress_last_error_hew() -> *mut HewString\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_conn_await_read",
-     "{\"native\": \"fn hew_conn_await_read( c_int, *mut HewActor, *mut "
-     "HewReadSlot, ) -> c_int\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_connection_is_valid",
      "{\"native\": \"fn hew_connection_is_valid( c_int) -> bool\"}", "native",
      "stable", "not-applicable", "not-applicable",
@@ -3462,34 +3457,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "\"wasm32-wasip1\": \"fn hew_int_to_string( i32) -> *mut HewString\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_poller_new",
-     "{\"native\": \"fn hew_io_poller_new() -> *mut HewIoPoller\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_poller_poll",
-     "{\"native\": \"fn hew_io_poller_poll( *mut HewIoPoller, c_int) -> "
-     "c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_poller_poll_ready",
-     "{\"native\": \"fn hew_io_poller_poll_ready( *mut HewIoPoller, c_int, "
-     "*mut c_int, *mut c_int, c_int, ) -> c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_poller_register",
-     "{\"native\": \"fn hew_io_poller_register( *mut HewIoPoller, c_int, *mut "
-     "HewActor, c_int, c_int, ) -> c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_poller_stop",
-     "{\"native\": \"fn hew_io_poller_stop( *mut HewIoPoller)\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_poller_unregister",
-     "{\"native\": \"fn hew_io_poller_unregister( *mut HewIoPoller, c_int) -> "
-     "c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_io_read_all",
      "{\"native\": \"fn hew_io_read_all() -> *mut HewString\", "
      "\"wasm32-wasip1\": \"fn hew_io_read_all() -> *mut HewString\"}",
@@ -3876,11 +3843,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
     {"hew_link_probe_terminal_state",
      "{\"native\": \"fn hew_link_probe_terminal_state( i64) -> i64\"}",
      "native", "non-declarable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_listener_await_accept",
-     "{\"native\": \"fn hew_listener_await_accept( c_int, *mut HewActor, *mut "
-     "HewReadSlot, ) -> c_int\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_listener_is_valid",
      "{\"native\": \"fn hew_listener_is_valid( c_int) -> bool\"}", "native",
@@ -5217,12 +5179,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "{\"native\": \"fn hew_read_slot_take( *mut HewReadSlot) -> "
      "BytesTriple\", \"wasm32-wasip1\": \"fn hew_read_slot_take( *mut "
      "HewReadSlot) -> BytesTriple\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_read_slot_take_handle",
-     "{\"native\": \"fn hew_read_slot_take_handle( *mut HewReadSlot) -> i64\", "
-     "\"wasm32-wasip1\": \"fn hew_read_slot_take_handle( *mut HewReadSlot) -> "
-     "i64\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_realloc",
@@ -6826,11 +6782,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
     {"hew_tcp_accept", "{\"native\": \"fn hew_tcp_accept( c_int) -> c_int\"}",
      "native", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_tcp_attach_native",
-     "{\"native\": \"fn hew_tcp_attach_native( c_int, NativeActorToken, "
-     "AttachCallback, AttachCallback, ) -> c_int\"}",
-     "native", "non-declarable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_tcp_broadcast_except",
      "{\"native\": \"fn hew_tcp_broadcast_except( c_int, *const BytesTriple, ) "
      "-> c_int\"}",
@@ -6851,9 +6802,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "{\"native\": \"fn hew_tcp_connect_timeout( *const c_char, c_int, c_int, "
      ") -> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_tcp_detach", "{\"native\": \"fn hew_tcp_detach( c_int)\"}", "native",
-     "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_tcp_listen",
      "{\"native\": \"fn hew_tcp_listen( *const c_char) -> c_int\"}", "native",

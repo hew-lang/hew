@@ -2,14 +2,28 @@ import std.net;
 
 import std.stream;
 
+// The pump owns the connection and hands each received chunk to its target.
+actor Pump {
+    let conn: net.Connection;
+    let target: AttachedInput;
+    receive fn run() {
+        while let .Some(data) = conn.recv() {
+            if let .Err(_) = target.on_data(data) {
+                break;
+            }
+        }
+    }
+}
+
 actor AttachedInput {
     let ready: stream.Sink<i64>;
-    receive fn on_close() {}
+    let never: stream.Stream<i64>;
     receive fn on_data(data: bytes) {
         ready.send(data.len()).expect("send");
-        // The parent observes readiness before closing this actor. The input
-        // remains live across suspension, so termination must clean its owner.
-        sleep(30s);
+        // The parent observes readiness before terminating this actor. The
+        // input remains live across suspension on a pipe nothing writes, so
+        // termination must clean its owner.
+        let _ = never.recv();
         assert(data.len() > 0);
     }
 }
@@ -27,12 +41,14 @@ fn main() {
         .Ok(value) => value,
         .Err(_) => panic("connect failed"),
     };
-    let receiver = spawn AttachedInput(ready: tx);
+    let (hold, never): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(value) => value,
+        .Err(_) => panic("pipe failed"),
+    };
+    let receiver = spawn AttachedInput(ready: tx, never: never);
     let server = listener.accept();
-    match server.attach(receiver) {
-        .Ok(()) => {}
-        .Err(_) => panic("attach refused"),
-    }
+    let pump = spawn Pump(conn: server, target: receiver);
+    mailbox(pump, on_full: .Wait).run().expect("start pump");
     match client.send("owned\0input".to_bytes()) {
         .Ok(()) => {}
         .Err(_) => panic("write failed"),
@@ -44,8 +60,11 @@ fn main() {
     let _ = client.send("pending\0input".to_bytes());
     terminate(receiver);
     stopped(receiver);
+    stop(pump);
+    stopped(pump);
     client.close();
     listener.close();
     rx.close();
-    println("attached input released on actor termination");
+    hold.close();
+    println("pumped input released on actor termination");
 }

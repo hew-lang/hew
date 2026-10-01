@@ -6612,7 +6612,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::TcpAttachLocal => declared::TCPATTACHLOCAL.row,
             Self::TlsAttachLocal => declared::TLSATTACHLOCAL.row,
             Self::WebSocketAttachLocal => declared::WEBSOCKETATTACHLOCAL.row,
             Self::TaskFree => RuntimeOpRow {

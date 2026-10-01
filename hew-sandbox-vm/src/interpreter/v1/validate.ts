@@ -18,12 +18,7 @@ import {
 } from "./shims.js";
 
 const UNSUPPORTED = "sandbox.capability.unsupported";
-const NATIVE_FAMILIES = new Set([
-  "AsyncIo",
-  "FileRead",
-  "Tcp",
-  "TcpAttachLocal",
-]);
+const NATIVE_FAMILIES = new Set(["AsyncIo", "FileRead", "Tcp"]);
 const NATIVE_SUSPENSIONS = new Set(["NativeIo", "RemoteAsk", "Read", "Accept"]);
 
 const OPS = new Set([
@@ -123,7 +118,6 @@ function capabilityMessage(capability: string, native: boolean): string {
   const nativeFeatures: Record<string, string> = {
     FileRead: "Filesystem access",
     Tcp: "Network sockets",
-    TcpAttachLocal: "Network streams",
     AsyncIo: "Host input and output",
     NativeIo: "Host input and output",
     Read: "Host input and output",

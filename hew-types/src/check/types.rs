@@ -3811,7 +3811,7 @@ pub struct Checker {
     /// imported `module_graph` modules are registered in a LATER pass where that
     /// module's own traits/types are not in the active `trait_defs` / `known_types`
     /// (those carry the root module's declarations) nor yet in the module-scoped
-    /// `local_*` sets. A bare `ConnectionHandler` actor-handle type inside an
+    /// `local_*` sets. A bare `TlsHandler` actor-handle type inside an
     /// imported `std::net` would therefore false-positive against the per-pass tables.
     /// Consulting this program-wide set makes any declared nominal type resolve
     /// uniformly regardless of which pass is running. A genuinely undefined type
@@ -4041,7 +4041,7 @@ pub struct Checker {
     pub(super) pattern_place: Option<(String, crate::env::PlacePath)>,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
-    /// `Actor`'s own actor-handle type → `ConnectionHandler`'s coercion can confirm an
+    /// `Actor`'s own actor-handle type → `TlsHandler`'s coercion can confirm an
     /// actor's `receive fn`s structurally satisfy a handler trait. Moved into
     /// `TypeCheckOutput::actor_protocol_descriptors` at the end of
     /// `check_program` (no rebuild — see `actor_satisfies_handler_trait`).

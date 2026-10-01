@@ -4557,6 +4557,11 @@ A runtime may offload a blocking operation or park a continuation. This must
 preserve the source suspension and cleanup contracts. An execution substrate
 or readiness mechanism is not a separate public call spelling.
 
+Waiting never holds a scheduler thread. A call that waits on a socket, a timer
+or offloaded work suspends only its own task; the worker runs other tasks and
+actors meanwhile. Cancelling the waiting task abandons the result, not an
+effect the operating system has already begun.
+
 ### 4.8 Interaction with Actor Messages
 
 An actor processes one receive handler at a time. Forked work cannot mutate

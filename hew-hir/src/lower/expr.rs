@@ -1734,7 +1734,7 @@ impl LowerCtx {
         // carries; the inner expression keeps its concrete type.
         let coercion_key = self.mk_key(&span);
         if let Some(coercion) = self.dyn_trait_coercions.get(&coercion_key).cloned() {
-            return self.wrap_dyn_coercion(inner, coercion, intent, span);
+            return self.wrap_dyn_coercion(inner, &coercion, intent, span);
         }
         inner
     }
@@ -1743,7 +1743,7 @@ impl LowerCtx {
     pub(super) fn wrap_dyn_coercion(
         &mut self,
         inner: HirExpr,
-        coercion: hew_types::DynCoercion,
+        coercion: &hew_types::DynCoercion,
         intent: IntentKind,
         span: Span,
     ) -> HirExpr {

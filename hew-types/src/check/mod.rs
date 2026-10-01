@@ -1860,21 +1860,18 @@ impl Checker {
                         if matches!(kind, Kind::Type | Kind::Record | Kind::MachineEventType) {
                             minted_types.push(id);
                         }
-                        match owner {
-                            Some(owner) => {
-                                let resolution = scope::Binding::of_item(&self.defs, id)
-                                    .map_or(scope::Resolution::Member(id), |binding| {
-                                        binding.resolution()
-                                    });
-                                self.scopes.declare_member(owner, name, resolution);
-                            }
-                            None => {
-                                self.defs.set_visibility(id, item_visibility);
-                                if let (Some(namespace_module), Some(binding)) =
-                                    (namespace_module, scope::Binding::of_item(&self.defs, id))
-                                {
-                                    self.scopes.declare_item(namespace_module, name, binding);
-                                }
+                        if let Some(owner) = owner {
+                            let resolution = scope::Binding::of_item(&self.defs, id)
+                                .map_or(scope::Resolution::Member(id), |binding| {
+                                    binding.resolution()
+                                });
+                            self.scopes.declare_member(owner, name, resolution);
+                        } else {
+                            self.defs.set_visibility(id, item_visibility);
+                            if let (Some(namespace_module), Some(binding)) =
+                                (namespace_module, scope::Binding::of_item(&self.defs, id))
+                            {
+                                self.scopes.declare_item(namespace_module, name, binding);
                             }
                         }
                         self.nominal_namespace_claims
@@ -4943,9 +4940,51 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
     actors
 }
 
+/// The handler specs of one actor's receive functions, or `None` when any
+/// signature did not resolve.
+fn actor_handler_specs(
+    defs: &crate::DefTable,
+    fn_sigs: crate::check::types::FnSigView<'_>,
+    actor_identity: &str,
+    ad: &ActorDecl,
+) -> Option<Vec<crate::actor_protocol::ActorHandlerSpec>> {
+    let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
+        Vec::with_capacity(ad.receive_fns.len());
+    // TRANSITION(A1c3): WHY actors are still collected by registration
+    // key. WHEN collection walks declarations, the actor is its id. WHAT:
+    // descriptors built per actor declaration.
+    let actor = defs.lookup_path(actor_identity);
+    for rf in &ad.receive_fns {
+        let declaration =
+            defs.member_of_kind(actor?, rf.name.name, crate::DeclarationKind::ActorReceive)?;
+        let sig = fn_sigs.of(declaration)?;
+        let param_tys = sig
+            .params
+            .iter()
+            .map(crate::ResolvedTy::from_ty)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let return_ty = crate::ResolvedTy::from_ty(&sig.return_type).ok()?;
+        // Symbol mangling is owned by MIR/codegen; for slice 1 we record
+        // a stable surface-derived symbol string so the descriptor row
+        // is self-describing. Downstream consumers may continue to
+        // derive their own emit name today; subsequent Q87 slices route
+        // codegen through this `symbol` field.
+        let symbol = format!("{actor_identity}__{}", rf.name);
+        specs.push(crate::actor_protocol::ActorHandlerSpec {
+            declaration,
+            name: rf.name.to_string(),
+            param_tys,
+            return_ty,
+            symbol,
+        });
+    }
+    Some(specs)
+}
+
 /// Build [`ActorProtocolDescriptor`]s for every actor in the program, using
 /// each `receive fn`'s resolved type signature (param types + return type)
-/// drawn from `fn_sigs` keyed `"Actor::handler"`.
+/// drawn from `fn_sigs` by handler declaration.
 ///
 /// On collision: emits a `TypeErrorKind::ActorProtocolCollision` diagnostic
 /// against the second-colliding handler's span and **omits** the actor from
@@ -4976,62 +5015,11 @@ fn build_actor_protocol_descriptors(
         if ad.receive_fns.is_empty() {
             continue;
         }
-        let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
-            Vec::with_capacity(ad.receive_fns.len());
-        let mut all_signatures_resolved = true;
-        // TRANSITION(A1c3): WHY actors are still collected by registration
-        // key. WHEN collection walks declarations, the actor is its id. WHAT:
-        // descriptors built per actor declaration.
-        let actor = defs.lookup_path(&actor_identity);
-        for rf in &ad.receive_fns {
-            let Some((declaration, sig)) = actor
-                .and_then(|actor| {
-                    defs.member_of_kind(actor, rf.name.name, crate::DeclarationKind::ActorReceive)
-                })
-                .and_then(|declaration| Some((declaration, fn_sigs.of(declaration)?)))
-            else {
-                all_signatures_resolved = false;
-                break;
-            };
-            let mut param_tys: Vec<crate::ResolvedTy> = Vec::with_capacity(sig.params.len());
-            let mut any_unresolved = false;
-            for p in &sig.params {
-                if let Ok(rt) = crate::ResolvedTy::from_ty(p) {
-                    param_tys.push(rt);
-                } else {
-                    any_unresolved = true;
-                    break;
-                }
-            }
-            if any_unresolved {
-                all_signatures_resolved = false;
-                break;
-            }
-            let Ok(return_ty) = crate::ResolvedTy::from_ty(&sig.return_type) else {
-                all_signatures_resolved = false;
-                break;
-            };
-            // Symbol mangling is owned by MIR/codegen; for slice 1 we record
-            // a stable surface-derived symbol string so the descriptor row
-            // is self-describing. Downstream consumers may continue to
-            // derive their own emit name today; subsequent Q87 slices route
-            // codegen through this `symbol` field.
-            let symbol = format!("{actor_identity}__{}", rf.name);
-            specs.push(crate::actor_protocol::ActorHandlerSpec {
-                declaration,
-                name: rf.name.to_string(),
-                param_tys,
-                return_ty,
-                symbol,
-            });
-        }
-        if !all_signatures_resolved {
-            // A handler signature failed to resolve; the underlying type
-            // error is already in `errors`. Skip publishing a partial
-            // descriptor — fail-closed downstream is preferable to a
-            // half-populated protocol.
+        // A handler signature that failed to resolve already reported its
+        // type error; a partial descriptor is never published.
+        let Some(specs) = actor_handler_specs(defs, fn_sigs, &actor_identity, ad) else {
             continue;
-        }
+        };
 
         // The descriptor is a source declaration fact, so its identity is the
         // actor's full owner path. Surface aliases remain resolver bindings and

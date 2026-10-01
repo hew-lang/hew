@@ -867,10 +867,6 @@ else needs `impl Display for {rendered}`)"
     /// — never falls through to the leaky "undefined variable" /
     /// "undefined type" surface.  Called only from the
     /// `check_field_access` pre-dispatch arm.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "qualified variant resolution handles each failure shape together"
-    )]
     pub(in crate::check) fn check_module_qualified_variant_ref(
         &mut self,
         module_short: &str,

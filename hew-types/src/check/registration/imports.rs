@@ -39,17 +39,19 @@ impl Checker {
     /// arrive as dotted strings. WHEN they resolve through `Scope`, the
     /// resolution marks the import and this is deleted. WHAT: the struct
     /// literal and member checkers take the written `Path`.
-    pub(in crate::check) fn note_import_use(&mut self, name: impl ToString) {
+    pub(in crate::check) fn note_import_use(&mut self, name: &str) {
         if let Some(site) = self.scope_site() {
             self.scopes
-                .mark_import_binding_used(site.file, Symbol::intern(&name.to_string()));
+                .mark_import_binding_used(site.file, Symbol::intern(name));
         }
     }
 
     /// Count a use of the module or declaration a rendered path names as a
     /// use of the current file's imports of its module.
     ///
-    /// TRANSITION(A1c3): see [`Self::note_import_use`].
+    /// TRANSITION(A1c3): WHY qualified call and member paths still arrive
+    /// rendered. WHEN they resolve through `Scope`, the resolution marks the
+    /// import and this is deleted. WHAT: callers take the written `Path`.
     pub(in crate::check) fn note_path_use(&mut self, path: &str) {
         let module = self.defs.module_for_path(path).or_else(|| {
             self.lookup_declaration(path)

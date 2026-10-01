@@ -210,7 +210,7 @@ impl Checker {
                     if let Some(binding) = self.env.lookup_ref(&qualified_key) {
                         let ty = binding.ty.clone();
                         if self.module_binding_in_current_file(name.name.as_str()) {
-                            self.note_import_use(name);
+                            self.note_import_use(name.name.as_str());
                         }
                         return ty;
                     }
@@ -219,7 +219,7 @@ impl Checker {
                     // falling through to the generic "undefined variable `module`" error.
                     if self.module_binding_in_current_file(name.name.as_str()) {
                         if self.has_fn_sig(&qualified_key) {
-                            self.note_import_use(name);
+                            self.note_import_use(name.name.as_str());
                             self.reject_wasm_native_only_module_function(
                                 name.name.as_str(),
                                 field,
@@ -1044,7 +1044,7 @@ impl Checker {
                                 .map(|_| format!("{path}::{variant}"))
                         })
                         .inspect(|_| {
-                            self.note_import_use(*module_short);
+                            self.note_import_use(module_short);
                         })
                 }
                 [surface_type, variant] if self.env.lookup_ref(surface_type).is_none() => self
@@ -1065,7 +1065,7 @@ impl Checker {
                     self.resolve_module_variant(module_short, surface_type, variant)
                         .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
                         .map(|_| {
-                            self.note_import_use(*module_short);
+                            self.note_import_use(module_short);
                             format!(
                                 "{}.{surface_type}::{variant}",
                                 self.canonical_module_import_owner(module_short)
@@ -1089,7 +1089,7 @@ impl Checker {
                     if self.env.lookup_ref(module_short).is_none()
                         && self.module_binding_in_current_file(module_short) =>
                 {
-                    self.note_import_use(*module_short);
+                    self.note_import_use(module_short);
                     let Some(_) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
                             .module_type_exports_for_binding(module_short)
@@ -1829,7 +1829,7 @@ impl Checker {
                             // keeping a single clear diagnostic.
                             return Err(());
                         };
-                        self.note_import_use(module);
+                        self.note_import_use(module.name.as_str());
                         // Keep the exact source identity recovered through the
                         // lexical module binding. The surface spelling may be
                         // an alias or share its leaf with another module.

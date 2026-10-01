@@ -686,7 +686,7 @@ impl Checker {
                     self.report_error(TypeErrorKind::InvalidOperation, &argument.1,
                     format!("request for `{}` cannot be redirected to `{}::{handler_name}`: the handler name, parameters and reply must agree",
                         self.defs.path(handler),
-                        self.defs.path(head.nominal().map_or(handler, |actor| actor.declaration()))));
+                        self.defs.path(head.nominal().map_or(handler, crate::NominalId::declaration))));
                     return Ty::Error;
                 };
                 destination_method = redirected;

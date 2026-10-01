@@ -92,7 +92,11 @@ impl Checker {
                 .iter()
                 .map(|arg| self.resolve_type_expr(arg))
                 .collect();
-            let child_type = self.canonical_supervisor_child_type(&c.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+            // TRANSITION(A1c4): WHY the child actor is still named by its
+            // rendered spelling. WHEN supervisor children resolve through
+            // `Scope`, the child is its declaration. WHAT: resolve the
+            // written path to the actor's `NominalId`.
+            let child_type = self.canonical_supervisor_child_type(&c.actor_type.to_string());
             let entry = (
                 c.name.to_string(),
                 self.named_ty_for_key(&child_type, type_args),

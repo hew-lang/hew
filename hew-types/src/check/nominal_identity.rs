@@ -710,10 +710,10 @@ impl Checker {
             Visibility::Package => owner == here || self.defs.same_package(owner, here),
         };
         if !visible && self.reported_type_visibility_violations.insert(declaration) {
-            let declaration_span = self
-                .defs
-                .site(declaration)
-                .map_or_else(|| span.clone(), |site| site.span());
+            let declaration_span = self.defs.site(declaration).map_or_else(
+                || span.clone(),
+                crate::def_table::DeclarationOccurrence::span,
+            );
             self.errors.push(super::TypeError::visibility_violation(
                 visibility,
                 span.clone(),
@@ -830,14 +830,28 @@ impl Checker {
         {
             return crate::Ty::Error;
         }
-        if lifecycle.is_some() && path.segments.len() > 1 {
+        self.report_unknown_type(&name, span, lifecycle, path.segments.len() > 1, &exporters);
+        crate::Ty::Error
+    }
+
+    /// Report an unknown type, with the import that would bring it in scope
+    /// when one is known.
+    fn report_unknown_type(
+        &mut self,
+        name: &str,
+        span: &hew_parser::ast::Span,
+        lifecycle: Option<crate::BuiltinType>,
+        qualified: bool,
+        exporters: &[String],
+    ) {
+        if lifecycle.is_some() && qualified {
             self.report_error_with_suggestions(
                 super::TypeErrorKind::UndefinedType,
                 span,
                 format!("unknown type `{name}`"),
                 vec![format!("import the owning module before using `{name}`")],
             );
-            return crate::Ty::Error;
+            return;
         }
         if let Some(lifecycle) = lifecycle {
             let module = if matches!(
@@ -856,7 +870,7 @@ impl Checker {
                     "import the lifecycle type explicitly, e.g. `import std.{module}.{{ {name} }}`"
                 )],
             );
-            return crate::Ty::Error;
+            return;
         }
         if exporters.is_empty() {
             self.report_error(
@@ -864,10 +878,10 @@ impl Checker {
                 span,
                 format!("unknown type `{name}`"),
             );
-            return crate::Ty::Error;
+            return;
         }
         let mut suggestions = Vec::new();
-        for owner in &exporters {
+        for owner in exporters {
             suggestions.push(format!("qualify the reference, e.g. `{owner}.{name}`"));
             suggestions.push(format!(
                 "or opt in to the bare name: `import {owner}.{{ {name} }}`"
@@ -887,7 +901,6 @@ impl Checker {
             ),
             suggestions,
         );
-        crate::Ty::Error
     }
 
     /// The declaration path a binding names, for diagnostics.

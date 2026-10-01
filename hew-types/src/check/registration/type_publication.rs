@@ -297,7 +297,7 @@ impl Checker {
                 let span = self
                     .defs
                     .site(declaration)
-                    .map(|site| site.span())
+                    .map(crate::def_table::DeclarationOccurrence::span)
                     .unwrap_or_default();
                 let mut error = TypeError::new(TypeErrorKind::InvalidOperation, span,
                     format!("type alias `{name}` is recursive: aliases cannot refer to themselves, directly or through a chain"));
@@ -523,10 +523,6 @@ impl Checker {
     /// Register type declarations, trait declarations, and impl blocks from
     /// stdlib modules that have Hew source files. This makes trait methods
     /// (e.g. bench.Suite.add) visible to the type checker.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "three-pass registration loop with local_type_defs scoping"
-    )]
     pub(in crate::check) fn register_stdlib_hew_items(
         &mut self,
         module_short: &str,
@@ -548,6 +544,10 @@ impl Checker {
         self.registering_embedded_source = saved;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "three-pass registration loop with local_type_defs scoping"
+    )]
     fn register_stdlib_hew_item_bodies(
         &mut self,
         module_short: &str,

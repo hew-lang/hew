@@ -292,7 +292,7 @@ impl Checker {
             );
             return Err(());
         }
-        self.note_import_use(binding);
+        self.note_import_use(&binding);
         Ok(Some(format!("{canonical}{suffix}")))
     }
 

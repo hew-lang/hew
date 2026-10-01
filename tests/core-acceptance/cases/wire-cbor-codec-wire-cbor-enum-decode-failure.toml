@@ -7,3 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "Type: .Full[1]: expected integer, found sequence\n"
+exit = 0

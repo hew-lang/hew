@@ -2330,19 +2330,28 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         eprintln!("no files were written; run the migration again");
         return Err(());
     }
+    write_migrations(&changed)?;
+    summary("migrated");
+    Ok(false)
+}
+
+/// Write each migrated file in order. An I/O failure stops at that file and
+/// names the files already migrated and those still to do.
+fn write_migrations(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
     for (index, (file, _, migrated)) in changed.iter().enumerate() {
         if let Err(error) = replace_file(file, migrated) {
             eprintln!("Error: cannot write {}: {error}", file.display());
-            let written = changed[..index]
-                .iter()
-                .map(|(file, _, _)| file.display().to_string())
-                .collect::<Vec<_>>();
-            let remaining = changed[index..]
-                .iter()
-                .map(|(file, _, _)| file.display().to_string())
-                .collect::<Vec<_>>();
-            eprintln!("migrated before the failure: {}", list_or_none(&written));
-            eprintln!("not migrated: {}", list_or_none(&remaining));
+            let names = |files: &[(&PathBuf, Vec<u8>, String)]| {
+                files
+                    .iter()
+                    .map(|(file, _, _)| file.display().to_string())
+                    .collect::<Vec<_>>()
+            };
+            eprintln!(
+                "migrated before the failure: {}",
+                list_or_none(&names(&changed[..index]))
+            );
+            eprintln!("not migrated: {}", list_or_none(&names(&changed[index..])));
             eprintln!(
                 "fix the cause and run the migration again; migrated files are left as they are"
             );
@@ -2350,8 +2359,7 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         }
         eprintln!("Migrated {}", file.display());
     }
-    summary("migrated");
-    Ok(false)
+    Ok(())
 }
 
 fn list_or_none(files: &[String]) -> String {

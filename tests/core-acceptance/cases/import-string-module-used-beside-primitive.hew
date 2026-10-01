@@ -1,0 +1,9 @@
+import std.string;
+
+fn label(n: i64) -> string {
+    string.from_int(n)
+}
+
+fn main() {
+    println(label(42));
+}

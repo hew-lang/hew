@@ -639,9 +639,6 @@ impl Scopes {
                 span: head_span.clone(),
             });
         };
-        if let Some(import) = import {
-            self.used_imports.insert(import);
-        }
         self.record(site, head_span, current);
         let mut index = 1;
         while let Some((segment, span)) = path.get(index) {
@@ -651,6 +648,14 @@ impl Scopes {
             self.record(site, span, next);
             current = next;
             index += 1;
+        }
+        // A module is not a type: `string` in type position under
+        // `import std.string;` names the primitive, not the import.
+        let names_type = !(matches!(namespace, Namespace::Type)
+            && matches!(current, Resolution::Module(_))
+            && index == path.len());
+        if let (Some(import), true) = (import, names_type) {
+            self.used_imports.insert(import);
         }
         Ok((current, &path[index..]))
     }

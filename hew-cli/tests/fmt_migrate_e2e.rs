@@ -110,8 +110,9 @@ fn a_refused_file_leaves_every_file_unwritten() {
         "a removed glob import must refuse"
     );
     assert!(
-        stderr(&output).contains("migration refused"),
-        "{}",
+        stderr(&output).contains("migration refused")
+            && stderr(&output).contains(&format!("{}:1:", bad.display())),
+        "a refusal names the file, line and column: {}",
         stderr(&output)
     );
     let after = [

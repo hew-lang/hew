@@ -31,6 +31,35 @@ pub fn program_eq_ignoring_spans(a: &Program, b: &Program) -> bool {
     va == vb
 }
 
+/// The span, in `a`, of the first top-level item that differs from `b` once
+/// spans are normalised away; the end of the last item of `a` when one
+/// program has items the other lacks; `None` when the items are equal.
+///
+/// # Panics
+///
+/// Panics if an item fails to serialise to JSON (see
+/// [`program_eq_ignoring_spans`]).
+#[must_use]
+pub fn first_item_difference(a: &Program, b: &Program) -> Option<std::ops::Range<usize>> {
+    let normalised = |item: &crate::ast::Item| {
+        let mut value = serde_json::to_value(item).expect("Item serialises to JSON");
+        strip_spans(&mut value);
+        value
+    };
+    if let Some((item, _)) = a
+        .items
+        .iter()
+        .zip(&b.items)
+        .find(|(left, right)| normalised(&left.0) != normalised(&right.0))
+    {
+        return Some(item.1.clone());
+    }
+    (a.items.len() != b.items.len()).then(|| {
+        let end = a.items.last().map_or(0, |item| item.1.end);
+        end..end
+    })
+}
+
 /// Recursively walk a JSON value and replace any span object
 /// (`{"start": int, "end": int}` with exactly those two keys) with `Null`.
 /// `Spanned<T>` is serialised by `serde` as a two-element array `[value,
@@ -93,6 +122,19 @@ mod tests {
         let a = parse("fn main() { let x = 1; }").program;
         let b = parse("fn main() { let x = 2; }").program;
         assert!(!program_eq_ignoring_spans(&a, &b));
+    }
+
+    #[test]
+    fn first_item_difference_names_the_changed_item_in_the_first_program() {
+        let source = "fn keep() {}\nfn change() { let x = 1; }\n";
+        let a = parse(source).program;
+        let b = parse("fn keep() {}\nfn change() { let x = 2; }\n").program;
+        let span = first_item_difference(&a, &b).expect("the second item differs");
+        assert!(source[span].starts_with("fn change()"));
+        assert_eq!(first_item_difference(&a, &a), None);
+        let shorter = parse("fn keep() {}\n").program;
+        let end = source.trim_end().len();
+        assert_eq!(first_item_difference(&a, &shorter), Some(end..end));
     }
 
     #[test]

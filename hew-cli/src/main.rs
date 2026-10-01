@@ -2313,11 +2313,11 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             Err(error) => {
                 refused = true;
                 for site in error.refusals {
+                    let (line, column) =
+                        crate::diagnostic::offset_to_line_col(source, site.span.start);
                     eprintln!(
-                        "Error: migration refused {}:{}-{}: {}",
+                        "Error: migration refused {}:{line}:{column}: {}",
                         file.display(),
-                        site.span.start,
-                        site.span.end,
                         site.reason
                     );
                 }

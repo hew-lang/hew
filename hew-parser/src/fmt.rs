@@ -170,13 +170,17 @@ pub fn migrate_syntax(source: &str) -> Result<String, MigrationError> {
     }
     let formatted = rewrite_path_separators(&format_source(source, &parsed.program));
     let checked = crate::parse(&formatted);
+    // Refusals name a place in the source being migrated: the item whose
+    // rewrite went wrong, not an offset into text that was never written.
+    let changed_item =
+        || crate::ast_eq::first_item_difference(&parsed.program, &checked.program).unwrap_or(0..0);
     let refusals = checked
         .errors
         .iter()
         .filter(|error| error.severity == Severity::Error)
         .map(|error| MigrationRefusal {
-            span: error.span.clone(),
-            reason: format!("migrated source: {}", error.message),
+            span: changed_item(),
+            reason: format!("the migrated item does not parse: {}", error.message),
         })
         .collect::<Vec<_>>();
     if !refusals.is_empty() {
@@ -185,8 +189,8 @@ pub fn migrate_syntax(source: &str) -> Result<String, MigrationError> {
     if !crate::ast_eq::program_eq_ignoring_spans(&parsed.program, &checked.program) {
         return Err(MigrationError {
             refusals: vec![MigrationRefusal {
-                span: 0..0,
-                reason: "source migration changed the program".to_string(),
+                span: changed_item(),
+                reason: "migration would change the meaning of this item".to_string(),
             }],
         });
     }
@@ -3282,9 +3286,21 @@ impl<'a> Formatter<'a> {
         if let Some(open) = open {
             self.prev_source_pos = open + 1;
         }
-        for stmt in &block.stmts {
+        for (index, stmt) in block.stmts.iter().enumerate() {
             self.flush_comments_before(stmt.1.start);
             self.format_stmt(&stmt.0);
+            // A final `if`/`match` is the block's value unless a `;` ends it,
+            // so the source's `;` stays to keep the value discarded.
+            let discards_final_value = index + 1 == block.stmts.len()
+                && block.trailing_expr.is_none()
+                && matches!(
+                    stmt.0,
+                    Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. }
+                );
+            if discards_final_value && self.output.ends_with('\n') {
+                self.output.pop();
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
+            }
             self.prev_source_pos = self.prev_source_pos.max(stmt.1.end);
         }
         if let Some(trailing) = &block.trailing_expr {
@@ -5497,6 +5513,30 @@ mod tests {
             )
         );
         assert_eq!(migrate_syntax(&migrated).unwrap(), migrated);
+    }
+
+    /// A final `match` or `if` followed by `;` is a discarded statement,
+    /// not the block's value; formatting keeps the `;` that says so.
+    #[test]
+    fn a_final_block_statement_keeps_its_discarding_semicolon() {
+        let source =
+            "fn main() { let p = 1; match p { 1 => println(\"a\"), _ => println(\"b\"), }; }\n";
+        let migrated = migrate_syntax(source).unwrap();
+        assert_eq!(
+            migrated,
+            concat!(
+                "fn main() {\n",
+                "    let p = 1;\n",
+                "    match p {\n",
+                "        1 => println(\"a\"),\n",
+                "        _ => println(\"b\"),\n",
+                "    };\n",
+                "}\n"
+            )
+        );
+        assert_eq!(migrate_syntax(&migrated).unwrap(), migrated);
+        let tail_if = "fn pick(c: bool) {\n    if c {\n        println(1)\n    } else {\n        println(2)\n    };\n}\n";
+        assert_eq!(migrate_syntax(tail_if).unwrap(), tail_if);
     }
 
     fn roundtrip(src: &str) -> String {

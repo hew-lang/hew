@@ -53,9 +53,6 @@ trait VersionMethods {
 
     /// Return the version as a string.
     fn to_string(self) -> string;
-
-    /// No-op for compatibility (record versions don't need manual freeing).
-    fn free(self);
 }
 
 impl VersionMethods for Version {
@@ -91,10 +88,6 @@ impl VersionMethods for Version {
     fn to_string(ver: Version) -> string {
         let result = version_to_string(ver);
         result
-    }
-    /// No-op for compatibility (record versions don't need manual freeing).
-    fn free(ver: Version) {
-        // No-op: record versions are value types, no manual freeing needed.
     }
 }
 

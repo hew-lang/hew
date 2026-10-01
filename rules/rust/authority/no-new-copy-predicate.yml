@@ -13,9 +13,7 @@ note: >-
   belongs in hew-types beside the class table.
 # §1.1 scopes this rule at "outside hew-types", so it carries no allow-list of
 # crates: every path the scan reaches is covered. `hew-types` holds the class
-# table itself, and the three files carrying the legacy predicates are scanned
-# by `no-new-copy-predicate-legacy` instead, which is the only rule that exempts
-# anything and exempts it by symbol.
+# table itself.
 ignores:
   - "hew-types/**"
   - "**/tests/**"

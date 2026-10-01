@@ -49,7 +49,7 @@ pub enum RuntimeCallFamily {
     /// fn` stream-producer pump's clean (generator-exhausted) exit:
     /// deregisters the actor's gen-sink slot and frees the sink (decision
     /// 7). Emitted only by `build_stream_producer_pump`
-    /// (`hew-mir/src/lower.rs`); no user-facing Hew syntax reaches it.
+    /// (the MIR stream-producer lowering); no user-facing Hew syntax reaches it.
     /// Pre-staged like `SinkClose`, which it replaces in the pump.
     ActorGenSinkComplete,
     /// `hew_actor_gen_sink_register(actor, sink) -> void` — a `receive gen

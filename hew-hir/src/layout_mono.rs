@@ -4,7 +4,7 @@
 //! through a substituted generic-function body, this pass discovers concrete
 //! *record* and *enum* layout instantiations reachable the same way and
 //! registers them under the shared `origin$$arg1$arg2` mangling so MIR's
-//! existing per-mangled-name layout merge (`hew-mir/src/lower.rs:961`) and
+//! existing per-mangled-name layout merge and
 //! field-access / variant dispatch find them with no back-end change.
 //!
 //! ## The gap this closes

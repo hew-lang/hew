@@ -57,36 +57,36 @@ trait VersionMethods {
 
 impl VersionMethods for Version {
     /// Return the major version number.
-    fn major(ver: Version) -> i64 {
-        component_as_i64("major", ver.maj)
+    fn major(self) -> i64 {
+        component_as_i64("major", self.maj)
     }
     /// Return the minor version number.
-    fn minor(ver: Version) -> i64 {
-        component_as_i64("minor", ver.min)
+    fn minor(self) -> i64 {
+        component_as_i64("minor", self.min)
     }
     /// Return the patch version number.
-    fn patch(ver: Version) -> i64 {
-        component_as_i64("patch", ver.pat)
+    fn patch(self) -> i64 {
+        component_as_i64("patch", self.pat)
     }
     /// Return the pre-release label, or an empty string if none.
-    fn pre(ver: Version) -> string {
-        ver.pre_release
+    fn pre(self) -> string {
+        self.pre_release
     }
     /// Compare this version to another. Return -1, 0, or 1.
-    fn compare(ver: Version, other: Version) -> i64 {
+    fn compare(self, other: Version) -> i64 {
         // Bind to local to prevent extract_call_target from finding a direct
         // call, which would bypass this body via handle-method rewriting.
-        let result = compare_versions(ver, other);
+        let result = compare_versions(self, other);
         result
     }
     /// Test whether this version satisfies a version requirement string.
-    fn matches(ver: Version, req: string) -> bool {
-        let result = matches_req(ver, req);
+    fn matches(self, req: string) -> bool {
+        let result = matches_req(self, req);
         result
     }
     /// Return the version as a string.
-    fn to_string(ver: Version) -> string {
-        let result = version_to_string(ver);
+    fn to_string(self) -> string {
+        let result = version_to_string(self);
         result
     }
 }

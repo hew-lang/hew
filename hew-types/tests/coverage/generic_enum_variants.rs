@@ -166,7 +166,7 @@ fn variant_constructors_preserve_type_args() {
 }
 
 impl Maybe<i64> {
-    fn unwrap(m: Maybe<i64>) -> i64 {
+    fn unwrap(self) -> i64 {
         0
     }
 }
@@ -261,8 +261,8 @@ fn impl_inline_bound_satisfies_display_in_method_body() {
 }
 
 impl<T: Display> Holder<T> {
-    fn show(h: Holder<T>) {
-        println(h.value)
+    fn show(self) {
+        println(self.value)
     }
 }
 
@@ -290,8 +290,8 @@ fn impl_where_clause_bound_satisfies_display_in_method_body() {
 }
 
 impl<T> Holder<T> where T: Display {
-    fn show(h: Holder<T>) {
-        println(h.value)
+    fn show(self) {
+        println(self.value)
     }
 }
 
@@ -319,8 +319,8 @@ fn impl_without_bound_rejects_display_call_in_method_body() {
 }
 
 impl<T> Holder<T> {
-    fn show(h: Holder<T>) {
-        println(h.value)
+    fn show(self) {
+        println(self.value)
     }
 }
 ",

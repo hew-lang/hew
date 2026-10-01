@@ -24,8 +24,8 @@ type Person {
 }
 
 impl Greeter for Person {
-    fn name(p: Person) -> string {
-        p.name
+    fn name(self) -> string {
+        self.name
     }
 }
 
@@ -61,7 +61,7 @@ type Widget {
 }
 
 impl Describable for Widget {
-    fn kind(w: Widget) -> string {
+    fn kind(self) -> string {
         "widget"
     }
 }
@@ -99,17 +99,17 @@ type Robot {
 }
 
 impl Greeter for Person {
-    fn name(p: Person) -> string {
-        p.name
+    fn name(self) -> string {
+        self.name
     }
 }
 
 impl Greeter for Robot {
-    fn name(r: Robot) -> string {
+    fn name(self) -> string {
         "R-bot"
     }
-    fn greet(r: Robot) -> string {
-        "Beep " + r.name()
+    fn greet(self) -> string {
+        "Beep " + self.name()
     }
 }
 

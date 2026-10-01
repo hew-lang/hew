@@ -1,0 +1,13 @@
+[[case]]
+id = "receiver-associated-fn-dot-reject"
+intent = "A dot call never reaches an associated function, even one whose first parameter is typed as the receiver; the refusal names the type-call form and hints at adding a `self` receiver."
+source = "cases/receiver-associated-fn-dot-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedMethod"
+line = 13
+column = 13
+message = "`same` is an associated function of `Point`, not a method"

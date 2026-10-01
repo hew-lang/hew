@@ -316,6 +316,7 @@ pub(super) fn make_checker_with_trait(
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: true,
                 }],
                 return_type: None,
                 where_clause: None,
@@ -479,8 +480,8 @@ fn user_impl_drop_rejected_fail_closed() {
 }
 
 impl Drop for Token {
-    fn drop(token: Token) {
-        println(token.id);
+    fn drop(self) {
+        println(self.id);
     }
 }
 

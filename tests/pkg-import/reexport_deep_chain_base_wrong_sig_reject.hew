@@ -13,14 +13,14 @@ type W {
 }
 
 impl Top for W {
-    fn base(w: W) -> bool {
+    fn base(self) -> bool {
         true
     }
-    fn mid(w: W) -> i64 {
-        w.id
+    fn mid(self) -> i64 {
+        self.id
     }
-    fn top(w: W) -> i64 {
-        w.id
+    fn top(self) -> i64 {
+        self.id
     }
 }
 

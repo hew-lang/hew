@@ -5664,10 +5664,10 @@ fn main() {
     #[test]
     fn flat_imported_specialisation_does_not_claim_the_generic_dispatch_key() {
         const GENERIC_IMPL: &str = "impl<T> Render for Box<T> {\n    \
-             pub fn render(value: Box<T>) -> string { \"generic\" }\n}\n";
+             pub fn render(self) -> string { \"generic\" }\n}\n";
         const SPECIALISED_IMPL: &str = "impl Render for Box<i64> {\n    \
-             pub fn render(value: Box<i64>) -> string { \"specialised\" }\n}\n";
-        const DECLARATIONS: &str = "pub trait Render {\n    fn render(value: Self) -> string;\n}\n\npub type Box<T> {\n    value: T;\n}\n";
+             pub fn render(self) -> string { \"specialised\" }\n}\n";
+        const DECLARATIONS: &str = "pub trait Render {\n    fn render(self) -> string;\n}\n\npub type Box<T> {\n    value: T;\n}\n";
 
         let mut mismatches: Vec<String> = Vec::new();
         for (order, first, second) in [

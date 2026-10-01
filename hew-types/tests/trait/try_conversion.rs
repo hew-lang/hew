@@ -342,8 +342,8 @@ fn identity_from_impl_is_refused() {
     let output = check(
         r"
 impl From<Low> for Low {
-    fn from(value: Low) -> Low {
-        value
+    fn from(self) -> Low {
+        self
     }
 }
 ",

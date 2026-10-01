@@ -568,7 +568,7 @@ trait MatcherMethods {
 }
 
 impl MatcherMethods for Matcher {
-    fn captures(m: Matcher, input: string) -> Caps {
+    fn captures(self, input: string) -> Caps {
         Caps { count: 0 }
     }
 }

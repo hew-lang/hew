@@ -973,13 +973,13 @@ mod assoc_types_slice1 {
             r"
             trait Counter {
                 type Step = i32;
-                fn step(val: Self) -> Self.Step;
+                fn step(self) -> Self.Step;
             }
 
             type Tick {}
 
             impl Counter for Tick {
-                fn step(val: Tick) -> i32 { 1 }
+                fn step(self) -> i32 { 1 }
             }
             ",
         );
@@ -998,7 +998,7 @@ mod assoc_types_slice1 {
             r"
             trait Show {
                 type Out: Display;
-                fn show(val: Self) -> Self.Out;
+                fn show(self) -> Self.Out;
             }
 
             type Widget {}
@@ -1007,7 +1007,7 @@ mod assoc_types_slice1 {
 
             impl Show for Widget {
                 type Out = Plain;
-                fn show(val: Widget) -> Plain { Plain {} }
+                fn show(self) -> Plain { Plain {} }
             }
             ",
         );
@@ -1029,7 +1029,7 @@ mod assoc_types_slice1 {
         let (errors, _warnings) = parse_and_check_with_stdlib(
             r"trait Show {
     type Out: Display;
-    fn show(val: Self) -> Self.Out;
+    fn show(self) -> Self.Out;
 }
 
 type Holder<T> {
@@ -1038,8 +1038,8 @@ type Holder<T> {
 
 impl<T: Display> Show for Holder<T> {
     type Out = T;
-    fn show(val: Holder<T>) -> T {
-        val.value
+    fn show(self) -> T {
+        self.value
     }
 }
 ",
@@ -1063,13 +1063,13 @@ impl<T: Display> Show for Holder<T> {
             r"
             trait Container {
                 type Item;
-                fn first(val: Self) -> Self.Item;
+                fn first(self) -> Self.Item;
             }
 
             type Box {}
 
             impl Container for Box {
-                fn first(val: Box) -> i64 { 0 }
+                fn first(self) -> i64 { 0 }
             }
             ",
         );
@@ -1093,7 +1093,7 @@ impl<T: Display> Show for Holder<T> {
         let output = check_source_allowing_prelude_redeclaration(
             r"trait Iterator {
     type Item;
-    fn next(var val: Self) -> Option<Self.Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 type Counter {
@@ -1102,8 +1102,8 @@ type Counter {
 
 impl Iterator for Counter {
     type Item = i64;
-    fn next(var c: Counter) -> Option<i64> {
-        .Some(c.value)
+    fn next(var self) -> Option<i64> {
+        .Some(self.value)
     }
 }
 ",
@@ -1148,14 +1148,14 @@ impl Iterator for Counter {
             r"
             trait Show {
                 type Out: Display;
-                fn show(val: Self) -> Self.Out;
+                fn show(self) -> Self.Out;
             }
 
             type Widget {}
 
             impl Show for Widget {
                 type Out = Task<i64>;
-                fn show(val: Widget) -> i64 { 0 }
+                fn show(self) -> i64 { 0 }
             }
             ",
         );
@@ -1185,7 +1185,7 @@ impl Iterator for Counter {
         let source = r"
             trait Show {
                 type Out: Display = Plain;
-                fn show(val: Self) -> Self.Out;
+                fn show(self) -> Self.Out;
             }
 
             type Plain {}
@@ -1193,7 +1193,7 @@ impl Iterator for Counter {
             type Widget {}
 
             impl Show for Widget {
-                fn show(val: Widget) -> Plain { Plain {} }
+                fn show(self) -> Plain { Plain {} }
             }
             ";
         let (errors, _warnings) = parse_and_check_with_stdlib(source);
@@ -1224,7 +1224,7 @@ impl Iterator for Counter {
         let (errors, _warnings) = parse_and_check_with_stdlib(
             r"trait Show {
     type Out: Display;
-    fn show(val: Self) -> Self.Out;
+    fn show(self) -> Self.Out;
 }
 
 type Container<T> {
@@ -1233,8 +1233,8 @@ type Container<T> {
 
 impl<T: Display> Show for Container<T> {
     type Out = Option<T>;
-    fn show(val: Container<T>) -> Option<T> {
-        .Some(val.value)
+    fn show(self) -> Option<T> {
+        .Some(self.value)
     }
 }
 ",
@@ -1305,7 +1305,7 @@ mod assoc_types_slice2 {
         let output = check_source(
             r"trait Iterator {
     type Item;
-    fn next(var it: Self) -> Option<Self.Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 type Counter {
@@ -1314,8 +1314,8 @@ type Counter {
 
 impl Iterator for Counter {
     type Item = i64;
-    fn next(var c: Counter) -> Option<i64> {
-        .Some(c.value)
+    fn next(var self) -> Option<i64> {
+        .Some(self.value)
     }
 }
 
@@ -1353,7 +1353,7 @@ fn caller() -> Option<i64> {
             r"
             trait Iterator {
                 type Item;
-                fn next(it: Self) -> Option<Self.Item>;
+                fn next(self) -> Option<Self.Item>;
             }
 
             fn bad<T>(it: T) -> T.Item {
@@ -1382,14 +1382,14 @@ fn caller() -> Option<i64> {
             r"
             trait Iterator {
                 type Item;
-                fn next(var it: Self) -> Option<Self.Item>;
+                fn next(var self) -> Option<Self.Item>;
             }
 
             type Counter {}
 
             impl Iterator for Counter {
                 type Item = i64;
-                fn next(var c: Counter) -> Option<i64> { .None }
+                fn next(var self) -> Option<i64> { .None }
             }
 
             fn collect<I: Iterator>(it: I) -> Vec<I.Item> {
@@ -1422,7 +1422,7 @@ fn caller() -> Option<i64> {
             r"
             trait Iterator {
                 type Item;
-                fn next(it: Self) -> Option<Self.Item>;
+                fn next(self) -> Option<Self.Item>;
             }
 
             fn bad<T: Iterator>(it: T) -> T.Other {

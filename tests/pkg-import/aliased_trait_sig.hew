@@ -22,7 +22,7 @@ pub type ClosableHandle {
 }
 
 impl C for ClosableHandle {
-    fn close(handle: ClosableHandle) -> Result<(), closableerr.CloseError> {
+    fn close(self) -> Result<(), closableerr.CloseError> {
         .Ok(())
     }
 }

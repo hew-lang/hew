@@ -5,7 +5,7 @@ use hew_parser::ast::{Item, TraitItem};
 fn parses_trait_defaults_and_impl_type_aliases() {
     let source = r"trait Iterator {
     type Item = int;
-    fn next(iter: Self) -> Self.Item;
+    fn next(self) -> Self.Item;
 }
 
 type Counter {
@@ -14,8 +14,8 @@ type Counter {
 
 impl Iterator for Counter {
     type Item = int;
-    fn next(c: Counter) -> Self.Item {
-        c.value
+    fn next(self) -> Self.Item {
+        self.value
     }
 }
 ";

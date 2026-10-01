@@ -9,8 +9,8 @@ pub fn make_dog(call_sign: string) -> Dog {
 }
 
 impl Greeter for Dog {
-    fn name(d: Dog) -> string {
-        d.call_sign
+    fn name(self) -> string {
+        self.call_sign
     }
 }
 

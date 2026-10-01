@@ -13,11 +13,11 @@ type Grid {
 
 impl Index<i64> for Grid {
     type Output = i32;
-    fn get(g: Grid, index: i64) -> Option<i32> {
-        g.data.get(index)
+    fn get(self, index: i64) -> Option<i32> {
+        self.data.get(index)
     }
-    fn at(g: Grid, index: i64) -> i32 {
-        g.data[index]
+    fn at(self, index: i64) -> i32 {
+        self.data[index]
     }
 }
 

@@ -1225,7 +1225,7 @@ fn source_resolutions_publish_selected_function_and_method() {
 
 #[test]
 fn source_resolutions_publish_trait_bound_method_declaration() {
-    let source = "trait Describable {\n    fn describe(value: Self) -> string;\n}\n\ntype Label {\n    text: string;\n}\n\nimpl Describable for Label {\n    fn describe(label: Label) -> string {\n        label.text\n    }\n}\n\nfn probe<T: Describable>(item: T) -> string {\n    item.describe()\n}\n";
+    let source = "trait Describable {\n    fn describe(self) -> string;\n}\n\ntype Label {\n    text: string;\n}\n\nimpl Describable for Label {\n    fn describe(self) -> string {\n        self.text\n    }\n}\n\nfn probe<T: Describable>(item: T) -> string {\n    item.describe()\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let method = source.find("item.describe()").unwrap() + "item.".len();

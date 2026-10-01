@@ -6,7 +6,7 @@ type Tag {
 }
 
 impl Display for Tag {
-    fn fmt(t: Tag) -> string {
+    fn fmt(self) -> string {
         "tag"
     }
 }

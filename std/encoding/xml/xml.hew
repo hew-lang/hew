@@ -59,42 +59,42 @@ trait NodeMethods {
     fn is_element(self) -> i32;
 } // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
 impl NodeMethods for Node {
-    fn to_string(node: Node) -> string {
+    fn to_string(self) -> string {
         unsafe {
-            hew_xml_to_string(node.handle)
+            hew_xml_to_string(self.handle)
         }
     }
-    fn get_tag(node: Node) -> string {
+    fn get_tag(self) -> string {
         unsafe {
-            hew_xml_get_tag(node.handle)
+            hew_xml_get_tag(self.handle)
         }
     }
-    fn get_attribute(node: Node, name: string) -> string {
+    fn get_attribute(self, name: string) -> string {
         unsafe {
-            hew_xml_get_attribute(node.handle, name)
+            hew_xml_get_attribute(self.handle, name)
         }
     }
-    fn children_count(node: Node) -> i64 {
+    fn children_count(self) -> i64 {
         unsafe {
-            hew_xml_children_count(node.handle) as i64
+            hew_xml_children_count(self.handle) as i64
         }
     }
-    fn get_child(node: Node, index: i64) -> Node {
+    fn get_child(self, index: i64) -> Node {
         if index < 0 || index > 2147483647 {
             panic(f"xml.Node.get_child: index {index} is outside the supported range");
         }
         unsafe {
-            Node { handle: hew_xml_get_child(node.handle, index as i32) }
+            Node { handle: hew_xml_get_child(self.handle, index as i32) }
         }
     } // INTERNAL-ABI: C ABI index is i32
-    fn get_text(node: Node) -> string {
+    fn get_text(self) -> string {
         unsafe {
-            hew_xml_get_text(node.handle)
+            hew_xml_get_text(self.handle)
         }
     }
-    fn is_element(node: Node) -> i32 { // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
+    fn is_element(self) -> i32 { // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
         unsafe {
-            hew_xml_is_element(node.handle)
+            hew_xml_is_element(self.handle)
         }
     }
 }

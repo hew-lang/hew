@@ -169,6 +169,22 @@ impl Checker {
         span: &Span,
     ) -> bool {
         for method in &trait_info.methods {
+            if !method.params.first().is_some_and(|param| param.is_receiver) {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::TraitNotObjectSafe {
+                        trait_name: trait_name.to_string(),
+                        method_name: method.name.to_string(),
+                        reason: "associated function",
+                    },
+                    span,
+                    format!(
+                        "trait `{trait_name}` is not object-safe: `{}` has no `self` receiver",
+                        method.name
+                    ),
+                    vec!["add a `self` receiver".to_string()],
+                );
+                return false;
+            }
             if method.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
                 self.report_error(
                     TypeErrorKind::TraitNotObjectSafe {

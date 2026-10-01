@@ -141,8 +141,8 @@ pub enum CodecError {
 }
 
 impl Display for CodecError {
-    fn fmt(error: CodecError) -> string {
-        match error {
+    fn fmt(self) -> string {
+        match self {
             CodecError.Malformed(detail) => f"malformed frame: {detail}",
         }
     }

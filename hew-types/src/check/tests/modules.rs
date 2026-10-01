@@ -390,6 +390,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
             ),
             is_mutable: false,
             is_consume: false,
+            is_receiver: false,
         }],
         return_type: Some((
             TypeExpr::Named {
@@ -744,6 +745,7 @@ fn adopting_declaration_keeps_its_own_provenance() {
                 ty: (i64_ty.clone(), 0..3),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             }],
             return_type: Some((i64_ty.clone(), 6..9)),
             is_variadic: false,
@@ -847,6 +849,7 @@ fn same_module_span_colliding_drifting_declarations_conflict() {
                 ty: (param_ty, 0..6),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             }],
             return_type: Some((
                 TypeExpr::Named {
@@ -1378,6 +1381,7 @@ mod module_body_diagnostic_envelope {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             }],
             return_type: None,
             where_clause: None,
@@ -1437,6 +1441,7 @@ mod module_body_diagnostic_envelope {
                 ty: (TypeExpr::Infer, 10..11),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             }],
             return_type: None,
             where_clause: None,
@@ -2164,6 +2169,7 @@ mod warning_source_attribution {
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: true,
                 }],
                 return_type: None,
                 where_clause: None,
@@ -2589,6 +2595,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
                     ty: (TypeExpr::Infer, 20..21),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: false,
                 }],
                 return_type: None,
                 is_variadic: false,

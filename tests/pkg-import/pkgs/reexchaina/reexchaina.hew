@@ -11,5 +11,5 @@ import hew.reexmid.{Mid};
 
 /// Apex over a two-hop re-exported super chain (Top -> Mid -> Base).
 pub trait Top: Mid {
-    fn top(val: Self) -> i64;
+    fn top(self) -> i64;
 }

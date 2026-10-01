@@ -1455,10 +1455,10 @@ trait MatcherMethods {
 }
 
 impl MatcherMethods for Matcher {
-    fn captures(m: Matcher, input: string) -> Caps {
+    fn captures(self, input: string) -> Caps {
         Caps { count: 0 }
     }
-    fn find_all(m: Matcher, input: string) -> Vec<string> {
+    fn find_all(self, input: string) -> Vec<string> {
         Vec.new()
     }
 }

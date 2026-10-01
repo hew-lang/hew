@@ -199,23 +199,23 @@ trait QUICEndpointMethods {
 }
 
 impl QUICEndpointMethods for QUICEndpoint {
-    fn connect(ep: QUICEndpoint, addr: string, server_name: string) -> QUICConnection {
+    fn connect(self, addr: string, server_name: string) -> QUICConnection {
         unsafe {
-            hew_quic_endpoint_connect(ep, addr, server_name)
+            hew_quic_endpoint_connect(self, addr, server_name)
         }
     }
-    fn accept(ep: QUICEndpoint) -> QUICConnection {
+    fn accept(self) -> QUICConnection {
         unsafe {
-            hew_quic_endpoint_accept(ep)
+            hew_quic_endpoint_accept(self)
         }
     }
-    fn on_event(ep: QUICEndpoint) -> QUICEvent {
+    fn on_event(self) -> QUICEvent {
         unsafe {
-            QUICEvent { handle: hew_quic_endpoint_on_event(ep) }
+            QUICEvent { handle: hew_quic_endpoint_on_event(self) }
         }
     }
-    fn observe(ep: QUICEndpoint) -> QUICEndpointObservation {
-        endpoint_observe(ep)
+    fn observe(self) -> QUICEndpointObservation {
+        endpoint_observe(self)
     }
 }
 
@@ -257,26 +257,26 @@ trait QUICConnectionMethods {
 }
 
 impl QUICConnectionMethods for QUICConnection {
-    fn open_stream(conn: QUICConnection) -> QUICStream {
+    fn open_stream(self) -> QUICStream {
         unsafe {
-            hew_quic_conn_open_stream(conn)
+            hew_quic_conn_open_stream(self)
         }
     }
-    fn accept_stream(conn: QUICConnection) -> QUICStream {
+    fn accept_stream(self) -> QUICStream {
         unsafe {
-            hew_quic_conn_accept_stream(conn)
+            hew_quic_conn_accept_stream(self)
         }
     }
     fn disconnect(consume self) -> Result<(), net.NetError> {
         connection_disconnect(self)
     }
-    fn on_event(conn: QUICConnection) -> QUICEvent {
+    fn on_event(self) -> QUICEvent {
         unsafe {
-            QUICEvent { handle: hew_quic_conn_on_event(conn) }
+            QUICEvent { handle: hew_quic_conn_on_event(self) }
         }
     }
-    fn observe(conn: QUICConnection) -> QUICConnectionObservation {
-        connection_observe(conn)
+    fn observe(self) -> QUICConnectionObservation {
+        connection_observe(self)
     }
 }
 
@@ -349,34 +349,34 @@ trait QUICStreamMethods {
 }
 
 impl QUICStreamMethods for QUICStream {
-    fn send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
-        stream_send(strm, data)
+    fn send(self, data: bytes) -> Result<(), net.NetError> {
+        stream_send(self, data)
     }
-    fn recv(strm: QUICStream) -> bytes {
+    fn recv(self) -> bytes {
         unsafe {
-            hew_quic_stream_recv(strm)
+            hew_quic_stream_recv(self)
         }
     }
-    fn recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, net.NetError> {
-        stream_recv_timeout(strm, deadline_ms)
+    fn recv_timeout(self, deadline_ms: i64) -> Result<bytes, net.NetError> {
+        stream_recv_timeout(self, deadline_ms)
     }
-    fn send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> Result<(), net.NetError> {
-        stream_send_timeout(strm, data, deadline_ms)
+    fn send_timeout(self, data: bytes, deadline_ms: i64) -> Result<(), net.NetError> {
+        stream_send_timeout(self, data, deadline_ms)
     }
-    fn finish(strm: QUICStream) -> Result<(), net.NetError> {
-        stream_finish(strm)
+    fn finish(self) -> Result<(), net.NetError> {
+        stream_finish(self)
     }
-    fn stop(strm: QUICStream, error_code: i64) -> Result<(), net.NetError> {
-        stream_stop(strm, error_code)
+    fn stop(self, error_code: i64) -> Result<(), net.NetError> {
+        stream_stop(self, error_code)
     }
-    fn send_string(strm: QUICStream, msg: string) -> Result<(), net.NetError> {
-        stream_send_string(strm, msg)
+    fn send_string(self, msg: string) -> Result<(), net.NetError> {
+        stream_send_string(self, msg)
     }
-    fn recv_string(strm: QUICStream) -> Result<string, utf8.Utf8Error> {
-        stream_recv_string(strm)
+    fn recv_string(self) -> Result<string, utf8.Utf8Error> {
+        stream_recv_string(self)
     }
-    fn observe(strm: QUICStream) -> QUICStreamObservation {
-        stream_observe(strm)
+    fn observe(self) -> QUICStreamObservation {
+        stream_observe(self)
     }
 }
 
@@ -400,9 +400,9 @@ trait QUICEventMethods {
     fn kind(self) -> i32;
 } // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error); planned enum migration
 impl QUICEventMethods for QUICEvent {
-    fn kind(evt: QUICEvent) -> i32 { // INTERNAL-ABI: opaque event-kind enum; planned enum migration
+    fn kind(self) -> i32 { // INTERNAL-ABI: opaque event-kind enum; planned enum migration
         unsafe {
-            hew_quic_event_kind(evt.handle)
+            hew_quic_event_kind(self.handle)
         }
     }
 }

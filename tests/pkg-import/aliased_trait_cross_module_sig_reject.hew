@@ -28,7 +28,7 @@ pub type ClosableHandle {
 }
 
 impl C for ClosableHandle {
-    fn close(handle: ClosableHandle) -> Result<(), closableerr2.CloseError> {
+    fn close(self) -> Result<(), closableerr2.CloseError> {
         .Ok(())
     }
 }

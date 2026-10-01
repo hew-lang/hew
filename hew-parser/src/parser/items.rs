@@ -655,6 +655,7 @@ impl Parser<'_> {
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: true,
                 },
             );
         }
@@ -1353,6 +1354,7 @@ impl Parser<'_> {
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: true,
                 },
             );
         }

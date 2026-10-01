@@ -1070,12 +1070,12 @@ impl Ticket {
 }
 
 trait Identified {
-    fn id(value: Self) -> i64;
+    fn id(self) -> i64;
 }
 
 impl Identified for Ticket {
-    fn id(value: Ticket) -> i64 {
-        value.id
+    fn id(self) -> i64 {
+        self.id
     }
 }
 

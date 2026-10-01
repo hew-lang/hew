@@ -2382,6 +2382,7 @@ fn user_module_fn_sig_has_correct_types() {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             },
             Param {
                 name: Ident::new("b"),
@@ -2398,6 +2399,7 @@ fn user_module_fn_sig_has_correct_types() {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             },
         ],
         Some(TypeExpr::Named {

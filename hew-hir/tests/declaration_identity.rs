@@ -34,8 +34,8 @@ fn source_and_child_artifacts_carry_checker_declaration_ids() {
 }
 
 impl Holder<i64> {
-    fn get(holder: Holder<i64>) -> i64 {
-        holder.value
+    fn get(self) -> i64 {
+        self.value
     }
 }
 

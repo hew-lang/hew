@@ -795,6 +795,7 @@ impl Parser<'_> {
                         ),
                         is_mutable,
                         is_consume: false,
+                        is_receiver: true,
                     });
                     if !self.eat(&Token::Comma) {
                         break;
@@ -803,9 +804,8 @@ impl Parser<'_> {
                 }
                 self.errors.push(ParseError {
                     message: "`self` is not a valid parameter name in Hew; \
-                              use bare `self` as the first parameter of a trait/impl method, \
-                              or use a named receiver with explicit type: \
-                              `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                              write bare `self`, `var self` or `consume self` as the \
+                              first parameter of a trait or impl method"
                         .to_string(),
                     span,
                     hint: None,
@@ -837,6 +837,7 @@ impl Parser<'_> {
                     ty,
                     is_mutable,
                     is_consume,
+                    is_receiver: false,
                 });
             }
 

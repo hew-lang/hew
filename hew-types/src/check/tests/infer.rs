@@ -27,6 +27,7 @@ mod non_root_module_inference_scope {
                 ty: (param_ty, 10..11),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             }],
             return_type: return_ty.map(|ty| (ty, 15..16)),
             where_clause: None,
@@ -169,6 +170,7 @@ mod non_root_module_inference_scope {
                 ty: (TypeExpr::Infer, 50..51),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             }],
             return_type: None,
             where_clause: None,
@@ -226,6 +228,7 @@ mod non_root_module_inference_scope {
                     ty: (TypeExpr::Infer, span_start..span_start + 1),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: false,
                 }],
                 return_type: None,
                 where_clause: None,
@@ -316,6 +319,7 @@ mod non_root_module_inference_scope {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             }],
             return_type: None,
             where_clause: None,
@@ -519,6 +523,7 @@ mod non_root_module_inference_scope {
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: false,
                 }],
                 return_type: Some((TypeExpr::Infer, 10..11)),
                 where_clause: None,
@@ -633,6 +638,7 @@ mod non_root_module_inference_scope {
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: false,
                 }],
                 return_type: Some((TypeExpr::Infer, 10..11)),
                 where_clause: None,
@@ -705,43 +711,6 @@ mod non_root_module_inference_scope {
             output.errors
         );
         assert_eq!(output.sigs()["Greeter::answer"].return_type, Ty::I64);
-    }
-
-    #[test]
-    fn trait_default_method_with_concrete_receiver_keeps_implicit_impl_arity() {
-        let source = r"type Greeter {
-    id: i64;
-}
-
-trait Answerer {
-    fn answer(g: Greeter) -> i64 {
-        42
-    }
-}
-
-impl Answerer for Greeter {
-}
-";
-        let result = hew_parser::parse(source);
-        assert!(
-            result.errors.is_empty(),
-            "unexpected parse errors: {:?}",
-            result.errors
-        );
-
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&result.program);
-
-        assert!(
-            output.errors.is_empty(),
-            "default impl method with a concrete receiver should typecheck cleanly; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            output.sigs()["Greeter::answer"].params.is_empty(),
-            "default impl method should not expose the concrete receiver as an explicit argument: {:?}",
-            output.sigs()["Greeter::answer"]
-        );
     }
 
     #[test]

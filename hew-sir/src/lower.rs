@@ -1436,18 +1436,6 @@ fn dyn_boundary_passing(own: OwnKind) -> SemParamPassing {
     }
 }
 
-/// How the erased receiver crosses the boundary, from the trait's own
-/// declaration rather than any one implementer's value class.
-fn dyn_receiver_passing(signature: &hew_types::FnSig) -> SemParamPassing {
-    if signature.consumes_receiver {
-        SemParamPassing::Consume
-    } else if signature.requires_mutable_receiver {
-        SemParamPassing::BorrowMut
-    } else {
-        SemParamPassing::Borrow
-    }
-}
-
 /// Whether an implementation's declared transfer realizes the boundary's.
 fn dyn_passing_admits(boundary: SemParamPassing, implementation: SemParamPassing) -> bool {
     match boundary {

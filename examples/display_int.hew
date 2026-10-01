@@ -5,11 +5,11 @@
 // Use the canonical primitive spelling directly; the `i64`↔`i64` alias case is
 // tracked separately.
 trait Renderable {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 impl Renderable for i64 {
-    fn fmt(val: i64) -> string {
+    fn fmt(self) -> string {
         "i64"
     }
 }

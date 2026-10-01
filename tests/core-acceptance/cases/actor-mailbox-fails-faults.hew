@@ -12,8 +12,8 @@ enum VaultError {
 }
 
 impl Display for VaultError {
-    fn fmt(problem: VaultError) -> string {
-        match problem {
+    fn fmt(self) -> string {
+        match self {
             VaultError.Overdrawn(short) => f"short by {short}",
             VaultError.Closed => "the vault is closed",
         }

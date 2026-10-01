@@ -1100,6 +1100,12 @@ pub struct Param {
     /// cross-module `pub` fns), optional elsewhere.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_consume: bool,
+    /// `true` when this parameter is the method receiver, written with the
+    /// `self` token (`self`, `var self` or `consume self`). The parser is the
+    /// only authority: a first parameter typed `Self` without the token is an
+    /// ordinary parameter of an associated function.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_receiver: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

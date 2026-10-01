@@ -1,7 +1,7 @@
 trait Sink {
     type Item;
 
-    fn push(sink: Self, item: Self.Item) -> i32;
+    fn push(self, item: Self.Item) -> i32;
 }
 
 type IntSink {
@@ -10,7 +10,7 @@ type IntSink {
 impl Sink for IntSink {
     type Item = Vec<i64>;
 
-    fn push(sink: IntSink, item: Vec<i64>) -> i32 {
+    fn push(self, item: Vec<i64>) -> i32 {
         0
     }
 }

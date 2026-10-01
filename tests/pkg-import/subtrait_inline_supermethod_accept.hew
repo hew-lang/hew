@@ -5,11 +5,11 @@
 // scoped the known set to the sub-trait alone, or lost the super edge, shows up
 // here. Run e2e so both methods are exercised through dispatch.
 trait Super {
-    fn base(val: Self) -> i64;
+    fn base(self) -> i64;
 }
 
 trait Sub: Super {
-    fn tag(val: Self) -> i64;
+    fn tag(self) -> i64;
 }
 
 type W {
@@ -17,14 +17,14 @@ type W {
 }
 
 impl Super for W {
-    fn base(w: W) -> i64 {
-        w.id
+    fn base(self) -> i64 {
+        self.id
     }
 }
 
 impl Sub for W {
-    fn tag(w: W) -> i64 {
-        w.base() + 100
+    fn tag(self) -> i64 {
+        self.base() + 100
     }
 }
 

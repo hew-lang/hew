@@ -584,9 +584,8 @@ impl Checker {
                                 .collect();
                             for m in defaults {
                                 let method_key = format!("{type_name}::{}", m.name);
-                                let skip = usize::from(
-                                    m.params.first().is_some_and(|p| self.is_receiver_param(p)),
-                                );
+                                let skip =
+                                    usize::from(m.params.first().is_some_and(|p| p.is_receiver));
                                 let param_names: Vec<String> = m
                                     .params
                                     .iter()
@@ -790,12 +789,8 @@ impl Checker {
                             }
                         }
                         self.register_fn_sig_with_name(&method_key, method, None);
-                        let skip = usize::from(
-                            method
-                                .params
-                                .first()
-                                .is_some_and(|p| self.is_receiver_param(p)),
-                        );
+                        let skip =
+                            usize::from(method.params.first().is_some_and(|p| p.is_receiver));
                         let param_names: Vec<String> = method
                             .params
                             .iter()
@@ -839,6 +834,7 @@ impl Checker {
                                     param_names,
                                     params,
                                     return_type,
+                                    associated: skip == 0,
                                     ..FnSig::default()
                                 },
                             );
@@ -1220,47 +1216,6 @@ impl Checker {
         }
     }
 
-    /// Check whether a parameter is the receiver (i.e. the implicit first
-    /// parameter of an impl/trait method).  A parameter is a receiver if its
-    /// declared type matches `Self` or the current impl target type.
-    /// Note: name-based matching (`p.name == "self"`) has been intentionally
-    /// removed — receivers are identified by type, not by name.
-    pub(in crate::check) fn is_receiver_param(&mut self, p: &Param) -> bool {
-        match &p.ty.0 {
-            TypeExpr::Named {
-                path: named_path,
-                type_args,
-            } => {
-                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                if name == "Self" {
-                    return true;
-                }
-                // Clone to avoid borrowing self while we resolve type args.
-                let impl_target = self.current_self_type.clone();
-                if let Some((self_name, self_type_args)) = impl_target {
-                    if name != &self_name {
-                        return false;
-                    }
-                    // Name matches — also verify generic arguments match the
-                    // impl target so that e.g. `impl Box<int>` rejects a
-                    // parameter typed `Box<string>`.
-                    let param_args: Vec<Ty> = type_args
-                        .as_ref()
-                        .map(|args| {
-                            args.iter()
-                                .map(|type_arg| self.resolve_type_expr(type_arg))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    param_args == self_type_args
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    }
-
     /// Register a signature under `name`, filed under `declaration` when the
     /// caller holds it and otherwise under the declaration `name` spells.
     pub(in crate::check) fn register_fn_sig_with_name(
@@ -1269,14 +1224,7 @@ impl Checker {
         fd: &FnDecl,
         declaration: Option<crate::DefId>,
     ) {
-        // Only filter out the receiver for methods (Type::method), not free
-        // functions that happen to have a parameter named `self`.
-        let is_method = name.contains("::");
-        let skip = if is_method {
-            usize::from(fd.params.first().is_some_and(|p| self.is_receiver_param(p)))
-        } else {
-            0
-        };
+        let skip = usize::from(fd.params.first().is_some_and(|p| p.is_receiver));
         // Validate that no bound carries unsupported positional type arguments
         // (e.g. `T: Eq<U>`) before `collect_type_param_bounds` erases them.
         self.validate_fn_type_param_bound_shapes(fd);
@@ -1335,14 +1283,10 @@ impl Checker {
             doc_comment: fd.doc_comment.clone(),
             extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
             // Receiver mutability flag — see `FnSig::requires_mutable_receiver`.
-            // Only methods (Type::method) can carry a receiver; free functions
-            // whose first parameter happens to be named `self` are not methods
-            // in this sense (matches the `skip` logic above).
-            requires_mutable_receiver: is_method
-                && fd
-                    .params
-                    .first()
-                    .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+            requires_mutable_receiver: fd
+                .params
+                .first()
+                .is_some_and(|p| p.is_receiver && p.is_mutable),
             receiver_update: if fd.origin == hew_parser::ast::DeclarationOrigin::MachineStep {
                 super::ReceiverUpdate::Staged
             } else {
@@ -1868,12 +1812,7 @@ impl Checker {
             }
         }
 
-        let skip = usize::from(
-            method
-                .params
-                .first()
-                .is_some_and(|p| self.is_receiver_param(p)),
-        );
+        let skip = usize::from(method.params.first().is_some_and(|p| p.is_receiver));
         let param_names: Vec<String> = method
             .params
             .iter()
@@ -2007,13 +1946,14 @@ impl Checker {
             requires_mutable_receiver: method
                 .params
                 .first()
-                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+                .is_some_and(|p| p.is_receiver && p.is_mutable),
             receiver_update: if method.origin == hew_parser::ast::DeclarationOrigin::MachineStep {
                 super::ReceiverUpdate::Staged
             } else {
                 super::ReceiverUpdate::Replace
             },
             consumes_receiver: method.consumes_self,
+            associated: !method.params.first().is_some_and(|p| p.is_receiver),
             ..FnSig::default()
         };
         sig.returns_receiver_identity =

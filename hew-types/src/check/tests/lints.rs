@@ -496,7 +496,7 @@ fn equality_assertions_reject_a_type_without_eq() {
 }
 
 impl Display for Holder {
-    fn fmt(holder: Holder) -> string {
+    fn fmt(self) -> string {
         "holder"
     }
 }
@@ -533,7 +533,7 @@ fn display_impl_satisfies_bounded_magic_builtins() {
 }
 
 impl Display for Widget {
-    fn fmt(widget: Widget) -> string {
+    fn fmt(self) -> string {
         "widget"
     }
 }
@@ -1104,7 +1104,7 @@ fn suggest_similar_field() {
 fn suggest_similar_method() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
+        "impl Counter { fn length(self) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.lenght(); }\n",
     ));
     let err = errors
@@ -1122,7 +1122,7 @@ fn suggest_similar_method() {
 fn no_suggest_method_when_too_different() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
+        "impl Counter { fn length(self) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.zzzzz(); }\n",
     ));
     let err = errors
@@ -3073,7 +3073,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         }
     ";
     let module_source = r#"pub trait Describable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 pub type Label {
@@ -3085,8 +3085,8 @@ pub fn make_label() -> Label {
 }
 
 impl Describable for Label {
-    fn describe(label: Label) -> string {
-        label.text
+    fn describe(self) -> string {
+        self.text
     }
 }
 
@@ -3169,11 +3169,11 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
     // dispatch site, which only ever sees a resolved `Ty`.
     let source = r#"
         pub trait Display {
-            fn fmt(val: Self) -> string;
+            fn fmt(self) -> string;
         }
 
         impl Display for i64 {
-            fn fmt(n: i64) -> string {
+            fn fmt(self) -> string {
                 ""
             }
         }
@@ -3210,11 +3210,11 @@ fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
     // impls on Vec must reach the side table the same way primitives do.
     let source = r#"
         pub trait Display {
-            fn fmt(val: Self) -> string;
+            fn fmt(self) -> string;
         }
 
         impl Display for Vec<i32> {
-            fn fmt(v: Vec<i32>) -> string {
+            fn fmt(self) -> string {
                 ""
             }
         }
@@ -3245,7 +3245,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
     // those flow through `type_defs` and would create duplicate dispatch
     // paths if the helper accepted them.
     let source = r#"pub trait Display {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 pub type MyType {
@@ -3253,7 +3253,7 @@ pub type MyType {
 }
 
 impl Display for MyType {
-    fn fmt(m: MyType) -> string {
+    fn fmt(self) -> string {
         ""
     }
 }
@@ -3338,9 +3338,9 @@ fn assert_primitive_trait_dispatch_records_metadata(
 fn primitive_impl_dispatch_resolves_int_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let x: i64 = 42;
@@ -3356,9 +3356,9 @@ fn primitive_impl_dispatch_resolves_int_receiver() {
 fn primitive_impl_dispatch_resolves_bool_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for bool {
-                fn fmt(b: bool) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let b: bool = true;
@@ -3374,9 +3374,9 @@ fn primitive_impl_dispatch_resolves_bool_receiver() {
 fn primitive_impl_dispatch_resolves_char_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for char {
-                fn fmt(c: char) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let c: char = 'a';
@@ -3394,9 +3394,9 @@ fn primitive_impl_dispatch_resolves_i32_receiver() {
     // as their `Ty::I32` variant — `i32` here, not `i64`.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i32 {
-                fn fmt(n: i32) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let n: i32 = 7;
@@ -3418,9 +3418,9 @@ fn primitive_impl_dispatch_resolves_string_receiver_via_method_using_trait_metho
     // type-check issue tracked separately (see issue #1565 follow-ups).
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait MyShow { fn show(val: Self) -> i64; }
+            pub trait MyShow { fn show(self) -> i64; }
             impl MyShow for string {
-                fn show(s: string) -> i64 { 0 }
+                fn show(self) -> i64 { 0 }
             }
             fn main() {
                 let s: string = "hi";
@@ -3437,9 +3437,9 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
     // Vec routes through `check_vec_method`'s not-found arm.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for Vec<i32> {
-                fn fmt(v: Vec<i32>) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let v: Vec<i32> = Vec.new();
@@ -3459,9 +3459,9 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     // in scope, calling the builtin must still resolve to `Option<i64>`, not
     // be hijacked into the user trait's `fmt` method.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> string; }
+        pub trait Display { fn fmt(self) -> string; }
         impl Display for i32 {
-            fn fmt(n: i32) -> string { "" }
+            fn fmt(self) -> string { "" }
         }
         fn main() {
             let n: i32 = 7;
@@ -3493,9 +3493,9 @@ fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
     // The UFCS dispatcher intercepts before that lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let x: i64 = 42;
@@ -3515,9 +3515,9 @@ fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
     // applied to the trailing args after the receiver is consumed.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Show { fn show(val: Self, suffix: string) -> string; }
+            pub trait Show { fn show(self, suffix: string) -> string; }
             impl Show for i64 {
-                fn show(n: i64, suffix: string) -> string { suffix }
+                fn show(self, suffix: string) -> string { suffix }
             }
             fn main() {
                 let x: i64 = 42;
@@ -3538,7 +3538,7 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
     // `type_defs` cannot reach).  The receiver-kind metadata for the
     // call must be `NamedTypeInstance`, not `PrimitiveTraitImpl`.
     let source = r#"pub trait Display {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 pub type Foo {
@@ -3546,7 +3546,7 @@ pub type Foo {
 }
 
 impl Display for Foo {
-    fn fmt(f: Foo) -> string {
+    fn fmt(self) -> string {
         ""
     }
 }
@@ -3618,7 +3618,7 @@ fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
     // `PrimitiveTraitImpl` metadata is recorded — the call is handled
     // entirely by the receiver-form dispatch path.
     let source = r#"pub trait UserDisplay {
-    fn show(val: Self) -> string;
+    fn show(self) -> string;
 }
 
 pub type Widget {
@@ -3626,7 +3626,7 @@ pub type Widget {
 }
 
 impl UserDisplay for Widget {
-    fn show(w: Widget) -> string {
+    fn show(self) -> string {
         ""
     }
 }
@@ -3676,9 +3676,9 @@ fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
     // The fix removes the redundant outer check_arity, leaving only the
     // inner one, matching the receiver-form path's behaviour.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> string; }
+        pub trait Display { fn fmt(self) -> string; }
         impl Display for i64 {
-            fn fmt(n: i64) -> string { "" }
+            fn fmt(self) -> string { "" }
         }
         fn main() {
             let x: i64 = 42;
@@ -3714,9 +3714,9 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
     // "no method `<name>` on <kind>" diagnostic must still fire — the
     // helper returns None so the existing reporter runs.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> string; }
+        pub trait Display { fn fmt(self) -> string; }
         impl Display for i64 {
-            fn fmt(n: i64) -> string { "" }
+            fn fmt(self) -> string { "" }
         }
         fn main() {
             let x: i64 = 42;
@@ -3755,9 +3755,9 @@ fn primitive_trait_dispatch_int_literal_receiver() {
     // `canonical_primitive_or_builtin_key` short-circuited on the literal.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let _ = (42).fmt();
@@ -3775,9 +3775,9 @@ fn primitive_trait_dispatch_float_literal_receiver() {
     // before canonical-key lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for f64 {
-                fn fmt(x: f64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let _ = (3.14).fmt();
@@ -3796,9 +3796,9 @@ fn primitive_trait_dispatch_ufcs_int_literal() {
     // and the trait-qualified path mis-arities (sig.params=[] vs args=[42]).
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let _ = Display.fmt(42);
@@ -3907,7 +3907,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // do not pollute `trait_defs` or hijack user names.
     let source = r"
         pub trait Display {
-            fn render(val: Self) -> string;
+            fn render(self) -> string;
         }
         fn main() {
             let x: i64 = 42;

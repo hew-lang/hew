@@ -9,8 +9,8 @@ pub enum LifecycleError {
 }
 
 impl Display for LifecycleError {
-    fn fmt(err: LifecycleError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             LifecycleError.StartFailed(reason) => f"StartFailed: {reason}",
             LifecycleError.Crashed(reason) => f"Crashed: {reason}",
         }

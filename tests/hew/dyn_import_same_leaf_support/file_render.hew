@@ -1,5 +1,5 @@
 pub trait Render {
-    fn render(value: Self) -> string;
+    fn render(self) -> string;
 }
 
 pub type Box {
@@ -7,8 +7,8 @@ pub type Box {
 }
 
 impl Render for Box {
-    fn render(value: Box) -> string {
-        f"file:{value.label}"
+    fn render(self) -> string {
+        f"file:{self.label}"
     }
 }
 

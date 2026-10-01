@@ -22,11 +22,11 @@ pub type Counter {
 
 impl Iterator for Counter {
     type Item = i64;
-    fn next(var it: Counter) -> Option<i64> {
-        if it.n >= it.limit {
+    fn next(var self) -> Option<i64> {
+        if self.n >= self.limit {
             .None
         } else {
-            .Some(it.n)
+            .Some(self.n)
         }
     }
 }
@@ -38,7 +38,7 @@ pub type Map<I, A, B> {
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
-    fn next(var it: Map<I, A, B>) -> Option<B> {
+    fn next(var self) -> Option<B> {
         panic("Map::next deferred pending Q004 checker fix");
         .None
     }
@@ -51,7 +51,7 @@ pub type Filter<I, A> {
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(var it: Filter<I, A>) -> Option<A> {
+    fn next(var self) -> Option<A> {
         panic("Filter::next deferred pending Q004 checker fix");
         .None
     }
@@ -64,7 +64,7 @@ pub type Take<I> {
 
 impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(var it: Take<I>) -> Option<A> {
+    fn next(var self) -> Option<A> {
         panic("Take::next deferred pending Q004 checker fix");
         .None
     }
@@ -77,7 +77,7 @@ pub type Skip<I> {
 
 impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(var it: Skip<I>) -> Option<A> {
+    fn next(var self) -> Option<A> {
         panic("Skip::next deferred pending Q004 checker fix");
         .None
     }

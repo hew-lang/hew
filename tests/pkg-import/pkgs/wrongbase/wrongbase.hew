@@ -9,5 +9,5 @@
 //! never this same-named `bool` `Base`.
 
 pub trait Base {
-    fn base(val: Self) -> bool;
+    fn base(self) -> bool;
 }

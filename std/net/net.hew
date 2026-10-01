@@ -122,8 +122,8 @@ pub fn net_error_from_errno(errno: i64) -> NetError {
 
 /// Print a `NetError`'s variant name and raw OS errno.
 impl Display for NetError {
-    fn fmt(e: NetError) -> string {
-        match e {
+    fn fmt(self) -> string {
+        match self {
             NetError.ConnectionRefused(code) => f"ConnectionRefused({code})",
             NetError.AddressInUse(code) => f"AddressInUse({code})",
             NetError.AddressNotAvailable(code) => f"AddressNotAvailable({code})",
@@ -362,14 +362,14 @@ trait ListenerMethods {
 
 impl ListenerMethods for Listener {
     /// Wait until a client connects and return the new `Connection`.
-    fn accept(ln: Listener) -> Connection {
+    fn accept(self) -> Connection {
         unsafe {
-            hew_tcp_accept(ln)
+            hew_tcp_accept(self)
         }
     }
-    fn local_port(ln: Listener) -> i64 {
+    fn local_port(self) -> i64 {
         unsafe {
-            hew_tcp_listener_local_port(ln) as i64
+            hew_tcp_listener_local_port(self) as i64
         }
     }
 }
@@ -424,13 +424,13 @@ trait ConnectionMethods {
 
 impl ConnectionMethods for Connection {
     /// Receive the next chunk; `None` is EOF, a failure traps.
-    fn recv(conn: Connection) -> Option<bytes> {
+    fn recv(self) -> Option<bytes> {
         unsafe {
 
             // Drop any status left by an earlier operation so the status read
             // after the call describes this read and nothing else.
             let _ = hew_stream_last_errno();
-            let data = hew_tcp_read(conn);
+            let data = hew_tcp_read(self);
             let errno = hew_stream_last_errno();
             if errno != 0 {
                 let detail = hew_stream_last_error();
@@ -445,9 +445,9 @@ impl ConnectionMethods for Connection {
     }
     /// Send raw bytes; `Closed` and `Full` are the peer's answers, anything
     /// else traps.
-    fn send(conn: Connection, data: bytes) -> Result<(), SendError> {
+    fn send(self, data: bytes) -> Result<(), SendError> {
         let status = unsafe {
-            hew_tcp_write(conn, data)
+            hew_tcp_write(self, data)
         };
         if status >= 0 {
             return .Ok(());
@@ -472,9 +472,9 @@ impl ConnectionMethods for Connection {
         panic(f"net.Connection.send: {to_string(net_error_from_errno(errno))}: {detail}")
     }
     /// Half-close the write side.
-    fn finish(conn: Connection) {
+    fn finish(self) {
         let status = unsafe {
-            hew_tcp_shutdown_write(conn)
+            hew_tcp_shutdown_write(self)
         };
         if status < 0 {
             let errno = unsafe {
@@ -487,17 +487,17 @@ impl ConnectionMethods for Connection {
         }
     }
     /// Set the read timeout in milliseconds.
-    fn set_read_timeout(conn: Connection, ms: i64) -> Result<(), NetError> {
+    fn set_read_timeout(self, ms: i64) -> Result<(), NetError> {
         let checked = try_connection_timeout_ms("net.Connection.set_read_timeout", ms)?;
         net_result_from_status(unsafe {
-            hew_tcp_set_read_timeout(conn, checked as i32) // INTERNAL-ABI: range-checked above
+            hew_tcp_set_read_timeout(self, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
     /// Set the write timeout in milliseconds.
-    fn set_write_timeout(conn: Connection, ms: i64) -> Result<(), NetError> {
+    fn set_write_timeout(self, ms: i64) -> Result<(), NetError> {
         let checked = try_connection_timeout_ms("net.Connection.set_write_timeout", ms)?;
         net_result_from_status(unsafe {
-            hew_tcp_set_write_timeout(conn, checked as i32) // INTERNAL-ABI: range-checked above
+            hew_tcp_set_write_timeout(self, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
 }

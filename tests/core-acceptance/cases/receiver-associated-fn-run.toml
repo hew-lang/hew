@@ -1,0 +1,11 @@
+[[case]]
+id = "receiver-associated-fn-run"
+intent = "Only the `self` token declares a receiver: a named-first impl or trait function is an associated function called through its type, beside ordinary `self` and `var self` methods; receiver-associated-fn-dot-reject is the control."
+source = "cases/receiver-associated-fn-run.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "run"
+
+[case.expected]
+stdout = "true\n25\n4\ntrue\n"
+exit = 0

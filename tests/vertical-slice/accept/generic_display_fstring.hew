@@ -7,7 +7,7 @@ type Point {
 }
 
 impl Display for Point {
-    fn fmt(p: Point) -> string {
+    fn fmt(self) -> string {
         "pt"
     }
 }

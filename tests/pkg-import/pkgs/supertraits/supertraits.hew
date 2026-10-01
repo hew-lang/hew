@@ -14,14 +14,14 @@
 
 /// Root of the chain. `base` returns `i64`.
 pub trait Base {
-    fn base(val: Self) -> i64;
+    fn base(self) -> i64;
 }
 
 /// Direct sub-trait of `Base`. The canonical import-only case: an importer that
 /// brings ONLY `Sub` into scope must still resolve `Base`'s methods through
 /// `Sub`'s owner-qualified supertrait edge (`supertraits.Base`).
 pub trait Sub: Base {
-    fn tag(val: Self) -> i64;
+    fn tag(self) -> i64;
 }
 
 /// Sub-trait that REDECLARES its supertrait's method (`base`) alongside its own
@@ -33,42 +33,42 @@ pub trait Sub: Base {
 /// relies on `impl Base for T`) is accepted, while keeping `Redecl`'s own `tag`
 /// required.
 pub trait Redecl: Base {
-    fn base(val: Self) -> i64;
+    fn base(self) -> i64;
 
-    fn tag(val: Self) -> i64;
+    fn tag(self) -> i64;
 }
 
 /// One level above `Base`.
 pub trait Mid: Base {
-    fn mid(val: Self) -> i64;
+    fn mid(self) -> i64;
 }
 
 /// Two levels above `Base` (a multi-level chain: Deep -> Mid -> Base).
 pub trait Deep: Mid {
-    fn deep(val: Self) -> i64;
+    fn deep(self) -> i64;
 }
 
 /// Left diamond branch over `Base`.
 pub trait Left: Base {
-    fn left(val: Self) -> i64;
+    fn left(self) -> i64;
 }
 
 /// Right diamond branch over `Base`.
 pub trait Right: Base {
-    fn right(val: Self) -> i64;
+    fn right(self) -> i64;
 }
 
 /// Diamond apex: inherits `Base` through two distinct branches.
 pub trait Diamond: Left + Right {
-    fn diamond(val: Self) -> i64;
+    fn diamond(self) -> i64;
 }
 
 /// A trait with one required method and one default-bodied method, so an impl
 /// may omit `provided` (default) while `req` stays required.
 pub trait Defaulty {
-    fn req(val: Self) -> i64;
+    fn req(self) -> i64;
 
-    fn provided(val: Self) -> i64 {
+    fn provided(self) -> i64 {
         7
     }
 }

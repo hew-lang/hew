@@ -54,33 +54,33 @@ trait SemaphoreMethods {
 
 impl SemaphoreMethods for Semaphore {
     /// Block until a permit is available, then acquire it.
-    fn acquire(sem: Semaphore) {
+    fn acquire(self) {
         unsafe {
-            hew_semaphore_acquire(sem.handle)
+            hew_semaphore_acquire(self.handle)
         };
     }
     /// Try to acquire a permit without blocking.
-    fn try_acquire(sem: Semaphore) -> bool {
+    fn try_acquire(self) -> bool {
         unsafe {
-            hew_semaphore_try_acquire(sem.handle)
+            hew_semaphore_try_acquire(self.handle)
         }
     }
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
-    fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool {
+    fn acquire_timeout(self, timeout_ms: i64) -> bool {
         unsafe {
-            hew_semaphore_acquire_timeout(sem.handle, timeout_ms as i64)
+            hew_semaphore_acquire_timeout(self.handle, timeout_ms as i64)
         } // INTERNAL-ABI: C ABI takes i64 timeout
     }
     /// Release a previously acquired permit.
-    fn release(sem: Semaphore) {
+    fn release(self) {
         unsafe {
-            hew_semaphore_release(sem.handle)
+            hew_semaphore_release(self.handle)
         };
     }
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> i64 {
+    fn count(self) -> i64 {
         unsafe {
-            hew_semaphore_count(sem.handle) as i64
+            hew_semaphore_count(self.handle) as i64
         }
     }
 }

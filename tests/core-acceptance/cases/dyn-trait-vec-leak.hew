@@ -1,7 +1,7 @@
 import std.string;
 
 trait Labeled {
-    fn label_size(val: Self) -> i64;
+    fn label_size(self) -> i64;
 }
 
 type Person {
@@ -9,8 +9,8 @@ type Person {
 }
 
 impl Labeled for Person {
-    fn label_size(val: Person) -> i64 {
-        val.label.len()
+    fn label_size(self) -> i64 {
+        self.label.len()
     }
 }
 
@@ -19,8 +19,8 @@ type Parcel {
 }
 
 impl Labeled for Parcel {
-    fn label_size(val: Parcel) -> i64 {
-        val.label.len()
+    fn label_size(self) -> i64 {
+        self.label.len()
     }
 }
 

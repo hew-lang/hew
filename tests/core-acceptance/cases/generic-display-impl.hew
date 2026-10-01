@@ -8,8 +8,8 @@ enum Outcome<T, E> {
 }
 
 impl<T, E> Display for Outcome<T, E> {
-    fn fmt(outcome: Outcome<T, E>) -> string {
-        match outcome {
+    fn fmt(self) -> string {
+        match self {
             Outcome.Done(_) => "done",
             Outcome.Failed(_) => "failed",
             Outcome.Pending => "pending",

@@ -19,7 +19,7 @@ use hew_types::{Checker, SpanKey};
 #[test]
 fn probe_trait_method_inside_generic_free_fn_rewrite() {
     let source = r#"pub trait Describable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 pub type Label {
@@ -27,8 +27,8 @@ pub type Label {
 }
 
 impl Describable for Label {
-    fn describe(label: Label) -> string {
-        label.text
+    fn describe(self) -> string {
+        self.text
     }
 }
 

@@ -3,8 +3,8 @@ type ParseFailure {
 }
 
 impl Display for ParseFailure {
-    fn fmt(value: ParseFailure) -> string {
-        f"parse failed: {value.detail}"
+    fn fmt(self) -> string {
+        f"parse failed: {self.detail}"
     }
 }
 

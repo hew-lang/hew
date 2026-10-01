@@ -13,5 +13,5 @@ import hew.reexbase.{Base as B};
 /// Sub-trait of the aliased re-imported `Base`. The super edge `B` resolves to
 /// `reexbase.Base` through this module's aliased import binding.
 pub trait SubA: B {
-    fn tag(val: Self) -> i64;
+    fn tag(self) -> i64;
 }

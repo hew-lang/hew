@@ -319,12 +319,7 @@ pub(super) fn plan_impl_block_symbols(
             method.name.name.as_str(),
         );
         if ctx.impl_method_symbol_collisions.contains(&declaration) {
-            ctx.register_impl_method_fn_entry_at(
-                &symbol_self_name,
-                method,
-                &impl_type_params,
-                &symbol,
-            );
+            ctx.register_impl_method_fn_entry_at(method, &impl_type_params, &symbol);
         }
         planned.push((declaration, symbol));
     }
@@ -406,12 +401,7 @@ pub(super) fn materialized_default_body_plan(
         if ctx.impl_method_symbol_collisions.contains(&declaration) {
             let method = trait_method_to_fn_decl(&default_method.method);
             let impl_parameters = impl_type_parameters(ctx, impl_decl);
-            ctx.register_impl_method_fn_entry_at(
-                symbol_self_name,
-                &method,
-                &impl_parameters,
-                &symbol,
-            );
+            ctx.register_impl_method_fn_entry_at(&method, &impl_parameters, &symbol);
         }
         out.push((declaration, symbol));
     }

@@ -25,8 +25,8 @@ type W {
 }
 
 impl A for W {
-    fn close(w: W) -> Result<Payload, ErrA> {
-        .Ok(Payload { code: w.id })
+    fn close(self) -> Result<Payload, ErrA> {
+        .Ok(Payload { code: self.id })
     }
 }
 

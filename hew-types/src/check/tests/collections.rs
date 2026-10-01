@@ -2498,7 +2498,7 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     let output = check_source(
         r"
         trait Speaker {
-            fn speak(val: Self) -> i64;
+            fn speak(self) -> i64;
         }
 
         fn clone_vec(values: Vec<dyn Speaker>) {
@@ -2599,8 +2599,8 @@ type Cat {
 }
 
 impl Speaker for Cat {
-    fn say(c: Cat) -> string {
-        c.name
+    fn say(self) -> string {
+        self.name
     }
 }
 

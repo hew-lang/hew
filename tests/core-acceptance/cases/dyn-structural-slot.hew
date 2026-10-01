@@ -5,7 +5,7 @@
 import std.string;
 
 trait Labeled {
-    fn label(val: Self) -> string;
+    fn label(self) -> string;
 }
 
 type Person {
@@ -13,8 +13,8 @@ type Person {
 }
 
 impl Person {
-    fn label(val: Person) -> string {
-        f"person {val.tag}"
+    fn label(self) -> string {
+        f"person {self.tag}"
     }
 }
 
@@ -23,8 +23,8 @@ type Bag {
 }
 
 impl Bag {
-    fn label(val: Bag) -> string {
-        f"bag {val.items.len()}"
+    fn label(self) -> string {
+        f"bag {self.items.len()}"
     }
 }
 
@@ -34,8 +34,8 @@ enum Status {
 }
 
 impl Status {
-    fn label(val: Status) -> string {
-        match val {
+    fn label(self) -> string {
+        match self {
             .Active(name) => f"active {name}",
             .Retired(year) => f"retired {year}",
         }

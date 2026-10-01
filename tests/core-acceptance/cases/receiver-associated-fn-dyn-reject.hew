@@ -1,0 +1,17 @@
+trait Zero {
+    fn zero(value: Self) -> i64;
+}
+
+type Point {
+    x: i64;
+}
+
+impl Zero for Point {
+    fn zero(value: Point) -> i64 {
+        value.x
+    }
+}
+
+fn main() {
+    let z: dyn Zero = Point { x: 1 };
+}

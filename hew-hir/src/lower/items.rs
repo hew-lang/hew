@@ -441,7 +441,6 @@ impl LowerCtx {
                 &symbol,
                 span.clone(),
                 &type_params,
-                Some(&symbol_self_name),
                 Some(declaration),
             ) else {
                 continue;
@@ -580,7 +579,6 @@ impl LowerCtx {
                                     &symbol,
                                     span.clone(),
                                     &type_params,
-                                    Some(&symbol_self_name),
                                     synthetic_default_declaration,
                                 )
                             });
@@ -654,7 +652,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> Option<HirFn> {
-        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None, None)
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
     }
 
     /// Lower an imported actor under its checker's current module and file scope.
@@ -852,7 +850,6 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
         impl_type_params: &[hew_types::ParamHead],
-        impl_self_type_name: Option<&str>,
         known_declaration: Option<hew_types::DefId>,
     ) -> Option<HirFn> {
         // Use the stable ItemId pre-allocated during the first pass.
@@ -938,8 +935,7 @@ impl LowerCtx {
         // already carries the dual-return `(ret, Self)` tuple when this fires,
         // so the wrapped body below is what makes the emitted return type
         // match the ABI every call site was told about.
-        let bare_self_type_name = impl_self_type_name.map(Self::bare_impl_self_type_name);
-        let var_self_receiver = if Self::is_var_self_method_for_type(func, bare_self_type_name) {
+        let var_self_receiver = if Self::is_var_self_method(func) {
             params.first().cloned()
         } else {
             None

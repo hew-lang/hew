@@ -56,8 +56,8 @@ impl Error for ParseFailure {
 }
 
 impl Display for ParseFailure {
-    fn fmt(value: ParseFailure) -> string {
-        f"parse failed: {value.detail}"
+    fn fmt(self) -> string {
+        f"parse failed: {self.detail}"
     }
 }
 "#,
@@ -77,8 +77,8 @@ fn error_impl_coerces_to_dyn_error_at_every_error_position() {
 }
 
 impl Display for ParseFailure {
-    fn fmt(value: ParseFailure) -> string {
-        f"parse failed: {value.detail}"
+    fn fmt(self) -> string {
+        f"parse failed: {self.detail}"
     }
 }
 
@@ -153,7 +153,7 @@ type Failure {
 }
 
 impl Display for Failure {
-    fn fmt(value: Failure) -> string {
+    fn fmt(self) -> string {
         "display"
     }
 }

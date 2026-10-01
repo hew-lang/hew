@@ -9,5 +9,5 @@ import hew.reexbase.{Base};
 
 /// One level above `Base`, itself re-exported downstream.
 pub trait Mid: Base {
-    fn mid(val: Self) -> i64;
+    fn mid(self) -> i64;
 }

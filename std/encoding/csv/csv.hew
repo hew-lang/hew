@@ -44,38 +44,38 @@ trait TableMethods {
 
 impl TableMethods for Table {
     /// Return the number of data rows (excluding the header row).
-    fn rows(tbl: Table) -> i64 {
-        tbl.data.len()
+    fn rows(self) -> i64 {
+        self.data.len()
     }
     /// Return the number of columns.
-    fn cols(tbl: Table) -> i64 {
-        tbl.hdrs.len()
+    fn cols(self) -> i64 {
+        self.hdrs.len()
     }
     /// Return the header name for the given column index.
-    fn header(tbl: Table, col: i64) -> string {
-        if col < 0 || col >= tbl.hdrs.len() {
+    fn header(self, col: i64) -> string {
+        if col < 0 || col >= self.hdrs.len() {
             return "";
         }
-        tbl.hdrs[col]
+        self.hdrs[col]
     }
     /// Return the cell value at the given row and column index.
-    fn get(tbl: Table, row: i64, col: i64) -> string {
-        if row < 0 || row >= tbl.data.len() {
+    fn get(self, row: i64, col: i64) -> string {
+        if row < 0 || row >= self.data.len() {
             return "";
         }
-        let r = tbl.data[row];
+        let r = self.data[row];
         if col < 0 || col >= r.len() {
             return "";
         }
         r[col]
     }
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(tbl: Table, row: i64, col_name: string) -> string {
-        let col = find_header(tbl.hdrs, col_name);
+    fn get_by_name(self, row: i64, col_name: string) -> string {
+        let col = find_header(self.hdrs, col_name);
         if col < 0 {
             return "";
         }
-        tbl.get(row, col as i64)
+        self.get(row, col as i64)
     }
 }
 

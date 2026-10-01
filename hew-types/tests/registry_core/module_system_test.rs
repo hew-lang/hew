@@ -187,7 +187,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         }
     "#;
     let module_source = r"pub trait Describable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 pub type Label {
@@ -195,8 +195,8 @@ pub type Label {
 }
 
 impl Describable for Label {
-    fn describe(label: Label) -> string {
-        label.text
+    fn describe(self) -> string {
+        self.text
     }
 }
 
@@ -627,6 +627,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
             ),
             is_mutable: false,
             is_consume: false,
+            is_receiver: false,
         }],
         return_type: None,
         where_clause: None,
@@ -941,6 +942,7 @@ fn colliding_unqualified_imports_are_typed_error() {
             ),
             is_mutable: false,
             is_consume: false,
+            is_receiver: false,
         }],
         return_type: None,
         where_clause: None,
@@ -1019,6 +1021,7 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
             ),
             is_mutable: false,
             is_consume: false,
+            is_receiver: false,
         }],
         return_type: None,
         where_clause: None,
@@ -1189,6 +1192,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             })
             .collect(),
         return_type: ret.map(|r| {

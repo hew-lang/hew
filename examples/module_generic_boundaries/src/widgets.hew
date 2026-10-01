@@ -1,5 +1,5 @@
 pub trait Describable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 pub type Label {
@@ -7,8 +7,8 @@ pub type Label {
 }
 
 impl Describable for Label {
-    fn describe(label: Label) -> string {
-        label.text
+    fn describe(self) -> string {
+        self.text
     }
 }
 

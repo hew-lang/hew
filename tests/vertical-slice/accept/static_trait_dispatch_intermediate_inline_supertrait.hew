@@ -1,5 +1,5 @@
 trait Base {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 trait Mid: Base {
@@ -13,7 +13,7 @@ type Widget {
 }
 
 impl Base for Widget {
-    fn name(w: Widget) -> string {
+    fn name(self) -> string {
         "intermediate"
     }
 }

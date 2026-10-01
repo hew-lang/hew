@@ -104,17 +104,17 @@ trait AsyncResponseMethods {
 }
 
 impl AsyncResponseMethods for AsyncResponse {
-    fn status(resp: AsyncResponse) -> i64 {
-        resp.code
+    fn status(self) -> i64 {
+        self.code
     }
-    fn body(resp: AsyncResponse) -> string {
-        resp.body_text
+    fn body(self) -> string {
+        self.body_text
     }
-    fn header(resp: AsyncResponse, name: string) -> string {
-        find_response_header(resp.header_section, name)
+    fn header(self, name: string) -> string {
+        find_response_header(self.header_section, name)
     }
-    fn content_type(resp: AsyncResponse) -> string {
-        find_response_header(resp.header_section, "Content-Type")
+    fn content_type(self) -> string {
+        find_response_header(self.header_section, "Content-Type")
     }
 }
 

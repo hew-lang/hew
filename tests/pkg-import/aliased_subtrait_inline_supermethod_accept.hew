@@ -6,14 +6,14 @@ type W {
 }
 
 impl B for W {
-    fn base(w: W) -> i64 {
-        w.id
+    fn base(self) -> i64 {
+        self.id
     }
 }
 
 impl S for W {
-    fn tag(w: W) -> i64 {
-        w.id + 1
+    fn tag(self) -> i64 {
+        self.id + 1
     }
 }
 

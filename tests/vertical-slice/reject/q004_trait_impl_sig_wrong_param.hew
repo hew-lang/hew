@@ -20,7 +20,7 @@ pub type Bag {
 
 impl Indexer for Bag {
     type Output = i64;
-    fn at(b: Bag, key: string) -> i64 {
+    fn at(self, key: string) -> i64 {
         0
     }
 }

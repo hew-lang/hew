@@ -56,8 +56,8 @@ fn at(path: string) -> string {
 }
 
 impl Display for DecodeError {
-    fn fmt(error: DecodeError) -> string {
-        match error {
+    fn fmt(self) -> string {
+        match self {
             DecodeError.Syntax { offset, line, column, reason } => match (line, column) {
                 (.Some(line), .Some(column)) => f"Syntax: line {line}, column {column}: {reason}",
                 _ => f"Syntax: offset {offset}: {reason}",

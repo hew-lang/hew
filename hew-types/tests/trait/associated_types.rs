@@ -8,7 +8,7 @@ fn impl_requires_associated_type_definition() {
     let output = typecheck_builtin(
         r"trait Iterator {
     type Item;
-    fn next(val: Self) -> Self.Item;
+    fn next(self) -> Self.Item;
 }
 
 type Counter {
@@ -16,8 +16,8 @@ type Counter {
 }
 
 impl Iterator for Counter {
-    fn next(c: Counter) -> Self.Item {
-        c.value
+    fn next(self) -> Self.Item {
+        self.value
     }
 }
 ",
@@ -37,7 +37,7 @@ fn impl_type_aliases_resolve_in_methods() {
     let output = typecheck_builtin(
         r"trait Iterator {
     type Item;
-    fn next(val: Self) -> Self.Item;
+    fn next(self) -> Self.Item;
 }
 
 type Counter {
@@ -46,8 +46,8 @@ type Counter {
 
 impl Iterator for Counter {
     type Item = i64;
-    fn next(c: Counter) -> Self.Item {
-        c.value
+    fn next(self) -> Self.Item {
+        self.value
     }
 }
 
@@ -71,7 +71,7 @@ fn trait_default_associated_type_used_in_impl() {
     let output = typecheck_isolated(
         r"trait Identity {
     type Output = i64;
-    fn value(val: Self) -> Self.Output;
+    fn value(self) -> Self.Output;
 }
 
 type Answer {
@@ -79,7 +79,7 @@ type Answer {
 }
 
 impl Identity for Answer {
-    fn value(a: Answer) -> Self.Output {
+    fn value(self) -> Self.Output {
         42
     }
 }

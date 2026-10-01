@@ -498,8 +498,8 @@ fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
 }
 
 impl Widget {
-    fn value_plus_one(w: Widget) -> i64 {
-        w.value + 1
+    fn value_plus_one(self) -> i64 {
+        self.value + 1
     }
 }
 
@@ -531,7 +531,7 @@ fn use_widget(w: Widget) -> i64 {
 fn method_call_receiver_kinds_record_trait_object_dispatch() {
     let output = typecheck_inline(
         r"trait Greeter {
-    fn greet(g: Self) -> string;
+    fn greet(self) -> string;
 }
 
 type Bot {
@@ -539,8 +539,8 @@ type Bot {
 }
 
 impl Greeter for Bot {
-    fn greet(bot: Bot) -> string {
-        bot.name
+    fn greet(self) -> string {
+        self.name
     }
 }
 
@@ -2197,8 +2197,8 @@ fn rc_user_drop_payload_rejected() {
 }
 
 impl Drop for Token {
-    fn drop(token: Token) {
-        print(token.id);
+    fn drop(self) {
+        print(self.id);
     }
 }
 
@@ -5254,12 +5254,12 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
 }
 
 impl Widget {
-    fn good(w: Widget) -> i64 {
-        w.value
+    fn good(self) -> i64 {
+        self.value
     }
 
-    fn broken(w: Widget, bad: Task<i64>) -> i64 {
-        w.value
+    fn broken(self, bad: Task<i64>) -> i64 {
+        self.value
     }
 }
 ",
@@ -5299,12 +5299,12 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
 }
 
 impl Widget {
-    fn good(w: Widget) -> i64 {
-        w.value
+    fn good(self) -> i64 {
+        self.value
     }
 
-    fn broken(w: Widget) -> Task<i64> {
-        w.value
+    fn broken(self) -> Task<i64> {
+        self.value
     }
 }
 ",

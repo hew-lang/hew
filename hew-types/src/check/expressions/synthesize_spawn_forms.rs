@@ -537,9 +537,16 @@ impl Checker {
         // never ran at all — so a diverging guard contributes nothing to the
         // fall-through. Its own body is unreachable for the same reason, so the
         // body's exit must stay out of the join no matter what the body does.
+        //
+        // An arm whose value is a contextual variant (`.None`, `.Err(e)`) takes
+        // the match's type from the arms that have one (A448). Until a typed
+        // arm has been checked, such an arm's pattern and guard run in source
+        // order but its body waits, with its scope suspended, and is checked
+        // against the join of the typed arms after the loop.
         let ownership_entry = self.env.ownership_snapshot();
         let mut fall_through = ownership_entry.clone();
         let mut arm_exits = Vec::with_capacity(arms.len());
+        let mut waiting = Vec::new();
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
@@ -574,35 +581,34 @@ impl Checker {
                 }
             }
 
-            self.tail_ok_armed = tail_ok_armed;
-            let arm_ty = if let Some(expected) = &result_ty {
-                if expected.contains_callable() && resolved_expected.is_none() {
-                    self.synthesize(&arm.body.0, &arm.body.1)
-                } else {
-                    self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
-                }
-            } else {
-                self.synthesize(&arm.body.0, &arm.body.1)
-            };
-            self.record_value_transfer(&arm.body.0, &arm.body.1);
-            arm_exits.push(BranchArmExit {
-                ownership: self.env.ownership_snapshot(),
-                diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
-            });
-            // Skip Never/Error when setting the expected type — diverging arms
-            // (return, panic, break) shouldn't constrain the match result type.
-            if !matches!(arm_ty, Ty::Never | Ty::Error) {
-                result_ty = Some(if let Some(previous) = result_ty {
-                    if previous.contains_callable() || arm_ty.contains_callable() {
-                        self.unify_branches(&previous, &arm_ty, span)
-                    } else {
-                        previous
-                    }
-                } else {
-                    arm_ty
-                });
+            if result_ty.is_none() && super::super::branch_join::expr_needs_context(&arm.body.0) {
+                let start = self.env.ownership_snapshot();
+                waiting.push((arm, self.env.suspend_scope(), start, guard_diverges));
+                continue;
             }
-
+            self.tail_ok_armed = tail_ok_armed;
+            self.check_match_arm_body(
+                arm,
+                guard_diverges,
+                &mut result_ty,
+                resolved_expected.as_ref(),
+                &mut arm_exits,
+                span,
+            );
+            self.env.pop_scope();
+        }
+        for (arm, scope, start, guard_diverges) in waiting {
+            self.env.resume_scope(scope);
+            self.env.restore_ownership(&start);
+            self.tail_ok_armed = tail_ok_armed;
+            self.check_match_arm_body(
+                arm,
+                guard_diverges,
+                &mut result_ty,
+                resolved_expected.as_ref(),
+                &mut arm_exits,
+                span,
+            );
             self.env.pop_scope();
         }
         self.join_branch_ownership(&ownership_entry, &arm_exits);
@@ -615,6 +621,46 @@ impl Checker {
 
         // If all arms diverge (Never/Error), the match itself diverges
         result_ty.unwrap_or(Ty::Never)
+    }
+
+    /// Check one arm body against the match's type so far, record its exit and
+    /// fold its type into the join.
+    fn check_match_arm_body(
+        &mut self,
+        arm: &MatchArm,
+        guard_diverges: bool,
+        result_ty: &mut Option<Ty>,
+        resolved_expected: Option<&Ty>,
+        arm_exits: &mut Vec<BranchArmExit>,
+        span: &Span,
+    ) {
+        let arm_ty = if let Some(expected) = result_ty.as_ref() {
+            if expected.contains_callable() && resolved_expected.is_none() {
+                self.synthesize(&arm.body.0, &arm.body.1)
+            } else {
+                self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
+            }
+        } else {
+            self.synthesize(&arm.body.0, &arm.body.1)
+        };
+        self.record_value_transfer(&arm.body.0, &arm.body.1);
+        arm_exits.push(BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
+        });
+        // Skip Never/Error when setting the expected type — diverging arms
+        // (return, panic, break) shouldn't constrain the match result type.
+        if !matches!(arm_ty, Ty::Never | Ty::Error) {
+            *result_ty = Some(if let Some(previous) = result_ty.take() {
+                if previous.contains_callable() || arm_ty.contains_callable() {
+                    self.unify_branches(&previous, &arm_ty, span)
+                } else {
+                    previous
+                }
+            } else {
+                arm_ty
+            });
+        }
     }
 
     #[expect(

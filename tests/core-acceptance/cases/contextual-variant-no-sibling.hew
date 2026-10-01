@@ -1,0 +1,24 @@
+// A contextual variant with no typed sibling and no expectation has no type.
+fn both(c: bool) -> i64 {
+    let _g = if c { .None } else { .Some(1) };
+    0
+}
+
+fn diverging(c: bool) -> i64 {
+    let _g = if c { .None } else { return 0 };
+    0
+}
+
+fn not_enum(c: bool) -> i64 {
+    let _g = if c { 5 } else { .None };
+    0
+}
+
+fn all_arms(o: Option<i64>) -> i64 {
+    let _g = match o { .None => .None, .Some(v) => .Some(v + 1) };
+    0
+}
+
+fn main() {
+    println(both(true) + diverging(true) + not_enum(true) + all_arms(.None));
+}

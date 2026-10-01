@@ -6,7 +6,7 @@
     clippy::wildcard_imports,
     reason = "chunk files share the parent module's import header"
 )]
-use super::super::branch_join::BranchArmExit;
+use super::super::branch_join::{BranchArmExit, BranchBody};
 use super::super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
 use super::super::types::GenericLambdaSig;
 #[allow(
@@ -282,22 +282,24 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
-                let entry = self.env.ownership_snapshot();
-                let then_ty = self.synthesize(&then_block.0, &then_block.1);
-                let then_exit = BranchArmExit {
-                    ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join(&then_ty),
-                };
                 if let Some(eb) = else_block {
-                    self.env.restore_ownership(&entry);
-                    let else_ty = self.synthesize(&eb.0, &eb.1);
-                    let else_exit = BranchArmExit {
-                        ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join(&else_ty),
-                    };
+                    let entry = self.env.ownership_snapshot();
+                    let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                        &entry,
+                        BranchBody::Expr(then_block),
+                        false,
+                        BranchBody::Expr(eb),
+                        None,
+                    );
                     self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    let entry = self.env.ownership_snapshot();
+                    let then_ty = self.synthesize(&then_block.0, &then_block.1);
+                    let then_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join(&then_ty),
+                    };
                     // No `else`: the implicit fall-through arm runs with the
                     // state the condition left behind and never consumes.
                     self.join_fall_through(&entry, then_exit);
@@ -1074,22 +1076,23 @@ impl Checker {
     ) -> Ty {
         let entry = self.env.ownership_snapshot();
         self.check_condition(conditions);
-        let then_ty = self.check_block(body, None);
-        let then_exit = BranchArmExit {
-            ownership: self.env.ownership_snapshot(),
-            diverges: Self::arm_skips_join(&then_ty),
-        };
-        self.env.pop_scope();
         if let Some(else_expr) = else_body {
-            self.env.restore_ownership(&entry);
-            let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
-            let else_exit = BranchArmExit {
-                ownership: self.env.ownership_snapshot(),
-                diverges: Self::arm_skips_join(&else_ty),
-            };
+            let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                &entry,
+                BranchBody::Block(body),
+                true,
+                BranchBody::Expr(else_expr),
+                None,
+            );
             self.join_branch_ownership(&entry, &[then_exit, else_exit]);
             self.unify_branches(&then_ty, &else_ty, span)
         } else {
+            let then_ty = self.check_block(body, None);
+            let then_exit = BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: Self::arm_skips_join(&then_ty),
+            };
+            self.env.pop_scope();
             self.join_fall_through(&entry, then_exit);
             Ty::Unit
         }

@@ -64,8 +64,6 @@ struct SlotState {
     added: bool,
     closed: bool,
     nonblocking: bool,
-    read_timeout: Option<Duration>,
-    write_timeout: Option<Duration>,
     /// Interest of the in-flight AFD poll, zero when none is in flight.
     #[cfg(windows)]
     armed: c_int,
@@ -175,21 +173,16 @@ impl Slot {
         self.state.lock_or_recover().closed
     }
 
-    /// Record a socket timeout for later waits in that direction.
-    pub(crate) fn set_timeout(&self, direction: Direction, timeout: Option<Duration>) {
-        let mut state = self.state.lock_or_recover();
-        match direction {
-            Direction::Read => state.read_timeout = timeout,
-            Direction::Write => state.write_timeout = timeout,
-        }
-    }
-
+    /// The socket's timeout for waits in `direction`. The socket option is
+    /// the one authority: duplicated handles, such as stream halves, share it.
     pub(crate) fn timeout(&self, direction: Direction) -> Option<Duration> {
-        let state = self.state.lock_or_recover();
+        let stream = self.stream()?;
         match direction {
-            Direction::Read => state.read_timeout,
-            Direction::Write => state.write_timeout,
+            Direction::Read => stream.read_timeout(),
+            Direction::Write => stream.write_timeout(),
         }
+        .ok()
+        .flatten()
     }
 
     /// Switch the socket to non-blocking mode at its first waiting operation.

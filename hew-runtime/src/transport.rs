@@ -28,7 +28,7 @@ use crate::actor::{self, HewActor};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::internal::types::HewActorState;
 use crate::node_identity::{HewLocation, Location};
-use crate::reactor::{Direction, IoObject, Slot};
+use crate::reactor::{IoObject, Slot};
 use crate::set_last_error;
 
 // ---------------------------------------------------------------------------
@@ -1438,8 +1438,6 @@ pub extern "C" fn hew_tcp_set_read_timeout(fd: c_int, timeout_ms: c_int) -> c_in
         );
         return -1;
     }
-    // Waiting operations enforce the same limit with a wheel deadline.
-    slot.set_timeout(Direction::Read, timeout);
     0
 }
 
@@ -1482,8 +1480,6 @@ pub extern "C" fn hew_tcp_set_write_timeout(fd: c_int, timeout_ms: c_int) -> c_i
         );
         return -1;
     }
-    // Waiting operations enforce the same limit with a wheel deadline.
-    slot.set_timeout(Direction::Write, timeout);
     0
 }
 

@@ -302,6 +302,10 @@ pub enum ResultReturnKind {
 /// the checker in rule order (D547): the same type passes through, a trait
 /// object target erases, and a declared `impl From<E> for F` converts.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one conversion per failure edge, recorded once; boxing buys nothing"
+)]
 pub enum ErrorConversion {
     Same,
     Erase(DynCoercion),

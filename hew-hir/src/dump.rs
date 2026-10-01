@@ -742,10 +742,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 .expect("write to string");
             dump_expr(defs, out, operand, indent + 2);
         }
-        HirExprKind::AwaitRestart { child } => {
-            writeln!(out, "{pad}  await-restart").expect("write to string");
-            dump_expr(defs, out, child, indent + 2);
-        }
         HirExprKind::ConnAwaitRead {
             conn,
             to_string,

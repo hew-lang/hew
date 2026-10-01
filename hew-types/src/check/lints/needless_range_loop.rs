@@ -220,7 +220,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             find_in_block(ctx, levels, body, out);
         }
         Expr::Await(inner)
-        | Expr::AwaitRestart(inner)
         | Expr::ReturnError(inner)
         | Expr::Clone(inner)
         | Expr::PostfixTry(inner)
@@ -597,7 +596,6 @@ impl BodyScan<'_> {
             Expr::ReturnError(inner)
             | Expr::Clone(inner)
             | Expr::Await(inner)
-            | Expr::AwaitRestart(inner)
             | Expr::PostfixTry(inner)
             | Expr::Cast { expr: inner, .. }
             | Expr::FieldAccess { object: inner, .. } => self.expr(&inner.0),

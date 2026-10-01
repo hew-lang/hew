@@ -1506,25 +1506,11 @@ impl Parser<'_> {
                                     }
                                 };
                             }
-                            // The retired `shutdown:` spelling is recognised
-                            // for migration, but strict parsing never lowers it.
-                            Some(Token::Identifier(s)) if *s == "stop" || *s == "shutdown" => {
-                                let retired = *s == "shutdown";
+                            Some(Token::Identifier(s)) if *s == "stop" => {
                                 let clause_start = self.peek_span().start;
                                 self.advance();
                                 self.expect(&Token::Colon)?;
                                 let value = match self.peek() {
-                                    Some(Token::Identifier(k))
-                                        if *k == "brutal_kill" && retired =>
-                                    {
-                                        let span = self.peek_span();
-                                        self.advance();
-                                        Some((Expr::Literal(Literal::Duration(0)), span))
-                                    }
-                                    Some(Token::Identifier(k)) if *k == "infinity" && retired => {
-                                        self.advance();
-                                        None
-                                    }
                                     Some(Token::Integer(n)) => {
                                         let n = n.to_string();
                                         self.error_with_hint(
@@ -1548,24 +1534,6 @@ impl Parser<'_> {
                                     }
                                     _ => self.parse_expr(),
                                 };
-                                if retired {
-                                    let hint = if value.as_ref().is_some_and(|(expr, _)| {
-                                        matches!(expr, Expr::Literal(Literal::Duration(0)))
-                                    }) {
-                                        "replace `shutdown: brutal_kill` with `stop: 0s`"
-                                    } else if value.is_none() {
-                                        "remove `shutdown: infinity` on a supervisor child"
-                                    } else {
-                                        "replace `shutdown:` with `stop:`"
-                                    };
-                                    self.error_at_with_kind_and_hint(
-                                        "E_SUPERVISOR_STOP_CLAUSE: `shutdown:` is retired"
-                                            .to_string(),
-                                        clause_start..self.last_token_end,
-                                        hint,
-                                        ParseDiagnosticKind::SupervisorStopClauseRetired,
-                                    );
-                                }
                                 if stop.is_some() {
                                     self.error_at(
                                         "duplicate supervisor child `stop:` clause".to_string(),

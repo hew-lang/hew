@@ -737,7 +737,7 @@ fn actor_stop_is_distinct_from_a_stop_receive_handler() {
         (
             "actor Worker { receive fn ping() {} }\n\
              fn main() { let worker = spawn Worker; worker.stop(1); }",
-            "E_ACTOR_HANDLE_METHOD_RETIRED",
+            "no method `stop`",
         ),
         ("fn main() { stop(1); }", "actor"),
     ] {

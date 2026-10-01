@@ -1480,16 +1480,16 @@ test-migrate-corpus: hew-native
 		migration_expected="$${migration_source%.hew}.expected"; \
 		diff -u "$$migration_expected" "$$migration_source"; \
 	done; \
-	echo "3/6 require the unresolvable source to fail loudly"; \
+	echo "3/6 require a source with no current spelling to fail loudly"; \
 	migration_refusal="$$migration_root/refusal.log"; \
 	if "$(DEBUG_HEW)" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
 		cat "$$migration_refusal"; \
-		echo "error: migration accepted the unresolvable representative site" >&2; \
+		echo "error: migration accepted the removed glob import" >&2; \
 		exit 1; \
 	fi; \
-	grep -F 'unresolvable.hew:24-35: type checking failed: undefined function `Missing`' "$$migration_refusal"; \
-	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
-	echo "4/6 prove the migrated snapshot reaches a successful typecheck"; \
+	grep -F 'migration refused' "$$migration_refusal" | grep -F 'removed_glob.hew'; \
+	diff -u tests/corpus/migrate/reject/removed_glob.hew "$$migration_root/reject/removed_glob.hew"; \
+	echo "4/6 prove the migrated sources type-check"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \
 		"$(DEBUG_HEW)" check "$$migration_source"; \
 	done; \

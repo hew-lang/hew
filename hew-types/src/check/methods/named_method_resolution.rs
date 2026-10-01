@@ -862,76 +862,55 @@ impl Checker {
             return Ty::Error;
         };
 
-        match method {
-            "send" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "`send` on an actor handle expects one argument (the message), but {} were supplied",
-                            args.len()
-                        ),
-                    );
-                }
-                // Check the argument against M (the message type) when present so
-                // the caller still gets the most specific message-type diagnostic
-                // alongside any arity error.
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    let ty = self.check_against(expr, sp, &m_ty);
-                    // Enforce Send bound: the message crosses the actor boundary.
-                    let resolved = self.subst.resolve(&ty);
-                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
-                }
-                // Synthesize extra args for recovery diagnostics, but do not accept
-                // them: MIR only lowers the receiver plus the first message arg.
-                for arg in args.iter().skip(1) {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                // `.send(msg)` is the same completion call as `handle(msg)`,
-                // so it publishes the same dispatch and yields the same
-                // envelope rather than a second spelling with its own
-                // delivery and error type.
-                self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
+        if method != "send" {
+            // Synthesize args for error recovery.
+            for arg in args {
+                let (expr, sp) = arg.expr();
+                self.synthesize(expr, sp);
             }
-            "close" => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorHandleMethodRetired,
-                    "E_ACTOR_HANDLE_METHOD_RETIRED: lambda actor `.close()` is retired".to_string(),
-                    "write `stop(handle); stopped(handle);`".to_string(),
-                    span,
-                );
-                if self.migration_mode {
-                    Ty::Unit
-                } else {
-                    Ty::Error
-                }
-            }
-            _ => {
-                // Synthesize args for error recovery.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
+            self.report_error(
+                TypeErrorKind::UndefinedMethod,
+                span,
+                format!(
+                    "no method `{method}` on `{}`; \
+                     a lambda actor is not a channel — supported methods: \
+                     send (the canonical call surface is `handle(msg)`)",
+                    receiver_ty.user_facing()
+                ),
+            );
+            return Ty::Error;
+        }
+        if args.len() != 1 {
+            self.report_error(
+                    TypeErrorKind::ArityMismatch,
                     span,
                     format!(
-                        "no method `{method}` on `{}`; \
-                         a lambda actor is not a channel — supported methods: \
-                         send / close (the canonical call surface is `handle(msg)`)",
-                        receiver_ty.user_facing()
+                        "`send` on an actor handle expects one argument (the message), but {} were supplied",
+                        args.len()
                     ),
                 );
-                Ty::Error
-            }
         }
+        // Check the argument against M (the message type) when present so
+        // the caller still gets the most specific message-type diagnostic
+        // alongside any arity error.
+        if let Some(arg) = args.first() {
+            let (expr, sp) = arg.expr();
+            let ty = self.check_against(expr, sp, &m_ty);
+            // Enforce Send bound: the message crosses the actor boundary.
+            let resolved = self.subst.resolve(&ty);
+            self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+        }
+        // Synthesize extra args for recovery diagnostics, but do not accept
+        // them: MIR only lowers the receiver plus the first message arg.
+        for arg in args.iter().skip(1) {
+            let (expr, sp) = arg.expr();
+            self.synthesize(expr, sp);
+        }
+        // `.send(msg)` is the same completion call as `handle(msg)`,
+        // so it publishes the same dispatch and yields the same
+        // envelope rather than a second spelling with its own
+        // delivery and error type.
+        self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
     }
 
     pub(super) fn ty_to_dispatch_pattern(&self, ty: &Ty) -> TyPattern {

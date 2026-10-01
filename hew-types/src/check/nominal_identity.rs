@@ -45,42 +45,6 @@ pub(super) enum NominalOrigin<'a> {
 }
 
 impl Checker {
-    /// The owned spelling of a former flat machine event name, when an exact
-    /// machine declaration proves the replacement. An authored type or trait
-    /// with the flat name remains its own declaration.
-    pub(super) fn legacy_machine_event_replacement(&self, spelling: &str) -> Option<String> {
-        let (qualifier, flat) = spelling
-            .rsplit_once('.')
-            .map_or((None, spelling), |(owner, flat)| (Some(owner), flat));
-        let machine = flat.strip_suffix("Event").filter(|name| !name.is_empty())?;
-        if self.type_def_at(spelling).is_some() || self.defs.lookup_path(spelling).is_some() {
-            return None;
-        }
-        let canonical = if let Some(qualifier) = qualifier {
-            let owner = self.module_import_bindings.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                qualifier.to_string(),
-            ))?;
-            format!("{owner}.{machine}")
-        } else {
-            self.source_nominal_declaration(machine)?
-        };
-        let owner = self.defs.lookup_path(&canonical)?;
-        if self.defs.kind(owner) != crate::DeclarationKind::Machine {
-            return None;
-        }
-        self.defs.member_of_kind(
-            owner,
-            hew_parser::ast::sym::EVENT,
-            crate::DeclarationKind::MachineEventType,
-        )?;
-        Some(qualifier.map_or_else(
-            || format!("{machine}.Event"),
-            |qualifier| format!("{qualifier}.{machine}.Event"),
-        ))
-    }
-
     /// The canonical owner-qualified declaration a nominal SPELLING denotes in
     /// this context, or `None` when no authority proves one (the caller keeps
     /// the spelling as written and the downstream exact compare fails closed).

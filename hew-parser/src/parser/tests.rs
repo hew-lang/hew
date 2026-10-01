@@ -173,25 +173,13 @@ fn supervisor_stop_clause_carries_a_duration_expression() {
 }
 
 #[test]
-fn retired_supervisor_shutdown_clause_has_a_migration_diagnostic() {
-    for old in [
-        "shutdown: 50ms",
-        "shutdown: brutal_kill",
-        "shutdown: infinity",
-    ] {
+fn supervisor_child_accepts_only_the_stop_clause() {
+    for old in ["shutdown: 50ms", "shutdown: brutal_kill"] {
         let source = format!(
             "actor Worker {{ receive fn work() {{}} }}\n\
              supervisor Team {{ child worker: Worker() {old}; }}"
         );
-        let result = parse(&source);
-        assert!(
-            result.errors.iter().any(|error| {
-                error.kind == ParseDiagnosticKind::SupervisorStopClauseRetired
-                    && error.message.contains("E_SUPERVISOR_STOP_CLAUSE")
-            }),
-            "{old}: {:?}",
-            result.errors
-        );
+        assert!(!parse(&source).errors.is_empty(), "{old} must not parse");
     }
 }
 
@@ -1224,32 +1212,13 @@ fn parse_for_over_a_stream_loop() {
 }
 
 #[test]
-fn parse_async_fn_is_rejected() {
-    let source = "async fn fetch() -> i32 { 42 }";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected a parse error for bare `async fn`"
-    );
-    assert!(
-        result.errors[0].message.contains("E_NO_ASYNC_FN"),
-        "expected rejection diagnostic, got: {:?}",
-        result.errors[0].message
-    );
-    assert_eq!(result.errors[0].hint.as_deref(), Some("delete `async`"));
-    assert_eq!(result.errors[0].kind.as_kind_str(), "E_NO_ASYNC_FN");
-}
-
-#[test]
-fn parse_async_gen_fn_is_rejected() {
-    let source = "async gen fn count_up() -> i32 { yield 1; yield 2; }";
-    let result = parse(source);
-    assert!(result
-        .errors
-        .iter()
-        .any(|error| error.message.contains("E_NO_ASYNC_GEN")));
-    assert_eq!(result.errors[0].hint.as_deref(), Some("delete `async`"));
-    assert_eq!(result.errors[0].kind.as_kind_str(), "E_NO_ASYNC_GEN");
+fn async_does_not_mark_a_callable() {
+    for source in [
+        "async fn fetch() -> i32 { 42 }",
+        "async gen fn count_up() -> i32 { yield 1; yield 2; }",
+    ] {
+        assert!(!parse(source).errors.is_empty(), "{source} must not parse");
+    }
 }
 
 #[test]

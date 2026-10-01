@@ -574,7 +574,7 @@ fn walk_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             walk_expr(conn, subst, residual_domain, disc);
         }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             walk_expr(child, subst, residual_domain, disc);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {

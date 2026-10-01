@@ -281,7 +281,6 @@ fn eval_inner(
         | Expr::PostfixTry(_)
         | Expr::Range { .. }
         | Expr::Await(_)
-        | Expr::AwaitRestart(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

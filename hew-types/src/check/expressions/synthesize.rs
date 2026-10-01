@@ -32,7 +32,6 @@ impl Checker {
                 Expr::ReturnError(_)
                     | Expr::PostfixTry(_)
                     | Expr::Await(_)
-                    | Expr::AwaitRestart(_)
                     | Expr::Yield(_)
                     | Expr::ScopeDeadline { .. }
                     | Expr::ForkChild { .. }
@@ -437,68 +436,6 @@ impl Checker {
                     other => {
                         self.check_await_operand(effective_expr, effective_span, &other);
                         other
-                    }
-                }
-            }
-
-            // AwaitRestart: `await_restart <supervised-child>` — suspend until the
-            // named slot is Live again, then resume with the same stable
-            // `ChildRef<ChildType>`. The operand names one slot: a static child
-            // accessor (recorded in `supervisor_child_slots`, kind `Static`) or
-            // one pool member (`sup.pool[i]`, recorded in `pool_accessor_sites`
-            // as `Index`). A whole pool names many slots and has no single
-            // restart signal, so it is refused. The result type is the same
-            // `ChildRef<ChildType>` — by construction the slot is Live after a
-            // completed restart; a permanently-Dead child fails closed at
-            // runtime (resumes immediately) rather than hanging, so the bare
-            // form never yields an `Option`.
-            Expr::AwaitRestart(inner) => {
-                // Synthesize the operand first; this records the supervisor child
-                // slot and pool accessor side-table entries keyed by the inner
-                // expression's span.
-                let inner_ty = self.synthesize(&inner.0, &inner.1);
-                let inner_key = SpanKey::in_module(&inner.1, self.current_module_idx);
-                let member = matches!(
-                    self.pool_accessor_sites
-                        .get(&inner_key)
-                        .map(|accessor| accessor.kind),
-                    Some(crate::check::types::PoolAccessorKind::Index)
-                );
-                if member {
-                    // One pool member's own slot: the same `ChildRef<ChildType>`
-                    // the indexed accessor produced.
-                    inner_ty
-                } else {
-                    match self.supervisor_child_slots.get(&inner_key).cloned() {
-                        Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
-                            // Stable role handle: same `ChildRef<ChildType>` the
-                            // accessor produced. Carry the discriminator forward — the
-                            // side-table entry already keys MIR lowering on this span.
-                            inner_ty
-                        }
-                        Some(_pool_slot) => {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                "`await_restart` waits on one supervised slot; a pool \
-                                 names many, so wait on a member with \
-                                 `await_restart sup.pool[i]`"
-                                    .to_string(),
-                            );
-                            Ty::Error
-                        }
-                        None => {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                "`await_restart` expects a supervised-child accessor \
-                                 (`await_restart sup.child` or `await_restart \
-                                 sup.pool[i]`); its operand is not a supervisor \
-                                 child slot"
-                                    .to_string(),
-                            );
-                            Ty::Error
-                        }
                     }
                 }
             }
@@ -1448,14 +1385,6 @@ impl Checker {
                 TypeErrorKind::ModuleUsedAsValue,
                 span,
                 format!("module `{surface_name}` cannot be used as a value"),
-            );
-            Ty::Error
-        } else if let Some(replacement) = self.legacy_machine_event_replacement(surface_name) {
-            self.report_error_with_suggestions(
-                TypeErrorKind::UndefinedVariable,
-                span,
-                format!("machine event type `{surface_name}` is now `{replacement}`"),
-                vec![format!("replace `{surface_name}` with `{replacement}`")],
             );
             Ty::Error
         } else if self.type_def_at(surface_name).is_some()

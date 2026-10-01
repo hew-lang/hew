@@ -725,7 +725,6 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         Expr::ReturnError(inner)
         | Expr::Clone(inner)
         | Expr::Await(inner)
-        | Expr::AwaitRestart(inner)
         | Expr::PostfixTry(inner)
         | Expr::Cast { expr: inner, .. }
         | Expr::FieldAccess { object: inner, .. } => walk_expr(&inner.0, &inner.1, visitor),

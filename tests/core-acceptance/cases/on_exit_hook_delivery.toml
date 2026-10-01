@@ -1,6 +1,6 @@
 [[case]]
 id = "on_exit_hook_delivery"
-intent = "A linked peer really crashes, so Watcher's #[on(exit)] hook must be invoked through the sys-dispatch ABI."
+intent = "A linked peer really crashes, so Watcher's #[on(link)] hook must be invoked through the sys-dispatch ABI."
 source = "../vertical-slice/accept/on_exit_hook_delivery.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

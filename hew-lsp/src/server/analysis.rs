@@ -1065,6 +1065,39 @@ pub(super) mod tests {
         assert_eq!(combined[0], lower_diagnostic);
     }
 
+    /// An open peer of a directory module is analysed with its entry and
+    /// siblings, so names they declare resolve, and an error in the open
+    /// buffer still reaches that buffer.
+    #[test]
+    fn analyze_document_checks_a_directory_module_peer_with_its_module() {
+        const ENTRY: &str = "pub type Config {\n    timeout: i64;\n}\n\npub fn describe(config: Config) -> i64 {\n    doubled(config)\n}\n";
+        const PEER: &str = "pub fn doubled(config: Config) -> i64 {\n    config.timeout * 2\n}\n";
+        let root = make_temp_workspace_dir(&[("forge/forge.hew", ENTRY), ("forge/ado.hew", PEER)]);
+        let peer_uri = Url::from_file_path(root.join("forge/ado.hew")).expect("absolute path");
+
+        let document = analyze_document(&peer_uri, PEER, &DashMap::new(), &[]);
+        let errors = document
+            .diagnostics_by_uri
+            .values()
+            .flatten()
+            .filter(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "the peer sees its module: {errors:?}");
+
+        let broken = format!("{PEER}\nfn wrong() -> i64 {{\n    \"text\"\n}}\n");
+        let document = analyze_document(&peer_uri, &broken, &DashMap::new(), &[]);
+        let peer_errors = document
+            .diagnostics_by_uri
+            .get(&peer_uri)
+            .map_or(0, |diagnostics| {
+                diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
+                    .count()
+            });
+        assert_eq!(peer_errors, 1, "{:?}", document.diagnostics_by_uri);
+    }
+
     #[test]
     fn analyze_document_skips_hir_when_typecheck_fails() {
         let uri = Url::parse("file:///test.hew").unwrap();

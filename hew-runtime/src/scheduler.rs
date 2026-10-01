@@ -328,12 +328,7 @@ pub(crate) fn drain_is_idle() -> bool {
     if sched.stealers.iter().any(|stealer| !stealer.is_empty()) {
         return false;
     }
-    // Snapshot the admission-parked set BEFORE the live-actors scan (the two
-    // locks are never nested). An actor parked solely on a listener
-    // `await accept()` is waiting for connections that have not arrived, not
-    // doing in-flight work, and must not hold the drain open.
-    let accept_parked = crate::reactor::actors_parked_on_accept();
-    if crate::lifetime::live_actors::has_drain_blocking_suspended_actor(&accept_parked) {
+    if crate::lifetime::live_actors::has_drain_blocking_suspended_actor() {
         return false;
     }
 
@@ -1068,6 +1063,7 @@ pub extern "C" fn hew_runtime_cleanup() {
     // imbalance into a diagnostic and a distinct exit status, which is what
     // makes a leaked actor visible to a caller that can only see exit status.
     crate::actor_balance::verdict_after_runtime_cleanup();
+    crate::reactor::io_leak_verdict_after_runtime_cleanup();
 }
 
 /// Run the canonical runtime cleanup chain from a compiled native `main` return.
@@ -1110,8 +1106,7 @@ pub(crate) use crate::activation::ACTIVATIONS_COMPLETED as TASKS_COMPLETED;
 #[cfg(any(test, all(feature = "profiler", not(target_arch = "wasm32"))))]
 pub(crate) use crate::activation::ACTIVE_ACTIVATIONS as ACTIVE_WORKERS;
 pub(crate) use crate::activation::{
-    activate_queued_actor, enqueue_resume_by_incarnation, release_scheduler_queue_ref,
-    SchedulerQueueEntry,
+    activate_queued_actor, release_scheduler_queue_ref, SchedulerQueueEntry,
 };
 /// Submit an actor to the global queue and wake a worker.
 ///
@@ -3405,79 +3400,6 @@ mod tests {
         }
     }
 
-    /// NEW-1 (reactor fd-IO): the reactor's resume-mode wake is the SECOND
-    /// production source of `enqueue_resume` (after the reply path). This models
-    /// the reactor depositing read bytes into a parked handler's read slot and
-    /// waking it: the parked actor transitions `Suspended → Runnable`, is
-    /// enqueued exactly once, and the resume edge reads the CORRECT bytes back
-    /// from the slot (the value-routing edge — not garbage). It is the runtime
-    /// half of the `await conn.read()` cycle, mirroring
-    /// `reply_to_parked_waiter_enqueues_resume` for the reactor source.
-    #[test]
-    fn reactor_data_deposit_resumes_parked_handler_with_bytes() {
-        let _guard = crate::runtime_test_guard();
-        let sched = NoWorkerSchedulerForTest::install();
-        let actor = TrackedTestActor::install(stub_actor());
-        // The handler is parked on the fd: Suspended with a published handle.
-        actor
-            .actor_state
-            .store(HewActorState::Suspended as i32, Ordering::Release);
-        actor.suspended_cont.store(
-            ptr::null_mut::<u8>().wrapping_add(1).cast(),
-            Ordering::Release,
-        );
-        actor.cont_tag.store(
-            crate::internal::types::ContTag::Parked as i32,
-            Ordering::Release,
-        );
-        let actor_ptr = actor.ptr();
-
-        // The reactor's resume-mode deposit + wake (what `handle_ready_resume`
-        // does on `Data`): build an owned bytes value, deposit it into the slot,
-        // then `enqueue_resume_pinned(actor, null)`.
-        let slot = crate::read_slot::hew_read_slot_new();
-        let payload = b"reactor-delivered-bytes";
-        let payload_len = u32::try_from(payload.len()).expect("payload fits u32");
-        // SAFETY: payload valid for its len; copied into a refcount-1 buffer.
-        let triple = unsafe { crate::bytes::hew_bytes_from_static(payload.as_ptr(), payload_len) };
-        // SAFETY: fresh slot; the deposit takes ownership of the triple.
-        let wake = unsafe { crate::read_slot::read_slot_deposit_data(slot, triple) };
-        assert!(wake, "a non-cancelled deposit must signal a wake");
-        // SAFETY: `actor_ptr` is live (tracked) for this scope.
-        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
-
-        assert_eq!(
-            actor.actor_state.load(Ordering::Acquire),
-            HewActorState::Runnable as i32,
-            "a reactor fd-readiness wake must transition the parked handler to Runnable"
-        );
-        assert_eq!(
-            sched.pop_global(),
-            Some(actor_ptr),
-            "the woken handler must be enqueued exactly once"
-        );
-
-        // The resume edge reads the bytes back — the value-routing edge.
-        // SAFETY: `slot` is the fresh live slot; status read after the deposit.
-        let status = unsafe { crate::read_slot::hew_read_slot_status(slot) };
-        assert_eq!(status, crate::read_slot::ReadStatus::Data as i32);
-        // SAFETY: `slot` is live; take transfers ownership of the deposited buffer.
-        let taken = unsafe { crate::read_slot::hew_read_slot_take(slot) };
-        assert_eq!(taken.len as usize, payload.len());
-        // SAFETY: take transferred ownership of a refcount-1 buffer of len bytes.
-        let read_back = unsafe {
-            std::slice::from_raw_parts(taken.ptr.add(taken.offset as usize), taken.len as usize)
-        };
-        assert_eq!(
-            read_back, payload,
-            "the resumed handler must bind the CORRECT reactor-delivered bytes"
-        );
-        // SAFETY: take transferred ownership of the buffer.
-        unsafe { crate::bytes::hew_bytes_drop(taken.ptr) };
-        // SAFETY: the creator ref is the last ref; this reclaims the slot.
-        unsafe { crate::read_slot::hew_read_slot_free(slot) };
-    }
-
     /// W6.010 waiter-kind (E6): a reply to a channel with NO parked waiter
     /// (the default — a foreign/main-thread condvar ask) does NOT touch the
     /// scheduler queue; the foreign thread is woken by the condvar. The
@@ -5204,13 +5126,13 @@ mod tests {
         crate::activation::ACTIVE_ACTIVATIONS.store(prior, Ordering::Release);
     }
 
-    /// The ticker thread must be stopped during runtime cleanup so it
-    /// doesn't access freed timer-wheel memory.  We start the global
-    /// wheel (which spawns the ticker), then call `hew_runtime_cleanup`
-    /// and verify the ticker is stopped.
+    /// The reactor, which ticks the timer wheel, must be stopped during runtime
+    /// cleanup so it doesn't access freed timer-wheel memory. We start the
+    /// global wheel (which starts the reactor), then call `hew_runtime_cleanup`
+    /// and verify the reactor is stopped.
     #[test]
-    fn ticker_stops_during_runtime_cleanup() {
-        use crate::timer_periodic::{TICKER_RUNNING, TICKER_TEST_MUTEX};
+    fn reactor_stops_during_runtime_cleanup() {
+        use crate::timer_periodic::TICKER_TEST_MUTEX;
 
         // Serialise against the actor/monitor/link test family (all of which hold
         // the shared scheduler-test lock via `runtime_test_guard`):
@@ -5232,17 +5154,16 @@ mod tests {
         // read; cleanup detaches and drops it as its final step.
         install_scheduler_for_test(worker_less_scheduler_for_test());
 
-        // Start the global wheel; the ticker is marked running before this
-        // returns.
+        // Start the global wheel; the reactor is running before this returns.
         let _tw = crate::timer_periodic::global_wheel();
 
-        // The ticker may have been stopped by a parallel test that shares
-        // the global wheel.  We can only assert the post-condition.
+        // The reactor may have been stopped by a parallel test that shares
+        // the global wheel. We can only assert the post-condition.
         hew_runtime_cleanup();
 
         assert!(
-            !TICKER_RUNNING.load(Ordering::Acquire),
-            "Ticker must be stopped after runtime cleanup"
+            !crate::reactor::reactor_running(),
+            "the reactor must be stopped after runtime cleanup"
         );
     }
 
@@ -6049,19 +5970,6 @@ mod tests {
             "a parked handler with no ask must keep shutdown draining"
         );
 
-        // Admission row: the same no-ask park does not block when the reactor
-        // reports the actor parked on a listener `await accept()` (waiting for
-        // connections that have not arrived is not in-flight work).
-        // SAFETY: `suspended_ptr` is a live tracked actor for the whole test.
-        let admission_set: std::collections::HashSet<_> = std::iter::once(unsafe {
-            crate::lifetime::live_actors::ActorIncarnation::of(suspended_ptr)
-        })
-        .collect();
-        assert!(
-            !crate::lifetime::live_actors::has_drain_blocking_suspended_actor(&admission_set),
-            "an admission-parked handler with no ask must not hold the drain open"
-        );
-
         // Attach a live ask: the gate slot owns a retained channel reference,
         // mirroring the suspend edge.
         let ask_channel = crate::reply_channel::hew_reply_channel_new();
@@ -6112,222 +6020,6 @@ mod tests {
         );
 
         take_default_runtime_for_test();
-        crate::activation::ACTIVE_ACTIVATIONS.store(0, Ordering::Release);
-    }
-
-    /// Forced-ordering composite for the drain's admission race: an accept
-    /// completion driven BETWEEN the drain's reactor sample and the final
-    /// scheduler poll's blocker scan (the window the per-state drain tests
-    /// cannot see — it exists only across the composite
-    /// scheduler→reactor→scheduler sample).
-    ///
-    /// The dichotomy under test: an accept completion is either SERVED (it
-    /// begins before admission closes, and the enqueued activation blocks the
-    /// drain until a worker dispatches it) or NEVER ADMITTED (admission closed
-    /// at drain start; the reactor refuses to begin the completion, so the
-    /// idle verdict abandons no accepted connection). What must be impossible
-    /// is the pre-fix third outcome: a connection accepted inside the window
-    /// while the composite sample still reads idle — shutdown terminating with
-    /// the accepted socket silently dropped during cleanup.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the forced-ordering composite must drive both arms of the \
-                  served-or-never-admitted dichotomy in one deterministic sequence"
-    )]
-    fn accept_completion_between_drain_samples_is_served_or_never_admitted() {
-        // Lock order: scheduler-test lock first, then the reactor test mutex
-        // (the order reactor tests that install a runtime already use).
-        let sched = NoWorkerSchedulerForTest::install();
-        let _reactor = crate::reactor::REACTOR_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::reactor::reset_listener_admission();
-        crate::activation::ACTIVE_ACTIVATIONS.store(0, Ordering::Release);
-
-        // A real tracked acceptor parked on `await accept()`: Suspended with a
-        // published (sentinel) continuation so the wake edge takes the normal
-        // resume path (the sentinel is never resumed — no worker exists).
-        let actor = TrackedTestActor::install(stub_actor());
-        actor
-            .actor_state
-            .store(HewActorState::Suspended as i32, Ordering::Release);
-        actor.suspended_cont.store(
-            ptr::null_mut::<u8>().wrapping_add(1).cast(),
-            Ordering::Release,
-        );
-        actor.cont_tag.store(
-            crate::internal::types::ContTag::Parked as i32,
-            Ordering::Release,
-        );
-        let actor_ptr = actor.ptr();
-
-        // SAFETY: no preconditions; stopped below.
-        let poller = unsafe { crate::io_time::hew_io_poller_new() };
-        assert!(!poller.is_null());
-
-        // ── Arm 1: admission OPEN — the completion begins before drain start
-        // and must make the woken acceptor visible to the drain (served). ──
-        let (listener1, client1) = crate::transport::tcp_listener_with_pending_conn_for_test();
-        let fd1 = crate::transport::tcp_listener_raw_fd(listener1).expect("listener1 fd");
-        let slot1 = crate::read_slot::hew_read_slot_new();
-        assert!(!slot1.is_null());
-        // SAFETY: slot1 was just created and is live (registration-owned ref).
-        unsafe { crate::read_slot::read_slot_retain(slot1) };
-        // SAFETY: `actor_ptr` is a live tracked actor for the whole test.
-        let ref_inject = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
-        crate::reactor::inject_accept_registration_for_test(
-            fd1,
-            listener1,
-            ref_inject,
-            // SAFETY: `actor_ptr` is a live tracked actor for the whole test.
-            unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor_ptr) },
-            slot1,
-        );
-
-        // The admission-parked acceptor is exempt through the REAL reactor
-        // snapshot: both pre-completion samples read idle.
-        assert!(
-            drain_is_idle(),
-            "an admission-parked acceptor must not hold the scheduler sample open"
-        );
-        assert!(
-            crate::reactor::drain_is_idle(),
-            "a parked accept registration must not hold the reactor sample open"
-        );
-
-        crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.set(-1);
-        // SAFETY: `actor_ptr` is live; the ref is a by-value snapshot.
-        let ref_drive = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
-        crate::reactor::handle_ready_accept_for_test(
-            poller, fd1, listener1, ref_drive, slot1, false,
-        );
-
-        let accepted = crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.get();
-        assert_ne!(
-            accepted, -1,
-            "open admission must accept the pending connection"
-        );
-        assert!(
-            !drain_is_idle(),
-            "an admitted accept completion must block the drain until the woken \
-             acceptor is dispatched (the connection is served, not abandoned)"
-        );
-        assert_eq!(
-            actor.actor_state.load(Ordering::Acquire),
-            HewActorState::Runnable as i32,
-            "the served completion must wake the parked acceptor"
-        );
-        assert_eq!(
-            sched.pop_global(),
-            Some(actor_ptr),
-            "the woken acceptor must be enqueued exactly once"
-        );
-        // Consume the served activation the way a worker would, then re-park.
-        crate::transport::tcp_close_raw_for_test(accepted);
-        actor
-            .actor_state
-            .store(HewActorState::Suspended as i32, Ordering::Release);
-        // The one-shot registration was removed (its Drop released the retained
-        // ref); release the creator ref.
-        // SAFETY: creator ref held.
-        unsafe { crate::read_slot::hew_read_slot_free(slot1) };
-        drop(client1);
-        crate::transport::hew_tcp_close(listener1);
-
-        // ── Arm 2: drain start — admission closes, then the completion fires
-        // inside the window: after the reactor sample and the final scheduler
-        // poll's queue checks, before its blocker scan. ──
-        let (listener2, client2) = crate::transport::tcp_listener_with_pending_conn_for_test();
-        let fd2 = crate::transport::tcp_listener_raw_fd(listener2).expect("listener2 fd");
-        let slot2 = crate::read_slot::hew_read_slot_new();
-        assert!(!slot2.is_null());
-        // SAFETY: slot2 was just created and is live (registration-owned ref).
-        unsafe { crate::read_slot::read_slot_retain(slot2) };
-        // SAFETY: `actor_ptr` is live; the ref is a by-value snapshot.
-        let ref_inject2 = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
-        crate::reactor::inject_accept_registration_for_test(
-            fd2,
-            listener2,
-            ref_inject2,
-            // SAFETY: `actor_ptr` is a live tracked actor for the whole test.
-            unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor_ptr) },
-            slot2,
-        );
-
-        // Step 1 (drain start): shutdown Phase 1 closes listener admission
-        // before any idleness sample.
-        crate::reactor::close_listener_admission();
-        // Steps 2-3: first scheduler sample and reactor sample read idle.
-        assert!(drain_is_idle(), "first scheduler sample must read idle");
-        assert!(
-            crate::reactor::drain_is_idle(),
-            "reactor sample must read idle"
-        );
-        // Step 4: the final scheduler poll has passed its queue checks.
-        assert!(
-            get_scheduler()
-                .expect("runtime installed")
-                .global_queue
-                .is_empty(),
-            "final poll's queue phase must observe an empty queue"
-        );
-        // Step 5: the readiness completion fires inside the window. Admission
-        // is closed: the reactor must refuse to BEGIN the accept.
-        crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.set(-1);
-        // SAFETY: `actor_ptr` is live; the ref is a by-value snapshot.
-        let ref_drive2 = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
-        crate::reactor::handle_ready_accept_for_test(
-            poller, fd2, listener2, ref_drive2, slot2, false,
-        );
-
-        assert_eq!(
-            crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.get(),
-            -1,
-            "closed admission must not accept a connection behind the drain sample"
-        );
-        // SAFETY: slot2 is live (creator + registration refs held).
-        let slot2_status = unsafe { crate::read_slot::hew_read_slot_status(slot2) };
-        assert_eq!(
-            slot2_status,
-            crate::read_slot::ReadStatus::Pending as i32,
-            "a refused completion must deposit nothing"
-        );
-        assert_eq!(
-            actor.actor_state.load(Ordering::Acquire),
-            HewActorState::Suspended as i32,
-            "a refused completion must leave the acceptor parked"
-        );
-        assert!(
-            crate::reactor::actors_parked_on_accept()
-                // SAFETY: `actor_ptr` is live here.
-                .contains(&unsafe {
-                    crate::lifetime::live_actors::ActorIncarnation::of(actor_ptr)
-                }),
-            "the refused park must remain a visible (skippable) admission wait"
-        );
-        // Step 6: the final blocker scan completes — the composite verdict is
-        // idle, and honestly so: nothing was admitted, so terminating abandons
-        // no accepted connection.
-        assert!(
-            drain_is_idle(),
-            "final scheduler sample must read idle with nothing admitted"
-        );
-        assert!(
-            crate::reactor::drain_is_idle(),
-            "reactor must stay idle with the refused park left in place"
-        );
-
-        // Teardown: remove the deliberately-retained registration (its Drop
-        // releases the retained ref), then the creator ref and admission flag.
-        crate::reactor::remove_registration_for_test(fd2);
-        // SAFETY: creator ref held.
-        unsafe { crate::read_slot::hew_read_slot_free(slot2) };
-        crate::reactor::reset_listener_admission();
-        drop(client2);
-        crate::transport::hew_tcp_close(listener2);
-        // SAFETY: poller was created above and is not in use by any thread.
-        unsafe { crate::io_time::hew_io_poller_stop(poller) };
         crate::activation::ACTIVE_ACTIVATIONS.store(0, Ordering::Release);
     }
 

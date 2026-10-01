@@ -1,4 +1,4 @@
-import std.net.{Connection, ConnectionHandler};
+import std.net;
 
 import std.stream;
 
@@ -21,9 +21,23 @@ actor ProbeSink {
     }
 }
 
-impl ConnectionHandler for ProbeSink {
-    fn on_data(data: bytes) {}
-    fn on_close() {}
+// The pump owns the connection and hands each received chunk to the sink.
+actor Pump {
+    let conn: net.Connection;
+    let sink: ProbeSink;
+    receive fn run() {
+        loop {
+            match conn.recv() {
+                .Some(data) => {
+                    sink.on_data(data).expect("deliver");
+                }
+                .None => {
+                    break;
+                }
+            }
+        }
+        sink.on_close().expect("close");
+    }
 }
 
 fn main() -> i64 {
@@ -43,7 +57,8 @@ fn main() -> i64 {
         };
         let conn = listener.accept();
         let sink = spawn ProbeSink(ready: ready);
-        conn.attach(sink).expect("attach");
+        let pump = spawn Pump(conn: conn, sink: sink);
+        mailbox(pump, on_full: .Wait).run().expect("start pump");
         client.send(b"active-mode-delivery").expect("send");
         client.close();
     }

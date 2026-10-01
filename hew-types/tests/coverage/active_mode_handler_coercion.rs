@@ -137,11 +137,7 @@ fn user_transport_short_names_keep_user_attach_dispatch() {
             "user-defined {type_name}::attach must retain user dispatch: {:#?}",
             output.method_call_rewrites
         );
-        for forbidden in [
-            "hew_tcp_attach_local",
-            "hew_tls_attach_local",
-            "hew_ws_attach_local",
-        ] {
+        for forbidden in ["hew_tls_attach_local", "hew_ws_attach_local"] {
             assert!(
                 !has_rewrite(&output, forbidden),
                 "bare user {type_name} must not rewrite to {forbidden}: {:#?}",
@@ -155,24 +151,14 @@ fn user_transport_short_names_keep_user_attach_dispatch() {
 /// the handler trait can erase the actor identity at a runtime boundary.
 #[test]
 fn declared_transport_methods_carry_concrete_receive_endpoints() {
-    use hew_types::check::dispatch::ResolvedRuntimeResult;
     use hew_types::{CallTarget, RuntimeCallFamily};
-    for (module, receiver, data_handler, payload, family, consumes) in [
-        (
-            "net",
-            "Connection",
-            "on_data",
-            "bytes",
-            RuntimeCallFamily::TcpAttachLocal,
-            true,
-        ),
+    for (module, receiver, data_handler, payload, family) in [
         (
             "net.tls",
             "TlsStream",
             "on_data",
             "bytes",
             RuntimeCallFamily::TlsAttachLocal,
-            false,
         ),
         (
             "net.websocket",
@@ -180,15 +166,9 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
             "on_message",
             "string",
             RuntimeCallFamily::WebSocketAttachLocal,
-            false,
         ),
     ] {
         let alias = module.rsplit('.').next().unwrap();
-        let parameter = if consumes {
-            "consume connection"
-        } else {
-            "connection"
-        };
         let source = format!(
             r"
             import std.{module};
@@ -197,7 +177,7 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
                 receive fn on_close() {{}}
                 receive fn {data_handler}(value: {payload}) {{}}
             }}
-            fn install({parameter}: {alias}.{receiver}) {{
+            fn install(connection: {alias}.{receiver}) {{
                 let handler = spawn Handler();
                 let _ = connection.attach(handler);
             }}
@@ -205,7 +185,7 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
         );
         let output = typecheck(&source);
         assert!(output.errors.is_empty(), "{module}: {:#?}", output.errors);
-        let (selected, endpoints, adaptation, receiver_consumed) = output
+        let (selected, endpoints, receiver_consumed) = output
             .method_call_rewrites
             .values()
             .find_map(|rewrite| match rewrite {
@@ -214,17 +194,16 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
                         CallTarget::DeclaredRuntime {
                             family,
                             actor_endpoints: Some(endpoints),
-                            result,
                             ..
                         },
                     consumes_receiver,
                     ..
-                } => Some((family, endpoints, result, consumes_receiver)),
+                } => Some((family, endpoints, consumes_receiver)),
                 _ => None,
             })
             .expect("attach must carry a declaration-owned runtime invocation");
         assert_eq!(*selected, family);
-        assert_eq!(*receiver_consumed, consumes);
+        assert!(!*receiver_consumed);
         assert_eq!(output.defs.path(endpoints.actor), "Handler");
         assert_eq!(
             output.defs.path(endpoints.data.handler),
@@ -243,10 +222,6 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
             Some(endpoints.close.msg_id),
             protocol.msg_id_for("on_close")
         );
-        assert_eq!(
-            matches!(adaptation, ResolvedRuntimeResult::StatusResult { .. }),
-            consumes
-        );
     }
 }
 
@@ -254,9 +229,9 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
 fn runtime_handler_must_have_a_concrete_receive_protocol() {
     let output = typecheck(
         r"
-        import std.net;
-        fn install(consume connection: net.Connection, handler: net.ConnectionHandler) {
-            connection.attach(handler);
+        import std.net.tls;
+        fn install(stream: tls.TlsStream, handler: tls.TlsHandler) {
+            stream.attach(handler);
         }
     ",
     );

@@ -1,0 +1,29 @@
+// Negative control for `tcp-silent-peer-leaves-worker-free`: a task that holds
+// the only worker for 500 ms keeps another task's sleeps from running, so the
+// sleeps cannot finish sooner than the hold.
+import std.time.datetime;
+
+fn hold_worker() {
+    let until = datetime.now_ms() + 500;
+    while datetime.now_ms() < until {}
+}
+
+fn ticks() -> i64 {
+    let start = datetime.now_ms();
+    for _ in 0 .. 20 {
+        sleep(20ms);
+    }
+    datetime.now_ms() - start
+}
+
+fn main() {
+    var elapsed = 0;
+    scope {
+        let ticker = fork ticks();
+        let holder = fork hold_worker();
+        elapsed = await ticker;
+        await holder;
+    };
+    assert(elapsed >= 500);
+    println("held worker delayed the sleeps");
+}

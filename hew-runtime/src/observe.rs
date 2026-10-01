@@ -62,6 +62,9 @@ static ACTORS_CRASHES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ACTORS_RESTARTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ARENA_RESETS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static THREADS_BLOCKING_COUNT: AtomicU64 = AtomicU64::new(0);
+static IO_HANDLES_LIVE: AtomicU64 = AtomicU64::new(0);
+static POOL_THREADS: AtomicU64 = AtomicU64::new(0);
+static POOL_SATURATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 static ATTRIBUTED_TURNS: PoisonSafe<Option<HashMap<(usize, i32), AttributedTurn>>> =
     PoisonSafe::new(None);
@@ -131,6 +134,9 @@ pub struct RuntimeHookSnapshot {
     pub actors_restarts_total: u64,
     pub arena_resets_total: u64,
     pub threads_blocking_count: u64,
+    pub io_handles_live: u64,
+    pub pool_threads: u64,
+    pub pool_saturations_total: u64,
 }
 
 /// Configure the hot observe tier from `HEW_OBSERVE`.
@@ -404,6 +410,32 @@ pub(crate) fn record_reactor_ready_event() {
     REACTOR_READY_EVENTS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
+// KEEP(wasm32): reactor.rs slot table.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn record_io_handle_opened() {
+    IO_HANDLES_LIVE.fetch_add(1, Ordering::Relaxed);
+}
+
+// KEEP(wasm32): reactor.rs slot table.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn record_io_handle_closed() {
+    let _ = IO_HANDLES_LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        value.checked_sub(1)
+    });
+}
+
+// KEEP(wasm32): blocking_pool.rs thread accounting.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn record_pool_threads(threads: usize) {
+    POOL_THREADS.store(threads as u64, Ordering::Relaxed);
+}
+
+// KEEP(wasm32): blocking_pool.rs admission.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn record_pool_saturation() {
+    POOL_SATURATIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
 // KEEP(wasm32): crash.rs fault handler.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_actor_crash() {
@@ -588,6 +620,9 @@ pub fn runtime_hook_snapshot() -> RuntimeHookSnapshot {
         actors_restarts_total: ACTORS_RESTARTS_TOTAL.load(Ordering::Relaxed),
         arena_resets_total: ARENA_RESETS_TOTAL.load(Ordering::Relaxed),
         threads_blocking_count: THREADS_BLOCKING_COUNT.load(Ordering::Relaxed),
+        io_handles_live: IO_HANDLES_LIVE.load(Ordering::Relaxed),
+        pool_threads: POOL_THREADS.load(Ordering::Relaxed),
+        pool_saturations_total: POOL_SATURATIONS_TOTAL.load(Ordering::Relaxed),
     }
 }
 
@@ -696,6 +731,9 @@ pub fn read_u64(name: &str) -> Option<u64> {
         "threads.blocking_count" => Some(hooks.threads_blocking_count),
         "reactor.registrations_live" => Some(hooks.reactor_registrations_live),
         "reactor.ready_events_total" => Some(hooks.reactor_ready_events_total),
+        "io.handles_live" => Some(hooks.io_handles_live),
+        "pool.threads" => Some(hooks.pool_threads),
+        "pool.saturations_total" => Some(hooks.pool_saturations_total),
         "arena.resets_total" => Some(hooks.arena_resets_total),
         _ => crate::metrics::read_u64(name),
     }
@@ -730,6 +768,9 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
         ("threads.blocking_count", "gauge"),
         ("reactor.registrations_live", "gauge"),
         ("reactor.ready_events_total", "counter"),
+        ("io.handles_live", "gauge"),
+        ("pool.threads", "gauge"),
+        ("pool.saturations_total", "counter"),
         ("arena.resets_total", "counter"),
     ]
 }

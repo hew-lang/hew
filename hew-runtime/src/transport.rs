@@ -11,17 +11,16 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    LazyLock, OnceLock,
+    Arc, OnceLock,
 };
 
 use crate::blocking_pool::{shared_blocking_pool_opt, spawn_blocking_result, BlockingPoolError};
-use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
+use crate::lifetime::poison_safe::PoisonSafeRw;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
@@ -29,6 +28,7 @@ use crate::actor::{self, HewActor};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::internal::types::HewActorState;
 use crate::node_identity::{HewLocation, Location};
+use crate::reactor::{IoObject, Slot};
 use crate::set_last_error;
 
 // ---------------------------------------------------------------------------
@@ -333,18 +333,6 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
     c_int::from(unsafe { r.data.remote.conn } != HEW_CONN_INVALID)
 }
 
-/// Return the local `*mut HewActor` pointer (as `*mut c_void`) for a LOCAL
-/// actor reference, or null for a REMOTE reference. Used by the active-mode
-/// reactor, which only supports local actors (mirrors the websocket attach
-/// reader's `actor_ref_local_actor`).
-pub(crate) fn actor_ref_local_ptr(actor_ref: &HewActorRef) -> *mut c_void {
-    if actor_ref.kind != ACTOR_REF_LOCAL {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: the local union variant is active when kind == ACTOR_REF_LOCAL.
-    unsafe { actor_ref.data.local }.cast::<c_void>()
-}
-
 // ===========================================================================
 // TCP transport
 // ===========================================================================
@@ -388,6 +376,22 @@ pub fn tcp_counters_snapshot() -> TcpCountersSnapshot {
         connect_count: counters.connect_count.load(Ordering::Relaxed),
         error_count: counters.error_count.load(Ordering::Relaxed),
     }
+}
+
+pub(crate) fn count_read(bytes: usize) {
+    tcp_counters()
+        .bytes_read
+        .fetch_add(bytes as u64, Ordering::Relaxed);
+}
+
+pub(crate) fn count_written(bytes: usize) {
+    tcp_counters()
+        .bytes_written
+        .fetch_add(bytes as u64, Ordering::Relaxed);
+}
+
+pub(crate) fn count_accept() {
+    tcp_counters().accept_count.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn record_tcp_error_kind(kind: ErrorKind) {
@@ -944,34 +948,13 @@ pub unsafe extern "C" fn hew_transport_tcp_new() -> *mut HewTransport {
 // Simple TCP API for Hew stdlib (`std::net`)
 // ===========================================================================
 
-#[derive(Debug)]
-struct TcpApiState {
-    next_handle: c_int,
-    listeners: HashMap<c_int, TcpListener>,
-    streams: HashMap<c_int, TcpStream>,
+// TCP sockets live in reactor slots: the slot table is the one handle table,
+// and a slot owns its socket, so operations never duplicate a descriptor to
+// reach it.
+
+fn tcp_slot(handle: c_int) -> Option<Arc<Slot>> {
+    crate::reactor::lookup(handle)
 }
-
-impl TcpApiState {
-    fn new() -> Self {
-        Self {
-            next_handle: 1,
-            listeners: HashMap::new(),
-            streams: HashMap::new(),
-        }
-    }
-
-    fn alloc_handle(&mut self) -> c_int {
-        let handle = self.next_handle;
-        self.next_handle = self.next_handle.saturating_add(1);
-        if self.next_handle <= 0 {
-            self.next_handle = 1;
-        }
-        handle
-    }
-}
-
-static TCP_API_STATE: LazyLock<PoisonSafe<TcpApiState>> =
-    LazyLock::new(|| PoisonSafe::new(TcpApiState::new()));
 
 /// Transfer a newly connected socket to the native handle table. The caller
 /// owns the returned handle and must close it if result delivery loses a race.
@@ -984,40 +967,19 @@ pub(crate) fn tcp_adopt_connection(stream: TcpStream) -> c_int {
 /// Register an already-connected stream owner, including a cloned stream half.
 /// Splitting ownership does not report another network connection event.
 pub(crate) fn tcp_register_owned_stream(stream: TcpStream) -> c_int {
-    TCP_API_STATE.access(|state| {
-        let handle = state.alloc_handle();
-        state.streams.insert(handle, stream);
-        handle
-    })
-}
-
-fn tcp_clone_listener(handle: c_int) -> Option<TcpListener> {
-    tcp_clone_listener_result(handle).ok()
-}
-
-fn tcp_clone_listener_result(handle: c_int) -> std::io::Result<TcpListener> {
-    TCP_API_STATE.access(|state| {
-        state
-            .listeners
-            .get(&handle)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EBADF))?
-            .try_clone()
-    })
+    crate::reactor::register(IoObject::TcpStream(stream))
 }
 
 /// Return the bound local port of a stdlib TCP listener handle, or `None` if
 /// the handle is unknown. Useful when binding to port 0 (ephemeral) and
-/// needing the OS-assigned port; consumed by active-mode e2e tests.
+/// needing the OS-assigned port.
 #[must_use]
 pub fn tcp_listener_local_port(handle: c_int) -> Option<u16> {
-    TCP_API_STATE.access(|state| {
-        state
-            .listeners
-            .get(&handle)?
-            .local_addr()
-            .ok()
-            .map(|a| a.port())
-    })
+    tcp_slot(handle)?
+        .listener()?
+        .local_addr()
+        .ok()
+        .map(|address| address.port())
 }
 
 #[no_mangle]
@@ -1048,28 +1010,27 @@ pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
 }
 
 /// Clone a connection's socket, distinguishing "no such handle" from "handle
-/// live but clone failed" so the stream bridge can report the real errno. The
-/// `Option`-returning [`tcp_clone_stream`] delegates here for callers that only
-/// need success/failure.
+/// live but clone failed" so the stream bridge can report the real errno.
 pub(crate) fn tcp_clone_stream_outcome(handle: c_int) -> CloneOutcome {
-    TCP_API_STATE.access(|state| {
-        let Some(stream) = state.streams.get(&handle) else {
-            return CloneOutcome::NoEntry;
-        };
-        // Deterministic test-only injection: with a live table entry confirmed,
-        // fail this clone if the current thread armed it (the valid-handle-
-        // clone-failed path). Production builds never compile this branch.
-        #[cfg(any(test, feature = "clone-failure-test"))]
-        if clone_failure_hook::take_should_fail() {
-            return CloneOutcome::Failed(std::io::Error::from_raw_os_error(
-                clone_failure_hook::INJECTED_CLONE_ERRNO,
-            ));
-        }
-        match stream.try_clone() {
-            Ok(clone) => CloneOutcome::Cloned(clone),
-            Err(err) => CloneOutcome::Failed(err),
-        }
-    })
+    let Some(slot) = tcp_slot(handle) else {
+        return CloneOutcome::NoEntry;
+    };
+    let Some(stream) = slot.stream() else {
+        return CloneOutcome::NoEntry;
+    };
+    // Deterministic test-only injection: with a live table entry confirmed,
+    // fail this clone if the current thread armed it (the valid-handle-
+    // clone-failed path). Production builds never compile this branch.
+    #[cfg(any(test, feature = "clone-failure-test"))]
+    if clone_failure_hook::take_should_fail() {
+        return CloneOutcome::Failed(std::io::Error::from_raw_os_error(
+            clone_failure_hook::INJECTED_CLONE_ERRNO,
+        ));
+    }
+    match stream.try_clone() {
+        Ok(clone) => CloneOutcome::Cloned(clone),
+        Err(err) => CloneOutcome::Failed(err),
+    }
 }
 
 /// Deterministic clone-failure injection seam for the consumed-connection
@@ -1094,10 +1055,7 @@ pub(crate) mod clone_failure_hook {
     /// Test-only: arm deterministic failure of the next one/two
     /// `tcp_clone_stream` calls on the CURRENT thread. `first` decides clone #1
     /// (the read fd), `second` decides clone #2 (the write fd). Replaces any
-    /// previously-armed decisions. A clone that is never attempted — because an
-    /// earlier one failed and `hew_tcp_stream_from_conn` returned early — simply
-    /// leaves its arm unconsumed until the next `force_next_clone_failures`
-    /// clears it, so re-arming per loop iteration is safe.
+    /// previously-armed decisions.
     pub fn force_next_clone_failures(first: bool, second: bool) {
         FORCE.with(|f| {
             let mut q = f.borrow_mut();
@@ -1127,66 +1085,41 @@ pub use clone_failure_hook::{
 /// Remove a TCP connection handle from the table WITHOUT calling `shutdown`.
 ///
 /// Used by `hew_tcp_stream_from_conn` after cloning the socket for the read
-/// and write backings.  The two clones keep the underlying OS socket alive;
-/// calling `shutdown` here would invalidate those clones because `TcpStream`
-/// clones share a single file descriptor on Unix.
-///
-/// This is intentionally different from `hew_tcp_close`, which does call
-/// `shutdown(Both)` because it fully releases the connection.
+/// and write backings. The clones share the socket, so `shutdown` here would
+/// end them too; this only releases the handle's own descriptor.
 pub(crate) fn tcp_release_conn(handle: c_int) {
-    TCP_API_STATE.access(|state| {
-        state.streams.remove(&handle);
-        // Drop the removed TcpStream here. No shutdown call.
-    });
+    drop(crate::reactor::unregister(handle));
 }
 
-/// Close a connection whose user-facing handle has no remaining owner.
-///
-/// This is the transport-table half of connection teardown: remove the stored
-/// stream, shut down the socket, and let the `TcpStream` drop close its fd. It
-/// deliberately does not detach from the reactor; callers use it only after no
-/// reactor registration exists (or while that registration is itself being
-/// destroyed).
+/// Close a connection whose user-facing handle has no remaining owner:
+/// remove its slot, shut the socket down, and let the slot's last reference
+/// close the descriptor. Returns whether `handle` named a live connection.
 fn tcp_close_unowned_conn(handle: c_int) -> bool {
-    TCP_API_STATE.access(|state| {
-        if let Some(stream) = state.streams.remove(&handle) {
-            let _ = stream.shutdown(Shutdown::Both);
-            true
-        } else {
-            false
-        }
-    })
+    if tcp_slot(handle)
+        .and_then(|slot| slot.stream().map(|_| ()))
+        .is_none()
+    {
+        return false;
+    }
+    let Some(slot) = crate::reactor::unregister(handle) else {
+        return false;
+    };
+    if let Some(stream) = slot.stream() {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    true
 }
 
-/// Release the connection owned by an active-mode reactor registration.
-///
-/// `Connection.attach` transfers the handle to the reactor. Dropping the
-/// registration is therefore the terminal close authority for the transport
-/// table entry and its socket fd.
-pub(crate) fn tcp_close_reactor_owned_conn(handle: c_int) {
-    let _ = tcp_close_unowned_conn(handle);
-}
-
-/// Close a freshly-accepted connection handle that has no Hew-side owner
-/// (NEW-2 accept/abandon race). When `handle_ready_accept` accepts a connection
-/// but the suspended handler was abandoned/cancelled before the deposit lands,
-/// no resume edge will ever bind — and thus own and close — the accepted handle.
-/// This removes it from `TCP_API_STATE.streams` and `shutdown(Both)`s the socket
-/// so the fd is released exactly once.
-///
-/// Unlike [`tcp_release_conn`] (which keeps the socket alive for clones) this
-/// fully releases the connection, mirroring `hew_tcp_close`'s stream branch. The
-/// accepted fd was never registered with the reactor (the reactor polls the
-/// listener, not this new conn), so no detach is required.
+/// Close a freshly accepted connection handle that no Hew owner took: the
+/// accept completed after its operation was cancelled or freed.
 pub(crate) fn tcp_close_orphan_conn(handle: c_int) {
     let _ = tcp_close_unowned_conn(handle);
 }
 
 /// Test-only: create a connected loopback TCP socketpair, register the server
-/// end as a conn handle, and return `(conn_handle, client_stream)`. Lets the
-/// reactor's resume-mode read branch be driven against a REAL readable socket
-/// (writing to `client_stream` makes `conn_handle` readable). The caller closes
-/// `conn_handle` with [`tcp_close_raw_for_test`] and drops `client_stream`.
+/// end as a conn handle, and return `(conn_handle, client_stream)`. The caller
+/// closes `conn_handle` with [`tcp_close_raw_for_test`] and drops
+/// `client_stream`.
 #[cfg(test)]
 pub(crate) fn tcp_socketpair_conn_for_test() -> (c_int, TcpStream) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
@@ -1194,12 +1127,7 @@ pub(crate) fn tcp_socketpair_conn_for_test() -> (c_int, TcpStream) {
     let client = TcpStream::connect(addr).expect("connect loopback client");
     let (server, _) = listener.accept().expect("accept loopback server");
     server.set_nodelay(true).ok();
-    let handle = TCP_API_STATE.access(|state| {
-        let handle = state.alloc_handle();
-        state.streams.insert(handle, server);
-        handle
-    });
-    (handle, client)
+    (tcp_register_owned_stream(server), client)
 }
 
 /// Test-only: remove a conn handle's stream from the table (no shutdown), the
@@ -1209,306 +1137,23 @@ pub(crate) fn tcp_close_raw_for_test(handle: c_int) {
     tcp_release_conn(handle);
 }
 
-/// Test-only: bind a loopback listener, register it as a listener handle, set it
-/// non-blocking, and connect a client so exactly one connection is pending in the
-/// kernel accept queue. Returns `(listener_handle, client_stream)`; keeping the
-/// client alive holds the pending connection so a subsequent
-/// [`tcp_listener_accept_nonblocking`] yields `Accepted`. Backs the NEW-2
-/// accept/abandon-race regression (the reactor accepts a real connection, then
-/// the deposit fails on a cancelled slot). The caller closes the listener with
-/// [`tcp_close_raw_for_test`] and drops `client_stream`.
+/// Test-only: bind a loopback listener, register it as a listener handle, and
+/// connect a client so exactly one connection is pending in the kernel accept
+/// queue. Returns `(listener_handle, client_stream)`.
 #[cfg(test)]
 pub(crate) fn tcp_listener_with_pending_conn_for_test() -> (c_int, TcpStream) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
     let addr = listener.local_addr().expect("listener addr");
-    let handle = TCP_API_STATE.access(|state| {
-        let handle = state.alloc_handle();
-        state.listeners.insert(handle, listener);
-        handle
-    });
-    assert!(tcp_listener_set_nonblocking(handle, true));
+    let handle = crate::reactor::register(IoObject::TcpListener(listener));
     let client = TcpStream::connect(addr).expect("connect loopback client");
-    // Give the loopback handshake a moment so the connection is queued and a
-    // subsequent non-blocking accept yields `Accepted` deterministically.
-    std::thread::sleep(std::time::Duration::from_millis(20));
     (handle, client)
 }
 
-/// Test-only: check whether a specific connection handle is currently in the
-/// live streams table. Checks a specific token rather than the global count,
-/// so concurrent transport tests adding/removing their own handles do not cause
-/// false positives or false negatives.
+/// Test-only: check whether a specific connection handle is currently live.
 #[cfg(any(test, feature = "clone-failure-test"))]
+#[must_use]
 pub fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
-    TCP_API_STATE.access(|state| state.streams.contains_key(&handle))
-}
-
-// ---- Active-mode reactor support -------------------------------------------
-//
-// These helpers back the non-blocking "I/O completion as a mailbox message"
-// reactor (`crate::reactor`). The reactor registers a connection's raw fd for
-// readiness; on readiness it reads available bytes and delivers them to the
-// owning actor's mailbox. All three operate by the user-facing `Connection`
-// handle (the `c_int` in `TCP_API_STATE`), so they share the same socket
-// table — clone/close coordination is identical to the blocking read path.
-
-/// Return the raw OS file descriptor for a TCP connection handle, or `None`
-/// if the handle is unknown. Used by the reactor to register the fd with the
-/// platform poller. The fd remains owned by the `TcpStream` in
-/// `TCP_API_STATE`; the reactor must NOT close it directly (it closes via
-/// `hew_tcp_close` / handle removal).
-#[cfg(unix)]
-pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
-    use std::os::fd::AsRawFd;
-    TCP_API_STATE.access(|state| state.streams.get(&handle).map(AsRawFd::as_raw_fd))
-}
-
-/// Windows token form of [`tcp_conn_raw_fd`]. A Windows `SOCKET` is pointer-width
-/// and does not fit the poller's `c_int fd` ABI, so the reactor uses the
-/// user-facing connection handle itself as the poller token (D-2a); the IOCP
-/// poller resolves that token back to the `SOCKET` via [`tcp_handle_raw_socket`].
-/// Returns the handle unchanged when it names a live stream, mirroring the unix
-/// "fd is known" semantics.
-#[cfg(windows)]
-pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
-    TCP_API_STATE.access(|state| state.streams.contains_key(&handle).then_some(handle))
-}
-
-/// Resolve a reactor poller token (a `c_int` connection or listener handle) to
-/// the OS `SOCKET` it names, checking the stream table first and then the
-/// listener table. The Windows IOCP poller owns the token↔`SOCKET` indirection
-/// (D-2a); the engine never sees a raw `SOCKET`. Returns `None` if the handle is
-/// unknown (already closed) — the poller treats that as a benign stale token.
-#[cfg(windows)]
-pub(crate) fn tcp_handle_raw_socket(handle: c_int) -> Option<std::os::windows::io::RawSocket> {
-    use std::os::windows::io::AsRawSocket;
-    TCP_API_STATE.access(|state| {
-        state
-            .streams
-            .get(&handle)
-            .map(AsRawSocket::as_raw_socket)
-            .or_else(|| state.listeners.get(&handle).map(AsRawSocket::as_raw_socket))
-    })
-}
-
-/// Return the raw OS file descriptor for a TCP *listener* handle, or `None` if
-/// the handle is unknown (NEW-2 `await listener.accept()`). The fd-readiness
-/// sibling of [`tcp_conn_raw_fd`]: the reactor registers the listener fd for
-/// readability and `accept()`s when it fires. The fd remains owned by the
-/// `TcpListener` in `TCP_API_STATE`; the reactor must NOT close it directly.
-#[cfg(unix)]
-pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
-    use std::os::fd::AsRawFd;
-    TCP_API_STATE.access(|state| state.listeners.get(&handle).map(AsRawFd::as_raw_fd))
-}
-
-/// Windows token form of [`tcp_listener_raw_fd`] — returns the listener handle
-/// itself as the poller token (D-2a; see [`tcp_conn_raw_fd`]). The IOCP poller
-/// resolves it to the `SOCKET` via [`tcp_handle_raw_socket`].
-#[cfg(windows)]
-pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
-    TCP_API_STATE.access(|state| state.listeners.contains_key(&handle).then_some(handle))
-}
-
-/// Put a TCP *listener* handle's socket into non-blocking mode (the reactor
-/// thread must never park in `accept()`). Returns `true` on success. The
-/// readiness-suspension sibling of [`tcp_conn_set_nonblocking`].
-pub(crate) fn tcp_listener_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
-    tcp_listener_set_nonblocking_result(handle, nonblocking).is_ok()
-}
-
-/// Preserve the OS failure for operation-owned asynchronous diagnostics.
-pub(crate) fn tcp_listener_set_nonblocking_result(
-    handle: c_int,
-    nonblocking: bool,
-) -> std::io::Result<()> {
-    TCP_API_STATE.access(|state| {
-        state
-            .listeners
-            .get(&handle)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EBADF))?
-            .set_nonblocking(nonblocking)
-    })
-}
-
-/// Outcome of a single non-blocking `accept()` on a registered listener handle
-/// (NEW-2 reactor accept-readiness). The accept-path analogue of
-/// [`ActiveReadOutcome`].
-pub(crate) enum AcceptOutcome {
-    /// A connection was accepted and registered as a new conn handle.
-    Accepted(c_int),
-    /// The listener was spuriously reported readable; nothing to accept yet.
-    WouldBlock,
-    /// The handle is unknown or a hard accept error occurred.
-    Closed,
-}
-
-/// Non-blocking `accept()` on a registered listener handle (NEW-2 reactor
-/// accept-readiness). Drains exactly ONE pending connection (an `await
-/// listener.accept()` accepts once; the handler re-registers on its next
-/// `await`), registers it as a fresh conn handle with `set_nodelay`, and returns
-/// the handle. The accept-path sibling of [`tcp_conn_read_available`].
-pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome {
-    tcp_listener_accept_nonblocking_result(listener).unwrap_or(AcceptOutcome::Closed)
-}
-
-/// The same accept operation with its original error retained for async callers.
-pub(crate) fn tcp_listener_accept_nonblocking_result(
-    listener: c_int,
-) -> std::io::Result<AcceptOutcome> {
-    let listener = tcp_clone_listener_result(listener)?;
-    match listener.accept() {
-        Ok((stream, _)) => {
-            let _ = stream.set_nodelay(true);
-            tcp_counters().accept_count.fetch_add(1, Ordering::Relaxed);
-            let handle = TCP_API_STATE.access(|state| {
-                let handle = state.alloc_handle();
-                state.streams.insert(handle, stream);
-                handle
-            });
-            Ok(AcceptOutcome::Accepted(handle))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(AcceptOutcome::WouldBlock),
-        Err(e) => {
-            record_tcp_error_kind(e.kind());
-            Err(e)
-        }
-    }
-}
-
-/// Put a TCP connection handle's socket into non-blocking mode (active mode
-/// reads must never park the reactor thread). Returns `true` on success.
-pub(crate) fn tcp_conn_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
-    tcp_conn_set_nonblocking_result(handle, nonblocking).is_ok()
-}
-
-/// Preserve the OS failure for operation-owned asynchronous diagnostics.
-pub(crate) fn tcp_conn_set_nonblocking_result(
-    handle: c_int,
-    nonblocking: bool,
-) -> std::io::Result<()> {
-    TCP_API_STATE.access(|state| {
-        state
-            .streams
-            .get(&handle)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EBADF))?
-            .set_nonblocking(nonblocking)
-    })
-}
-
-/// Outcome of a single non-blocking active-mode read.
-pub(crate) enum ActiveReadOutcome {
-    /// Bytes were read (non-empty).
-    Data(Vec<u8>),
-    /// The socket is readable-empty for now (`WouldBlock`); nothing to deliver.
-    WouldBlock,
-    /// Peer closed the connection (read returned 0) — deliver `on_close`.
-    Eof,
-    /// The handle is unknown or a hard read error occurred — deliver `on_close`.
-    Closed,
-}
-
-/// Read all currently-available bytes from a non-blocking TCP connection
-/// handle, draining the socket until it would block (so a single readiness
-/// notification does not strand buffered data when the poller is edge
-/// triggered). Returns the concatenated bytes, or a non-`Data` outcome
-/// describing EOF / would-block / error.
-pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
-    tcp_conn_read_available_result(handle).unwrap_or(ActiveReadOutcome::Closed)
-}
-
-/// Preserve the original read/clone error while sharing the active-mode syscall
-/// loop. Buffered bytes still precede EOF/error, matching the existing reader.
-pub(crate) fn tcp_conn_read_available_result(handle: c_int) -> std::io::Result<ActiveReadOutcome> {
-    let mut stream = match tcp_clone_stream_outcome(handle) {
-        CloneOutcome::Cloned(stream) => stream,
-        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
-        CloneOutcome::Failed(error) => return Err(error),
-    };
-    let mut out: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => {
-                tcp_counters()
-                    .bytes_read
-                    .fetch_add(out.len() as u64, Ordering::Relaxed);
-                // Peer closed. If we already drained some bytes, deliver them
-                // first; the caller re-polls and observes EOF next time. With
-                // an empty buffer this is a clean EOF.
-                return Ok(if out.is_empty() {
-                    ActiveReadOutcome::Eof
-                } else {
-                    ActiveReadOutcome::Data(out)
-                });
-            }
-            Ok(n) => {
-                out.extend_from_slice(&buf[..n]);
-                // Keep draining; a partial fill (< buf len) means the kernel
-                // buffer is empty and the next read would block, so stop to
-                // avoid an extra syscall.
-                if n < buf.len() {
-                    tcp_counters()
-                        .bytes_read
-                        .fetch_add(out.len() as u64, Ordering::Relaxed);
-                    return Ok(ActiveReadOutcome::Data(out));
-                }
-            }
-            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                tcp_counters()
-                    .bytes_read
-                    .fetch_add(out.len() as u64, Ordering::Relaxed);
-                return Ok(if out.is_empty() {
-                    ActiveReadOutcome::WouldBlock
-                } else {
-                    ActiveReadOutcome::Data(out)
-                });
-            }
-            Err(ref e) if e.kind() == ErrorKind::Interrupted => {
-                // Retry the read; EINTR is not a failure.
-            }
-            Err(e) => {
-                record_tcp_error_kind(e.kind());
-                return if out.is_empty() {
-                    Err(e)
-                } else {
-                    Ok(ActiveReadOutcome::Data(out))
-                };
-            }
-        }
-    }
-}
-
-/// Read the socket's configured inactivity timeout before a native request.
-pub(crate) fn tcp_conn_timeout_result(
-    handle: c_int,
-    write: bool,
-) -> std::io::Result<Option<std::time::Duration>> {
-    let stream = match tcp_clone_stream_outcome(handle) {
-        CloneOutcome::Cloned(stream) => stream,
-        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
-        CloneOutcome::Failed(error) => return Err(error),
-    };
-    if write {
-        stream.write_timeout()
-    } else {
-        stream.read_timeout()
-    }
-}
-
-/// One nonblocking write for a reactor-owned request. The caller retains the
-/// connection loan and sets nonblocking mode before registering readiness.
-pub(crate) fn tcp_conn_write_some_result(handle: c_int, bytes: &[u8]) -> std::io::Result<usize> {
-    let mut stream = match tcp_clone_stream_outcome(handle) {
-        CloneOutcome::Cloned(stream) => stream,
-        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
-        CloneOutcome::Failed(error) => return Err(error),
-    };
-    let written = stream.write(bytes)?;
-    tcp_counters()
-        .bytes_written
-        .fetch_add(written as u64, Ordering::Relaxed);
-    Ok(written)
+    tcp_slot(handle).is_some_and(|slot| slot.stream().is_some())
 }
 
 /// Open a TCP listener at `addr` (`host:port`).
@@ -1543,11 +1188,7 @@ pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
             return -1;
         }
     };
-    TCP_API_STATE.access(|state| {
-        let handle = state.alloc_handle();
-        state.listeners.insert(handle, listener);
-        handle
-    })
+    crate::reactor::register(IoObject::TcpListener(listener))
 }
 
 /// Accept one incoming TCP connection from a listener handle.
@@ -1555,7 +1196,10 @@ pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
 /// Returns a positive connection handle, or -1 on error.
 #[no_mangle]
 pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
-    let Some(listener) = tcp_clone_listener(listener) else {
+    let Some(slot) = tcp_slot(listener) else {
+        return -1;
+    };
+    let Some(listener) = slot.listener() else {
         return -1;
     };
     let (stream, _) = match listener.accept() {
@@ -1566,12 +1210,8 @@ pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
         }
     };
     let _ = stream.set_nodelay(true);
-    tcp_counters().accept_count.fetch_add(1, Ordering::Relaxed);
-    TCP_API_STATE.access(|state| {
-        let handle = state.alloc_handle();
-        state.streams.insert(handle, stream);
-        handle
-    })
+    count_accept();
+    tcp_register_owned_stream(stream)
 }
 
 /// Resolve `addr` through the shared blocking pool with an optional deadline.
@@ -1743,13 +1383,7 @@ pub unsafe extern "C" fn hew_tcp_connect_timed(addr: *const c_char, deadline_ms:
             }
         }
     };
-    let _ = stream.set_nodelay(true);
-    tcp_counters().connect_count.fetch_add(1, Ordering::Relaxed);
-    TCP_API_STATE.access(|state| {
-        let handle = state.alloc_handle();
-        state.streams.insert(handle, stream);
-        handle
-    })
+    tcp_adopt_connection(stream)
 }
 
 /// The errno a socket deadline reports: `WSAETIMEDOUT` on Windows, where the
@@ -1771,7 +1405,14 @@ pub(crate) const fn etimedout_errno() -> i32 {
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn hew_tcp_set_read_timeout(fd: c_int, timeout_ms: c_int) -> c_int {
-    let Some(stream) = tcp_clone_stream(fd) else {
+    let Some(slot) = tcp_slot(fd) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_set_read_timeout: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
+        return -1;
+    };
+    let Some(stream) = slot.stream() else {
         hew_cabi::sink::set_last_error_with_errno(
             "hew_tcp_set_read_timeout: invalid connection handle".into(),
             9, // EBADF: Bad file descriptor
@@ -1806,7 +1447,14 @@ pub extern "C" fn hew_tcp_set_read_timeout(fd: c_int, timeout_ms: c_int) -> c_in
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn hew_tcp_set_write_timeout(fd: c_int, timeout_ms: c_int) -> c_int {
-    let Some(stream) = tcp_clone_stream(fd) else {
+    let Some(slot) = tcp_slot(fd) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_set_write_timeout: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
+        return -1;
+    };
+    let Some(stream) = slot.stream() else {
         hew_cabi::sink::set_last_error_with_errno(
             "hew_tcp_set_write_timeout: invalid connection handle".into(),
             9, // EBADF: Bad file descriptor
@@ -1917,11 +1565,7 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
         return -1;
     };
     let _ = stream.set_nodelay(true);
-    TCP_API_STATE.access(|state| {
-        let handle = state.alloc_handle();
-        state.streams.insert(handle, stream);
-        handle
-    })
+    tcp_register_owned_stream(stream)
 }
 
 /// Read up to 8192 bytes from a TCP connection into a fresh `bytes` value.
@@ -1943,7 +1587,14 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> crate::bytes::BytesTriple {
         offset: 0,
         len: 0,
     };
-    let Some(mut stream) = tcp_clone_stream(conn) else {
+    let Some(slot) = tcp_slot(conn) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_read: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
+        return empty;
+    };
+    let Some(mut stream) = slot.stream() else {
         hew_cabi::sink::set_last_error_with_errno(
             "hew_tcp_read: invalid connection handle".into(),
             9, // EBADF: Bad file descriptor
@@ -2038,7 +1689,14 @@ pub unsafe extern "C" fn hew_tcp_write(
         // len 0 in a valid triple.
         return 0;
     }
-    let Some(mut stream) = tcp_clone_stream(conn) else {
+    let Some(slot) = tcp_slot(conn) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_write: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
+        return -1;
+    };
+    let Some(mut stream) = slot.stream() else {
         hew_cabi::sink::set_last_error_with_errno(
             "hew_tcp_write: invalid connection handle".into(),
             9, // EBADF: Bad file descriptor
@@ -2099,7 +1757,7 @@ mod tests {
     use super::*;
     use std::ffi::CString;
     use std::io;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::{Mutex, PoisonError};
 
     #[test]
     fn remote_ip_class_classifies_loopback_and_routable() {
@@ -2210,6 +1868,52 @@ mod tests {
         );
     }
 
+    /// The I/O balance check is live: a handle left open at runtime cleanup
+    /// exits with the I/O leak status when armed, and passes when not.
+    #[test]
+    fn io_leak_check_reports_an_open_handle() {
+        const CHILD: &str = "HEW_RUNTIME_IO_LEAK_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let (server, _client) = connected_streams();
+            let _handle = register_stream(server);
+            crate::reactor::io_leak_verdict_after_runtime_cleanup();
+            return;
+        }
+        for armed in [true, false] {
+            let mut child = std::process::Command::new(
+                std::env::current_exe().expect("resolve current test binary"),
+            );
+            child
+                .arg("transport::tests::io_leak_check_reports_an_open_handle")
+                .arg("--exact")
+                .arg("--nocapture")
+                .arg("--test-threads=1")
+                .env(CHILD, "1")
+                .env_remove("HEW_IO_LEAK_CHECK");
+            if armed {
+                child.env("HEW_IO_LEAK_CHECK", "1");
+            }
+            let output = child.output().expect("spawn isolated test process");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if armed {
+                assert_eq!(
+                    output.status.code(),
+                    Some(crate::reactor::HEW_EXIT_IO_LEAK),
+                    "armed check must report the open handle: {stderr}"
+                );
+                assert!(
+                    stderr.contains("hew: I/O leak: 1 handle(s) open"),
+                    "{stderr}"
+                );
+            } else {
+                assert!(
+                    output.status.success(),
+                    "unarmed check must stay silent: {stderr}"
+                );
+            }
+        }
+    }
+
     fn connected_streams() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
         let addr = listener.local_addr().expect("read listener addr");
@@ -2300,31 +2004,19 @@ mod tests {
     }
 
     fn register_stream(stream: TcpStream) -> c_int {
-        TCP_API_STATE.access(|state| {
-            let handle = state.alloc_handle();
-            state.streams.insert(handle, stream);
-            handle
-        })
+        tcp_register_owned_stream(stream)
     }
 
     fn remove_stream(handle: c_int) {
-        TCP_API_STATE.access(|state| {
-            state.streams.remove(&handle);
-        });
+        tcp_release_conn(handle);
     }
 
     fn register_listener(listener: TcpListener) -> c_int {
-        TCP_API_STATE.access(|state| {
-            let handle = state.alloc_handle();
-            state.listeners.insert(handle, listener);
-            handle
-        })
+        crate::reactor::register(IoObject::TcpListener(listener))
     }
 
     fn remove_listener(handle: c_int) {
-        TCP_API_STATE.access(|state| {
-            state.listeners.remove(&handle);
-        });
+        drop(crate::reactor::unregister(handle));
     }
 
     /// The two stdlib resource types intentionally publish distinct release
@@ -2980,64 +2672,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn broadcast_clone_failure_returns_neg1() {
-        run_in_isolated_test_process(
-            "transport::tests::broadcast_clone_failure_returns_neg1",
-            "HEW_RUNTIME_TCP_BROADCAST_CLONE_FAIL",
-            || {
-                let _guard = crate::runtime_test_guard();
-                let (server, _client) = connected_streams();
-                let handle = register_stream(server);
-                let _ = hew_cabi::sink::take_last_errno();
-
-                // Drop the fd soft limit below current usage so `try_clone`
-                // (dup) fails with EMFILE. Safe here because this body runs in
-                // its own isolated process.
-                let mut lim = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                // SAFETY: `lim` is a valid out-pointer for getrlimit.
-                let got = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) };
-                assert_eq!(got, 0, "getrlimit(RLIMIT_NOFILE) must succeed");
-                let saved = lim;
-                lim.rlim_cur = 1;
-                // SAFETY: `lim` is a valid rlimit value for setrlimit.
-                let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) };
-                assert_eq!(lowered, 0, "lowering RLIMIT_NOFILE must succeed");
-
-                let status = broadcast_bytes(-1, b"no fds left");
-
-                // SAFETY: `saved` is the previously read valid rlimit.
-                let restored = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const saved) };
-                assert_eq!(restored, 0, "restoring RLIMIT_NOFILE must succeed");
-
-                assert_eq!(
-                    status, -1,
-                    "a clone failure on an eligible recipient must report -1"
-                );
-                // The exact errno is platform-variable (EMFILE on Linux;
-                // macOS's fcntl(F_DUPFD_CLOEXEC) reports EINVAL at the fd
-                // limit), so pin the branch by non-zero errno + the clone
-                // failure's message prefix instead of an exact value.
-                assert_ne!(
-                    hew_cabi::sink::take_last_errno(),
-                    0,
-                    "the dup failure's OS errno must be surfaced"
-                );
-                let msg = hew_cabi::sink::take_last_error()
-                    .expect("the clone failure's message must be recorded");
-                assert!(
-                    msg.starts_with("hew_tcp_broadcast_except: clone failed"),
-                    "the recorded message must come from the clone branch, got: {msg}"
-                );
-                remove_stream(handle);
-            },
-        );
-    }
-
     #[cfg(feature = "profiler")]
     #[test]
     fn tcp_read_stays_at_zero_rust_allocs_across_payload_sizes() {
@@ -3348,45 +2982,35 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
         );
         return -1;
     };
-    let (recipients, first_failure) = TCP_API_STATE.access(|state| {
-        let mut recipients = 0usize;
-        let mut first_failure: Option<(String, i32)> = None;
-        let mut note_failure = |msg: String, e: &std::io::Error| {
-            if first_failure.is_none() {
-                first_failure = Some((msg, e.raw_os_error().unwrap_or(0)));
-            }
+    let mut recipients = 0usize;
+    let mut first_failure: Option<(String, i32)> = None;
+    let mut note_failure = |msg: String, e: &std::io::Error| {
+        if first_failure.is_none() {
+            first_failure = Some((msg, e.raw_os_error().unwrap_or(0)));
+        }
+    };
+    for slot in crate::reactor::slots() {
+        let Some(mut stream) = slot.stream() else {
+            continue;
         };
-        for (conn, stream) in &state.streams {
-            if *conn == exclude_conn {
-                continue;
-            }
-            let mut cloned = match stream.try_clone() {
-                Ok(cloned) => cloned,
-                Err(e) => {
-                    note_failure(format!("hew_tcp_broadcast_except: clone failed: {e}"), &e);
-                    continue;
-                }
-            };
-            if let Err(e) = cloned.write_all(text.as_bytes()) {
+        if slot.handle() == exclude_conn {
+            continue;
+        }
+        if let Err(e) = stream.write_all(text.as_bytes()) {
+            note_failure(format!("hew_tcp_broadcast_except: {e}"), &e);
+            continue;
+        }
+        // The appended-newline write feeds the same failure accounting as
+        // the body write: a newline that fails after a successful body
+        // write still marks the broadcast failed (`-1`).
+        if !text.ends_with('\n') {
+            if let Err(e) = stream.write_all(b"\n") {
                 note_failure(format!("hew_tcp_broadcast_except: {e}"), &e);
                 continue;
             }
-            // The appended-newline write feeds the same failure accounting as
-            // the body write: a newline that fails after a successful body
-            // write still marks the broadcast failed (`-1`).
-            if !text.ends_with('\n') {
-                if let Err(e) = cloned.write_all(b"\n") {
-                    note_failure(format!("hew_tcp_broadcast_except: {e}"), &e);
-                    continue;
-                }
-            }
-            recipients += 1;
         }
-        (recipients, first_failure)
-    });
-    // Record the first failure OUTSIDE the table lock: the thread-local error
-    // write does not need the lock, and keeping the lock scope minimal matches
-    // the transport's errno hygiene elsewhere.
+        recipients += 1;
+    }
     if let Some((msg, errno)) = first_failure {
         hew_cabi::sink::set_last_error_with_errno(msg, errno);
         return -1;
@@ -3404,7 +3028,8 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
     }
 }
 
-/// Stable native actor identity used by attachment callbacks.
+/// Stable native actor identity used by the TLS and WebSocket attachment
+/// callbacks.
 pub type NativeActorToken = crate::lifetime::local_handles::HewLocalPidId;
 
 /// Generated adapter: copies borrowed input into the compiler's typed message.
@@ -3422,19 +3047,6 @@ pub struct NativeAttachment {
 }
 
 impl NativeAttachment {
-    #[cfg(test)]
-    pub(crate) fn inert_for_test() -> Self {
-        unsafe extern "C" fn ignore(_: usize, _: *const u8, _: usize) -> i32 {
-            2
-        }
-        Self {
-            token: NativeActorToken::INVALID,
-            incarnation: crate::lifetime::live_actors::ActorIncarnation::NONE,
-            data: ignore,
-            close: ignore,
-        }
-    }
-
     /// Capture a live destination and the generated adapters for its protocol.
     ///
     /// # Safety
@@ -3488,120 +3100,10 @@ impl NativeAttachment {
     }
 }
 
-/// Consume a TCP connection into native actor delivery, including on refusal.
-///
-/// # Safety
-/// Callback pointers must be generated adapters for the destination protocol.
-#[no_mangle]
-pub unsafe extern "C" fn hew_tcp_attach_native(
-    conn: c_int,
-    token: NativeActorToken,
-    data: AttachCallback,
-    close: AttachCallback,
-) -> c_int {
-    // SAFETY: the native attach ABI requires matching generated callbacks.
-    let status = if let Some(target) = unsafe { NativeAttachment::new(token, data, close) } {
-        crate::reactor::reactor_attach_native(conn, target)
-    } else {
-        set_last_error("tcp.attach: destination is closed");
-        -1
-    };
-    if status < 0 {
-        let _ = tcp_close_unowned_conn(conn);
-    }
-    status
-}
-
-/// Register a TCP connection for a SUSPENDING `await conn.read()` (NEW-1).
-///
-/// The codegen ramp for `Terminator::SuspendingRead` calls this from a
-/// suspendable handler: it has created a `HewReadSlot` (held across the suspend
-/// in the coro frame) and parked its continuation on `actor`. This forwards to
-/// the reactor's resume-mode registration: when the fd becomes readable the
-/// reactor reads the bytes, deposits the result into `read_slot`, and
-/// `enqueue_resume`s the parked continuation.
-///
-/// `actor` is the raw `*mut HewActor` the Hew actor handle lowers to (same shape
-/// the runtime constructs the local `HewActorRef` from that live actor pointer.
-///
-/// Returns 0 on success, -1 on failure (null args, unknown handle, reactor
-/// unavailable). On failure the caller's slot ref is untouched and the codegen
-/// ramp binds the error edge.
-///
-/// # Safety
-///
-/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
-/// - `actor` must be a valid pointer to a live [`HewActor`] that owns the parked
-///   continuation registered for this read.
-/// - `read_slot` must be a valid live `HewReadSlot` the caller holds a ref to.
-#[no_mangle]
-pub unsafe extern "C" fn hew_conn_await_read(
-    conn: c_int,
-    actor: *mut HewActor,
-    read_slot: *mut crate::read_slot::HewReadSlot,
-) -> c_int {
-    if actor.is_null() {
-        set_last_error("hew_conn_await_read: null actor pointer");
-        return -1;
-    }
-    // SAFETY: `actor` is non-null and the caller guarantees it is live.
-    let actor_ref = unsafe { hew_actor_ref_local(actor) };
-    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; the reactor takes
-    // a by-value snapshot before returning. `read_slot` validity is the caller's
-    // contract (the reactor takes its own ref on success).
-    unsafe { crate::reactor::reactor_await_read(conn, &raw const actor_ref, read_slot) }
-}
-
-/// Register a TCP listener for a SUSPENDING `await listener.accept()` (NEW-2,
-/// the listener-readiness sibling of [`hew_conn_await_read`]).
-///
-/// The codegen ramp for `Terminator::SuspendingAccept` calls this from a
-/// suspendable handler: it has created a `HewReadSlot` (held across the suspend
-/// in the coro frame) and parked its continuation on `actor`. This forwards to
-/// the reactor's accept-mode registration: when the listener fd becomes readable
-/// the reactor `accept()`s a new connection, deposits its i64 handle into
-/// `read_slot`, and `enqueue_resume`s the parked continuation.
-///
-/// Returns 0 on success, -1 on failure (null args, unknown listener handle,
-/// reactor unavailable). On failure the caller's slot ref is untouched and the
-/// codegen ramp binds an invalid `Connection` on the resume edge.
-///
-/// # Safety
-///
-/// - `listener` must be a valid TCP listener handle from the stdlib `net` API.
-/// - `actor` must be a valid pointer to a live [`HewActor`] that owns the parked
-///   continuation registered for this accept.
-/// - `read_slot` must be a valid live `HewReadSlot` the caller holds a ref to.
-#[no_mangle]
-pub unsafe extern "C" fn hew_listener_await_accept(
-    listener: c_int,
-    actor: *mut HewActor,
-    read_slot: *mut crate::read_slot::HewReadSlot,
-) -> c_int {
-    if actor.is_null() {
-        set_last_error("hew_listener_await_accept: null actor pointer");
-        return -1;
-    }
-    // SAFETY: `actor` is non-null and the caller guarantees it is live.
-    let actor_ref = unsafe { hew_actor_ref_local(actor) };
-    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; the reactor takes
-    // a by-value snapshot before returning. `read_slot` validity is the caller's
-    // contract (the reactor takes its own ref on success).
-    unsafe { crate::reactor::reactor_await_accept(listener, &raw const actor_ref, read_slot) }
-}
-
-/// Detach a TCP connection from the active-mode reactor without closing it.
-///
-/// Idempotent; a no-op if the connection was never attached.
-#[no_mangle]
-pub extern "C" fn hew_tcp_detach(conn: c_int) {
-    crate::reactor::reactor_detach_conn(conn);
-}
-
-/// Fully close a TCP *connection* handle: detach it from the active-mode
-/// reactor, remove its table entry, and `shutdown(Both)` the socket before the
-/// stored `TcpStream` drops (closing the fd). Returns `true` if a connection
-/// entry was present and removed, `false` if `handle` is not a live connection.
+/// Fully close a TCP *connection* handle: remove its slot, complete any
+/// waiting operation with `ECANCELED`, and `shutdown(Both)` the socket.
+/// Returns `true` if a connection was present and removed, `false` if
+/// `handle` is not a live connection.
 ///
 /// This is the shared connection-close body used by [`hew_tcp_close`] (its
 /// connection branch) and by the clone-failure early-returns in
@@ -3617,12 +3119,6 @@ pub extern "C" fn hew_tcp_detach(conn: c_int) {
 /// that RAII-drops independently — so `shutdown(Both)` here is safe and closes
 /// exactly the original fd.
 pub(crate) fn tcp_full_close_conn(handle: c_int) -> bool {
-    // Detach from the active-mode reactor first so the reactor stops polling a
-    // fd we are about to close (reactor-fd ownership: unregister before close).
-    // No-op on the bridge failure path (that path never attached to the
-    // reactor); kept for symmetry with `hew_tcp_close` and robustness if the
-    // call graph ever changes.
-    crate::reactor::reactor_detach_conn(handle);
     tcp_close_unowned_conn(handle)
 }
 
@@ -3633,7 +3129,14 @@ pub(crate) fn tcp_full_close_conn(handle: c_int) -> bool {
 /// shutdown failed (the errno is recorded for the caller).
 #[no_mangle]
 pub extern "C" fn hew_tcp_shutdown_write(conn: c_int) -> c_int {
-    let Some(stream) = tcp_clone_stream(conn) else {
+    let Some(slot) = tcp_slot(conn) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_shutdown_write: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
+        return -1;
+    };
+    let Some(stream) = slot.stream() else {
         hew_cabi::sink::set_last_error_with_errno(
             "hew_tcp_shutdown_write: invalid connection handle".into(),
             9, // EBADF: Bad file descriptor
@@ -3657,17 +3160,16 @@ pub extern "C" fn hew_tcp_shutdown_write(conn: c_int) -> c_int {
 /// Returns 0 on success, -1 if handle is unknown.
 #[no_mangle]
 pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
-    // Connection branch: detach from the reactor, remove, and shutdown.
     if tcp_full_close_conn(handle) {
         return 0;
     }
     // Otherwise it may be a listener handle.
-    TCP_API_STATE.access(|state| {
-        if state.listeners.remove(&handle).is_some() {
-            return 0;
-        }
-        -1
-    })
+    if tcp_slot(handle).is_some_and(|slot| slot.listener().is_some())
+        && crate::reactor::unregister(handle).is_some()
+    {
+        return 0;
+    }
+    -1
 }
 
 /// Close a TCP listener handle.

@@ -4527,19 +4527,6 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_conn_await_read( c_int, *mut HewActor, *mut HewReadSlot, ) -> c_int"
-      },
-      "symbol": "hew_conn_await_read"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
@@ -9002,84 +8989,6 @@
     },
     {
       "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_poller_new() -> *mut HewIoPoller"
-      },
-      "symbol": "hew_io_poller_new"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_poller_poll( *mut HewIoPoller, c_int) -> c_int"
-      },
-      "symbol": "hew_io_poller_poll"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_poller_poll_ready( *mut HewIoPoller, c_int, *mut c_int, *mut c_int, c_int, ) -> c_int"
-      },
-      "symbol": "hew_io_poller_poll_ready"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_poller_register( *mut HewIoPoller, c_int, *mut HewActor, c_int, c_int, ) -> c_int"
-      },
-      "symbol": "hew_io_poller_register"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_poller_stop( *mut HewIoPoller)"
-      },
-      "symbol": "hew_io_poller_stop"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_poller_unregister( *mut HewIoPoller, c_int) -> c_int"
-      },
-      "symbol": "hew_io_poller_unregister"
-    },
-    {
-      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -10139,19 +10048,6 @@
         "native": "fn hew_link_probe_terminal_state( i64) -> i64"
       },
       "symbol": "hew_link_probe_terminal_state"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_listener_await_accept( c_int, *mut HewActor, *mut HewReadSlot, ) -> c_int"
-      },
-      "symbol": "hew_listener_await_accept"
     },
     {
       "availability": [
@@ -13861,21 +13757,6 @@
         "wasm32-wasip1": "fn hew_read_slot_take( *mut HewReadSlot) -> BytesTriple"
       },
       "symbol": "hew_read_slot_take"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_read_slot_take_handle( *mut HewReadSlot) -> i64",
-        "wasm32-wasip1": "fn hew_read_slot_take_handle( *mut HewReadSlot) -> i64"
-      },
-      "symbol": "hew_read_slot_take_handle"
     },
     {
       "availability": [
@@ -18116,19 +17997,6 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_tcp_attach_native( c_int, NativeActorToken, AttachCallback, AttachCallback, ) -> c_int"
-      },
-      "symbol": "hew_tcp_attach_native"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -18189,19 +18057,6 @@
         "native": "fn hew_tcp_connect_timeout( *const c_char, c_int, c_int, ) -> c_int"
       },
       "symbol": "hew_tcp_connect_timeout"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_tcp_detach( c_int)"
-      },
-      "symbol": "hew_tcp_detach"
     },
     {
       "availability": [

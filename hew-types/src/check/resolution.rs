@@ -2609,7 +2609,7 @@ impl Checker {
         // module_graph module is being checked, that module's own types/traits
         // are seeded into these module-scoped sets (see the body-check loop in
         // `check_program`) rather than the global `known_types` / `trait_defs`,
-        // which carry the root module's declarations. A bare `ConnectionHandler`
+        // which carry the root module's declarations. A bare `TlsHandler`
         // actor-handle type inside an imported `std::net` therefore resolves
         // against `local_trait_defs`, not `trait_defs`. Consulting these sets only ever recognises an
         // already-declared name, so a genuinely undefined `Bogus` is still caught.
@@ -2643,7 +2643,7 @@ impl Checker {
         // imported module's own types/traits while that module's signatures are
         // registered in a pass where the global `trait_defs` / `known_types`
         // still hold only the root module's declarations (e.g.
-        // `ConnectionHandler`'s own actor-handle type inside `std::net`). A genuinely
+        // `TlsHandler`'s own actor-handle type inside `std::net.tls`). A genuinely
         // undefined name is in neither declared set, so it is still caught.
         if self.declared_nominal_type_names.contains(name) {
             return true;
@@ -2889,7 +2889,7 @@ impl Checker {
     ///
     /// A handler-style trait (its methods take no `self` receiver, so an actor
     /// satisfies it structurally through its `receive fn`s) names an actor the
-    /// same way: `attach(handler: ConnectionHandler)` takes the handle of any
+    /// same way: `attach(handler: TlsHandler)` takes the handle of any
     /// actor that satisfies the trait.
     pub(super) fn canonicalize_actor_handles(&self, ty: &mut Ty) {
         match ty {

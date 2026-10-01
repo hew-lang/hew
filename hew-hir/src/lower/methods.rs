@@ -976,7 +976,6 @@ impl LowerCtx {
                         receiver,
                         args,
                         consumes_receiver,
-                        ret_ty,
                         &span,
                     );
                 }

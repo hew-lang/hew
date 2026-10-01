@@ -57,7 +57,6 @@ hew-hir/src/lower/program.rs	done-id	7b771bec19	0	source.name = Ident::new(canon
 hew-hir/src/lower/program.rs	done-id	8f0e373eee	0	source.name = Ident::new(&canonical_name); // TRANSITION(P1): deleted by A1 comm
 hew-hir/src/lower/program.rs	done-id	aa472e4198	3	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
 hew-hir/src/lower/stmt.rs	done-id	3d311260b5	0	// TRANSITION(P1): deleted by A1 commit 2
-hew-hir/src/lower/var_self.rs	done-id	18859eae46	0	let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
 hew-hir/src/node.rs	todo-no-id	d221ed406a	0	/// codegen fail-closed match arms (semantic-invariant TODO markers).
 hew-lexer/src/lib.rs	no-real-fix	6290fe29bc	0	// WHY: nothing generates docs/syntax-data.json's `version` field — it
 hew-lexer/src/lib.rs	no-real-fix	90e9d672f9	0	// WHY: hand-maintained editor grammars silently drift from the real
@@ -211,7 +210,6 @@ hew-types/src/check/registration/functions.rs	done-id	aa472e4198	0	let name = &n
 hew-types/src/check/registration/functions.rs	done-id	0d2f6d8174	1	); // TRANSITION(P1): deleted by A1 commit 2
 hew-types/src/check/registration/functions.rs	done-id	aa472e4198	1	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
 hew-types/src/check/registration/functions.rs	done-id	59e47652bd	0	let trait_key = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANS
-hew-types/src/check/registration/functions.rs	done-id	aa472e4198	2	let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
 hew-types/src/check/registration/functions.rs	done-id	3d311260b5	2	// TRANSITION(P1): deleted by A1 commit 2
 hew-types/src/check/registration/functions.rs	done-id	99d7d99a58	0	let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
 hew-types/src/check/registration/functions.rs	done-id	3d311260b5	3	// TRANSITION(P1): deleted by A1 commit 2

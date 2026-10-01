@@ -186,7 +186,8 @@ fn scalar(ty: &TypeExpr) -> &'static str {
         type_args.is_none(),
         "direct runtime scalar cannot have type arguments"
     );
-    scalar_named(&path.to_string()) // TRANSITION(P1): deleted by A1 commit 2
+    let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+    scalar_named(&name)
 }
 
 fn scalar_named(name: &str) -> &'static str {

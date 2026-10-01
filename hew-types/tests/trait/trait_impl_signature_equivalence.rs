@@ -268,7 +268,7 @@ impl Iterator for Counter {{
 #[test]
 fn impl_with_wrong_receiver_rejected_at_impl_site() {
     // Receiver type is wrong — `(it: i64)` instead of an impl-target-shaped
-    // receiver. The first param fails `is_receiver_param` so the impl post-skip
+    // receiver. The first param is not a receiver (`Param::is_receiver`) so the impl post-skip
     // arity is 1, vs trait post-skip arity 0, surfacing as an arity mismatch.
     let src = format!(
         "{ITER_TRAIT_PRELUDE}

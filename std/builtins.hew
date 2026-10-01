@@ -60,8 +60,7 @@ impl Display for NodeError {
     }
 }
 
-impl Error for NodeError {
-}
+impl Error for NodeError {}
 
 impl NodeConfig {
     fn at(bind: string) -> NodeConfig {
@@ -151,8 +150,7 @@ impl<M> Display for SendFailure<M> {
     }
 }
 
-impl<M> Error for SendFailure<M> {
-}
+impl<M> Error for SendFailure<M> {}
 
 /// Successful submission describes acceptance or a discard. A discard is a
 /// loss either the destination's declared mailbox policy or the sender's own
@@ -233,8 +231,7 @@ impl Display for SendError {
     }
 }
 
-impl Error for SendError {
-}
+impl Error for SendError {}
 
 /// Error returned when `Node.lookup<T>(name)` cannot resolve `name`.
 ///
@@ -275,8 +272,7 @@ impl Display for LookupError {
     }
 }
 
-impl Error for LookupError {
-}
+impl Error for LookupError {}
 
 /// The error of a handler that cannot fail.
 ///
@@ -292,8 +288,7 @@ impl Display for Never {
     }
 }
 
-impl Error for Never {
-}
+impl Error for Never {}
 
 /// Error of a completion call on an actor handle.
 ///
@@ -345,8 +340,7 @@ impl<E: Display, Req> Display for ActorError<E, Req> {
     }
 }
 
-impl<E: Error, Req> Error for ActorError<E, Req> {
-}
+impl<E: Error, Req> Error for ActorError<E, Req> {}
 
 /// Failure to subscribe to an actor's exit through `link` or `monitor`.
 /// Both operations require a current actor to receive the notification; a
@@ -364,8 +358,7 @@ impl Display for LinkError {
     }
 }
 
-impl Error for LinkError {
-}
+impl Error for LinkError {}
 
 /// Message contract for actor types addressed through `RemotePid<A>`.
 ///
@@ -1156,5 +1149,4 @@ impl Display for ScopeFailure {
     }
 }
 
-impl Error for ScopeFailure {
-}
+impl Error for ScopeFailure {}

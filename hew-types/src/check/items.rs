@@ -1098,7 +1098,7 @@ impl Checker {
                     && fd.origin != hew_parser::ast::DeclarationOrigin::MachineStep
                     && fn_name.contains("::")
             })
-            .filter(|param| self.is_receiver_param(param))
+            .filter(|param| param.is_receiver)
             .map(|param| param.name.to_string());
         let prev_var_self_receiver =
             std::mem::replace(&mut self.var_self_receiver, var_self_receiver);
@@ -3055,7 +3055,7 @@ impl Checker {
 
 impl Checker {
     fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
-        let is_receiver = index == 0 && self.is_receiver_param(param);
+        let is_receiver = index == 0 && param.is_receiver;
         if is_receiver {
             if let Some(receiver_ty) = self.current_self_binding_ty.clone() {
                 return (receiver_ty, true);

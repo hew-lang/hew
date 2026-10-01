@@ -2722,7 +2722,7 @@ pub struct FnSig {
     /// (`fn next(var self)`).
     ///
     /// Populated by the registration pass when the first parameter is a
-    /// receiver (per [`Self::is_receiver_param`]) AND `param.is_mutable` is
+    /// receiver (`Param::is_receiver`, published from the `self` token) AND `param.is_mutable` is
     /// set. Consumed by the method-dispatch site to enforce that the call
     /// receiver is a `var`-bound binding (mirrors the precedent in
     /// `methods.rs::step` — see Q297 Stage 1).

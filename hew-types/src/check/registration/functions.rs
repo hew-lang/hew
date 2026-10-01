@@ -584,9 +584,8 @@ impl Checker {
                                 .collect();
                             for m in defaults {
                                 let method_key = format!("{type_name}::{}", m.name);
-                                let skip = usize::from(
-                                    m.params.first().is_some_and(|p| self.is_receiver_param(p)),
-                                );
+                                let skip =
+                                    usize::from(m.params.first().is_some_and(|p| p.is_receiver));
                                 let param_names: Vec<String> = m
                                     .params
                                     .iter()
@@ -790,12 +789,8 @@ impl Checker {
                             }
                         }
                         self.register_fn_sig_with_name(&method_key, method, None);
-                        let skip = usize::from(
-                            method
-                                .params
-                                .first()
-                                .is_some_and(|p| self.is_receiver_param(p)),
-                        );
+                        let skip =
+                            usize::from(method.params.first().is_some_and(|p| p.is_receiver));
                         let param_names: Vec<String> = method
                             .params
                             .iter()
@@ -1221,13 +1216,6 @@ impl Checker {
         }
     }
 
-    /// Whether a parameter is the method receiver. The parser publishes it
-    /// from the `self` token; a parameter typed `Self` without the token
-    /// belongs to an associated function.
-    pub(in crate::check) fn is_receiver_param(&self, p: &Param) -> bool {
-        p.is_receiver
-    }
-
     /// Register a signature under `name`, filed under `declaration` when the
     /// caller holds it and otherwise under the declaration `name` spells.
     pub(in crate::check) fn register_fn_sig_with_name(
@@ -1236,7 +1224,7 @@ impl Checker {
         fd: &FnDecl,
         declaration: Option<crate::DefId>,
     ) {
-        let skip = usize::from(fd.params.first().is_some_and(|p| self.is_receiver_param(p)));
+        let skip = usize::from(fd.params.first().is_some_and(|p| p.is_receiver));
         // Validate that no bound carries unsupported positional type arguments
         // (e.g. `T: Eq<U>`) before `collect_type_param_bounds` erases them.
         self.validate_fn_type_param_bound_shapes(fd);
@@ -1298,7 +1286,7 @@ impl Checker {
             requires_mutable_receiver: fd
                 .params
                 .first()
-                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+                .is_some_and(|p| p.is_receiver && p.is_mutable),
             receiver_update: if fd.origin == hew_parser::ast::DeclarationOrigin::MachineStep {
                 super::ReceiverUpdate::Staged
             } else {
@@ -1824,12 +1812,7 @@ impl Checker {
             }
         }
 
-        let skip = usize::from(
-            method
-                .params
-                .first()
-                .is_some_and(|p| self.is_receiver_param(p)),
-        );
+        let skip = usize::from(method.params.first().is_some_and(|p| p.is_receiver));
         let param_names: Vec<String> = method
             .params
             .iter()
@@ -1963,7 +1946,7 @@ impl Checker {
             requires_mutable_receiver: method
                 .params
                 .first()
-                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+                .is_some_and(|p| p.is_receiver && p.is_mutable),
             receiver_update: if method.origin == hew_parser::ast::DeclarationOrigin::MachineStep {
                 super::ReceiverUpdate::Staged
             } else {

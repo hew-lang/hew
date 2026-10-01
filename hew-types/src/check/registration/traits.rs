@@ -2059,11 +2059,11 @@ impl Checker {
         let trait_receiver_mut = trait_method
             .params
             .first()
-            .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+            .is_some_and(|p| p.is_receiver && p.is_mutable);
         let impl_receiver_mut = method
             .params
             .first()
-            .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+            .is_some_and(|p| p.is_receiver && p.is_mutable);
         if trait_receiver_mut != impl_receiver_mut {
             let (trait_shape, impl_shape) = if trait_receiver_mut {
                 (

@@ -46,7 +46,7 @@ trait Zero {
         .iter()
         .filter_map(|item| match item {
             TraitItem::Method(method) => Some(method.params.first().is_some_and(|p| p.is_receiver)),
-            _ => None,
+            TraitItem::AssociatedType { .. } => None,
         })
         .collect();
     assert_eq!(receivers, [false, true]);

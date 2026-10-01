@@ -1701,7 +1701,7 @@ impl Checker {
         });
         if let Some(m) = found_method {
             let skip = if skip_receiver {
-                usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)))
+                usize::from(m.params.first().is_some_and(|p| p.is_receiver))
             } else {
                 0
             };
@@ -1748,7 +1748,7 @@ impl Checker {
             let requires_mutable_receiver = m
                 .params
                 .first()
-                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+                .is_some_and(|p| p.is_receiver && p.is_mutable);
             let returns_receiver_identity = Self::trait_receiver_identity_is_structurally_valid(&m);
             return Some(FnSig {
                 type_params,
@@ -1998,7 +1998,7 @@ impl Checker {
         });
         if let Some(m) = found_method {
             let skip = if skip_receiver {
-                usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)))
+                usize::from(m.params.first().is_some_and(|p| p.is_receiver))
             } else {
                 0
             };
@@ -2043,7 +2043,7 @@ impl Checker {
             let requires_mutable_receiver = m
                 .params
                 .first()
-                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+                .is_some_and(|p| p.is_receiver && p.is_mutable);
             let returns_receiver_identity = Self::trait_receiver_identity_is_structurally_valid(&m);
             return Some((
                 trait_name.to_string(),

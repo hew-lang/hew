@@ -654,7 +654,7 @@ impl Checker {
         let Some(receiver_name) = fd
             .params
             .first()
-            .filter(|param| self.is_receiver_param(param))
+            .filter(|param| param.is_receiver)
             .map(|param| param.name)
         else {
             return;

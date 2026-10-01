@@ -3137,7 +3137,7 @@ enum Command {
         crate::ast::SerialField::of(attributes).key.as_deref(),
         Some("added_name")
     );
-    let migrated = crate::fmt::migrate_punctuation(source).expect("migratable");
+    let migrated = crate::fmt::migrate_syntax(source).expect("migratable");
     assert!(
         migrated.contains("#[serial(case = \"kebab-case\")]"),
         "{migrated}"

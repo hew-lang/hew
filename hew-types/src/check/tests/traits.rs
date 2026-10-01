@@ -3356,3 +3356,49 @@ fn shout(t: dyn Tick) { println(t); }
         "{messages:?}"
     );
 }
+
+/// R11: a trait object in a `receive fn` signature cannot cross the actor
+/// boundary; the hint points at a declared failure enum.
+#[test]
+fn receive_fn_refuses_a_trait_object_in_its_signature() {
+    let output = check_source(
+        r#"
+type Boom { code: i64; }
+impl Display for Boom { fn fmt(val: Boom) -> string { f"boom {val.code}" } }
+impl Error for Boom {}
+actor Store {
+    receive fn put(n: i64) fails dyn Error {
+        if n < 0 { return error Boom { code: n }; }
+    }
+    receive fn take(e: dyn Error) {}
+}
+"#,
+    );
+    let refusals: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.starts_with("E_DYN_NOT_SEND"))
+        .collect();
+    assert_eq!(refusals.len(), 2, "{:?}", output.errors);
+    assert!(refusals
+        .iter()
+        .all(|e| e.suggestions.iter().any(|s| s.contains("declare an enum"))));
+}
+
+/// Control: a declared failure enum crosses the boundary.
+#[test]
+fn receive_fn_admits_a_declared_failure_enum() {
+    let output = check_source(
+        r#"
+enum StoreError { Full; Closed; }
+impl Display for StoreError { fn fmt(val: StoreError) -> string { "store" } }
+impl Error for StoreError {}
+actor Store {
+    receive fn put(n: i64) fails StoreError {
+        if n < 0 { return error StoreError.Full; }
+    }
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}

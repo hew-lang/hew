@@ -682,8 +682,8 @@ else needs `impl Display for {rendered}`)"
                     TypeErrorKind::UndefinedVariable,
                     span,
                     "`self` is the actor's own handle and exists only inside an actor \
-                     body; elsewhere use a named receiver parameter: \
-                     `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                     body or a method that declares it; add a `self` receiver: \
+                     `fn method(self)`"
                         .to_string(),
                 );
             } else {

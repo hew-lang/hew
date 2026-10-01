@@ -1104,7 +1104,7 @@ fn suggest_similar_field() {
 fn suggest_similar_method() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
+        "impl Counter { fn length(self) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.lenght(); }\n",
     ));
     let err = errors
@@ -1122,7 +1122,7 @@ fn suggest_similar_method() {
 fn no_suggest_method_when_too_different() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
+        "impl Counter { fn length(self) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.zzzzz(); }\n",
     ));
     let err = errors

@@ -824,12 +824,12 @@ fn main() {
 }
 
 trait PointMethods {
-    fn shift(pt: Point, dx: i64, dy: i64) -> Point;
+    fn shift(self, dx: i64, dy: i64) -> Point;
 }
 
 impl PointMethods for Point {
-    fn shift(pt: Point, dx: i64, dy: i64) -> Point {
-        Point { x: pt.x + dx, y: pt.y + dy }
+    fn shift(self, dx: i64, dy: i64) -> Point {
+        Point { x: self.x + dx, y: self.y + dy }
     }
 }
 
@@ -1143,7 +1143,7 @@ fn main() -> i64 {
 
     #[test]
     fn same_named_impl_methods_keep_their_own_return_hints() {
-        let source = "type A {\n    value: i64;\n}\n\nimpl A {\n    fn get(a: A) {\n        a.value\n    }\n}\n\ntype B {\n    flag: bool;\n}\n\nimpl B {\n    fn get(b: B) {\n        b.flag\n    }\n}\n";
+        let source = "type A {\n    value: i64;\n}\n\nimpl A {\n    fn get(self) {\n        self.value\n    }\n}\n\ntype B {\n    flag: bool;\n}\n\nimpl B {\n    fn get(self) {\n        self.flag\n    }\n}\n";
         let parsed = parse(source);
         let mut output = type_check(&parsed);
         let method = |index: usize| match &parsed.program.items[index].0 {

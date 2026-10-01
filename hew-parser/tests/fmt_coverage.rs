@@ -1273,7 +1273,7 @@ fn internal() -> i32 {
 
 #[test]
 fn fmt_pub_method_in_impl_body() {
-    let src = "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    pub fn make(v: int) -> Foo {\n        Foo { x: v }\n    }\n\n    fn private_helper(f: Foo) -> int {\n        f.x\n    }\n}\n";
+    let src = "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    pub fn make(v: int) -> Foo {\n        Foo { x: v }\n    }\n\n    fn private_helper(self) -> int {\n        self.x\n    }\n}\n";
     let out = roundtrip(src);
     assert!(out.contains("pub fn make"), "output: {out}");
     assert!(out.contains("fn private_helper"), "output: {out}");
@@ -1853,20 +1853,20 @@ fn fmt_trait_object_type_args_and_assoc_bindings_roundtrip() {
 
 #[test]
 fn fmt_trait_associated_type_roundtrip() {
-    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self.Item;\n}\n");
+    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(self) -> Self.Item;\n}\n");
 }
 
 #[test]
 fn fmt_trait_associated_type_bound_default_and_interleaved_fns_roundtrip() {
     exact_roundtrip(
-        "trait AssocForms {\n    type Plain;\n\n    fn make(c: Self) -> Self.Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(c: Self) -> Self.Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
+        "trait AssocForms {\n    type Plain;\n\n    fn make(self) -> Self.Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(self) -> Self.Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
     );
 }
 
 #[test]
 fn fmt_impl_associated_type_binding_roundtrip() {
     exact_roundtrip(
-        "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(c: Vec<i32>) -> i32 {\n        c[0]\n    }\n}\n",
+        "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(self) -> i32 {\n        self[0]\n    }\n}\n",
     );
 }
 
@@ -1875,7 +1875,7 @@ fn fmt_impl_members_keep_source_order() {
     // An associated type written after a method stays after it: the formatter
     // reprints members in the order the source declares them.
     exact_roundtrip(
-        "impl Container for Widget {\n    fn get(c: Widget) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
+        "impl Container for Widget {\n    fn get(self) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
     );
 }
 

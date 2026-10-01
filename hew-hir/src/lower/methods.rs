@@ -323,7 +323,7 @@ impl LowerCtx {
 
         // Intercept `.clone()` before any side-table lookup — but only when the
         // type checker has NOT already resolved the call to a user-defined method
-        // (e.g. a user-declared `trait Clone { fn clone(val: Self) -> Self; }`).
+        // (e.g. a user-declared `trait Clone { fn clone(self) -> Self; }`).
         //
         // Fail-closed per the no-silent-stub invariant (M-COW P0):
         // `.clone()` must never silently return the same handle.  Collection

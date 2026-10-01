@@ -119,7 +119,7 @@ fn vtable_drop_slot_runs_when_invoked() {
 
 /// Synthetic trait method: takes a receiver pointer, returns the
 /// receiver's value cast to `i64`. Modelled on the signature shape
-/// codegen will emit for `fn fmt(val: Self) -> i64` style methods
+/// codegen will emit for `fn fmt(self) -> i64` style methods
 /// (the `string`-returning real `Display` shape arrives in TO-7).
 unsafe extern "C" fn method_return_value(receiver: *mut u8) -> i64 {
     i64::from(unsafe { *receiver.cast::<u32>() })

@@ -468,7 +468,7 @@ fn imported_impl_body_using_ok_err_ctor_is_not_skipped() {
     // `fn_registry`, so they are not "unresolvable" bare calls. Regression for
     // the over-aggressive body-unresolvable gate that dropped every ADT-
     // returning imported impl method (e.g. `Conn::try_send`, `Url::port`).
-    let imported_src = "pub type Foo {\n    n: i64;\n}\n\nimpl Foo {\n    pub fn try_get(f: Foo) -> Result<i64, string> {\n        if f.n < 0 {\n            .Err(\"negative\")\n        } else {\n            .Ok(f.n)\n        }\n    }\n}\n";
+    let imported_src = "pub type Foo {\n    n: i64;\n}\n\nimpl Foo {\n    pub fn try_get(self) -> Result<i64, string> {\n        if self.n < 0 {\n            .Err(\"negative\")\n        } else {\n            .Ok(self.n)\n        }\n    }\n}\n";
     let program = build_imported_impl_program_src(imported_src);
     let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 

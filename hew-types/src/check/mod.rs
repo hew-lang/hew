@@ -35,11 +35,13 @@ pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
 pub mod dispatch_table;
+pub use dyn_layout::{DynReceiver, DynSlot, SlotEffect, TraitObjectLayout};
 mod indirect_candidates;
 pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
+mod dyn_layout;
 pub mod effects;
 mod exhaustiveness;
 mod expressions;
@@ -2779,6 +2781,7 @@ impl Checker {
                 })
                 .collect();
 
+        let trait_object_layouts = self.finalize_trait_object_layouts();
         // Also resolve inferred call type args so the enrichment layer can
         // fill in explicit type annotations for the codegen.
         let mut resolved_call_type_args: HashMap<SpanKey, Vec<Ty>> =
@@ -3298,6 +3301,7 @@ impl Checker {
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             error_conversions: std::mem::take(&mut self.error_conversions),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
+            trait_object_layouts,
             closure_capture_facts: resolved_closure_capture_facts,
             closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),
             actor_protocol_descriptors,

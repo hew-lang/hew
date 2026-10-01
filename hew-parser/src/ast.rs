@@ -1559,6 +1559,12 @@ pub struct TraitMethod {
     /// Whether the declaration takes ownership of its receiver.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub consumes_self: bool,
+    /// `fn[suspends] name(..)`: a call through this method may suspend the
+    /// caller. A trait method declaration is a written boundary (A421): an
+    /// unmarked method never suspends, so an implementation whose body
+    /// suspends cannot fill it behind `dyn`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspends: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

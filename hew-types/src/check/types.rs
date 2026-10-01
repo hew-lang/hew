@@ -821,6 +821,9 @@ pub struct TypeCheckOutput {
     /// as a trait object but whose span is absent from this map is a HIR
     /// diagnostic, not a runtime panic.
     pub dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
+    /// The layout of every trait object a coercion or dispatch names, keyed
+    /// by its canonical type: the one slot list (D540).
+    pub trait_object_layouts: std::collections::BTreeMap<ResolvedTy, super::TraitObjectLayout>,
     /// Checker-authoritative closure capture facts keyed by the closure literal span.
     ///
     /// The checker records the exact lexical binding for every captured name before
@@ -1270,6 +1273,9 @@ pub struct DynVtableEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynCoercion {
+    /// The canonical trait-object type the value is erased into; its layout
+    /// is `TypeCheckOutput::trait_object_layouts[target]`.
+    pub target: ResolvedTy,
     /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
     pub trait_name: String,
     /// Ordered checker-resolved bounds of the target trait object. Each
@@ -1336,7 +1342,12 @@ pub struct DynMethodCall {
     /// Trait method name as declared in the trait body.
     pub method_name: String,
     /// Vtable slot index: `3 + position` in the trait object's layout.
+    // TRANSITION(D1b): WHY the SIR/MIR vtable builders still number slots
+    // past the runtime prefix; WHEN D1b switches both sides to the 0-based
+    // `TraitObjectLayout::slot_of`; WHAT the prefix moves into physical MIR.
     pub slot: u32,
+    /// The slot's declared effect, read from the trait object's layout.
+    pub effect: super::SlotEffect,
     /// Caller-side method signature after substituting trait type
     /// parameters and associated-type bindings from the receiver's
     /// `Ty::TraitObject` bound (e.g. `Self::Item -> int`). The receiver
@@ -3651,6 +3662,10 @@ pub struct Checker {
     /// into `TypeCheckOutput::dyn_trait_coercions` at the end of
     /// `check_program`.
     pub(super) dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Layouts recorded by [`Checker::dyn_layout`], published through
+    /// `TypeCheckOutput::trait_object_layouts`.
+    pub(super) trait_object_layouts:
+        HashMap<Vec<crate::ty::TraitObjectBound>, super::TraitObjectLayout>,
     /// Failure-edge conversions, moved into
     /// `TypeCheckOutput::error_conversions`.
     pub(super) error_conversions: HashMap<SpanKey, ErrorConversion>,
@@ -4507,6 +4522,7 @@ impl Checker {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            trait_object_layouts: HashMap::new(),
             error_conversions: HashMap::new(),
             from_impls: Vec::new(),
             dyn_trait_method_calls: HashMap::new(),

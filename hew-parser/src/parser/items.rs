@@ -1220,6 +1220,7 @@ impl Parser<'_> {
             Some(Token::Fn) => {
                 let fn_start = self.peek_span().start;
                 self.advance();
+                let suspends = self.parse_trait_method_effect()?;
                 let name = self.expect_ident()?;
                 let type_params = self.parse_opt_type_params()?;
 
@@ -1255,6 +1256,7 @@ impl Parser<'_> {
                     doc_comment,
                     lang_item,
                     consumes_self,
+                    suspends,
                 }))
             }
             Some(Token::Type) => self.parse_trait_associated_type(),
@@ -1270,6 +1272,24 @@ impl Parser<'_> {
                 None
             }
         }
+    }
+
+    /// The optional `[suspends]` effect after a trait method's `fn`, the
+    /// spelling a written callable type uses (`fn[suspends](..)`).
+    fn parse_trait_method_effect(&mut self) -> Option<bool> {
+        if !self.eat(&Token::LeftBracket) {
+            return Some(false);
+        }
+        if self.peek() != Some(&Token::Identifier("suspends")) {
+            self.error_with_hint(
+                "expected `suspends` in a trait method effect".into(),
+                "a trait method declares `fn[suspends] name(..)` when a call may suspend",
+            );
+            return None;
+        }
+        self.advance();
+        self.expect(&Token::RightBracket)?;
+        Some(true)
     }
 
     fn parse_trait_associated_type(&mut self) -> Option<TraitItem> {

@@ -25,6 +25,8 @@ pub(super) struct DynLayoutSlot {
     /// The written bound whose closure first reaches this method; its type
     /// arguments and associated-type bindings substitute the signature.
     pub bound: usize,
+    pub receiver: super::DynReceiver,
+    pub effect: super::SlotEffect,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1777,6 +1779,7 @@ impl Checker {
         span: &Span,
     ) -> Option<Vec<DynLayoutSlot>> {
         let mut layout = Vec::new();
+        let mut closure = Vec::new();
         let mut visited = std::collections::HashSet::new();
         for (bound, trait_object_bound) in traits.iter().enumerate() {
             let pushed = self.push_dyn_layout_trait(
@@ -1784,6 +1787,7 @@ impl Checker {
                 &trait_object_bound.trait_name,
                 bound,
                 &mut visited,
+                &mut closure,
                 &mut layout,
             );
             if let Err(unidentified) = pushed {
@@ -1802,6 +1806,7 @@ impl Checker {
                 return None;
             }
         }
+        self.record_trait_object_layout(traits, closure, &layout);
         Some(layout)
     }
 
@@ -1811,6 +1816,7 @@ impl Checker {
         spelling: &str,
         bound: usize,
         visited: &mut std::collections::HashSet<String>,
+        closure: &mut Vec<crate::DefId>,
         layout: &mut Vec<DynLayoutSlot>,
     ) -> Result<(), String> {
         if !visited.insert(key.to_string()) {
@@ -1818,8 +1824,16 @@ impl Checker {
         }
         for super_key in self.trait_supers(key).cloned().unwrap_or_default() {
             let super_spelling = super_key.rsplit('.').next().unwrap_or(super_key.as_str());
-            self.push_dyn_layout_trait(&super_key, super_spelling, bound, visited, layout)?;
+            self.push_dyn_layout_trait(
+                &super_key,
+                super_spelling,
+                bound,
+                visited,
+                closure,
+                layout,
+            )?;
         }
+        closure.extend(self.trait_key_id(key));
         let Some(info) = self.trait_def_at(key) else {
             return Ok(());
         };
@@ -1839,6 +1853,18 @@ impl Checker {
                 declaring_trait,
                 method: method_id,
                 bound,
+                receiver: if method.consumes_self {
+                    super::DynReceiver::Consume
+                } else if method.params.first().is_some_and(|param| param.is_mutable) {
+                    super::DynReceiver::BorrowMut
+                } else {
+                    super::DynReceiver::Borrow
+                },
+                effect: if method.suspends {
+                    super::SlotEffect::Suspends
+                } else {
+                    super::SlotEffect::Plain
+                },
             });
         }
         Ok(())

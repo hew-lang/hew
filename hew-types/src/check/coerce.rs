@@ -774,7 +774,23 @@ impl Checker {
             assoc_bindings: assoc_bindings.clone(),
         };
 
+        let target_ty = self.finalize_type_for_handoff(&Ty::TraitObject {
+            traits: traits.to_vec(),
+        });
+        let Ok(target) = crate::resolved_ty::ResolvedTy::from_ty(&target_ty) else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "cannot erase into `{}`: its type arguments are not known here; \
+                     annotate the trait object's type",
+                    target_ty.user_facing()
+                ),
+            );
+            return None;
+        };
         Some(DynCoercion {
+            target,
             trait_name: composite_trait_name,
             trait_bounds: traits.to_vec(),
             concrete_type: concrete_type.clone(),

@@ -623,7 +623,7 @@ impl Checker {
                 // visible to the eager trait-use path. Pass `None` for the import
                 // span deliberately: this import statement lives in a stdlib source
                 // file, so its span indexes that file — not the user document the
-                // diagnostics are reported against. Recording it in `import_spans`
+                // diagnostics are reported against. Reporting it as an import
                 // would make it a user-facing unused-import lint candidate whose
                 // span cannot be resolved to any user source, mis-attributing a
                 // stdlib-internal offset to the user's document.

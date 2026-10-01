@@ -1227,16 +1227,8 @@ impl Checker {
 
         if let Some(qualified) = qualified_owned.as_deref() {
             // `qualified` is the full owner-qualified source identity
-            // (`owner.TypeName`), and `owner` itself may be a dotted module
-            // path (`src.plain`). Splitting on the FIRST dot mistook the
-            // owner's leading path segment for the lexical import binding —
-            // `import_spans` keys a selective import by the MODULE's short
-            // name (`plain`), not its first path segment (`src`), so that
-            // mis-derived key never matched and `Plain { … }` warned
-            // "unused import" even though it constructed the imported type.
-            // `mark_module_owner_bindings_used` resolves the owner back to
-            // the correct lexical binding via `module_import_bindings`,
-            // mirroring the working annotation-position credit above.
+            // (`owner.TypeName`); constructing it uses the current file's
+            // imports of `owner`.
             if let Some((owner, _)) = qualified.rsplit_once('.') {
                 self.note_path_use(owner);
             }

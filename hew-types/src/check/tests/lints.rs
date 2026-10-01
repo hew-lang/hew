@@ -2987,15 +2987,8 @@ fn no_warn_used_import() {
 // ── Selective-import load-bearing use false positive (D8) ─────────────
 //
 // A selectively-imported type used only through expression-position
-// resolution (a record literal, an enum-variant constructor call) still
-// warned "unused import" — the checker's `import_spans` unused-import
-// table keys each import by the MODULE's short name (`fixture` for
-// `import src.fixture.{Widget}`), but the two credit sites below spliced
-// the resolved owner-qualified identity apart on the FIRST `.` rather than
-// the LAST, so a multi-segment module path (`src.fixture`) mapped to the
-// wrong lexical key (`src` instead of `fixture`) and the credit never
-// landed. Annotation-position resolution already threaded the correct
-// `mark_module_owner_bindings_used` call (post-#2930) and never had this bug.
+// resolution (a record literal, an enum-variant constructor call) must count
+// as a use of its import, as annotation-position resolution does.
 
 fn check_resolved_selective_import(child_source: &str, root_source: &str) -> TypeCheckOutput {
     let child = hew_parser::parse(child_source);

@@ -2957,7 +2957,7 @@ pub(super) struct DeferredBoundCheck {
 /// bare name carried by `Account`'s own actor-handle type) against the
 /// local-first identity policy.
 ///
-/// Produced by `Checker::resolve_bare_actor_identity`. `Resolved` carries the
+/// Produced by `Checker::resolve_bare_spawn_target_identity`. `Resolved` carries the
 /// registered identity key — bare for root/flat actors, dotted
 /// `{module_short}.{name}` for module actors. `Ambiguous` carries the sorted
 /// candidate module list for the typed diagnostic; resolution is never

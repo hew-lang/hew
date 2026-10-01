@@ -1598,16 +1598,9 @@ mod warning_source_attribution {
     use super::*;
 
     fn make_unused_import_decl() -> ImportDecl {
-        // import std::encoding::json  (unresolved — no resolved_items)
-        // The module registry will fail to find it, but the import is still
-        // registered into import_spans so the UnusedImport path is exercised.
-        // Use a fake single-segment path so `register_import` takes the user-
-        // module branch (path non-empty, no resolved_items → unresolved error
-        // path, does NOT insert into import_spans).
-        //
-        // Instead we supply `resolved_items = Some(vec![])` to convince
-        // register_import to follow the user-module branch and insert into
-        // import_spans.
+        // A fake single-segment module with `resolved_items = Some(vec![])`
+        // takes the user-module branch of `register_import`, which reports
+        // the declaration to the unused-import lint.
         ImportDecl {
             path: hew_parser::ast::Path::from_spellings(&["fakemod"]),
             spec: None,
@@ -1772,7 +1765,7 @@ mod warning_source_attribution {
     /// continue to carry `source_module = None` — no regression.
     #[test]
     fn root_unused_import_has_no_source_module() {
-        // Build an ImportDecl with resolved_items so it reaches import_spans.
+        // Build an ImportDecl with resolved_items so the lint reports it.
         let import_decl = make_unused_import_decl();
         let main_fn = make_trivial_fn("main");
 
@@ -1888,7 +1881,7 @@ mod warning_source_attribution {
         }
     }
 
-    // ── ImportKey: same short-name across different owning modules ─────────────
+    // ── Same short name imported by different owning modules ───────────────────
 
     fn make_named_import_decl(short_name: &str) -> ImportDecl {
         ImportDecl {
@@ -1983,13 +1976,10 @@ mod warning_source_attribution {
         );
     }
 
-    /// When one owning module *uses* `fakemod` (via a module-qualified call
-    /// registered through `import_spans`) and another owning module imports the
-    /// same short name but never uses it, only the second module's import must
-    /// be warned as unused.
-    ///
-    /// This is the core clobber regression: before the `ImportKey` fix, marking
-    /// `fakemod` as used in `mod_a` would also suppress the warning for `mod_b`.
+    /// When one owning module *uses* `fakemod` (via a module-qualified call)
+    /// and another owning module imports the same short name but never uses
+    /// it, only the second module's import is warned as unused: use is
+    /// recorded per import declaration.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -2141,8 +2131,8 @@ mod warning_source_attribution {
     }
 
     /// A trait impl recorded elsewhere must not make an unrelated owner-module
-    /// import look used. The eager trait-use path records `ImportKey { owner,
-    /// short_name }`; a global trait table fallback would over-suppress this.
+    /// import look used; a global trait table fallback would over-suppress
+    /// this.
     #[test]
     fn recorded_trait_impl_elsewhere_does_not_suppress_unused_import() {
         let root_id = ModulePath::root();

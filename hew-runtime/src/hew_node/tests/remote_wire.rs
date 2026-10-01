@@ -699,9 +699,9 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
         "a remote ask to a never-spawned actor must report ActorStopped, not a silent drop"
     );
     assert_eq!(
-        crate::internal::types::hew_ask_error_translate_for_public_result(status),
-        3,
-        "a dead remote actor must surface the same public ActorError.Dead ordinal (3) the \
+        AskError::ALL[usize::try_from(status).expect("ask status")].public_role(),
+        Some(crate::internal::types::ActorErrorRole::Dead),
+        "a dead remote actor must surface the same public ActorError.Dead role the \
          local ask route reports (D526)"
     );
 
@@ -781,9 +781,9 @@ fn two_node_inbound_dead_actor_ask_reports_dead_not_decode_failure() {
          local dead target's reason rather than DecodeFailure"
     );
     assert_eq!(
-        crate::internal::types::hew_ask_error_translate_for_public_result(status),
-        3,
-        "a dead remote actor must surface the same public ActorError.Dead ordinal (3) the \
+        AskError::ALL[usize::try_from(status).expect("ask status")].public_role(),
+        Some(crate::internal::types::ActorErrorRole::Dead),
+        "a dead remote actor must surface the same public ActorError.Dead role the \
          local ask route reports (D526)"
     );
 

@@ -764,6 +764,7 @@ pub trait Error: Display {
 /// A conversion never chains, and erasure into `dyn Error` needs no impl.
 #[lang_item("from")]
 pub trait From<Source> {
+    #[lang_item("from.from")]
     fn from(value: Source) -> Self;
 }
 

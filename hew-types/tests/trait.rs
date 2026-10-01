@@ -19,6 +19,8 @@ mod dyn_trait_coercion;
 mod error_trait;
 #[path = "trait/iterator_trait_surface.rs"]
 mod iterator_trait_surface;
+#[path = "trait/param_bounds.rs"]
+mod param_bounds;
 #[path = "trait/trait_bounds.rs"]
 mod trait_bounds;
 #[path = "trait/trait_coverage.rs"]

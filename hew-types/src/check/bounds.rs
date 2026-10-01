@@ -343,6 +343,37 @@ impl Checker {
             .any(|bound| self.bound_provides(bound.trait_id, trait_id))
     }
 
+    /// Whether a binder in scope carries a bound providing `wanted`. A bound
+    /// with arguments (`From<Low>`) is provided only by a bound of the same
+    /// trait whose arguments agree.
+    pub(in crate::check) fn param_carries_bound(
+        &mut self,
+        param: crate::TypeParamId,
+        wanted: &TraitRef,
+    ) -> bool {
+        if wanted.args.is_empty() {
+            return self.param_carries_trait(param, wanted.trait_id);
+        }
+        let wanted_args: Vec<Ty> = wanted
+            .args
+            .iter()
+            .map(|arg| self.subst.resolve(arg))
+            .collect();
+        self.active_bounds_of(param).iter().any(|carried| {
+            if carried.trait_id != wanted.trait_id || carried.args.len() != wanted_args.len() {
+                return false;
+            }
+            let snapshot = self.subst.snapshot();
+            let agree = carried
+                .args
+                .iter()
+                .zip(&wanted_args)
+                .all(|(carried, wanted)| self.try_unify_with_owner_identity(carried, wanted));
+            self.subst.restore(snapshot);
+            agree
+        })
+    }
+
     /// Whether a binder in scope carries a bound that is `marker`.
     pub(in crate::check) fn param_carries_marker(
         &self,
@@ -537,9 +568,7 @@ impl Checker {
                 // A binder of the enclosing declaration satisfies the bound
                 // its own bounds provide.
                 match head {
-                    crate::TypeHead::Param(param) => {
-                        self.param_carries_trait(param.id, bound.trait_id)
-                    }
+                    crate::TypeHead::Param(param) => self.param_carries_bound(param.id, bound),
                     _ => false,
                 }
             }

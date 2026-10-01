@@ -474,3 +474,44 @@ fn missing() -> i64 fails Mid {
     );
     assert_clean(&output);
 }
+
+#[test]
+fn a_from_bound_on_the_error_binder_converts_at_the_edge() {
+    let output = check(
+        r"
+fn lifted<F: From<Low>>() -> i64 fails F {
+    let value = low()?;
+    value + 1
+}
+",
+    );
+    assert_clean(&output);
+    assert!(
+        output.error_conversions.is_empty(),
+        "a bound conversion is no declared impl: {:?}",
+        output.error_conversions
+    );
+    let calls: Vec<_> = output.binder_trait_calls.values().collect();
+    let [call] = calls.as_slice() else {
+        panic!("the `?` edge converts through the bound: {calls:#?}");
+    };
+    assert_eq!(call.self_param.spelling.as_str(), "F");
+    let hew_types::CallTarget::StaticTraitMethod { method, .. } = call.target else {
+        panic!("the edge calls `From.from`: {:?}", call.target);
+    };
+    assert_eq!(output.defs.name(method).as_str(), "from");
+}
+
+#[test]
+fn a_from_bound_at_another_source_does_not_convert() {
+    let output = check(
+        r"
+fn lifted<F: From<i64>>() -> i64 fails F {
+    let value = low()?;
+    value + 1
+}
+",
+    );
+    no_conversion(&output);
+    assert!(output.binder_trait_calls.is_empty());
+}

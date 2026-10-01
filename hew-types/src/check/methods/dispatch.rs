@@ -219,6 +219,9 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if let Some(param) = self.binder_call_head(receiver) {
+            return self.check_binder_associated_call(param, method, args, span);
+        }
         let dotted_type_head = self.resolve_dotted_type_head(receiver, method);
         if let Some(head) = dotted_type_head.as_ref() {
             if let Some(result) = self.dispatch_dotted_type_member(
@@ -2422,8 +2425,9 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
-                        let declaring_traits: Vec<&str> =
+                        let mut declaring_traits: Vec<&str> =
                             hits.iter().map(|hit| self.defs.path(hit.0)).collect();
+                        declaring_traits.sort_unstable();
                         self.report_error(
                             TypeErrorKind::AmbiguousTraitMethod,
                             span,
@@ -2894,5 +2898,186 @@ impl Checker {
             }
         }
         self.errors.push(error);
+    }
+}
+
+impl Checker {
+    /// The generic binder a call head names: `T` in `T.make(n)` when `T` is
+    /// no value in scope.
+    pub(in crate::check) fn binder_call_head(
+        &mut self,
+        receiver: &Spanned<Expr>,
+    ) -> Option<crate::ParamHead> {
+        let Expr::Ident(name) = &receiver.0 else {
+            return None;
+        };
+        if self.env.lookup_ref(*name).is_some() {
+            return None;
+        }
+        let path = hew_parser::ast::Path::single(*name, receiver.1.clone());
+        match self.resolve_type_path(&path)? {
+            super::scope::Resolution::Param(id) => Some(crate::ParamHead::new(id, name.name)),
+            _ => None,
+        }
+    }
+
+    /// The associated function `method` a bound on `param` declares, with
+    /// the bound that reaches it, or the refusal to report.
+    fn binder_trait_method(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+    ) -> Result<(crate::DefId, FnSig, TraitRef), Box<(TypeErrorKind, String)>> {
+        let mut hits: Vec<(crate::DefId, FnSig, TraitRef)> = Vec::new();
+        for bound in self.active_bounds_of(param.id) {
+            for declaring in self.collect_all_declaring_traits_for_method(bound.trait_id, method) {
+                if hits.iter().any(|(known, _, _)| *known == declaring) {
+                    continue;
+                }
+                if let Some((_, sig)) = self.lookup_trait_method_with_origin(declaring, method) {
+                    hits.push((declaring, sig, bound.clone()));
+                }
+            }
+        }
+        if hits.len() > 1 {
+            let mut declaring: Vec<&str> = hits
+                .iter()
+                .map(|(id, _, _)| self.defs.display(*id))
+                .collect();
+            declaring.sort_unstable();
+            return Err(Box::new((
+                TypeErrorKind::AmbiguousTraitMethod,
+                format!(
+                    "ambiguous associated function `{method}` on `{}`: declared by multiple \
+                     traits ({}); qualify the call to disambiguate",
+                    param.spelling,
+                    declaring.join(", ")
+                ),
+            )));
+        }
+        let Some((declaring, sig, bound)) = hits.pop() else {
+            return Err(Box::new((
+                TypeErrorKind::UndefinedMethod,
+                format!(
+                    "no associated function `{method}` in the bounds of type parameter `{}`",
+                    param.spelling
+                ),
+            )));
+        };
+        if !sig.associated {
+            return Err(Box::new((
+                TypeErrorKind::UndefinedMethod,
+                format!(
+                    "`{}.{method}` takes a receiver; call it on a value of type `{}`",
+                    self.defs.display(declaring),
+                    param.spelling
+                ),
+            )));
+        }
+        Ok((declaring, sig, bound))
+    }
+
+    /// Check `T.method(args)` where `T` is a generic binder: the method is
+    /// an associated function a bound on `T` declares, called with `T` as
+    /// `Self`. The selection is published in `binder_trait_calls`.
+    pub(in crate::check) fn check_binder_associated_call(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let (declaring, mut sig, bound) = match self.binder_trait_method(param, method) {
+            Ok(selected) => selected,
+            Err(refusal) => {
+                let (kind, message) = *refusal;
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_error(kind, span, message);
+                return Ty::Error;
+            }
+        };
+        // `Self` is the binder; a bound's own arguments fill its trait's
+        // parameters (`from(value: Source)` under `F: From<Low>`).
+        let mut substitution: HashMap<crate::ParamHead, Ty> =
+            HashMap::from([(crate::ParamHead::receiver(declaring), Ty::param(param))]);
+        if declaring == bound.trait_id {
+            if let Some(info) = self.trait_info(declaring) {
+                substitution.extend(
+                    info.type_params
+                        .iter()
+                        .copied()
+                        .zip(bound.args.iter().cloned()),
+                );
+            }
+        }
+        sig.params = sig
+            .params
+            .iter()
+            .map(|ty| ty.substitute_type_params_parallel(&substitution))
+            .collect();
+        sig.return_type = sig
+            .return_type
+            .substitute_type_params_parallel(&substitution);
+        let callee = self.defs.path(declaring).to_string();
+        let applied = self.apply_instantiated_call_signature_with_assoc(
+            &sig,
+            None,
+            args,
+            span,
+            super::calls::SignatureArgApplication::FunctionLike {
+                param_names: &sig.param_names,
+                arity_context: format!("associated function `{method}`"),
+            },
+            true,
+            Some(super::types::GenericCallee::Method {
+                type_name: &callee,
+                method,
+                owner_type_args: &[],
+            }),
+        );
+        let target = self.trait_method_ids_of(declaring, method).map_or_else(
+            || CallTarget::Unsupported {
+                reason: format!("trait method `{callee}.{method}` has no declaration identity"),
+            },
+            |(declaring_trait, method)| CallTarget::static_trait(declaring_trait, method),
+        );
+        self.binder_trait_calls.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            BinderTraitCall {
+                target,
+                self_param: param,
+            },
+        );
+        self.project_assoc_types(&applied.return_type)
+    }
+
+    /// The `From` conversion a bound on the binder `target` provides from
+    /// `source` at a failure edge (`F: From<E>`), as the static call the edge
+    /// makes.
+    pub(in crate::check) fn binder_from_conversion(
+        &mut self,
+        target: crate::ParamHead,
+        source: &Ty,
+    ) -> Option<BinderTraitCall> {
+        let from = self.lang_trait(crate::LangItem::From)?;
+        let wanted = TraitRef {
+            trait_id: from,
+            args: vec![source.clone()],
+            assoc: Vec::new(),
+        };
+        if !self.param_carries_bound(target.id, &wanted) {
+            return None;
+        }
+        let method = self
+            .lang_items
+            .get(crate::LangItem::FromFrom.key())
+            .and_then(|binding| binding.method_id)?;
+        Some(BinderTraitCall {
+            target: CallTarget::static_trait(from, method),
+            self_param: target,
+        })
     }
 }

@@ -1,0 +1,33 @@
+import bound_identity.alpha;
+
+import bound_identity.beta.{Show as Counted};
+
+type Item {
+    n: i64;
+}
+
+impl alpha.Show for Item {
+    fn show(self) -> string {
+        f"item {self.n}"
+    }
+}
+
+impl Counted for Item {
+    fn show(self) -> i64 {
+        self.n * 2
+    }
+}
+
+fn label<T: alpha.Show>(value: T) -> string {
+    value.show()
+}
+
+fn count<T: Counted>(value: T) -> i64 {
+    value.show()
+}
+
+fn main() {
+    let item = Item { n: 4 };
+    println(label(item));
+    println(count(item));
+}

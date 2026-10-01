@@ -911,6 +911,15 @@ impl Checker {
         if compiling_canonical_stdlib || !self.protected_prelude_bindings.contains_key(name) {
             return false;
         }
+        // The refused declaration binds nothing: the name keeps naming the
+        // prelude's declaration.
+        if let Some(module) = declaration_owner.map_or_else(
+            || self.defs.root_module(),
+            |owner| self.defs.module_for_path(owner),
+        ) {
+            let namespace = self.scopes.namespace_of(module);
+            self.scopes.unbind_item(namespace, Symbol::intern(name));
+        }
         let declaration_key = (declaration_owner.map(str::to_string), name.to_string());
         if self
             .protected_prelude_declaration_collisions

@@ -3581,6 +3581,8 @@ class ExecutorV1 {
       ? fault.message
       : (fault.message ?? trapMessage(fault.trap));
     const [code, kind] = faultInfo(fault);
+    // Native writes the failure line to stderr before it exits; so does this.
+    this.trace.writeStderr(faultReport(fault), null);
     // A failing run reports no exit code: native exits 1 for every fault and
     // names the kind in its message, so the kind is what travels, in
     // `runtime_failures`. The page turns it into an exit code of its own.

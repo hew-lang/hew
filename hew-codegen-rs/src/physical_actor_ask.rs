@@ -803,3 +803,26 @@ pub(super) const fn actor_error_variant_role(
         Role::Partition => Variant::ActorErrorPartition,
     }
 }
+
+#[cfg(test)]
+mod actor_error_role_tests {
+    use hew_runtime::internal::types::AskError;
+
+    /// Every runtime ask failure reaches the `ActorError` role of the same
+    /// name; SIR then joins that role to the std variant by name, so the tag
+    /// follows the declaration rather than a position.
+    #[test]
+    fn every_ask_failure_selects_its_named_actor_error_role() {
+        for status in AskError::ALL {
+            let Some(role) = status.public_role() else {
+                assert_eq!(status, AskError::None, "only success has no role");
+                continue;
+            };
+            assert_eq!(
+                format!("{:?}", super::actor_error_variant_role(role)),
+                format!("ActorError{role:?}"),
+                "{status:?} drifted from its ActorError role"
+            );
+        }
+    }
+}

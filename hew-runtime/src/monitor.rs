@@ -1611,6 +1611,10 @@ mod tests {
                 .actor_state
                 .store(HewActorState::Runnable as i32, Ordering::Release);
             let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
+            let exit = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!exit.is_null(), "retired link target must deliver its exit");
+            assert_eq!((*exit).msg_type, HewSysMsg::Exit.as_i32());
+            mailbox::hew_msg_node_free(exit);
             for _ in 0..2 {
                 let previous_id = id;
                 assert_eq!(hew_native_actor_monitor(token, &raw mut id), 0);

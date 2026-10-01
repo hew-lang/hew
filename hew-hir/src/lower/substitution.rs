@@ -344,14 +344,8 @@ pub(super) fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            collect_call_sites_in_expr(conn, out, trait_out);
-        }
         HirExprKind::AwaitTask { operand: child, .. } => {
             collect_call_sites_in_expr(child, out, trait_out);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            collect_call_sites_in_expr(listener, out, trait_out);
         }
         HirExprKind::RemoteActorAsk {
             receiver,
@@ -533,9 +527,6 @@ pub(super) fn collect_call_sites_in_expr(
             source: receiver, ..
         } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            collect_call_sites_in_expr(stream, out, trait_out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             if let Some(fields) = payload {

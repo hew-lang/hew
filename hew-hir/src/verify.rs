@@ -416,15 +416,6 @@ impl Verifier {
             HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
                 self.expr(operand);
             }
-            HirExprKind::ConnAwaitRead { conn, .. } => {
-                self.expr(conn);
-            }
-            HirExprKind::ListenerAwaitAccept { listener, .. } => {
-                self.expr(listener);
-            }
-            HirExprKind::StreamRecvAwait { stream, .. } => {
-                self.expr(stream);
-            }
             HirExprKind::NumericCast {
                 value,
                 from_ty,

@@ -388,17 +388,10 @@ impl LowerCtx {
             }
             | HirExprKind::RecordCloneCall { src: object, .. }
             | HirExprKind::SubsumedValue { source: object, .. }
-            | HirExprKind::ConnAwaitRead { conn: object, .. }
             | HirExprKind::AwaitTask {
                 operand: object, ..
             } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
-            }
-            HirExprKind::ListenerAwaitAccept { listener, .. } => {
-                self.wrap_var_self_explicit_expr_returns(listener, receiver, abi_return_ty);
-            }
-            HirExprKind::StreamRecvAwait { stream, .. } => {
-                self.wrap_var_self_explicit_expr_returns(stream, receiver, abi_return_ty);
             }
             HirExprKind::Index { container, index }
             | HirExprKind::BorrowedIndex { container, index } => {

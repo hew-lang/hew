@@ -2,6 +2,8 @@
 
 pub mod physical;
 
+/// The closed runtime variant roles a physical variant glue names its cases by.
+pub use hew_sir::RuntimeVariantRole;
 pub use physical::{
     lower_physical_module, ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier,
     PhysicalBlock, PhysicalCallable, PhysicalCheckedFailure, PhysicalConst, PhysicalEdge,

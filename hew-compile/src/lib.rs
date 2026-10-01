@@ -6171,8 +6171,8 @@ fn main() {
         assert_eq!(
             super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle)
                 .map(|module| module.dotted()),
-            Some("std.concurrency".to_string()),
-            "a direct check of a canonical directory-module peer must retain std.concurrency identity"
+            Some("std.concurrency.lifecycle".to_string()),
+            "a direct check of a shipped nested std module must retain its identity"
         );
         fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
         let user_lifecycle = write_source(
@@ -6182,7 +6182,7 @@ fn main() {
         );
         assert!(
             super::canonical_direct_stdlib_module_for_source(Path::new(&user_lifecycle)).is_none(),
-            "a same-named user directory peer must not acquire std.concurrency provenance"
+            "a same-named user file must not acquire std.concurrency.lifecycle provenance"
         );
         let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
         assert!(

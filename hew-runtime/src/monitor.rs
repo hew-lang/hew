@@ -876,8 +876,13 @@ pub unsafe extern "C" fn hew_actor_monitor(
     out_monitor_id: *mut u64,
 ) -> i32 {
     const LINK_ERR_DEAD: i32 = 1;
+    const LINK_ERR_NO_CONTEXT: i32 = 3;
 
-    if watcher.is_null() || target.is_null() || out_monitor_id.is_null() {
+    // No current actor: nothing can receive the DOWN.
+    if watcher.is_null() {
+        return LINK_ERR_NO_CONTEXT;
+    }
+    if target.is_null() || out_monitor_id.is_null() {
         return LINK_ERR_DEAD;
     }
 

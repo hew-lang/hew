@@ -7,5 +7,5 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "CALLER OWNER\nCALLEE OWNER\n"
-stderr = "hew: failure: UserPanic (212): expect failed: a long word was present\n"
+stderr = "hew: failure: UserPanic (212): a long word was present\n"
 exit = 1

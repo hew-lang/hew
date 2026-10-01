@@ -467,7 +467,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         let reason_ty = ResolvedTy::from_ty(&hew_types::Ty::send_error())
             .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
-        let reason = self.actor_unit_variant(&reason_ty, self.ctx.i32_type().const_zero())?;
+        let full = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == reason_ty)
+            .and_then(|glue| glue.runtime_tag(hew_mir::RuntimeVariantRole::SendErrorFull))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("send refusal reason lacks its `Full` role".into())
+            })?;
+        let reason = self.actor_unit_variant(
+            &reason_ty,
+            self.ctx.i32_type().const_int(u64::from(full), false),
+        )?;
         let failure = self.ask_record(&failure_ty, &[reason, message])?;
         let object_ty = llvm_type(
             self.ctx,

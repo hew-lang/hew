@@ -95,7 +95,8 @@ export type RuntimeVariantRole =
   | "SendErrorBackpressure"
   | "SendErrorDead"
   | "DeliveryAccepted"
-  | "DeliveryDiscarded";
+  | "DeliveryDiscarded"
+  | "LinkErrorNoContext";
 
 export function runtimeTag(
   shape: VariantShape,

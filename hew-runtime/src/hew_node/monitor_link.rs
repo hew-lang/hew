@@ -18,22 +18,77 @@ use std::thread;
 
 // ── Cross-node monitor ───────────────────────────────────────────────────────
 
-const fn setup_error(variant: i32) -> i32 {
-    variant + 1
+use crate::monitor::HEW_OBSERVATION_NO_CONTEXT;
+
+/// A remote target this node cannot reach or register with answers the
+/// watcher with an immediate lost `DOWN` (a shutdown `DOWN` while this node
+/// stops), exactly as a route lost after setup would.
+fn monitor_unreachable(
+    rt: &crate::runtime::RuntimeInner,
+    ref_id: Option<u64>,
+    watcher_actor_id: u64,
+    target: Location,
+    out_monitor_id: *mut u64,
+) -> i32 {
+    // A registered observation is claimed once: a route-loss fan-out that
+    // already delivered its `DOWN` during setup leaves nothing to send.
+    let (monitor_id, down) = if let Some(ref_id) = ref_id {
+        (ref_id, rt.monitors.deliver_monitor_to_ref(ref_id, target))
+    } else {
+        let monitor_id = rt
+            .monitors
+            .next_observation_id()
+            .unwrap_or_else(|| crate::monitor::observation_ids_exhausted());
+        let down = crate::monitor::MonitorDown {
+            monitor_id,
+            watcher_actor_id,
+            target,
+        };
+        (monitor_id, Some(down))
+    };
+    if let Some(down) = down {
+        if current_node_accepts_observations() == Some(true) {
+            rt.monitors.enqueue_lost(down);
+        } else {
+            rt.monitors.enqueue_shutdown(down);
+        }
+    }
+    // SAFETY: the caller provides a writable out pointer.
+    unsafe { *out_monitor_id = monitor_id };
+    0
 }
 
-// LinkError declaration order in std/builtins.hew: Dead, Partition, NoContext.
-// A pid that no longer names a live incarnation is Dead; every failure to
-// reach or register with the peer leaves it unreachable.
-pub(super) const LINK_ERR_DEAD: i32 = setup_error(0);
-pub(super) const LINK_ERR_PARTITION: i32 = setup_error(1);
-pub(super) const LINK_ERR_NO_CURRENT_ACTOR: i32 = setup_error(2);
-const LINK_ERR_NODE_NOT_RUNNING: i32 = LINK_ERR_PARTITION;
-const LINK_ERR_INVALID_TARGET: i32 = LINK_ERR_DEAD;
-const LINK_ERR_STALE_REF: i32 = LINK_ERR_DEAD;
-const LINK_ERR_ENCODE_FAILURE: i32 = LINK_ERR_PARTITION;
-const LINK_ERR_LOCAL_SHUTDOWN: i32 = LINK_ERR_PARTITION;
-const LINK_ERR_RESOURCE_EXHAUSTED: i32 = LINK_ERR_PARTITION;
+/// A remote link this node cannot establish fires the link's partition
+/// policy at once, exactly as a route lost after setup would.
+fn link_unreachable(
+    rt: &crate::runtime::RuntimeInner,
+    ref_id: Option<u64>,
+    local_actor_id: u64,
+    target: Location,
+    policy_tag: u8,
+) -> i32 {
+    let fire = ref_id.is_none_or(|ref_id| {
+        rt.monitors
+            .deliver_link_down_to_ref(ref_id, target, crate::monitor::MONITOR_REASON_LOST)
+            .is_some()
+    });
+    if fire {
+        let _ = crate::link::deliver_cross_node_link_exit(
+            local_actor_id,
+            target.slot(),
+            crate::monitor::MONITOR_REASON_LOST,
+            policy_tag,
+        );
+    }
+    0
+}
+
+/// A null or malformed remote pid cannot come from checked source.
+fn invalid_remote_target(entry: &str) -> ! {
+    set_last_error(format!("{entry}: invalid remote target"));
+    std::process::abort()
+}
+
 const REMOTE_SETUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const REVERSE_LINK_SETUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 const SETUP_RACE_MONITOR: u8 = 1;
@@ -541,51 +596,40 @@ fn monitor_setup_request(
 /// Resolves the current node, records a watcher-side entry keyed by a fresh
 /// `ref_id`, and sends a `CTRL_MONITOR_REQ` to the node owning `target_pid` so
 /// that node will fan a `CTRL_MONITOR_DOWN` back when the target reaches a
-/// terminal state. The returned `ref_id` is assembled into the `MonitorRef`
-/// value. Returns status 0 and writes `out_monitor_id` on success; non-zero
-/// statuses are one-based `LinkError` discriminants.
+/// terminal state. Returns status 0 and writes `out_monitor_id`; a target that
+/// is gone or unreachable answers with an immediate `DOWN`. The one refusal is
+/// [`HEW_OBSERVATION_NO_CONTEXT`].
 ///
 /// # Safety
 ///
 /// `target` and `out_monitor_id` must point to writable/readable storage.
 #[no_mangle]
-#[allow(
-    clippy::too_many_lines,
-    reason = "function coordinates checked actor identity, route, observation, and wire setup"
-)]
 pub unsafe extern "C" fn hew_node_monitor_location(
     target: *const HewRemotePid,
     out_monitor_id: *mut u64,
 ) -> i32 {
-    if target.is_null() || out_monitor_id.is_null() {
-        return LINK_ERR_INVALID_TARGET;
-    }
-    // SAFETY: caller guarantees `target` is readable.
-    let Ok(target) = Location::try_from(unsafe { *target }) else {
-        return LINK_ERR_STALE_REF;
-    };
-    let Some(rt) = crate::runtime::rt_current_opt() else {
-        set_last_error("hew_node_monitor_location: no runtime installed");
-        return LINK_ERR_NODE_NOT_RUNNING;
-    };
+    const ENTRY: &str = "hew_node_monitor_location";
     let self_actor = crate::actor::hew_actor_self();
     if self_actor.is_null() {
         set_last_error("hew_node_monitor_location: no current actor (monitor watcher)");
-        return LINK_ERR_NO_CURRENT_ACTOR;
+        return HEW_OBSERVATION_NO_CONTEXT;
     }
-    match current_node_accepts_observations() {
-        Some(true) => {}
-        Some(false) => {
-            set_last_error("hew_node_monitor_location: node is shutting down");
-            return LINK_ERR_LOCAL_SHUTDOWN;
-        }
-        None => {
-            set_last_error("hew_node_monitor_location: no active node");
-            return LINK_ERR_NODE_NOT_RUNNING;
-        }
+    if target.is_null() || out_monitor_id.is_null() {
+        invalid_remote_target(ENTRY);
     }
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        invalid_remote_target(ENTRY);
+    };
+    // A current actor implies an installed runtime.
+    let rt = crate::runtime::rt_current();
     // SAFETY: hew_actor_self returned a live actor pointer.
     let watcher_actor_id = unsafe { (*self_actor).id };
+    let unreachable =
+        |ref_id| monitor_unreachable(rt, ref_id, watcher_actor_id, target, out_monitor_id);
+    if current_node_accepts_observations() != Some(true) {
+        return unreachable(None);
+    }
     let Some(target_route) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
@@ -594,16 +638,13 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         // SAFETY: current-node read lock pins the node.
         Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
     }) else {
-        set_last_error("hew_node_monitor_location: no active node");
-        return LINK_ERR_NODE_NOT_RUNNING;
+        return unreachable(None);
     };
-    if matches!(target_route, routing::LocationRoute::StaleRef) {
-        set_last_error("hew_node_monitor_location: target Location is stale");
-        return LINK_ERR_STALE_REF;
-    }
-    if matches!(target_route, routing::LocationRoute::Partition) {
-        set_last_error("hew_node_monitor_location: target identity is partitioned");
-        return LINK_ERR_PARTITION;
+    if matches!(
+        target_route,
+        routing::LocationRoute::StaleRef | routing::LocationRoute::Partition
+    ) {
+        return unreachable(None);
     }
     let Some(watcher) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
@@ -614,23 +655,17 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         let node = unsafe { &*node };
         local_actor_location(node, watcher_actor_id)
     }) else {
-        set_last_error("hew_node_monitor_location: exact watcher/target Location is unavailable");
-        return LINK_ERR_STALE_REF;
+        return unreachable(None);
     };
 
     // Record the watcher entry first so the connection-drop / SWIM-DEAD fan-out
     // can deliver even if the request send races a drop.
-    let Some(ref_id) = rt
+    let ref_id = rt
         .monitors
         .register_remote_monitor(target, watcher_actor_id)
-    else {
-        set_last_error("hew_node_monitor_location: monitor id space exhausted");
-        return LINK_ERR_RESOURCE_EXHAUSTED;
-    };
+        .unwrap_or_else(|| crate::monitor::observation_ids_exhausted());
     if current_node_accepts_observations() != Some(true) {
-        rt.monitors.remove_remote_observation(ref_id);
-        set_last_error("hew_node_monitor_location: node shut down during monitor setup");
-        return LINK_ERR_LOCAL_SHUTDOWN;
+        return unreachable(Some(ref_id));
     }
 
     let setup = if let routing::LocationRoute::Local { actor_id } = target_route {
@@ -657,45 +692,16 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         })
     };
     match setup {
-        Some(Ok(status)) => {
-            match status {
-                crate::envelope::SETUP_STATUS_ACCEPTED => {}
-                crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
-                    send_remote_demonitor(ref_id, target, watcher_actor_id);
-                    rt.monitors.remove_remote_observation(ref_id);
-                    return LINK_ERR_RESOURCE_EXHAUSTED;
-                }
-                _ => {
-                    send_remote_demonitor(ref_id, target, watcher_actor_id);
-                    if let Some(down) = rt.monitors.deliver_monitor_to_ref(ref_id, target) {
-                        rt.monitors.enqueue_lost(down);
-                    }
-                }
-            }
-            // SAFETY: caller provided a writable out pointer; write only on success.
+        Some(Ok(crate::envelope::SETUP_STATUS_ACCEPTED)) => {
+            // SAFETY: caller provided a writable out pointer.
             unsafe { *out_monitor_id = ref_id };
             0
         }
-        Some(Err(SetupSendError::StaleRef)) => {
-            rt.monitors.remove_remote_observation(ref_id);
-            LINK_ERR_STALE_REF
+        Some(Ok(_)) => {
+            send_remote_demonitor(ref_id, target, watcher_actor_id);
+            unreachable(Some(ref_id))
         }
-        Some(Err(SetupSendError::Encode)) => {
-            rt.monitors.remove_remote_observation(ref_id);
-            LINK_ERR_ENCODE_FAILURE
-        }
-        Some(Err(SetupSendError::Send)) => {
-            rt.monitors.remove_remote_observation(ref_id);
-            if current_node_accepts_observations() == Some(true) {
-                LINK_ERR_PARTITION
-            } else {
-                LINK_ERR_LOCAL_SHUTDOWN
-            }
-        }
-        None => {
-            rt.monitors.remove_remote_observation(ref_id);
-            LINK_ERR_LOCAL_SHUTDOWN
-        }
+        Some(Err(_)) | None => unreachable(Some(ref_id)),
     }
 }
 
@@ -800,9 +806,8 @@ fn link_local_target(
 /// `CTRL_LINK_DOWN` back when the target dies AND (b) registers the reverse link
 /// so the LOCAL actor's death crashes the remote peer too (bidirectional OTP).
 ///
-/// Returns a positive internal `ref_id` on success. Setup failures are returned
-/// as negative `LinkError` codes encoded as `-(variant + 1)`, so
-/// `link_remote` cannot report `Ok(())` for a link that was never established.
+/// Returns status 0; a target that is gone or unreachable fires the link's
+/// policy at once. The one refusal is [`HEW_OBSERVATION_NO_CONTEXT`].
 ///
 /// # Safety
 ///
@@ -816,40 +821,38 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
     target: *const HewRemotePid,
     policy_tag: i64,
 ) -> i32 {
-    if target.is_null() {
-        return LINK_ERR_INVALID_TARGET;
-    }
-    // SAFETY: caller guarantees `target` is readable.
-    let Ok(target) = Location::try_from(unsafe { *target }) else {
-        return LINK_ERR_STALE_REF;
-    };
-    let Some(rt) = crate::runtime::rt_current_opt() else {
-        set_last_error("hew_node_link_remote_location: no runtime installed");
-        return LINK_ERR_NODE_NOT_RUNNING;
-    };
+    const ENTRY: &str = "hew_node_link_remote_location";
     // The linking subject is the calling actor; a cross-node link with no local
-    // actor has nothing to crash, so fail closed.
+    // actor has nothing to crash.
     let self_actor = crate::actor::hew_actor_self();
     if self_actor.is_null() {
         set_last_error("hew_node_link_remote_location: no current actor (link subject)");
-        return LINK_ERR_NO_CURRENT_ACTOR;
+        return HEW_OBSERVATION_NO_CONTEXT;
     }
-    match current_node_accepts_observations() {
-        Some(true) => {}
-        Some(false) => {
-            set_last_error("hew_node_link_remote_location: node is shutting down");
-            return LINK_ERR_LOCAL_SHUTDOWN;
-        }
-        None => {
-            set_last_error("hew_node_link_remote_location: no active node");
-            return LINK_ERR_NODE_NOT_RUNNING;
-        }
+    if target.is_null() {
+        invalid_remote_target(ENTRY);
     }
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        invalid_remote_target(ENTRY);
+    };
+    // A current actor implies an installed runtime.
+    let rt = crate::runtime::rt_current();
     // SAFETY: hew_actor_self returned a non-null live actor pointer.
     // The actor `id` is already a packed pid (node<<48 | serial); the cascade
     // looks it up verbatim via get_actor_ptr_by_id, while the wire carries only
     // the serial part so the peer can address the linker on its own node.
     let local_actor_id = unsafe { (*self_actor).id };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "policy_tag is a small PartitionPolicy discriminant (0..4); the Hew side passes i64"
+    )]
+    let policy_tag = policy_tag as u8;
+    let unreachable = |ref_id| link_unreachable(rt, ref_id, local_actor_id, target, policy_tag);
+    if current_node_accepts_observations() != Some(true) {
+        return unreachable(None);
+    }
     let Some(target_route) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
@@ -858,37 +861,23 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         // SAFETY: current-node read lock pins the node.
         Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
     }) else {
-        set_last_error("hew_node_link_remote_location: no active node");
-        return LINK_ERR_NODE_NOT_RUNNING;
+        return unreachable(None);
     };
-    if matches!(target_route, routing::LocationRoute::StaleRef) {
-        set_last_error("hew_node_link_remote_location: target Location is stale");
-        return LINK_ERR_STALE_REF;
+    if matches!(
+        target_route,
+        routing::LocationRoute::StaleRef | routing::LocationRoute::Partition
+    ) {
+        return unreachable(None);
     }
-    if matches!(target_route, routing::LocationRoute::Partition) {
-        set_last_error("hew_node_link_remote_location: target identity is partitioned");
-        return LINK_ERR_PARTITION;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "policy_tag is a small PartitionPolicy discriminant (0..4); the Hew side passes i64"
-    )]
-    let policy_tag = policy_tag as u8;
 
     // Record the watcher-side LINK entry first so a connection-drop / SWIM-DEAD
     // fan-out can deliver even if the request send races a drop.
-    let Some(ref_id) = rt
+    let ref_id = rt
         .monitors
         .register_link_watcher(target, local_actor_id, policy_tag)
-    else {
-        set_last_error("hew_node_link_remote_location: observation id space exhausted");
-        return LINK_ERR_RESOURCE_EXHAUSTED;
-    };
+        .unwrap_or_else(|| crate::monitor::observation_ids_exhausted());
     if current_node_accepts_observations() != Some(true) {
-        rt.monitors.remove_remote_observation(ref_id);
-        set_last_error("hew_node_link_remote_location: node shut down during link setup");
-        return LINK_ERR_LOCAL_SHUTDOWN;
+        return unreachable(Some(ref_id));
     }
 
     let Some(linker) = with_current_node_read(|guard| {
@@ -900,11 +889,7 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         let node = unsafe { &*node };
         local_actor_location(node, local_actor_id)
     }) else {
-        set_last_error(
-            "hew_node_link_remote_location: exact linker/target Location is unavailable",
-        );
-        rt.monitors.remove_remote_observation(ref_id);
-        return LINK_ERR_STALE_REF;
+        return unreachable(Some(ref_id));
     };
 
     let setup = if let routing::LocationRoute::Local { actor_id } = target_route {
@@ -929,52 +914,12 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         })
     };
     match setup {
-        Some(Ok(status)) => {
-            match status {
-                crate::envelope::SETUP_STATUS_ACCEPTED => {}
-                crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
-                    send_outbound_unlink(ref_id, target, linker, policy_tag);
-                    rt.monitors.remove_remote_observation(ref_id);
-                    return LINK_ERR_RESOURCE_EXHAUSTED;
-                }
-                _ => {
-                    send_outbound_unlink(ref_id, target, linker, policy_tag);
-                    if let Some(down) = rt.monitors.deliver_link_down_to_ref(
-                        ref_id,
-                        target,
-                        crate::monitor::MONITOR_REASON_LOST,
-                    ) {
-                        let _ = crate::link::deliver_cross_node_link_exit(
-                            down.local_actor_id,
-                            down.remote_target_serial,
-                            down.reason,
-                            down.policy_tag,
-                        );
-                    }
-                }
-            }
-            0
+        Some(Ok(crate::envelope::SETUP_STATUS_ACCEPTED)) => 0,
+        Some(Ok(_)) => {
+            send_outbound_unlink(ref_id, target, linker, policy_tag);
+            unreachable(Some(ref_id))
         }
-        Some(Err(SetupSendError::StaleRef)) => {
-            rt.monitors.remove_remote_observation(ref_id);
-            LINK_ERR_STALE_REF
-        }
-        Some(Err(SetupSendError::Encode)) => {
-            rt.monitors.remove_remote_observation(ref_id);
-            LINK_ERR_ENCODE_FAILURE
-        }
-        Some(Err(SetupSendError::Send)) => {
-            rt.monitors.remove_remote_observation(ref_id);
-            if current_node_accepts_observations() == Some(true) {
-                LINK_ERR_PARTITION
-            } else {
-                LINK_ERR_LOCAL_SHUTDOWN
-            }
-        }
-        None => {
-            rt.monitors.remove_remote_observation(ref_id);
-            LINK_ERR_LOCAL_SHUTDOWN
-        }
+        Some(Err(_)) | None => unreachable(Some(ref_id)),
     }
 }
 

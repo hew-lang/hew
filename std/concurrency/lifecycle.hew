@@ -17,7 +17,8 @@ impl Display for LifecycleError {
     }
 }
 
-impl Error for LifecycleError {}
+impl Error for LifecycleError {
+}
 
 pub machine Lifecycle<T> {
     events {

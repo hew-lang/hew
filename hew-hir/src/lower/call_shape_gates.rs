@@ -443,17 +443,8 @@ pub(super) fn scan_expr_for_call_shape(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             scan_expr_for_call_shape(operand, callable, diagnostics);
         }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            scan_expr_for_call_shape(conn, callable, diagnostics);
-        }
         HirExprKind::AwaitTask { operand: child, .. } => {
             scan_expr_for_call_shape(child, callable, diagnostics);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            scan_expr_for_call_shape(listener, callable, diagnostics);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            scan_expr_for_call_shape(stream, callable, diagnostics);
         }
         HirExprKind::ArrayRepeat { value }
         | HirExprKind::NumericCast { value, .. }

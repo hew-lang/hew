@@ -1029,6 +1029,7 @@ pub(crate) fn runtime_variant_tags(
             (Role::ActorErrorConnectionDropped, "ConnectionDropped"),
             (Role::ActorErrorPartition, "Partition"),
         ],
+        TypeHead::Builtin(BuiltinType::LinkError) => &[(Role::LinkErrorNoContext, "NoContext")],
         head if *head == KnownDecl::Delivery.head() => &[
             (Role::DeliveryAccepted, "Accepted"),
             (Role::DeliveryDiscarded, "Discarded"),

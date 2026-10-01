@@ -91,14 +91,8 @@ pub(super) fn collect_captures_walk(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_captures_walk(operand, param_ids, seen, captures, self_id);
         }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            collect_captures_walk(conn, param_ids, seen, captures, self_id);
-        }
         HirExprKind::AwaitTask { operand: child, .. } => {
             collect_captures_walk(child, param_ids, seen, captures, self_id);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            collect_captures_walk(listener, param_ids, seen, captures, self_id);
         }
         HirExprKind::ArrayRepeat { value }
         | HirExprKind::NumericCast { value, .. }
@@ -248,9 +242,6 @@ pub(super) fn collect_captures_walk(
         } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
         }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            collect_captures_walk(stream, param_ids, seen, captures, self_id);
-        }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             // Machine state constructors are not expected inside lambda bodies.
             // Walk payload fields defensively for exhaustiveness.
@@ -351,17 +342,8 @@ pub(super) fn collect_general_closure_captures_walk(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
         }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            collect_general_closure_captures_walk(conn, outer_bindings, seen, captures);
-        }
         HirExprKind::AwaitTask { operand: child, .. } => {
             collect_general_closure_captures_walk(child, outer_bindings, seen, captures);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            collect_general_closure_captures_walk(listener, outer_bindings, seen, captures);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            collect_general_closure_captures_walk(stream, outer_bindings, seen, captures);
         }
         HirExprKind::ArrayRepeat { value }
         | HirExprKind::NumericCast { value, .. }

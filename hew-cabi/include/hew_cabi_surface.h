@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1599u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1598u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1598] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -767,12 +767,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
      "*mut HewVec) -> *mut HewReleaseCursor\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_ask_error_translate_for_public_result",
-     "{\"native\": \"fn hew_ask_error_translate_for_public_result( i32) -> "
-     "i32\", \"wasm32-wasip1\": \"fn "
-     "hew_ask_error_translate_for_public_result( i32) -> i32\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_assert",
      "{\"native\": \"fn hew_assert( u8)\", \"wasm32-wasip1\": \"fn hew_assert( "
      "u8)\"}",

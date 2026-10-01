@@ -571,17 +571,8 @@ fn walk_expr(
                 walk_expr(arg, subst, residual_domain, disc);
             }
         }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            walk_expr(conn, subst, residual_domain, disc);
-        }
         HirExprKind::AwaitTask { operand: child, .. } => {
             walk_expr(child, subst, residual_domain, disc);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            walk_expr(listener, subst, residual_domain, disc);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            walk_expr(stream, subst, residual_domain, disc);
         }
         HirExprKind::RemoteActorAsk {
             receiver,

@@ -6,6 +6,11 @@
 
 This candidate is scoped to errors and data.
 
+- Import `std.concurrency.lifecycle` in place of the removed `std.concurrency`
+  module; `ActorError.Timeout` is `ActorError.TimedOut`.
+- `link` and `monitor` answer a dead or unreachable target with an immediate
+  exit or `DOWN`; `LinkError.NoContext` is their only error.
+
 ## [0.6.0-rc4] - 2026-09-27
 
 This candidate updates declaration syntax, actor lifecycle operations and the

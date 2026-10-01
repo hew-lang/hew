@@ -738,37 +738,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 .expect("write to string");
             dump_expr(defs, out, operand, indent + 2);
         }
-        HirExprKind::ConnAwaitRead {
-            conn,
-            to_string,
-            deadline_ns,
-            ..
-        } => {
-            let deadline = deadline_ns
-                .map(|ns| format!(" | after {ns}ns"))
-                .unwrap_or_default();
-            writeln!(
-                out,
-                "{pad}  conn-await-read to_string={to_string}{deadline}"
-            )
-            .expect("write to string");
-            dump_expr(defs, out, conn, indent + 2);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            writeln!(out, "{pad}  listener-await-accept").expect("write to string");
-            dump_expr(defs, out, listener, indent + 2);
-        }
-        HirExprKind::StreamRecvAwait {
-            stream,
-            deadline_ns,
-            ..
-        } => {
-            let deadline = deadline_ns
-                .map(|ns| format!(" | after {ns}ns"))
-                .unwrap_or_default();
-            writeln!(out, "{pad}  stream-recv-await{deadline}").expect("write to string");
-            dump_expr(defs, out, stream, indent + 2);
-        }
         HirExprKind::Select(select) => {
             writeln!(out, "{pad}  select arms={}", select.arms.len()).expect("write to string");
             for arm in &select.arms {

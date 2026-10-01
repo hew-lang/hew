@@ -851,22 +851,11 @@ impl Checker {
         };
         // A binder bounded `F: From<E>` converts through the bound; each
         // instantiation of `F` supplies the impl.
-        if conversion.is_none() {
-            if let Some(call) = Self::bare_param(&target)
+        let conversion = conversion.or_else(|| {
+            Self::bare_param(&target)
                 .and_then(|param| self.binder_from_conversion(param, &source))
-            {
-                self.record_binder_trait_call(
-                    span,
-                    call,
-                    &format!(
-                        "{} converts into `{}`",
-                        edge.spelling(),
-                        target.user_facing()
-                    ),
-                );
-                return true;
-            }
-        }
+                .map(ErrorConversion::Binder)
+        });
         if let Some(conversion) = conversion {
             self.error_conversions.insert(
                 SpanKey::in_module(span, self.current_module_idx),

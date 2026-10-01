@@ -285,24 +285,26 @@ pub enum ErrorConversion {
     From {
         method: crate::DefId,
     },
+    /// Call `From.from` on the error payload with the binder `F` of a bound
+    /// `F: From<E>` as `Self`; each instantiation of `F` supplies the impl.
+    Binder(BinderTraitCall),
 }
 
 /// A static call a generic binder's bound selects, with the binder as
 /// `Self`: `T.make(n)` under `T: Make`, or the `F.from(e)` a failure edge
 /// makes under `F: From<E>`. Each monomorphisation calls the impl its
 /// instantiation of the binder provides.
-///
-/// TRANSITION(A1c4): WHY HIR lowers a static trait call only through a
-/// receiver value. WHEN `CallTraitMethodStatic` takes `Self` from the
-/// binder's substitution, these join `MethodCallRewrite` and
-/// `ErrorConversion` and the table goes. WHAT: receiver-less static trait
-/// calls in HIR and SIR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinderTraitCall {
     /// `CallTarget::StaticTraitMethod` naming the declaring trait and method.
     pub target: crate::check::dispatch::CallTarget,
     /// The binder that is `Self` at the call.
     pub self_param: crate::ParamHead,
+    /// The declaring trait's arguments at the call (`Low` in
+    /// `F: From<Low>`), which select among a type's impls of a generic
+    /// trait. Empty when the trait takes none or the method comes from a
+    /// supertrait the bound does not spell.
+    pub trait_args: Vec<Ty>,
 }
 
 /// One declared `impl From<Source> for Target`.
@@ -797,9 +799,6 @@ pub struct TypeCheckOutput {
     /// The conversion chosen at each failure edge, keyed by the span of the
     /// `?` or `return error` expression.
     pub error_conversions: HashMap<SpanKey, ErrorConversion>,
-    /// Static calls through a binder's bound, keyed by the call or failure
-    /// edge span. See [`BinderTraitCall`].
-    pub binder_trait_calls: HashMap<SpanKey, BinderTraitCall>,
     /// Per-method-call-site resolution for `obj.method()` where `obj` has
     /// resolved type `Ty::TraitObject`. Each entry pins the originating trait,
     /// the method name, and the 0-based layout slot.
@@ -1943,6 +1942,10 @@ pub enum MethodCallRewrite {
     /// warning and returns the operand type unchanged. HIR lowers this as a
     /// plain read (no extra copy is needed — `BitCopy` semantics already copy).
     CopyCloneNoop,
+    /// `T.make(n)`: an associated function a bound on the binder `T`
+    /// declares, called with `T` as `Self` and no receiver. HIR emits a
+    /// receiver-less `CallTraitMethodStatic`.
+    BinderStaticCall(BinderTraitCall),
     /// Static trait dispatch: the method was resolved from the bounds on a
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
@@ -3527,8 +3530,6 @@ pub struct Checker {
     /// Failure-edge conversions, moved into
     /// `TypeCheckOutput::error_conversions`.
     pub(super) error_conversions: HashMap<SpanKey, ErrorConversion>,
-    /// Moved into `TypeCheckOutput::binder_trait_calls`.
-    pub(super) binder_trait_calls: HashMap<SpanKey, BinderTraitCall>,
     /// Every declared `impl From<Source> for Target`, in registration order.
     pub(super) from_impls: Vec<FromImpl>,
     /// Side-table populated during method-call type-checking on a `dyn Trait`
@@ -4364,7 +4365,6 @@ impl Checker {
             structural_witnesses: Vec::new(),
             trait_object_layouts: HashMap::new(),
             error_conversions: HashMap::new(),
-            binder_trait_calls: HashMap::new(),
             from_impls: Vec::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),

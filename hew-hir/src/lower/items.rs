@@ -113,15 +113,16 @@ impl LowerCtx {
         // Generic impls (`impl<U> Describe for Wrapper<U>`, non-empty type_params)
         // are excluded: their method symbols stay bare (`"Wrapper::describe"`)
         // and monomorphisation suffixes them at instantiation time.
-        let self_type_concrete_args: Vec<hew_types::ResolvedTy> = if type_params.is_empty() {
-            target_type_args
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(|a| self.lower_type(a))
-                .collect()
+        let self_type_args: Vec<hew_types::ResolvedTy> = target_type_args
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|a| self.lower_type(a))
+            .collect();
+        let self_type_concrete_args: &[hew_types::ResolvedTy] = if type_params.is_empty() {
+            &self_type_args
         } else {
-            Vec::new()
+            &[]
         };
         // Symbol name for this impl's methods: mangled when the impl is a concrete
         // specialisation of a generic type, bare otherwise.
@@ -143,7 +144,7 @@ impl LowerCtx {
         } else {
             std::borrow::Cow::Owned(crate::monomorph::mangle(
                 base_symbol_self_name,
-                &self_type_concrete_args,
+                self_type_concrete_args,
             ))
         };
         // Blanket-impl guard: reject `impl<T> Trait for T` (target name is
@@ -626,6 +627,12 @@ impl LowerCtx {
             .iter()
             .map(|alias| (alias.name.to_string(), self.lower_type(&alias.ty)))
             .collect();
+        let trait_args: Vec<ResolvedTy> = decl
+            .trait_bound
+            .iter()
+            .flat_map(|bound| bound.type_args.iter().flatten())
+            .map(|arg| self.lower_type(arg))
+            .collect();
 
         items.push(HirItem::Impl(crate::node::HirImplBlock {
             id: self.ids.item(),
@@ -634,7 +641,8 @@ impl LowerCtx {
             self_type_name: hir_impl_self_type_name,
             self_type: impl_self_nominal,
             type_params,
-            self_type_concrete_args,
+            self_type_args,
+            trait_args,
             type_aliases,
             method_names,
             method_declaring_traits,

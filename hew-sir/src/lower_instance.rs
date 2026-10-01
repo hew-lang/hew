@@ -597,6 +597,7 @@ impl<'a> InstanceService<'a> {
                 layout_slot.declaring_trait,
                 layout_slot.method,
                 concrete_ty,
+                &[],
                 site,
                 substitution,
             )?;
@@ -1137,7 +1138,7 @@ impl<'a> InstanceService<'a> {
     }
 
     /// Select the implementation a static trait call reaches, from the
-    /// receiver type this instance's substitution produced.
+    /// `Self` type and trait arguments this instance's substitution produced.
     ///
     /// The generic template could not name it: `it.next()` under
     /// `I: Iterator<Item = A>` has no implementation until `I` is bound. The
@@ -1148,30 +1149,32 @@ impl<'a> InstanceService<'a> {
         &mut self,
         declaring_trait: DefId,
         method: DefId,
-        receiver_ty: &ResolvedTy,
+        self_ty: &ResolvedTy,
+        trait_args: &[ResolvedTy],
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
     ) -> Result<SemCallable, String> {
-        let self_type = receiver_ty
+        let self_type = self_ty
             .impl_receiver_instance(&self.module.defs)
             .ok_or_else(|| {
                 format!(
-                    "static trait receiver `{}` cannot anchor an implementation",
-                    receiver_ty.user_facing()
+                    "static trait `Self` type `{}` cannot anchor an implementation",
+                    self_ty.user_facing()
                 )
             })?;
         let entry = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
             &self.table.trait_impls,
             &declaring_trait,
             &self_type,
+            trait_args,
             &method,
         )
         .cloned()
         .ok_or_else(|| {
             format!(
-                "no implementation of `{}` for `{}` provides `{}`",
+                "no single implementation of `{}` for `{}` provides `{}`",
                 self.module.defs.path(declaring_trait),
-                receiver_ty.user_facing(),
+                self_ty.user_facing(),
                 self.module.defs.path(method)
             )
         })?;
@@ -1197,13 +1200,14 @@ impl<'a> InstanceService<'a> {
         })
     }
 
-    /// Bind impl parameters from the concrete receiver and append the method
+    /// Bind impl parameters from the concrete `Self` and append the method
     /// parameters selected by the checker at this call site.
     ///
     /// `impl<A, B> Trait for Pair<B, A>` spells its self-type arguments in the
-    /// opposite order to its parameter list, so the receiver's arguments are
-    /// matched against the implementation's own receiver pattern rather than
-    /// handed to the instance positionally.
+    /// opposite order to its parameter list, so `Self`'s arguments are
+    /// matched against the impl's own target pattern rather than handed to
+    /// the instance positionally. The pattern is the impl's, not a receiver
+    /// parameter's, so associated functions (`make(n) -> Self`) bind too.
     pub(super) fn static_trait_instance_args(
         &self,
         entry: &hew_hir::dispatch::TraitImplMethodEntry,
@@ -1247,15 +1251,7 @@ impl<'a> InstanceService<'a> {
         if impl_param_count == 0 {
             return Ok(method_args.collect());
         }
-        let Some(ResolvedTy::Named {
-            args: pattern_args, ..
-        }) = function.params.first().map(|param| &param.ty)
-        else {
-            return Err(format!(
-                "generic implementation `{}` has no nominal receiver pattern",
-                self.module.defs.path(*method)
-            ));
-        };
+        let pattern_args = &entry.self_type_args;
         if pattern_args.len() != self_type.args.len() {
             return Err(format!(
                 "generic implementation `{}` declares {} receiver argument(s), the concrete receiver carries {}",

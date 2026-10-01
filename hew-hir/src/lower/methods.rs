@@ -1293,6 +1293,20 @@ impl LowerCtx {
                     option_ty,
                 )
             }
+            // `T.make(n)`: the receiver names the binder, not a value.
+            Some(MethodCallRewrite::BinderStaticCall(call)) => {
+                let ret_ty = self
+                    .resolved_expr_types
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(ResolvedTy::Unit);
+                self.record_static_trait_type_args(&span, site);
+                let lowered_args = self.lower_call_args(args, &span);
+                (
+                    self.make_binder_trait_call(&call, lowered_args, ret_ty.clone(), &span),
+                    ret_ty,
+                )
+            }
             Some(MethodCallRewrite::StaticTraitDispatch {
                 target,
                 receiver_type_param,
@@ -1472,7 +1486,8 @@ impl LowerCtx {
                 let lowered_args = self.lower_call_args(args, &span);
                 (
                     self.make_static_trait_dispatch_call(
-                        lowered_receiver,
+                        crate::StaticTraitSelf::Receiver(Box::new(lowered_receiver)),
+                        Vec::new(),
                         target,
                         receiver_type_param,
                         lowered_args,

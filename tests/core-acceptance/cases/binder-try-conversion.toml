@@ -1,0 +1,11 @@
+[[case]]
+id = "binder-try-conversion"
+intent = "`?` under `F: From<E>` converts each failure edge through the impl of `F` at that edge's error type."
+source = "cases/binder-try-conversion.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "99\n898\n7\n"
+exit = 0

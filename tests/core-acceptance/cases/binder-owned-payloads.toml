@@ -1,0 +1,11 @@
+[[case]]
+id = "binder-owned-payloads"
+intent = "Heap-owning errors and results cross `?` under `F: From<E>`, `F.from(e)` and `T.make(n)` with each value dropped once."
+source = "cases/binder-owned-payloads.hew"
+suites = ["acceptance", "safety"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "io: <empty>\n4\nparse: abcdef!\nio: /tmp/x\n3\n"
+exit = 0

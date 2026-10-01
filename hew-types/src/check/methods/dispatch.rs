@@ -2979,7 +2979,7 @@ impl Checker {
 
     /// Check `T.method(args)` where `T` is a generic binder: the method is
     /// an associated function a bound on `T` declares, called with `T` as
-    /// `Self`. The selection is published in `binder_trait_calls`.
+    /// `Self`. The selection is published as a `BinderStaticCall` rewrite.
     pub(in crate::check) fn check_binder_associated_call(
         &mut self,
         param: crate::ParamHead,
@@ -3003,7 +3003,7 @@ impl Checker {
         // parameters (`from(value: Source)` under `F: From<Low>`).
         let mut substitution: HashMap<crate::ParamHead, Ty> =
             HashMap::from([(crate::ParamHead::receiver(declaring), Ty::param(param))]);
-        if declaring == bound.trait_id {
+        let trait_args = if declaring == bound.trait_id {
             if let Some(info) = self.trait_info(declaring) {
                 substitution.extend(
                     info.type_params
@@ -3012,7 +3012,10 @@ impl Checker {
                         .zip(bound.args.iter().cloned()),
                 );
             }
-        }
+            bound.args
+        } else {
+            Vec::new()
+        };
         sig.params = sig
             .params
             .iter()
@@ -3044,41 +3047,15 @@ impl Checker {
             },
             |(declaring_trait, method)| CallTarget::static_trait(declaring_trait, method),
         );
-        self.record_binder_trait_call(
+        self.record_method_call_rewrite(
             span,
-            BinderTraitCall {
+            MethodCallRewrite::BinderStaticCall(BinderTraitCall {
                 target,
                 self_param: param,
-            },
-            &format!("`{}.{method}` calls", param.spelling),
+                trait_args,
+            }),
         );
         self.project_assoc_types(&applied.return_type)
-    }
-
-    /// Publish a static call through a binder's bound, and refuse it: code
-    /// generation cannot yet take `Self` from the binder's instantiation.
-    ///
-    /// TRANSITION(A1c4): WHY HIR lowers a static trait call only through a
-    /// receiver value. WHEN `CallTraitMethodStatic` takes `Self` from the
-    /// binder's substitution, the refusal goes and the selection lowers.
-    /// WHAT: receiver-less static trait calls in HIR and SIR.
-    pub(in crate::check) fn record_binder_trait_call(
-        &mut self,
-        span: &Span,
-        call: BinderTraitCall,
-        lead: &str,
-    ) {
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "{lead} through a bound on type parameter `{}`, which this compiler \
-                 cannot build yet",
-                call.self_param.spelling
-            ),
-        );
-        self.binder_trait_calls
-            .insert(SpanKey::in_module(span, self.current_module_idx), call);
     }
 
     /// The `From` conversion a bound on the binder `target` provides from
@@ -3105,6 +3082,7 @@ impl Checker {
         Some(BinderTraitCall {
             target: CallTarget::static_trait(from, method),
             self_param: target,
+            trait_args: vec![source.clone()],
         })
     }
 }

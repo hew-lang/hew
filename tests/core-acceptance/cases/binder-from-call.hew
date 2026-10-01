@@ -1,0 +1,41 @@
+// `F.from(value)` under `F: From<Source>` converts through the impl the
+// instantiation of `F` provides at that source, even when the target
+// implements `From` at several sources.
+type LowError {
+    code: i64;
+}
+
+type IoError {
+    code: i64;
+}
+
+type AppError {
+    code: i64;
+}
+
+impl From<LowError> for AppError {
+    fn from(value: LowError) -> AppError {
+        AppError { code: value.code + 100 }
+    }
+}
+
+impl From<IoError> for AppError {
+    fn from(value: IoError) -> AppError {
+        AppError { code: value.code + 900 }
+    }
+}
+
+fn lift_low<F: From<LowError>>(error: LowError) -> F {
+    F.from(error)
+}
+
+fn lift_io<F: From<IoError>>(error: IoError) -> F {
+    F.from(error)
+}
+
+fn main() {
+    let low: AppError = lift_low(LowError { code: 4 });
+    let io: AppError = lift_io(IoError { code: 4 });
+    println(low.code);
+    println(io.code);
+}

@@ -94,6 +94,7 @@ fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
                     .expect("declared"),
                 args: Vec::new(),
             },
+            &[],
             &next,
         )
         .unwrap_or_else(|| {
@@ -192,6 +193,7 @@ fn main() -> i64 {
                 .expect("declared"),
             args: Vec::new(),
         },
+        &[],
         &next,
     )
     .unwrap_or_else(|| {
@@ -211,6 +213,7 @@ fn main() -> i64 {
                 .expect("declared"),
             args: Vec::new(),
         },
+        &[],
         &next,
     )
     .expect("the user same-leaf nominal keeps an independent impl");
@@ -261,6 +264,7 @@ fn main() -> i64 {
                 .expect("declared"),
             args: Vec::new(),
         },
+        &[],
         &next,
     )
     .expect("std.iter.Map remains registered despite a local Map");
@@ -271,6 +275,7 @@ fn main() -> i64 {
             nominal: output.module.defs.lookup_nominal("Map").expect("declared"),
             args: Vec::new(),
         },
+        &[],
         &next,
     )
     .expect("the local Map is independently registered");

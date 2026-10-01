@@ -365,7 +365,7 @@ struct CallableTable<'a> {
     /// `CallTarget::StaticTraitMethod` because no concrete implementation
     /// exists at the template; this stage substitutes the receiver type, so
     /// this is where the implementation is selected.
-    trait_impls: HashMap<hew_hir::dispatch::TraitImplKey, hew_hir::dispatch::TraitImplMethodEntry>,
+    trait_impls: hew_hir::dispatch::TraitImplIndex,
     /// Why a declaration was refused a SIR callable header, keyed by the
     /// declaration a call would name.
     ///

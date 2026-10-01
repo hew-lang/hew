@@ -222,7 +222,11 @@ impl Checker {
             .and_then(|rewrite| match rewrite {
                 MethodCallRewrite::RewriteToFunction { target, .. }
                 | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
-                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+                | MethodCallRewrite::StaticTraitDispatch { target, .. }
+                | MethodCallRewrite::BinderStaticCall(super::types::BinderTraitCall {
+                    target,
+                    ..
+                }) => Some(target),
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key))
@@ -244,6 +248,13 @@ impl Checker {
             _ => return,
         };
         let key = SpanKey::in_module(span, self.current_module_idx);
+        // `T.make(n)` names its binder, not a receiver value.
+        let receiver = receiver.filter(|_| {
+            !matches!(
+                self.method_call_rewrites.get(&key),
+                Some(MethodCallRewrite::BinderStaticCall(_))
+            )
+        });
         if matches!(
             self.selected_callable_target(span),
             Some(CallTarget::StaticTraitMethod { .. })

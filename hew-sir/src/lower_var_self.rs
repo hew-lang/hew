@@ -65,6 +65,7 @@ impl Builder<'_, '_> {
                 *declaring_trait,
                 *method,
                 &receiver_ty,
+                &[],
                 expr.site,
                 &self.substitution,
             )?,

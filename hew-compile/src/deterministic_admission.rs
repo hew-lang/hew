@@ -64,7 +64,11 @@ fn selected_call_declaration(output: &TypeCheckOutput, span: &SpanKey) -> Option
         .and_then(|rewrite| match rewrite {
             hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
             | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
-            | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+            | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. }
+            | hew_types::MethodCallRewrite::BinderStaticCall(hew_types::BinderTraitCall {
+                target,
+                ..
+            }) => Some(target),
             _ => None,
         })
         .or_else(|| output.direct_call_targets.get(span))
@@ -350,7 +354,11 @@ fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<CallableNo
         let target = match rewrite {
             hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
             | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
-            | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. } => target.clone(),
+            | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. }
+            | hew_types::MethodCallRewrite::BinderStaticCall(hew_types::BinderTraitCall {
+                target,
+                ..
+            }) => target.clone(),
             // These checker-selected rewrites bypass ordinary call targets.
             // Project them to the codegen ABI endpoint, whose admission policy
             // remains owned by the capability manifest.
@@ -762,6 +770,9 @@ pub(super) fn check(
                                 receiver_type_param,
                                 ..
                             } => Some(receiver_type_param),
+                            hew_types::MethodCallRewrite::BinderStaticCall(call) => {
+                                Some(&call.self_param)
+                            }
                             _ => None,
                         },
                     );

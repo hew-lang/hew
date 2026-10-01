@@ -688,7 +688,11 @@ impl Checker {
                 Some(
                     MethodCallRewrite::RewriteToFunction { target, .. }
                     | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
-                    | MethodCallRewrite::StaticTraitDispatch { target, .. },
+                    | MethodCallRewrite::StaticTraitDispatch { target, .. }
+                    | MethodCallRewrite::BinderStaticCall(super::types::BinderTraitCall {
+                        target,
+                        ..
+                    }),
                 ) => Some(target),
                 _ => None,
             })

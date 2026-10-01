@@ -1,0 +1,52 @@
+// `?` inside a function failing with a binder `F: From<E>` converts the
+// error through the impl the instantiation of `F` provides at `E`.
+type LowError {
+    code: i64;
+}
+
+type IoError {
+    code: i64;
+}
+
+type AppError {
+    code: i64;
+}
+
+impl From<LowError> for AppError {
+    fn from(value: LowError) -> AppError {
+        AppError { code: value.code + 100 }
+    }
+}
+
+impl From<IoError> for AppError {
+    fn from(value: IoError) -> AppError {
+        AppError { code: value.code + 900 }
+    }
+}
+
+fn low(n: i64) -> Result<i64, LowError> {
+    if n < 0 { .Err(LowError { code: n }) } else { .Ok(n) }
+}
+
+fn io(n: i64) -> Result<i64, IoError> {
+    if n < 0 { .Err(IoError { code: n }) } else { .Ok(n) }
+}
+
+fn both<F: From<LowError> + From<IoError>>(a: i64, b: i64) -> Result<i64, F> {
+    let x = low(a)?;
+    let y = io(b)?;
+    .Ok(x + y)
+}
+
+fn show(result: Result<i64, AppError>) {
+    match result {
+        .Ok(value) => println(value),
+        .Err(error) => println(error.code),
+    }
+}
+
+fn main() {
+    show(both(-1, 1));
+    show(both(1, -2));
+    show(both(3, 4));
+}

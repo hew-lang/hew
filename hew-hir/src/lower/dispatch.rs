@@ -76,9 +76,14 @@ impl LowerCtx {
     /// the abstract-`T` arm of `lower_display_dispatch`. SIR selects the
     /// concrete callee from the target identities and the substituted
     /// receiver, and fails closed when no impl is registered.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per field of the `CallTraitMethodStatic` node it builds"
+    )]
     pub(super) fn make_static_trait_dispatch_call(
         &mut self,
-        receiver: HirExpr,
+        receiver: crate::StaticTraitSelf,
+        trait_args: Vec<ResolvedTy>,
         target: hew_types::CallTarget,
         receiver_type_param: hew_types::ParamHead,
         args: LoweredCallArgs,
@@ -89,7 +94,8 @@ impl LowerCtx {
             return HirExprKind::Unsupported("static trait call has no checker target".to_string());
         }
         HirExprKind::CallTraitMethodStatic {
-            receiver: Box::new(receiver),
+            receiver,
+            trait_args,
             target,
             receiver_type_param,
             args: args.args,
@@ -127,6 +133,54 @@ impl LowerCtx {
         self.call_site_type_args.insert(site, resolved);
     }
 
+    /// Build the receiver-less static call a binder's bound selects:
+    /// `T.make(n)`, or `F.from(e)` at a failure edge. `Self` is the binder,
+    /// or the impl's self type inside a trait default body lowered for it.
+    pub(super) fn make_binder_trait_call(
+        &mut self,
+        call: &hew_types::BinderTraitCall,
+        args: LoweredCallArgs,
+        ret_ty: ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        let self_ty = match &self.current_impl_self_ty {
+            Some(impl_self) if call.self_param.is_receiver() => impl_self.clone(),
+            _ => ResolvedTy::param(call.self_param),
+        };
+        let binder = HashMap::from([(call.self_param, self_ty.clone())]);
+        let mut trait_args = Vec::with_capacity(call.trait_args.len());
+        for arg in &call.trait_args {
+            match ResolvedTy::from_ty(arg) {
+                Ok(arg) => trait_args.push(substitute_ty(
+                    &self.restore_type_declaration_facts(arg),
+                    &binder,
+                )),
+                Err(error) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "binder trait call arguments".to_string(),
+                            reason: error.to_string(),
+                        },
+                        span.clone(),
+                        "the checker must publish resolved trait arguments for a binder call",
+                    ));
+                    return HirExprKind::Unsupported(
+                        "binder trait call has unresolved trait arguments".to_string(),
+                    );
+                }
+            }
+        }
+        self.make_static_trait_dispatch_call(
+            crate::StaticTraitSelf::Type(self_ty),
+            trait_args,
+            call.target.clone(),
+            call.self_param,
+            args,
+            ret_ty,
+            span,
+        )
+    }
+
     /// Emit a `Display::fmt` static trait-dispatch over an abstract type
     /// parameter `type_param_name` (#1565). The concrete `Display` impl is
     /// selected per monomorphisation, which fails closed if no impl is
@@ -139,7 +193,8 @@ impl LowerCtx {
         span: Span,
     ) -> HirExpr {
         let kind = self.make_static_trait_dispatch_call(
-            value,
+            crate::StaticTraitSelf::Receiver(Box::new(value)),
+            Vec::new(),
             target,
             type_param_name,
             LoweredCallArgs {

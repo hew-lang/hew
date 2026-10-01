@@ -1,0 +1,65 @@
+// A generic binder calls the associated function its bound declares, with
+// the binder as `Self`: each instantiation reaches its own impl, including a
+// generic impl and a trait default that builds through `Self`.
+trait Make {
+    fn make(n: i64) -> Self;
+    fn value(self) -> i64;
+    fn twice(self) -> Self {
+        Self.make(self.value() * 2)
+    }
+}
+
+type Cell {
+    v: i64;
+}
+
+type Tally {
+    n: i64;
+}
+
+type Stack<T> {
+    base: i64;
+    items: Vec<T>;
+}
+
+impl Make for Cell {
+    fn make(n: i64) -> Cell {
+        Cell { v: n }
+    }
+    fn value(self) -> i64 {
+        self.v
+    }
+}
+
+impl Make for Tally {
+    fn make(n: i64) -> Tally {
+        Tally { n: n + 1000 }
+    }
+    fn value(self) -> i64 {
+        self.n
+    }
+}
+
+impl<T> Make for Stack<T> {
+    fn make(n: i64) -> Stack<T> {
+        Stack { base: n, items: Vec.new() }
+    }
+    fn value(self) -> i64 {
+        self.base + self.items.len()
+    }
+}
+
+fn build<T: Make>(n: i64) -> T {
+    T.make(n)
+}
+
+fn main() {
+    let cell: Cell = build(7);
+    let tally: Tally = build(7);
+    let stack: Stack<string> = build(40);
+    println(cell.value());
+    println(tally.value());
+    println(stack.value());
+    println(cell.twice().value());
+    println(tally.twice().value());
+}

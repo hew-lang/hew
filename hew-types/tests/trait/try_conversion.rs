@@ -485,24 +485,20 @@ fn lifted<F: From<Low>>() -> i64 fails F {
 }
 ",
     );
-    let [refusal] = output.errors.as_slice() else {
-        panic!("expected only the build refusal, got: {:#?}", output.errors);
-    };
-    assert!(
-        refusal.message.contains("cannot build yet"),
-        "{}",
-        refusal.message
-    );
-    assert!(
-        output.error_conversions.is_empty(),
-        "a bound conversion is no declared impl: {:?}",
-        output.error_conversions
-    );
-    let calls: Vec<_> = output.binder_trait_calls.values().collect();
+    assert_clean(&output);
+    let calls: Vec<_> = output
+        .error_conversions
+        .values()
+        .filter_map(|conversion| match conversion {
+            ErrorConversion::Binder(call) => Some(call),
+            _ => None,
+        })
+        .collect();
     let [call] = calls.as_slice() else {
         panic!("the `?` edge converts through the bound: {calls:#?}");
     };
     assert_eq!(call.self_param.spelling.as_str(), "F");
+    assert_eq!(call.trait_args.len(), 1, "the edge names `From<Low>`");
     let hew_types::CallTarget::StaticTraitMethod { method, .. } = call.target else {
         panic!("the edge calls `From.from`: {:?}", call.target);
     };
@@ -520,5 +516,4 @@ fn lifted<F: From<i64>>() -> i64 fails F {
 ",
     );
     no_conversion(&output);
-    assert!(output.binder_trait_calls.is_empty());
 }

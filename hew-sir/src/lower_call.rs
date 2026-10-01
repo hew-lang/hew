@@ -971,6 +971,7 @@ impl Builder<'_, '_> {
     ) -> Result<Option<ValueId>, String> {
         let HirExprKind::CallTraitMethodStatic {
             receiver,
+            trait_args,
             target,
             args,
             evaluation_order,
@@ -986,19 +987,21 @@ impl Builder<'_, '_> {
         else {
             return Err("static trait call requires a checker-selected trait method".to_string());
         };
-        let receiver_ty = self.ty(&receiver.ty);
+        let self_ty = self.ty(receiver.self_ty());
+        let trait_args: Vec<ResolvedTy> = trait_args.iter().map(|arg| self.ty(arg)).collect();
         let callee = self.service.resolve_static_trait_call(
             *declaring_trait,
             *method,
-            &receiver_ty,
+            &self_ty,
+            &trait_args,
             expr.site,
             &self.substitution,
         )?;
         let signature = callee.signature.clone();
         let result_ty = self.ty(&expr.ty);
-        let arguments: Vec<HirExpr> = std::iter::once((**receiver).clone())
-            .chain(args.iter().cloned())
-            .collect();
+        let leading = receiver.receiver().cloned();
+        let receiver_offset = usize::from(leading.is_some());
+        let arguments: Vec<HirExpr> = leading.into_iter().chain(args.iter().cloned()).collect();
         if arguments.len() != signature.params.len() || result_ty != signature.return_ty {
             return Err(format!(
                 "static trait call to `{}` differs from its semantic signature: {} arguments, expected {}; result {result_ty:?}, expected {:?}",
@@ -1011,8 +1014,8 @@ impl Builder<'_, '_> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
-        let evaluation_order = if evaluation_order.is_empty() {
-            Vec::new()
+        let evaluation_order = if evaluation_order.is_empty() || receiver_offset == 0 {
+            evaluation_order.clone()
         } else {
             std::iter::once(0)
                 .chain(evaluation_order.iter().map(|index| index + 1))

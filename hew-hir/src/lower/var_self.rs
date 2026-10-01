@@ -280,11 +280,6 @@ impl LowerCtx {
                 args,
                 ..
             }
-            | HirExprKind::CallTraitMethodStatic {
-                receiver: target,
-                args,
-                ..
-            }
             | HirExprKind::VarSelfMethodCall {
                 receiver: target,
                 args,
@@ -293,6 +288,15 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
                 for arg in args {
                     self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
+                }
+            }
+            HirExprKind::CallTraitMethodStatic {
+                receiver: target,
+                args,
+                ..
+            } => {
+                for operand in target.receiver_mut().into_iter().chain(args) {
+                    self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
                 }
             }
             HirExprKind::RemoteActorAsk {

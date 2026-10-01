@@ -350,6 +350,7 @@ impl Render for Box<string> {
             nominal: left_specialized.0.self_type.nominal,
             args: vec![hew_types::ResolvedTy::I64],
         },
+        &[],
         &left_specialized.0.method,
     )
     .expect("left i64 dispatch must resolve its specialization");
@@ -369,7 +370,7 @@ impl Render for Box<string> {
     );
     assert_eq!(
         left_selected.method_symbol,
-        left_specialized.1.method_symbol
+        left_specialized.1[0].method_symbol
     );
     assert!(
         left_selected.impl_type_params.is_empty(),
@@ -383,10 +384,14 @@ impl Render for Box<string> {
             nominal: right_generic.0.self_type.nominal,
             args: vec![hew_types::ResolvedTy::Bool],
         },
+        &[],
         &right_generic.0.method,
     )
     .expect("right bool dispatch must fall back to its generic impl");
-    assert_eq!(right_selected.method_symbol, right_generic.1.method_symbol);
+    assert_eq!(
+        right_selected.method_symbol,
+        right_generic.1[0].method_symbol
+    );
     assert_eq!(
         right_selected
             .impl_type_params

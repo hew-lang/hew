@@ -3446,7 +3446,6 @@ impl Checker {
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             structural_witnesses: std::mem::take(&mut self.structural_witnesses),
             error_conversions: std::mem::take(&mut self.error_conversions),
-            binder_trait_calls: std::mem::take(&mut self.binder_trait_calls),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             trait_object_layouts,
             closure_capture_facts: resolved_closure_capture_facts,

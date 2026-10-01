@@ -360,13 +360,16 @@ pub struct HirImplBlock {
     /// Outer type parameters on the impl, e.g. `["T"]` for
     /// `impl<T> Iterator for VecIter<T>`.
     pub type_params: Vec<hew_types::ParamHead>,
-    /// Concrete self-type arguments for a concrete specialised impl, e.g.
-    /// `[ResolvedTy::I64]` for `impl Describe for Wrapper<i64>`. Always empty
-    /// when `type_params` is non-empty (generic impl) or when the target type
-    /// carries no type arguments. Used to distinguish two concrete impls for
-    /// the same base nominal (`Wrapper<i64>` vs `Wrapper<string>`) so the
-    /// dispatch index key and method symbol are distinct per instantiation.
-    pub self_type_concrete_args: Vec<ResolvedTy>,
+    /// The impl target's type arguments as written: `[T]` for
+    /// `impl<T> Iterator for VecIter<T>`, `[ResolvedTy::I64]` for the concrete
+    /// specialisation `impl Describe for Wrapper<i64>`. A concrete
+    /// specialisation keys the dispatch index and method symbol on them, so
+    /// `Wrapper<i64>` and `Wrapper<string>` stay distinct; a generic impl
+    /// binds its parameters by matching them against the concrete `Self`.
+    pub self_type_args: Vec<ResolvedTy>,
+    /// The implemented trait's arguments as written (`Low` in
+    /// `impl From<Low> for Wrapped`), possibly naming `type_params`.
+    pub trait_args: Vec<ResolvedTy>,
     /// Associated-type bindings declared on the impl
     /// (e.g. `type Item = T;` → `("Item", ResolvedTy::TypeParam("T"))`).
     pub type_aliases: Vec<(String, ResolvedTy)>,
@@ -1161,6 +1164,41 @@ pub enum HirStmtKind {
     },
 }
 
+/// What is `Self` at a [`HirExprKind::CallTraitMethodStatic`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum StaticTraitSelf {
+    /// `item.show()`: the receiver value, passed first; its type is `Self`.
+    Receiver(Box<HirExpr>),
+    /// `T.make(n)`, or the `F.from(e)` a failure edge makes: no receiver;
+    /// this type is `Self`.
+    Type(ResolvedTy),
+}
+
+impl StaticTraitSelf {
+    #[must_use]
+    pub fn receiver(&self) -> Option<&HirExpr> {
+        match self {
+            Self::Receiver(receiver) => Some(receiver),
+            Self::Type(_) => None,
+        }
+    }
+
+    pub fn receiver_mut(&mut self) -> Option<&mut HirExpr> {
+        match self {
+            Self::Receiver(receiver) => Some(receiver),
+            Self::Type(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn self_ty(&self) -> &ResolvedTy {
+        match self {
+            Self::Receiver(receiver) => &receiver.ty,
+            Self::Type(ty) => ty,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirExpr {
     pub node: HirNodeId,
@@ -1673,14 +1711,20 @@ pub enum HirExprKind {
     /// enter the ordinary direct-call boundary. The impl is unknown until the
     /// receiver is substituted, so `ResolvedImplCall` cannot carry this call.
     CallTraitMethodStatic {
-        receiver: Box<HirExpr>,
+        /// The receiver value, or the type that is `Self` when the call has
+        /// none (`T.make(n)`).
+        receiver: StaticTraitSelf,
+        /// The declaring trait's arguments at the call (`Low` under
+        /// `F: From<Low>`), substituted with the enclosing instance; they
+        /// select among a type's impls of a generic trait.
+        trait_args: Vec<ResolvedTy>,
         /// Checker-selected static-trait method identity. The receiver
         /// substitution may choose an impl later, but no phase may recover the
         /// declaring method by leaf-name retry.
         target: hew_types::CallTarget,
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: hew_types::ParamHead,
-        /// Arguments in parameter order.
+        /// Arguments in parameter order, after the receiver when there is one.
         args: Vec<HirExpr>,
         /// The index into `args` of each argument in the order the source
         /// evaluates them; empty when that is parameter order.

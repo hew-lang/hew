@@ -1975,6 +1975,16 @@ fn directory_module_entry_in(dir: &Path) -> Option<PathBuf> {
     entry.canonicalize().ok().filter(|path| path.is_file())
 }
 
+/// How a requested file becomes the root of a frontend run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootSelection {
+    /// A directory-module entry or peer is checked as its whole module.
+    Module,
+    /// The file is the program root as written. A build keeps it: its root
+    /// is where `main` and the compiled entry points are selected.
+    AsWritten,
+}
+
 /// The label of the root that checks a directory module through an import.
 /// It names no source, so it can never be the module's entry or a peer.
 const DIRECTORY_MODULE_ROOT_LABEL: &str = "(directory module)";
@@ -1988,7 +1998,12 @@ const DIRECTORY_MODULE_ROOT_LABEL: &str = "(directory module)";
 /// anchored in the module's directory, so project discovery and relative
 /// imports behave as they do for the requested file. Root-only lints (unused
 /// private items) do not run on an imported module.
-fn run_directory_module_frontend(entry: &Path, options: &FrontendOptions) -> DocumentFrontendState {
+fn run_directory_module_frontend(
+    entry: &Path,
+    input: &str,
+    source_override: Option<&str>,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
     let label = entry
         .with_file_name(DIRECTORY_MODULE_ROOT_LABEL)
         .display()
@@ -1996,12 +2011,32 @@ fn run_directory_module_frontend(entry: &Path, options: &FrontendOptions) -> Doc
     let empty = hew_parser::parse("");
     let mut state = DocumentFrontendState {
         source: String::new(),
-        program: empty.program.clone(),
-        parse_result: Some(empty),
+        program: empty.program,
+        parse_result: None,
         diagnostics: Vec::new(),
         typecheck_result: None,
         stopped: None,
     };
+    // The requested document keeps its own text and parse for the host; an
+    // open buffer stands in for its file while the module is assembled.
+    let mut options = options.clone();
+    let source = match source_override {
+        Some(source) => {
+            options.documents.insert(input, source);
+            source.to_string()
+        }
+        None => match read_source(&options.documents, Path::new(input)) {
+            Ok(source) => source,
+            Err(error) => {
+                return state.stop(FrontendFailure::message_only(format!(
+                    "Error: cannot read {input}: {error}"
+                )))
+            }
+        },
+    };
+    state.parse_result = Some(hew_parser::parse(&source));
+    state.source = source;
+    let options = &options;
     let project = match load_project_context(&label, Some(options), Some("")) {
         Ok(project) => project,
         Err(failure) => return state.stop(failure),
@@ -3336,7 +3371,7 @@ pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_document_frontend_from(input, None, options).into_result()
+    run_document_frontend_from(input, None, options, RootSelection::AsWritten).into_result()
 }
 
 /// What the shared frontend produced for one document.
@@ -3399,7 +3434,7 @@ impl DocumentFrontendState {
 /// so an open buffer checks against its saved siblings.
 #[must_use]
 pub fn run_document_frontend(input: &str, options: &FrontendOptions) -> DocumentFrontendState {
-    run_document_frontend_from(input, None, options)
+    run_document_frontend_from(input, None, options, RootSelection::Module)
 }
 
 /// [`run_document_frontend`] for a buffer with no file behind it.
@@ -3411,14 +3446,20 @@ pub fn run_source_frontend(
     label: &str,
     options: &FrontendOptions,
 ) -> DocumentFrontendState {
-    run_document_frontend_from(label, Some(source), options)
+    run_document_frontend_from(label, Some(source), options, RootSelection::Module)
 }
 
 fn run_document_frontend_from(
     input: &str,
     source_override: Option<&str>,
     options: &FrontendOptions,
+    roots: RootSelection,
 ) -> DocumentFrontendState {
+    if roots == RootSelection::Module {
+        if let Some(entry) = directory_module_entry(Path::new(input)) {
+            return run_directory_module_frontend(&entry, input, source_override, options);
+        }
+    }
     let project = match load_project_context(input, Some(options), source_override) {
         Ok(project) => project,
         Err(failure) => {
@@ -3632,10 +3673,8 @@ pub fn check_file_with_state(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<(CheckOutput, FileFrontendState), FrontendFailure> {
-    let state = match directory_module_entry(Path::new(input)) {
-        Some(entry) => run_directory_module_frontend(&entry, options).into_result()?,
-        None => run_file_frontend_to_typecheck(input, options)?,
-    };
+    let state =
+        run_document_frontend_from(input, None, options, RootSelection::Module).into_result()?;
     let diagnostics = fail_on_warning_diagnostics(state.diagnostics.clone(), options)?;
     let stack_hints = state
         .typecheck_result

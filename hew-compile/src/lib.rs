@@ -226,11 +226,16 @@ impl SessionTarget {
     }
 }
 
-/// The fixed compiler check set. Hosts cannot select a narrower subset.
+/// What a session runs after the SIR is lowered and verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CheckSet {
+    /// Verify, then run the SIR optimization passes and verify their result:
+    /// the SIR a build, run or `--explain-cow` report consumes.
     #[default]
     Build,
+    /// Verify the lowered SIR only. Nothing in a diagnostics-only check reads
+    /// the optimized form.
+    Check,
 }
 
 /// Policy used when exposing diagnostics produced by a compilation session.
@@ -449,14 +454,17 @@ impl Session {
         }
         compiled_roots.sort_unstable();
         compiled_roots.dedup();
-        let sir_error = |error| match error {
-            hew_sir::SirOptimizationError::InvalidInput(diagnostics)
-            | hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
-                SessionError::Semantic(diagnostics)
+        if self.checks == CheckSet::Build {
+            hew_sir::canonicalize_module_constant_cfg(&mut sir.module)
+                .map_err(SessionError::Semantic)?;
+            hew_sir::transfer_module_dead_local_reads(&mut sir.module);
+            // The passes rewrite in place without verifying; this is the one
+            // verification of their result.
+            let diagnostics = hew_sir::verify_module(&sir.module);
+            if !diagnostics.is_empty() {
+                return Err(SessionError::Semantic(diagnostics));
             }
-        };
-        hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(sir_error)?;
-        hew_sir::transfer_module_dead_local_reads(&mut sir.module).map_err(sir_error)?;
+        }
         Ok(SessionOutput {
             sir,
             compiled_roots,

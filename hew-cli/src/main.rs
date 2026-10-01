@@ -143,43 +143,46 @@ fn lower_program_to_semantics(
     label: &str,
     tco: &hew_types::TypeCheckOutput,
     target: &target::TargetSpec,
+    checks: hew_compile::CheckSet,
 ) -> Result<hew_compile::SessionOutput, DiagChannel> {
-    hew_compile::Session::new(
+    let mut session = hew_compile::Session::new(
         hew_compile::SessionTarget {
             hir_arch: hir_target_arch(target),
             ..hew_compile::SessionTarget::native()
         },
         hew_compile::DiagnosticPolicy::default(),
-    )
-    .lower_program(program, tco)
-    .map_err(|error| match error {
-        hew_compile::SessionError::Hir(diagnostics) => {
-            let diagnostics = hew_compile::hir_diagnostics_to_frontend(
-                program,
-                source,
-                label,
-                diagnostics,
-                &hew_compile::DocumentSet::new(),
-            );
-            compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
-        }
-        hew_compile::SessionError::Ownership(diagnostics) => {
-            let diagnostics = hew_compile::ownership_diagnostics_to_frontend(
-                program,
-                source,
-                label,
-                diagnostics,
-                &hew_compile::DocumentSet::new(),
-            );
-            compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
-        }
-        error @ hew_compile::SessionError::Semantic(_) => {
-            emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
-        }
-        hew_compile::SessionError::Unsupported { message, span, .. } => {
-            diagnostic::render_unsupported_error(&message, span.as_ref(), source, label)
-        }
-    })
+    );
+    session.checks = checks;
+    session
+        .lower_program(program, tco)
+        .map_err(|error| match error {
+            hew_compile::SessionError::Hir(diagnostics) => {
+                let diagnostics = hew_compile::hir_diagnostics_to_frontend(
+                    program,
+                    source,
+                    label,
+                    diagnostics,
+                    &hew_compile::DocumentSet::new(),
+                );
+                compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
+            }
+            hew_compile::SessionError::Ownership(diagnostics) => {
+                let diagnostics = hew_compile::ownership_diagnostics_to_frontend(
+                    program,
+                    source,
+                    label,
+                    diagnostics,
+                    &hew_compile::DocumentSet::new(),
+                );
+                compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
+            }
+            error @ hew_compile::SessionError::Semantic(_) => {
+                emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
+            }
+            hew_compile::SessionError::Unsupported { message, span, .. } => {
+                diagnostic::render_unsupported_error(&message, span.as_ref(), source, label)
+            }
+        })
 }
 
 fn emit_semantic_error(code: &str, message: &str, channel: DiagChannel) -> DiagChannel {
@@ -215,7 +218,14 @@ fn lower_file_to_semantics(
             DiagChannel::User,
         )
     })?;
-    let output = lower_program_to_semantics(&state.program, &state.source, &input, tco, target)?;
+    let output = lower_program_to_semantics(
+        &state.program,
+        &state.source,
+        &input,
+        tco,
+        target,
+        hew_compile::CheckSet::Build,
+    )?;
     let native_pkg_dirs = native_link::collect_import_pkg_dirs(&state.program);
     Ok((output, native_pkg_dirs))
 }
@@ -299,6 +309,7 @@ fn run_check_deep_gates(
     target: &target::TargetSpec,
     state: &hew_compile::FileFrontendState,
     levels: &hew_types::LintLevels,
+    checks: hew_compile::CheckSet,
 ) -> Result<Option<hew_compile::SessionOutput>, DiagChannel> {
     // `std/builtins.hew` is compiler-embedded, while `std/prelude.hew` is an
     // import-only authority manifest. Neither has a standalone lowering
@@ -316,7 +327,7 @@ fn run_check_deep_gates(
     };
 
     let _ = levels;
-    lower_program_to_semantics(&state.program, &state.source, input, tco, target).map(Some)
+    lower_program_to_semantics(&state.program, &state.source, input, tco, target, checks).map(Some)
 }
 
 fn emit_module(
@@ -558,8 +569,14 @@ pub(crate) fn compile_native_from_program_with_paths(
         DiagChannel::User
     })?;
 
-    let output =
-        lower_program_to_semantics(&state.program, &state.source, source_label, tco, &target)?;
+    let output = lower_program_to_semantics(
+        &state.program,
+        &state.source,
+        source_label,
+        tco,
+        &target,
+        hew_compile::CheckSet::Build,
+    )?;
     let pipeline = lower_session_to_physical(&output, &target)?;
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
@@ -1849,11 +1866,18 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
         diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
     }
 
-    let deep_started = std::time::Instant::now();
-    let semantics = match run_check_deep_gates(&input, &target, &state, &options.lint_levels) {
-        Ok(output) => output,
-        Err(channel) => return channel.exit_code(),
+    // Only `--explain-cow` reads the optimized SIR; a plain check verifies once.
+    let checks = if !json && a.explain_cow {
+        hew_compile::CheckSet::Build
+    } else {
+        hew_compile::CheckSet::Check
     };
+    let deep_started = std::time::Instant::now();
+    let semantics =
+        match run_check_deep_gates(&input, &target, &state, &options.lint_levels, checks) {
+            Ok(output) => output,
+            Err(channel) => return channel.exit_code(),
+        };
     measure_compile_phase("semantic lowering", deep_started.elapsed());
     if !json && a.explain_cow {
         if let Some(output) = semantics {
@@ -2318,21 +2342,34 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         summary("to migrate");
         return Ok(!changed.is_empty());
     }
+    apply_migrations(&changed)?;
+    summary("migrated");
+    Ok(false)
+}
+
+/// Apply a migration plan: nothing is written unless every planned file still
+/// holds the bytes the plan was built from.
+fn apply_migrations(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
+    refuse_stale_inputs(changed)?;
+    write_migrations(changed)
+}
+
+/// The apply phase rereads every planned file; any file whose bytes differ
+/// from the ones the plan was built from stops the whole run before a write.
+fn refuse_stale_inputs(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
     let stale = changed
         .iter()
         .filter(|(file, original, _)| std::fs::read(file).ok().as_ref() != Some(original))
         .map(|(file, _, _)| file.display().to_string())
         .collect::<Vec<_>>();
-    if !stale.is_empty() {
-        for file in &stale {
-            eprintln!("Error: {file} changed while it was being migrated");
-        }
-        eprintln!("no files were written; run the migration again");
-        return Err(());
+    if stale.is_empty() {
+        return Ok(());
     }
-    write_migrations(&changed)?;
-    summary("migrated");
-    Ok(false)
+    for file in &stale {
+        eprintln!("Error: {file} changed while it was being migrated");
+    }
+    eprintln!("no files were written; run the migration again");
+    Err(())
 }
 
 /// Write each migrated file in order. An I/O failure stops at that file and
@@ -2627,5 +2664,38 @@ mod embedded_stdlib_tests {
             &root.join("std/prelude.hew").display().to_string(),
             "std/builtins.hew"
         ));
+    }
+}
+
+#[cfg(test)]
+mod migration_apply_tests {
+    use super::apply_migrations;
+    use std::path::PathBuf;
+
+    #[test]
+    fn an_input_changed_after_planning_leaves_every_file_unwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.hew");
+        let second = dir.path().join("second.hew");
+        std::fs::write(&first, "before one").unwrap();
+        std::fs::write(&second, "before two").unwrap();
+        let plan: Vec<(&PathBuf, Vec<u8>, String)> = vec![
+            (&first, b"before one".to_vec(), "after one".to_string()),
+            (&second, b"before two".to_vec(), "after two".to_string()),
+        ];
+
+        std::fs::write(&second, "edited since the preview").unwrap();
+        assert!(apply_migrations(&plan).is_err());
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "before one");
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            "edited since the preview"
+        );
+
+        // Negative control: with the inputs as planned, both files are written.
+        std::fs::write(&second, "before two").unwrap();
+        assert!(apply_migrations(&plan).is_ok());
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "after one");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "after two");
     }
 }

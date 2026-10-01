@@ -97,3 +97,15 @@ specifications.
   failure's intent.
 - Fix the underlying implementation or contract; do not weaken a checker,
   oracle, or gate to hide the failure.
+
+## Markers name a live lane
+
+`make transition-marker-lint` checks every `TRANSITION(<id>)`, `SHIM`, `WHY:`
+and `TODO` marker in tracked Rust, Hew, TypeScript, shell and TOML sources. A
+`TRANSITION` or `SHIM` names a lane id with state `live` in
+`docs/internal/marker-lanes.tsv` and carries a `WHEN` or `deleted by` line
+within 6 lines; `SHIM` and `WHY:` also state the real fix; `TODO` names a
+registry id or `#N`. To add a lane, append a row (`id owner state ref`); mark
+it `done` when it lands so leftover markers fail. Existing violations live in
+`docs/internal/marker-baseline.tsv`, which only shrinks: fix the marker and
+delete its row.

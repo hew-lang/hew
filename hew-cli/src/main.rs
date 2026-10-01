@@ -2318,21 +2318,34 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         summary("to migrate");
         return Ok(!changed.is_empty());
     }
+    apply_migrations(&changed)?;
+    summary("migrated");
+    Ok(false)
+}
+
+/// Apply a migration plan: nothing is written unless every planned file still
+/// holds the bytes the plan was built from.
+fn apply_migrations(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
+    refuse_stale_inputs(changed)?;
+    write_migrations(changed)
+}
+
+/// The apply phase rereads every planned file; any file whose bytes differ
+/// from the ones the plan was built from stops the whole run before a write.
+fn refuse_stale_inputs(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
     let stale = changed
         .iter()
         .filter(|(file, original, _)| std::fs::read(file).ok().as_ref() != Some(original))
         .map(|(file, _, _)| file.display().to_string())
         .collect::<Vec<_>>();
-    if !stale.is_empty() {
-        for file in &stale {
-            eprintln!("Error: {file} changed while it was being migrated");
-        }
-        eprintln!("no files were written; run the migration again");
-        return Err(());
+    if stale.is_empty() {
+        return Ok(());
     }
-    write_migrations(&changed)?;
-    summary("migrated");
-    Ok(false)
+    for file in &stale {
+        eprintln!("Error: {file} changed while it was being migrated");
+    }
+    eprintln!("no files were written; run the migration again");
+    Err(())
 }
 
 /// Write each migrated file in order. An I/O failure stops at that file and
@@ -2627,5 +2640,38 @@ mod embedded_stdlib_tests {
             &root.join("std/prelude.hew").display().to_string(),
             "std/builtins.hew"
         ));
+    }
+}
+
+#[cfg(test)]
+mod migration_apply_tests {
+    use super::apply_migrations;
+    use std::path::PathBuf;
+
+    #[test]
+    fn an_input_changed_after_planning_leaves_every_file_unwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.hew");
+        let second = dir.path().join("second.hew");
+        std::fs::write(&first, "before one").unwrap();
+        std::fs::write(&second, "before two").unwrap();
+        let plan: Vec<(&PathBuf, Vec<u8>, String)> = vec![
+            (&first, b"before one".to_vec(), "after one".to_string()),
+            (&second, b"before two".to_vec(), "after two".to_string()),
+        ];
+
+        std::fs::write(&second, "edited since the preview").unwrap();
+        assert!(apply_migrations(&plan).is_err());
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "before one");
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            "edited since the preview"
+        );
+
+        // Negative control: with the inputs as planned, both files are written.
+        std::fs::write(&second, "before two").unwrap();
+        assert!(apply_migrations(&plan).is_ok());
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "after one");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "after two");
     }
 }

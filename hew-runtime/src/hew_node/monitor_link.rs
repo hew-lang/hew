@@ -32,20 +32,19 @@ fn monitor_unreachable(
 ) -> i32 {
     // A registered observation is claimed once: a route-loss fan-out that
     // already delivered its `DOWN` during setup leaves nothing to send.
-    let (monitor_id, down) = match ref_id {
-        Some(ref_id) => (ref_id, rt.monitors.deliver_monitor_to_ref(ref_id, target)),
-        None => {
-            let monitor_id = rt
-                .monitors
-                .next_observation_id()
-                .unwrap_or_else(|| crate::monitor::observation_ids_exhausted());
-            let down = crate::monitor::MonitorDown {
-                monitor_id,
-                watcher_actor_id,
-                target,
-            };
-            (monitor_id, Some(down))
-        }
+    let (monitor_id, down) = if let Some(ref_id) = ref_id {
+        (ref_id, rt.monitors.deliver_monitor_to_ref(ref_id, target))
+    } else {
+        let monitor_id = rt
+            .monitors
+            .next_observation_id()
+            .unwrap_or_else(|| crate::monitor::observation_ids_exhausted());
+        let down = crate::monitor::MonitorDown {
+            monitor_id,
+            watcher_actor_id,
+            target,
+        };
+        (monitor_id, Some(down))
     };
     if let Some(down) = down {
         if current_node_accepts_observations() == Some(true) {
@@ -68,13 +67,11 @@ fn link_unreachable(
     target: Location,
     policy_tag: u8,
 ) -> i32 {
-    let fire = match ref_id {
-        Some(ref_id) => rt
-            .monitors
+    let fire = ref_id.is_none_or(|ref_id| {
+        rt.monitors
             .deliver_link_down_to_ref(ref_id, target, crate::monitor::MONITOR_REASON_LOST)
-            .is_some(),
-        None => true,
-    };
+            .is_some()
+    });
     if fire {
         let _ = crate::link::deliver_cross_node_link_exit(
             local_actor_id,

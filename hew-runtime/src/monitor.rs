@@ -1605,11 +1605,11 @@ mod tests {
             notify_monitors_on_death(target_id, HewActorState::Crashed as i32, crash_kind);
             assert_eq!(crate::actor::hew_actor_free(target), 0);
             assert!(pin_actor_by_id(target_id).is_none());
-            // Linking a retired incarnation succeeds and delivers its exit.
-            assert_eq!(crate::link::hew_native_actor_link(token), 0);
             (*watcher)
                 .actor_state
                 .store(HewActorState::Runnable as i32, Ordering::Release);
+            // Linking a retired incarnation succeeds and delivers its exit.
+            assert_eq!(crate::link::hew_native_actor_link(token), 0);
             let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
             let exit = mailbox::hew_mailbox_try_recv_sys(mailbox);
             assert!(!exit.is_null(), "retired link target must deliver its exit");

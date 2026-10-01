@@ -411,6 +411,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatch table over every static type-member head; splitting it scatters the head match"
+    )]
     fn dispatch_static_type_member(
         &mut self,
         head: &ResolvedDottedTypeHead,

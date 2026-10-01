@@ -22,15 +22,6 @@ const fn setup_error(variant: i32) -> i32 {
     variant + 1
 }
 
-// MonitorError declaration order in std/link_monitor.hew.
-pub(super) const MONITOR_ERR_NODE_NOT_RUNNING: i32 = setup_error(0);
-const MONITOR_ERR_INVALID_TARGET: i32 = setup_error(1);
-const MONITOR_ERR_PARTITION: i32 = setup_error(2);
-const MONITOR_ERR_STALE_REF: i32 = setup_error(3);
-const MONITOR_ERR_ENCODE_FAILURE: i32 = setup_error(4);
-pub(super) const MONITOR_ERR_LOCAL_SHUTDOWN: i32 = setup_error(5);
-pub(super) const MONITOR_ERR_RESOURCE_EXHAUSTED: i32 = setup_error(10);
-
 // LinkError declaration order in std/builtins.hew: Dead, Partition, NoContext.
 // A pid that no longer names a live incarnation is Dead; every failure to
 // reach or register with the peer leaves it unreachable.
@@ -552,7 +543,7 @@ fn monitor_setup_request(
 /// that node will fan a `CTRL_MONITOR_DOWN` back when the target reaches a
 /// terminal state. The returned `ref_id` is assembled into the `MonitorRef`
 /// value. Returns status 0 and writes `out_monitor_id` on success; non-zero
-/// statuses are one-based `MonitorError` discriminants.
+/// statuses are one-based `LinkError` discriminants.
 ///
 /// # Safety
 ///
@@ -567,30 +558,30 @@ pub unsafe extern "C" fn hew_node_monitor_location(
     out_monitor_id: *mut u64,
 ) -> i32 {
     if target.is_null() || out_monitor_id.is_null() {
-        return MONITOR_ERR_INVALID_TARGET;
+        return LINK_ERR_INVALID_TARGET;
     }
     // SAFETY: caller guarantees `target` is readable.
     let Ok(target) = Location::try_from(unsafe { *target }) else {
-        return MONITOR_ERR_STALE_REF;
+        return LINK_ERR_STALE_REF;
     };
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("hew_node_monitor_location: no runtime installed");
-        return MONITOR_ERR_NODE_NOT_RUNNING;
+        return LINK_ERR_NODE_NOT_RUNNING;
     };
     let self_actor = crate::actor::hew_actor_self();
     if self_actor.is_null() {
         set_last_error("hew_node_monitor_location: no current actor (monitor watcher)");
-        return MONITOR_ERR_INVALID_TARGET;
+        return LINK_ERR_NO_CURRENT_ACTOR;
     }
     match current_node_accepts_observations() {
         Some(true) => {}
         Some(false) => {
             set_last_error("hew_node_monitor_location: node is shutting down");
-            return MONITOR_ERR_LOCAL_SHUTDOWN;
+            return LINK_ERR_LOCAL_SHUTDOWN;
         }
         None => {
             set_last_error("hew_node_monitor_location: no active node");
-            return MONITOR_ERR_NODE_NOT_RUNNING;
+            return LINK_ERR_NODE_NOT_RUNNING;
         }
     }
     // SAFETY: hew_actor_self returned a live actor pointer.
@@ -604,15 +595,15 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
     }) else {
         set_last_error("hew_node_monitor_location: no active node");
-        return MONITOR_ERR_NODE_NOT_RUNNING;
+        return LINK_ERR_NODE_NOT_RUNNING;
     };
     if matches!(target_route, routing::LocationRoute::StaleRef) {
         set_last_error("hew_node_monitor_location: target Location is stale");
-        return MONITOR_ERR_STALE_REF;
+        return LINK_ERR_STALE_REF;
     }
     if matches!(target_route, routing::LocationRoute::Partition) {
         set_last_error("hew_node_monitor_location: target identity is partitioned");
-        return MONITOR_ERR_PARTITION;
+        return LINK_ERR_PARTITION;
     }
     let Some(watcher) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
@@ -624,7 +615,7 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         local_actor_location(node, watcher_actor_id)
     }) else {
         set_last_error("hew_node_monitor_location: exact watcher/target Location is unavailable");
-        return MONITOR_ERR_STALE_REF;
+        return LINK_ERR_STALE_REF;
     };
 
     // Record the watcher entry first so the connection-drop / SWIM-DEAD fan-out
@@ -634,12 +625,12 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         .register_remote_monitor(target, watcher_actor_id)
     else {
         set_last_error("hew_node_monitor_location: monitor id space exhausted");
-        return MONITOR_ERR_RESOURCE_EXHAUSTED;
+        return LINK_ERR_RESOURCE_EXHAUSTED;
     };
     if current_node_accepts_observations() != Some(true) {
         rt.monitors.remove_remote_observation(ref_id);
         set_last_error("hew_node_monitor_location: node shut down during monitor setup");
-        return MONITOR_ERR_LOCAL_SHUTDOWN;
+        return LINK_ERR_LOCAL_SHUTDOWN;
     }
 
     let setup = if let routing::LocationRoute::Local { actor_id } = target_route {
@@ -672,7 +663,7 @@ pub unsafe extern "C" fn hew_node_monitor_location(
                 crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
                     send_remote_demonitor(ref_id, target, watcher_actor_id);
                     rt.monitors.remove_remote_observation(ref_id);
-                    return MONITOR_ERR_RESOURCE_EXHAUSTED;
+                    return LINK_ERR_RESOURCE_EXHAUSTED;
                 }
                 _ => {
                     send_remote_demonitor(ref_id, target, watcher_actor_id);
@@ -687,23 +678,23 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         }
         Some(Err(SetupSendError::StaleRef)) => {
             rt.monitors.remove_remote_observation(ref_id);
-            MONITOR_ERR_STALE_REF
+            LINK_ERR_STALE_REF
         }
         Some(Err(SetupSendError::Encode)) => {
             rt.monitors.remove_remote_observation(ref_id);
-            MONITOR_ERR_ENCODE_FAILURE
+            LINK_ERR_ENCODE_FAILURE
         }
         Some(Err(SetupSendError::Send)) => {
             rt.monitors.remove_remote_observation(ref_id);
             if current_node_accepts_observations() == Some(true) {
-                MONITOR_ERR_PARTITION
+                LINK_ERR_PARTITION
             } else {
-                MONITOR_ERR_LOCAL_SHUTDOWN
+                LINK_ERR_LOCAL_SHUTDOWN
             }
         }
         None => {
             rt.monitors.remove_remote_observation(ref_id);
-            MONITOR_ERR_LOCAL_SHUTDOWN
+            LINK_ERR_LOCAL_SHUTDOWN
         }
     }
 }

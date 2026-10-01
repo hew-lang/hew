@@ -473,6 +473,21 @@ impl ResolvedTy {
                             args: args.clone(),
                         });
                     }
+                    // A std-declared lifecycle record or monomorphic enum
+                    // (`SendError`, `CrashKind`, ...) anchors on that
+                    // declaration's id.
+                    other
+                        if other.source_owned_path().is_some()
+                            || crate::builtin_enums::monomorphic_canonical_name(*other)
+                                .is_some() =>
+                    {
+                        return defs
+                            .builtin_declaration(*builtin)
+                            .map(|nominal| NominalInstance {
+                                nominal,
+                                args: args.clone(),
+                            });
+                    }
                     _ => return None,
                 };
                 anchored(anchor, args.clone())

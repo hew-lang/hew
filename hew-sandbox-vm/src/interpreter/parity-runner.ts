@@ -46,17 +46,20 @@ function parseArgs(argv: string[]): CliArgs {
 
 try {
   const args = parseArgs(process.argv.slice(2));
-  const bytecode = JSON.parse(fs.readFileSync(args.bytecodePath, "utf8")) as unknown;
+  const bytecode = JSON.parse(
+    fs.readFileSync(args.bytecodePath, "utf8"),
+  ) as unknown;
   const trace = runBytecode(bytecode, {
     replay: {
       seed: args.seed,
       step_budget: DEFAULT_STEP_BUDGET,
       virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 },
-      inputs: []
-    }
+      inputs: [],
+    },
   });
 
   process.stdout.write(trace.final_state.stdout.join(""));
+  process.stderr.write(trace.final_state.stderr.join(""));
   process.exitCode = trace.final_state.exit_code ?? 1;
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

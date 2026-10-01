@@ -289,14 +289,12 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
-            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue,
         )

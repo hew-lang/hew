@@ -1005,7 +1005,6 @@ pub(crate) fn runtime_variant_tags(
         TypeHead::Builtin(BuiltinType::SendError) => &[
             (Role::SendErrorFull, "Full"),
             (Role::SendErrorClosed, "Closed"),
-            (Role::SendErrorNodeRoutingNotWired, "NodeRoutingNotWired"),
             (Role::SendErrorPartition, "Partition"),
             (Role::SendErrorStaleRef, "StaleRef"),
             (Role::SendErrorLocalShutdown, "LocalShutdown"),
@@ -1020,7 +1019,7 @@ pub(crate) fn runtime_variant_tags(
             (Role::ActorErrorFailed, "Failed"),
             (Role::ActorErrorTrapped, "Trapped"),
             (Role::ActorErrorDead, "Dead"),
-            (Role::ActorErrorTimeout, "Timeout"),
+            (Role::ActorErrorTimedOut, "TimedOut"),
             (Role::ActorErrorNodeNotRunning, "NodeNotRunning"),
             (Role::ActorErrorRoutingFailed, "RoutingFailed"),
             (Role::ActorErrorEncodeFailed, "EncodeFailed"),

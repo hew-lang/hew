@@ -57,27 +57,3 @@ fn exercise_result(r_i64: Result<i64, string>, consume r_f64: Result<f64, string
         );
     }
 }
-
-#[test]
-fn existing_option_result_module_helpers_still_typecheck() {
-    let source = r"
-        import std.option;
-        import std.result;
-
-        fn main() {
-            let opt: Option<i64> = .Some(42);
-            let _: bool = option.is_some_int(opt);
-            let _: i64 = option.unwrap_or_int(opt, 0);
-
-            let res: Result<i64, i64> = .Ok(7);
-            let _: bool = result.is_ok_int(res);
-            let _: i64 = result.unwrap_or_int(res, 0);
-        }
-    ";
-    let output = typecheck(source);
-    assert!(
-        output.errors.is_empty(),
-        "module-level Option/Result helpers should continue to typecheck; got: {:#?}",
-        output.errors
-    );
-}

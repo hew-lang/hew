@@ -277,16 +277,34 @@ impl LowerCtx {
                 &mut self.try_width_cast_lowerings,
                 tc_output.try_width_cast_lowerings.clone(),
             ),
-            std::mem::take(&mut self.actor_method_dispatch),
-            std::mem::take(&mut self.actor_delivery_calls),
+            std::mem::replace(
+                &mut self.actor_method_dispatch,
+                tc_output.actor_method_dispatch.clone(),
+            ),
+            std::mem::replace(
+                &mut self.actor_delivery_calls,
+                tc_output.actor_delivery_calls.clone(),
+            ),
             std::mem::replace(
                 &mut self.actor_coalesce_keys,
                 tc_output.actor_coalesce_keys.clone(),
             ),
-            std::mem::take(&mut self.machine_method_dispatch),
-            std::mem::take(&mut self.method_call_receiver_kinds),
-            std::mem::take(&mut self.dyn_trait_coercions),
-            std::mem::take(&mut self.dyn_trait_method_calls),
+            std::mem::replace(
+                &mut self.machine_method_dispatch,
+                tc_output.machine_method_dispatch.clone(),
+            ),
+            std::mem::replace(
+                &mut self.method_call_receiver_kinds,
+                tc_output.method_call_receiver_kinds.clone(),
+            ),
+            std::mem::replace(
+                &mut self.dyn_trait_coercions,
+                tc_output.dyn_trait_coercions.clone(),
+            ),
+            std::mem::replace(
+                &mut self.dyn_trait_method_calls,
+                tc_output.dyn_trait_method_calls.clone(),
+            ),
             std::mem::replace(
                 &mut self.error_conversions,
                 tc_output.error_conversions.clone(),

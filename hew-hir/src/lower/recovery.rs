@@ -71,6 +71,8 @@ impl LowerCtx {
             ));
             return value;
         };
+        let call_site = self.ids.site();
+        self.register_free_fn_monomorphisation(&symbol, Some(&method), span, call_site);
         let callee = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -88,7 +90,7 @@ impl LowerCtx {
         };
         HirExpr {
             node: self.ids.node(),
-            site: self.ids.site(),
+            site: call_site,
             ty: target.clone(),
             intent: IntentKind::Consume,
             kind: HirExprKind::Call {

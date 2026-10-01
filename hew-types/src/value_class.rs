@@ -750,14 +750,12 @@ fn classify(
             | BuiltinType::Duration
             | BuiltinType::Range
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError
             | BuiltinType::CrashAction
             | BuiltinType::CrashKind
             | BuiltinType::SendError
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
-            | BuiltinType::MonitorError
             // §1.1 decision, overrides `marker() = Resource`: a pid never owns
             // the actor, so its drop frees nothing.
             | BuiltinType::ActorHandle

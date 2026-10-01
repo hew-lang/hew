@@ -463,6 +463,18 @@ pub struct PhysicalVariantGlue {
     pub own: OwnKind,
     pub is_indirect: bool,
     pub variants: Vec<PhysicalVariantCase>,
+    /// The closed runtime roles SIR froze for this exact shape.
+    pub runtime_tags: Vec<(hew_sir::RuntimeVariantRole, u32)>,
+}
+
+impl PhysicalVariantGlue {
+    /// The case index of a closed runtime role in this exact shape.
+    #[must_use]
+    pub fn runtime_tag(&self, role: hew_sir::RuntimeVariantRole) -> Option<u32> {
+        self.runtime_tags
+            .iter()
+            .find_map(|(candidate, tag)| (*candidate == role).then_some(*tag))
+    }
 }
 
 /// One `select` source in arm order. The physical index a selection reports is
@@ -957,7 +969,6 @@ pub enum PhysicalTerminator {
         /// Admission behaviour when the destination mailbox is full: `Wait`
         /// parks the caller, `Reject` refuses the call.
         policy: hew_types::actor_delivery::SendPolicy,
-        deadline_ns: Option<i64>,
         sealed: bool,
         args: Vec<ArgumentTransfer>,
         result: StorageId,

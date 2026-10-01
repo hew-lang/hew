@@ -2280,7 +2280,7 @@ impl Checker {
             // `monitor(<actor handle>)` form stays on the generic `fn_sigs` path
             // below (registered with an actor-handle receiver). When the argument
             // resolves to a `RemotePid<T>`, accept it here and return
-            // `Result<MonitorRef, MonitorError>` — remote setup can fail before
+            // `Result<MonitorRef, LinkError>` — remote setup can fail before
             // a registration exists, so it must not manufacture a zero-valued
             // handle. The remote form is its own runtime family, the node
             // monitor ABI (`hew_node_monitor_location`).
@@ -2293,7 +2293,7 @@ impl Checker {
                 let arg_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&arg_ty);
                 if resolved.as_remote_pid().is_some() {
-                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::monitor_error());
+                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::link_error());
                     self.record_type(span, &result_ty);
                     self.record_direct_call_target(
                         span,

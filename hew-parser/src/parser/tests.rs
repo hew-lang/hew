@@ -5849,11 +5849,45 @@ fn fallible_function_and_error_return_roundtrip() {
 }
 
 #[test]
+fn return_error_dot_names_a_variant_of_the_error_type() {
+    let parsed = parse("fn f() -> i64 fails E { return error .Missing(\"port\"); }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(function) = &parsed.program.items[0].0 else {
+        panic!("expected function");
+    };
+    assert!(
+        matches!(
+            &function.body.stmts[0].0,
+            Stmt::Expression((Expr::ReturnError(value), _))
+                if matches!(&value.0, Expr::Call { function, .. }
+                    if matches!(function.0, Expr::ContextVariant(_)))
+        ),
+        "{:?}",
+        function.body.stmts[0].0
+    );
+    let formatted = crate::fmt::format_program(&parsed.program);
+    assert!(
+        formatted.contains("return error .Missing(\"port\")"),
+        "{formatted}"
+    );
+
+    // Attached, it reads as a field of a binding named `error`: refused with
+    // the rename.
+    let parsed = parse("fn f() -> string { return error.fmt(); }");
+    assert!(
+        parsed.errors.iter().any(|e| e
+            .hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("rename the binding"))),
+        "{:?}",
+        parsed.errors
+    );
+}
+
+#[test]
 fn ordinary_error_binding_expressions_take_priority_after_return() {
     for operand in [
         "error",
-        "error.fmt()",
-        "error .fmt()",
         "error()",
         "error(1)",
         "error[0]",

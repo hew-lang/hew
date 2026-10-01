@@ -573,7 +573,7 @@ struct InstanceService<'a> {
     variant_shapes_by_type: HashMap<ResolvedTy, VariantShapeId>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
-    wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlan>>,
+    wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlans>>,
     value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
     structural_display: BTreeMap<crate::StructuralType, crate::SemStructuralRender>,

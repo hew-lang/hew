@@ -77,12 +77,12 @@ The body shapes (the `wire-body` rule and its parts):
   but tolerates an absent known key only when checked field metadata marks it
   `optional`. Required fields use the failing selector.
 - A **`#[wire]` enum** encodes as either a **bare unsigned tag `N`** (a unit
-  variant) or a **single-entry map `{ N => [field0, field1, …] }`** (a
-  payload variant, the "map-of-one"). The variant tag is the declaration
-  ordinal (the `#[wire]` enum surface tags variants positionally). The
-  runtime reader `hew_cbor_de_enum_begin` accepts exactly these two shapes
-  and fails closed on a negative tag, a multi-entry map, or a single value
-  that is not an array.
+  variant) or a **single-entry map from `N` to its payload** (the
+  "map-of-one"): the value itself for one positional field, an array for
+  several, a map keyed by text key for named fields. Every variant declares
+  its stable tag (`Joined(string) @1;`). The reader accepts exactly these
+  shapes and fails closed on an unknown tag, a multi-entry map, or a payload
+  of the wrong shape.
 - The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
   (CBOR text), `bytes` (CBOR byte string), `Option<T>` (`null` for `None`,
   the inner encoding for `Some`), `Vec<T>` (a CBOR array), `HashMap<K, V>`

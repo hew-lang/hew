@@ -11,6 +11,7 @@ pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;
 pub mod cycle;
+pub mod data_shape;
 pub mod def_table;
 pub mod dump;
 pub mod env;
@@ -73,8 +74,7 @@ pub use check::{
     ResultReturnKind, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern,
     TypeAliasDef, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch,
     VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
-    WireVariantLayout,
+    WireTextFormat,
 };
 pub use def_table::{
     DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, KnownDecl,

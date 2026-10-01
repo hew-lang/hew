@@ -97,8 +97,7 @@ pub use self::types::{
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
     TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
     VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
-    WireVariantLayout,
+    WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -701,15 +700,7 @@ impl Checker {
                     .map(|alias| (alias.declaration, alias.clone()))
                     .collect(),
             )
-            .with_wire_types(
-                self.wire_layouts
-                    .keys()
-                    .filter_map(|name| {
-                        self.lookup_declaration(name)
-                            .map(crate::NominalId::of_declaration)
-                    })
-                    .collect(),
-            )
+            .with_serial_layouts(self.serial_layouts.clone())
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
                 self.trait_impl_method_binders.clone(),
@@ -3236,7 +3227,6 @@ impl Checker {
             pool_accessor_sites: std::mem::take(&mut self.pool_accessor_sites),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
-            wire_layouts: std::mem::take(&mut self.wire_layouts),
             // W4.001 Stage A: substrate-only. Field is empty in Stage A
             // (no production populator); Stage B's resolver fills it.
             // See `check::dispatch` module docs and

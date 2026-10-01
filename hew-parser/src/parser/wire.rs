@@ -175,14 +175,14 @@ impl Parser<'_> {
                                 } else {
                                     self.serial_argument_error(
                                         attr,
-                                        format!("`{value}` is not a case"),
+                                        &format!("`{value}` is not a case"),
                                         "use camelCase, PascalCase, snake_case, SCREAMING_SNAKE or kebab-case",
                                     );
                                 }
                             }
                             _ => self.serial_argument_error(
                                 attr,
-                                "a type takes `case = \"..\"`".to_string(),
+                                "a type takes `case = \"..\"`",
                                 "for example #[serial(case = \"camelCase\")]",
                             ),
                         }
@@ -190,7 +190,7 @@ impl Parser<'_> {
                     if attr.args.is_empty() {
                         self.serial_argument_error(
                             attr,
-                            "a type takes `case = \"..\"`".to_string(),
+                            "a type takes `case = \"..\"`",
                             "for example #[serial(case = \"camelCase\")]",
                         );
                     }
@@ -227,7 +227,7 @@ impl Parser<'_> {
                 AttributeArg::Positional(word) if word == "skip" => {}
                 _ => self.serial_argument_error(
                     attr,
-                    "a field takes `key = \"..\"` and `skip`".to_string(),
+                    "a field takes `key = \"..\"` and `skip`",
                     "for example #[serial(key = \"type\")]",
                 ),
             }
@@ -235,13 +235,13 @@ impl Parser<'_> {
         if attr.args.is_empty() {
             self.serial_argument_error(
                 attr,
-                "a field takes `key = \"..\"` and `skip`".to_string(),
+                "a field takes `key = \"..\"` and `skip`",
                 "for example #[serial(key = \"type\")]",
             );
         }
     }
 
-    fn serial_argument_error(&mut self, attr: &Attribute, what: String, hint: &str) {
+    fn serial_argument_error(&mut self, attr: &Attribute, what: &str, hint: &str) {
         self.error_at_with_kind_and_hint(
             format!("invalid arguments for `#[serial]`: {what} [E_ATTRIBUTE_ARGUMENT]"),
             attr.span.clone(),
@@ -544,25 +544,24 @@ impl Parser<'_> {
             let TypeBodyItem::Variant(variant) = item else {
                 continue;
             };
-            let tag = match variant.tag {
-                Some(tag) => tag,
-                None => {
-                    let tag = u32::try_from(ordinal).unwrap_or(u32::MAX);
-                    self.error_at_with_kind_and_hint(
-                        format!(
-                            "`#[wire]` variant `{}` needs a stable tag [E_WIRE_VARIANT_TAG]",
-                            variant.name
-                        ),
-                        variant.span.clone(),
-                        format!(
-                            "write `{} @N;`; `hew fmt --migrate` writes its current tag, @{tag}",
-                            variant.name
-                        ),
-                        ParseDiagnosticKind::WireVariantTagMissing,
-                    );
-                    variant.tag = Some(tag);
-                    tag
-                }
+            let tag = if let Some(tag) = variant.tag {
+                tag
+            } else {
+                let tag = u32::try_from(ordinal).unwrap_or(u32::MAX);
+                self.error_at_with_kind_and_hint(
+                    format!(
+                        "`#[wire]` variant `{}` needs a stable tag [E_WIRE_VARIANT_TAG]",
+                        variant.name
+                    ),
+                    variant.span.clone(),
+                    format!(
+                        "write `{} @N;`; `hew fmt --migrate` writes its current tag, @{tag}",
+                        variant.name
+                    ),
+                    ParseDiagnosticKind::WireVariantTagMissing,
+                );
+                variant.tag = Some(tag);
+                tag
             };
             if !seen.insert(tag) {
                 self.error_at(

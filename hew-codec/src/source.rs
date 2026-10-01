@@ -169,6 +169,17 @@ impl<'t> Source<'t> {
         }
     }
 
+    /// The unit value, written as null.
+    ///
+    /// # Errors
+    /// `Type` for anything but null.
+    pub fn read_unit(&mut self) -> Result<(), DecodeError> {
+        match self.take() {
+            Value::Null => self.finish_read(()),
+            other => Err(self.mismatch("null", &other)),
+        }
+    }
+
     /// # Errors
     /// `Type` when the value is not a boolean.
     pub fn read_bool(&mut self) -> Result<bool, DecodeError> {

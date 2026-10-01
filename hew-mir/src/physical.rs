@@ -14,7 +14,10 @@ pub use hew_sir::{
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
-pub use hew_sir::{LeafContents, SemWireKind, SemWirePlan};
+pub use hew_sir::{
+    LeafContents, SemWireKind, SemWireMember, SemWirePayload, SemWirePlan, SemWirePlans,
+    SemWireTable,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "physical_wire.rs"]

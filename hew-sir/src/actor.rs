@@ -88,8 +88,8 @@ pub struct SemActorHandler {
 /// Portable actor values selected by the checker and resolved to SIR shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemActorCodec {
-    pub params: Vec<std::sync::Arc<crate::SemWirePlan>>,
-    pub reply: Option<std::sync::Arc<crate::SemWirePlan>>,
+    pub params: Vec<std::sync::Arc<crate::SemWirePlans>>,
+    pub reply: Option<std::sync::Arc<crate::SemWirePlans>>,
 }
 
 impl SemActorHandler {

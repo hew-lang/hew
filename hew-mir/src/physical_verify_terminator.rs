@@ -1541,7 +1541,7 @@ pub(crate) fn verify_terminator(
                 return Err(PhysicalError::new("wire codec input must borrow its slot"));
             };
             let input_ty = if direction.is_serialize() {
-                plan.ty.clone()
+                plan.root.clone()
             } else if direction.is_text() {
                 ResolvedTy::String
             } else {
@@ -1555,13 +1555,13 @@ pub(crate) fn verify_terminator(
             let output = &slot(*result)?.ty;
             let valid_result = match direction {
                 hew_types::WireCodecDirection::Encode => *output == ResolvedTy::Bytes,
-                hew_types::WireCodecDirection::Decode => *output == plan.ty,
+                hew_types::WireCodecDirection::Decode => *output == plan.root,
                 hew_types::WireCodecDirection::ToJson | hew_types::WireCodecDirection::ToYaml => {
                     *output == ResolvedTy::String
                 }
                 hew_types::WireCodecDirection::FromJson
                 | hew_types::WireCodecDirection::FromYaml => {
-                    matches!(output, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
+                    matches!(output, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.root.clone(), ResolvedTy::String])
                 }
             };
             if !valid_result {
@@ -1579,10 +1579,9 @@ pub(crate) fn verify_terminator(
                     })?;
                 if cases.ok == cases.error
                     || glue.variants.len() != 2
-                    || !glue
-                        .variants
-                        .get(cases.ok as usize)
-                        .is_some_and(|case| case.fields.len() == 1 && case.fields[0].ty == plan.ty)
+                    || !glue.variants.get(cases.ok as usize).is_some_and(|case| {
+                        case.fields.len() == 1 && case.fields[0].ty == plan.root
+                    })
                     || !glue.variants.get(cases.error as usize).is_some_and(|case| {
                         case.fields.len() == 1 && case.fields[0].ty == ResolvedTy::String
                     })

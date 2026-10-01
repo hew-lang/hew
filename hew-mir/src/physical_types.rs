@@ -1130,7 +1130,7 @@ pub enum PhysicalTerminator {
     /// initializes the scalar result; failure owns a fault on the cleanup edge.
     WireCodec {
         direction: hew_types::WireCodecDirection,
-        plan: std::sync::Arc<hew_sir::SemWirePlan>,
+        plan: std::sync::Arc<hew_sir::SemWirePlans>,
         recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
         text_result: Option<PhysicalWireTextResult>,
         input: ArgumentTransfer,

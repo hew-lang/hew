@@ -275,15 +275,16 @@ fn generic_wire_facade_named_import_records_codec_rewrite() {
 }
 
 #[test]
-fn generic_wire_facade_refuses_values_without_a_codec() {
-    for (value_ty, value) in [
-        ("Plain", "Plain { a: 1 }"),
-        ("Vec<Plain>", "[Plain { a: 1 }]"),
-        ("(i64, string)", r#"(1, "a")"#),
-        ("Option<Option<i64>>", "Some(Some(1))"),
-        ("Outer", "Outer { p: Plain { a: 1 } }"),
-        ("Tree", "Tree { v: 1, kids: [] }"),
-        ("Handle", "Handle { fd: 3 }"),
+fn generic_wire_facade_admits_data_and_refuses_the_rest_with_a_path() {
+    for (value_ty, value, refused) in [
+        ("Plain", "Plain { a: 1 }", false),
+        ("Vec<Plain>", "[Plain { a: 1 }]", false),
+        ("(i64, string)", r#"(1, "a")"#, false),
+        ("Outer", "Outer { p: Plain { a: 1 } }", false),
+        ("Tree", "Tree { v: 1, kids: [] }", false),
+        ("Option<Option<i64>>", "Some(Some(1))", true),
+        ("Handle", "Handle { fd: 3 }", true),
+        ("Vec<Holder>", "[Holder { h: Handle { fd: 3 } }]", true),
     ] {
         let output = check_wire_program(&format!(
             r"
@@ -304,20 +305,34 @@ fn generic_wire_facade_refuses_values_without_a_codec() {
                 fn close(consume self) {{}}
             }}
 
+            type Holder {{ h: Handle; }}
+
             fn main() {{
                 let v: {value_ty} = {value};
                 let _text = wire.to_json(v);
             }}
             "
         ));
+        if !refused {
+            assert!(
+                output.errors.is_empty(),
+                "`{value_ty}` is data: {:#?}",
+                output.errors
+            );
+            continue;
+        }
         assert!(
             output.errors.iter().any(|error| {
                 error.kind == TypeErrorKind::BoundsNotSatisfied
                     && error.message.contains(&format!(
                         "type `{value_ty}` does not implement trait `Serializable`"
                     ))
+                    && error
+                        .suggestions
+                        .iter()
+                        .any(|help| help.starts_with("E_NOT_SERIALIZABLE"))
             }),
-            "`{value_ty}` has no codec and must be refused at check time: {:#?}",
+            "`{value_ty}` is not data and must be refused at check time: {:#?}",
             output.errors
         );
     }
@@ -473,64 +488,6 @@ fn main() {
         !output.errors.is_empty(),
         "assigning Result<Point, string> to Point must be a type error"
     );
-}
-
-#[test]
-fn wire_layout_table_populated_from_wire_struct() {
-    let output = check_source(
-        r"#[wire]
-type Point {
-    x: i64 @1;
-    y: i64 @2;
-}
-",
-    );
-
-    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
-    assert!(output.wire_layouts.contains_key("Point"));
-    let entry = &output.wire_layouts["Point"];
-    assert_eq!(entry.fields.len(), 2);
-    assert_eq!(entry.fields[0].tag, 1);
-    assert_eq!(entry.fields[0].name, "x");
-    assert_eq!(entry.fields[1].tag, 2);
-    assert_eq!(entry.fields[1].name, "y");
-}
-
-#[test]
-fn wire_layout_table_populated_from_wire_enum() {
-    let output = check_source(
-        r"#[wire]
-enum Status {
-    Active @0;
-    Inactive @1;
-}
-",
-    );
-
-    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
-    assert!(output.wire_layouts.contains_key("Status"));
-    let entry = &output.wire_layouts["Status"];
-    assert_eq!(entry.variants.len(), 2);
-}
-
-#[test]
-fn wire_layout_json_name_override_preserved() {
-    let output = check_source(
-        r#"#[wire]
-type Cfg {
-    #[serial(key = "hostname")]
-    host: string @1;
-}
-"#,
-    );
-
-    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
-    let entry = output
-        .wire_layouts
-        .get("Cfg")
-        .expect("Cfg should have a wire layout entry");
-    assert_eq!(entry.fields[0].json_name, "hostname");
-    assert_eq!(entry.fields[0].yaml_name, "hostname");
 }
 
 #[test]

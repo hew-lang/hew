@@ -2034,7 +2034,7 @@ pub enum SemTerminator {
     WireCodec {
         id: OpId,
         direction: hew_types::WireCodecDirection,
-        plan: std::sync::Arc<crate::SemWirePlan>,
+        plan: std::sync::Arc<crate::SemWirePlans>,
         text_result: Option<crate::SemWireTextResult>,
         args: Vec<BoundaryOperand>,
         result: CallResult,

@@ -12,6 +12,10 @@
 //!
 //! Tables are `hew_codec::Table` globals the compiler emits; handles are
 //! exclusively owned by the walk that opened them.
+#![expect(
+    clippy::missing_panics_doc,
+    reason = "these entries panic only on a walk that breaks the event grammar or an unknown format code, both compiler defects"
+)]
 
 use core::ffi::c_void;
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
@@ -251,6 +255,29 @@ pub unsafe extern "C" fn hew_ser_finish_bytes(s: *mut c_void, out: *mut BytesTri
     unsafe { out.write(value) };
 }
 
+/// Consume the sink and return its document in a runtime buffer (freed by
+/// `hew_ser_free_bytes`), for the actor envelope's payload slot.
+///
+/// # Safety
+/// `s` is a live sink holding one complete value, transferred here; `out_len`
+/// is writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_ser_finish_raw(s: *mut c_void, out_len: *mut usize) -> *mut u8 {
+    // SAFETY: per contract.
+    let document = unsafe { finish(s) };
+    let buffer = crate::mem::buf_try_alloc(document.len()).cast::<u8>();
+    assert!(
+        !buffer.is_null(),
+        "hew codec: out of memory for an encoded payload"
+    );
+    // SAFETY: the buffer has room for the document; `out_len` is writable.
+    unsafe {
+        core::ptr::copy_nonoverlapping(document.as_ptr(), buffer, document.len());
+        out_len.write(document.len());
+    }
+    buffer
+}
+
 /// Consume the sink and return its text document.
 ///
 /// # Safety
@@ -321,6 +348,10 @@ pub unsafe extern "C" fn hew_de_new(format_code: i32, input: *const c_void) -> *
         // SAFETY: binary formats pass a byte carrier.
         unsafe { bytes_of(input.cast()) }
     };
+    reader_for(format, bytes)
+}
+
+fn reader_for(format: Format, bytes: &[u8]) -> *mut c_void {
     let reader = match Source::new(format, bytes) {
         Ok(source) => Reader {
             source: Some(source),
@@ -332,6 +363,25 @@ pub unsafe extern "C" fn hew_de_new(format_code: i32, input: *const c_void) -> *
         },
     };
     Box::into_raw(Box::new(reader)).cast()
+}
+
+/// Parse a document from a raw buffer (an actor payload).
+///
+/// # Safety
+/// `data` is readable for `len` bytes, or null when `len` is zero.
+#[no_mangle]
+pub unsafe extern "C" fn hew_de_new_raw(
+    format_code: i32,
+    data: *const u8,
+    len: usize,
+) -> *mut c_void {
+    let bytes = if len == 0 || data.is_null() {
+        &[][..]
+    } else {
+        // SAFETY: per contract.
+        unsafe { core::slice::from_raw_parts(data, len) }
+    };
+    reader_for(format(format_code), bytes)
 }
 
 /// # Safety
@@ -384,6 +434,14 @@ pub unsafe extern "C" fn hew_de_duplicate(r: *mut c_void) {
 pub unsafe extern "C" fn hew_de_is_null(r: *mut c_void) -> i32 {
     // SAFETY: per contract.
     i32::from(unsafe { reader(r) }.pull(false, Source::is_null))
+}
+
+/// # Safety
+/// `r` is a live reader.
+#[no_mangle]
+pub unsafe extern "C" fn hew_de_unit(r: *mut c_void) {
+    // SAFETY: per contract.
+    unsafe { reader(r) }.pull((), Source::read_unit);
 }
 
 /// # Safety
@@ -606,10 +664,8 @@ mod tests {
     #[test]
     fn a_walk_encodes_through_static_tables() {
         // SAFETY: the sink is complete and transferred.
-        assert_eq!(
-            text(unsafe { hew_ser_finish_string(encode(JSON)) }),
-            r#"{"x":7}"#
-        );
+        let json = unsafe { hew_ser_finish_string(encode(JSON)) };
+        assert_eq!(text(json), r#"{"x":7}"#);
         let mut out = BytesTriple {
             ptr: core::ptr::null_mut(),
             offset: 0,

@@ -14,11 +14,11 @@
 ; (`hew-runtime/tests/wire_body_cddl_conformance.rs`) feeds emitted bytes through
 ; a real CDDL validator against these rules so drift is caught, not narrated.
 ;
-;   struct body  — emitter `emit_ser_value_cbor` / `cbor_field_key`
-;                  (`hew-codegen-rs/src/llvm.rs`, `hew_cbor_ser_begin_map`).
-;   enum body    — emitter `emit_ser_enum_cbor` / `cbor_variant_tag`
-;                  (`hew-codegen-rs/src/llvm.rs`); reader
-;                  `hew_cbor_de_enum_begin` (`hew-runtime/src/cbor_serial.rs`).
+;   struct body  — the codec walk's `hew_ser_record_begin` over a tagged
+;                  table (`hew-codegen-rs/src/physical_wire.rs`), written by
+;                  `hew_codec::Sink` (`hew-codec/src/sink.rs`).
+;   enum body    — `hew_ser_variant` / `hew_de_variant` over the same table;
+;                  `hew_codec::Source::variant` is the reader.
 ;
 ; ── Fail-closed posture (do NOT relax) ───────────────────────────────────────
 ;
@@ -40,8 +40,7 @@ wire-body = wire-struct-body / wire-enum-body
 ; ── Struct body — `@N`-keyed map ─────────────────────────────────────────────
 ;
 ; A `#[wire]` struct serializes as a CBOR map whose keys are the unsigned field
-; tags (`@N`, or a 1-based positional fallback for layout-less records — see
-; `cbor_field_key`) and whose values are the per-field leaf encodings. Keys are
+; tags (`@N`) and whose values are the per-field leaf encodings. Keys are
 ; emitted in canonical (ascending) order. Forward-compatibility: a decoder
 ; tolerates extra keys it does not know. A known absent key is accepted only
 ; when checked field-presence metadata marks it optional; required keys fail
@@ -75,42 +74,41 @@ wire-presence-body = {
 ;
 ; A `#[wire]` enum serializes one of two ways, selected by whether the active
 ; variant carries a payload:
-;   * a UNIT variant  → a bare unsigned tag `N` (the variant's `@N`, or its
-;     ordinal index as a fallback — see `cbor_variant_tag`);
-;   * a PAYLOAD variant → a single-entry map `{ N => [ field0, field1, ... ] }`,
-;     the variant's positional payload array under its tag.
-; The reader `hew_cbor_de_enum_begin` accepts exactly these two shapes and fails
-; closed on a negative tag, a multi-entry map, or a single value that is not an
-; array.
+;   * a UNIT variant  → a bare unsigned tag `N` (the variant's `@N`);
+;   * a PAYLOAD variant → a single-entry map from `N` to its payload: the value
+;     itself for one positional field, an array for several, and a map keyed by
+;     text key for named fields.
+; The reader accepts exactly these shapes and fails closed on an unknown tag, a
+; multi-entry map, or a payload of the wrong shape.
 
 wire-enum-body = wire-enum-unit / wire-enum-payload
 
 wire-enum-unit    = uint                    ; bare variant tag
-wire-enum-payload = { uint => [* wire-value] }  ; single-entry map-of-one
+wire-enum-payload = { uint => wire-value }  ; single-entry map-of-one
 
-; Worked example: `#[wire] enum WireCmd { Ping; Move(WirePoint); }` — the
-; cross-process fixture type. `Ping` (ordinal 0, unit) → `0`; `Move(p)`
-; (ordinal 1, payload) → `{ 1 => [ <wire-point-body> ] }`.
-wire-cmd-body = wire-enum-unit / { 1 => [ wire-point-body ] }
+; Worked example: `#[wire] enum WireCmd { Ping @0; Move(WirePoint) @1; }` — the
+; cross-process fixture type. `Ping` → `0`; `Move(p)` → `{ 1 => <wire-point-body> }`.
+wire-cmd-body = wire-enum-unit / { 1 => wire-point-body }
 
 ; ── Leaf value floor ─────────────────────────────────────────────────────────
 ;
-; The values a struct field or enum payload element may take. This is the
-; supported wire-body floor (`emit_ser_value_cbor`); a type outside it fails
-; closed at codegen ("unsupported value type … outside the supported wire-body
-; floor"), so it never reaches the wire.
+; The values a struct field or enum payload element may take. The checker admits
+; only data (`hew-types/src/data_shape.rs`), and a remote payload's records and
+; enums must be `#[wire]`, so nothing else reaches the wire.
 
 wire-value = wire-scalar
            / wire-text
            / wire-bytes
            / wire-optional
            / wire-vector
+           / wire-map
            / wire-struct-body   ; nested `#[wire]` struct → nested map
            / wire-enum-body     ; nested `#[wire]` enum   → unit tag / map-of-one
 
-; Scalars. Signed integer types (`i8`..`i64`, `isize`, `Duration`, `char`) and
-; `bool` encode as CBOR int / bool; unsigned types (`u8`..`u64`, `usize`) encode
-; as CBOR uint (a subset of `int`); floats (`f32`/`f64`) widen to a CBOR float.
+; Scalars. Signed integer types (`i8`..`i64`, `isize`, `Duration`) and `bool`
+; encode as CBOR int / bool; unsigned types (`u8`..`u64`, `usize`) encode as
+; CBOR uint (a subset of `int`); floats (`f32`/`f64`) widen to a CBOR float.
+; `char` is a one-scalar text string.
 wire-scalar = int / bool / float
 
 ; `string` → CBOR text string; `bytes` → CBOR byte string.
@@ -124,8 +122,12 @@ wire-bytes = bstr
 ; encoding.
 wire-optional = null / wire-value
 
-; `Vec<T>` → a CBOR array of element encodings.
+; `Vec<T>`, tuples and arrays → a CBOR array of element encodings; a `HashSet`
+; is an array in canonical order.
 wire-vector = [* wire-value]
+
+; `HashMap<K, V>` → a CBOR map in canonical key order.
+wire-map = { * wire-value => wire-value }
 
 ; ── Body-shape disambiguation note ───────────────────────────────────────────
 ;

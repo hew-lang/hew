@@ -19,6 +19,8 @@ test = []
 
 [dependencies]
 heck = "0.5"
+# Member flag bits of serialization tables, and the decoder `embed!` shares.
+hew-codec = { path = "../hew-codec" }
 hew-parser = { path = "../hew-parser" }
 serde.workspace = true
 siphasher = "1"

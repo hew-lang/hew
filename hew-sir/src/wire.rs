@@ -1,12 +1,21 @@
-//! Exact wire schemas selected from checked type and field identities.
+//! Codec plans: the shape of every concrete type a codec walk visits, joined
+//! to the checker's serial layouts. Physical stages supply storage layout.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
 
-use hew_types::{ResolvedTy, WireFieldPresence};
+use hew_types::ResolvedTy;
 
 use crate::{AggregateShapeId, VariantShapeId};
 
-/// One encode/decode schema. Physical stages supply storage layout separately.
+/// Every plan one codec call reaches, closed under children. A child is named
+/// by its type and planned once, so recursive types terminate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemWirePlans {
+    pub root: ResolvedTy,
+    pub plans: BTreeMap<ResolvedTy, SemWirePlan>,
+}
+
+/// One concrete type's encode and decode shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemWirePlan {
     pub ty: ResolvedTy,
@@ -16,217 +25,219 @@ pub struct SemWirePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemWireKind {
     Scalar,
-    Vector(Arc<SemWirePlan>),
-    Set(Arc<SemWirePlan>),
+    Unit,
+    Tuple(Vec<ResolvedTy>),
+    Array {
+        element: ResolvedTy,
+        len: u64,
+    },
+    Vector(ResolvedTy),
+    Set(ResolvedTy),
     Map {
-        key: Arc<SemWirePlan>,
-        value: Arc<SemWirePlan>,
+        key: ResolvedTy,
+        value: ResolvedTy,
     },
     Option {
         shape: VariantShapeId,
         none: u32,
         some: u32,
-        value: Arc<SemWirePlan>,
+        value: ResolvedTy,
     },
+    /// Fields in declaration order: field `i` is aggregate field `i` and
+    /// table member `i`. A positional record has no table and encodes as a
+    /// sequence.
     Record {
         shape: AggregateShapeId,
-        fields: Vec<SemWireField>,
+        table: Option<SemWireTable>,
+        fields: Vec<ResolvedTy>,
     },
+    /// Variants in declaration order: variant `i` is shape variant `i` and
+    /// table member `i`.
     Enum {
         shape: VariantShapeId,
-        variants: Vec<SemWireVariant>,
+        table: SemWireTable,
+        variants: Vec<SemWirePayload>,
     },
 }
 
+/// The runtime table of a record's fields or an enum's variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemWireField {
-    pub index: u32,
-    pub tag: u32,
-    pub json_name: String,
-    pub yaml_name: String,
-    pub presence: WireFieldPresence,
-    pub value: Arc<SemWirePlan>,
+pub struct SemWireTable {
+    pub tagged: bool,
+    pub members: Vec<SemWireMember>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemWireVariant {
-    pub index: u32,
-    pub tag: u32,
-    pub json_name: String,
-    pub yaml_name: String,
-    pub fields: Vec<Arc<SemWirePlan>>,
+pub struct SemWireMember {
+    pub key: String,
+    pub tag: u64,
+    /// `hew_codec::Member` flag bits.
+    pub flags: u32,
 }
 
-impl SemWirePlan {
-    /// Check semantic field selections before physical lowering can use them.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive check keeps schema selections tied to their checked value shapes"
-    )]
-    pub(crate) fn verify(
-        &self,
-        records: &[crate::SemAggregateShape],
-        enums: &[crate::SemVariantShape],
-    ) -> Result<(), String> {
-        fn child(
-            expected: &ResolvedTy,
-            plan: &SemWirePlan,
-            records: &[crate::SemAggregateShape],
-            enums: &[crate::SemVariantShape],
-        ) -> Result<(), String> {
-            if expected != &plan.ty {
-                return Err("wire child type disagrees with checked shape".into());
-            }
-            plan.verify(records, enums)
-        }
-        let bad = || "wire plan disagrees with its concrete checked type".to_string();
-        match (&self.ty, &self.kind) {
-            (
-                ResolvedTy::I8
-                | ResolvedTy::I16
-                | ResolvedTy::I32
-                | ResolvedTy::I64
-                | ResolvedTy::U8
-                | ResolvedTy::U16
-                | ResolvedTy::U32
-                | ResolvedTy::U64
-                | ResolvedTy::Isize
-                | ResolvedTy::Usize
-                | ResolvedTy::F32
-                | ResolvedTy::F64
-                | ResolvedTy::Bool
-                | ResolvedTy::Char
-                | ResolvedTy::Duration
-                | ResolvedTy::String
-                | ResolvedTy::Bytes,
-                SemWireKind::Scalar,
-            ) => Ok(()),
-            (
-                ResolvedTy::Named {
-                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
-                    args,
-                    ..
-                },
-                SemWireKind::Vector(value),
-            )
-            | (
-                ResolvedTy::Named {
-                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashSet),
-                    args,
-                    ..
-                },
-                SemWireKind::Set(value),
-            ) if args.len() == 1 => child(&args[0], value, records, enums),
-            (
-                ResolvedTy::Named {
-                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashMap),
-                    args,
-                    ..
-                },
-                SemWireKind::Map { key, value },
-            ) if args.len() == 2 => {
-                child(&args[0], key, records, enums)?;
-                child(&args[1], value, records, enums)
-            }
-            (
-                ResolvedTy::Named {
-                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Option),
-                    args,
-                    ..
-                },
-                SemWireKind::Option {
-                    shape,
-                    none,
-                    some,
-                    value,
-                },
-            ) if args.len() == 1 => {
-                let shape = enums
-                    .get(shape.0 as usize)
-                    .filter(|shape| shape.enum_ty == self.ty)
-                    .ok_or_else(bad)?;
-                if matches!(value.kind, SemWireKind::Option { .. })
-                    || shape.variants.len() != 2
-                    || none == some
-                    || !shape
-                        .variants
-                        .get(*none as usize)
-                        .is_some_and(|case| case.fields.is_empty())
-                    || !shape
-                        .variants
-                        .get(*some as usize)
-                        .is_some_and(|case| case.fields.len() == 1 && case.fields[0].ty == args[0])
-                {
-                    return Err(bad());
-                }
-                child(&args[0], value, records, enums)
-            }
-            (_, SemWireKind::Record { shape, fields }) => {
-                let shape = records
-                    .get(shape.0 as usize)
-                    .filter(|shape| shape.aggregate_ty == self.ty)
-                    .ok_or_else(bad)?;
-                if fields.len() != shape.fields.len() {
-                    return Err(bad());
-                }
-                let mut indices = std::collections::HashSet::new();
-                let mut tags = std::collections::HashSet::new();
-                for field in fields {
-                    if !indices.insert(field.index) || !tags.insert(field.tag) {
-                        return Err(bad());
-                    }
-                    let expected = shape.fields.get(field.index as usize).ok_or_else(bad)?;
-                    if field.presence == WireFieldPresence::Optional
-                        && !matches!(field.value.kind, SemWireKind::Option { .. })
-                    {
-                        return Err(bad());
-                    }
-                    child(&expected.ty, &field.value, records, enums)?;
-                }
-                Ok(())
-            }
-            (_, SemWireKind::Enum { shape, variants }) => {
-                let shape = enums
-                    .get(shape.0 as usize)
-                    .filter(|shape| shape.enum_ty == self.ty)
-                    .ok_or_else(bad)?;
-                if variants.len() != shape.variants.len() {
-                    return Err(bad());
-                }
-                let mut indices = std::collections::HashSet::new();
-                let mut tags = std::collections::HashSet::new();
-                for variant in variants {
-                    if !indices.insert(variant.index) || !tags.insert(variant.tag) {
-                        return Err(bad());
-                    }
-                    let expected = shape.variants.get(variant.index as usize).ok_or_else(bad)?;
-                    if expected.fields.len() != variant.fields.len() {
-                        return Err(bad());
-                    }
-                    for (expected, field) in expected.fields.iter().zip(&variant.fields) {
-                        child(&expected.ty, field, records, enums)?;
-                    }
-                }
-                Ok(())
-            }
-            _ => Err(bad()),
+/// One variant's payload: one value, a sequence, or named fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemWirePayload {
+    Unit,
+    Single(ResolvedTy),
+    Tuple(Vec<ResolvedTy>),
+    Record {
+        table: SemWireTable,
+        fields: Vec<ResolvedTy>,
+    },
+}
+
+impl SemWirePayload {
+    #[must_use]
+    pub fn types(&self) -> &[ResolvedTy] {
+        match self {
+            Self::Unit => &[],
+            Self::Single(ty) => std::slice::from_ref(ty),
+            Self::Tuple(fields) | Self::Record { fields, .. } => fields,
         }
     }
 }
 
 impl SemWirePlan {
+    /// The types this plan's walk visits directly.
+    #[must_use]
+    pub fn children(&self) -> Vec<&ResolvedTy> {
+        match &self.kind {
+            SemWireKind::Scalar | SemWireKind::Unit => Vec::new(),
+            SemWireKind::Tuple(elements)
+            | SemWireKind::Record {
+                fields: elements, ..
+            } => elements.iter().collect(),
+            SemWireKind::Array { element, .. }
+            | SemWireKind::Vector(element)
+            | SemWireKind::Set(element)
+            | SemWireKind::Option { value: element, .. } => vec![element],
+            SemWireKind::Map { key, value } => vec![key, value],
+            SemWireKind::Enum { variants, .. } => {
+                variants.iter().flat_map(SemWirePayload::types).collect()
+            }
+        }
+    }
+}
+
+impl SemWirePlans {
+    #[must_use]
+    pub fn get(&self, ty: &ResolvedTy) -> Option<&SemWirePlan> {
+        self.plans.get(ty)
+    }
+
+    /// Check every plan against the exact shapes it names before physical
+    /// lowering uses them.
+    pub(crate) fn verify(
+        &self,
+        records: &[crate::SemAggregateShape],
+        enums: &[crate::SemVariantShape],
+    ) -> Result<(), String> {
+        let bad = |plan: &SemWirePlan| {
+            format!(
+                "codec plan for `{}` disagrees with its checked shape",
+                plan.ty.user_facing()
+            )
+        };
+        if !self.plans.contains_key(&self.root) {
+            return Err("codec plan set lacks its root".into());
+        }
+        for (ty, plan) in &self.plans {
+            if *ty != plan.ty
+                || plan
+                    .children()
+                    .iter()
+                    .any(|child| !self.plans.contains_key(child))
+            {
+                return Err(bad(plan));
+            }
+            match &plan.kind {
+                SemWireKind::Record {
+                    shape,
+                    table,
+                    fields,
+                } => {
+                    let shape = records
+                        .get(shape.0 as usize)
+                        .filter(|shape| shape.aggregate_ty == plan.ty)
+                        .ok_or_else(|| bad(plan))?;
+                    if shape.fields.len() != fields.len()
+                        || shape
+                            .fields
+                            .iter()
+                            .zip(fields)
+                            .any(|(field, ty)| field.ty != *ty)
+                        || table
+                            .as_ref()
+                            .is_some_and(|table| table.members.len() != fields.len())
+                    {
+                        return Err(bad(plan));
+                    }
+                }
+                SemWireKind::Enum {
+                    shape,
+                    table,
+                    variants,
+                } => {
+                    let shape = enums
+                        .get(shape.0 as usize)
+                        .filter(|shape| shape.enum_ty == plan.ty)
+                        .ok_or_else(|| bad(plan))?;
+                    if shape.variants.len() != variants.len()
+                        || table.members.len() != variants.len()
+                        || shape
+                            .variants
+                            .iter()
+                            .zip(variants)
+                            .any(|(variant, payload)| {
+                                variant.fields.len() != payload.types().len()
+                                    || variant
+                                        .fields
+                                        .iter()
+                                        .zip(payload.types())
+                                        .any(|(field, ty)| field.ty != *ty)
+                            })
+                    {
+                        return Err(bad(plan));
+                    }
+                }
+                SemWireKind::Option {
+                    shape,
+                    none,
+                    some,
+                    value,
+                } => {
+                    let shape = enums
+                        .get(shape.0 as usize)
+                        .filter(|shape| shape.enum_ty == plan.ty)
+                        .ok_or_else(|| bad(plan))?;
+                    if shape.variants.len() != 2
+                        || none == some
+                        || !shape
+                            .variants
+                            .get(*none as usize)
+                            .is_some_and(|case| case.fields.is_empty())
+                        || !shape.variants.get(*some as usize).is_some_and(|case| {
+                            case.fields.len() == 1 && case.fields[0].ty == *value
+                        })
+                    {
+                        return Err(bad(plan));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Decoding a map or set invokes its selected key capabilities to build
     /// the collection and reject duplicate semantic keys.
     pub fn visit_decode_capabilities(
         &self,
         visit: &mut impl FnMut(&ResolvedTy, hew_types::ValueCapability),
     ) {
-        self.visit_types(&mut |ty| {
-            if let Some((
-                hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet,
-                [key, ..],
-            )) = hew_types::runtime_call::collection_type_arguments(ty)
-            {
+        for plan in self.plans.values() {
+            if let SemWireKind::Set(key) | SemWireKind::Map { key, .. } = &plan.kind {
                 for capability in [
                     hew_types::ValueCapability::Hash,
                     hew_types::ValueCapability::Eq,
@@ -234,34 +245,12 @@ impl SemWirePlan {
                     visit(key, capability);
                 }
             }
-        });
+        }
     }
 
-    /// Visit every exact type needed by the codec, including nested payloads.
+    /// Visit every exact type the codec walks.
     pub fn visit_types(&self, visit: &mut impl FnMut(&ResolvedTy)) {
-        visit(&self.ty);
-        match &self.kind {
-            SemWireKind::Scalar => {}
-            SemWireKind::Vector(value)
-            | SemWireKind::Set(value)
-            | SemWireKind::Option { value, .. } => value.visit_types(visit),
-            SemWireKind::Map { key, value } => {
-                key.visit_types(visit);
-                value.visit_types(visit);
-            }
-            SemWireKind::Record { fields, .. } => {
-                for field in fields {
-                    field.value.visit_types(visit);
-                }
-            }
-            SemWireKind::Enum { variants, .. } => {
-                for variant in variants {
-                    for field in &variant.fields {
-                        field.visit_types(visit);
-                    }
-                }
-            }
-        }
+        self.plans.keys().for_each(visit);
     }
 }
 

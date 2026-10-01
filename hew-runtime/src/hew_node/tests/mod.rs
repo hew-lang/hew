@@ -110,11 +110,11 @@ unsafe extern "C" fn test_u32_serialize(
 ) -> *mut u8 {
     // SAFETY: value_ptr points to a live u32 from the test.
     let v = unsafe { *value_ptr.cast::<u32>() };
-    let buf = crate::cbor_serial::hew_cbor_ser_new();
-    // SAFETY: buf is a fresh live CborSerBuf handle.
-    unsafe { crate::cbor_serial::hew_cbor_ser_u64(buf, u64::from(v)) };
+    let buf = crate::codec::hew_ser_new(0);
+    // SAFETY: buf is a fresh live sink.
+    unsafe { crate::codec::hew_ser_u64(buf, u64::from(v)) };
     // SAFETY: buf is consumed by finish; out_len is a valid pointer.
-    unsafe { crate::cbor_serial::hew_cbor_ser_finish(buf, out_len) }
+    unsafe { crate::codec::hew_ser_finish_raw(buf, out_len) }
 }
 
 unsafe extern "C" fn test_u32_deserialize(
@@ -123,18 +123,19 @@ unsafe extern "C" fn test_u32_deserialize(
     out_struct_size: *mut usize,
 ) -> *mut std::ffi::c_void {
     // SAFETY: data is valid for len bytes.
-    let reader = unsafe { crate::cbor_serial::hew_cbor_de_new(data, len) };
+    let reader = unsafe { crate::codec::hew_de_new_raw(0, data, len) };
     // SAFETY: reader is a live handle.
-    let v64 = unsafe { crate::cbor_serial::hew_cbor_de_u64(reader) };
+    let v64 = unsafe { crate::codec::hew_de_int(reader, 32, 0) };
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "test payload is always a u32 round-tripped through the u64 primitive"
+        clippy::cast_sign_loss,
+        reason = "the reader range-checked the payload to u32"
     )]
     let v = v64 as u32;
     // SAFETY: reader is a live handle.
-    let failed = unsafe { crate::cbor_serial::hew_cbor_de_failed(reader) };
+    let failed = unsafe { crate::codec::hew_de_failed(reader) };
     // SAFETY: reader is a live handle.
-    unsafe { crate::cbor_serial::hew_cbor_de_free(reader) };
+    unsafe { crate::codec::hew_de_free(reader) };
     if failed != 0 {
         if !out_struct_size.is_null() {
             // SAFETY: out_struct_size validated non-null.

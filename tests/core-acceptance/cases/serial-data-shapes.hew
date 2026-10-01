@@ -1,0 +1,91 @@
+// Plain records, a generic record, a recursive record, Result, a tuple, an
+// enum with tuple and struct variants, bytes and char round-trip through JSON,
+// YAML and CBOR with #[serial] keys; decode errors name the failing path.
+import std.encoding.wire;
+
+type Pair<T> {
+    left: T;
+    right: T;
+}
+
+type Tree {
+    label: string;
+    children: Vec<Tree>;
+}
+
+enum Figure {
+    Circle(f64);
+    Rect { w: f64; h: f64; }
+    Line(i64, i64);
+    Empty;
+}
+
+#[serial(case = "camelCase")]
+type Config {
+    service_name: string;
+    port: u16;
+    pair: Pair<i64>;
+    tree: Tree;
+    outcome: Result<i64, string>;
+    origin: (i64, f64, bool);
+    figures: Vec<Figure>;
+    blob: bytes;
+    grade: char;
+    timeout: Option<i64>;
+    #[serial(key = "type")]
+    kind: string;
+    #[serial(skip)]
+    cached: Option<f64>;
+}
+
+fn main() {
+    var blob = bytes.new();
+    blob.push(0);
+    blob.push(255);
+    let leaf = Tree { label: "a", children: [] };
+    let config = Config {
+        service_name: "api",
+        port: 8080,
+        pair: Pair { left: 1, right: -2 },
+        tree: Tree { label: "root", children: [leaf] },
+        outcome: .Err("refused"),
+        origin: (3, 0.5, true),
+        figures: [.Circle(1.5), .Rect { w: 2.0, h: 3.25 }, .Line(0, 9), .Empty],
+        blob: blob,
+        grade: 'é',
+        timeout: .None,
+        kind: "svc",
+        cached: .Some(9.5),
+    };
+    let json = wire.to_json(config);
+    println(json);
+    match wire.from_json<Config>(json) {
+        .Ok(back) => {
+            println(wire.to_json(back) == json);
+            println(back.cached.is_none());
+            println(back.tree.children[0].label);
+        }
+        .Err(error) => println(f"decode failed: {error}"),
+    }
+    let yaml = wire.to_yaml(config);
+    print(yaml);
+    match wire.from_yaml<Config>(yaml) {
+        .Ok(back) => println(wire.to_json(back) == json),
+        .Err(error) => println(f"yaml failed: {error}"),
+    }
+    let cbor = wire.encode(config);
+    let again = wire.decode<Config>(cbor);
+    println(wire.to_json(again) == json);
+    match wire.from_json<Config>("{\"serviceName\":1}") {
+        .Ok(_) => println("unexpected"),
+        .Err(error) => println(error),
+    }
+    match wire.from_json<Pair<i64>>("{\"left\":1}") {
+        .Ok(_) => println("unexpected"),
+        .Err(error) => println(error),
+    }
+    match wire.from_json<Vec<Figure>>("[\"Hexagon\"]") {
+        .Ok(_) => println("unexpected"),
+        .Err(error) => println(error),
+    }
+}

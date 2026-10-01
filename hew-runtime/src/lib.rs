@@ -288,18 +288,8 @@ pub mod envelope;
 /// survive a process hop without shipping in-memory heap pointers.
 pub mod xnode_serial;
 
-/// CBOR wire-body codec: the runtime primitives the compiler's
-/// `__hew_cbor_*` thunks drive to turn a `#[wire]` value into CBOR bytes and back.
-/// Reuses the envelope's `ciborium` dependency; the bytes ride the envelope's
-/// CBOR `bstr` payload slot unchanged.
-pub mod cbor_serial;
-
 /// The serialization event ABI over `hew-codec` that compiled walks call.
 pub mod codec;
-
-/// Managed-value adapters for the generated wire walks, and the JSON/YAML
-/// bridge from the binary walk onto `hew-codec`.
-pub mod wire_native;
 
 /// Test-only RAII guard that serializes runtime-touching tests AND installs a
 /// default `RuntimeInner` so the de-globalized authority resolvers

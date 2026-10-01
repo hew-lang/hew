@@ -14,20 +14,8 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
-use heck::{ToKebabCase, ToLowerCamelCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use hew_parser::ast::Ident;
-use hew_parser::ast::{NamingCase, WireMetadata};
-
-fn wire_name(name: &str, case: Option<NamingCase>) -> String {
-    match case {
-        None => name.to_owned(),
-        Some(NamingCase::CamelCase) => name.to_lower_camel_case(),
-        Some(NamingCase::PascalCase) => name.to_upper_camel_case(),
-        Some(NamingCase::SnakeCase) => name.to_snake_case(),
-        Some(NamingCase::ScreamingSnake) => name.to_shouty_snake_case(),
-        Some(NamingCase::KebabCase) => name.to_kebab_case(),
-    }
-}
+use hew_parser::ast::WireMetadata;
 
 impl Checker {
     pub(super) fn refresh_handle_bearing_structs(&mut self) {
@@ -768,6 +756,7 @@ impl Checker {
         );
         self.commit_reresolved_type_def(td.name.name.as_str(), type_def);
 
+        self.register_serial_layout(td);
         if td.wire.is_some() {
             self.register_wire_methods(td);
         }
@@ -1551,6 +1540,7 @@ impl Checker {
         self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
 
+        self.register_serial_layout(td);
         // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
         if let Some(ref wire) = td.wire {
             self.register_wire_methods(td);
@@ -1689,6 +1679,11 @@ impl Checker {
             ),
         );
 
+        self.register_record_serial_layout(
+            &declaration_name,
+            matches!(rd.kind, RecordKind::Tuple(_)),
+            &type_def,
+        );
         self.insert_type_def(&declaration_name, type_def);
         self.record_type_def_inference_holes(declaration_name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
@@ -1715,7 +1710,7 @@ impl Checker {
         let self_ty = self.named_ty_for_key(&canonical_identity, vec![]);
         let bytes_ty = Ty::Bytes;
 
-        let Some((is_wire_struct, is_serial_wire_enum, layout_entry)) =
+        let Some((is_wire_struct, is_serial_wire_enum)) =
             self.type_def_at(type_name).map(|type_def| {
                 let is_wire_struct = type_def.kind == TypeDefKind::Struct;
                 let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
@@ -1729,16 +1724,14 @@ impl Checker {
                         .values()
                         .any(|variant| !matches!(variant, VariantDef::Unit));
                 let is_serial_wire_enum = is_unit_wire_enum || is_payload_wire_enum;
-                let layout_entry = Self::wire_layout_entry_from_metadata(td, is_wire_struct);
-                (is_wire_struct, is_serial_wire_enum, layout_entry)
+                (is_wire_struct, is_serial_wire_enum)
             })
         else {
             return;
         };
-        self.validate_wire_text_names(type_name, &layout_entry);
         // Track wire structs and wire enums so the method-dispatch arms can
         // recognise the binary `encode`/`decode` codec calls (which lower to the
-        // `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*` thunks) without
+        // codec walks) without
         // re-deriving wire-ness. Both ride the CBOR body codec: structs as a
         // tag-keyed map, enums as the "map-of-one" shape.
         if is_wire_struct {
@@ -1747,8 +1740,6 @@ impl Checker {
         if is_serial_wire_enum {
             self.wire_enum_types.insert(canonical_identity.clone());
         }
-        self.wire_layouts
-            .insert(canonical_identity.clone(), layout_entry);
 
         // Wire structs and wire enums carry the same method surface: the binary
         // CBOR codec (`encode`/`decode`) plus the text-format helpers. The body
@@ -1820,112 +1811,6 @@ impl Checker {
                     self.insert_fn_sig(&key, member, sig);
                 }
                 None => self.insert_fn_sig_at(&key, sig),
-            }
-        }
-    }
-
-    pub(super) fn wire_layout_entry_from_metadata(
-        td: &hew_parser::ast::TypeDecl,
-        is_wire_struct: bool,
-    ) -> WireLayoutEntry {
-        let wire = td
-            .wire
-            .as_ref()
-            .expect("a wire layout comes from a #[wire] type");
-        let case = td.serial_case;
-        let fields = if is_wire_struct {
-            // The parser records one `field_meta` entry per field, in body order.
-            let field_attributes = td.body.iter().filter_map(|item| match item {
-                TypeBodyItem::Field { attributes, .. } => Some(attributes.as_slice()),
-                _ => None,
-            });
-            wire.field_meta
-                .iter()
-                .zip(field_attributes)
-                .map(|(field, attributes)| {
-                    let key = hew_parser::ast::SerialField::of(attributes)
-                        .key
-                        .unwrap_or_else(|| wire_name(&field.field_name, case));
-                    WireFieldLayout {
-                        name: field.field_name.clone(),
-                        tag: field.field_number,
-                        json_name: key.clone(),
-                        yaml_name: key,
-                        presence: if field.is_optional {
-                            WireFieldPresence::Optional
-                        } else {
-                            WireFieldPresence::Required
-                        },
-                        repeated: field.is_repeated,
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let variants = td
-            .body
-            .iter()
-            .filter_map(|item| match item {
-                TypeBodyItem::Variant(variant) => {
-                    let name = variant.name.to_string();
-                    let key = wire_name(&name, case);
-                    Some(WireVariantLayout {
-                        json_name: key.clone(),
-                        yaml_name: key,
-                        name,
-                        tag: variant.tag.expect("the parser tags every #[wire] variant"),
-                    })
-                }
-                _ => None,
-            })
-            .collect();
-
-        WireLayoutEntry {
-            is_struct: is_wire_struct,
-            version: wire.version,
-            min_version: wire.min_version,
-            fields,
-            variants,
-        }
-    }
-
-    fn validate_wire_text_names(&mut self, type_name: &str, layout: &WireLayoutEntry) {
-        let (member, keys): (&str, Vec<&str>) = if layout.is_struct {
-            (
-                "fields",
-                layout
-                    .fields
-                    .iter()
-                    .map(|field| field.json_name.as_str())
-                    .collect(),
-            )
-        } else {
-            (
-                "variants",
-                layout
-                    .variants
-                    .iter()
-                    .map(|variant| variant.json_name.as_str())
-                    .collect(),
-            )
-        };
-        let mut seen = HashSet::new();
-        for key in keys {
-            if !seen.insert(key) {
-                self.errors.push(TypeError {
-                    severity: crate::error::Severity::Error,
-                    kind: TypeErrorKind::InvalidOperation,
-                    span: self.type_def_spans.get(type_name).cloned().unwrap_or(0..0),
-                    message: format!(
-                        "E_SERIAL_KEY_COLLISION: two {member} of `{type_name}` share the text key `{key}`"
-                    ),
-                    notes: vec![],
-                    suggestions: vec![
-                        "give one of them its own key with `#[serial(key = \"..\")]`".to_string(),
-                    ],
-                    source_module: self.current_module.clone(),
-                });
             }
         }
     }

@@ -151,30 +151,27 @@ impl Checker {
         }
     }
 
-    pub(super) fn report_nonserializable_remote_actor_msg(&mut self, ty: &Ty, span: &Span) {
-        self.report_error(
-            TypeErrorKind::BoundsNotSatisfied,
-            span,
-            format!(
-                "remote actor message type `{}` must implement Serializable before it can \
-                 cross a RemotePid boundary; only scalars, collections of serializable \
-                 values and `#[wire]` types have a wire encoding",
-                ty.user_facing()
-            ),
-        );
-    }
-
+    /// A remote message must be data whose records and enums are `#[wire]`,
+    /// the same rule `RemotePid` sends check (D524).
     pub(super) fn enforce_remote_actor_msg_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
             return true;
         }
-        if self.satisfies_serializable(&resolved) {
-            true
-        } else {
-            self.report_nonserializable_remote_actor_msg(&resolved, span);
-            false
-        }
+        let resolved = self.normalize_for_use(&resolved.materialize_literal_defaults());
+        let Ok(concrete) = ResolvedTy::from_ty(&resolved) else {
+            return true;
+        };
+        let Some(error) = self.remote_payload_error(&concrete) else {
+            return true;
+        };
+        let owner = format!("remote actor message `{}`", resolved.user_facing());
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            Self::not_data_message(&owner, &error),
+        );
+        false
     }
 
     /// Enforce the A640 remote serializability floor after method signature

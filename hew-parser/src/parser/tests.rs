@@ -3134,8 +3134,8 @@ type Msg {
 
 #[wire]
 enum Command {
-    Start @0;
-    Stop @1;
+    Start;
+    Stop;
 }
 ";
     let result = parse(source);

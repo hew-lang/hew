@@ -324,8 +324,8 @@ pub struct TypeFactContext {
     display_method: Option<crate::DefId>,
     aliases: HashMap<crate::DefId, crate::check::TypeAliasDef>,
     rendering_members: HashMap<crate::NominalId, RenderingMembers>,
-    /// Declarations with a checked `#[wire]` layout, by canonical identity.
-    wire_types: HashSet<crate::NominalId>,
+    /// Text keys, tags and flags of every data record and enum.
+    serial_layouts: HashMap<crate::NominalId, crate::data_shape::SerialLayout>,
 }
 
 /// Source type identities before storage normalization expands aliases.
@@ -393,7 +393,7 @@ impl TypeFactContext {
             display_method: None,
             aliases: HashMap::new(),
             rendering_members: HashMap::new(),
-            wire_types: HashSet::new(),
+            serial_layouts: HashMap::new(),
         }
     }
 
@@ -437,9 +437,18 @@ impl TypeFactContext {
         self
     }
 
-    pub(crate) fn with_wire_types(mut self, wire_types: HashSet<crate::NominalId>) -> Self {
-        self.wire_types = wire_types;
+    pub(crate) fn with_serial_layouts(
+        mut self,
+        layouts: HashMap<crate::NominalId, crate::data_shape::SerialLayout>,
+    ) -> Self {
+        self.serial_layouts = layouts;
         self
+    }
+
+    /// The serialization layout of a data record or enum.
+    #[must_use]
+    pub fn serial_layout(&self, id: crate::NominalId) -> Option<&crate::data_shape::SerialLayout> {
+        self.serial_layouts.get(&id)
     }
 
     pub(crate) fn with_rendering_members(
@@ -941,119 +950,28 @@ impl TypeFactService {
         }
     }
 
-    /// The one `Serializable` admission check: whether the wire codec can plan
-    /// `ty`. It admits scalars, `Vec`/`HashMap`/`HashSet`/`Option` of
-    /// serializable values, and `#[wire]` declarations whose members are
-    /// serializable. `param` answers a bound (`Serializable`, `Hash`, `Eq`) on a
-    /// type parameter of the code being checked; concrete callers pass a
-    /// closure that answers `false`.
-    ///
-    /// WHY this is narrower than "every data type": plain records, tuples,
-    /// arrays, `Result` and unit have no codec plan until the structural data
-    /// shape and event walk land (design-data-codegen §1.3-1.4). WHEN that
-    /// lands, this becomes `data_shape(ty).is_ok()` and widens in place.
+    /// Whether `ty` is data; see [`crate::data_shape`].
     pub(crate) fn is_serializable(
         &self,
         ty: &ResolvedTy,
         param: &dyn Fn(&str, MarkerTrait) -> bool,
     ) -> bool {
-        self.serializable_within(ty, param, &mut Vec::new())
+        self.data_error(ty, false, param).is_none()
     }
 
-    /// `is_serializable` for a member reached from the declarations in
-    /// `visiting`. The codec plan is finite, so a schema that reaches itself
-    /// has none.
-    pub(crate) fn serializable_within(
-        &self,
-        ty: &ResolvedTy,
-        param: &dyn Fn(&str, MarkerTrait) -> bool,
-        visiting: &mut Vec<crate::NominalId>,
-    ) -> bool {
-        match ty {
-            ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::Duration
-            | ResolvedTy::String
-            | ResolvedTy::Bytes => true,
-            ResolvedTy::TypeParam { name } => {
-                param(name.spelling.as_str(), MarkerTrait::Serializable)
-            }
-            ResolvedTy::Named {
-                head: crate::TypeHead::Builtin(builtin),
-                args,
-                ..
-            } => match (builtin, args.as_slice()) {
-                (BuiltinType::Vec, [element]) => self.serializable_within(element, param, visiting),
-                (BuiltinType::HashSet, [element]) => {
-                    self.is_codec_key(element, param)
-                        && self.serializable_within(element, param, visiting)
-                }
-                (BuiltinType::HashMap, [key, value]) => {
-                    self.is_codec_key(key, param)
-                        && self.serializable_within(key, param, visiting)
-                        && self.serializable_within(value, param, visiting)
-                }
-                // `None` and `Some(None)` share the null encoding, and a type
-                // parameter may itself be instantiated with an `Option`.
-                (BuiltinType::Option, [value]) => {
-                    !value.is_builtin(BuiltinType::Option)
-                        && !matches!(value, ResolvedTy::TypeParam { .. })
-                        && self.serializable_within(value, param, visiting)
-                }
-                _ => false,
-            },
-            ResolvedTy::Named {
-                head:
-                    head @ (crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_)),
-                args,
-                is_opaque: false,
-            } => {
-                let Some(declaration) = head.declaration(&self.context.defs) else {
-                    return false;
-                };
-                if !args.is_empty()
-                    || !self.context.wire_types.contains(&declaration)
-                    || visiting.contains(&declaration)
-                    || head
-                        .declaration(&self.context.defs)
-                        .and_then(|id| self.context.declarations.get(&id))
-                        .is_none_or(|declaration| {
-                            declaration.marker != crate::DeclarationMarker::None
-                        })
-                {
-                    return false;
-                }
-                let Ok(members) = self.declared_capability_members(ty) else {
-                    return false;
-                };
-                visiting.push(declaration);
-                let ok = members
-                    .iter()
-                    .all(|member| self.serializable_within(member, param, visiting));
-                visiting.pop();
-                ok
-            }
-            _ => false,
-        }
+    /// The service's declaration context.
+    #[must_use]
+    pub fn context(&self) -> &TypeFactContext {
+        &self.context
     }
 
     /// Map keys and set elements need the selected `Hash` and `Eq` the codec
     /// uses to rebuild the collection.
-    fn is_codec_key(&self, ty: &ResolvedTy, param: &dyn Fn(&str, MarkerTrait) -> bool) -> bool {
+    pub(crate) fn is_codec_key(
+        &self,
+        ty: &ResolvedTy,
+        param: &dyn Fn(&str, MarkerTrait) -> bool,
+    ) -> bool {
         if let ResolvedTy::TypeParam { name } = ty {
             return param(name.spelling.as_str(), MarkerTrait::Hash)
                 && param(name.spelling.as_str(), MarkerTrait::Eq);
@@ -1082,7 +1000,10 @@ impl TypeFactService {
 
     /// Instantiate declaration members, preserving the same source identities
     /// and parallel parameter substitution as the class and record services.
-    fn declared_capability_members(&self, ty: &ResolvedTy) -> Result<Vec<ResolvedTy>, ClassError> {
+    pub(crate) fn declared_capability_members(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
         let ResolvedTy::Named { head, args, .. } = ty else {
             return Err(ClassError::UnknownDeclaration {
                 name: ty.user_facing().to_string(),

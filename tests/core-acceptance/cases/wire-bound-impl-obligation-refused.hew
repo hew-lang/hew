@@ -1,7 +1,8 @@
 // A Hash and Eq impl bounded by `T: Serializable` does not apply to a key
-// whose argument has no wire encoding, so the map has no key operations.
-type Plain {
-    a: i64;
+// whose argument is a resource, so the map has no key operations.
+#[resource]
+type Handle {
+    fd: i64;
 }
 
 type Key<T> {
@@ -21,6 +22,6 @@ impl<T: Serializable> Hash for Key<T> {
 }
 
 fn main() {
-    let plains: HashMap<Key<Plain>, i64> = HashMap.new();
-    println(f"{plains.len()}");
+    let handles: HashMap<Key<Handle>, i64> = HashMap.new();
+    println(f"{handles.len()}");
 }

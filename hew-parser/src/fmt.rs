@@ -1182,7 +1182,8 @@ impl<'a> Formatter<'a> {
                     }
                     self.flush_comments_before(start);
                     let text = self.attribute_text(&(start..end));
-                    let Some(text) = self.migrate_serial_attribute(text, &mut legacy_serial) else {
+                    let Some(text) = Self::migrate_serial_attribute(text, &mut legacy_serial)
+                    else {
                         continue;
                     };
                     self.write_indent();
@@ -1202,7 +1203,7 @@ impl<'a> Formatter<'a> {
     /// Rewrite a retired `#[json(..)]`/`#[yaml(..)]` naming attribute: the
     /// first becomes `#[serial(case = "..")]`, as the parser reads it, and
     /// any later one is dropped. Every other attribute prints unchanged.
-    fn migrate_serial_attribute(&self, text: String, seen: &mut bool) -> Option<String> {
+    fn migrate_serial_attribute(text: String, seen: &mut bool) -> Option<String> {
         let tokens = hew_lexer::lex(&text);
         let is_legacy = matches!(
             tokens.get(1),
@@ -1703,7 +1704,7 @@ impl<'a> Formatter<'a> {
     fn format_serial_case_attr(&mut self, case: Option<NamingCase>) {
         if let Some(case) = case {
             self.write_indent();
-            write!(self.output, "#[serial(case = \"{}\")]\n", case.as_str()).unwrap();
+            writeln!(self.output, "#[serial(case = \"{}\")]", case.as_str()).unwrap();
         }
     }
 
@@ -1875,6 +1876,15 @@ impl<'a> Formatter<'a> {
         }
         self.format_type_expr(&decl.target_type.0);
         self.format_opt_where_clause(decl.where_clause.as_ref());
+        // An empty body (`impl Error for E {}`) stays on one line unless a
+        // comment sits inside it.
+        let body_comment = self.next_comment < self.comments.len()
+            && self.comments[self.next_comment].span.start
+                < self.find_block_close(self.prev_source_pos, span_end);
+        if decl.type_aliases.is_empty() && decl.methods.is_empty() && !body_comment {
+            self.write(" {}\n");
+            return;
+        }
         self.write(" {\n");
         self.indent += 1;
         // Aliases and methods print in source order; the AST keeps them in

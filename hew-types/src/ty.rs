@@ -59,14 +59,12 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
-            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue,
         )
@@ -105,9 +103,10 @@ impl fmt::Display for TypeVar {
 pub struct TraitObjectBound {
     /// Trait name
     pub trait_name: String,
-    /// The declared trait the bound names; `None` for a compiler predicate
-    /// (`Send`, `Clone`), which has no declaration. A declared trait is never
-    /// a predicate, whatever its spelling (R2).
+    /// The trait the bound names: a declared trait, or the sourceless row of a
+    /// compiler predicate (`Send`, `Clone`). A declared trait is never a
+    /// predicate, whatever its spelling (R2). `None` only for a bound whose
+    /// trait did not resolve (already reported). This is the bound's identity.
     pub trait_id: Option<crate::DefId>,
     /// Type arguments
     pub args: Vec<Ty>,
@@ -118,10 +117,27 @@ pub struct TraitObjectBound {
     pub assoc_bindings: Vec<(String, Ty)>,
 }
 
+impl TraitObjectBound {
+    /// Order a trait object's bounds canonically, so every spelling of one
+    /// set of traits is one type (R1): declared traits by identity first, then
+    /// compiler predicates, then unresolved bounds (already reported).
+    pub fn sort_canonical(bounds: &mut [Self]) {
+        bounds.sort_by_key(|bound| {
+            let rank = match bound.trait_id {
+                Some(id) if crate::DefTable::as_predicate(id).is_some() => 1,
+                Some(_) => 0,
+                None => 2,
+            };
+            (rank, bound.trait_id)
+        });
+    }
+}
+
+// The trait's identity is `trait_id`; `trait_name` is display data and never
+// takes part in equality, hashing or ordering.
 impl PartialEq for TraitObjectBound {
     fn eq(&self, other: &Self) -> bool {
         self.trait_id == other.trait_id
-            && self.trait_name == other.trait_name
             && self.args == other.args
             && self.assoc_bindings == other.assoc_bindings
     }
@@ -132,7 +148,6 @@ impl Eq for TraitObjectBound {}
 impl std::hash::Hash for TraitObjectBound {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.trait_id.hash(state);
-        self.trait_name.hash(state);
         self.args.hash(state);
         self.assoc_bindings.hash(state);
     }
@@ -1457,20 +1472,6 @@ impl Ty {
         crate::actor_delivery::nominal(crate::KnownDecl::Never, Vec::new())
     }
 
-    /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
-    /// and `await stream.recv() | after d`.  A unit enum with one variant
-    /// (`Timeout`) distinguishing deadline expiry from a closed channel
-    /// (`Ok(None)`).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
-    #[must_use]
-    pub fn timeout_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("TimeoutError")
-            .expect("generated builtin enum catalog must contain TimeoutError")
-    }
-
     /// Construct `LinkError` — error type for `link(handle)` calls.
     ///
     /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
@@ -1484,17 +1485,6 @@ impl Ty {
     pub fn link_error() -> Ty {
         crate::builtin_enums::monomorphic_builtin_enum_ty("LinkError")
             .expect("generated builtin enum catalog must contain LinkError")
-    }
-
-    /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
-    #[must_use]
-    pub fn monitor_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("MonitorError")
-            .expect("generated builtin enum catalog must contain MonitorError")
     }
 
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.

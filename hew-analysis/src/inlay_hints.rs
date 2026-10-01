@@ -552,7 +552,6 @@ fn collect_inlay_hints_from_expr(
         Expr::Cast { expr: inner, .. }
         | Expr::PostfixTry(inner)
         | Expr::Await(inner)
-        | Expr::AwaitRestart(inner)
         | Expr::Yield(Some(inner))
         | Expr::Return(Some(inner)) => {
             collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
@@ -754,7 +753,6 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),

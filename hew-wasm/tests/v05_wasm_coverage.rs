@@ -8,7 +8,7 @@
 //!
 //! ## Fixture tiers
 //!
-//! **`FIXTURES`** (all 30, excluding the cross-module main): every fixture is
+//! **`FIXTURES`** (all 29, excluding the cross-module main): every fixture is
 //! checked for API validity (no export panic, well-formed JSON, diagnostics array
 //! present).
 //!
@@ -145,7 +145,7 @@ fn is_analysis_error_fixture(name: &str) -> bool {
 
 // ── Fixture count sanity ──────────────────────────────────────────────────
 
-// ── API-valid: all 30 fixtures produce well-formed JSON ───────────────────
+// ── API-valid: all 29 fixtures produce well-formed JSON ───────────────────
 
 #[test]
 fn v05_wasm_coverage_analyze_all_api_valid() {

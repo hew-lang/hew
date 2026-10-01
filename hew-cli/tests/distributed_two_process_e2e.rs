@@ -859,13 +859,13 @@ fn remote_monitor_down_on_connection_drop() {
 }
 
 /// Cross-node monitor setup fails honestly after route teardown. The runtime
-/// must return `Err(MonitorError::Partition)`, never an inert `MonitorRef`.
+/// must return `Err(LinkError::Partition)`, never an inert `MonitorRef`.
 #[test]
 fn remote_monitor_setup_after_drop_returns_typed_partition() {
     let stdout = run_conn_drop_scenario("remote_monitor_setup_after_drop");
     assert!(
         stdout.contains("PASS remote_monitor_setup_after_drop error=Partition"),
-        "expected typed MonitorError::Partition after route teardown; client stdout:\n{stdout}"
+        "expected typed LinkError::Partition after route teardown; client stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("FAIL "),

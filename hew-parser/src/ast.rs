@@ -564,15 +564,6 @@ pub enum Expr {
     },
     Await(Box<Spanned<Expr>>),
 
-    /// `await_restart <supervised-child>` — suspend the current actor until the
-    /// named supervised child's slot is Live again (it restarted), then resume
-    /// with the same stable `ChildRef<ChildType>`. A dedicated prefix
-    /// keyword (not a method, not an extension of `await`): the supervisor
-    /// analogue of `await task`, lowered through `SuspendKind::RestartWait`. The
-    /// operand must be a static supervised-child accessor; a permanently-Dead
-    /// child fails closed (resumes immediately) rather than hanging forever.
-    AwaitRestart(Box<Spanned<Expr>>),
-
     /// Regex literal, e.g. `re"pattern"`.
     RegexLiteral(String),
 
@@ -1375,6 +1366,10 @@ pub struct TypeDecl {
     /// Lang-item key from `#[lang_item("key")]`, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang_item: Option<String>,
+    /// Text-key case from `#[serial(case = "..")]`, applied to every field
+    /// and variant name that has no explicit key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_case: Option<NamingCase>,
 }
 
 impl ResourceMarker {
@@ -1444,8 +1439,6 @@ pub enum TypeDeclKind {
 pub struct WireMetadata {
     pub field_meta: Vec<WireFieldMeta>,
     pub reserved_numbers: Vec<u32>,
-    pub json_case: Option<NamingCase>,
-    pub yaml_case: Option<NamingCase>,
     /// Schema version from `#[wire(version = N)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
@@ -1462,8 +1455,6 @@ pub struct WireFieldMeta {
     pub is_optional: bool,
     pub is_deprecated: bool,
     pub is_repeated: bool,
-    pub json_name: Option<String>,
-    pub yaml_name: Option<String>,
     /// Schema version that introduced this field, from `since N` modifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<u32>,
@@ -1493,6 +1484,9 @@ pub enum TypeBodyItem {
 pub struct VariantDecl {
     pub name: Ident,
     pub kind: VariantKind,
+    /// The stable `@N` tag of a `#[wire]` enum variant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<u32>,
     #[serde(default)]
     pub doc_comment: Option<String>,
     /// Source byte range of this variant (after any doc comments), used by
@@ -1568,6 +1562,12 @@ pub struct TraitMethod {
     /// Whether the declaration takes ownership of its receiver.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub consumes_self: bool,
+    /// `fn[suspends] name(..)`: a call through this method may suspend the
+    /// caller. A trait method declaration is a written boundary (A421): an
+    /// unmarked method never suspends, so an implementation whose body
+    /// suspends cannot fill it behind `dyn`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspends: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1592,7 +1592,35 @@ pub struct ImplTypeAlias {
     pub span: Span,
 }
 
-/// Naming case convention for JSON/YAML struct-level key transformation.
+/// A field's `#[serial(..)]` options, as the parser validated them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SerialField {
+    /// `key = ".."`: the field's text key in every text format.
+    pub key: Option<String>,
+    /// `skip`: never encoded; decodes as `None`.
+    pub skip: bool,
+}
+
+impl SerialField {
+    #[must_use]
+    pub fn of(attributes: &[Attribute]) -> Self {
+        let mut options = Self::default();
+        for attr in attributes.iter().filter(|attr| attr.name == "serial") {
+            for arg in &attr.args {
+                match arg {
+                    AttributeArg::KeyValue { key, value } if key == "key" => {
+                        options.key = Some(value.clone());
+                    }
+                    AttributeArg::Positional(word) if word == "skip" => options.skip = true,
+                    _ => {}
+                }
+            }
+        }
+        options
+    }
+}
+
+/// Naming case for the text keys of a type's fields and variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NamingCase {
     CamelCase,
@@ -1603,17 +1631,32 @@ pub enum NamingCase {
 }
 
 impl NamingCase {
-    /// Parse a naming case from an attribute argument string (e.g. `"camelCase"`).
+    pub const ALL: [Self; 5] = [
+        Self::CamelCase,
+        Self::PascalCase,
+        Self::SnakeCase,
+        Self::ScreamingSnake,
+        Self::KebabCase,
+    ];
+
+    /// Parse the canonical spelling in `#[serial(case = "..")]`.
     #[must_use]
-    pub fn from_attr(s: &str) -> Option<Self> {
-        match s {
-            "camelCase" | "camel" => Some(Self::CamelCase),
-            "PascalCase" | "pascal" => Some(Self::PascalCase),
-            "snake_case" | "snake" => Some(Self::SnakeCase),
-            "SCREAMING_SNAKE" | "screaming_snake" => Some(Self::ScreamingSnake),
-            "kebab-case" | "kebab" => Some(Self::KebabCase),
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|case| case.as_str() == s)
+    }
+
+    /// Parse a retired `#[json(..)]`/`#[yaml(..)]` argument, short aliases
+    /// included, for `hew fmt --migrate`.
+    #[must_use]
+    pub fn parse_legacy(s: &str) -> Option<Self> {
+        Self::parse(s).or(match s {
+            "camel" => Some(Self::CamelCase),
+            "pascal" => Some(Self::PascalCase),
+            "snake" => Some(Self::SnakeCase),
+            "screaming_snake" => Some(Self::ScreamingSnake),
+            "kebab" => Some(Self::KebabCase),
             _ => None,
-        }
+        })
     }
 
     /// Canonical attribute string for this naming case.

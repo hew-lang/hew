@@ -762,12 +762,13 @@ pub enum ParseDiagnosticKind {
     LegacyTurbofish,
     /// A removed glob import was used instead of an explicit selection.
     ImportGlobRemoved,
-    /// Retired `await_restart role` keyword form.
-    AwaitRestartRetired,
-    /// Retired supervisor child `shutdown:` clause.
-    SupervisorStopClauseRetired,
     /// `-> () fails E` spells out the unit a failing function omits.
     UnitFailsArrow,
+    /// A retired `#[json(..)]`/`#[yaml(..)]` attribute or `json(..)`/`yaml(..)`
+    /// wire modifier; `#[serial(..)]` replaces them.
+    LegacySerialSpelling,
+    /// A `#[wire]` enum variant without its stable `@N` tag.
+    WireVariantTagMissing,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -791,10 +792,6 @@ pub enum ParseDiagnosticKind {
     },
     /// Pipe-closure syntax is malformed or incomplete.
     ClosurePipeSyntax,
-    /// Retired `async fn` syntax; suspension is inferred from the body.
-    NoAsyncFn,
-    /// Retired `async gen fn` syntax; generators infer suspension too.
-    NoAsyncGen,
     /// Retired `for await` syntax; `for` waits per item on its own.
     ForAwait,
     /// A record literal named more than one `..base`.
@@ -817,17 +814,15 @@ impl ParseDiagnosticKind {
             Self::LegacyPathSeparator => "E_PATH_LEGACY_SEPARATOR",
             Self::LegacyTurbofish => "E_LEGACY_TURBOFISH",
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
-            Self::AwaitRestartRetired => "E_AWAIT_RESTART_RETIRED",
-            Self::SupervisorStopClauseRetired => "E_SUPERVISOR_STOP_CLAUSE",
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
+            Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
+            Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
             Self::ClosurePipeSyntax => "ClosurePipeSyntax",
-            Self::NoAsyncFn => "E_NO_ASYNC_FN",
-            Self::NoAsyncGen => "E_NO_ASYNC_GEN",
             Self::ForAwait => "E_FOR_AWAIT",
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
             Self::ReservedName => "E_RESERVED_NAME",

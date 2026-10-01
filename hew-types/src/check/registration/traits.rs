@@ -1976,6 +1976,18 @@ impl Checker {
         }
 
         if expected_params.len() != impl_sig.params.len() {
+            // An identity `impl From<T> for T` reads its `value: T` as the
+            // receiver; `E_FROM_INVALID` already names that impl.
+            let identity_from = self
+                .impl_method_declaration_id(type_name, method, Some(trait_bound))
+                .is_some_and(|declaration| {
+                    self.from_impls
+                        .iter()
+                        .any(|row| row.method == declaration && row.source == row.target)
+                });
+            if identity_from {
+                return;
+            }
             // Arity mismatch — also fires when the impl wrote a different
             // receiver shape (e.g. `(it: X)` vs `(self)`), because the impl's
             // non-Self first param is not detected as a receiver and so is

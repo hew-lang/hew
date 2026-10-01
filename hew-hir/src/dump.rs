@@ -526,15 +526,11 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             method_id,
             args,
             reply_ty,
-            deadline_ns,
             ..
         } => {
-            let deadline = deadline_ns
-                .map(|ns| format!(" | after {ns}ns"))
-                .unwrap_or_default();
             writeln!(
                 out,
-                "{pad}  actor-ask {method_id} -> {}{deadline}",
+                "{pad}  actor-ask {method_id} -> {}",
                 reply_ty.user_facing()
             )
             .expect("write to string");
@@ -741,10 +737,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             writeln!(out, "{pad}  await-task -> {}", output_ty.user_facing())
                 .expect("write to string");
             dump_expr(defs, out, operand, indent + 2);
-        }
-        HirExprKind::AwaitRestart { child } => {
-            writeln!(out, "{pad}  await-restart").expect("write to string");
-            dump_expr(defs, out, child, indent + 2);
         }
         HirExprKind::ConnAwaitRead {
             conn,

@@ -1551,15 +1551,6 @@ impl Checker {
                 return None;
             }
             Some("start" | "stop" | "crash" | "link" | "down") => {}
-            Some("exit") => {
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorLifecycleRetired,
-                    "E_ACTOR_LIFECYCLE_RETIRED: `#[on(exit)]` is retired".to_string(),
-                    "replace `#[on(exit)]` with `#[on(link)]`".to_string(),
-                    &hook_attr.span,
-                );
-                return self.migration_mode.then_some("link");
-            }
             Some(unknown) => {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
@@ -2523,6 +2514,28 @@ impl Checker {
         );
     }
 
+    /// R11: a `receive fn`'s message crosses an actor boundary, and a trait
+    /// object is not Send: its concrete type is erased, so nothing proves it
+    /// owns no actor-local state.
+    fn reject_dyn_message_type(&mut self, ty: &Ty, span: &Span) {
+        if !ty.contains_trait_object() {
+            return;
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::InvalidSend,
+            span,
+            format!(
+                "E_DYN_NOT_SEND: `{}` cannot cross an actor boundary: a trait object is not Send",
+                ty.user_facing()
+            ),
+            vec![
+                "declare an enum of the failures or values the handler can produce, \
+                 such as `fails StoreError`"
+                    .to_string(),
+            ],
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "receive body checking establishes actor and callable contexts"
@@ -2581,6 +2594,7 @@ impl Checker {
             self.check_shadowing(p.name.name.as_str(), &p.name_span);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
+            self.reject_dyn_message_type(&ty, &p.ty.1);
             self.env
                 .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);
@@ -2604,6 +2618,9 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation))
         };
+        if let Some((_, return_span)) = &rf.return_type {
+            self.reject_dyn_message_type(&declared_ret, return_span);
+        }
         // A `fails` handler spells failure exactly as every `fails` fn does:
         // `return error e`, `?`, and a bare success tail the compiler wraps.
         // The body is checked against the success type, and the declared
@@ -2888,6 +2905,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "impl checking walks each method against its trait in one pass"
+    )]
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.

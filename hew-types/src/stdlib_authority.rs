@@ -1271,7 +1271,6 @@ extern "C" {
             ("std.failure", "CrashNotification"),
             ("std.failure", "CrashKind"),
             ("std.link_monitor", "MonitorRef"),
-            ("std.link_monitor", "MonitorError"),
             ("std.link_monitor", "set_partition_policy"),
         ] {
             assert!(exports

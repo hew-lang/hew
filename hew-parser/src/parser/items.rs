@@ -270,36 +270,6 @@ impl Parser<'_> {
         Some(Item::Function(f))
     }
 
-    /// Reject the retired `async fn` spellings while keeping `async` available
-    /// as an ordinary identifier everywhere else.
-    fn retired_async_fn(&mut self) -> bool {
-        if !matches!(self.peek(), Some(Token::Identifier(name)) if *name == "async") {
-            return false;
-        }
-        let is_generator = matches!(self.peek_at(self.pos + 1), Some(Token::Gen));
-        let is_function = matches!(self.peek_at(self.pos + 1), Some(Token::Fn))
-            || (is_generator && matches!(self.peek_at(self.pos + 2), Some(Token::Fn)));
-        if !is_function {
-            return false;
-        }
-
-        let span = self.peek_span();
-        let (code, kind) = if is_generator {
-            ("E_NO_ASYNC_GEN", ParseDiagnosticKind::NoAsyncGen)
-        } else {
-            ("E_NO_ASYNC_FN", ParseDiagnosticKind::NoAsyncFn)
-        };
-        self.error_at_with_kind_and_hint(
-            format!(
-                "{code}: `async` no longer marks a callable; suspension is inferred from its body"
-            ),
-            span,
-            "delete `async`",
-            kind,
-        );
-        true
-    }
-
     /// Redirect a foreign-language keyword found where an item was expected
     /// to the matching Hew construct, with an actionable hint. Shared by the
     /// bare-item path and the post-visibility-modifier path so both give the
@@ -509,9 +479,6 @@ impl Parser<'_> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
-                        if self.retired_async_fn() {
-                            return None;
-                        }
                         if let Some(Token::Identifier(id)) = self.peek() {
                             let id = *id;
                             if self.foreign_keyword_redirect(id, has_wire_attr) {
@@ -527,13 +494,6 @@ impl Parser<'_> {
             }
             Some(Token::Fn | Token::Gen) => {
                 self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
-            }
-            Some(Token::Identifier("async")) => {
-                if self.retired_async_fn() {
-                    return None;
-                }
-                self.error("expected item declaration".to_string());
-                return None;
             }
             Some(Token::Indirect) => {
                 let mut t = self.parse_indirect_enum(Visibility::Private, &attrs)?;
@@ -897,6 +857,7 @@ impl Parser<'_> {
             .iter()
             .find(|a| a.name == "lang_item")
             .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+        let serial_case = self.parse_serial_case(attrs);
 
         let kind = match self.peek() {
             Some(Token::Type) => {
@@ -970,6 +931,7 @@ impl Parser<'_> {
             is_opaque,
             consuming_methods,
             lang_item,
+            serial_case,
         })
     }
 
@@ -1129,7 +1091,6 @@ impl Parser<'_> {
                     Some((TypeBodyItem::Method(method), has_consuming_self))
                 } else {
                     self.validate_attributes_for(&attributes, AttrPosition::Field);
-                    // Field with optional attributes (e.g. #[encode(rename = "x")])
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
@@ -1179,7 +1140,15 @@ impl Parser<'_> {
                     VariantKind::Unit
                 };
 
-                if matches!(kind, VariantKind::Struct(_)) {
+                let tag = if self.eat(&Token::At) {
+                    self.parse_wire_field_number_after_marker(
+                        super::wire::WireFieldParseMode::Struct,
+                    )
+                    .ok()
+                } else {
+                    None
+                };
+                if matches!(kind, VariantKind::Struct(_)) && tag.is_none() {
                     self.refuse_mark_after_body();
                 } else {
                     self.expect_member_terminator("variant");
@@ -1190,6 +1159,7 @@ impl Parser<'_> {
                     TypeBodyItem::Variant(VariantDecl {
                         name,
                         kind,
+                        tag,
                         doc_comment,
                         span: item_start..item_end,
                     }),
@@ -1260,6 +1230,7 @@ impl Parser<'_> {
             Some(Token::Fn) => {
                 let fn_start = self.peek_span().start;
                 self.advance();
+                let suspends = self.parse_trait_method_effect()?;
                 let name = self.expect_ident()?;
                 let type_params = self.parse_opt_type_params()?;
 
@@ -1295,6 +1266,7 @@ impl Parser<'_> {
                     doc_comment,
                     lang_item,
                     consumes_self,
+                    suspends,
                 }))
             }
             Some(Token::Type) => self.parse_trait_associated_type(),
@@ -1310,6 +1282,24 @@ impl Parser<'_> {
                 None
             }
         }
+    }
+
+    /// The optional `[suspends]` effect after a trait method's `fn`, the
+    /// spelling a written callable type uses (`fn[suspends](..)`).
+    fn parse_trait_method_effect(&mut self) -> Option<bool> {
+        if !self.eat(&Token::LeftBracket) {
+            return Some(false);
+        }
+        if self.peek() != Some(&Token::Identifier("suspends")) {
+            self.error_with_hint(
+                "expected `suspends` in a trait method effect".into(),
+                "a trait method declares `fn[suspends] name(..)` when a call may suspend",
+            );
+            return None;
+        }
+        self.advance();
+        self.expect(&Token::RightBracket)?;
+        Some(true)
     }
 
     fn parse_trait_associated_type(&mut self) -> Option<TraitItem> {

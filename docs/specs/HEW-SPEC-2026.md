@@ -729,8 +729,6 @@ qualifier — is **not** part of edition 2026:
 
 Both diagnostics carry a machine-applicable fix-it that replaces `X` with
 `.X` where the context selects the enum, and with `Type.X` where it does not.
-`hew fmt --migrate` applies those fix-its across a source tree, so a pre-2026
-program is rewritten rather than hand-edited.
 
 State names inside a `machine` declaration are not variants at the surface,
 and this rule does not reach them (§3.11.3). Outside the machine that declares
@@ -4559,6 +4557,11 @@ A runtime may offload a blocking operation or park a continuation. This must
 preserve the source suspension and cleanup contracts. An execution substrate
 or readiness mechanism is not a separate public call spelling.
 
+Waiting never holds a scheduler thread. A call that waits on a socket, a timer
+or offloaded work suspends only its own task; the worker runs other tasks and
+actors meanwhile. Cancelling the waiting task abandons the result, not an
+effect the operating system has already begun.
+
 ### 4.8 Interaction with Actor Messages
 
 An actor processes one receive handler at a time. Forked work cannot mutate
@@ -4855,8 +4858,7 @@ names it says the body yields handles. A generator yielding `i64` is declared
 
 There is no `async gen fn`. A plain `gen fn` body may suspend and is consumed
 by `for` wherever its producer lives, so the word marked nothing; `async` is
-not a keyword (§12) and `async gen fn` is `E_NO_ASYNC_GEN` (User) with a
-fix-it that deletes it. `gen.next()` and `for x in gen` are plain calls:
+not a keyword (§12) and `async gen fn` does not parse. `gen.next()` and `for x in gen` are plain calls:
 pulling from a generator you own is a call into your own frame, and it carries
 the generator's inferred suspension effect like any other call (§4.0). The
 pull that crosses an actor boundary is written the same way:
@@ -5555,9 +5557,9 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 ```hew
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 
 // Status.Pending   -> CBOR integer: 0
@@ -5662,8 +5664,7 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | Hew Type                               | JSON Representation                                         |
 | -------------------------------------- | ----------------------------------------------------------- |
 | `bool`                                 | JSON boolean                                                |
-| `u8`, `u16`, `u32`, `i8`, `i16`, `i32` | JSON number                                                 |
-| `u64`, `i64`                           | JSON string (to avoid precision loss)                       |
+| integers (`i8`..`i64`, `u8`..`u64`)    | JSON number; decode refuses a fraction or an out-of-range value |
 | `f32`, `f64`                           | JSON number (special: `"NaN"`, `"Infinity"`, `"-Infinity"`) |
 | `string`                               | JSON string                                                 |
 | `bytes`                                | JSON string (base64-encoded)                                |
@@ -5674,23 +5675,27 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | `optional Option<T>` `None`            | field omitted                                                |
 | any `Option<T>` `Some(v)`              | JSON value of `v`                                            |
 
+A JSON integer literal beyond 128 bits decodes as a float, so decoding it
+into an integer field reports a type error rather than a range error.
+
 ##### 7.3.2.2 Field Names
 
 JSON field names are determined by the following rules, in priority order:
 
-1. **Per-field override** — `json("name")` wire attribute sets the exact JSON key.
-2. **Type-level convention** — `#[json(convention)]` attribute on the `#[wire] type` declaration transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
+1. **Per-field override** — `#[serial(key = "name")]` on the field sets the exact text key.
+2. **Type-level convention** — `#[serial(case = "convention")]` on the type declaration transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
 3. **Default** — field name is used as-is (no transformation).
 
 Per-field override always wins over the type-level convention.
 
 ```hew
-#[json(camelCase)]
+#[serial(case = "camelCase")]
 #[wire]
 type User {
     user_name: string @1; // JSON: "userName"
     email_address: string @2; // JSON: "emailAddress"
-    internal_id: string @3 json("id"); // JSON: "id"  (override wins)
+    #[serial(key = "id")]
+    internal_id: string @3; // JSON: "id"  (override wins)
 }
 ```
 
@@ -5728,9 +5733,9 @@ Wire enums encode as the string name of the variant:
 ```hew
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 ```
 
@@ -5750,15 +5755,15 @@ JSON decoders SHOULD ignore unknown fields (permissive parsing). This enables fo
 
 ##### 7.3.2.5 Enum Variant Names in JSON
 
-Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or another convention) to the `#[wire] enum` declaration to transform variant names consistently.
+Enum variant names are used as-is by default. Apply `#[serial(case = "camelCase")]` (or another convention) to the enum declaration to transform variant names consistently.
 
 ```hew
-#[json(camelCase)]
+#[serial(case = "camelCase")]
 #[wire]
 enum Status {
-    PendingReview;
-    ActiveNow;
-    Completed;
+    PendingReview @0;
+    ActiveNow @1;
+    Completed @2;
 }
 ```
 
@@ -6085,7 +6090,7 @@ added in later editions without growing the annotation vocabulary.
 | `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on cooperative actor termination or supervisor shutdown. |
 | `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before restart-policy handling.                            |
 
-`#[on(exit)]` and `#[on(down)]` are the two further accepted kinds; they
+`#[on(link)]` and `#[on(down)]` are the two further accepted kinds; they
 deliver link and monitor notifications and their payload types are not
 specified in this section.
 
@@ -6377,9 +6382,8 @@ against a surface that either shipped under another spelling or was refused:
 
 - `async` marked nothing. Functions are colourless — suspension is inferred
   from the body and written only on a callable type (§4.0), and `await`
-  joins a Task or vector of Tasks (§4.4). `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
-  deletes the word, and `async gen fn` is `E_NO_ASYNC_GEN` (User) with the
-  same fix-it (§4.12).
+  joins a Task or vector of Tasks (§4.4). Neither `async fn` nor
+  `async gen fn` parses (§4.12).
 - `try` and `catch` have no construct: fallible operations return `Result`
   and propagate with `?` (§2.2.1). `catch` never reached the parser at all.
 - `join` is retired. Waiting for every operand is batch `fork`
@@ -6837,7 +6841,7 @@ refuses the name it does not know rather than dropping it.
 | `#[linear]` | type declaration | Linear value: must be consumed by a `consume self` method before scope exit (§3.7.8). Not combinable with `#[resource]`. |
 | `#[opaque]` | type declaration | Opaque handle whose internal representation is not accessible (§3.10.7). |
 | `#[wire]`, `#[wire(...)]` | type declaration, enum, field | Wire contract and per-field tag/naming metadata (§7.1, §7.3). |
-| `#[json(...)]`, `#[yaml(...)]` | type declaration | Per-encoding field-naming case for a `#[wire]` type (§7.3.2, §7.3.2a). |
+| `#[serial(...)]` | type declaration, field | Text-key case (`case = ".."`) on a type; text key (`key = ".."`) or `skip` on a field (§7.3.2). On a `#[test]` fn, runs it alone. |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
 | `#[ignore]` | `#[test]` function | Discovered but not run; accepts an optional reason string. |

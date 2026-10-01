@@ -27,8 +27,8 @@ pub use file_resources::{FileReadHandleKind, FileReadOp};
 mod declared;
 pub use declared::{
     declared_direct_runtime_method, declared_runtime_method, DeclaredDirectRuntimeMethod,
-    DeclaredRuntimeMethod, DeclaredRuntimeResult, DeclaredRuntimeTarget,
-    DECLARED_DIRECT_RUNTIME_METHODS, DECLARED_RUNTIME_EXPORTS_TOML,
+    DeclaredRuntimeMethod, DeclaredRuntimeTarget, DECLARED_DIRECT_RUNTIME_METHODS,
+    DECLARED_RUNTIME_EXPORTS_TOML,
 };
 
 // Value/argument/result kinds and the ownership-verdict vocabulary shared by

@@ -1431,7 +1431,7 @@ fn main() {
 
 Use `EnumName.Variant` to qualify construction or disambiguate across modules. In a match, use the contextual `.Variant` pattern when the scrutinee type selects the enum.
 
-The bare spelling — a variant name with neither the dot nor the type qualifier — is not the language, and `Option` and `Result` are no exception: write `.Some(x)` or `.None` where the expected type selects the enum and `Option.Some(x)` where nothing does. Since v0.6.0 the bare spelling is rejected in expression position with `E_BARE_VARIANT_EXPR` and in pattern position with `E_BARE_VARIANT_PATTERN`, each with a fix-it that inserts the dot or the type. `hew fmt --migrate` applies both across a source tree.
+The bare spelling — a variant name with neither the dot nor the type qualifier — is not the language, and `Option` and `Result` are no exception: write `.Some(x)` or `.None` where the expected type selects the enum and `Option.Some(x)` where nothing does. Since v0.6.0 the bare spelling is rejected in expression position with `E_BARE_VARIANT_EXPR` and in pattern position with `E_BARE_VARIANT_PATTERN`, each with a fix-it that inserts the dot or the type.
 
 ### Self-referential recursive enum (indirect)
 

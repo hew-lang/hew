@@ -1,0 +1,13 @@
+[[case]]
+id = "tcp-pump-bytes-delivery"
+intent = "Leak oracle for TCP bytes a Hew pump delivers to an actor's `on_data(bytes)`: fifty pumped payloads reach their sinks with no leak, double free or use after free under ASan/LSan."
+source = "cases/tcp-pump-bytes-delivery.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.env]
+HEW_IO_LEAK_CHECK = "1"
+
+[case.expected]
+stdout = "DATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDONE\n"
+exit = 0

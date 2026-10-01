@@ -1506,20 +1506,6 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                if method == "stop" && resolved.as_actor_handle().is_some() {
-                    self.report_migration_diagnostic(
-                        TypeErrorKind::ActorHandleMethodRetired,
-                        "E_ACTOR_HANDLE_METHOD_RETIRED: actor `.stop()` is retired".to_string(),
-                        "write `stop(actor)`; a receive handler named `stop` remains callable"
-                            .to_string(),
-                        span,
-                    );
-                    return if self.migration_mode {
-                        Ty::Unit
-                    } else {
-                        Ty::Error
-                    };
-                }
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedMethod,
                     span,
@@ -2785,6 +2771,9 @@ impl Checker {
                             method_name: method.to_string(),
                             slot: layout_slot.slot,
                             signature: sig.clone(),
+                            effect: self
+                                .dyn_slot_effect(traits, layout_slot.method)
+                                .expect("dyn_layout records the layout it returns"),
                         },
                     );
                     if sig.consumes_receiver {

@@ -1,6 +1,6 @@
 [[case]]
 id = "wire_text_name_collision"
-intent = "A wire type with colliding final JSON names is rejected during checking, before any codec is selected."
+intent = "A type whose fields share a text key after its case is applied is rejected during checking, before any codec is selected."
 source = "cases/wire_text_name_collision.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -11,4 +11,4 @@ severity = "error"
 code = "InvalidOperation"
 line = 1
 column = 1
-message = "wire JSON field name `fooBar` is ambiguous after naming metadata"
+message = "E_SERIAL_KEY_COLLISION: two fields of `Cfg` share the text key `fooBar`"

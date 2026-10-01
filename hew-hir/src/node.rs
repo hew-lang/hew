@@ -7,7 +7,7 @@ use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::RcIntrinsicOp;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
-    Ty, TyPattern, VariantMatch, WireLayoutTable,
+    Ty, TyPattern, VariantMatch,
 };
 use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
 
@@ -46,8 +46,6 @@ pub struct HirModule {
     /// Checker-selected test entries in dispatcher ordinal order. Each entry
     /// retains its own typed process-exit action.
     pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
-    /// Checker-authored wire layout metadata keyed by canonical type name.
-    pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.
@@ -1347,13 +1345,6 @@ pub enum HirExprKind {
         /// is full: `Wait` for a bare handle, whatever the `policy(..)` view
         /// carries when the call goes through one.
         policy: hew_types::actor_delivery::SendPolicy,
-        /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
-        /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the
-        /// deadline elapses before the reply, the in-flight ask is cancelled and the
-        /// `Result<R, ActorError>` resolves to `Err(ActorError.Timeout)`. `None` is a
-        /// plain ask. Only literal `Duration` deadlines are carried (codegen-locals
-        /// side-table); non-literal durations fail closed at CHECK time.
-        deadline_ns: Option<i64>,
     },
     /// `receive gen fn` dispatch, selected from the checker's
     /// `actor_method_dispatch` side table (`ActorMethodKind::StreamProducer`).
@@ -1467,20 +1458,6 @@ pub enum HirExprKind {
         operand: Box<HirExpr>,
         /// The `T` from `Task<T>`.
         output_ty: ResolvedTy,
-    },
-    /// `await_restart <supervised-child>` — suspend the current actor until the
-    /// named static supervised child's slot is Live again (it restarted), then
-    /// resume with the same stable `ChildRef<ChildType>`. The inner
-    /// `child` expression is the supervised-child accessor (a `FieldAccess`
-    /// whose `SiteId` keys `HirModule.supervisor_child_slots` with the
-    /// `(supervisor, slot)` discriminator). MIR lowers this to
-    /// `SuspendKind::RestartWait`, parking on the supervisor restart observer;
-    /// a permanently-Dead child fails closed (resumes immediately) rather than
-    /// hanging. The supervisor analogue of `AwaitTask`.
-    AwaitRestart {
-        /// The lowered supervised-child accessor. Its `site` carries the
-        /// `(supervisor, slot)` discriminator via `supervisor_child_slots`.
-        child: Box<HirExpr>,
     },
     /// `await conn.read()` / `await conn.read_string()` — a non-blocking
     /// suspending socket read (NEW-1). Produced by HIR lowering when an `await`

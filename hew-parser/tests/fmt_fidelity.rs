@@ -345,9 +345,23 @@ fn comment_after_last_type_method() {
 }
 
 #[test]
+fn empty_impl_body_stays_on_one_line() {
+    assert_faithful(
+        "type E {\n    code: i64;\n}\n\nimpl Error for E {}\n\nimpl Display for E {\n    // nothing yet\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn serial_attributes_and_variant_tags() {
+    assert_faithful(
+        "#[serial(case = \"camelCase\")]\ntype Account {\n    user_id: i64;\n    #[serial(key = \"type\")]\n    kind: string;\n    #[serial(skip)]\n    cached: Option<f64>;\n}\n\n#[wire]\nenum Event {\n    Joined(string) @1;\n    Moved { x: i64; } @2;\n    Left @3;\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
 fn comments_inside_wire_declarations() {
     assert_faithful(
-        "#[wire]\ntype Message {\n    // the id\n    id: i32 @1; // first\n    text: string @2;\n    // end of message\n}\n\n#[wire]\nenum Kind {\n    // plain\n    Plain;\n    Rich;\n    // end of kind\n}\n\nfn main() {}\n",
+        "#[wire]\ntype Message {\n    // the id\n    id: i32 @1; // first\n    text: string @2;\n    // end of message\n}\n\n#[wire]\nenum Kind {\n    // plain\n    Plain @0;\n    Rich @1;\n    // end of kind\n}\n\nfn main() {}\n",
     );
 }
 

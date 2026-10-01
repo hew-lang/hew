@@ -52,7 +52,7 @@ fn main() {
             ActorError.Rejected(_) => println("rejected"),
             ActorError.Trapped => println("trapped"),
             ActorError.Dead => println("dead"),
-            ActorError.Timeout => println("timeout"),
+            ActorError.TimedOut => println("timeout"),
             ActorError.NodeNotRunning => println("node not running"),
             ActorError.RoutingFailed => println("routing failed"),
             ActorError.EncodeFailed => println("encode failed"),

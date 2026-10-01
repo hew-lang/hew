@@ -746,8 +746,6 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> bool {
-        use crate::check::dispatch::ResolvedRuntimeResult;
-        use crate::runtime_call::DeclaredRuntimeResult;
         let canonical = self
             .canonical_nominal_name(receiver_name)
             .unwrap_or_else(|| receiver_name.to_string());
@@ -779,29 +777,10 @@ impl Checker {
                 contract.data_handler,
                 contract.close_handler,
             )?;
-            let result = match contract.result {
-                DeclaredRuntimeResult::DiscardStatus => ResolvedRuntimeResult::DiscardStatus,
-                DeclaredRuntimeResult::StatusResult {
-                    error_type,
-                    error_variant,
-                } => {
-                    let error_ty = self.named_ty_for_key(error_type, Vec::new());
-                    let error = self.resolve_variant_match(
-                        &format!("{error_type}::{error_variant}"), &error_ty,
-                    ).ok_or_else(|| format!("runtime error variant `{error_type}::{error_variant}` is not declared"))?;
-                    if !self.lookup_type_def(&error.type_name).is_some_and(|ty| {
-                        matches!(ty.variants.get(&error.variant_name), Some(VariantDef::Unit))
-                    }) {
-                        return Err("runtime status error must be a unit enum variant".to_string());
-                    }
-                    ResolvedRuntimeResult::StatusResult { error }
-                }
-            };
             Ok::<_, String>(CallTarget::DeclaredRuntime {
                 declaration,
                 family: contract.family,
                 actor_endpoints: Some(endpoints),
-                result,
             })
         })();
         let target = match selected {

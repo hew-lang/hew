@@ -1,5 +1,5 @@
 use hew_parser::{
-    fmt::{format_source, migrate_punctuation},
+    fmt::{format_source, migrate_syntax},
     parse, ParseDiagnosticKind, Severity,
 };
 
@@ -114,10 +114,10 @@ fn retired_marks_report_recoverable_kinds_at_exact_sites() {
 #[test]
 fn punctuation_migration_preserves_comments_and_rejects_other_errors() {
     let old = "type P { x: i64, // field\n y: i64, }\nactor A { name: string, }\nfn main() { let p = P { x: 1, y: 2 }; }\n";
-    let migrated = migrate_punctuation(old).expect("old separators migrate");
+    let migrated = migrate_syntax(old).expect("old separators migrate");
     assert!(migrated.contains("x: i64; // field"), "{migrated}");
     assert!(migrated.contains("let name: string;"), "{migrated}");
-    assert_eq!(migrate_punctuation(&migrated).unwrap(), migrated);
+    assert_eq!(migrate_syntax(&migrated).unwrap(), migrated);
     let bad = "type P { x: i64, } fn main( {";
-    assert!(!migrate_punctuation(bad).unwrap_err().refusals.is_empty());
+    assert!(!migrate_syntax(bad).unwrap_err().refusals.is_empty());
 }

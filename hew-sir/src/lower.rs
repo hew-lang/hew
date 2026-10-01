@@ -114,8 +114,7 @@ pub enum SirLoweringStatus {
 /// Which bodies a lowering run demands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SirLoweringDemand {
-    /// Demand-driven from the module's resolved entry callable: the strict
-    /// `--sir-lower` compile route. A declaration the entry never reaches is
+    /// Demand-driven from the module's resolved entry callable. A declaration the entry never reaches is
     /// reported [`SirLoweringStatus::NotReached`] and is never admitted a
     /// header, so it costs the module no signature, shape or type-fact row.
     ///
@@ -573,7 +572,7 @@ struct InstanceService<'a> {
     variant_shapes_by_type: HashMap<ResolvedTy, VariantShapeId>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
-    wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlan>>,
+    wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlans>>,
     value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
     structural_display: BTreeMap<crate::StructuralType, crate::SemStructuralRender>,
@@ -1006,7 +1005,6 @@ pub(crate) fn runtime_variant_tags(
         TypeHead::Builtin(BuiltinType::SendError) => &[
             (Role::SendErrorFull, "Full"),
             (Role::SendErrorClosed, "Closed"),
-            (Role::SendErrorNodeRoutingNotWired, "NodeRoutingNotWired"),
             (Role::SendErrorPartition, "Partition"),
             (Role::SendErrorStaleRef, "StaleRef"),
             (Role::SendErrorLocalShutdown, "LocalShutdown"),
@@ -1021,7 +1019,7 @@ pub(crate) fn runtime_variant_tags(
             (Role::ActorErrorFailed, "Failed"),
             (Role::ActorErrorTrapped, "Trapped"),
             (Role::ActorErrorDead, "Dead"),
-            (Role::ActorErrorTimeout, "Timeout"),
+            (Role::ActorErrorTimedOut, "TimedOut"),
             (Role::ActorErrorNodeNotRunning, "NodeNotRunning"),
             (Role::ActorErrorRoutingFailed, "RoutingFailed"),
             (Role::ActorErrorEncodeFailed, "EncodeFailed"),

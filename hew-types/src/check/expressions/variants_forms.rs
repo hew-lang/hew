@@ -102,6 +102,24 @@ impl Checker {
                 return Some(resolved);
             }
         }
+        // R6: a trait object is Display when Display is in its bounds'
+        // supertrait closure; the value renders through that slot.
+        // TRANSITION(D1b): WHY HIR's Display arm has no trait-object shape, so
+        // `f"{e}"` over `dyn Error` checks clean and then reports a HIR
+        // boundary violation; WHEN D1b lowers the interpolant to the closure's
+        // `fmt` slot; WHAT the checker then publishes that slot's dyn call at
+        // the interpolant and HIR reads it.
+        if let Ty::TraitObject { traits } = &resolved {
+            let display_id = self
+                .lang_items
+                .get(crate::LANG_ITEM_DISPLAY)
+                .map(|binding| binding.trait_id);
+            let renders = traits.iter().any(|bound| {
+                bound.trait_id.is_some() && bound.trait_id == display_id
+                    || self.trait_extends(&self.dyn_bound_trait_key(bound), &display_trait_key)
+            });
+            return renders.then_some(resolved);
+        }
         if let Ty::Named { head, args } = &resolved {
             let name = head.registry_key();
             if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
@@ -741,6 +759,9 @@ else needs `impl Display for {rendered}`)"
                 method_name: "at".to_string(),
                 slot,
                 signature: sig,
+                effect: self
+                    .dyn_slot_effect(traits, layout_slot.method)
+                    .expect("dyn_layout records the layout it returns"),
             },
         );
         self.record_method_call_receiver_kind(

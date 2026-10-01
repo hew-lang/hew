@@ -351,12 +351,6 @@ stable = [
   "hew_hostname",
   "hew_i64_to_string",
   "hew_int_to_string",
-  "hew_io_poller_new",
-  "hew_io_poller_poll",
-  "hew_io_poller_poll_ready",
-  "hew_io_poller_register",
-  "hew_io_poller_stop",
-  "hew_io_poller_unregister",
   "hew_io_read_all",
   "hew_io_read_line",
   "hew_io_write",
@@ -675,7 +669,6 @@ stable = [
   "hew_tcp_connect",
   "hew_tcp_connect_timed",
   "hew_tcp_connect_timeout",
-  "hew_tcp_detach",
   "hew_tcp_listen",
   "hew_tcp_listener_close",
   "hew_tcp_listener_local_port",
@@ -1201,11 +1194,52 @@ stable-stdlib = [
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 non-declarable = [
   # Verified native compiler/runtime protocol entry points.
-  "hew_cbor_de_bytes_hew",
-  "hew_cbor_de_string_hew",
-  "hew_cbor_ser_string_hew",
-  "hew_wire_decode_begin",
-  "hew_wire_encode_finish",
+  "hew_de_new_raw",
+  "hew_de_unit",
+  "hew_ser_finish_raw",
+  "hew_de_bool",
+  "hew_de_bytes",
+  "hew_de_char",
+  "hew_de_duplicate",
+  "hew_de_error",
+  "hew_de_f64",
+  "hew_de_failed",
+  "hew_de_free",
+  "hew_de_int",
+  "hew_de_is_null",
+  "hew_de_map_begin",
+  "hew_de_map_next",
+  "hew_de_new",
+  "hew_de_record_begin",
+  "hew_de_record_next",
+  "hew_de_seq_begin",
+  "hew_de_seq_next",
+  "hew_de_set_begin",
+  "hew_de_str",
+  "hew_de_tuple_begin",
+  "hew_de_variant",
+  "hew_de_variant_end",
+  "hew_ser_bool",
+  "hew_ser_bytes",
+  "hew_ser_char",
+  "hew_ser_f64",
+  "hew_ser_field",
+  "hew_ser_finish_bytes",
+  "hew_ser_finish_string",
+  "hew_ser_i64",
+  "hew_ser_map_begin",
+  "hew_ser_map_end",
+  "hew_ser_new",
+  "hew_ser_null",
+  "hew_ser_record_begin",
+  "hew_ser_record_end",
+  "hew_ser_seq_begin",
+  "hew_ser_seq_end",
+  "hew_ser_set_begin",
+  "hew_ser_str",
+  "hew_ser_u64",
+  "hew_ser_variant",
+  "hew_ser_variant_end",
   "hew_actor_ask_submit_native",
   "hew_actor_ask_wait_free",
   "hew_actor_ask_wait_new",
@@ -1420,51 +1454,6 @@ non-declarable = [
   "hew_callable_clone",
   "hew_callable_drop",
   "hew_callable_env_alloc",
-  "hew_cbor_de_array_next",
-  "hew_cbor_de_bool",
-  "hew_cbor_de_bytes",
-  "hew_cbor_de_char",
-  "hew_cbor_de_enter_array",
-  "hew_cbor_de_enter_map",
-  "hew_cbor_de_enter_map_iter",
-  "hew_cbor_de_enum_begin",
-  "hew_cbor_de_enum_end",
-  "hew_cbor_de_exit_array",
-  "hew_cbor_de_exit_map",
-  "hew_cbor_de_exit_map_iter",
-  "hew_cbor_de_f64",
-  "hew_cbor_de_fail",
-  "hew_cbor_de_failed",
-  "hew_cbor_de_free",
-  "hew_cbor_de_i64",
-  "hew_cbor_de_int_checked",
-  "hew_cbor_de_is_null",
-  "hew_cbor_de_map_next",
-  "hew_cbor_de_map_value",
-  "hew_cbor_de_new",
-  "hew_cbor_de_select_key",
-  "hew_cbor_de_select_optional_key",
-  "hew_cbor_de_skip",
-  "hew_cbor_de_string",
-  "hew_cbor_de_u64",
-  "hew_cbor_ser_abort",
-  "hew_cbor_ser_begin_array",
-  "hew_cbor_ser_begin_key",
-  "hew_cbor_ser_begin_map",
-  "hew_cbor_ser_begin_set",
-  "hew_cbor_ser_bool",
-  "hew_cbor_ser_bytes",
-  "hew_cbor_ser_end_array",
-  "hew_cbor_ser_end_map",
-  "hew_cbor_ser_f64",
-  "hew_cbor_ser_finish",
-  "hew_cbor_ser_i64",
-  "hew_cbor_ser_key_u64",
-  "hew_cbor_ser_new",
-  "hew_cbor_ser_null",
-  "hew_cbor_ser_string",
-  "hew_cbor_ser_u64",
-  "hew_conn_await_read",
   "hew_cont_crash_cleanup_arm",
   "hew_cont_crash_cleanup_deactivate",
   "hew_cont_crash_cleanup_retire",
@@ -1501,7 +1490,6 @@ non-declarable = [
   "hew_glob_get",
   "hew_glob_is_valid",
   "hew_global_timer_wheel",
-  "hew_listener_await_accept",
   "hew_location_display",
   "hew_location_format",
   "hew_location_incarnation",
@@ -1536,7 +1524,6 @@ non-declarable = [
   "hew_read_slot_set_await_cancel",
   "hew_read_slot_status",
   "hew_read_slot_take",
-  "hew_read_slot_take_handle",
   "hew_realloc",
   "hew_require_execution_context",
   "hew_reply_channel_await_status",
@@ -1586,7 +1573,6 @@ non-declarable = [
   "hew_supervisor_start",
   "hew_task_scope_set_current",
   "hew_test_selected",
-  "hew_wasm_register_actor_meta",
   "hew_xnode_register_codec",
   "hew_xnode_register_reply_codec",
 
@@ -2786,61 +2772,6 @@ result-retention = "transferred"
 symbol = "hew_hashset_iter_next_layout"
 result = "none"
 params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# Collection CBOR framing mutates a caller-owned serializer/reader in place.
-# Every handle remains with its caller, all return values are scalars, and no
-# operation creates, retains, or consumes an allocation across this ABI edge.
-[[ownership.contracts]]
-symbol = "hew_cbor_de_enter_map_iter"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_de_exit_map_iter"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_de_map_next"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_de_map_value"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-runtime/src/cbor_serial.rs: the optional selector mutates the borrowed
-# reader cursor and inspects a scalar key; it neither transfers the reader nor
-# creates, retains, or consumes an allocation across the ABI boundary.
-[[ownership.contracts]]
-symbol = "hew_cbor_de_select_optional_key"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_ser_begin_key"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_ser_begin_set"
-result = "none"
-params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4281,14 +4212,6 @@ discharge-depth = "none"
 symbol = "hew_tcp_close"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.net.Connection"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_tcp_detach"
-result = "none"
-params = ["borrow"]
 resource-param-types = ["std.net.Connection"]
 release-symbol = ""
 discharge-depth = "none"

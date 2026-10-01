@@ -37,6 +37,8 @@ export interface ShimHost {
   releaseValue?(value: VmValue): void;
   /// Write to the program's standard output.
   writeStdout(text: string): void;
+  /// Write to the program's standard error.
+  writeStderr(text: string): void;
   /// The next line of replay stdin, and the replay record for it.
   readLine(): string;
   /// The program's own generator. `hew_random_seed` replaces it, and it is
@@ -176,6 +178,10 @@ function printShim(detail: unknown): RuntimeShim | undefined {
 }
 
 const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+  StderrWrite: (host, args) => {
+    host.writeStderr(text(args, 0));
+    return UNIT;
+  },
   StringToBytes: (_host, args) => ({
     kind: "vector",
     elementType: "u8",

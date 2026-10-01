@@ -1,0 +1,8 @@
+pub trait Ticker { fn tick(self) -> i64; }
+pub type Slow { n: i64; }
+impl Ticker for Slow {
+    fn tick(self) -> i64 {
+        sleep(1ms);
+        self.n
+    }
+}

@@ -424,43 +424,6 @@ fn call_site_rejects_assoc_binding_mismatch() {
 }
 
 #[test]
-fn scope_error_type_constructs_and_field_accesses() {
-    let source = concat!(
-        "import std.concurrency;\n",
-        "fn read_primary(err: concurrency.ScopeError<i64>) -> i64 {\n",
-        "    let primary: i64 = err.primary;\n",
-        "    primary\n",
-        "}\n",
-        "fn read_others(err: concurrency.ScopeError<i64>) -> Vec<i64> {\n",
-        "    let others: Vec<i64> = err.also_failed;\n",
-        "    others\n",
-        "}\n",
-        "fn read_cancelled(err: concurrency.ScopeError<i64>) -> i64 {\n",
-        "    let cancelled: i64 = err.cancelled_count;\n",
-        "    cancelled\n",
-        "}\n",
-        "fn pass_through(err: concurrency.ScopeError<i64>) -> concurrency.ScopeError<i64> {\n",
-        "    err\n",
-        "}\n",
-        "fn main() {\n",
-        "}\n",
-    );
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "unexpected type errors: {:?}",
-        output.errors
-    );
-}
-
-#[test]
 fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
     let mut checker = Checker::new(test_registry());
     checker.register_builtins();

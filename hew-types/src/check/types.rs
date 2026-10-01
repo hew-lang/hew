@@ -280,6 +280,10 @@ pub enum ResultReturnKind {
 /// the checker in rule order (D547): the same type passes through, a trait
 /// object target erases, and a declared `impl From<E> for F` converts.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one conversion per failure edge, recorded once; boxing buys nothing"
+)]
 pub enum ErrorConversion {
     Same,
     Erase(Box<DynCoercion>),
@@ -294,6 +298,8 @@ pub enum ErrorConversion {
 pub struct FromImpl {
     pub target: Ty,
     pub source: Ty,
+    /// The impl's own type parameters, in the order its method takes them.
+    pub params: Vec<crate::ParamHead>,
     pub method: crate::DefId,
 }
 
@@ -422,10 +428,8 @@ pub struct TypeCheckOutput {
     /// resolves those later. There is no "no entry → guess" third state for a
     /// concrete accepted expression.
     ///
-    /// In Phase 1 (W4.047) this is a transitional *shadow* of `expr_types`:
-    /// HIR lowering still drives off `expr_types` and only asserts agreement
-    /// (zero behaviour change). Phase 2 promotes this to the primary read path;
-    /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
+    /// HIR lowering reads this map as its primary expression-type source; the
+    /// `Ty`-typed `expr_types` map remains only for analysis and LSP readers.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Resolved source annotations, keyed by their defining file and span.
     pub declaration_type_parameters:
@@ -494,12 +498,6 @@ pub struct TypeCheckOutput {
     /// consume a single authoritative contract instead of re-resolving C
     /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
-    /// Wire layout metadata keyed by canonical type name.
-    ///
-    /// Populated by `register_wire_methods` for every accepted `#[wire]` type
-    /// so downstream lowering phases consume checker-owned field tags, names,
-    /// casing, and version metadata instead of recovering it from source text.
-    pub wire_layouts: WireLayoutTable,
     /// Checker-owned width-conversion method lowering decisions keyed by
     /// method-call span.
     ///
@@ -801,6 +799,9 @@ pub struct TypeCheckOutput {
     /// as a trait object but whose span is absent from this map is a HIR
     /// diagnostic, not a runtime panic.
     pub dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
+    /// The layout of every trait object a coercion or dispatch names, keyed
+    /// by its canonical type: the one slot list (D540).
+    pub trait_object_layouts: std::collections::BTreeMap<ResolvedTy, super::TraitObjectLayout>,
     /// Checker-authoritative closure capture facts keyed by the closure literal span.
     ///
     /// The checker records the exact lexical binding for every captured name before
@@ -941,63 +942,6 @@ pub struct TypeCheckOutput {
     /// declaration the checker resolved it to.
     pub import_fn_name_aliases: HashMap<ImportBindingKey, String>,
 }
-
-/// Whether a wire struct field's enclosing map key may be absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireFieldPresence {
-    /// The map key must be emitted and must be present while decoding.
-    Required,
-    /// `None` omits the map key and an absent key reconstructs `None`.
-    Optional,
-}
-
-/// Wire layout metadata for a single field, carried from AST through the
-/// compilation pipeline so lowering passes never infer presence from the value
-/// type. `Option<T>` describes the value's null shape; [`WireFieldPresence`]
-/// independently describes whether the enclosing map key may be absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireFieldLayout {
-    /// Source-level field name.
-    pub name: String,
-    /// Numeric wire tag (`@N`), the compatibility authority.
-    pub tag: u32,
-    /// Final JSON key selected by the checker.
-    pub json_name: String,
-    /// Final YAML key selected by the checker.
-    pub yaml_name: String,
-    /// Whether the enclosing map key is required or optional.
-    pub presence: WireFieldPresence,
-    /// Whether this field is repeated (maps to `Vec<T>`).
-    pub repeated: bool,
-}
-
-/// Checker-selected wire names and tag for one enum variant.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireVariantLayout {
-    pub name: String,
-    pub tag: u32,
-    pub json_name: String,
-    pub yaml_name: String,
-}
-
-/// Wire layout metadata for a single type (struct or enum).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireLayoutEntry {
-    /// True for `#[wire] type`, false for `#[wire] enum`.
-    pub is_struct: bool,
-    /// Wire schema version (from `#[wire(version = N)]`).
-    pub version: Option<u32>,
-    /// Minimum compatible reader version.
-    pub min_version: Option<u32>,
-    /// Ordered fields (structs). Empty for enums.
-    pub fields: Vec<WireFieldLayout>,
-    /// Enum variant tags and final text names.
-    /// Empty for structs.
-    pub variants: Vec<WireVariantLayout>,
-}
-
-/// All wire types registered during type-checking, keyed by canonical type name.
-pub type WireLayoutTable = HashMap<String, WireLayoutEntry>;
 
 /// Checker-owned capture record for one binding referenced by a closure body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1250,6 +1194,9 @@ pub struct DynVtableEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynCoercion {
+    /// The canonical trait-object type the value is erased into; its layout
+    /// is `TypeCheckOutput::trait_object_layouts[target]`.
+    pub target: ResolvedTy,
     /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
     pub trait_name: String,
     /// Ordered checker-resolved bounds of the target trait object. Each
@@ -1316,7 +1263,12 @@ pub struct DynMethodCall {
     /// Trait method name as declared in the trait body.
     pub method_name: String,
     /// Vtable slot index: `3 + position` in the trait object's layout.
+    // TRANSITION(D1b): WHY the SIR/MIR vtable builders still number slots
+    // past the runtime prefix; WHEN D1b switches both sides to the 0-based
+    // `TraitObjectLayout::slot_of`; WHAT the prefix moves into physical MIR.
     pub slot: u32,
+    /// The slot's declared effect, read from the trait object's layout.
+    pub effect: super::SlotEffect,
     /// Caller-side method signature after substituting trait type
     /// parameters and associated-type bindings from the receiver's
     /// `Ty::TraitObject` bound (e.g. `Self::Item -> int`). The receiver
@@ -2044,10 +1996,9 @@ pub enum MethodCallRewrite {
     /// `value.encode() -> bytes` (instance) or `Type.decode(bytes) -> Type`
     /// (static).
     ///
-    /// The CBOR round-trip is implemented by the `__hew_cbor_serialize_<key>` /
-    /// `__hew_cbor_deserialize_<key>` C-ABI thunk pair codegen emits
-    /// (`hew-codegen-rs/src/llvm.rs`). A struct rides a tag-keyed CBOR map; an
-    /// enum rides the "map-of-one" shape. These thunks have a non-Hew
+    /// The CBOR round-trip is the codec walk codegen emits
+    /// (`hew-codegen-rs/src/physical_wire.rs`). A struct rides a tag-keyed CBOR
+    /// map; an enum rides the "map-of-one" shape. These thunks have a non-Hew
     /// ABI (an out-length / out-struct-size pointer parameter and a malloc'd
     /// result the caller adopts), so the call cannot lower through the generic
     /// `RewriteToFunction` path — it gets a dedicated HIR node that codegen
@@ -3244,8 +3195,8 @@ pub struct Checker {
     /// idempotent (last write wins, which is fine since the inner type is the
     /// same variable every time).
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
-    /// Checker-side accumulator for [`TypeCheckOutput::wire_layouts`].
-    pub(super) wire_layouts: WireLayoutTable,
+    /// Text keys, tags and flags of every data record and enum.
+    pub(super) serial_layouts: HashMap<crate::NominalId, crate::data_shape::SerialLayout>,
     /// Checker-side accumulator for [`TypeCheckOutput::resolved_calls`].
     ///
     /// **Stage A:** never populated by production code paths. Reserved
@@ -3358,8 +3309,7 @@ pub struct Checker {
     pub(super) opaque_type_ids: HashSet<crate::NominalId>,
     /// `#[wire]` struct type names that carry the binary CBOR codec methods
     /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
-    /// — which lower to the `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*`
-    /// thunks — from a same-named user method, without re-deriving wire-ness in
+    /// — which lower to codec walks — from a same-named user method, without re-deriving wire-ness in
     /// the method-dispatch arms. Populated by `register_wire_methods` for wire
     /// structs.
     pub(super) wire_struct_types: HashSet<String>,
@@ -3631,6 +3581,10 @@ pub struct Checker {
     /// into `TypeCheckOutput::dyn_trait_coercions` at the end of
     /// `check_program`.
     pub(super) dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Layouts recorded by [`Checker::dyn_layout`], published through
+    /// `TypeCheckOutput::trait_object_layouts`.
+    pub(super) trait_object_layouts:
+        HashMap<Vec<crate::ty::TraitObjectBound>, super::TraitObjectLayout>,
     /// Failure-edge conversions, moved into
     /// `TypeCheckOutput::error_conversions`.
     pub(super) error_conversions: HashMap<SpanKey, ErrorConversion>,
@@ -3788,7 +3742,7 @@ pub struct Checker {
     /// imported `module_graph` modules are registered in a LATER pass where that
     /// module's own traits/types are not in the active `trait_defs` / `known_types`
     /// (those carry the root module's declarations) nor yet in the module-scoped
-    /// `local_*` sets. A bare `ConnectionHandler` actor-handle type inside an
+    /// `local_*` sets. A bare `TlsHandler` actor-handle type inside an
     /// imported `std::net` would therefore false-positive against the per-pass tables.
     /// Consulting this program-wide set makes any declared nominal type resolve
     /// uniformly regardless of which pass is running. A genuinely undefined type
@@ -4018,7 +3972,7 @@ pub struct Checker {
     pub(super) pattern_place: Option<(String, crate::env::PlacePath)>,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
-    /// `Actor`'s own actor-handle type → `ConnectionHandler`'s coercion can confirm an
+    /// `Actor`'s own actor-handle type → `TlsHandler`'s coercion can confirm an
     /// actor's `receive fn`s structurally satisfy a handler trait. Moved into
     /// `TypeCheckOutput::actor_protocol_descriptors` at the end of
     /// `check_program` (no rebuild — see `actor_satisfies_handler_trait`).
@@ -4053,15 +4007,6 @@ pub struct Checker {
     /// routinely referenced by a later REPL input, so emitting those warnings
     /// is noise rather than signal. Set only by the eval paths.
     pub(super) repl_fragment: bool,
-    /// Whether the checker is running behind the syntax migrator.
-    ///
-    /// The migrator rewrites a source using the checker's own resolution, so
-    /// it can only fix a legacy spelling the checker was willing to resolve.
-    /// When `true`, both bare-variant rules (`E_BARE_VARIANT_EXPR` and
-    /// `E_BARE_VARIANT_PATTERN`) report at warning severity instead of error,
-    /// which is what lets `hew fmt --migrate` rewrite a source that `hew check`
-    /// now refuses. Set only by the migration frontend entry point.
-    pub(super) migration_mode: bool,
     /// Whether the checker is currently type-checking a stdlib (or built-in
     /// library) source body.
     ///
@@ -4387,7 +4332,7 @@ impl Checker {
             eq_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
             method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
+            serial_layouts: HashMap::new(),
             resolved_calls: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
@@ -4493,6 +4438,7 @@ impl Checker {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            trait_object_layouts: HashMap::new(),
             error_conversions: HashMap::new(),
             from_impls: Vec::new(),
             dyn_trait_method_calls: HashMap::new(),
@@ -4570,7 +4516,6 @@ impl Checker {
             impl_assoc_type_bindings: HashMap::new(),
             wasm_target: false,
             repl_fragment: false,
-            migration_mode: false,
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
@@ -4654,14 +4599,6 @@ impl Checker {
     /// [`Checker::repl_fragment`].
     pub fn set_repl_fragment(&mut self) {
         self.repl_fragment = true;
-    }
-
-    /// Mark the checker as running behind the syntax migrator, downgrading the
-    /// graduated bare-variant expression rule to a warning so the migrator can
-    /// still resolve and rewrite a legacy source. See
-    /// [`Checker::migration_mode`].
-    pub fn set_migration_mode(&mut self) {
-        self.migration_mode = true;
     }
 
     /// Mark the checker as currently processing a stdlib or built-in library

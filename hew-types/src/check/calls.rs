@@ -2197,28 +2197,6 @@ impl Checker {
                 );
                 return Ty::Error;
             }
-            "close" | "closed" | "supervisor_stop" if !self.declares_function(&func_name) => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                let replacement = if func_name == "closed" {
-                    "stopped(handle)"
-                } else {
-                    "stop(handle); stopped(handle);"
-                };
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorLifecycleRetired,
-                    format!("E_ACTOR_LIFECYCLE_RETIRED: `{func_name}` is retired for actors"),
-                    format!("write `{replacement}` using the original handle expression"),
-                    span,
-                );
-                return if self.migration_mode {
-                    Ty::Unit
-                } else {
-                    Ty::Error
-                };
-            }
             "bytes::from" => {
                 self.check_arity(args, 1, "`bytes.from`", span);
                 if let Some(arg) = args.first() {
@@ -2298,7 +2276,7 @@ impl Checker {
             // `monitor(<actor handle>)` form stays on the generic `fn_sigs` path
             // below (registered with an actor-handle receiver). When the argument
             // resolves to a `RemotePid<T>`, accept it here and return
-            // `Result<MonitorRef, MonitorError>` — remote setup can fail before
+            // `Result<MonitorRef, LinkError>` — remote setup can fail before
             // a registration exists, so it must not manufacture a zero-valued
             // handle. The remote form is its own runtime family, the node
             // monitor ABI (`hew_node_monitor_location`).
@@ -2311,7 +2289,7 @@ impl Checker {
                 let arg_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&arg_ty);
                 if resolved.as_remote_pid().is_some() {
-                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::monitor_error());
+                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::link_error());
                     self.record_type(span, &result_ty);
                     self.record_direct_call_target(
                         span,

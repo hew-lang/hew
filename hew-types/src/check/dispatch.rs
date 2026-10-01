@@ -212,13 +212,6 @@ pub struct ResolvedActorEndpoints {
     pub close: ResolvedActorEndpoint,
 }
 
-/// Source result adaptation selected from a trusted declaration contract.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ResolvedRuntimeResult {
-    DiscardStatus,
-    StatusResult { error: super::types::VariantMatch },
-}
-
 /// Canonical target selected for an admitted call.
 ///
 /// A linker label may be carried beside this value after resolution, but it is
@@ -253,7 +246,6 @@ pub enum CallTarget {
         declaration: DefId,
         family: RuntimeCallFamily,
         actor_endpoints: Option<ResolvedActorEndpoints>,
-        result: ResolvedRuntimeResult,
     },
     /// A closed catalog builtin endpoint whose linkage is selected by the
     /// compiler's builtin catalog rather than by a source declaration.  This

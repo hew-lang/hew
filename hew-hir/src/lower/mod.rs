@@ -22,10 +22,10 @@ use hew_types::check::scope::Resolution;
 use hew_types::env::TypeBindingId;
 use hew_types::BuiltinType;
 use hew_types::{
-    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ExecutionContextReader, LoweringFact,
-    MethodCallReceiverKind, MethodCallRewrite, PatternKind, RcIntrinsicOp, ResolvedTraitBound,
-    ResolvedTy, SpanKey, Ty, TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, CallTarget, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ExecutionContextReader, MethodCallReceiverKind, MethodCallRewrite,
+    PatternKind, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    UserComparisonDispatch, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -281,19 +281,14 @@ const REMOTE_SEND_STATUS: SendStatusCodes = SendStatusCodes {
 };
 
 /// `SendError` is also declared in `std/builtins.hew` and likewise invisible
-/// to the user-enum walk. Surface it so `match e { SendError::NodeRoutingNotWired
+/// to the user-enum walk. Surface it so `match e { SendError::Full
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via
 /// `machine_ctor_registry`.
 const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 const SYNTHETIC_NODE_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1010);
-/// `TimeoutError` is declared in `std/builtins.hew` and likewise invisible to
-/// the user-enum walk. Surface it so `match e { TimeoutError::Timeout => ... }`
-/// arms inside `Result<Option<T>, TimeoutError>` matches resolve via
-/// `machine_ctor_registry`.
-const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 /// `LinkError` is the `Err` variant of `Result<(), LinkError>` returned by
 /// `link()` in value position. Declared in `std/builtins.hew` and — like
-/// `SendError` / `TimeoutError` — invisible to the user-enum walk in
+/// `SendError` — invisible to the user-enum walk in
 /// `lower_program` (builtins.hew is loaded out-of-band, not via `module_graph`).
 /// Surface it through the same builtin-enum path so
 /// `Err(LinkError::AlreadyLinked)` / `Err(LinkError::TargetDead)` match arms
@@ -306,7 +301,6 @@ const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
 pub(crate) const SYNTHETIC_HASHMAP_ITER_ITEM: ItemId = ItemId(u32::MAX - 1006);
 const SYNTHETIC_CRASH_ACTION_ITEM: ItemId = ItemId(u32::MAX - 1007);
 const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
-const SYNTHETIC_MONITOR_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1009);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../../std/builtins.hew");
 
 /// One compiler-owned cursor record admitted at the HIR layout boundary.
@@ -542,14 +536,9 @@ const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
     ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
     ("std.builtins.NodeError", SYNTHETIC_NODE_ERROR_ITEM),
-    ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
     ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
     ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
     ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
-    (
-        "std.link_monitor.MonitorError",
-        SYNTHETIC_MONITOR_ERROR_ITEM,
-    ),
 ];
 
 const fn const_str_eq(left: &str, right: &str) -> bool {
@@ -1222,35 +1211,11 @@ struct LowerCtx {
     /// (e.g. a builtin or runtime-symbol call) and skipped.
     /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
-    /// Checker-authoritative ABI-selector facts for erased runtime types.
-    /// Currently covers `HashSet` element-type dispatch (`i64`/`u64`/`str`
-    /// → `Int64` or `String` ABI variant).
-    ///
-    /// Passive pass-through: `HashSet` ABI selection lives in MIR/codegen, not
-    /// in HIR lowering.  Future consumer: E4 codegen and slice 4.7 spine
-    /// widening when `HashSet` operations enter the Rust pipeline.
-    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is HashSet ABI selection in E4 codegen"
-    )]
-    lowering_facts: HashMap<SpanKey, LoweringFact>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span.
     ///
     /// Selects indexed-write lowering before consuming the resolved mutation.
     assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
-    /// Checker-resolved assignment target type-shape metadata (signedness flag)
-    /// keyed by the target expression span.  Populated alongside
-    /// `assign_target_kinds` for every accepted assignment.
-    ///
-    /// Passive pass-through: same consumer timeline as `assign_target_kinds`.
-    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
-    )]
-    assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     checked_indexed_place_operations:
         HashMap<SpanKey, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
     indexed_place_operations:

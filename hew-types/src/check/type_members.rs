@@ -446,6 +446,17 @@ impl Checker {
             return Some(result);
         }
 
+        let receiver = self.named_ty_for_key(&head.canonical_type, Vec::new());
+        if let crate::check::dispatch_table::MethodSelection::Ambiguous(traits) =
+            self.select_method(&receiver, method)
+        {
+            for arg in args {
+                let (expr, arg_span) = arg.expr();
+                self.synthesize(expr, arg_span);
+            }
+            self.report_ambiguous_method(&receiver, method, &traits, span);
+            return Some(Ty::Error);
+        }
         let type_def = self.type_def_at(&head.canonical_type).cloned()?;
         let raw_sig = type_def.methods.get(method).cloned()?;
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {

@@ -1760,13 +1760,13 @@ impl Checker {
                 .unwrap_or_default();
             let receiver = Ty::from_name(&type_identity)
                 .unwrap_or_else(|| self.named_ty_for_key(&type_identity, receiver_args));
-            if let Some(owner) = self.impl_method_owner(trait_bound) {
-                self.record_from_impl(owner, bound, &receiver, declaration_id);
-            }
             let impl_parameters = self.source_parameter_heads(
                 impl_type_params.map_or(&[], Vec::as_slice),
                 &method.fn_span,
             );
+            if let Some(owner) = self.impl_method_owner(trait_bound) {
+                self.record_from_impl(owner, bound, &receiver, &impl_parameters, declaration_id);
+            }
             let method_parameters = self.source_parameter_heads(
                 method.type_params.as_deref().unwrap_or_default(),
                 &method.fn_span,

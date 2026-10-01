@@ -645,6 +645,7 @@ impl Builder {
                 .map(|(name, fields)| {
                     TypeBodyItem::Variant(VariantDecl {
                         name: *name,
+                        tag: None,
                         doc_comment: None,
                         span: self.span(),
                         kind: if fields.is_empty() {
@@ -659,6 +660,7 @@ impl Builder {
             wire: None,
             is_indirect: false,
             resource_marker: ResourceMarker::None,
+            serial_case: None,
             is_opaque: false,
             consuming_methods: Vec::new(),
             lang_item: None,

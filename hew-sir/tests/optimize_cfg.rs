@@ -4,8 +4,7 @@ use hew_sir::{
     BoundaryDecision, BoundaryOperand, CallableId, CallableInstance, CfgCanonicalizationReport,
     Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance, SemAbiParam, SemBlock,
     SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind, SirOptimizationError,
-    ValueDef, ValueId,
+    SemParamPassing, SemSignature, SemTerminator, SirDiagnostic, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 use std::collections::BTreeMap;
@@ -131,7 +130,7 @@ fn function(
 /// still sees the facts it audits against.
 fn canonicalize(
     function: &mut SemFunction,
-) -> Result<CfgCanonicalizationReport, SirOptimizationError> {
+) -> Result<CfgCanonicalizationReport, Vec<SirDiagnostic>> {
     let mut wrapper = module(function.clone());
     let reports = canonicalize_module_constant_cfg(&mut wrapper)?;
     *function = wrapper.functions.remove(0);
@@ -752,82 +751,6 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
 }
 
 #[test]
-fn malformed_input_is_rejected_atomically() {
-    let mut function = function(
-        "missing_successor",
-        Vec::new(),
-        ResolvedTy::Unit,
-        vec![SemBlock {
-            terminator_provenance: hew_sir::Provenance::Synthesized,
-            id: BlockId(0),
-            args: Vec::new(),
-            ops: Vec::new(),
-            terminator: SemTerminator::Goto(Edge {
-                target: BlockId(1),
-                args: Vec::new(),
-            }),
-        }],
-    );
-    let before = function.clone();
-
-    assert!(matches!(
-        canonicalize(&mut function),
-        Err(SirOptimizationError::InvalidInput(_))
-    ));
-    assert_eq!(function, before);
-}
-
-#[test]
-fn duplicate_block_identity_is_rejected_before_cfg_indexing_or_mutation() {
-    let mut function = false_same_target_diamond();
-    function.blocks[1].id = BlockId(0);
-    let before = function.clone();
-
-    let Err(SirOptimizationError::InvalidInput(diagnostics)) = canonicalize(&mut function) else {
-        panic!("a duplicate block identity is malformed input");
-    };
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.kind == SirDiagnosticKind::DuplicateBlock(BlockId(0))));
-    assert_eq!(function, before);
-}
-
-#[test]
-fn noncanonical_unique_block_order_is_rejected_atomically() {
-    let mut function = function(
-        "noncanonical_unique_blocks",
-        Vec::new(),
-        ResolvedTy::Unit,
-        vec![
-            SemBlock {
-                terminator_provenance: hew_sir::Provenance::Synthesized,
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: Vec::new(),
-                terminator: SemTerminator::Goto(Edge {
-                    target: BlockId(2),
-                    args: Vec::new(),
-                }),
-            },
-            SemBlock {
-                terminator_provenance: hew_sir::Provenance::Synthesized,
-                id: BlockId(2),
-                args: Vec::new(),
-                ops: Vec::new(),
-                terminator: SemTerminator::Return { value: None },
-            },
-        ],
-    );
-    let before = function.clone();
-
-    assert!(matches!(
-        canonicalize(&mut function),
-        Err(SirOptimizationError::InvalidInput(_))
-    ));
-    assert_eq!(function, before);
-}
-
-#[test]
 fn compaction_canonicalizes_a_nonzero_entry_block() {
     let mut function = function(
         "nonzero_entry",
@@ -885,68 +808,13 @@ fn compaction_canonicalizes_a_nonzero_entry_block() {
 }
 
 #[test]
-fn module_canonicalization_keeps_callable_validation_and_is_atomic() {
+fn module_canonicalization_keeps_callable_validation() {
     let mut module = module(false_same_target_diamond());
     assert!(verify_module(&module).is_empty());
-    let reports = canonicalize_module_constant_cfg(&mut module)
-        .expect("verified module must canonicalize as one transaction");
+    let reports =
+        canonicalize_module_constant_cfg(&mut module).expect("verified module must canonicalize");
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].0, CallableId(0));
     assert_eq!(reports[0].1.folded_branches, 1);
     assert!(verify_module(&module).is_empty());
-}
-
-#[test]
-fn module_canonicalization_rejects_an_invalid_body_atomically() {
-    let valid = false_same_target_diamond();
-    let invalid = function(
-        "invalid_module_body",
-        Vec::new(),
-        ResolvedTy::Unit,
-        vec![SemBlock {
-            terminator_provenance: hew_sir::Provenance::Synthesized,
-            id: BlockId(0),
-            args: Vec::new(),
-            ops: Vec::new(),
-            terminator: SemTerminator::Goto(Edge {
-                target: BlockId(1),
-                args: Vec::new(),
-            }),
-        }],
-    );
-    let mut invalid = invalid;
-    invalid.id = ItemId(1);
-    invalid.callable = CallableId(1);
-
-    let mut module = SemModule {
-        defs: hew_types::DefTable::fixture(),
-        debug: hew_sir::SemDebugFacts::default(),
-        regex_patterns: Vec::new(),
-        actors: Vec::new(),
-        supervisors: Vec::new(),
-        resources: BTreeMap::new(),
-        closures: Vec::new(),
-        vtables: Vec::new(),
-        value_capabilities: BTreeMap::new(),
-        structural_display: BTreeMap::new(),
-        callables: vec![callable_for(&valid), callable_for(&invalid)],
-        generic_templates: Vec::new(),
-        root_unit_callables: Vec::new(),
-        entry_exit_plan: None,
-        entry_callable: None,
-        test_entries: Vec::new(),
-        functions: vec![valid, invalid],
-        aggregate_shapes: Vec::new(),
-        variant_shapes: Vec::new(),
-        type_facts: BTreeMap::new(),
-        string_literals: BTreeMap::new(),
-        bytes_literals: BTreeMap::new(),
-    };
-    let before = module.clone();
-
-    assert!(matches!(
-        canonicalize_module_constant_cfg(&mut module),
-        Err(SirOptimizationError::InvalidInput(_))
-    ));
-    assert_eq!(module, before);
 }

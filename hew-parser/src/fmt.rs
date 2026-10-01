@@ -102,27 +102,6 @@ pub fn format_checked(source: &str, program: &Program) -> Result<String, fidelit
     Ok(formatted)
 }
 
-/// A checker-approved replacement for a legacy bare enum variant.
-///
-/// The formatter owns the byte edit, while the caller supplies the semantic
-/// decision.  Keeping that split prevents a token rewrite from guessing whether
-/// an identifier denotes a variant or an ordinary binding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VariantMigration {
-    pub span: Range<usize>,
-    pub name: String,
-    pub replacement: String,
-}
-
-/// A checker-selected source replacement whose range is the complete syntax
-/// node. The checker decides that it is an actor operation before passing it
-/// here; the formatter only applies the byte edit.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SelectedMigration {
-    pub span: Range<usize>,
-    pub replacement: String,
-}
-
 /// A source location the legacy-syntax migrator deliberately declined to edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationRefusal {
@@ -148,15 +127,18 @@ impl std::fmt::Display for MigrationError {
 
 impl std::error::Error for MigrationError {}
 
-/// Reprint a source file after recovering punctuation and other mechanically
-/// migratable spellings. Other parse errors refuse the entire file, so the
-/// first migration phase cannot conceal malformed source.
+/// Rewrite retired spellings to their current form.
+///
+/// Every rewrite is syntactic: the parser recovers retired punctuation and
+/// `::` path separators with a fix-it, and the formatter prints the current
+/// spelling of each construct. Any other parse error refuses the file, and the
+/// result must parse cleanly back to the same program.
 ///
 /// # Errors
 ///
-/// Returns every unrelated parse error or an error if reprinting changes the
-/// parsed program.
-pub fn migrate_punctuation(source: &str) -> Result<String, MigrationError> {
+/// Returns every unrelated parse error, or an error if the rewrite would
+/// change the parsed program.
+pub fn migrate_syntax(source: &str) -> Result<String, MigrationError> {
     use crate::parser::{ParseDiagnosticKind, Severity};
 
     let parsed = crate::parse(source);
@@ -173,9 +155,9 @@ pub fn migrate_punctuation(source: &str) -> Result<String, MigrationError> {
                         | ParseDiagnosticKind::ActorFieldBinding
                         | ParseDiagnosticKind::LegacyPathSeparator
                         | ParseDiagnosticKind::LegacyTurbofish
-                        | ParseDiagnosticKind::AwaitRestartRetired
-                        | ParseDiagnosticKind::SupervisorStopClauseRetired
                         | ParseDiagnosticKind::UnitFailsArrow
+                        | ParseDiagnosticKind::LegacySerialSpelling
+                        | ParseDiagnosticKind::WireVariantTagMissing
                 )
         })
         .map(|error| MigrationRefusal {
@@ -186,21 +168,12 @@ pub fn migrate_punctuation(source: &str) -> Result<String, MigrationError> {
     if !refusals.is_empty() {
         return Err(MigrationError { refusals });
     }
-    let formatted = format_source(source, &parsed.program);
+    let formatted = rewrite_path_separators(&format_source(source, &parsed.program));
     let checked = crate::parse(&formatted);
     let refusals = checked
         .errors
         .iter()
-        .filter(|error| {
-            error.severity == Severity::Error
-                && !matches!(
-                    error.kind,
-                    ParseDiagnosticKind::AwaitRestartRetired
-                        | ParseDiagnosticKind::LegacyPathSeparator
-                        | ParseDiagnosticKind::LegacyTurbofish
-                        | ParseDiagnosticKind::SupervisorStopClauseRetired
-                )
-        })
+        .filter(|error| error.severity == Severity::Error)
         .map(|error| MigrationRefusal {
             span: error.span.clone(),
             reason: format!("migrated source: {}", error.message),
@@ -220,95 +193,22 @@ pub fn migrate_punctuation(source: &str) -> Result<String, MigrationError> {
     Ok(formatted)
 }
 
-/// Rewrite legacy path separators and checker-approved bare variants.
-///
-/// Every edit is anchored to lexer tokens.  Comments and string literals never
-/// produce a `DoubleColon` token, and a caller-provided variant span must still
-/// point at the named identifier token before it is changed.
-///
-/// # Errors
-///
-/// Returns [`MigrationError`] when a checker-selected variant no longer points
-/// at its expected identifier token, or when requested edits overlap.
-pub fn migrate_legacy_syntax(
-    source: &str,
-    variants: &[VariantMigration],
-) -> Result<String, MigrationError> {
-    migrate_legacy_syntax_with_selected(source, variants, &[])
-}
-
-/// Apply legacy syntax edits together with checker-selected actor edits.
-///
-/// # Errors
-/// Refuses invalid spans or overlapping edits.
-pub fn migrate_legacy_syntax_with_selected(
-    source: &str,
-    variants: &[VariantMigration],
-    selected: &[SelectedMigration],
-) -> Result<String, MigrationError> {
+/// Replace each `::` path separator with `.` and drop the `::` of a
+/// Rust-style `::<...>` application. Edits are anchored to lexer tokens, so
+/// comments and string literals never change.
+fn rewrite_path_separators(source: &str) -> String {
     let tokens = hew_lexer::lex(source);
-    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
-
-    for (index, (token, span)) in tokens.iter().enumerate() {
+    let mut migrated = source.to_string();
+    for (index, (token, span)) in tokens.iter().enumerate().rev() {
         if !matches!(token, hew_lexer::Token::DoubleColon) {
             continue;
         }
         let is_turbofish = tokens
             .get(index + 1)
             .is_some_and(|(next, _)| matches!(next, hew_lexer::Token::Less));
-        let replacement = if is_turbofish { "" } else { "." };
-        edits.push((span.start..span.end, replacement.to_string()));
+        migrated.replace_range(span.start..span.end, if is_turbofish { "" } else { "." });
     }
-
-    let mut refusals = Vec::new();
-    for variant in variants {
-        let valid_token = tokens.iter().any(|(token, span)| {
-            span.start == variant.span.start
-                && span.end == variant.span.end
-                && matches!(token, hew_lexer::Token::Identifier(name) if *name == variant.name)
-        });
-        if !valid_token {
-            refusals.push(MigrationRefusal {
-                span: variant.span.clone(),
-                reason: format!(
-                    "expected identifier `{}` selected by the checker",
-                    variant.name
-                ),
-            });
-            continue;
-        }
-        edits.push((variant.span.clone(), variant.replacement.clone()));
-    }
-
-    for edit in selected {
-        if source.get(edit.span.clone()).is_none() {
-            refusals.push(MigrationRefusal {
-                span: edit.span.clone(),
-                reason: "checker-selected edit has no valid source span".to_string(),
-            });
-        } else {
-            edits.push((edit.span.clone(), edit.replacement.clone()));
-        }
-    }
-
-    edits.sort_by_key(|(span, _)| (span.start, span.end));
-    for pair in edits.windows(2) {
-        if pair[0].0.end > pair[1].0.start {
-            refusals.push(MigrationRefusal {
-                span: pair[1].0.clone(),
-                reason: "migration edits overlap".to_string(),
-            });
-        }
-    }
-    if !refusals.is_empty() {
-        return Err(MigrationError { refusals });
-    }
-
-    let mut migrated = source.to_string();
-    for (span, replacement) in edits.into_iter().rev() {
-        migrated.replace_range(span, &replacement);
-    }
-    Ok(migrated)
+    migrated
 }
 
 struct Formatter<'a> {
@@ -1154,6 +1054,7 @@ impl<'a> Formatter<'a> {
             return false;
         };
         let mut tokens = hew_lexer::Lexer::new(rest).peekable();
+        let mut legacy_serial = false;
         loop {
             match tokens.peek() {
                 // A doc comment prints in place with the other comments.
@@ -1179,6 +1080,10 @@ impl<'a> Formatter<'a> {
                     }
                     self.flush_comments_before(start);
                     let text = self.attribute_text(&(start..end));
+                    let Some(text) = Self::migrate_serial_attribute(text, &mut legacy_serial)
+                    else {
+                        continue;
+                    };
                     self.write_indent();
                     self.write(&text);
                     self.newline();
@@ -1191,6 +1096,31 @@ impl<'a> Formatter<'a> {
                 None => return true,
             }
         }
+    }
+
+    /// Rewrite a retired `#[json(..)]`/`#[yaml(..)]` naming attribute: the
+    /// first becomes `#[serial(case = "..")]`, as the parser reads it, and
+    /// any later one is dropped. Every other attribute prints unchanged.
+    fn migrate_serial_attribute(text: String, seen: &mut bool) -> Option<String> {
+        let tokens = hew_lexer::lex(&text);
+        let is_legacy = matches!(
+            tokens.get(1),
+            Some((hew_lexer::Token::Identifier("json" | "yaml"), _))
+        );
+        if !is_legacy {
+            return Some(text);
+        }
+        if std::mem::replace(seen, true) {
+            return None;
+        }
+        let case = tokens.iter().find_map(|(token, _)| match token {
+            hew_lexer::Token::Identifier(word) => NamingCase::parse_legacy(word),
+            hew_lexer::Token::StringLit(word) => {
+                NamingCase::parse_legacy(crate::parser::unquote_str(word))
+            }
+            _ => None,
+        })?;
+        Some(format!("#[serial(case = \"{}\")]", case.as_str()))
     }
 
     /// The attribute at `span` with canonical spacing and its source
@@ -1513,6 +1443,7 @@ impl<'a> Formatter<'a> {
             self.write(lang_item);
             self.write("\")]\n");
         }
+        self.format_serial_case_attr(decl.serial_case);
     }
 
     fn format_type_body_method(
@@ -1570,9 +1501,17 @@ impl<'a> Formatter<'a> {
         match decl.kind {
             TypeDeclKind::Struct => {
                 for (i, item) in decl.body.iter().enumerate() {
-                    if let TypeBodyItem::Field { name, ty, span, .. } = item {
+                    if let TypeBodyItem::Field {
+                        name,
+                        ty,
+                        attributes,
+                        span,
+                        ..
+                    } = item
+                    {
                         self.flush_comments_before(span.start);
                         self.prev_source_pos = span.start;
+                        self.format_attributes(attributes);
                         self.write_indent();
                         self.write_ident(*name);
                         self.write(": ");
@@ -1586,8 +1525,6 @@ impl<'a> Formatter<'a> {
                                 meta.is_deprecated,
                                 meta.is_repeated,
                                 meta.since,
-                                meta.json_name.as_deref(),
-                                meta.yaml_name.as_deref(),
                             );
                         }
                         self.write(";");
@@ -1641,9 +1578,7 @@ impl<'a> Formatter<'a> {
             self.write(lang_item);
             self.write("\")]\n");
         }
-        // Emit type-level naming attributes
-        self.format_naming_attr("json", wire.json_case);
-        self.format_naming_attr("yaml", wire.yaml_case);
+        self.format_serial_case_attr(decl.serial_case);
         self.write_indent();
         if wire.version.is_some() || wire.min_version.is_some() {
             self.write("#[wire(");
@@ -1664,22 +1599,10 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_naming_attr(&mut self, attr_name: &str, case: Option<NamingCase>) {
+    fn format_serial_case_attr(&mut self, case: Option<NamingCase>) {
         if let Some(case) = case {
             self.write_indent();
-            let s = case.as_str();
-            let needs_quotes = s.contains('-');
-            self.write("#[");
-            self.write(attr_name);
-            self.write("(");
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(s);
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(")]\n");
+            writeln!(self.output, "#[serial(case = \"{}\")]", case.as_str()).unwrap();
         }
     }
 
@@ -1689,8 +1612,6 @@ impl<'a> Formatter<'a> {
         is_deprecated: bool,
         is_repeated: bool,
         since: Option<u32>,
-        json_name: Option<&str>,
-        yaml_name: Option<&str>,
     ) {
         if is_optional {
             self.write(" optional");
@@ -1704,16 +1625,6 @@ impl<'a> Formatter<'a> {
         if let Some(version) = since {
             self.write(" since ");
             self.write(&version.to_string());
-        }
-        if let Some(name) = json_name {
-            self.write(" json(\"");
-            self.write(name);
-            self.write("\")");
-        }
-        if let Some(name) = yaml_name {
-            self.write(" yaml(\"");
-            self.write(name);
-            self.write("\")");
         }
     }
 
@@ -1741,7 +1652,10 @@ impl<'a> Formatter<'a> {
                 self.write("}");
             }
         }
-        if !matches!(v.kind, VariantKind::Struct(_)) {
+        if let Some(tag) = v.tag {
+            write!(self.output, " @{tag}").unwrap();
+        }
+        if !matches!(v.kind, VariantKind::Struct(_)) || v.tag.is_some() {
             self.write(";");
         }
         self.newline();
@@ -1815,7 +1729,7 @@ impl<'a> Formatter<'a> {
         }
         self.flush_after_attributes(&m.attributes);
         self.write_indent();
-        self.write("fn ");
+        self.write(if m.suspends { "fn[suspends] " } else { "fn " });
         self.write_ident(m.name);
         if m.consumes_self {
             self.format_opt_type_params(m.type_params.as_ref());
@@ -1860,6 +1774,15 @@ impl<'a> Formatter<'a> {
         }
         self.format_type_expr(&decl.target_type.0);
         self.format_opt_where_clause(decl.where_clause.as_ref());
+        // An empty body (`impl Error for E {}`) stays on one line unless a
+        // comment sits inside it.
+        let body_comment = self.next_comment < self.comments.len()
+            && self.comments[self.next_comment].span.start
+                < self.find_block_close(self.prev_source_pos, span_end);
+        if decl.type_aliases.is_empty() && decl.methods.is_empty() && !body_comment {
+            self.write(" {}\n");
+            return;
+        }
         self.write(" {\n");
         self.indent += 1;
         // Aliases and methods print in source order; the AST keeps them in
@@ -2755,11 +2678,13 @@ impl<'a> Formatter<'a> {
                             // AST. Emit them bare only when lexing preserves a
                             // single identifier or the same integer value.
                             let tokens = hew_lexer::lex(value);
-                            let bare = match tokens.as_slice() {
-                                [(hew_lexer::Token::Identifier(name), _)] => *name == value,
-                                [(hew_lexer::Token::Integer(integer), _)] => *integer == value,
-                                _ => false,
-                            };
+                            // A serial key is data, always a string literal.
+                            let bare = attr.name != "serial"
+                                && match tokens.as_slice() {
+                                    [(hew_lexer::Token::Identifier(name), _)] => *name == value,
+                                    [(hew_lexer::Token::Integer(integer), _)] => *integer == value,
+                                    _ => false,
+                                };
                             if bare {
                                 self.write(value);
                             } else {
@@ -3482,7 +3407,6 @@ impl<'a> Formatter<'a> {
             | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
-            | Expr::AwaitRestart(operand)
             | Expr::Yield(Some(operand))
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
@@ -4059,7 +3983,6 @@ impl<'a> Formatter<'a> {
                 | Expr::Range { .. }
                 | Expr::Is { .. }
                 | Expr::Await(_)
-                | Expr::AwaitRestart(_)
                 | Expr::StructInit { .. }
         )
     }
@@ -4735,10 +4658,6 @@ impl<'a> Formatter<'a> {
             Expr::Await(inner) => {
                 self.write("await ");
                 self.format_expr_prec(inner, 25, false);
-            }
-            Expr::AwaitRestart(inner) => {
-                self.write("await_restart ");
-                self.format_expr(inner);
             }
             Expr::RegexLiteral(_) | Expr::ByteStringLiteral(_)
                 if self.literal_spelling(&expr.1).is_some() =>
@@ -5550,11 +5469,10 @@ mod tests {
     use crate::parse;
 
     #[test]
-    fn migrates_legacy_paths_turbofish_and_checker_selected_variants() {
+    fn migrates_legacy_paths_and_turbofish_outside_comments_and_strings() {
         let source = concat!(
-            "import a.b.{C};\n",
+            "import a::b::{C};\n",
             "fn main() {\n",
-            "    let value = Some(42);\n",
             "    f::<T>();\n",
             "    HashMap::<string, i64>::new();\n",
             "    Vec::new::<i64>();\n",
@@ -5562,23 +5480,14 @@ mod tests {
             "    println(\"a::b and f::<T>()\");\n",
             "}\n"
         );
-        let start = source.find("Some(42)").unwrap();
-        let migrated = migrate_legacy_syntax(
-            source,
-            &[VariantMigration {
-                span: start..start + "Some".len(),
-                name: "Some".to_string(),
-                replacement: "Option.Some".to_string(),
-            }],
-        )
-        .unwrap();
+        let migrated = migrate_syntax(source).unwrap();
 
         assert_eq!(
             migrated,
             concat!(
                 "import a.b.{C};\n",
+                "\n",
                 "fn main() {\n",
-                "    let value = Option.Some(42);\n",
                 "    f<T>();\n",
                 "    HashMap<string, i64>.new();\n",
                 "    Vec.new<i64>();\n",
@@ -5587,25 +5496,7 @@ mod tests {
                 "}\n"
             )
         );
-        assert_eq!(migrate_legacy_syntax(&migrated, &[]).unwrap(), migrated);
-    }
-
-    #[test]
-    fn refuses_variant_rewrite_without_the_checker_selected_token() {
-        let error = migrate_legacy_syntax(
-            "fn main() { println(\"Some\"); }\n",
-            &[VariantMigration {
-                span: 21..25,
-                name: "Some".to_string(),
-                replacement: ".Some".to_string(),
-            }],
-        )
-        .unwrap_err();
-
-        assert_eq!(error.refusals.len(), 1);
-        assert!(error.refusals[0]
-            .reason
-            .contains("expected identifier `Some` selected by the checker"));
+        assert_eq!(migrate_syntax(&migrated).unwrap(), migrated);
     }
 
     fn roundtrip(src: &str) -> String {
@@ -5621,12 +5512,11 @@ mod tests {
     #[test]
     fn runtime_attribute_values_survive_formatting() {
         let source = r#"
-            impl Connection {
-                #[runtime(family = TcpAttachLocal, symbol = hew_tcp_attach_native,
+            impl TlsStream {
+                #[runtime(family = TlsAttachLocal, symbol = hew_tls_attach_native,
                     lowering = actor_ingress, target = native,
-                    classification = "non-declarable-stdlib", receiver = connection,
-                    data = on_data, close = on_close, result = status_result,
-                    error_type = "std.net.AttachError", error_variant = Refused)]
+                    classification = "non-declarable-stdlib", receiver = opaque,
+                    data = on_data, close = on_close)]
                 fn attach() {}
             }
         "#;
@@ -5874,11 +5764,11 @@ trait Fluent {
         assert_eq!(roundtrip_source(short), short);
 
         let long = "fn load(path: string) -> () fails LoadError {\n    return error LoadError.Missing;\n}\n";
-        assert_eq!(migrate_punctuation(long).unwrap(), short);
+        assert_eq!(migrate_syntax(long).unwrap(), short);
 
         // A success type other than unit keeps its arrow.
         let valued = "fn load(path: string) -> string fails LoadError {\n    path\n}\n";
-        assert_eq!(migrate_punctuation(valued).unwrap(), valued);
+        assert_eq!(migrate_syntax(valued).unwrap(), valued);
     }
 
     #[test]
@@ -6059,23 +5949,23 @@ enum Colour {
         let src = "\
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 ";
         assert_eq!(roundtrip(src), src);
     }
 
     #[test]
-    fn wire_enum_with_json_case_roundtrips() {
+    fn wire_enum_with_serial_case_roundtrips() {
         let src = "\
-#[json(camelCase)]
+#[serial(case = \"camelCase\")]
 #[wire]
 enum Status {
-    PendingReview;
-    ActiveNow;
-    Completed;
+    PendingReview @0;
+    ActiveNow @1;
+    Completed @2;
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -6086,7 +5976,8 @@ enum Status {
         let src = "\
 #[wire]
 type Msg {
-    added: String @2 repeated since 3 yaml(\"added\");
+    #[serial(key = \"addedName\")]
+    added: String @2 repeated since 3;
 }
 ";
         assert_eq!(roundtrip(src), src);

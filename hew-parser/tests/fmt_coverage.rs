@@ -1101,15 +1101,6 @@ fn fmt_restarted_call_roundtrips() {
     exact_roundtrip("fn main() {\n    restarted(sup.worker);\n}\n");
 }
 
-#[test]
-fn await_restart_is_a_targeted_migration_error() {
-    let parsed = parse("fn main() { let w = await_restart sup.worker; }");
-    assert!(parsed.errors.iter().any(|error| {
-        error.kind == hew_parser::ParseDiagnosticKind::AwaitRestartRetired
-            && error.message.contains("E_AWAIT_RESTART_RETIRED")
-    }));
-}
-
 // -----------------------------------------------------------------------
 // Comments preservation
 // -----------------------------------------------------------------------
@@ -1914,14 +1905,16 @@ fn fmt_wire_attr_enum_roundtrip() {
     // enums; verify the formatter round-trips unit, tuple, and struct
     // variant payloads while preserving the `#[wire]` attribute.
     exact_roundtrip(
-        "#[wire]\nenum Command {\n    Start;\n    Push(i64);\n    Move { x: i32; y: i32; }\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Push(i64) @1;\n    Move { x: i32; y: i32; } @2;\n}\n",
     );
 }
 
 #[test]
 fn fmt_wire_attr_enum_with_version_roundtrip() {
     // `#[wire(version = N, min_version = M)]` on an enum.
-    exact_roundtrip("#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1;\n    V2;\n}\n");
+    exact_roundtrip(
+        "#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1 @0;\n    V2 @1;\n}\n",
+    );
 }
 
 #[test]

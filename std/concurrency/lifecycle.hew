@@ -1,24 +1,30 @@
 //! Generic lifecycle state machine for resource-owning services.
 
-/// Opaque lifecycle failure payload.
-pub enum Error {
-    Code(i64);
+/// Why a lifecycle-managed service faulted.
+pub enum LifecycleError {
+    /// Initialisation failed before the service started.
+    StartFailed(string);
+    /// The running service crashed.
+    Crashed(string);
 }
 
-impl Display for Error {
-    fn fmt(err: Error) -> string {
+impl Display for LifecycleError {
+    fn fmt(err: LifecycleError) -> string {
         match err {
-            Error.Code(code) => f"lifecycle error (code {code})",
+            LifecycleError.StartFailed(reason) => f"StartFailed: {reason}",
+            LifecycleError.Crashed(reason) => f"Crashed: {reason}",
         }
     }
 }
+
+impl Error for LifecycleError {}
 
 pub machine Lifecycle<T> {
     events {
         Initialise;
         Started { handle: T; }
         Stop;
-        Crashed { error: Error; }
+        Crashed { error: LifecycleError; }
     }
 
     state Created;
@@ -26,7 +32,7 @@ pub machine Lifecycle<T> {
     state Running { handle: T; }
     state Stopping;
     state Stopped;
-    state Faulted { error: Error; }
+    state Faulted { error: LifecycleError; }
 
     on Initialise: Created => Initialising;
     on Initialise: _ => _ {
@@ -68,6 +74,6 @@ fn lifecycle_string_faulted_path_state_names() {
     assert(lifecycle.state_name() == "Created");
     lifecycle.step(.Initialise);
     assert(lifecycle.state_name() == "Initialising");
-    lifecycle.step(Lifecycle.Event.Crashed { error: Error.Code(7) });
+    lifecycle.step(Lifecycle.Event.Crashed { error: LifecycleError.StartFailed("bind refused") });
     assert(lifecycle.state_name() == "Faulted");
 }

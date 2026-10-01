@@ -30,6 +30,9 @@ pub enum DecodeError {
     },
     /// A variant name or tag matches no variant.
     UnknownVariant { path: String, name: String },
+    /// A map key or set element repeats in a form the parser cannot refuse
+    /// itself (a `[key, value]` pair sequence, a set's sequence).
+    Duplicate { path: String, key: String },
     /// A representation override refused its representation.
     Invalid { path: String, reason: String },
 }
@@ -112,6 +115,11 @@ impl fmt::Display for DecodeError {
                 f.write_str("UnknownVariant: ")?;
                 at(f, path)?;
                 write!(f, "no variant named {name}")
+            }
+            Self::Duplicate { path, key } => {
+                f.write_str("Duplicate: ")?;
+                at(f, path)?;
+                write!(f, "{key} repeats")
             }
             Self::Invalid { path, reason } => {
                 f.write_str("Invalid: ")?;

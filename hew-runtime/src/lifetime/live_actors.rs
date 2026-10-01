@@ -277,20 +277,12 @@ pub(crate) fn with_live_actor<R>(
 /// null under THIS registry lock before dropping the reference
 /// (`scheduler::release_parked_ask_channel`).
 ///
-/// `accept_parked` is the reactor's snapshot of actors parked on a listener
-/// `await accept()` ([`crate::reactor::actors_parked_on_accept`], taken before
-/// this lock — never nested). An admission wait for connections that have not
-/// arrived is likewise not in-flight work, UNLESS the handler parked there
-/// while serving a live ask — then a caller is still owed a reply and the
-/// actor keeps blocking through the ask rule. A parked handler with no ask and
-/// no admission wait (plain recv/timer/stream) is genuinely outstanding work
-/// and keeps blocking.
-// Native-only: the shutdown drain (and the `reply_channel`/`reactor` modules
-// this scan consults) is not compiled on wasm32.
+/// A parked handler with no ask (plain recv, timer or stream) is genuinely
+/// outstanding work and keeps blocking.
+// Native-only: the shutdown drain (and the `reply_channel` module this scan
+// consults) is not compiled on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn has_drain_blocking_suspended_actor(
-    accept_parked: &std::collections::HashSet<ActorIncarnation>,
-) -> bool {
+pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
     with_live_actors_opt(|map| {
         map.as_ref().is_some_and(|actors| {
             actors.values().any(|ActorPtr(actor)| {
@@ -309,13 +301,9 @@ pub(crate) fn has_drain_blocking_suspended_actor(
                 }
                 let gate = a.parked_ask_channel.load(Ordering::Acquire);
                 if gate.is_null() {
-                    // Parked with no ask: an admission wait does not block;
-                    // any other wait (plain recv/timer/stream) is outstanding
-                    // work and does. Matched by INCARNATION, so a snapshot
-                    // entry left by a dead acceptor cannot exempt whatever
-                    // actor now occupies its address.
-                    return !accept_parked
-                        .contains(&ActorIncarnation::from_parts(a.id, a.spawn_serial));
+                    // Parked with no ask: a plain wait (recv, timer, stream)
+                    // is outstanding work.
+                    return true;
                 }
                 // SAFETY: the gate slot owns a retained channel reference that
                 // is released only after a swap performed under this same

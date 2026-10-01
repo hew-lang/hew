@@ -389,7 +389,6 @@ impl LowerCtx {
             | HirExprKind::RecordCloneCall { src: object, .. }
             | HirExprKind::SubsumedValue { source: object, .. }
             | HirExprKind::ConnAwaitRead { conn: object, .. }
-            | HirExprKind::AwaitRestart { child: object }
             | HirExprKind::AwaitTask {
                 operand: object, ..
             } => {

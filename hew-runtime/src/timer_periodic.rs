@@ -10,16 +10,14 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
-use std::thread::JoinHandle;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::lifetime::PoisonSafe;
 
 use crate::actor::{hew_actor_send, HewActor};
 use crate::timer_wheel::{
-    hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_next_deadline_ms,
-    hew_timer_wheel_remove, hew_timer_wheel_tick, timer_wheel_cursor_ms,
+    hew_timer_wheel_free, hew_timer_wheel_remove, timer_wheel_cursor_ms,
     timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
 };
 
@@ -27,65 +25,19 @@ use crate::timer_wheel::{
 // Global timer wheel (lazy-initialised singleton)
 // ---------------------------------------------------------------------------
 
-/// Wrapper to allow a raw timer-wheel pointer in a static Mutex.
-struct WheelSlot(*mut HewTimerWheel);
-
-// SAFETY: Access is guarded by the Mutex; the pointer is only dereferenced
-// through the timer-wheel C ABI which uses its own internal Mutex.
-unsafe impl Send for WheelSlot {}
-// SAFETY: Only accessed under the GLOBAL_WHEEL Mutex; no unsynchronised sharing.
-unsafe impl Sync for WheelSlot {}
-
-static GLOBAL_WHEEL: PoisonSafe<WheelSlot> = PoisonSafe::new(WheelSlot(ptr::null_mut()));
-pub(crate) static TICKER_RUNNING: AtomicBool = AtomicBool::new(false);
-static TICKER_STOP: AtomicBool = AtomicBool::new(false);
-static TICKER_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
+/// The process timer wheel, created on first use. The reactor thread reads it
+/// every loop turn to bound its poll and fire due timers.
+static GLOBAL_WHEEL: AtomicPtr<HewTimerWheel> = AtomicPtr::new(ptr::null_mut());
+/// Serializes creation and teardown of `GLOBAL_WHEEL`.
+static WHEEL_INIT: Mutex<()> = Mutex::new(());
 static PERIODIC_ADMISSION: RwLock<()> = RwLock::new(());
 static PERIODIC_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
-// ---------------------------------------------------------------------------
-// Ticker park primitive (tickless idle — no spin when wheel is empty)
-//
-// The ticker parks here instead of unconditionally sleeping 1 ms per loop.
-// When the wheel is empty it waits indefinitely; otherwise it waits until the
-// next deadline.  Any new-timer insert (via register_ticker_notify_hook) and
-// shutdown both signal this to interrupt the current park.
-//
-// INVARIANT: the `bool` inside the Mutex is `true` when a notification is
-// pending (standard "spurious-wake eliminator" / condvar ping pattern).
-// ---------------------------------------------------------------------------
-
-struct TickerPark {
-    mu: Mutex<bool>,
-    cv: Condvar,
-}
-
-static TICKER_PARK: OnceLock<TickerPark> = OnceLock::new();
-
-fn ticker_park() -> &'static TickerPark {
-    TICKER_PARK.get_or_init(|| TickerPark {
-        mu: Mutex::new(false),
-        cv: Condvar::new(),
-    })
-}
-
-/// Called (from the insert hook registered with the wheel) whenever a new
-/// timer is inserted.  Signals the ticker to re-evaluate its park deadline.
-fn ticker_park_notify() {
-    let park = ticker_park();
-    *park
-        .mu
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-    park.cv.notify_one();
-}
-
 /// Return (or create) the process timer wheel, ensuring something ticks it.
 ///
-/// On the threaded runtime that is a background ticker thread parked on the
-/// next deadline. The single-thread driver has no thread to park: it drives
-/// the wheel itself between steps, so the wheel lives with the driver and
-/// nothing is started here.
+/// On the threaded runtime the reactor ticks it: its poll timeout is the
+/// wheel's next deadline. The single-thread driver has no reactor loop to
+/// park: it drives its own wheel between steps, so nothing is started here.
 pub(crate) fn global_wheel() -> *mut HewTimerWheel {
     if crate::driver::active() {
         return crate::driver::global_wheel();
@@ -102,38 +54,50 @@ pub(crate) fn global_wheel() -> *mut HewTimerWheel {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_global_wheel() -> *mut HewTimerWheel {
-    GLOBAL_WHEEL.access(|guard| {
-        if guard.0.is_null() {
+    let mut wheel = GLOBAL_WHEEL.load(Ordering::Acquire);
+    if wheel.is_null() {
+        let _init = WHEEL_INIT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wheel = GLOBAL_WHEEL.load(Ordering::Acquire);
+        if wheel.is_null() {
             // SAFETY: hew_timer_wheel_new has no preconditions.
-            let tw = unsafe { hew_timer_wheel_new() };
-            if tw.is_null() {
+            wheel = unsafe { crate::timer_wheel::hew_timer_wheel_new() };
+            if wheel.is_null() {
                 return ptr::null_mut();
             }
-            guard.0 = tw;
-            if !start_ticker_thread(tw) {
-                guard.0 = ptr::null_mut();
-                // SAFETY: tw was just allocated above and no ticker thread started.
-                unsafe {
-                    hew_timer_wheel_free(tw);
-                }
-            }
-        } else if !TICKER_RUNNING.load(Ordering::SeqCst) {
-            // Wheel exists but ticker was shut down - restart it
-            if !start_ticker_thread(guard.0) {
-                return ptr::null_mut();
-            }
+            crate::timer_wheel::register_insert_hook(wheel_inserted);
+            GLOBAL_WHEEL.store(wheel, Ordering::Release);
         }
-        guard.0
-    })
+    }
+    if !crate::reactor::ensure_reactor_started() {
+        crate::set_last_error("hew timer wheel: the I/O reactor could not start");
+        return ptr::null_mut();
+    }
+    wheel
+}
+
+/// The process wheel if one exists, for the reactor loop. Never creates one.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn process_wheel() -> *mut HewTimerWheel {
+    GLOBAL_WHEEL.load(Ordering::Acquire)
+}
+
+/// Wake the reactor when an insert into the process wheel lands before its
+/// current sleep limit. Inserts into other wheels (the driver's) need no wake.
+#[cfg(not(target_arch = "wasm32"))]
+fn wheel_inserted(wheel: *mut HewTimerWheel, deadline_ms: u64) {
+    if wheel == GLOBAL_WHEEL.load(Ordering::Acquire) {
+        crate::reactor::timer_inserted(deadline_ms);
+    }
 }
 
 /// Return the process-wide timer wheel, lazily creating it and ensuring the
-/// 1 ms ticker thread is running. This is the deadline-schedule target for
-/// NEW-6b `await … | after d`: codegen passes the returned wheel to
-/// `hew_await_cancel_schedule_deadline_ms`. Returns null only if the wheel /
-/// ticker could not be created (the caller then skips arming the deadline and
-/// the await behaves as an un-deadlined suspend — fail-safe, never a hang of
-/// the timer subsystem itself).
+/// reactor ticks it. This is the deadline-schedule target for
+/// `await … | after d`: codegen passes the returned wheel to
+/// `hew_await_cancel_schedule_deadline_ms`. Returns null only if the wheel or
+/// the reactor could not be created (the caller then skips arming the
+/// deadline and the await behaves as an un-deadlined suspend).
 ///
 /// # Safety
 ///
@@ -142,106 +106,6 @@ fn native_global_wheel() -> *mut HewTimerWheel {
 #[no_mangle]
 pub unsafe extern "C" fn hew_global_timer_wheel() -> *mut HewTimerWheel {
     global_wheel()
-}
-
-/// Spawn a background thread that ticks the global timer wheel, parking until
-/// the next timer deadline (tickless when the wheel is empty).
-fn start_ticker_thread(tw: *mut HewTimerWheel) -> bool {
-    if TICKER_RUNNING.swap(true, Ordering::SeqCst) {
-        return true; // already running
-    }
-
-    #[cfg(test)]
-    if should_fail_ticker_spawn() {
-        TICKER_RUNNING.store(false, Ordering::SeqCst);
-        crate::set_last_error("hew_actor_schedule_periodic: failed to spawn timer ticker thread");
-        return false;
-    }
-
-    // Register the insert-notify hook so every new timer scheduled on the
-    // global wheel wakes the ticker to re-evaluate its park deadline.
-    crate::timer_wheel::register_ticker_notify_hook(ticker_park_notify);
-
-    let tw_addr = tw as usize;
-    let Ok(handle) = std::thread::Builder::new()
-        .name("hew-timer-tick".into())
-        .spawn(move || {
-            let tw = tw_addr as *mut HewTimerWheel;
-            let park = ticker_park();
-            loop {
-                // ── compute how long to park ──────────────────────────────
-                // SAFETY: tw is valid until shutdown_ticker() is called.
-                let gap_ms: i64 = unsafe { hew_timer_wheel_next_deadline_ms(tw) };
-                // gap_ms == -1 → empty wheel → park indefinitely.
-                // gap_ms == 0  → deadline already passed → do not park.
-                // gap_ms > 0   → park for that many ms (minimum 1).
-
-                if gap_ms != 0 {
-                    let mut notified = park
-                        .mu
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    // If a notification arrived between the gap computation
-                    // and acquiring the lock, consume it and skip the park.
-                    if *notified {
-                        *notified = false;
-                    } else if gap_ms < 0 {
-                        // Empty wheel: park indefinitely until notified or
-                        // shutdown signals.
-                        let _guard = park
-                            .cv
-                            .wait_while(notified, |n| {
-                                if *n {
-                                    *n = false;
-                                    false // stop waiting
-                                } else {
-                                    true // keep waiting
-                                }
-                            })
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    } else {
-                        // Known deadline: park for gap_ms (at least 1 ms so
-                        // we never spin when gap rounds to zero).
-                        let timeout =
-                            std::time::Duration::from_millis(gap_ms.max(1).cast_unsigned());
-                        let (_guard, _timeout_result) = park
-                            .cv
-                            .wait_timeout_while(notified, timeout, |n| {
-                                if *n {
-                                    *n = false;
-                                    false // stop waiting
-                                } else {
-                                    true // keep waiting
-                                }
-                            })
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    }
-                }
-
-                // ── check shutdown (after waking, before tick) ────────────
-                if TICKER_STOP.load(Ordering::Acquire) {
-                    break;
-                }
-
-                // ── tick the wheel ────────────────────────────────────────
-                // SAFETY: tw is valid until shutdown_ticker() is called.
-                unsafe {
-                    hew_timer_wheel_tick(tw);
-                }
-            }
-        })
-    else {
-        TICKER_RUNNING.store(false, Ordering::SeqCst);
-        crate::set_last_error("hew_actor_schedule_periodic: failed to spawn timer ticker thread");
-        return false;
-    };
-
-    // Store the handle for later joining
-    let handle_mutex = TICKER_HANDLE.get_or_init(|| Mutex::new(None));
-    *handle_mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
-    true
 }
 
 // ---------------------------------------------------------------------------
@@ -429,18 +293,6 @@ pub(crate) fn timer_count_for_actor(actor: *mut HewActor) -> usize {
     })
 }
 
-/// Returns the total number of active (registered) periodic timers across all
-/// actors. Used by the debug-only ticker-liveness diagnostics in
-/// `shutdown_ticker`; not gated on `cfg(test)` because it is also needed in
-/// ordinary debug-profile builds (which is what CI's e2e suite links).
-#[cfg(debug_assertions)]
-fn registered_periodic_timer_count() -> usize {
-    ACTOR_TIMERS.access(|lock| {
-        lock.as_ref()
-            .map_or(0, |map| map.values().map(Vec::len).sum())
-    })
-}
-
 /// Heap-allocated context for a periodic timer callback.
 ///
 /// Owned through an [`Arc`]; see [`ACTOR_TIMERS`] for the ownership protocol.
@@ -610,29 +462,9 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
 
     // SAFETY: `actor` and `tw` were validated above; hew_now_ms has no
     // preconditions on native targets.
-    let handle = unsafe {
+    unsafe {
         schedule_periodic_on_wheel(actor, msg_type, interval_ms, tw, crate::clock::hew_now_ms())
-    };
-
-    // Debug-only liveness check (see `assert_ticker_alive` doc comment): a
-    // ticker that died between `start_ticker_thread` returning and this first
-    // insert would otherwise leave the freshly-armed entry silently dead —
-    // the wheel holds it, but nothing will ever tick it. This traps at the
-    // arm site, with a file:line-precise diagnostic, instead of surfacing
-    // later as a program that exits cleanly having fired zero times. Gated
-    // to the real FFI entry point (not `schedule_periodic_on_wheel` itself)
-    // because unit tests call that helper directly against a bare test
-    // wheel with no ticker thread ever started, by design.
-    #[cfg(debug_assertions)]
-    if !handle.is_null() {
-        // SAFETY: `tw` was validated above and is still live.
-        unsafe {
-            #[cfg(not(target_arch = "wasm32"))]
-            assert_ticker_alive("hew_actor_schedule_periodic: after first insert", tw);
-        }
     }
-
-    handle
 }
 
 /// Schedule one native periodic timer on a specific wheel and clock sample.
@@ -689,55 +521,6 @@ unsafe fn schedule_periodic_on_wheel(
     handle_ptr
 }
 
-/// Debug-only liveness assertion for the periodic-timer ticker thread.
-///
-/// Verifies both that `TICKER_RUNNING` is still `true` and, when the ticker's
-/// `JoinHandle` is available, that the thread has not already finished.
-/// Gated on `cfg(debug_assertions)` because this is the profile CI's e2e
-/// suite actually links (`cargo nextest run` with no `--release`, producing
-/// `target/debug/libhew_runtime.a` — see `hew-cli/src/link.rs`), so the check
-/// is live exactly where the single-witness failure was observed, and adds
-/// no cost to a release-profile user binary.
-///
-/// On failure, includes the wheel's seeded `current_ms` against a fresh
-/// wall-clock read so a large clock/scheduling discontinuity (a residual
-/// hypothesis distinct from ticker death) is distinguishable in the panic
-/// message rather than collapsed into the same diagnostic.
-///
-/// # Safety
-///
-/// `tw` must be a valid pointer returned by `hew_timer_wheel_new`.
-/// Only the native target has a ticker thread to be alive: wasm32 ticks the
-/// wheel from the process driver between readiness steps, so the premise of
-/// this check does not hold there.
-#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-unsafe fn assert_ticker_alive(context: &str, tw: *mut HewTimerWheel) {
-    // The single-thread driver ticks the wheel itself; there is no ticker.
-    if crate::driver::active() {
-        return;
-    }
-    let ticker_running = TICKER_RUNNING.load(Ordering::SeqCst);
-    let handle_finished = TICKER_HANDLE.get().and_then(|handle_mutex| {
-        handle_mutex
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(JoinHandle::is_finished)
-    });
-    if !ticker_running || handle_finished == Some(true) {
-        // SAFETY: caller guarantees `tw` is valid.
-        let wheel_cursor_ms = unsafe { timer_wheel_cursor_ms(tw) };
-        let wall_clock_ms = crate::clock::hew_now_ms();
-        panic!(
-            "hew periodic-timer liveness check failed ({context}): TICKER_RUNNING={ticker_running}, \
-             ticker thread finished={handle_finished:?} — the ticker thread is not alive right \
-             after arming a periodic timer; wheel cursor current_ms={wheel_cursor_ms}, wall-clock \
-             now_ms={wall_clock_ms} (delta={delta}ms)",
-            delta = wall_clock_ms.abs_diff(wheel_cursor_ms),
-        );
-    }
-}
-
 /// Cancel a periodic timer previously started by [`hew_actor_schedule_periodic`].
 ///
 /// # Safety
@@ -772,106 +555,10 @@ pub unsafe extern "C" fn hew_actor_cancel_periodic(handle: *mut c_void) {
     unregister_timer(actor, addr);
 }
 
-/// Mutex that serialises every test touching the process-wide ticker globals
-/// (`GLOBAL_WHEEL`, `TICKER_RUNNING`, `TICKER_STOP`).  Declared at module
-/// level so that coupled tests in other modules (e.g. `scheduler`) can import
-/// and acquire it without duplicating the guard.
+/// Serializes tests that create, tick or free the process wheel. Declared at
+/// module level so coupled tests in other modules can acquire the same guard.
 #[cfg(test)]
 pub(crate) static TICKER_TEST_MUTEX: Mutex<()> = Mutex::new(());
-
-#[cfg(test)]
-thread_local! {
-    static FAIL_TICKER_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-fn should_fail_ticker_spawn() -> bool {
-    FAIL_TICKER_SPAWN.with(std::cell::Cell::get)
-}
-
-fn report_ticker_join_result(join_result: std::thread::Result<()>) {
-    if let Err(panic_payload) = join_result {
-        let message = format!(
-            "hew timer ticker panicked during shutdown: {}",
-            crate::util::take_panic_payload_message(panic_payload)
-        );
-        crate::set_last_error(message.clone());
-        eprintln!("hew: {message}");
-    }
-}
-
-/// Gracefully stop the ticker thread.
-///
-/// Sets the stop flag, waits for the thread to join, then resets the flag
-/// for potential re-initialisation. Safe to call multiple times.
-pub(crate) fn shutdown_ticker() {
-    // Debug-only: `report_ticker_join_result` below only fires on a *panic*
-    // observed at join time. A ticker thread that instead returned early —
-    // an unanticipated exit from its loop, distinct from a panic — is
-    // otherwise invisible: it is *only* ever supposed to finish after this
-    // function sets `TICKER_STOP` and notifies it, so a handle that is
-    // already finished before that happens is a bug on its own, independent
-    // of whether any periodic timer registration is still live at this
-    // exact instant (actor drain commonly cancels/unregisters timers ahead
-    // of this call in the healthy path, so registration count alone is not
-    // a reliable signal here — an already-dead handle is). This converts
-    // the exact silent-zero-tick shape under investigation into a loud
-    // diagnostic instead of a clean exit. Detect this *before* this
-    // function's own stop request makes a finished handle look expected.
-    #[cfg(debug_assertions)]
-    {
-        let already_finished = TICKER_HANDLE.get().is_some_and(|handle_mutex| {
-            handle_mutex
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .is_some_and(JoinHandle::is_finished)
-        });
-        if already_finished {
-            let live_registrations = registered_periodic_timer_count();
-            // SAFETY: the wheel is still live; shutdown_ticker runs before
-            // hew_periodic_shutdown frees it. hew_now_ms has no
-            // preconditions on native targets.
-            let (wheel_cursor_ms, wall_clock_ms) = unsafe {
-                (
-                    timer_wheel_cursor_ms(global_wheel()),
-                    crate::clock::hew_now_ms(),
-                )
-            };
-            eprintln!(
-                "hew: periodic timer ticker thread exited before shutdown was requested \
-                 ({live_registrations} periodic timer(s) still registered at this point; any \
-                 timer already unregistered by then — e.g. via actor drain — could still have \
-                 missed every tick before that); wheel cursor current_ms={wheel_cursor_ms}, \
-                 wall-clock now_ms={wall_clock_ms} (delta={delta}ms)",
-                delta = wall_clock_ms.abs_diff(wheel_cursor_ms),
-            );
-        }
-    }
-
-    // Set the stop flag first so the ticker exits after its next wakeup.
-    TICKER_STOP.store(true, Ordering::Release);
-
-    // Signal the condvar so a parked ticker wakes immediately instead of
-    // sleeping until its next deadline (or indefinitely on an empty wheel).
-    ticker_park_notify();
-
-    // Take the handle without holding its mutex while joining or reporting.
-    let handle = TICKER_HANDLE.get().and_then(|handle_mutex| {
-        handle_mutex
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    });
-    if let Some(handle) = handle {
-        let join_result = handle.join();
-        report_ticker_join_result(join_result);
-    }
-
-    // Reset flags for potential re-initialisation
-    TICKER_RUNNING.store(false, Ordering::SeqCst);
-    TICKER_STOP.store(false, Ordering::SeqCst);
-}
 
 /// Tear down the global periodic timer wheel.
 ///
@@ -884,42 +571,42 @@ pub(crate) fn shutdown_ticker() {
 /// this.
 #[no_mangle]
 pub unsafe extern "C" fn hew_periodic_shutdown() {
-    // First, shutdown the ticker thread to prevent access to the wheel. After
-    // this returns no callback is executing, so the only remaining strong
-    // references to any PeriodicCtx are the registry references and the wheel's
-    // pending one-shot references.
-    shutdown_ticker();
+    // Stop the reactor, which ticks the wheel. After this returns no callback
+    // is executing, so the only remaining strong references to any
+    // PeriodicCtx are the registry references and the wheel's pending
+    // one-shot references.
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::reactor::reactor_shutdown();
 
     // Drain every tracked periodic ctx before freeing the wheel. Without this
     // the wheel would free entry nodes but not their `data` references.
     quiesce_periodic_timers();
 
-    GLOBAL_WHEEL.access(|guard| {
-        let tw = guard.0;
-        if !tw.is_null() {
-            guard.0 = ptr::null_mut();
-            // SAFETY: tw was allocated by hew_timer_wheel_new, and the ticker
-            // thread has been stopped.
-            unsafe {
-                hew_timer_wheel_free(tw);
-            }
+    let _init = WHEEL_INIT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tw = GLOBAL_WHEEL.swap(ptr::null_mut(), Ordering::AcqRel);
+    if !tw.is_null() {
+        // SAFETY: tw was allocated by hew_timer_wheel_new, and the reactor
+        // that ticks it has been joined.
+        unsafe {
+            hew_timer_wheel_free(tw);
         }
-    });
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::internal::types::HewActorState;
-    use crate::timer_wheel::hew_timer_wheel_schedule;
-    use std::ffi::CStr;
-    use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32};
+    use crate::timer_wheel::{
+        hew_timer_wheel_new, hew_timer_wheel_next_deadline_ms, hew_timer_wheel_schedule,
+    };
+    use std::sync::atomic::{AtomicI32, AtomicU32};
     use std::time::{Duration, Instant};
 
-    // TICKER_TEST_MUTEX is declared at module level (pub(crate)) so that
-    // TICKER_TEST_MUTEX is declared at module level (pub(crate)) and
-    // brought in by `use super::*` above; it is also imported directly by
-    // coupled tests in other modules (e.g. scheduler).
+    // TICKER_TEST_MUTEX is declared at module level (pub(crate)) and brought
+    // in by `use super::*` above; coupled tests in other modules import it.
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -1074,192 +761,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_ticker_shutdown_positive() {
-        let _guard = TICKER_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Reset counter
-        TEST_COUNTER.store(0, Ordering::SeqCst);
-
-        // Get the global timer wheel which will start the ticker
-        let tw = global_wheel();
-        assert!(!tw.is_null());
-
-        // Schedule a timer to verify the ticker is working
-        // SAFETY: tw is a valid timer wheel pointer from global_wheel().
-        unsafe {
-            hew_timer_wheel_schedule(tw, 5, test_timer_cb, ptr::null_mut());
-        }
-
-        // Poll until the timer fires (or give up after 500 ms).  A fixed
-        // sleep is fragile under parallel-test or heavy-load conditions.
-        let deadline = Instant::now() + Duration::from_millis(500);
+    fn wait_for_counter(limit: Duration, context: &str) {
+        let deadline = Instant::now() + limit;
         while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "Timer did not fire within 500 ms"
-            );
+            assert!(Instant::now() < deadline, "{context}");
             std::thread::sleep(Duration::from_millis(2));
         }
-
-        // Now shutdown the ticker and measure how long it takes
-        let start_time = Instant::now();
-        shutdown_ticker();
-        let shutdown_duration = start_time.elapsed();
-
-        // Should join within 500ms as required
-        assert!(
-            shutdown_duration < Duration::from_millis(500),
-            "Ticker thread should join within 500ms, took {shutdown_duration:?}"
-        );
     }
 
+    /// The reactor ticks the process wheel, joins promptly on shutdown and
+    /// starts again for the next wheel user.
     #[test]
-    fn test_ticker_shutdown_negative() {
+    fn reactor_ticks_the_process_wheel_and_restarts_after_shutdown() {
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Test calling shutdown when no ticker was started
-        // This should not panic or hang
-        shutdown_ticker(); // Should be safe to call multiple times
-        shutdown_ticker(); // Should be safe to call again
-    }
-
-    #[test]
-    fn ticker_shutdown_reports_worker_panic() {
-        let _guard = TICKER_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::hew_clear_error();
-
-        let handle_mutex = TICKER_HANDLE.get_or_init(|| Mutex::new(None));
-        *handle_mutex
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(std::thread::spawn(|| panic!("ticker intentional panic")));
-        TICKER_RUNNING.store(true, Ordering::SeqCst);
-
-        shutdown_ticker();
-
-        let error_ptr = crate::hew_last_error();
-        assert!(
-            !error_ptr.is_null(),
-            "joining a panicked ticker must record a diagnostic"
-        );
-        // SAFETY: shutdown_ticker populated this thread's last-error slot.
-        let error = unsafe {
-            CStr::from_ptr(error_ptr)
-                .to_str()
-                .expect("last error should be utf-8")
-        };
-        assert!(
-            error.contains("hew timer ticker panicked during shutdown"),
-            "unexpected last error: {error}"
-        );
-        assert!(
-            error.contains("ticker intentional panic"),
-            "panic payload must be included in the diagnostic: {error}"
-        );
-    }
-
-    #[test]
-    fn test_ticker_shutdown_sabotage() {
-        let _guard = TICKER_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Reset counter
-        TEST_COUNTER.store(0, Ordering::SeqCst);
-
-        // Get the global timer wheel
-        let tw = global_wheel();
-
-        // Schedule a timer
-        // SAFETY: tw is a valid timer wheel pointer from global_wheel().
-        unsafe {
-            hew_timer_wheel_schedule(tw, 5, test_timer_cb, ptr::null_mut());
-        }
-
-        // Poll until the timer fires (or give up after 500 ms).
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "Timer did not fire within 500 ms"
+        for round in 0..2 {
+            TEST_COUNTER.store(0, Ordering::SeqCst);
+            let tw = global_wheel();
+            assert!(!tw.is_null());
+            // SAFETY: tw is a valid timer wheel pointer from global_wheel().
+            unsafe { hew_timer_wheel_schedule(tw, 5, test_timer_cb, ptr::null_mut()) };
+            wait_for_counter(
+                Duration::from_millis(500),
+                "timer did not fire within 500 ms",
             );
-            std::thread::sleep(Duration::from_millis(2));
-        }
-
-        // Now temporarily disable the stop check to test that our test detects the UAF scenario
-        // This is commented out because it would break the fix, but this test structure
-        // demonstrates that the fix is necessary.
-
-        // TO TEST: Comment out the TICKER_STOP.load checks in the ticker loop,
-        // then run this test. It should timeout/fail on the join, proving the test
-        // detects the actual UAF scenario.
-
-        let start_time = Instant::now();
-        shutdown_ticker();
-        let shutdown_duration = start_time.elapsed();
-
-        // With the fix, this should complete quickly
-        assert!(
-            shutdown_duration < Duration::from_millis(500),
-            "With the fix, ticker should join within 500ms, took {shutdown_duration:?}"
-        );
-    }
-
-    #[test]
-    fn test_ticker_restart_after_shutdown() {
-        let _guard = TICKER_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Test that we can restart the ticker after shutdown
-        TEST_COUNTER.store(0, Ordering::SeqCst);
-
-        // Start ticker, then shutdown
-        let tw1 = global_wheel();
-        // SAFETY: tw1 is a valid timer wheel pointer from global_wheel().
-        unsafe {
-            hew_timer_wheel_schedule(tw1, 10, test_timer_cb, ptr::null_mut());
-        }
-
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
+            let started = Instant::now();
+            // SAFETY: the test owns the process wheel under TICKER_TEST_MUTEX.
+            unsafe { hew_periodic_shutdown() };
             assert!(
-                Instant::now() < deadline,
-                "First timer did not fire within 500 ms"
+                started.elapsed() < Duration::from_millis(500),
+                "round {round}: reactor should join promptly"
             );
-            std::thread::sleep(Duration::from_millis(2));
         }
-        shutdown_ticker();
-
-        let count_after_first = TEST_COUNTER.load(Ordering::SeqCst);
-        assert!(count_after_first > 0);
-
-        // Reset and start again - this should work due to flag reset
-        TEST_COUNTER.store(0, Ordering::SeqCst);
-        let tw2 = global_wheel();
-        // SAFETY: tw2 is a valid timer wheel pointer from global_wheel().
-        unsafe {
-            hew_timer_wheel_schedule(tw2, 10, test_timer_cb, ptr::null_mut());
-        }
-
-        let deadline2 = Instant::now() + Duration::from_millis(500);
-        while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
-            assert!(
-                Instant::now() < deadline2,
-                "Ticker should restart after shutdown — timer did not fire within 500 ms"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
-
-        // Cleanup
-        shutdown_ticker();
     }
 
     #[test]
@@ -1343,7 +877,7 @@ mod tests {
         // callback fires into freed memory.
         std::thread::sleep(Duration::from_millis(200));
 
-        shutdown_ticker();
+        crate::reactor::reactor_shutdown();
     }
 
     #[test]
@@ -1367,8 +901,8 @@ mod tests {
 
         assert_eq!(timer_count_for_actor(actor_ptr), 0);
         assert!(
-            TICKER_RUNNING.load(Ordering::Acquire),
-            "shutdown quiescence must leave the shared sleep-timer ticker alive"
+            crate::reactor::reactor_running(),
+            "shutdown quiescence must leave the reactor that ticks sleeps alive"
         );
         // SAFETY: actor_ptr is still live, but the shutdown admission gate must
         // reject a timer that races after periodic quiescence.
@@ -1509,53 +1043,7 @@ mod tests {
         assert_eq!(timer_count_for_actor(actor_ptr), 0);
     }
 
-    #[test]
-    fn schedule_periodic_spawn_failure_returns_null_without_leaking_wheel() {
-        let _guard = TICKER_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // SAFETY: test owns teardown of the process-wide wheel state.
-        unsafe {
-            hew_periodic_shutdown();
-        }
-        reset_periodic_admission();
-        crate::hew_clear_error();
-
-        FAIL_TICKER_SPAWN.with(|fail| fail.set(true));
-        let mut actor = create_test_actor(50_300);
-        let actor_ptr = &raw mut actor;
-        // SAFETY: actor_ptr points to a valid test actor and interval is non-zero.
-        let handle = unsafe { hew_actor_schedule_periodic(actor_ptr, 7, 10) };
-        FAIL_TICKER_SPAWN.with(|fail| fail.set(false));
-
-        assert!(handle.is_null(), "spawn failure should fail closed");
-        assert_eq!(
-            timer_count_for_actor(actor_ptr),
-            0,
-            "failed start must not register a periodic timer"
-        );
-        assert!(
-            !TICKER_RUNNING.load(Ordering::SeqCst),
-            "ticker should not remain marked running after spawn failure"
-        );
-        let wheel_is_null = GLOBAL_WHEEL.access(|guard| guard.0.is_null());
-        assert!(
-            wheel_is_null,
-            "newly created wheel should be freed when ticker spawn fails"
-        );
-
-        // SAFETY: hew_last_error returns a valid C string pointer for the current thread.
-        let err = unsafe { CStr::from_ptr(crate::hew_last_error()) }
-            .to_str()
-            .expect("last error should be utf-8");
-        assert!(
-            err.contains("failed to spawn timer ticker thread"),
-            "unexpected last error: {err}"
-        );
-    }
-
-    /// When the wheel is empty the ticker parks indefinitely.  Scheduling a
+    /// When the wheel is empty the reactor waits with no timeout. Scheduling a
     /// timer must wake it and the timer must fire within a tight window.
     ///
     /// Verifies: parked-empty → schedule fires on time.
@@ -1574,7 +1062,7 @@ mod tests {
         let tw = global_wheel();
         assert!(!tw.is_null(), "global_wheel must succeed");
 
-        // Allow the ticker to settle into its indefinite park on the empty wheel.
+        // Allow the reactor to settle into its unbounded wait on the empty wheel.
         std::thread::sleep(Duration::from_millis(20));
 
         // Schedule a ~50 ms timer while the ticker is parked indefinitely.
@@ -1600,10 +1088,10 @@ mod tests {
             "timer fired too late ({elapsed:?}); insert-wakeup may not be working"
         );
 
-        shutdown_ticker();
+        crate::reactor::reactor_shutdown();
     }
 
-    /// While the ticker is parked waiting for a far deadline, inserting a
+    /// While the reactor waits for a far deadline, inserting a
     /// nearer timer must cause the nearer one to fire on time.
     ///
     /// Verifies: sooner-insert-while-parked wakes the ticker and the near timer
@@ -1621,15 +1109,15 @@ mod tests {
         let tw = global_wheel();
         assert!(!tw.is_null(), "global_wheel must succeed");
 
-        // Schedule a far timer (10 s) — the ticker parks for ~10 s.
+        // Schedule a far timer (10 s): the reactor waits for ~10 s.
         // SAFETY: tw is valid.
         unsafe { hew_timer_wheel_schedule(tw, 10_000, test_timer_cb, ptr::null_mut()) };
 
-        // Let the ticker pick up the far deadline and park.
+        // Let the reactor pick up the far deadline and wait.
         std::thread::sleep(Duration::from_millis(20));
 
-        // Now insert a near timer (50 ms).  The insert-notify must wake the
-        // ticker so it re-parks for 50 ms, not 10 s.
+        // Now insert a near timer (50 ms). The insert hook must wake the
+        // reactor so it waits 50 ms, not 10 s.
         let t0 = Instant::now();
         // SAFETY: tw is valid.
         unsafe { hew_timer_wheel_schedule(tw, 50, test_timer_cb, ptr::null_mut()) };
@@ -1649,50 +1137,31 @@ mod tests {
             "near timer fired too late ({elapsed:?}); sooner-insert wakeup may not be working"
         );
 
-        shutdown_ticker();
+        crate::reactor::reactor_shutdown();
     }
 
-    /// The ticker must not spin when the wheel is empty.  We verify this by
-    /// checking that no tick-driven callback fires during a quiet period — and
-    /// by observing that the condvar `notified` flag stays false (i.e. the
-    /// ticker is not being re-woken repeatedly by its own activity).
-    ///
-    /// Verifies: no idle CPU wakeups when the wheel is empty.
+    /// The reactor must not spin when the wheel is empty: with nothing to
+    /// wait for, a quiet period passes without a single loop turn.
     #[test]
     fn tickless_no_idle_wakeup_when_wheel_empty() {
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        TEST_COUNTER.store(0, Ordering::SeqCst);
-
+        let _reactor = crate::reactor::REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: test owns teardown of the process-wide timer state via TICKER_TEST_MUTEX.
         unsafe { hew_periodic_shutdown() };
         let tw = global_wheel();
         assert!(!tw.is_null(), "global_wheel must succeed");
-
-        // Let the ticker settle.
         std::thread::sleep(Duration::from_millis(20));
-
-        // The wheel is empty.  Confirm the notified flag is false — the ticker
-        // has not re-signalled itself (which would indicate a spin).
-        let park = ticker_park();
-        let notified = *park
-            .mu
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(
-            !notified,
-            "ticker_park notified flag should be false when wheel is empty (ticker is parked)"
-        );
-
-        // No callback should have fired.
+        let turns = crate::reactor::loop_turns_for_test();
+        std::thread::sleep(Duration::from_millis(100));
         assert_eq!(
-            TEST_COUNTER.load(Ordering::SeqCst),
-            0,
-            "no timer was scheduled; no callback should have fired"
+            crate::reactor::loop_turns_for_test(),
+            turns,
+            "an empty wheel and no I/O must leave the reactor asleep"
         );
-
-        shutdown_ticker();
+        crate::reactor::reactor_shutdown();
     }
 }

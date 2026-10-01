@@ -257,6 +257,6 @@ fn test_send_error_display_names_the_refusal() {
     // `Connection.send` answers with the one `SendError` the whole pipe family
     // uses; a full send buffer past its deadline is `Full`, a gone peer is
     // `Closed`, and anything else traps rather than returning a variant.
-    assert(to_string(SendError.Full) == "the destination mailbox is full");
-    assert(to_string(SendError.Closed) == "the sink or connection is closed");
+    assert(to_string(SendError.Full) == "Full: the destination mailbox is full");
+    assert(to_string(SendError.Closed) == "Closed: the sink or connection is closed");
 }

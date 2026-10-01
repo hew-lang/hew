@@ -988,3 +988,99 @@ fn ok_coerced_tails_keep_the_written_callable_contract() {
         ]
     );
 }
+
+const DYN_TICKER: &str = "trait Ticker {\n    fn tick(self) -> i64;\n}\n\ntype Clock {\n    n: i64;\n}\n\nimpl Ticker for Clock {\n    fn tick(self) -> i64 {\n        self.n\n    }\n}\n\nfn run(t: dyn Ticker) {\n    defer {\n        println(t.tick());\n    }\n    println(t.tick());\n}\n\nfn main() {\n    run(Clock { n: 1 });\n}\n";
+
+#[test]
+fn dyn_slot_effect_follows_the_trait_method_declaration() {
+    // A plain trait method is a written boundary that never suspends, so a
+    // dispatch through it may run in a deferred body (A421).
+    assert_call_effect(DYN_TICKER, "t.tick()", SuspensionEffect::Never);
+    let source = "enum E { Bad; }\nimpl Display for E { fn fmt(self) -> string { \"Bad\" } }\nimpl Error for E {}\nfn run(e: dyn Error) { defer { println(e.fmt()); } println(\"body\"); }\nfn main() { let e: dyn Error = E.Bad; run(e); }\n";
+    assert_call_effect(source, "e.fmt()", SuspensionEffect::Never);
+
+    // A `fn[suspends]` slot may suspend, so a deferred dispatch is refused.
+    let suspends = DYN_TICKER.replace("fn tick(self) -> i64;", "fn[suspends] tick(self) -> i64;");
+    let output = check_source(&suspends);
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("a deferred body cannot suspend: `tick(...)`")),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn a_suspending_impl_cannot_fill_a_plain_dyn_slot() {
+    let suspending_impl = DYN_TICKER.replace(
+        "    fn tick(self) -> i64 {\n        self.n",
+        "    fn tick(self) -> i64 {\n        sleep(1ms);\n        self.n",
+    );
+    let output = check_source(&suspending_impl);
+    let start = suspending_impl.rfind("Clock { n: 1 }").unwrap();
+    assert_eq!(
+        output
+            .errors
+            .iter()
+            .map(|error| (error.span.clone(), error.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            start..start + "Clock { n: 1 }".len(),
+            "E_DYN_SLOT_SUSPENDS: function `Clock::<impl Ticker for Clock>::tick` suspends via \
+             `sleep(...)`, so it cannot fill `Ticker::tick` in `dyn Ticker`; that trait method \
+             never suspends unless it is declared `fn[suspends]`"
+        )]
+    );
+
+    // Declared `fn[suspends]`, the slot admits the impl; only the deferred
+    // dispatch is refused.
+    let declared = suspending_impl
+        .replace("fn tick(self) -> i64;", "fn[suspends] tick(self) -> i64;")
+        .replace("    defer {\n        println(t.tick());\n    }\n", "");
+    let output = check_source(&declared);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        call_effects(&output, &declared, "t.tick()"),
+        vec![SuspensionEffect::MaySuspend]
+    );
+}
+
+#[test]
+fn the_trait_object_layout_publishes_closure_slots_and_effects() {
+    let output = check_source(&DYN_TICKER.replace(
+        "fn tick(self) -> i64;",
+        "fn tick(self) -> i64;\n    fn[suspends] wait(var self);",
+    ));
+    let layouts: Vec<_> = output.trait_object_layouts.values().collect();
+    assert_eq!(layouts.len(), 1, "{layouts:?}");
+    let layout = layouts[0];
+    assert_eq!(layout.closure.len(), 1);
+    let shape: Vec<_> = layout
+        .slots
+        .iter()
+        .map(|slot| {
+            (
+                slot.receiver,
+                slot.effect,
+                slot.declaring_trait == layout.closure[0],
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (
+                crate::check::DynReceiver::Borrow,
+                crate::check::SlotEffect::Plain,
+                true
+            ),
+            (
+                crate::check::DynReceiver::BorrowMut,
+                crate::check::SlotEffect::Suspends,
+                true
+            ),
+        ]
+    );
+    assert_eq!(layout.slot_of(layout.slots[1].method), Some(1));
+}

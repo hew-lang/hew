@@ -35,11 +35,13 @@ pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
 pub mod dispatch_table;
+pub use dyn_layout::{DynReceiver, DynSlot, SlotEffect, TraitObjectLayout};
 mod indirect_candidates;
 pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
+mod dyn_layout;
 pub mod effects;
 mod exhaustiveness;
 mod expressions;
@@ -97,8 +99,7 @@ pub use self::types::{
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
     TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
     VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
-    WireVariantLayout,
+    WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -701,15 +702,7 @@ impl Checker {
                     .map(|alias| (alias.declaration, alias.clone()))
                     .collect(),
             )
-            .with_wire_types(
-                self.wire_layouts
-                    .keys()
-                    .filter_map(|name| {
-                        self.lookup_declaration(name)
-                            .map(crate::NominalId::of_declaration)
-                    })
-                    .collect(),
-            )
+            .with_serial_layouts(self.serial_layouts.clone())
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
                 self.trait_impl_method_binders.clone(),
@@ -2627,7 +2620,7 @@ impl Checker {
         // The descriptor maps each `receive fn` to its stable, hash-derived
         // `msg_id` (`SipHash-1-3("Actor::handler")`). Body checking needs this
         // map available because the active-mode `conn.attach(this)` coercion
-        // (`Actor`'s own actor-handle type → `ConnectionHandler`'s) consults
+        // (`Actor`'s own actor-handle type → `TlsHandler`'s) consults
         // `actor_satisfies_handler_trait`, which reads
         // `self.actor_protocol_descriptors` to confirm an actor's `receive fn`s
         // structurally satisfy the handler trait. Building it after body
@@ -2910,6 +2903,7 @@ impl Checker {
                 })
                 .collect();
 
+        let trait_object_layouts = self.finalize_trait_object_layouts();
         // Also resolve inferred call type args so the enrichment layer can
         // fill in explicit type annotations for the codegen.
         let mut resolved_call_type_args: HashMap<SpanKey, Vec<Ty>> =
@@ -3367,7 +3361,6 @@ impl Checker {
             pool_accessor_sites: std::mem::take(&mut self.pool_accessor_sites),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
-            wire_layouts: std::mem::take(&mut self.wire_layouts),
             // W4.001 Stage A: substrate-only. Field is empty in Stage A
             // (no production populator); Stage B's resolver fills it.
             // See `check::dispatch` module docs and
@@ -3429,6 +3422,7 @@ impl Checker {
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             error_conversions: std::mem::take(&mut self.error_conversions),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
+            trait_object_layouts,
             closure_capture_facts: resolved_closure_capture_facts,
             closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),
             actor_protocol_descriptors,
@@ -4385,7 +4379,7 @@ impl Checker {
                     );
                 }
             }
-            Expr::Await(inner) | Expr::AwaitRestart(inner) => {
+            Expr::Await(inner) => {
                 self.classify_escapes_in_expr(&inner.0, &inner.1, in_fork, AnonContext::Other);
             }
             Expr::InterpolatedString(parts) => {
@@ -4814,7 +4808,7 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&boxed.0, &boxed.1, out);
             }
         }
-        Expr::Await(inner) | Expr::AwaitRestart(inner) => {
+        Expr::Await(inner) => {
             collect_lambda_spans_in_expr(&inner.0, &inner.1, out);
         }
         Expr::InterpolatedString(parts) => {

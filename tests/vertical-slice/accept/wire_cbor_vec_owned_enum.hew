@@ -6,8 +6,8 @@
 // count of `Full` payloads) proves the array round-trips with the right shape.
 #[wire]
 enum Payload {
-    Empty;
-    Full(string);
+    Empty @0;
+    Full(string) @1;
 }
 
 #[wire]

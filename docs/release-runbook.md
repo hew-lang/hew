@@ -396,7 +396,7 @@ This triggers `.github/workflows/release.yml`, which:
 - Creates a GitHub Release with checksums and the curated notes from
   `docs/releases/<tag>.md`
 - Updates the Homebrew tap (if HOMEBREW_TAP_TOKEN is configured)
-- Publishes the VS Code extension (if VSCE_PAT is configured)
+- The VS Code extension publishes from its own repository on a version tag
 
 macOS release notes:
 

@@ -449,7 +449,7 @@ impl Checker {
     /// Why the checker canonicalizes here instead of trusting a context-free
     /// suffix compare (issue #2651): a bare name and a module-qualified name
     /// sharing a final segment may name the SAME definition (a prelude stdlib
-    /// type reached bare — `MonitorError` ↔ `link_monitor.MonitorError` — or a
+    /// type reached bare — `MonitorRef` ↔ `link_monitor.MonitorRef` — or a
     /// single-publisher import) or DIFFERENT ones (a root-local `Widget` vs an
     /// imported `widgeti8.Widget`). Only the checker's resolution tables can
     /// tell them apart; mapping both compared names to this identity before an
@@ -564,7 +564,7 @@ impl Checker {
         // name that arrived from another module's frame — e.g. a callee's return
         // type `Result<Vec<Box>, _>` spelled bare in the defining module
         // `nestbox`, compared in the importer against `nestbox.Box`, or a prelude
-        // stdlib type reached bare (`MonitorError` → `link_monitor.MonitorError`).
+        // stdlib type reached bare (`MonitorRef` → `link_monitor.MonitorRef`).
         // Ambiguous (>1 owner) or none → leave bare and let the exact / builtin
         // compare fail closed (a genuinely ambiguous bare reference is a
         // resolution error, not something to silently pick a winner for).
@@ -1211,15 +1211,27 @@ impl Checker {
             }
         }
 
-        let trait_id = self.trait_key_id(&trait_lookup_key);
-        if let (Some(site), Some(id)) = (self.scope_site(), trait_id) {
-            let _ = self.scopes.resolve_prefix(
+        let mut trait_id = self.trait_key_id(&trait_lookup_key);
+        if let Some(site) = self.scope_site() {
+            let resolved = self.scopes.resolve(
                 &self.env,
                 site,
                 super::scope::Namespace::Type,
                 &bound.path.segments,
             );
-            if let Some((_, name_span)) = bound.path.segments.last() {
+            // A compiler predicate (`Send`) has no trait declaration; its
+            // identity is the sourceless predicate row the scope binds.
+            if trait_id.is_none() {
+                trait_id = match resolved {
+                    Ok(super::scope::Resolution::Def(id))
+                        if crate::DefTable::as_predicate(id).is_some() =>
+                    {
+                        Some(id)
+                    }
+                    _ => None,
+                };
+            }
+            if let (Some(id), Some((_, name_span))) = (trait_id, bound.path.segments.last()) {
                 self.scopes
                     .record_resolution(site, name_span, super::scope::Resolution::Def(id));
             }
@@ -2640,7 +2652,7 @@ impl Checker {
     ///
     /// A handler-style trait (its methods take no `self` receiver, so an actor
     /// satisfies it structurally through its `receive fn`s) names an actor the
-    /// same way: `attach(handler: ConnectionHandler)` takes the handle of any
+    /// same way: `attach(handler: TlsHandler)` takes the handle of any
     /// actor that satisfies the trait.
     pub(super) fn canonicalize_actor_handles(&self, ty: &mut Ty) {
         match ty {
@@ -3230,10 +3242,11 @@ impl Checker {
                 Ty::Error
             }
             TypeExpr::TraitObject(bounds) => {
-                let traits = bounds
+                let mut traits: Vec<_> = bounds
                     .iter()
                     .map(|bound| self.resolve_trait_object_bound(bound, &te.1, hole_vars, context))
                     .collect();
+                crate::ty::TraitObjectBound::sort_canonical(&mut traits);
                 Ty::TraitObject { traits }
             }
             TypeExpr::Infer => {

@@ -619,7 +619,7 @@ fn rejected_completion_requests_keep_owned_payloads_for_retry_and_redirection() 
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/actor-policy-reject.hew"
     ));
-    assert_eq!(stdout(&trace), "submitted: accepted\nrejected: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n");
+    assert_eq!(stdout(&trace), "submitted: accepted\nrejected: Full: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n");
 }
 
 #[test]

@@ -384,12 +384,15 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
                 });
             }
 
-            // Compare as sets: for each bound in a, find a matching bound in b by trait_name
+            // Compare as sets: for each bound in a, find the bound in b naming
+            // the same trait.
             let mut matched = vec![false; b_traits.len()];
             for a_bound in a_traits {
-                let Some(idx) = b_traits.iter().enumerate().position(|(i, b_bound)| {
-                    !matched[i] && b_bound.trait_name == a_bound.trait_name
-                }) else {
+                let Some(idx) = b_traits
+                    .iter()
+                    .enumerate()
+                    .position(|(i, b_bound)| !matched[i] && b_bound.trait_id == a_bound.trait_id)
+                else {
                     return Err(UnifyError::Mismatch {
                         expected: a.clone(),
                         actual: b.clone(),

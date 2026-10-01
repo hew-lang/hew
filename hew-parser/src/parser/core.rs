@@ -330,7 +330,10 @@ impl<'src> Parser<'src> {
     }
 
     /// Ordinary expressions rooted at a binding named `error` take priority
-    /// over the contextual failure-return marker, in either return position.
+    /// over the contextual failure-return marker, in either return position,
+    /// except that `return error .Variant` names a variant of the function's
+    /// error type. `return error.field`, written attached, is refused: after
+    /// `return`, `error` begins an error return.
     pub(crate) fn eat_error_return_marker(&mut self) -> bool {
         if !matches!(self.peek(), Some(Token::Identifier("error"))) {
             return false;
@@ -338,6 +341,22 @@ impl<'src> Parser<'src> {
         let Some(next) = self.peek_at(self.pos + 1) else {
             return false;
         };
+        if matches!(next, Token::Dot) {
+            let marker = self.peek_span();
+            let dot = self.tokens[self.pos + 1].1.clone();
+            if marker.end == dot.start {
+                self.error_at_with_hint(
+                    "`return error.` reads a binding named `error`, but after `return` the word \
+                     `error` begins an error return"
+                        .to_string(),
+                    marker.start..dot.end,
+                    "rename the binding, or write `return error .Variant(..)` for a variant of \
+                     the error type",
+                );
+            }
+            self.advance();
+            return true;
+        }
         if infix_bp(next).is_some()
             || matches!(
                 next,
@@ -347,7 +366,6 @@ impl<'src> Parser<'src> {
                     | Token::RightBracket
                     | Token::Comma
                     | Token::Else
-                    | Token::Dot
                     | Token::LeftParen
                     | Token::LeftBracket
                     | Token::Question

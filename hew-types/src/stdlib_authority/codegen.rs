@@ -42,36 +42,22 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "LookupError",
-        variant_count: 8,
-        order_fingerprint: 0x7ab9_6324_a0dd_7d1f,
+        variant_count: 7,
+        order_fingerprint: 0x66e4_5f01_5f05_d553,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "SendError",
-        variant_count: 11,
-        order_fingerprint: 0x3209_3963_fa63_ec71,
+        variant_count: 10,
+        order_fingerprint: 0x6f31_303d_4437_3a86,
         suppress_from_sandbox_emit: false,
-    },
-    BuiltinEnumAbi {
-        module: "std.builtins",
-        name: "TimeoutError",
-        variant_count: 1,
-        order_fingerprint: 0xe9ae_0b1c_348b_0715,
-        suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "LinkError",
         variant_count: 3,
         order_fingerprint: 0xd92a_6973_af1e_05dc,
-        suppress_from_sandbox_emit: true,
-    },
-    BuiltinEnumAbi {
-        module: "std.link_monitor",
-        name: "MonitorError",
-        variant_count: 11,
-        order_fingerprint: 0xba69_94e8_654d_0ac6,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
@@ -204,8 +190,7 @@ pub fn derive_monitor_ref_projection(
                     if source.module == "std.link_monitor"
                         && matches!(
                             decl.name.name.as_str(),
-                            "MonitorError"
-                                | "PartitionPolicy"
+                            "PartitionPolicy"
                                 | "MonitorId"
                                 | "DownTarget"
                                 | "DownReason"
@@ -252,7 +237,6 @@ pub fn derive_monitor_ref_projection(
 fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
     for expected in [
         "LinkError",
-        "MonitorError",
         "PartitionPolicy",
         "MonitorId",
         "DownTarget",
@@ -377,11 +361,6 @@ mod tests {
         for expected in [
             ("std.builtins", "LookupError", "std.builtins.LookupError"),
             ("std.builtins", "LinkError", "std.builtins.LinkError"),
-            (
-                "std.link_monitor",
-                "MonitorError",
-                "std.link_monitor.MonitorError",
-            ),
             ("std.failure", "CrashAction", "std.failure.CrashAction"),
             ("std.failure", "CrashKind", "std.failure.CrashKind"),
         ] {

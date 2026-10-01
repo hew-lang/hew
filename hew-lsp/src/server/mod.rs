@@ -6859,14 +6859,12 @@ fn label(colour: Colour) -> string {
     //
     // ─── Fixture count notes ─────────────────────────────────────────────
     //
-    //  Total v05_*.hew fixtures: 31
+    //  Total v05 fixtures: 30
     //    accepted:                          28 (all have passing native LSP tests;
     //                                          v05_spawn_lambda_actor re-enabled)
     //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
-    //    known-rejected:                     0
     //    pending-upstream-substrate:         1 (v05_record_tuple_literal)
-    //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
-    //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==8 in v05_wasm_coverage.rs.
+    //  WASM fixture table covers 29 (all except v05_cross_module_machine_main, tested separately).
 
     fn v05_fixture_path(name: &str) -> String {
         format!("file:///v05/{name}.hew")

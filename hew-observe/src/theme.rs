@@ -45,13 +45,6 @@ pub const TEXT_DIM: Color = Color::DarkGray;
 /// Memory-related metric values.
 pub const METRIC_MEMORY: Color = Color::Magenta;
 
-/// Border / separator lines.
-#[expect(
-    dead_code,
-    reason = "Available for future use in custom border styling"
-)]
-pub const BORDER: Color = Color::DarkGray;
-
 /// Table / section header background.
 pub const HEADER_BG: Color = Color::Black;
 
@@ -60,13 +53,6 @@ pub const HEADER_FG: Color = Color::Yellow;
 
 /// Selected-row background.
 pub const SELECTED_BG: Color = Color::DarkGray;
-
-/// Selected-row foreground.
-#[expect(
-    dead_code,
-    reason = "Available for future use in selected-row text styling"
-)]
-pub const SELECTED_FG: Color = Color::White;
 
 /// Keyboard shortcut foreground.
 pub const KEY_FG: Color = Color::Cyan;

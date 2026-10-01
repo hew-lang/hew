@@ -337,77 +337,6 @@ impl MembershipCallbackBinding {
     }
 }
 
-// WHY: MembershipCallbackGeneration and its accessors were consumed only by
-// remote_sup.rs (now deleted), so this epoch machinery is currently dead —
-// `hew_cluster_replace_membership_callback` only writes the binding and does
-// not exercise generation()/in_flight()/invoke(). Retained under
-// #[allow(dead_code)] as the membership-callback epoch discipline a future
-// supervision protocol would build on.
-// WHEN obsolete: when that protocol lands and consumes it, or it is removed.
-#[allow(
-    dead_code,
-    reason = "sole consumer was remote_sup.rs (deleted); epoch discipline retained for replace_membership_callback"
-)]
-#[derive(Clone, Debug, Default)]
-pub(crate) struct MembershipCallbackGeneration {
-    binding: MembershipCallbackBinding,
-    epoch: Arc<MembershipCallbackEpoch>,
-}
-
-impl MembershipCallbackGeneration {
-    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-    fn new(binding: MembershipCallbackBinding, epoch: Arc<MembershipCallbackEpoch>) -> Self {
-        Self { binding, epoch }
-    }
-
-    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-    pub(crate) fn binding(&self) -> MembershipCallbackBinding {
-        self.binding
-    }
-
-    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-    pub(crate) fn in_flight(&self) -> usize {
-        self.epoch.in_flight()
-    }
-
-    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-    pub(crate) fn invoke(&self, node_id: u16, event: u8) {
-        if let Some(callback) = self.binding.callback {
-            callback(node_id, event, self.binding.user_data());
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct MembershipCallbackEpoch {
-    in_flight: AtomicUsize,
-}
-
-impl MembershipCallbackEpoch {
-    fn begin_dispatch(self: &Arc<Self>) -> MembershipCallbackDispatchGuard {
-        self.in_flight.fetch_add(1, Ordering::AcqRel);
-        MembershipCallbackDispatchGuard {
-            epoch: Arc::clone(self),
-        }
-    }
-
-    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-    pub(crate) fn in_flight(&self) -> usize {
-        self.in_flight.load(Ordering::Acquire)
-    }
-}
-
-#[derive(Debug)]
-struct MembershipCallbackDispatchGuard {
-    epoch: Arc<MembershipCallbackEpoch>,
-}
-
-impl Drop for MembershipCallbackDispatchGuard {
-    fn drop(&mut self) {
-        self.epoch.in_flight.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 /// The cluster membership manager.
 #[derive(Debug)]
 pub struct HewCluster {
@@ -435,8 +364,6 @@ pub struct HewCluster {
     callback: Option<MemberChangeCallback>,
     /// Membership event callback binding.
     membership_callback_binding: Mutex<MembershipCallbackBinding>,
-    /// Tracks in-flight membership callback dispatches.
-    membership_callback_epoch: Arc<MembershipCallbackEpoch>,
     /// Registry gossip callback.
     registry_callback: Option<HewRegistryGossipCallback>,
     /// User data for [`HewRegistryGossipCallback`].
@@ -884,7 +811,6 @@ impl HewCluster {
             local_incarnation: AtomicU64::new(1),
             callback: None,
             membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
-            membership_callback_epoch: Arc::new(MembershipCallbackEpoch::default()),
             registry_callback: None,
             registry_callback_user_data: std::ptr::null_mut(),
             last_tick_ms: AtomicU64::new(0),
@@ -1602,31 +1528,14 @@ impl HewCluster {
         }
     }
 
-    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-    fn membership_callback_binding(&self) -> MembershipCallbackBinding {
-        *self.membership_callback_binding.lock_or_recover()
-    }
-
-    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-    fn membership_callback_generation(&self) -> MembershipCallbackGeneration {
-        MembershipCallbackGeneration::new(
-            self.membership_callback_binding(),
-            Arc::clone(&self.membership_callback_epoch),
-        )
-    }
-
-    /// Snapshot the current membership callback binding and enter the
-    /// dispatch epoch before releasing the binding lock.
+    /// Snapshot the current membership callback binding.
     fn with_membership_callback_dispatch<R>(
         &self,
         invoke: impl FnOnce(HewMembershipCallback, *mut c_void) -> R,
     ) -> Option<R> {
-        let binding_guard = self.membership_callback_binding.lock_or_recover();
-        let binding = *binding_guard;
+        let binding = *self.membership_callback_binding.lock_or_recover();
         let callback = binding.callback?;
         let user_data = binding.user_data();
-        let _dispatch_guard = self.membership_callback_epoch.begin_dispatch();
-        drop(binding_guard);
         Some(invoke(callback, user_data))
     }
 
@@ -2531,41 +2440,6 @@ pub unsafe extern "C" fn hew_cluster_set_membership_callback(
             MembershipCallbackBinding::new(Some(callback), user_data),
         );
     };
-}
-
-/// Read the current membership callback binding.
-///
-/// # Safety
-///
-/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
-#[cfg(test)]
-#[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-pub(crate) unsafe fn hew_cluster_membership_callback_binding(
-    cluster: *mut HewCluster,
-) -> MembershipCallbackBinding {
-    if cluster.is_null() {
-        return MembershipCallbackBinding::default();
-    }
-    // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &*cluster };
-    cluster.membership_callback_binding()
-}
-
-/// Snapshot the current membership callback generation for `cluster`.
-///
-/// # Safety
-///
-/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
-#[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
-pub(crate) unsafe fn hew_cluster_membership_callback_generation(
-    cluster: *mut HewCluster,
-) -> MembershipCallbackGeneration {
-    if cluster.is_null() {
-        return MembershipCallbackGeneration::default();
-    }
-    // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &*cluster };
-    cluster.membership_callback_generation()
 }
 
 /// Replace the current membership callback binding.

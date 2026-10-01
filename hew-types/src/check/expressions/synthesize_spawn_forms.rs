@@ -145,16 +145,6 @@ impl Checker {
                 if self.module_binding_in_current_file(module_short.name.as_str())
                     && self.env.lookup_ref(module_short.name.as_str()).is_none()
                 {
-                    let old_head = format!("{module_short}.{}", type_name.0);
-                    if let Some(replacement) = self.legacy_machine_event_replacement(&old_head) {
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedType,
-                            &type_name.1,
-                            format!("machine event type `{old_head}` is now `{replacement}`"),
-                            vec![format!("replace `{old_head}` with `{replacement}`")],
-                        );
-                        return Ty::Error;
-                    }
                     let constructor = format!("{module_short}.{}::{}", type_name.0, field);
                     return self.synthesize_identifier(&constructor, span);
                 }
@@ -1762,9 +1752,36 @@ impl Checker {
                         );
                         return Err(());
                     }
-                    // Unknown actor: keep the bare name so the pre-existing
-                    // unknown-actor diagnostics downstream fire unchanged.
-                    super::types::BareActorResolution::Unknown => Some(name.to_string()),
+                    // A type that is not an actor or supervisor cannot be
+                    // spawned.
+                    super::types::BareActorResolution::Unknown
+                        if self.type_def_at(name.name.as_str()).is_some() =>
+                    {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &target.1,
+                            format!(
+                                "`{name}` is not an actor; `spawn` starts an actor or a supervisor"
+                            ),
+                        );
+                        return Err(());
+                    }
+                    // A name that resolves to nothing is unresolved (#3623).
+                    super::types::BareActorResolution::Unknown => {
+                        let similar = crate::error::find_similar(
+                            name.name.as_str(),
+                            self.type_defs
+                                .keys()
+                                .map(|id| self.defs.path(id.declaration())),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &target.1,
+                            format!("undefined actor `{name}`"),
+                            similar,
+                        );
+                        return Err(());
+                    }
                 }
             }
             // Handle module-qualified actor: spawn module.ActorName(args)

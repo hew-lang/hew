@@ -95,16 +95,6 @@ pub(crate) unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
         // SAFETY: caller guarantees `actor` is valid and quiescent.
         let actor_id = unsafe { (*actor).id };
         crate::timer_periodic::cancel_all_timers_for_actor(actor);
-        // Unregister any connection fds owned by this actor BEFORE it is
-        // untracked/freed, so a readiness event arriving after the actor stops
-        // is dropped (the dead-actor-while-registered race) rather than
-        // delivered to a freed actor. Keyed by the INCARNATION the reactor
-        // recorded at registration, so the scrub and the Dekker handshake both
-        // name this actor and not whatever later spawn inherits its address.
-        // SAFETY: the caller guarantees `actor` is valid here.
-        crate::reactor::reactor_detach_actor(unsafe {
-            crate::lifetime::live_actors::ActorIncarnation::of(actor)
-        });
         // SAFETY: caller guarantees `actor` is valid; `unregister_actor_names`
         // does not require LIVE_ACTORS membership, only the actor id.
         unsafe { crate::hew_node::unregister_actor_names(actor_id) };

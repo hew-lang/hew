@@ -65,7 +65,7 @@ them, and their rule lives in the spec section that decision writes — not
 here. Each row is added by the lane that lands the refusal:
 `E_IS_VALUE_TYPE`, `E_OPAQUE_MESSAGE_PAYLOAD`, `E_UNKNOWN_ATTRIBUTE`,
 `E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_RESULT_DROPPED`,
-`E_GEN_RETURN_SPELLING`, `E_NO_ASYNC_FN`, `E_NO_ASYNC_GEN`.
+`E_GEN_RETURN_SPELLING`.
 
 ## Refusals with no code yet
 

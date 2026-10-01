@@ -1,0 +1,13 @@
+[[case]]
+id = "spawn-non-actor-reject"
+intent = "Spawning a record type is refused by the checker at the target; only an actor or a supervisor is spawned."
+source = "cases/spawn-non-actor-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 6
+column = 14
+message = "`Rec` is not an actor; `spawn` starts an actor or a supervisor"

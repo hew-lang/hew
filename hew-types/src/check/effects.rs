@@ -124,8 +124,18 @@ struct PendingForkTransfer {
 struct SuspensionObligation {
     body: EffectBody,
     key: SpanKey,
-    slot: String,
+    slot: ObligationSlot,
     source_module: Option<String>,
+}
+
+/// The written boundary a body is supplied to.
+#[derive(Debug)]
+enum ObligationSlot {
+    /// A callable type that never suspends, as the user wrote it.
+    Callable(String),
+    /// A trait-object slot whose trait method is not `fn[suspends]` (A421):
+    /// the trait method and the trait object, as the user wrote them.
+    Dyn { method: String, target: String },
 }
 
 /// An `#[on(crash)]` hook body, which must not suspend (D529).
@@ -323,6 +333,48 @@ impl Checker {
     /// A closure or named function coerced into a written callable type must
     /// not suspend unless that type says `fn[suspends]`. Bodies are known only
     /// after the fixed point, so the check is deferred to it.
+    ///
+    /// An erasure into a trait object supplies each impl method to a slot;
+    /// a slot whose trait method is not `fn[suspends]` obliges that method's
+    /// body not to suspend (A421).
+    pub(super) fn record_dyn_slot_obligations(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        entries: &[super::DynVtableEntry],
+        span: &Span,
+    ) {
+        let Some(layout) = self.trait_object_layouts.get(traits) else {
+            return;
+        };
+        let target = Ty::TraitObject {
+            traits: traits.to_vec(),
+        }
+        .user_facing()
+        .to_string();
+        let mut obligations = Vec::new();
+        for entry in entries {
+            let Some(impl_method) = entry.impl_method else {
+                continue;
+            };
+            let plain = layout
+                .slots
+                .iter()
+                .any(|slot| slot.method == entry.method && slot.effect == super::SlotEffect::Plain);
+            if plain {
+                obligations.push(SuspensionObligation {
+                    body: EffectBody::Declaration(impl_method),
+                    key: SpanKey::in_module(span, self.current_module_idx),
+                    slot: ObligationSlot::Dyn {
+                        method: self.defs.display(entry.method).to_string(),
+                        target: target.clone(),
+                    },
+                    source_module: self.current_module.clone(),
+                });
+            }
+        }
+        self.effect_graph.obligations.extend(obligations);
+    }
+
     pub(super) fn record_suspension_obligations(
         &mut self,
         expected: &Ty,
@@ -335,7 +387,7 @@ impl Checker {
                     self.effect_graph.obligations.push(SuspensionObligation {
                         body: identity.clone(),
                         key: SpanKey::in_module(span, self.current_module_idx),
-                        slot: expected.user_facing().to_string(),
+                        slot: ObligationSlot::Callable(expected.user_facing().to_string()),
                         source_module: self.current_module.clone(),
                     });
                 }
@@ -617,7 +669,6 @@ impl Checker {
             {
                 "await"
             }
-            Expr::AwaitRestart(_) => "await_restart",
             Expr::Race(_) => "race",
             Expr::Select { .. } => "select",
             Expr::ForkChild { .. } | Expr::ForkBlock { .. } => "fork",
@@ -724,7 +775,11 @@ impl Checker {
                 | CallTarget::Builtin { .. }
                 | CallTarget::RuntimeCollection(_),
             ) => false,
-            Some(CallTarget::DynamicVtable { .. } | CallTarget::Unsupported { .. }) => true,
+            Some(CallTarget::DynamicVtable { .. }) => self
+                .dyn_trait_method_calls
+                .get(key)
+                .is_none_or(|call| call.effect == super::SlotEffect::Suspends),
+            Some(CallTarget::Unsupported { .. }) => true,
             None => match self.method_call_rewrites.get(key) {
                 Some(
                     MethodCallRewrite::RecordFnFieldCall { .. }
@@ -875,23 +930,39 @@ impl Checker {
             }
         }
         for obligation in &graph.obligations {
+            // TRANSITION(D1a): WHY std and primitive impl bodies (`i64` as
+            // `Display`) are not in this program's effect graph, so a dyn
+            // slot cannot judge them; WHEN their bodies publish an effect
+            // fact; WHAT this skip goes and an unknown body refuses.
+            if matches!(obligation.slot, ObligationSlot::Dyn { .. })
+                && !bodies.contains_key(&obligation.body)
+            {
+                continue;
+            }
             if !bodies.get(&obligation.body).copied().unwrap_or(true) {
                 continue;
             }
             let subject = match &obligation.body {
-                EffectBody::Declaration(id) => format!("function `{}`", self.defs.display(*id)),
+                EffectBody::Declaration(id) => format!("function `{}`", self.defs.path(*id)),
                 _ => "closure".to_string(),
             };
             let witness = witnesses
                 .get(&obligation.body)
                 .map_or("an unchecked body", String::as_str);
+            let message = match &obligation.slot {
+                ObligationSlot::Callable(slot) => format!(
+                    "{subject} suspends via `{witness}`; `{slot}` never suspends, write `fn[suspends]`"
+                ),
+                ObligationSlot::Dyn { method, target } => format!(
+                    "E_DYN_SLOT_SUSPENDS: {subject} suspends via `{witness}`, so it cannot fill \
+                     `{method}` in `{target}`; that trait method never suspends unless it is \
+                     declared `fn[suspends]`"
+                ),
+            };
             let mut error = crate::error::TypeError::new(
                 crate::error::TypeErrorKind::InvalidOperation,
                 obligation.key.start..obligation.key.end,
-                format!(
-                    "{subject} suspends via `{witness}`; `{}` never suspends, write `fn[suspends]`",
-                    obligation.slot
-                ),
+                message,
             );
             error.source_module.clone_from(&obligation.source_module);
             self.errors.push(error);

@@ -210,7 +210,7 @@ impl Checker {
     /// Does the concrete actor type `actor_name` satisfy the handler trait
     /// `trait_name` by virtue of its `receive fn`s?
     ///
-    /// Active-mode handler traits (`ConnectionHandler`, `WebSocketHandler`)
+    /// Active-mode handler traits (`TlsHandler`, `WebSocketHandler`)
     /// are satisfied *structurally by an actor's receive functions*, not by an
     /// explicit `impl Trait for Actor` block: the actor declares
     /// `receive fn on_data(bytes)` / `receive fn on_close()` and the runtime
@@ -271,7 +271,7 @@ impl Checker {
 
     /// Is `trait_name` an active-mode *handler* trait — one whose methods take
     /// no `self` receiver and are therefore satisfied structurally by an actor's
-    /// `receive fn`s (e.g. `ConnectionHandler`, `WebSocketHandler`), rather than
+    /// `receive fn`s (e.g. `TlsHandler`, `WebSocketHandler`), rather than
     /// by a vtable-dispatched `impl`?
     ///
     /// The parser names every receiver parameter `self` (and types it `Self`),
@@ -468,7 +468,7 @@ impl Checker {
             //
             // The active-mode `conn.attach(this)` surface needs a concrete
             // actor handle (`EchoConn`) to satisfy an extern that takes the
-            // handler-trait handle (`ConnectionHandler`). An actor handle is an
+            // handler-trait handle (`TlsHandler`). An actor handle is an
             // opaque actor-ref pointer (`*mut HewActor`); its nominal
             // identity is purely a compile-time tag used for
             // `.send`/`.ask` message typing and (for handler traits) for
@@ -509,7 +509,7 @@ impl Checker {
                     //    `actor_satisfies_handler_trait`. `attach` codegen
                     //    synthesises the `on_data`/`on_close` `msg_id`s from the
                     //    actor's receive-fn protocol descriptor; an explicit
-                    //    `impl ConnectionHandler for X {}` with no matching
+                    //    `impl TlsHandler for X {}` with no matching
                     //    `receive fn`s carries nothing codegen can lower, so
                     //    gating on `type_implements_trait` would admit a
                     //    coercion that later fails closed with a late
@@ -774,7 +774,10 @@ impl Checker {
             assoc_bindings: assoc_bindings.clone(),
         };
 
+        self.record_dyn_slot_obligations(traits, &vtable_entries, span);
+        let target = self.dyn_coercion_target(traits, span)?;
         Some(DynCoercion {
+            target,
             trait_name: composite_trait_name,
             trait_bounds: traits.to_vec(),
             concrete_type: concrete_type.clone(),
@@ -813,6 +816,7 @@ impl Checker {
         owner: super::dispatch_table::MethodOwner,
         bound: &TraitBound,
         receiver: &Ty,
+        params: &[crate::ParamHead],
         method: crate::DefId,
     ) {
         let from_trait = self
@@ -834,20 +838,38 @@ impl Checker {
         self.from_impls.push(FromImpl {
             target: receiver.clone(),
             source,
+            params: params.to_vec(),
             method,
         });
     }
 
-    /// The declared `impl From<source> for target`, if any. Coherence admits
-    /// at most one impl per pair, so the first match is the only one.
-    fn declared_from_impl(&mut self, target: &Ty, source: &Ty) -> Option<crate::DefId> {
+    /// The declared `impl From<source> for target`, if any. A generic impl
+    /// (`impl<E> From<Wrap<E>> for F`) matches with its parameters opened to
+    /// fresh variables. Coherence admits at most one impl per pair, so the
+    /// first match is the only one.
+    ///
+    /// Returns the impl method and the impl's type arguments at this edge.
+    fn declared_from_impl(&mut self, target: &Ty, source: &Ty) -> Option<(crate::DefId, Vec<Ty>)> {
         let rows = self.from_impls.clone();
         rows.into_iter().find_map(|row| {
+            let opened = std::cell::RefCell::new(HashMap::new());
+            let row_target = open_type_params(&row.target, &opened);
+            let row_source = open_type_params(&row.source, &opened);
             let snapshot = self.subst.snapshot();
-            let matched = self.try_unify_with_owner_identity(&row.target, target)
-                && self.try_unify_with_owner_identity(&row.source, source);
+            let matched = self.try_unify_with_owner_identity(&row_target, target)
+                && self.try_unify_with_owner_identity(&row_source, source);
+            let opened = opened.into_inner();
+            let type_args = row
+                .params
+                .iter()
+                .map(|param| {
+                    opened
+                        .get(param)
+                        .map_or_else(|| Ty::param(*param), |ty| self.subst.resolve(ty))
+                })
+                .collect();
             self.subst.restore(snapshot);
-            matched.then_some(row.method)
+            matched.then_some((row.method, type_args))
         })
     }
 
@@ -879,7 +901,12 @@ impl Checker {
                     .map(|coercion| ErrorConversion::Erase(Box::new(coercion)))
             } else {
                 self.declared_from_impl(&target, &source)
-                    .map(|method| ErrorConversion::From { method })
+                    .map(|(method, type_args)| {
+                        // The edge calls the impl method; a generic impl's
+                        // arguments are this call's type arguments.
+                        self.record_concrete_call_type_args(span, &type_args);
+                        ErrorConversion::From { method }
+                    })
             }
         };
         if let Some(conversion) = conversion {
@@ -941,6 +968,25 @@ impl Checker {
             suggestions,
         );
     }
+}
+
+/// `ty` with each generic binder replaced by one fresh variable, shared
+/// through `opened` so a binder that appears twice stays one variable.
+fn open_type_params(ty: &Ty, opened: &std::cell::RefCell<HashMap<crate::ParamHead, Ty>>) -> Ty {
+    if let Ty::Named {
+        head: crate::TypeHead::Param(parameter),
+        args,
+    } = ty
+    {
+        if args.is_empty() {
+            return opened
+                .borrow_mut()
+                .entry(*parameter)
+                .or_insert_with(|| Ty::Var(TypeVar::fresh()))
+                .clone();
+        }
+    }
+    ty.map_children_pub(&|child| open_type_params(child, opened))
 }
 
 /// Map a resolved concrete `Ty` to the type-name string used by the impl

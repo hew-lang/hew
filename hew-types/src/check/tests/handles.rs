@@ -1619,7 +1619,7 @@ fn probe() {
         // the qualified spelling — the reason the ownership marking must not
         // be gated on `Copy`.
         let output = check_source(
-            r"import std.link_monitor.{MonitorError, MonitorRef};
+            r"import std.link_monitor.{MonitorRef};
 
 actor Child {
     receive fn ping() {}

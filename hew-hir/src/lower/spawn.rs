@@ -313,7 +313,6 @@ impl LowerCtx {
                 evaluation_order: Vec::new(),
                 reply_ty,
                 policy,
-                deadline_ns: None,
             },
             result_ty,
         )

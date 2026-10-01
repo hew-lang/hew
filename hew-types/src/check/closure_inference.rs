@@ -440,7 +440,7 @@ fn esc_visit_expr(
                 esc_visit_arg(e, name, in_fork, acc);
             }
         }
-        Expr::Await(inner) | Expr::AwaitRestart(inner) => {
+        Expr::Await(inner) => {
             esc_visit_expr(&inner.0, name, in_fork, acc, false);
         }
         Expr::GenBlock { body } => esc_visit_block(body, name, in_fork, acc),

@@ -450,6 +450,7 @@ pub(crate) fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalErr
                 own,
                 is_indirect: descriptor.is_indirect,
                 variants,
+                runtime_tags: shape.runtime_tags.clone(),
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;

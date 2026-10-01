@@ -1,136 +1,151 @@
 //! Verify the native storage selections made by a checked wire schema.
 
-use std::collections::BTreeSet;
-
 use hew_types::ResolvedTy;
 
-use super::{PhysicalError, PhysicalModule, SemWireKind, SemWirePlan};
+use super::{PhysicalError, PhysicalModule, SemWireKind, SemWirePlans};
 
+/// Every plan in the set selects the physical value shape its type has.
 #[expect(
     clippy::too_many_lines,
-    reason = "the exhaustive schema check validates each physical field selection before codegen"
+    reason = "the exhaustive plan check validates each physical selection before codegen"
 )]
 pub(super) fn verify_wire_plan(
     module: &PhysicalModule,
-    plan: &SemWirePlan,
+    plans: &SemWirePlans,
 ) -> Result<(), PhysicalError> {
-    let mismatch = || PhysicalError::new("wire schema selects a different physical value shape");
-    let child = |expected: &ResolvedTy, child: &SemWirePlan| -> Result<(), PhysicalError> {
-        if expected != &child.ty {
-            return Err(mismatch());
+    let mismatch = || PhysicalError::new("codec plan selects a different physical value shape");
+    let same = |expected: &[ResolvedTy], planned: &[ResolvedTy]| {
+        if expected == planned {
+            Ok(())
+        } else {
+            Err(mismatch())
         }
-        verify_wire_plan(module, child)
     };
-    match &plan.kind {
-        SemWireKind::Scalar => {
-            if !plan.ty.is_integer()
-                && !plan.ty.is_float()
-                && !matches!(
-                    plan.ty,
-                    ResolvedTy::Bool
-                        | ResolvedTy::Char
-                        | ResolvedTy::Duration
-                        | ResolvedTy::String
-                        | ResolvedTy::Bytes
-                )
-            {
-                return Err(mismatch());
-            }
-        }
-        SemWireKind::Vector(value) => {
-            let glue = module
-                .vector_glue
-                .iter()
-                .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(mismatch)?;
-            child(&glue.element.ty, value)?;
-        }
-        SemWireKind::Set(value) => {
-            let glue = module
-                .set_glue
-                .iter()
-                .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(mismatch)?;
-            child(&glue.element.ty, value)?;
-        }
-        SemWireKind::Map { key, value } => {
-            let glue = module
-                .map_glue
-                .iter()
-                .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(mismatch)?;
-            child(&glue.key.ty, key)?;
-            child(&glue.value.ty, value)?;
-        }
-        SemWireKind::Option {
-            none, some, value, ..
-        } => {
-            let glue = module
-                .variant_glue
-                .iter()
-                .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(mismatch)?;
-            if none == some
-                || glue.variants.len() != 2
-                || !glue
-                    .variants
-                    .get(*none as usize)
-                    .is_some_and(|case| case.fields.is_empty())
-            {
-                return Err(mismatch());
-            }
-            let fields = &glue
-                .variants
-                .get(*some as usize)
-                .ok_or_else(mismatch)?
-                .fields;
-            let [field] = fields.as_slice() else {
-                return Err(mismatch());
-            };
-            child(&field.ty, value)?;
-        }
-        SemWireKind::Record { fields, .. } => {
-            let glue = module
-                .aggregate_glue
-                .iter()
-                .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(mismatch)?;
-            if fields.len() != glue.fields.len() {
-                return Err(mismatch());
-            }
-            let mut selected = BTreeSet::new();
-            for field in fields {
-                if !selected.insert(field.index) {
+    for plan in plans.plans.values() {
+        match &plan.kind {
+            SemWireKind::Scalar => {
+                if !plan.ty.is_integer()
+                    && !plan.ty.is_float()
+                    && !matches!(
+                        plan.ty,
+                        ResolvedTy::Bool
+                            | ResolvedTy::Char
+                            | ResolvedTy::Duration
+                            | ResolvedTy::String
+                            | ResolvedTy::Bytes
+                    )
+                {
                     return Err(mismatch());
                 }
-                let recipe = glue.fields.get(field.index as usize).ok_or_else(mismatch)?;
-                child(&recipe.ty, &field.value)?;
             }
-        }
-        SemWireKind::Enum { variants, .. } => {
-            let glue = module
-                .variant_glue
-                .iter()
-                .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(mismatch)?;
-            if variants.len() != glue.variants.len() {
-                return Err(mismatch());
+            SemWireKind::Unit => {
+                if plan.ty != ResolvedTy::Unit {
+                    return Err(mismatch());
+                }
             }
-            let mut selected = BTreeSet::new();
-            for variant in variants {
-                if !selected.insert(variant.index) {
+            SemWireKind::Tuple(elements) => {
+                let ResolvedTy::Tuple(expected) = &plan.ty else {
+                    return Err(mismatch());
+                };
+                same(expected, elements)?;
+            }
+            SemWireKind::Array { element, len } => {
+                let ResolvedTy::Array(expected, expected_len) = &plan.ty else {
+                    return Err(mismatch());
+                };
+                if **expected != *element || expected_len != len {
+                    return Err(mismatch());
+                }
+            }
+            SemWireKind::Vector(value) => {
+                let glue = module
+                    .vector_glue
+                    .iter()
+                    .find(|glue| glue.ty == plan.ty)
+                    .ok_or_else(mismatch)?;
+                same(
+                    std::slice::from_ref(&glue.element.ty),
+                    std::slice::from_ref(value),
+                )?;
+            }
+            SemWireKind::Set(value) => {
+                let glue = module
+                    .set_glue
+                    .iter()
+                    .find(|glue| glue.ty == plan.ty)
+                    .ok_or_else(mismatch)?;
+                same(
+                    std::slice::from_ref(&glue.element.ty),
+                    std::slice::from_ref(value),
+                )?;
+            }
+            SemWireKind::Map { key, value } => {
+                let glue = module
+                    .map_glue
+                    .iter()
+                    .find(|glue| glue.ty == plan.ty)
+                    .ok_or_else(mismatch)?;
+                same(
+                    &[glue.key.ty.clone(), glue.value.ty.clone()],
+                    &[key.clone(), value.clone()],
+                )?;
+            }
+            SemWireKind::Option {
+                none, some, value, ..
+            } => {
+                let glue = module
+                    .variant_glue
+                    .iter()
+                    .find(|glue| glue.ty == plan.ty)
+                    .ok_or_else(mismatch)?;
+                if none == some
+                    || glue.variants.len() != 2
+                    || !glue
+                        .variants
+                        .get(*none as usize)
+                        .is_some_and(|case| case.fields.is_empty())
+                {
                     return Err(mismatch());
                 }
                 let fields = &glue
                     .variants
-                    .get(variant.index as usize)
+                    .get(*some as usize)
                     .ok_or_else(mismatch)?
                     .fields;
-                if fields.len() != variant.fields.len() {
+                let [field] = fields.as_slice() else {
+                    return Err(mismatch());
+                };
+                same(std::slice::from_ref(&field.ty), std::slice::from_ref(value))?;
+            }
+            SemWireKind::Record { fields, .. } => {
+                let glue = module
+                    .aggregate_glue
+                    .iter()
+                    .find(|glue| glue.ty == plan.ty)
+                    .ok_or_else(mismatch)?;
+                let expected = glue
+                    .fields
+                    .iter()
+                    .map(|field| field.ty.clone())
+                    .collect::<Vec<_>>();
+                same(&expected, fields)?;
+            }
+            SemWireKind::Enum { variants, .. } => {
+                let glue = module
+                    .variant_glue
+                    .iter()
+                    .find(|glue| glue.ty == plan.ty)
+                    .ok_or_else(mismatch)?;
+                if variants.len() != glue.variants.len() {
                     return Err(mismatch());
                 }
-                for (field, plan) in fields.iter().zip(&variant.fields) {
-                    child(&field.ty, plan)?;
+                for (case, payload) in glue.variants.iter().zip(variants) {
+                    let expected = case
+                        .fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect::<Vec<_>>();
+                    same(&expected, payload.types())?;
                 }
             }
         }
@@ -148,8 +163,8 @@ pub(super) fn verify_actor_codecs(module: &PhysicalModule) -> Result<(), Physica
                         .params
                         .iter()
                         .zip(&handler.params)
-                        .any(|(plan, ty)| &plan.ty != ty)
-                    || codec.reply.as_ref().map(|plan| &plan.ty)
+                        .any(|(plan, ty)| &plan.root != ty)
+                    || codec.reply.as_ref().map(|plan| &plan.root)
                         != (handler.return_ty != ResolvedTy::Unit).then_some(&handler.return_ty)
                 {
                     return Err(PhysicalError::new(

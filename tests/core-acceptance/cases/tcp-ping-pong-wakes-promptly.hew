@@ -1,0 +1,50 @@
+// A loopback ping-pong registers two waiting reads per round trip. The median
+// round trip stays far below the old 50 ms registration floor: a wait that
+// meets `WouldBlock` arms readiness at once, and the reactor wakes at once.
+import std.net;
+import std.time.datetime;
+
+fn echo(listener: net.Listener) {
+    let conn = listener.accept();
+    loop {
+        match conn.recv() {
+            .Some(data) => {
+                conn.send(data).expect("echo");
+            }
+            .None => {
+                break;
+            }
+        }
+    }
+    conn.close();
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let address = f"127.0.0.1:{listener.local_port()}";
+    var sorted: Vec<i64> = Vec.new();
+    scope {
+        let server = fork echo(listener);
+        let client = net.connect(address).expect("connect");
+        for _ in 0..100 {
+            let start = datetime.now_nanos();
+            client.send("x".to_bytes()).expect("send");
+            match client.recv() {
+                .Some(_) => {}
+                .None => panic("server closed"),
+            }
+            let sample = datetime.now_nanos() - start;
+            var index = sorted.len();
+            sorted.push(sample);
+            while index > 0 && sorted[index - 1] > sample {
+                sorted[index] = sorted[index - 1];
+                index = index - 1;
+            }
+            sorted[index] = sample;
+        }
+        client.close();
+        await server;
+    };
+    assert(sorted[50] < 5_000_000);
+    println("median round trip under 5 ms");
+}

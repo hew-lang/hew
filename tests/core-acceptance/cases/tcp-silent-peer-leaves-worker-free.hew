@@ -1,0 +1,31 @@
+// A task waiting on a peer that never sends must not hold the only worker:
+// twenty 20 ms sleeps in another task still finish. If the read held the
+// worker, the sleeps could never run and the program would hang until the
+// harness timeout. The control case `worker-held-delays-sleeps` shows the
+// same harness detects a held worker.
+import std.net;
+
+fn silent(listener: net.Listener) {
+    let conn = listener.accept();
+    let _ = conn.recv();
+    conn.close();
+}
+
+fn ticks() {
+    for _ in 0..20 {
+        sleep(20ms);
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let address = f"127.0.0.1:{listener.local_port()}";
+    scope {
+        let reader = fork silent(listener);
+        let client = net.connect(address).expect("connect");
+        await fork ticks();
+        client.close();
+        await reader;
+    };
+    println("silent peer left the worker free");
+}

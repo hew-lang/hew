@@ -1,0 +1,13 @@
+[[case]]
+id = "tcp-ping-pong-wakes-promptly"
+intent = "Readiness registration has no polling floor: the median loopback round trip of 100 is under 5 ms (about 100 ms with a 50 ms poll)."
+source = "cases/tcp-ping-pong-wakes-promptly.hew"
+suites = ["acceptance"]
+timeout_seconds = 60
+
+[case.env]
+HEW_IO_LEAK_CHECK = "1"
+
+[case.expected]
+stdout = "median round trip under 5 ms\n"
+exit = 0

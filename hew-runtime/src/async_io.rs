@@ -23,11 +23,15 @@ mod connect;
 mod deadline;
 mod file;
 mod net;
+mod stdin;
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
 pub use file::{hew_async_file_read, hew_async_file_write, hew_async_file_write_string};
 pub(crate) use file::{start_sink_write, start_stream_read};
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
 pub(crate) use net::{start_tcp_readable, start_tcp_stream_write};
+#[cfg(windows)]
+pub(crate) use stdin::ensure_reader as ensure_stdin_reader;
+pub use stdin::hew_async_stdin_read_line;
 
 #[cfg(test)]
 mod tests;
@@ -90,6 +94,7 @@ pub(crate) enum IoValue {
     StreamItem(Option<Vec<u8>>),
     Count(i64),
     Connection(AcceptedConnection),
+    StdinLine(stdin::Line),
 }
 
 enum State {
@@ -425,19 +430,25 @@ pub unsafe extern "C" fn hew_async_io_take_bytes(
         return AsyncIoStatus::Error as i32;
     }
     let mut state = operation.state.lock_or_recover();
-    let State::Ready(Ok(IoValue::Bytes(bytes))) = &*state else {
-        return if state.status() == AsyncIoStatus::Success {
-            AsyncIoStatus::Error as i32
-        } else {
-            state.status() as i32
-        };
+    let bytes = match &*state {
+        State::Ready(Ok(IoValue::Bytes(bytes))) => bytes.as_slice(),
+        State::Ready(Ok(IoValue::StdinLine(line))) => line.bytes(),
+        _ => {
+            return if state.status() == AsyncIoStatus::Success {
+                AsyncIoStatus::Error as i32
+            } else {
+                state.status() as i32
+            };
+        }
     };
     let Ok(len) = u32::try_from(bytes.len()) else {
         return AsyncIoStatus::Error as i32;
     };
-    // SAFETY: bytes owns len readable bytes; out is aligned writable storage.
-    // The managed allocation belongs to the resume edge only after this write.
+    // SAFETY: the region is live under the state lock; the carrier copies it.
     unsafe { out.write(crate::bytes::hew_bytes_from_static(bytes.as_ptr(), len)) };
+    if let State::Ready(Ok(IoValue::StdinLine(line))) = &mut *state {
+        line.consume();
+    }
     *state = State::Taken;
     AsyncIoStatus::Success as i32
 }

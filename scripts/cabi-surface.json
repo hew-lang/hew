@@ -2099,6 +2099,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_async_stdin_read_line( *const HewWaker) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_stdin_read_line"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_async_tcp_accept( i32, *const HewWaker, ) -> *const HewAsyncIo"
       },
       "symbol": "hew_async_tcp_accept"
@@ -8626,36 +8639,6 @@
         "wasm32-wasip1": "fn hew_int_to_string( i32) -> *mut HewString"
       },
       "symbol": "hew_int_to_string"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_read_all() -> *mut HewString",
-        "wasm32-wasip1": "fn hew_io_read_all() -> *mut HewString"
-      },
-      "symbol": "hew_io_read_all"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_io_read_line() -> *mut HewString",
-        "wasm32-wasip1": "fn hew_io_read_line() -> *mut HewString"
-      },
-      "symbol": "hew_io_read_line"
     },
     {
       "availability": [
@@ -15753,19 +15736,6 @@
         "wasm32-wasip1": "fn hew_stderr_write( *const c_char)"
       },
       "symbol": "hew_stderr_write"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_stdin_read_line() -> *mut HewString"
-      },
-      "symbol": "hew_stdin_read_line"
     },
     {
       "availability": [

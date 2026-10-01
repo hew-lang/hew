@@ -82,6 +82,7 @@ pub enum AsyncIoOp {
     TcpAccept,
     TcpConnect,
     TcpConnectTimeout,
+    StdinReadLine,
 }
 
 impl AsyncIoOp {
@@ -92,7 +93,8 @@ impl AsyncIoOp {
             | Self::FileWriteString
             | Self::FileWriteBytes
             | Self::TcpConnect
-            | Self::TcpConnectTimeout => AsyncIoLoan::UntilSubmitReturns,
+            | Self::TcpConnectTimeout
+            | Self::StdinReadLine => AsyncIoLoan::UntilSubmitReturns,
             Self::TcpRead | Self::TcpWrite | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
         }
     }
@@ -107,6 +109,7 @@ impl AsyncIoOp {
             Self::TcpAccept => "hew_tcp_accept",
             Self::TcpConnect => "hew_tcp_connect",
             Self::TcpConnectTimeout => "hew_tcp_connect_timeout",
+            Self::StdinReadLine => "hew_stdin_read_line",
         }
     }
 
@@ -123,13 +126,14 @@ impl AsyncIoOp {
             Self::TcpAccept => "hew_async_tcp_accept",
             Self::TcpConnect => "hew_async_tcp_connect",
             Self::TcpConnectTimeout => "hew_async_tcp_connect_timeout",
+            Self::StdinReadLine => "hew_async_stdin_read_line",
         }
     }
 
     #[must_use]
     pub const fn resume(self) -> AsyncIoResume {
         match self {
-            Self::FileReadBytes | Self::TcpRead => AsyncIoResume::Bytes,
+            Self::FileReadBytes | Self::TcpRead | Self::StdinReadLine => AsyncIoResume::Bytes,
             Self::FileWriteString | Self::FileWriteBytes => AsyncIoResume::WriteStatus,
             Self::TcpAccept | Self::TcpConnect | Self::TcpConnectTimeout => {
                 AsyncIoResume::Connection
@@ -174,6 +178,7 @@ impl AsyncIoOp {
             Self::FileWriteString => runtime_semantic_contract(&[PATH, PATH], BitCopy(I32), &[]),
             Self::FileWriteBytes => runtime_semantic_contract(&[PATH, DATA], BitCopy(I32), &[]),
             Self::TcpRead => runtime_semantic_contract(&[CONNECTION], FreshOwned(Bytes), &[]),
+            Self::StdinReadLine => runtime_semantic_contract(&[], FreshOwned(Bytes), &[]),
             Self::TcpConnect => runtime_semantic_contract(
                 &[PATH],
                 FreshOwned(IoHandle(IoHandleKind::Connection)),
@@ -223,6 +228,7 @@ impl RuntimeCallFamily {
             | AsyncIoOp::TcpAccept
             | AsyncIoOp::TcpConnect
             | AsyncIoOp::TcpConnectTimeout => "std.net",
+            AsyncIoOp::StdinReadLine => "std.io",
         };
         module == owner
             && symbol == op.c_symbol()
@@ -277,6 +283,12 @@ mod tests {
                 ResolvedTy::I32,
             ),
             (AsyncIoOp::TcpAccept, "std.net", vec![listener], connection),
+            (
+                AsyncIoOp::StdinReadLine,
+                "std.io",
+                vec![],
+                ResolvedTy::Bytes,
+            ),
         ] {
             let family = RuntimeCallFamily::AsyncIo(op);
             let declaration = format!("{module}.{}", op.c_symbol());
@@ -320,15 +332,18 @@ mod tests {
                 &ResolvedTy::Unit,
                 &borrowed
             ));
-            assert!(!family.matches_async_io_extern(
-                &crate::DefTable::new(),
-                module,
-                &declaration,
-                op.c_symbol(),
-                &params,
-                &result,
-                &vec![true; params.len()]
-            ));
+            assert!(
+                params.is_empty()
+                    || !family.matches_async_io_extern(
+                        &crate::DefTable::new(),
+                        module,
+                        &declaration,
+                        op.c_symbol(),
+                        &params,
+                        &result,
+                        &vec![true; params.len()]
+                    )
+            );
         }
         let forged = handle("user.Connection");
         assert!(!AsyncIoOp::TcpRead.contract().matches_signature(

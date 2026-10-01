@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1598u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1596u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1598] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1596] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -835,6 +835,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1598] = {
     {"hew_async_io_take_handle",
      "{\"native\": \"fn hew_async_io_take_handle( *const HewAsyncIo, *mut i64, "
      ") -> i32\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_stdin_read_line",
+     "{\"native\": \"fn hew_async_stdin_read_line( *const HewWaker) -> *const "
+     "HewAsyncIo\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_tcp_accept",
@@ -3328,16 +3333,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1598] = {
     {"hew_int_to_string",
      "{\"native\": \"fn hew_int_to_string( i32) -> *mut HewString\", "
      "\"wasm32-wasip1\": \"fn hew_int_to_string( i32) -> *mut HewString\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_read_all",
-     "{\"native\": \"fn hew_io_read_all() -> *mut HewString\", "
-     "\"wasm32-wasip1\": \"fn hew_io_read_all() -> *mut HewString\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_io_read_line",
-     "{\"native\": \"fn hew_io_read_line() -> *mut HewString\", "
-     "\"wasm32-wasip1\": \"fn hew_io_read_line() -> *mut HewString\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_io_write",
@@ -5905,10 +5900,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1598] = {
      "\"fn hew_stderr_write( *const c_char)\"}",
      "native,wasm32-wasip1", "stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_stdin_read_line",
-     "{\"native\": \"fn hew_stdin_read_line() -> *mut HewString\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_stream_await_next",
      "{\"native\": \"fn hew_stream_await_next( *mut HewStream, *mut HewActor, "
      "*mut HewReadSlot, ) -> i32\", \"wasm32-wasip1\": \"fn "

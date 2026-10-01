@@ -9,20 +9,42 @@
 //!
 //! fn main() {
 //!     io.write("enter your name: ");
-//!     let name = io.read_line();
+//!     let name = io.read_line().unwrap_or("stranger");
 //!     io.write("hello, ");
 //!     io.write(name);
 //!     io.write("\n");
 //! }
 //! ```
 
-/// Read a single line from standard input.
+import std.encoding.utf8;
+
+/// Read one line from standard input.
 ///
-/// Strips the trailing newline. Returns an empty string on EOF or error.
-pub fn read_line() -> string {
-    unsafe {
-        hew_io_read_line()
+/// The call waits without holding a scheduler thread, so other tasks keep
+/// running while input is silent. The trailing `\n` or `\r\n` is removed and
+/// invalid UTF-8 becomes U+FFFD. Returns `None` at end of input or on a read
+/// error; a final line without a newline is still returned first.
+///
+/// A read that a deadline or an enclosing scope cancels consumes nothing:
+/// the next read returns the line that was pending.
+pub fn read_line() -> Option<string> {
+    var line = unsafe { hew_stdin_read_line() };
+    if line.is_empty() {
+        return .None;
     }
+    match line.get(line.len() - 1) {
+        .Some(10) => {
+            let _ = line.pop();
+            match line.get(line.len() - 1) {
+                .Some(13) => {
+                    let _ = line.pop();
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    .Some(utf8.decode_lossy(line))
 }
 
 /// Write a string to standard output without a trailing newline.
@@ -39,13 +61,18 @@ pub fn write_err(s: string) {
     };
 }
 
-/// Read all available data from standard input.
+/// Read standard input to its end.
 ///
-/// Returns an empty string on error.
+/// Waits like `read_line`. Invalid UTF-8 becomes U+FFFD.
 pub fn read_all() -> string {
-    unsafe {
-        hew_io_read_all()
+    var all = unsafe { hew_stdin_read_line() };
+    var reading = !all.is_empty();
+    while reading {
+        let more = unsafe { hew_stdin_read_line() };
+        reading = !more.is_empty();
+        all.append(more);
     }
+    utf8.decode_lossy(all)
 }
 
 // ── Declarative bytes receiver FFI ───────────────────────────────────
@@ -90,8 +117,9 @@ impl bytes {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_io_read_line() -> string;
+    // One line with its newline, or the unterminated last line; empty at
+    // end of input. A waiting call: it suspends the task.
+    fn hew_stdin_read_line() -> bytes;
     fn hew_io_write(s: string);
     fn hew_io_write_err(s: string);
-    fn hew_io_read_all() -> string;
 }

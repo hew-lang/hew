@@ -564,7 +564,7 @@ impl<'a> InstanceService<'a> {
     ///
     /// Each slot resolves the checker's implementer declaration to a demanded
     /// SIR callable, so no later stage joins a slot to a body by name. The
-    /// slot order is the checker's, past the runtime's three-word prefix.
+    /// slot order is the checker's 0-based layout.
     pub(super) fn request_vtable(
         &mut self,
         dyn_ty: &ResolvedTy,
@@ -580,7 +580,7 @@ impl<'a> InstanceService<'a> {
         self.require_type_facts(concrete_ty)?;
         let mut slots = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
-            let slot = 3 + u32::try_from(index)
+            let slot = u32::try_from(index)
                 .map_err(|_| "trait-object method count exceeds u32".to_string())?;
             let declaration = entry.impl_method.as_ref().ok_or_else(|| {
                 format!(

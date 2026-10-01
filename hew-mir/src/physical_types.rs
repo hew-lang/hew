@@ -1081,7 +1081,9 @@ pub enum PhysicalTerminator {
     /// Load one slot from the receiver's vtable and call through it.
     DynCall {
         receiver: ArgumentTransfer,
-        slot: u32,
+        /// The table word holding the slot: the layout slot past the
+        /// runtime prefix.
+        word: u32,
         /// Exact method declaration expected at the selected slot.
         method: hew_types::DefId,
         signature: PhysicalCallSignature,

@@ -3086,6 +3086,7 @@ pub fn lower_program_with_mono_cap(
         entry_exit_plan,
         test_entry_plans: type_check_output.test_entry_plans.clone(),
         wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
+        trait_object_layouts: Arc::clone(&ctx.trait_object_layouts),
         type_classes: ctx.type_classes,
         monomorphisations,
         call_site_type_args,

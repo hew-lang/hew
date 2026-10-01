@@ -1087,6 +1087,10 @@ struct LowerCtx {
     /// `HirExprKind::CallDynMethod` (vtable slot index attached) rather
     /// than failing closed on the missing rewrite entry.
     dyn_trait_method_calls: HashMap<SpanKey, hew_types::DynMethodCall>,
+    /// The checker's trait-object layouts; Display over a trait object
+    /// dispatches through the closure's `fmt` slot read here.
+    trait_object_layouts:
+        std::sync::Arc<std::collections::BTreeMap<ResolvedTy, hew_types::TraitObjectLayout>>,
     /// Checker-resolved `(ImplId, MethodTarget)` verdict per method-call
     /// site, keyed by the method-call expression span. Populated by the
     /// checker's `populate_collection_dispatch` for builtin-generic

@@ -127,7 +127,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalTerminator::DynCall {
                 receiver,
-                slot,
+                word,
                 method: _,
                 signature,
                 args,
@@ -136,7 +136,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind,
             } => self.emit_dyn_call(
                 *receiver,
-                *slot,
+                *word,
                 signature,
                 args,
                 *result,

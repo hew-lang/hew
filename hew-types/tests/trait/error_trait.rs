@@ -187,8 +187,8 @@ fn main() -> Result<(), dyn (Pretty + Error)> {
             output.entry_exit_plan
         );
     };
-    // `Pretty.fmt` occupies slot 3; `Display.fmt`, reached through `Error`,
-    // is slot 4.
-    assert_eq!(*slot, 4);
+    // `Pretty.fmt` occupies slot 0; `Display.fmt`, reached through `Error`,
+    // is slot 1.
+    assert_eq!(*slot, 1);
     assert_eq!(output.defs.path(*method), "std.builtins.Display::fmt");
 }

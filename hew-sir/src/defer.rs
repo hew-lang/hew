@@ -283,28 +283,48 @@ pub(crate) fn verify_calls(
     module: &crate::SemModule,
     function: &SemFunction,
 ) -> Result<(), &'static str> {
+    fn callee_body(
+        module: &crate::SemModule,
+        callee: crate::CallableId,
+        seen: &mut BTreeSet<crate::CallableId>,
+    ) -> Result<(), &'static str> {
+        if !seen.insert(callee) {
+            return Ok(());
+        }
+        let body = module
+            .functions
+            .iter()
+            .find(|f| f.callable == callee)
+            .ok_or("defer call has no proven non-suspending body")?;
+        for block in &body.blocks {
+            inspect(module, &block.terminator, seen)?;
+        }
+        Ok(())
+    }
     fn inspect(
         module: &crate::SemModule,
         term: &SemTerminator,
         seen: &mut BTreeSet<crate::CallableId>,
     ) -> Result<(), &'static str> {
         match term {
-            SemTerminator::Call { callee, .. } => {
-                if !seen.insert(*callee) {
-                    return Ok(());
-                }
-                let body = module
-                    .functions
+            SemTerminator::Call { callee, .. } => callee_body(module, *callee, seen)?,
+            // The module's tables are the closed set of erasures a trait
+            // object can hold, so a dispatch is proven by every body that
+            // fills its slot.
+            SemTerminator::DynCall { method, .. } => {
+                let fillers: Vec<_> = module
+                    .vtables
                     .iter()
-                    .find(|f| f.callable == *callee)
-                    .ok_or("defer call has no proven non-suspending body")?;
-                for block in &body.blocks {
-                    inspect(module, &block.terminator, seen)?;
+                    .flat_map(|table| &table.slots)
+                    .filter(|slot| slot.method == *method)
+                    .map(|slot| slot.callee)
+                    .collect();
+                for callee in fillers {
+                    callee_body(module, callee, seen)?;
                 }
             }
             SemTerminator::Suspend { .. }
             | SemTerminator::IndirectCall { .. }
-            | SemTerminator::DynCall { .. }
             | SemTerminator::ValueCall { .. } => {
                 return Err("defer call has unproven or suspending effects");
             }

@@ -1189,7 +1189,7 @@ mod tests {
         let path = directory.path().join("admission.hew");
         std::fs::write(
             directory.path().join("host.hew"),
-            "import std.io;\npub fn read() -> string { io.read_line() }",
+            "import std.io;\npub fn read() -> string { io.read_line().unwrap_or(\"\") }",
         )
         .expect("write imported source");
         std::fs::write(

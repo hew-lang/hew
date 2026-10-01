@@ -1,0 +1,13 @@
+import std.io;
+
+fn main() {
+    let first = io.read_line().unwrap_or("<none>");
+    let second = io.read_line().unwrap_or("<none>");
+    println(f"first=[{first}] second=[{second}]");
+    let rest = io.read_all();
+    println(f"rest=[{rest}]");
+    match io.read_line() {
+        .Some(line) => println(f"after=[{line}]"),
+        .None => println("after end"),
+    }
+}

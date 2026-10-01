@@ -587,7 +587,7 @@ deterministic_functions = [
   "std.io.read_all",
   "std.io.scanner.from_stdin",
 ]
-deterministic_endpoints = ["hew_io_read_line", "hew_io_read_all"]
+deterministic_endpoints = ["hew_stdin_read_line"]
 
 [[feature]]
 id = "crypto-random"

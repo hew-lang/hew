@@ -436,36 +436,71 @@ test("v1: switch.variant does not join equal display names across shapes", () =>
   assert.match(trace.final_state.runtime_failures[0].message, /expected variant 1/);
 });
 
-test("v1: read_line hands out successive lines of the replay stdin", () => {
+test("v1: a stdin line read resumes with the raw line bytes, then empty bytes at end of input", () => {
   const trace = run(
     pkg({
-      runtime_families: [PRINT_LN],
-      externs: [{ id: 0, symbol: "hew_io_read_line" }],
+      runtime_families: [PRINT_LN, { id: 1, family: "BytesDecodeUtf8Lossy" }],
+      suspend_kinds: ["NativeIo"],
       functions: [
         fn(0, "main", [
           block(0, [], readLineTerm(0, 1)),
-          block(1, [], printTerm(0, 2), [{ value: 0, own: "owned" }]),
-          block(2, [], readLineTerm(1, 3)),
-          block(3, [], printTerm(1, 4), [{ value: 1, own: "owned" }]),
-          block(4, [], RETURN_UNIT)
+          block(1, [], decodeTerm(0, 10, 2), [{ value: 0, own: "owned" }]),
+          block(2, [], printTerm(10, 3), [{ value: 10, own: "owned" }]),
+          block(3, [], readLineTerm(1, 4)),
+          block(4, [], decodeTerm(1, 11, 5), [{ value: 1, own: "owned" }]),
+          block(5, [], printTerm(11, 6), [{ value: 11, own: "owned" }]),
+          block(6, [], readLineTerm(2, 7)),
+          block(7, [], decodeTerm(2, 12, 8), [{ value: 2, own: "owned" }]),
+          block(8, [], printTerm(12, 9), [{ value: 12, own: "owned" }]),
+          block(9, [], RETURN_UNIT)
         ])
       ]
     }),
-    { inputs: [{ kind: "stdin", data: "first\nsecond\n" }] }
+    { inputs: [{ kind: "stdin", data: "first\r\nsecond" }] }
   );
 
   assert.equal(trace.result, "ok");
-  assert.equal(stdout(trace), "first\nsecond\n");
+  assert.equal(stdout(trace), "first\r\n\nsecond\n\n");
 });
 
-function readLineTerm(dst, to) {
+test("v1: a native I/O suspension other than a stdin line read is refused at load", () => {
+  const tcpRead = pkg({
+    runtime_families: [PRINT_LN],
+    suspend_kinds: ["NativeIo"],
+    functions: [
+      fn(0, "main", [
+        block(0, [], { ...readLineTerm(0, 1), detail: { operation: "TcpRead" } }),
+        block(1, [], RETURN_UNIT, [{ value: 0, own: "owned" }])
+      ])
+    ]
+  });
+  assertRejected(run(tcpRead), "NativeIo::TcpRead");
+});
+
+function decodeTerm(source, dst, to) {
   return {
-    op: "extern.call",
-    extern: 0,
-    args: [],
+    op: "runtime.call",
+    family: 1,
+    args: [{ value: source, decision: "borrow" }],
+    callbacks: [],
     result: { value: dst, own: "owned" },
     result_shape: null,
     normal: { to, args: [dst] },
+    unwind: null,
+    span: null
+  };
+}
+
+function readLineTerm(dst, to) {
+  return {
+    op: "suspend",
+    kind: "NativeIo",
+    detail: { operation: "StdinReadLine" },
+    inputs: [],
+    result: { value: dst, own: "owned" },
+    result_shape: null,
+    resumes: [{ to, args: [dst] }],
+    cancel: { to, args: [] },
     unwind: null,
     span: null
   };
@@ -565,10 +600,6 @@ test("v1: a runtime family the shim table does not know is refused at load", () 
 
 test("v1: an extern symbol with no shim is refused at load", () => {
   assertRejected(run(wouldPrint({ externs: [{ id: 0, symbol: "hew_open_socket" }] })), "hew_open_socket");
-});
-
-test("v1: native I/O suspension is refused at load", () => {
-  assertRejected(run(wouldPrint({ suspend_kinds: ["NativeIo"] })), "NativeIo");
 });
 
 test("v1: a known family with an operation the VM has no shim for is refused", () => {

@@ -18,8 +18,33 @@
       "type": "replay.input"
     },
     {
+      "budget_remaining": 998,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 2,
+      "span": null,
+      "step_count": 2,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step",
+          "ready_id": 1
+        },
+        "kind": "user_event"
+      },
+      "seq": 3,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "phase": "run",
+      "seq": 4,
       "span": null,
       "text": "hello Ada\n",
       "type": "io.stdout"
@@ -27,13 +52,13 @@
     {
       "message": "ok",
       "phase": "run",
-      "seq": 3,
+      "seq": 5,
       "span": null,
       "type": "trace.ended"
     }
   ],
   "final_state": {
-    "budget_remaining": 979,
+    "budget_remaining": 936,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -53,7 +78,7 @@
     "stdout": [
       "hello Ada\n"
     ],
-    "step_count": 21,
+    "step_count": 64,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -68,6 +93,14 @@
       {
         "data": "Ada",
         "kind": "stdin"
+      },
+      {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step",
+          "ready_id": 1
+        },
+        "kind": "user_event"
       }
     ],
     "seed": 21,

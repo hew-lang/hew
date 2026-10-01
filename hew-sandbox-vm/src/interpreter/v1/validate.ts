@@ -12,6 +12,7 @@
 import type { SandboxRejection } from "../types.js";
 import type { PackageV1 } from "./package.js";
 import {
+  SUPPORTED_NATIVE_IO,
   SUPPORTED_SUSPEND_KINDS,
   resolveExternShim,
   resolveRuntimeShim,
@@ -246,19 +247,38 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   }
 
   for (const kind of pkg.suspend_kinds) {
-    if (!SUPPORTED_SUSPEND_KINDS.has(kind)) {
+    const refused =
+      kind === "NativeIo"
+        ? refusedNativeIo(pkg)
+        : SUPPORTED_SUSPEND_KINDS.has(kind)
+          ? null
+          : kind;
+    if (refused !== null) {
       return {
         category: NATIVE_SUSPENSIONS.has(kind)
           ? "native_only"
           : "not_implemented",
         code: UNSUPPORTED,
-        capability: kind,
+        capability: refused,
         message: capabilityMessage(kind, NATIVE_SUSPENSIONS.has(kind)),
         span: null,
       };
     }
   }
 
+  return null;
+}
+
+/// The first native I/O suspension whose operation the VM does not serve.
+function refusedNativeIo(pkg: PackageV1): string | null {
+  for (const function_ of pkg.functions) {
+    for (const block of function_.blocks) {
+      const term = block.term;
+      if (term.op !== "suspend" || term.kind !== "NativeIo") continue;
+      const operation = String(term.detail?.operation);
+      if (!SUPPORTED_NATIVE_IO.has(operation)) return `NativeIo::${operation}`;
+    }
+  }
   return null;
 }
 

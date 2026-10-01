@@ -544,14 +544,16 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
             if slot.slot != expected_slot {
                 refuse(format!(
                     "slot {} for `{}` is out of emitted order; expected {expected_slot}",
-                    slot.slot, slot.method_name
+                    slot.slot,
+                    module.defs.path(slot.method)
                 ));
                 continue;
             }
             let Some(callee) = module.callable(slot.callee) else {
                 refuse(format!(
                     "slot {} for `{}` names no callable",
-                    slot.slot, slot.method_name
+                    slot.slot,
+                    module.defs.path(slot.method)
                 ));
                 continue;
             };

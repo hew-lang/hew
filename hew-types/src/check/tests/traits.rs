@@ -672,19 +672,20 @@ fn qualified_dyn_trait_keeps_foreign_method_order_and_identity() {
         .values()
         .next()
         .expect("concrete argument to foreign trait object");
-    assert_eq!(coercion.trait_bounds[0].trait_id, Some(foreign_trait));
+    let layout = &output.trait_object_layouts[&coercion.target];
+    assert_eq!(layout.closure, [foreign_trait]);
     assert_eq!(
-        coercion
-            .vtable_entries
+        layout
+            .slots
             .iter()
-            .map(|entry| entry.method_name.as_str())
+            .map(|slot| output.defs.name(slot.method).to_string())
             .collect::<Vec<_>>(),
         ["name", "kind"]
     );
-    assert!(coercion
-        .vtable_entries
+    assert!(layout
+        .slots
         .iter()
-        .all(|entry| output.defs.owner(entry.method) == Some(foreign_trait)));
+        .all(|slot| output.defs.owner(slot.method) == Some(foreign_trait)));
 }
 
 #[test]

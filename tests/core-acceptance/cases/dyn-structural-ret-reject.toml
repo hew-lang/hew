@@ -1,0 +1,13 @@
+[[case]]
+id = "dyn-structural-ret-reject"
+intent = "An inherent method whose return type differs from the trait method's does not satisfy the trait structurally."
+source = "cases/dyn-structural-ret-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 5
+column = 23
+message = "type mismatch: expected `dyn Named`, found `W`"

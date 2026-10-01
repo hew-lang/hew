@@ -818,15 +818,41 @@ pub(super) fn check(
                         }
                     }
                 } else if let CallTarget::DynamicVtable { method, .. } = &call.target {
-                    // Every concrete-to-dyn coercion publishes its executable
-                    // vtable entries by declaration identity. A dyn call can
-                    // reach any implementation filed for this trait method.
-                    let candidates = output
+                    // A dyn call can reach the filler of its slot in every
+                    // erasure whose layout carries the method: the concrete
+                    // type's own method of that name or its impl of the
+                    // declaring trait (nominal, default or structural).
+                    let method_name = output.defs.name(*method);
+                    let candidates: Vec<_> = output
                         .dyn_trait_coercions
                         .values()
-                        .flat_map(|coercion| &coercion.vtable_entries)
-                        .filter(|entry| entry.method == *method)
-                        .filter_map(|entry| entry.impl_method);
+                        .filter_map(|coercion| {
+                            let slot = output
+                                .trait_object_layouts
+                                .get(&coercion.target)?
+                                .slots
+                                .iter()
+                                .find(|slot| slot.method == *method)?;
+                            let instance = ResolvedTy::from_ty(&coercion.concrete_type)
+                                .ok()?
+                                .impl_receiver_instance(&output.defs)?;
+                            Some((slot.declaring_trait, instance.nominal))
+                        })
+                        .flat_map(|(declaring_trait, nominal)| {
+                            output.dispatch.methods_of(nominal).filter_map(
+                                move |(name, owner, candidate)| {
+                                    (name == method_name
+                                        && (owner
+                                            == hew_types::check::dispatch_table::MethodOwner::Inherent
+                                            || owner
+                                                == hew_types::check::dispatch_table::MethodOwner::Trait(
+                                                    declaring_trait,
+                                                )))
+                                    .then_some(candidate)
+                                },
+                            )
+                        })
+                        .collect();
                     for candidate in candidates {
                         let next_env = callee_env(output, &call.span, candidate, &caller_env, 0);
                         queue.push_back((

@@ -1,0 +1,13 @@
+[[case]]
+id = "dyn-structural-defaults-reject"
+intent = "A trait whose methods all carry defaults is not satisfied structurally; it needs an explicit impl."
+source = "cases/dyn-structural-defaults-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 5
+column = 23
+message = "type mismatch: expected `dyn Hi`, found `W`"

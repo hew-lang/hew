@@ -310,7 +310,10 @@ impl Render for Box<string> {
         "same-leaf imported functions must retain distinct source identities"
     );
 
-    let index = hew_hir::dispatch::build_trait_impl_method_index(&output.module.items);
+    let index = hew_hir::dispatch::build_trait_impl_method_index(
+        &output.module.items,
+        &output.module.structural_witnesses,
+    );
     let left_specialized = index
         .iter()
         .find(|(key, _)| {

@@ -1611,7 +1611,47 @@ impl Checker {
             }
         }
 
+        self.record_structural_witnesses(&trait_name, &concrete_ty, &required);
         true
+    }
+
+    /// Publish the inherent method that fills each required method of
+    /// `trait_key` or one of its super-traits for `concrete_ty`.
+    fn record_structural_witnesses(
+        &mut self,
+        trait_key: &str,
+        concrete_ty: &Ty,
+        required: &[String],
+    ) {
+        let Some(self_type) = ResolvedTy::from_ty(concrete_ty)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance(&self.defs))
+            .map(|instance| instance.nominal)
+        else {
+            return;
+        };
+        for method_name in required {
+            let Some((declaring_key, _)) =
+                self.lookup_trait_method_with_origin(trait_key, method_name)
+            else {
+                continue;
+            };
+            let (Some((declaring_trait, method)), Some(inherent)) = (
+                self.trait_method_ids_for_key(&declaring_key, method_name),
+                self.inherent_impl_method_declaration(concrete_ty, method_name),
+            ) else {
+                continue;
+            };
+            let witness = StructuralWitness {
+                declaring_trait,
+                self_type,
+                method,
+                inherent,
+            };
+            if !self.structural_witnesses.contains(&witness) {
+                self.structural_witnesses.push(witness);
+            }
+        }
     }
 
     /// Look up a method on a trait, walking super-traits if needed.

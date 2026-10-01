@@ -502,9 +502,6 @@ pub(crate) fn require_dyn_trait_ids(dyn_ty: &ResolvedTy) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemVtableSlot {
     pub slot: u32,
-    /// The trait that declares the method, for diagnostics only.
-    pub trait_name: String,
-    pub method_name: String,
     /// The trait method declaration this slot dispatches.
     pub method: hew_types::DefId,
     /// The exact implementation this concrete type contributes.

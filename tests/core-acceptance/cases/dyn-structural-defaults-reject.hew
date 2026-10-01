@@ -1,0 +1,5 @@
+trait Hi { fn hi(self) -> string { "hi" } }
+type W { id: i64; }
+impl W { fn hi(self) -> string { "w" } }
+fn d(n: dyn Hi) -> string { n.hi() }
+fn main() { println(d(W { id: 1 })); }

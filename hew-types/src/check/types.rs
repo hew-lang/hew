@@ -801,12 +801,9 @@ pub struct TypeCheckOutput {
     /// `Self`-returning methods produce a [`TypeErrorKind::TraitNotObjectSafe`]
     /// diagnostic and no entry is inserted for that site.
     ///
-    /// Multi-bound `dyn (A + B)` coercion sites flatten into a single
-    /// [`DynCoercion`] whose `trait_name` joins the bound names with `+` and
-    /// whose `method_table` follows the trait object's layout; each entry's
-    /// method name is prefixed by its declaring trait (`Trait::method`) for
-    /// diagnostics.
     pub dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Every structural trait satisfaction the checker admitted.
+    pub structural_witnesses: Vec<StructuralWitness>,
     /// The conversion chosen at each failure edge, keyed by the span of the
     /// `?` or `return error` expression.
     pub error_conversions: HashMap<SpanKey, ErrorConversion>,
@@ -1153,103 +1150,33 @@ impl IndirectCallCandidates {
     }
 }
 
-/// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
+/// Checker-resolved `T → dyn Trait` erasure at one site.
 ///
-/// Populated by the checker for every accepted coercion of a concrete
-/// receiver into a trait-object argument. Downstream MIR construction and
-/// LLVM vtable emission consume this fail-closed: missing entry at a known
-/// coercion span is a hard error during lowering.
-///
-/// The `method_table` is ordered: vtable slot index `i` (after the
-/// runtime-fixed `drop_in_place`/`size_of`/`align_of` prefix triple defined
-/// in `hew-runtime/src/trait_object.rs`) maps to the i-th entry in
-/// `method_table`. The order is the trait object's layout
-/// (`Checker::dyn_layout`): supertraits before the traits that extend them,
-/// bounds in written order, one entry per trait method declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DynAssocBinding {
-    /// Originating trait name; qualifies `assoc_name` for multi-bound objects.
-    pub trait_name: String,
-    /// Associated type declared by `trait_name`.
-    pub assoc_name: String,
-    /// Fully projected binding type.
-    pub ty: Ty,
-}
-
-/// Canonical vtable intern key for a concrete-to-dyn coercion.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DynVtableKey {
-    /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
-    pub trait_name: String,
-    /// Exact bound declarations in source order. A compiler predicate has no
-    /// declaration and keeps `None` in its position.
-    pub trait_ids: Vec<Option<crate::DefId>>,
-    /// Resolved concrete `Self` type at the coercion site.
-    pub concrete_type: Ty,
-    /// Canonical associated-type bindings sorted by `(trait_name, assoc_name)`.
-    pub assoc_bindings: Vec<DynAssocBinding>,
-}
-
-/// Checker-authored vtable slot entry with substituted method signature.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DynVtableEntry {
-    /// Originating trait name for this slot.
-    pub trait_name: String,
-    /// Trait method name as declared in the trait.
-    pub method_name: String,
-    /// The trait method declaration this slot dispatches. A dispatch through
-    /// the slot names the same declaration.
-    pub method: crate::DefId,
-    /// Implementer-side function key (`Type::method`).
-    pub impl_fn_key: String,
-    /// Declaration identity of the implementer-side method that fills this
-    /// slot. `None` when the impl was matched structurally or comes from a
-    /// primitive/builtin registry that mints no source declaration; a
-    /// consumer that needs an executable target fails closed on `None`
-    /// rather than recovering one from `impl_fn_key`.
-    pub impl_method: Option<crate::DefId>,
-    /// Caller-side signature after substituting trait type parameters and
-    /// associated-type bindings (e.g. `Self::Item` -> `int`).
-    pub signature: FnSig,
-}
-
+/// The slot list is the target's layout
+/// (`TypeCheckOutput::trait_object_layouts[target]`); each slot is filled by
+/// the implementation a static call of the slot's method on `concrete_type`
+/// reaches, so the erasure carries no table of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynCoercion {
-    /// The canonical trait-object type the value is erased into; its layout
-    /// is `TypeCheckOutput::trait_object_layouts[target]`.
+    /// The canonical trait-object type the value is erased into.
     pub target: ResolvedTy,
-    /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
-    pub trait_name: String,
-    /// Ordered checker-resolved bounds of the target trait object. Each
-    /// declared trait carries its exact declaration identity, including when
-    /// it has no methods and therefore contributes no vtable entry.
-    pub trait_bounds: Vec<crate::ty::TraitObjectBound>,
     /// Resolved concrete `Self` type at the coercion site.
     pub concrete_type: Ty,
-    /// Canonical vtable key used to distinguish projections such as
-    /// `dyn Iterator<Item = int>` from `dyn Iterator<Item = string>`.
-    pub vtable_key: DynVtableKey,
-    /// Canonical associated-type binding side-table entries, qualified by
-    /// originating trait and sorted by `(trait_name, assoc_name)`.
-    pub assoc_bindings: Vec<DynAssocBinding>,
-    /// Ordered vtable entries. Each entry carries the substituted caller-side
-    /// method signature at the trait-object boundary.
-    pub vtable_entries: Vec<DynVtableEntry>,
-    /// Ordered `(method_name, impl_fn_key)` pairs naming the impl-side
-    /// resolution for each trait method.
-    ///
-    /// * `method_name` is the trait method's declared name. For multi-bound
-    ///   coercions it is prefixed by `Trait::` so the originating trait is
-    ///   recoverable.
-    /// * `impl_fn_key` is the implementer-side identifier in the shape
-    ///   `<Type>::<method>` for user types (matches the key under which
-    ///   the impl method is registered in [`Checker::fn_sigs`]). For
-    ///   primitive and compiler-builtin receivers the key is
-    ///   `<canonical>::<method>` where `<canonical>` is
-    ///   [`Ty::canonical_lowering_name`] / the builtin-generic name; the
-    ///   impl signature itself lives in
-    ///   [`Checker::primitive_trait_impls`].
-    pub method_table: Vec<(String, String)>,
+}
+
+/// An inherent method that satisfies a trait method structurally: with
+/// `impl Widget { fn name(self) }` and no `impl Named for Widget`, `Widget`
+/// fills `Named.name` with its own `name`. Static and `dyn` dispatch reach
+/// the inherent declaration through this fact; a nominal impl of the trait
+/// takes precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructuralWitness {
+    pub declaring_trait: crate::DefId,
+    pub self_type: crate::NominalId,
+    /// The trait method declaration.
+    pub method: crate::DefId,
+    /// The inherent method declaration that fills it.
+    pub inherent: crate::DefId,
 }
 
 /// Checker-resolved metadata for a method call on a `dyn Trait` receiver.
@@ -3589,6 +3516,9 @@ pub struct Checker {
     /// into `TypeCheckOutput::dyn_trait_coercions` at the end of
     /// `check_program`.
     pub(super) dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Structural satisfactions, published as
+    /// `TypeCheckOutput::structural_witnesses`.
+    pub(super) structural_witnesses: Vec<StructuralWitness>,
     /// Layouts recorded by [`Checker::dyn_layout`], published through
     /// `TypeCheckOutput::trait_object_layouts`.
     pub(super) trait_object_layouts:
@@ -4449,6 +4379,7 @@ impl Checker {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            structural_witnesses: Vec::new(),
             trait_object_layouts: HashMap::new(),
             error_conversions: HashMap::new(),
             from_impls: Vec::new(),

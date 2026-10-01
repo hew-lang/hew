@@ -22,9 +22,7 @@ use hew_types::DynCoercion;
 use hew_types::Ty;
 
 /// `i64 → dyn Display` records a `DynCoercion` whose `concrete_type` is the
-/// canonical integer kind (`i64` after defaulting from `i64`), whose
-/// `trait_name` is `Display`, and whose `method_table` contains the trait's
-/// single declared method (`fmt`) mapped to the primitive impl key.
+/// canonical integer kind and whose target's layout has the one `fmt` slot.
 #[test]
 fn int_to_dyn_display_records_coercion_entry() {
     let output = typecheck(
@@ -52,18 +50,20 @@ fn int_to_dyn_display_records_coercion_entry() {
         .values()
         .next()
         .expect("entry exists");
-    assert_eq!(entry.trait_name, "Display");
     assert_eq!(entry.concrete_type, Ty::I64);
+    let layout = &output.trait_object_layouts[&entry.target];
     assert_eq!(
-        entry.method_table,
-        vec![("fmt".to_string(), "i64::fmt".to_string())],
-        "method_table should map trait method `fmt` to the impl key for i64"
+        layout
+            .slots
+            .iter()
+            .map(|slot| output.defs.name(slot.method).to_string())
+            .collect::<Vec<_>>(),
+        ["fmt"]
     );
 }
 
 /// Two distinct concrete types coerced to `dyn Display` produce two
-/// independent side-table entries.  Each entry's `concrete_type` and
-/// `method_table` reflect that site's receiver.
+/// independent side-table entries over one target layout.
 #[test]
 fn two_concrete_types_to_dyn_display_produce_distinct_entries() {
     let output = typecheck(
@@ -101,16 +101,7 @@ fn two_concrete_types_to_dyn_display_produce_distinct_entries() {
         .find(|e| e.concrete_type == Ty::I64)
         .expect("i64 entry");
 
-    assert_eq!(bool_entry.trait_name, "Display");
-    assert_eq!(
-        bool_entry.method_table,
-        vec![("fmt".to_string(), "bool::fmt".to_string())]
-    );
-    assert_eq!(int_entry.trait_name, "Display");
-    assert_eq!(
-        int_entry.method_table,
-        vec![("fmt".to_string(), "i64::fmt".to_string())]
-    );
+    assert_eq!(bool_entry.target, int_entry.target);
 }
 
 /// A trait with a generic method, used in `dyn` position, is rejected with
@@ -259,19 +250,9 @@ fn main() {
         .values()
         .next()
         .expect("coercion entry");
-    assert_eq!(
-        entry.assoc_bindings,
-        vec![hew_types::DynAssocBinding {
-            trait_name: "Iterator".to_string(),
-            assoc_name: "Item".to_string(),
-            ty: Ty::I32,
-        }]
-    );
-    assert_eq!(entry.vtable_entries.len(), 1);
-    assert_eq!(
-        entry.vtable_entries[0].signature.return_type,
-        Ty::option(Ty::I32)
-    );
+    let layout = &output.trait_object_layouts[&entry.target];
+    assert_eq!(layout.slots.len(), 1);
+    assert_eq!(layout.slots[0].signature.return_type, Ty::option(Ty::I32));
 }
 
 #[test]
@@ -410,21 +391,19 @@ fn main() {
         "expected clean check, got: {:#?}",
         output.errors
     );
-    let keys: Vec<_> = output
+    let returns: Vec<_> = output
         .dyn_trait_coercions
         .values()
-        .map(|entry| entry.vtable_key.clone())
+        .map(|entry| {
+            output.trait_object_layouts[&entry.target].slots[0]
+                .signature
+                .return_type
+                .clone()
+        })
         .collect();
-    assert_eq!(keys.len(), 2, "expected two vtable keys: {keys:#?}");
-    assert_ne!(keys[0], keys[1]);
-    assert!(keys.iter().any(|key| key
-        .assoc_bindings
-        .iter()
-        .any(|binding| binding.assoc_name == "Item" && binding.ty == Ty::I32)));
-    assert!(keys.iter().any(|key| key
-        .assoc_bindings
-        .iter()
-        .any(|binding| binding.assoc_name == "Item" && binding.ty == Ty::String)));
+    assert_eq!(returns.len(), 2, "expected two erasures: {returns:#?}");
+    assert!(returns.contains(&Ty::option(Ty::I32)));
+    assert!(returns.contains(&Ty::option(Ty::String)));
 }
 
 #[test]
@@ -464,8 +443,8 @@ fn main() {
         .dyn_trait_coercions
         .values()
         .next()
-        .and_then(|coercion| coercion.vtable_entries.first())
-        .expect("vtable entry");
+        .and_then(|coercion| output.trait_object_layouts[&coercion.target].slots.first())
+        .expect("layout slot");
     assert_eq!(entry.signature.return_type, Ty::option(Ty::I32));
     assert!(
         !matches!(entry.signature.return_type, Ty::AssocType { .. }),
@@ -475,12 +454,10 @@ fn main() {
 
 /// A bare `impl T { fn name(self) -> string }` that structurally matches a
 /// trait `Named { fn name(self) -> string }` (no explicit `impl Named for T`)
-/// still populates the `method_table` for a `T → dyn Named` coercion.  This
-/// is the structural-trait-impl path: codegen vtable emission cannot
-/// distinguish nominal from structural matches when building the slot
-/// resolution, so the checker must surface both.
+/// publishes a structural witness naming the inherent declaration, which
+/// fills the `dyn Named` slot.
 #[test]
-fn structural_impl_populates_method_table_for_dyn_named() {
+fn structural_impl_publishes_its_witness_for_dyn_named() {
     let output = typecheck_isolated(
         r#"trait Named {
     fn name(val: Self) -> string;
@@ -520,15 +497,9 @@ fn main() {
         .values()
         .next()
         .expect("entry exists");
-    assert_eq!(entry.trait_name, "Named");
     assert_eq!(
         entry.concrete_type,
         Ty::named_in(&output.defs, "Widget", vec![])
-    );
-    assert_eq!(
-        entry.method_table,
-        vec![("name".to_string(), "Widget::name".to_string())],
-        "structural-match method_table should map `name` to `Widget::name`"
     );
     let inherent = output
         .impl_method_declaration_ids
@@ -539,8 +510,14 @@ fn main() {
         "the inherent impl must publish a declaration identity: {:#?}",
         output.impl_method_declaration_ids
     );
+    let slot = &output.trait_object_layouts[&entry.target].slots[0];
     assert_eq!(
-        entry.vtable_entries[0].impl_method, inherent,
+        output
+            .structural_witnesses
+            .iter()
+            .find(|witness| witness.method == slot.method)
+            .map(|witness| witness.inherent),
+        inherent,
         "a structurally filled slot must name the inherent declaration a direct \
          `Widget.name(..)` call targets, not a second identity"
     );

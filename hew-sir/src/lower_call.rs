@@ -654,13 +654,16 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         value: &HirExpr,
         concrete_type: &ResolvedTy,
-        entries: &[hew_types::DynVtableEntry],
     ) -> Result<ValueId, String> {
         let dyn_ty = self.ty(&expr.ty);
         let concrete_ty = self.ty(concrete_type);
-        let vtable = self
-            .service
-            .request_vtable(&dyn_ty, &concrete_ty, entries)?;
+        let vtable = self.service.request_vtable(
+            &expr.ty,
+            &dyn_ty,
+            &concrete_ty,
+            expr.site,
+            &self.substitution,
+        )?;
         if self.ty(&value.ty) != concrete_ty {
             return Err(format!(
                 "erasure input `{}` differs from the checker's concrete type `{}`",

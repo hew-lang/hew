@@ -739,6 +739,9 @@ else needs `impl Display for {rendered}`)"
                 method_name: "at".to_string(),
                 slot,
                 signature: sig,
+                effect: self
+                    .dyn_slot_effect(traits, layout_slot.method)
+                    .expect("dyn_layout records the layout it returns"),
             },
         );
         self.record_method_call_receiver_kind(

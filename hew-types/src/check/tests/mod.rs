@@ -298,6 +298,7 @@ pub(super) fn make_checker_with_trait(
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
+                suspends: false,
                 name: Ident::new(name),
                 type_params,
                 params: vec![Param {

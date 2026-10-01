@@ -1,0 +1,24 @@
+trait Ticker {
+    fn[suspends] tick(self) -> i64;
+}
+
+type Clock {
+    n: i64;
+}
+
+impl Ticker for Clock {
+    fn tick(self) -> i64 {
+        self.n
+    }
+}
+
+fn run(t: dyn Ticker) {
+    defer {
+        println(t.tick());
+    }
+    println(t.tick() + 1);
+}
+
+fn main() {
+    run(Clock { n: 1 });
+}

@@ -1779,9 +1779,36 @@ impl Checker {
                         );
                         return Err(());
                     }
-                    // Unknown actor: keep the bare name so the pre-existing
-                    // unknown-actor diagnostics downstream fire unchanged.
-                    super::types::BareActorResolution::Unknown => Some(name.to_string()),
+                    // A type that is not an actor or supervisor cannot be
+                    // spawned.
+                    super::types::BareActorResolution::Unknown
+                        if self.type_def_at(name.name.as_str()).is_some() =>
+                    {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &target.1,
+                            format!(
+                                "`{name}` is not an actor; `spawn` starts an actor or a supervisor"
+                            ),
+                        );
+                        return Err(());
+                    }
+                    // A name that resolves to nothing is unresolved (#3623).
+                    super::types::BareActorResolution::Unknown => {
+                        let similar = crate::error::find_similar(
+                            name.name.as_str(),
+                            self.type_defs
+                                .keys()
+                                .map(|id| self.defs.path(id.declaration())),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &target.1,
+                            format!("undefined actor `{name}`"),
+                            similar,
+                        );
+                        return Err(());
+                    }
                 }
             }
             // Handle module-qualified actor: spawn module.ActorName(args)

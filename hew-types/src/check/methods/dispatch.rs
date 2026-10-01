@@ -2772,6 +2772,9 @@ impl Checker {
                             method_name: method.to_string(),
                             slot: layout_slot.slot,
                             signature: sig.clone(),
+                            effect: self
+                                .dyn_slot_effect(traits, layout_slot.method)
+                                .expect("dyn_layout records the layout it returns"),
                         },
                     );
                     if sig.consumes_receiver {

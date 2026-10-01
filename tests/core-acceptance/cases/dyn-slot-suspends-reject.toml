@@ -1,0 +1,13 @@
+[[case]]
+id = "dyn-slot-suspends-reject"
+intent = "An impl whose body suspends cannot be erased under a trait method that is not `fn[suspends]`; the erasure names the suspending call."
+source = "cases/dyn-slot-suspends-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 24
+column = 9
+message = "E_DYN_SLOT_SUSPENDS: function `Clock::<impl Ticker for Clock>::tick` suspends via `sleep(...)`, so it cannot fill `Ticker::tick` in `dyn Ticker`; that trait method never suspends unless it is declared `fn[suspends]`"

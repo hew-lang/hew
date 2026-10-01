@@ -2577,6 +2577,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
+                suspends: false,
                 name: Ident::new("do_it"),
                 type_params: None,
                 params: vec![Param {
@@ -2622,6 +2623,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
@@ -2675,6 +2677,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("map"),
             type_params: Some(vec![TypeParam {
                 name: Ident::new("U"),
@@ -2721,6 +2724,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {

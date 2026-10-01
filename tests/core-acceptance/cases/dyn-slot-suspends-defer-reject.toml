@@ -1,0 +1,13 @@
+[[case]]
+id = "dyn-slot-suspends-defer-reject"
+intent = "A `fn[suspends]` trait method may suspend, so a dispatch through it in a deferred body is refused; the control for dyn-slot-plain-in-defer."
+source = "cases/dyn-slot-suspends-defer-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 17
+column = 17
+message = "a deferred body cannot suspend: `tick(...)` may suspend"

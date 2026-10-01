@@ -3127,6 +3127,7 @@ fn import_selected_trait_from_module() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("display"),
             type_params: None,
             params: vec![],
@@ -3171,6 +3172,7 @@ fn import_private_trait_not_registered() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("internal_op"),
             type_params: None,
             params: vec![],

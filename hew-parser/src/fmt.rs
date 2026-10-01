@@ -1713,7 +1713,7 @@ impl<'a> Formatter<'a> {
         }
         self.flush_after_attributes(&m.attributes);
         self.write_indent();
-        self.write("fn ");
+        self.write(if m.suspends { "fn[suspends] " } else { "fn " });
         self.write_ident(m.name);
         if m.consumes_self {
             self.format_opt_type_params(m.type_params.as_ref());

@@ -774,7 +774,10 @@ impl Checker {
             assoc_bindings: assoc_bindings.clone(),
         };
 
+        self.record_dyn_slot_obligations(traits, &vtable_entries, span);
+        let target = self.dyn_coercion_target(traits, span)?;
         Some(DynCoercion {
+            target,
             trait_name: composite_trait_name,
             trait_bounds: traits.to_vec(),
             concrete_type: concrete_type.clone(),

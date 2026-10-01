@@ -1766,22 +1766,7 @@ impl LowerCtx {
             ));
             return self.unsupported_expr(span, "dyn-trait identity mismatch");
         }
-        let dyn_ty = match ResolvedTy::from_ty(&Ty::TraitObject {
-            traits: coercion.trait_bounds.clone(),
-        }) {
-            Ok(ty) => ty,
-            Err(error) => {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "dyn-trait coercion".to_string(),
-                        reason: error.to_string(),
-                    },
-                    span.clone(),
-                    "checked trait-object type failed boundary conversion",
-                ));
-                return self.unsupported_expr(span, "dyn-trait boundary type");
-            }
-        };
+        let dyn_ty = coercion.target.clone();
         // The checker side table is keyed by source span and may preserve
         // the original concrete provenance when an already-erased value is
         // passed to the same `dyn Trait` type. Re-wrapping that value would

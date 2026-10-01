@@ -110,7 +110,6 @@
             },
             "detail": {
               "actor": 0,
-              "deadline_ns": null,
               "message": 1451298403,
               "policy": "wait",
               "sealed": false
@@ -273,7 +272,6 @@
             },
             "detail": {
               "actor": 0,
-              "deadline_ns": null,
               "message": 1451298403,
               "policy": "wait",
               "sealed": false
@@ -1024,7 +1022,7 @@
         },
         {
           "fields": [],
-          "name": "Timeout"
+          "name": "TimedOut"
         },
         {
           "fields": [],
@@ -1058,7 +1056,7 @@
         "ActorErrorPartition": 9,
         "ActorErrorRejected": 0,
         "ActorErrorRoutingFailed": 6,
-        "ActorErrorTimeout": 4,
+        "ActorErrorTimedOut": 4,
         "ActorErrorTrapped": 2
       }
     },
@@ -1077,10 +1075,6 @@
         {
           "fields": [],
           "name": "Closed"
-        },
-        {
-          "fields": [],
-          "name": "NodeRoutingNotWired"
         },
         {
           "fields": [],
@@ -1118,17 +1112,16 @@
       "id": 4,
       "name": "SendError",
       "runtime_tags": {
-        "SendErrorBackpressure": 9,
-        "SendErrorCancelled": 6,
+        "SendErrorBackpressure": 8,
+        "SendErrorCancelled": 5,
         "SendErrorClosed": 1,
-        "SendErrorDead": 10,
+        "SendErrorDead": 9,
         "SendErrorFull": 0,
-        "SendErrorLocalShutdown": 5,
-        "SendErrorNodeRoutingNotWired": 2,
-        "SendErrorPartition": 3,
-        "SendErrorStaleRef": 4,
-        "SendErrorUnauthorized": 8,
-        "SendErrorVersionMismatch": 7
+        "SendErrorLocalShutdown": 4,
+        "SendErrorPartition": 2,
+        "SendErrorStaleRef": 3,
+        "SendErrorUnauthorized": 7,
+        "SendErrorVersionMismatch": 6
       }
     }
   ],

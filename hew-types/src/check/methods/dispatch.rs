@@ -219,6 +219,9 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if let Some(param) = self.binder_call_head(receiver) {
+            return self.check_binder_associated_call(param, method, args, span);
+        }
         let dotted_type_head = self.resolve_dotted_type_head(receiver, method);
         if let Some(head) = dotted_type_head.as_ref() {
             if let Some(result) = self.dispatch_dotted_type_member(
@@ -426,10 +429,8 @@ impl Checker {
                         method,
                         span,
                     );
-                    let assoc_bindings = sig.type_param_assoc_bindings.clone();
                     let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
-                        &assoc_bindings,
                         None,
                         args,
                         span,
@@ -1358,7 +1359,7 @@ impl Checker {
                             receiver_args,
                             method,
                         ) {
-                            let applied_sig = self.apply_instantiated_call_signature(
+                            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                                 &sig,
                                 None,
                                 args,
@@ -1433,7 +1434,7 @@ impl Checker {
                             // The hand-rolled loop that used to live here skipped
                             // both, so a generic handler reported `expected T` at
                             // every call site.
-                            let applied_sig = self.apply_instantiated_call_signature(
+                            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                                 &sig,
                                 None,
                                 args,
@@ -1496,7 +1497,7 @@ impl Checker {
                         receiver_args,
                         method,
                     ) {
-                        let applied_sig = self.apply_instantiated_call_signature(
+                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                             &sig,
                             None,
                             args,
@@ -1872,7 +1873,7 @@ impl Checker {
                             self.actor_member(*head, method, crate::DeclarationKind::ActorReceive)
                         })
                         .flatten();
-                    let applied_sig = self.apply_instantiated_call_signature(
+                    let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
                         None,
                         args,
@@ -2038,7 +2039,7 @@ impl Checker {
                     //      `build(consume self)`, a `#[linear]` type's consuming
                     //      method). The resolved sig carries the consume fact.
                     let consumes_receiver = sig.consumes_receiver
-                        || self.named_type_method_consumes_receiver(name, method)
+                        || self.named_type_method_consumes_receiver(&resolved, method)
                         || self.named_type_inherent_close_consumes_receiver(
                             resolved.head().expect("named receiver has a head"),
                             method,
@@ -2285,12 +2286,8 @@ impl Checker {
                     Ty::Named {
                         head: crate::TypeHead::Param(parameter),
                         ..
-                    } => self
-                        .checking_declaration
-                        .and_then(|declaration| self.fn_sigs.get(&declaration))
-                        .filter(|sig| sig.type_params.contains(parameter))
-                        .and_then(|sig| sig.type_param_bounds.get(parameter.spelling.as_str()))
-                        .cloned(),
+                    } => Some(self.active_bounds_of(parameter.id))
+                        .filter(|bounds| !bounds.is_empty()),
                     _ => None,
                 };
                 if let (
@@ -2307,37 +2304,29 @@ impl Checker {
                     // supertrait-redeclaration case (plan §4 V14) where a bound
                     // `T: B` with `trait B: A` and both A and B declaring the same
                     // method reaches two distinct declaring traits.
-                    let mut hits: Vec<(String, String, FnSig)> = Vec::new();
-                    for bound_trait in &bounds {
-                        // Keep the source spelling for diagnostics, but resolve
-                        // the dispatch lookup through the declaration owner.
-                        // An imported alias such as `AlphaRender` is not a
-                        // declaration identity and must never reach HIR as one.
-                        let bound_trait_key = self.trait_ref_lookup_key(bound_trait);
+                    let mut hits: Vec<(crate::DefId, FnSig)> = Vec::new();
+                    for bound in &bounds {
                         let declaring =
-                            self.collect_all_declaring_traits_for_method(&bound_trait_key, method);
+                            self.collect_all_declaring_traits_for_method(bound.trait_id, method);
                         for declaring_trait in declaring {
                             // Resolve the sig from the declaring trait directly.
                             if let Some((_, sig)) =
-                                self.lookup_trait_method_with_origin(&declaring_trait, method)
+                                self.lookup_trait_method_with_origin(declaring_trait, method)
                             {
-                                hits.push((bound_trait.clone(), declaring_trait, sig));
+                                hits.push((declaring_trait, sig));
                             }
                         }
                     }
                     // Deduplicate by declaring_trait — same origin via multiple bounds is NOT ambiguous.
-                    hits.sort_by(|a, b| a.1.cmp(&b.1));
-                    hits.dedup_by_key(|h| h.1.clone());
+                    hits.sort_by_key(|hit| hit.0);
+                    hits.dedup_by_key(|hit| hit.0);
 
                     if hits.len() == 1 {
-                        let (bound_trait, declaring_trait, mut trait_sig) =
-                            hits.into_iter().next().unwrap();
+                        let (declaring_id, mut trait_sig) = hits.into_iter().next().unwrap();
+                        let declaring_trait = self.defs.path(declaring_id).to_string();
                         // Replace `Self` references with the type parameter type.
                         let self_ty = resolved.clone();
-                        let self_parameter = crate::ParamHead::receiver(
-                            self.lookup_declaration(&declaring_trait)
-                                .expect("resolved declaring trait owns Self"),
-                        );
+                        let self_parameter = crate::ParamHead::receiver(declaring_id);
                         for param_ty in &mut trait_sig.params {
                             *param_ty = param_ty.substitute_type_param(self_parameter, &self_ty);
                         }
@@ -2360,7 +2349,7 @@ impl Checker {
                                 span,
                             );
                         }
-                        let applied_sig = self.apply_instantiated_call_signature(
+                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                             &trait_sig,
                             None,
                             args,
@@ -2407,8 +2396,7 @@ impl Checker {
                         }
                         // Record the StaticTraitDispatch rewrite for HIR consumption.
                         let target = self
-                            .trait_method_call_target_ids(&declaring_trait, method)
-                            .or_else(|| self.trait_method_call_target_ids(&bound_trait, method))
+                            .trait_method_ids_of(declaring_id, method)
                             .map_or_else(
                                 || CallTarget::Unsupported {
                                     reason: format!(
@@ -2437,8 +2425,9 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
-                        let declaring_traits: Vec<&str> =
-                            hits.iter().map(|h| h.1.as_str()).collect();
+                        let mut declaring_traits: Vec<&str> =
+                            hits.iter().map(|hit| self.defs.path(hit.0)).collect();
+                        declaring_traits.sort_unstable();
                         self.report_error(
                             TypeErrorKind::AmbiguousTraitMethod,
                             span,
@@ -2656,21 +2645,22 @@ impl Checker {
                 }
                 if let Some(layout_slot) = matching.pop() {
                     let bound = &traits[layout_slot.bound];
-                    let Some(mut sig) = self.lookup_trait_method(&layout_slot.trait_key, method)
+                    let Some(mut sig) = self.lookup_trait_method(layout_slot.trait_id, method)
                     else {
                         // JUSTIFIED: the layout lists only methods registered
                         // in `trait_defs`, which always resolve.
                         unreachable!(
                             "trait method `{}.{method}` is in a dyn layout but is not resolvable",
-                            layout_slot.trait_key
+                            layout_slot.trait_spelling
                         );
                     };
-                    let pid_send_dispatch =
-                        layout_slot.trait_key == "std.builtins.Pid" && method == "send";
+                    let pid_send_dispatch = self.defs.path(layout_slot.trait_id)
+                        == "std.builtins.Pid"
+                        && method == "send";
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::TraitObject {
-                            trait_name: bound.trait_name.clone(),
+                            trait_name: self.defs.path(layout_slot.trait_id).to_string(),
                         },
                     );
                     // Apply trait-type-param and associated-type substitution
@@ -2708,7 +2698,7 @@ impl Checker {
                         let resolved_ty = self.subst.resolve(&receiver_ty);
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
                     }
-                    let applied_sig = self.apply_instantiated_call_signature(
+                    let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
                         None,
                         args,
@@ -2908,5 +2898,213 @@ impl Checker {
             }
         }
         self.errors.push(error);
+    }
+}
+
+impl Checker {
+    /// The generic binder a call head names: `T` in `T.make(n)` when `T` is
+    /// no value in scope.
+    pub(in crate::check) fn binder_call_head(
+        &mut self,
+        receiver: &Spanned<Expr>,
+    ) -> Option<crate::ParamHead> {
+        let Expr::Ident(name) = &receiver.0 else {
+            return None;
+        };
+        if self.env.lookup_ref(*name).is_some() {
+            return None;
+        }
+        let path = hew_parser::ast::Path::single(*name, receiver.1.clone());
+        match self.resolve_type_path(&path)? {
+            super::scope::Resolution::Param(id) => Some(crate::ParamHead::new(id, name.name)),
+            _ => None,
+        }
+    }
+
+    /// The associated function `method` a bound on `param` declares, with
+    /// the bound that reaches it, or the refusal to report.
+    fn binder_trait_method(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+    ) -> Result<(crate::DefId, FnSig, TraitRef), Box<(TypeErrorKind, String)>> {
+        let mut hits: Vec<(crate::DefId, FnSig, TraitRef)> = Vec::new();
+        for bound in self.active_bounds_of(param.id) {
+            for declaring in self.collect_all_declaring_traits_for_method(bound.trait_id, method) {
+                if hits.iter().any(|(known, _, _)| *known == declaring) {
+                    continue;
+                }
+                if let Some((_, sig)) = self.lookup_trait_method_with_origin(declaring, method) {
+                    hits.push((declaring, sig, bound.clone()));
+                }
+            }
+        }
+        if hits.len() > 1 {
+            let mut declaring: Vec<&str> = hits
+                .iter()
+                .map(|(id, _, _)| self.defs.display(*id))
+                .collect();
+            declaring.sort_unstable();
+            return Err(Box::new((
+                TypeErrorKind::AmbiguousTraitMethod,
+                format!(
+                    "ambiguous associated function `{method}` on `{}`: declared by multiple \
+                     traits ({}); qualify the call to disambiguate",
+                    param.spelling,
+                    declaring.join(", ")
+                ),
+            )));
+        }
+        let Some((declaring, sig, bound)) = hits.pop() else {
+            return Err(Box::new((
+                TypeErrorKind::UndefinedMethod,
+                format!(
+                    "no associated function `{method}` in the bounds of type parameter `{}`",
+                    param.spelling
+                ),
+            )));
+        };
+        if !sig.associated {
+            return Err(Box::new((
+                TypeErrorKind::UndefinedMethod,
+                format!(
+                    "`{}.{method}` takes a receiver; call it on a value of type `{}`",
+                    self.defs.display(declaring),
+                    param.spelling
+                ),
+            )));
+        }
+        Ok((declaring, sig, bound))
+    }
+
+    /// Check `T.method(args)` where `T` is a generic binder: the method is
+    /// an associated function a bound on `T` declares, called with `T` as
+    /// `Self`. The selection is published in `binder_trait_calls`.
+    pub(in crate::check) fn check_binder_associated_call(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let (declaring, mut sig, bound) = match self.binder_trait_method(param, method) {
+            Ok(selected) => selected,
+            Err(refusal) => {
+                let (kind, message) = *refusal;
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_error(kind, span, message);
+                return Ty::Error;
+            }
+        };
+        // `Self` is the binder; a bound's own arguments fill its trait's
+        // parameters (`from(value: Source)` under `F: From<Low>`).
+        let mut substitution: HashMap<crate::ParamHead, Ty> =
+            HashMap::from([(crate::ParamHead::receiver(declaring), Ty::param(param))]);
+        if declaring == bound.trait_id {
+            if let Some(info) = self.trait_info(declaring) {
+                substitution.extend(
+                    info.type_params
+                        .iter()
+                        .copied()
+                        .zip(bound.args.iter().cloned()),
+                );
+            }
+        }
+        sig.params = sig
+            .params
+            .iter()
+            .map(|ty| ty.substitute_type_params_parallel(&substitution))
+            .collect();
+        sig.return_type = sig
+            .return_type
+            .substitute_type_params_parallel(&substitution);
+        let callee = self.defs.path(declaring).to_string();
+        let applied = self.apply_instantiated_call_signature_with_assoc(
+            &sig,
+            None,
+            args,
+            span,
+            super::calls::SignatureArgApplication::FunctionLike {
+                param_names: &sig.param_names,
+                arity_context: format!("associated function `{method}`"),
+            },
+            true,
+            Some(super::types::GenericCallee::Method {
+                type_name: &callee,
+                method,
+                owner_type_args: &[],
+            }),
+        );
+        let target = self.trait_method_ids_of(declaring, method).map_or_else(
+            || CallTarget::Unsupported {
+                reason: format!("trait method `{callee}.{method}` has no declaration identity"),
+            },
+            |(declaring_trait, method)| CallTarget::static_trait(declaring_trait, method),
+        );
+        self.record_binder_trait_call(
+            span,
+            BinderTraitCall {
+                target,
+                self_param: param,
+            },
+            &format!("`{}.{method}` calls", param.spelling),
+        );
+        self.project_assoc_types(&applied.return_type)
+    }
+
+    /// Publish a static call through a binder's bound, and refuse it: code
+    /// generation cannot yet take `Self` from the binder's instantiation.
+    ///
+    /// TRANSITION(A1c4): WHY HIR lowers a static trait call only through a
+    /// receiver value. WHEN `CallTraitMethodStatic` takes `Self` from the
+    /// binder's substitution, the refusal goes and the selection lowers.
+    /// WHAT: receiver-less static trait calls in HIR and SIR.
+    pub(in crate::check) fn record_binder_trait_call(
+        &mut self,
+        span: &Span,
+        call: BinderTraitCall,
+        lead: &str,
+    ) {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "{lead} through a bound on type parameter `{}`, which this compiler \
+                 cannot build yet",
+                call.self_param.spelling
+            ),
+        );
+        self.binder_trait_calls
+            .insert(SpanKey::in_module(span, self.current_module_idx), call);
+    }
+
+    /// The `From` conversion a bound on the binder `target` provides from
+    /// `source` at a failure edge (`F: From<E>`), as the static call the edge
+    /// makes.
+    pub(in crate::check) fn binder_from_conversion(
+        &mut self,
+        target: crate::ParamHead,
+        source: &Ty,
+    ) -> Option<BinderTraitCall> {
+        let from = self.lang_trait(crate::LangItem::From)?;
+        let wanted = TraitRef {
+            trait_id: from,
+            args: vec![source.clone()],
+            assoc: Vec::new(),
+        };
+        if !self.param_carries_bound(target.id, &wanted) {
+            return None;
+        }
+        let method = self
+            .lang_items
+            .get(crate::LangItem::FromFrom.key())
+            .and_then(|binding| binding.method_id)?;
+        Some(BinderTraitCall {
+            target: CallTarget::static_trait(from, method),
+            self_param: target,
+        })
     }
 }

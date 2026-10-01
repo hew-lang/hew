@@ -271,10 +271,12 @@ impl Checker {
 
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
         let resolved = self.subst.resolve(iter_ty);
+        let iterator = self.lang_trait(crate::LangItem::Iterator)?;
         if let Ty::TraitObject { traits } = &resolved {
             for bound in traits {
-                if bound.trait_name != "Iterator"
-                    && !self.trait_extends(&bound.trait_name, "Iterator")
+                if !bound
+                    .trait_id
+                    .is_some_and(|id| id == iterator || self.trait_extends(id, iterator))
                 {
                     continue;
                 }
@@ -293,22 +295,25 @@ impl Checker {
             }
         }
 
-        if self.type_satisfies_trait_bound(&resolved, "IntoIterator") {
+        if let Some(into_iterator) = self
+            .lang_trait(crate::LangItem::IntoIterator)
+            .filter(|into_iterator| self.type_satisfies_trait(&resolved, *into_iterator))
+        {
             let item_projection = Ty::AssocType {
                 base: Box::new(resolved),
-                trait_name: "IntoIterator".into(),
+                trait_name: self.defs.path(into_iterator).into(),
                 assoc_name: "Item".into(),
             };
             return Some(self.project_assoc_types(&item_projection));
         }
 
-        if !self.type_satisfies_trait_bound(&resolved, "Iterator") {
+        if !self.type_satisfies_trait(&resolved, iterator) {
             return None;
         }
 
         let item_projection = Ty::AssocType {
             base: Box::new(resolved),
-            trait_name: "Iterator".into(),
+            trait_name: self.defs.path(iterator).into(),
             assoc_name: "Item".into(),
         };
         Some(self.project_assoc_types(&item_projection))

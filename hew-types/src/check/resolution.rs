@@ -1126,11 +1126,13 @@ impl Checker {
         }
         assoc_bindings.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let trait_lookup_key = self.trait_ref_lookup_key(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-                                                                                   // `dyn X` names a trait; an unknown name has no vtable to build and no
-                                                                                   // methods to dispatch, so refuse it here rather than letting it reach a
-                                                                                   // coercion site as an unexplained type mismatch.
-        if !self.has_trait_def(&trait_lookup_key) {
+        // A compiler predicate (`Send`) has no trait declaration; its
+        // identity is the sourceless predicate row the scope binds.
+        let trait_id = self.resolve_trait_path(&bound.path);
+        // `dyn X` names a trait; an unknown name has no vtable to build and no
+        // methods to dispatch, so refuse it here rather than letting it reach a
+        // coercion site as an unexplained type mismatch.
+        if trait_id.and_then(|id| self.trait_info(id)).is_none() {
             // A type annotation is resolved once per registration pass and
             // again at use, so report the span once.
             let dedup_key = (
@@ -1146,13 +1148,15 @@ impl Checker {
             }
         }
         if let Some(associated_type_names) =
-            self.trait_def_at(&trait_lookup_key).map(|trait_info| {
-                trait_info
-                    .associated_types
-                    .iter()
-                    .map(|assoc| assoc.name.clone())
-                    .collect::<Vec<_>>()
-            })
+            trait_id
+                .and_then(|id| self.trait_info(id))
+                .map(|trait_info| {
+                    trait_info
+                        .associated_types
+                        .iter()
+                        .map(|assoc| assoc.name.clone())
+                        .collect::<Vec<_>>()
+                })
         {
             let declared_assoc: HashSet<&str> =
                 associated_type_names.iter().map(String::as_str).collect();
@@ -1211,31 +1215,6 @@ impl Checker {
             }
         }
 
-        let mut trait_id = self.trait_key_id(&trait_lookup_key);
-        if let Some(site) = self.scope_site() {
-            let resolved = self.scopes.resolve(
-                &self.env,
-                site,
-                super::scope::Namespace::Type,
-                &bound.path.segments,
-            );
-            // A compiler predicate (`Send`) has no trait declaration; its
-            // identity is the sourceless predicate row the scope binds.
-            if trait_id.is_none() {
-                trait_id = match resolved {
-                    Ok(super::scope::Resolution::Def(id))
-                        if crate::DefTable::as_predicate(id).is_some() =>
-                    {
-                        Some(id)
-                    }
-                    _ => None,
-                };
-            }
-            if let (Some(id), Some((_, name_span))) = (trait_id, bound.path.segments.last()) {
-                self.scopes
-                    .record_resolution(site, name_span, super::scope::Resolution::Def(id));
-            }
-        }
         crate::ty::TraitObjectBound {
             trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
             trait_id,
@@ -1975,118 +1954,81 @@ impl Checker {
         }
     }
 
-    /// Resolve a `T::Bar` projection where `T` is a generic type parameter
-    /// in the current scope. Returns `Some(Ty)` if `T::Bar` is well-formed
-    /// (carrier `Ty::AssocType` or eagerly-collapsed concrete type) and
-    /// emits a typed diagnostic on failure.
-    ///
-    /// Resolution algorithm:
-    /// 1. Look up `base_name` in `current_type_param_bounds` (top frame) and
-    ///    in the current function's `fn_sigs.type_param_bounds` (for the
-    ///    body-check fallback). If neither has bounds for the name, emit
-    ///    a `MissingBound` diagnostic.
-    /// 2. For each direct trait bound, consult `trait_defs[trait].associated_types`
-    ///    and collect every trait that declares `assoc_name`.
-    /// 3. Zero matches → `MissingAssocType` diagnostic. More than one match
-    ///    → `AmbiguousAssocType` diagnostic citing both trait names.
-    /// 4. Exactly one match → return
-    ///    `Ty::AssocType { base: Ty::Named { name: T, args: [] }, trait_name, assoc_name }`.
-    ///
-    /// Returns `None` when `base_name` is not a type parameter in scope at
-    /// all (so the caller falls through to other resolution paths, e.g. an
-    /// unrelated `module.Submodule::Item`).
+    /// Resolve a `T.Bar` projection where `T` names a generic binder in
+    /// scope: the one bound on `T` whose trait declares `Bar` gives the
+    /// carrier `Ty::AssocType`. Returns `None` when `base` names no binder (an
+    /// unrelated `module.Type` path), after a typed diagnostic when the
+    /// binder has no bound declaring `Bar` or more than one.
     pub(super) fn try_resolve_assoc_projection(
         &mut self,
-        base_name: &str,
+        base: Ident,
         assoc_name: &str,
         span: &Span,
     ) -> Option<Ty> {
-        // Is `base_name` a known generic type param in the current scope?
-        // Consult both the registration-time bounds stack and the body-time
-        // fn_sigs fallback.
-        if !self.is_type_param_in_scope(base_name) {
+        let head = hew_parser::ast::Path::single(base, span.clone());
+        let Some(super::scope::Resolution::Param(id)) = self.resolve_type_path(&head) else {
             return None;
-        }
-        let bounds = self.lookup_type_param_bounds(base_name).unwrap_or_default();
+        };
+        let param = crate::ParamHead::new(id, base.name);
+        let bounds = self.active_bounds_of(id);
         if bounds.is_empty() {
-            // Type param is in scope but has no bounds declared. Emit a
-            // typed diagnostic naming the missing bound surface.
             self.report_error(
                 TypeErrorKind::UndefinedType,
                 span,
                 format!(
-                    "associated-type projection `{base_name}.{assoc_name}` requires \
-                     a trait bound on `{base_name}` that declares `{assoc_name}`; \
-                     no bounds are declared on `{base_name}`"
+                    "associated-type projection `{base}.{assoc_name}` requires \
+                     a trait bound on `{base}` that declares `{assoc_name}`; \
+                     no bounds are declared on `{base}`"
                 ),
             );
             return Some(Ty::Error);
         }
-        // Walk each direct bound, scanning that trait's associated types.
         // Super-trait projections are deferred per the precursor plan.
-        let mut matches: Vec<String> = Vec::new();
-        for trait_name in &bounds {
-            if let Some(info) = self.trait_def_at(trait_name) {
-                if info
-                    .associated_types
+        let mut matches: Vec<crate::DefId> = Vec::new();
+        for bound in &bounds {
+            let declares = self.trait_info(bound.trait_id).is_some_and(|info| {
+                info.associated_types
                     .iter()
                     .any(|assoc| assoc.name == assoc_name)
-                {
-                    matches.push(trait_name.clone());
-                }
+            });
+            if declares && !matches.contains(&bound.trait_id) {
+                matches.push(bound.trait_id);
             }
         }
-        match matches.len() {
-            0 => {
-                let bound_list = bounds.join(", ");
+        match matches.as_slice() {
+            [] => {
+                let bound_list = bounds
+                    .iter()
+                    .map(|bound| self.trait_ref_display(bound))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 self.report_error(
                     TypeErrorKind::UndefinedType,
                     span,
                     format!(
-                        "no trait bound on `{base_name}` declares associated type \
+                        "no trait bound on `{base}` declares associated type \
                          `{assoc_name}`; bounds in scope: [{bound_list}]"
                     ),
                 );
                 Some(Ty::Error)
             }
-            1 => {
-                let trait_name = matches.into_iter().next().expect("len==1");
-                Some(Ty::AssocType {
-                    base: Box::new(
-                        self.generic_ctx
-                            .iter()
-                            .rev()
-                            .find_map(|scope| scope.get(base_name))
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                self.current_declaration_module()
-                                    .and_then(|module| {
-                                        self.scopes.source_type_parameter(
-                                            module,
-                                            span,
-                                            Ident::new(base_name),
-                                        )
-                                    })
-                                    .map_or(Ty::Error, |id| {
-                                        Ty::param(crate::ParamHead::new(
-                                            id,
-                                            Symbol::intern(base_name),
-                                        ))
-                                    })
-                            }),
-                    ),
-                    trait_name: trait_name.into_boxed_str(),
-                    assoc_name: assoc_name.to_string().into_boxed_str(),
-                })
-            }
+            [trait_id] => Some(Ty::AssocType {
+                base: Box::new(Ty::param(param)),
+                trait_name: self.defs.path(*trait_id).into(),
+                assoc_name: assoc_name.into(),
+            }),
             _ => {
-                let cites = matches.join(", ");
+                let cites = matches
+                    .iter()
+                    .map(|trait_id| self.defs.display(*trait_id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
-                        "ambiguous associated-type projection `{base_name}.{assoc_name}`: \
-                         declared by multiple bounds on `{base_name}`: [{cites}]. \
+                        "ambiguous associated-type projection `{base}.{assoc_name}`: \
+                         declared by multiple bounds on `{base}`: [{cites}]. \
                          Same-name binding syntax `<Trait.Item>` is not yet supported"
                     ),
                 );
@@ -2095,83 +2037,21 @@ impl Checker {
         }
     }
 
-    /// Look up the bound list for `param_name` in the resolver's scope:
-    /// the top of `current_type_param_bounds` (registration-time signature
-    /// resolution) or, failing that, the current function's `fn_sigs` entry
-    /// (body-check fallback). Returns `None` when the name is unbound.
-    fn lookup_type_param_bounds(&self, param_name: &str) -> Option<Vec<String>> {
-        // Walk the bounds stack from top to bottom so the innermost binding
-        // wins (mirrors `generic_ctx` lookup semantics).
-        for frame in self.current_type_param_bounds.iter().rev() {
-            if let Some(bounds) = frame.bounds.get(param_name) {
-                if !bounds.is_empty() {
-                    return Some(bounds.clone());
-                }
-                return Some(vec![]);
-            }
-        }
-        if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sig(fn_name) {
-                if sig
-                    .type_params
-                    .iter()
-                    .any(|p| p.spelling.as_str() == param_name)
-                {
-                    return Some(
-                        sig.type_param_bounds
-                            .get(param_name)
-                            .cloned()
-                            .unwrap_or_default(),
-                    );
-                }
-            }
-        }
-        None
-    }
-
-    fn lookup_type_param_assoc_binding(
-        &self,
-        param_name: &str,
-        trait_name: &str,
-        assoc_name: &str,
-    ) -> Option<Ty> {
-        let key = (
-            param_name.to_string(),
-            trait_name.to_string(),
-            assoc_name.to_string(),
-        );
-        for frame in self.current_type_param_bounds.iter().rev() {
-            if let Some(binding) = frame.assoc_bindings.get(&key) {
-                return Some(binding.clone());
-            }
-        }
-        if let Some(declaration) = self.checking_declaration {
-            return self
-                .fn_sigs
-                .get(&declaration)
-                .and_then(|sig| sig.type_param_assoc_bindings.get(&key))
-                .cloned();
-        }
-        None
-    }
-
-    /// True if `name` is a type parameter declared in the current scope —
-    /// either the resolver's bounds stack (even with no bounds) or the
-    /// current function's signature.
-    pub(super) fn is_type_param_in_scope(&self, name: &str) -> bool {
-        for frame in self.current_type_param_bounds.iter().rev() {
-            if frame.bounds.contains_key(name) {
-                return true;
-            }
-        }
-        if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sig(fn_name) {
-                if sig.type_params.iter().any(|p| p.spelling.as_str() == name) {
-                    return true;
-                }
-            }
-        }
-        false
+    /// The trait a `Ty::AssocType` carrier names.
+    ///
+    /// TRANSITION(A1c4): WHY the carrier holds the trait's path render, and
+    /// the module registry's signature mirror a prelude spelling. WHEN the
+    /// carrier holds the trait's `DefId`, this is a field read. WHAT:
+    /// `AssocType` by id.
+    pub(super) fn assoc_carrier_trait(&self, trait_name: &str) -> Option<crate::DefId> {
+        self.lookup_declaration(trait_name)
+            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
+            .or_else(
+                || match self.scopes.prelude_binding(Symbol::intern(trait_name)) {
+                    Some(super::scope::Binding::Trait(id)) => Some(id),
+                    _ => None,
+                },
+            )
     }
 
     /// Walk a `Ty` and collapse `Ty::AssocType { base, trait_name, assoc_name }`
@@ -2194,12 +2074,15 @@ impl Checker {
                 trait_name,
                 assoc_name,
             } => {
-                // Projection carriers may originate at syntax-directed builtin
-                // consumers (`Index`, `Iterator`) or retain an import alias.
-                // Resolve that spelling before consulting declaration-owned impl
-                // binding keys; never retry through an unrelated short trait.
-                let trait_key = self.trait_ref_lookup_key(trait_name);
+                let carrier = |base: Ty| Ty::AssocType {
+                    base: Box::new(base),
+                    trait_name: trait_name.clone(),
+                    assoc_name: assoc_name.clone(),
+                };
                 let projected_base = self.project_assoc_types(base);
+                let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
+                    return carrier(projected_base);
+                };
                 // Resolve via the substitution so a `Ty::Var` bound to a
                 // concrete type also collapses.
                 let resolved_base = self.subst.resolve(&projected_base);
@@ -2208,91 +2091,40 @@ impl Checker {
                     args,
                 } = &resolved_base
                 {
-                    let name = param.spelling.as_str();
-                    if args.is_empty() && self.is_type_param_in_scope(name) {
-                        if let Some(binding) = self.lookup_type_param_assoc_binding(
-                            name,
-                            &trait_key,
-                            assoc_name.as_ref(),
-                        ) {
-                            return self.project_assoc_types(&binding);
-                        }
-                        return Ty::AssocType {
-                            base: Box::new(projected_base),
-                            trait_name: trait_name.clone(),
-                            assoc_name: assoc_name.clone(),
+                    if args.is_empty() {
+                        // A binder's own bound may fix the projection
+                        // (`I: Iterator<Item = i64>`).
+                        let binding = self
+                            .active_bounds_of(param.id)
+                            .into_iter()
+                            .filter(|bound| bound.trait_id == trait_id)
+                            .find_map(|bound| {
+                                bound
+                                    .assoc
+                                    .into_iter()
+                                    .find(|(name, _)| name.as_str() == assoc_name.as_ref())
+                                    .map(|(_, ty)| ty)
+                            });
+                        return match binding {
+                            Some(binding) => self.project_assoc_types(&binding),
+                            None => carrier(projected_base),
                         };
                     }
                 }
-
                 // Associated-type projection is executable conformance
-                // authority. Registration keys primitive targets by their flat
-                // `Ty` variant and named targets by their constructor identity;
-                // projection must accept both classes. Generic arguments remain
-                // instance data used only to substitute the selected binding.
-                let named_base = match &resolved_base {
-                    Ty::Named { head, args } => Some((head.registry_key(), args)),
-                    _ => None,
-                };
-                let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
-                    .or_else(|| {
-                        named_base.and_then(|(name, args)| {
-                            self.resolved_builtin_type(name).and_then(|builtin| {
-                                Self::canonical_primitive_or_builtin_key(&Ty::builtin_named(
-                                    builtin,
-                                    args.clone(),
-                                ))
-                            })
-                        })
-                    })
-                    .or_else(|| {
-                        named_base.map(|(name, _)| {
-                            self.canonical_nominal_name(name)
-                                .unwrap_or_else(|| name.to_string())
-                        })
-                    });
-                if let Some(nominal_identity) = nominal_identity {
-                    let key = (
-                        nominal_identity.clone(),
-                        trait_key.clone(),
-                        assoc_name.to_string(),
-                    );
-                    let binding = self.impl_assoc_type_bindings.get(&key).or_else(|| {
-                        // Earlier registration passes can encounter a trait
-                        // before its imported source owner has populated the
-                        // canonical map, leaving the binding under the trait's
-                        // presentation spelling.  Recover only when the
-                        // *current* canonical trait resolver proves that the
-                        // stored spelling names this exact trait and there is
-                        // exactly one matching owner/association binding.  A
-                        // same-leaf foreign trait or an ambiguous duplicate
-                        // remains unprojected rather than becoming a leaf-name
-                        // fallback.
-                        let mut compatible = self.impl_assoc_type_bindings.iter().filter(
-                            |((owner, stored_trait, stored_assoc), _)| {
-                                owner == &nominal_identity
-                                    && stored_assoc == assoc_name.as_ref()
-                                    && self.trait_ref_lookup_key(stored_trait) == trait_key
-                            },
-                        );
-                        let first = compatible.next();
-                        if compatible.next().is_none() {
-                            first.map(|(_, binding)| binding)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(bound) =
-                        binding.and_then(|binding| binding.instantiate(&resolved_base))
+                // authority: the impl registered for the base's head and the
+                // trait. Generic arguments remain instance data used only to
+                // substitute the selected binding.
+                if let Some(key) = Self::impl_self_key(&resolved_base) {
+                    if let Some(bound) = self
+                        .impl_assoc_type_bindings
+                        .get(&(key, trait_id, Symbol::intern(assoc_name)))
+                        .and_then(|binding| binding.instantiate(&resolved_base))
                     {
                         return self.project_assoc_types(&bound);
                     }
                 }
-                Ty::AssocType {
-                    base: Box::new(projected_base),
-                    trait_name: trait_name.clone(),
-                    assoc_name: assoc_name.clone(),
-                }
+                carrier(projected_base)
             }
             _ => ty.map_children_pub(&|child| self.project_assoc_types(child)),
         }
@@ -2714,7 +2546,8 @@ impl Checker {
         if self.supervisor_children.contains_key(name) {
             return true;
         }
-        self.trait_is_handler_style(name)
+        self.lookup_declaration(name)
+            .is_some_and(|id| self.trait_is_handler_style(id))
     }
 
     #[expect(
@@ -2748,41 +2581,12 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                let mut candidates = Vec::new();
-                if self.has_trait_def(&trait_name) {
-                    candidates.push(trait_name.clone());
-                } else if !trait_name.contains('.') && !trait_name.contains("::") {
-                    if let Some(owners) = self.published_bare_trait_owners.get(&(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        trait_name.clone(),
-                    )) {
-                        candidates.extend(
-                            owners
-                                .iter()
-                                .filter(|owner| self.has_trait_def(owner))
-                                .cloned(),
-                        );
-                    }
-                }
-                candidates.sort_unstable();
-                candidates.dedup();
-                if candidates.len() > 1 {
-                    self.report_error(
-                        TypeErrorKind::AssocItemAmbiguous,
-                        &te.1,
-                        format!(
-                            "associated type `{assoc_name}` is ambiguous because trait `{trait_name}` has multiple imported owners"
-                        ),
-                    );
+                let Some(trait_id) =
+                    self.resolve_qualified_trait(&path.trait_path, *assoc_name, &te.1)
+                else {
                     return Ty::Error;
-                }
-                let trait_key = candidates
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| self.trait_ref_lookup_key(&trait_name));
-                if let Some(info) = self.trait_def_at(&trait_key) {
+                };
+                if let Some(info) = self.trait_info(trait_id) {
                     if !info
                         .associated_types
                         .iter()
@@ -2796,22 +2600,18 @@ impl Checker {
                         self.report_error(
                             kind,
                             &te.1,
-                            format!("trait `{trait_key}` has no associated type `{assoc_name}`"),
+                            format!(
+                                "trait `{}` has no associated type `{assoc_name}`",
+                                self.defs.path(trait_id)
+                            ),
                         );
                         return Ty::Error;
                     }
-                } else {
-                    self.report_error(
-                        TypeErrorKind::PathMemberNotFound,
-                        &te.1,
-                        format!("cannot resolve trait `{trait_name}`"),
-                    );
-                    return Ty::Error;
                 }
                 Ty::AssocType {
                     base: Box::new(base),
-                    trait_name: trait_key.into_boxed_str(),
-                    assoc_name: assoc_name.clone().to_string().into_boxed_str(),
+                    trait_name: self.defs.path(trait_id).into(),
+                    assoc_name: assoc_name.name.as_str().into(),
                 }
             }
             TypeExpr::Named {
@@ -2825,8 +2625,8 @@ impl Checker {
                 let name = &named_path.to_string();
                 // Handle `Self` type
                 if name == "Self" {
-                    if let Some((self_type_name, self_type_args)) = &self.current_self_type {
-                        return self.named_ty_for_key(self_type_name, self_type_args.clone());
+                    if let Some((_, self_ty)) = &self.current_self_type {
+                        return self_ty.clone();
                     }
                     // Outside an impl, `Self` is the declaring trait's abstract
                     // receiver binder.
@@ -2837,11 +2637,7 @@ impl Checker {
                         }) {
                             return Ty::param(crate::ParamHead::new(id, Symbol::intern("Self")));
                         }
-                        if let Some(owner) = self
-                            .current_trait_for_self_projection
-                            .as_deref()
-                            .and_then(|name| self.lookup_declaration(name))
-                        {
+                        if let Some(owner) = self.current_trait_for_self_projection {
                             return Ty::param(crate::ParamHead::receiver(owner));
                         }
                         self.report_error(
@@ -2882,14 +2678,11 @@ impl Checker {
                     // spurious "expected A, found B". The impl-alias path below
                     // still owns the distinct case where an impl body resolves
                     // its OWN `Self::Item` (projection flag unset).
-                    if let Some(trait_name) = self.current_trait_for_self_projection.clone() {
+                    if let Some(trait_id) = self.current_trait_for_self_projection {
                         return Ty::AssocType {
-                            base: Box::new(Ty::param(crate::ParamHead::receiver(
-                                self.lookup_declaration(&trait_name)
-                                    .expect("resolved trait owns Self"),
-                            ))),
-                            trait_name: trait_name.into_boxed_str(),
-                            assoc_name: alias_name.to_string().into_boxed_str(),
+                            base: Box::new(Ty::param(crate::ParamHead::receiver(trait_id))),
+                            trait_name: self.defs.path(trait_id).into(),
+                            assoc_name: alias_name.into(),
                         };
                     }
                     if let Some(alias_ty) = self.resolve_impl_associated_type(alias_name) {
@@ -2930,13 +2723,13 @@ impl Checker {
                     // surface. Treat a direct `T.Item` as an associated-type
                     // projection only when `T` is a type parameter in scope;
                     // otherwise leave it for nominal resolution below.
-                    if let Some((base_name, assoc_name)) = name.split_once('.') {
-                        if !assoc_name.contains('.') {
-                            if let Some(ty) =
-                                self.try_resolve_assoc_projection(base_name, assoc_name, &te.1)
-                            {
-                                return ty;
-                            }
+                    if let [(base, _), (assoc_name, _)] = named_path.segments.as_slice() {
+                        if let Some(ty) = self.try_resolve_assoc_projection(
+                            *base,
+                            assoc_name.name.as_str(),
+                            &te.1,
+                        ) {
+                            return ty;
                         }
                     }
                     if let Some((base_name, assoc_name)) = name.split_once("::") {
@@ -2953,9 +2746,11 @@ impl Checker {
                             );
                             return Ty::Error;
                         }
-                        if let Some(ty) =
-                            self.try_resolve_assoc_projection(base_name, assoc_name, &te.1)
-                        {
+                        if let Some(ty) = self.try_resolve_assoc_projection(
+                            Ident::new(base_name),
+                            assoc_name,
+                            &te.1,
+                        ) {
                             return ty;
                         }
                         // `base_name` is not a type parameter in scope, so

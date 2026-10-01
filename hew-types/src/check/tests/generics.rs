@@ -2433,7 +2433,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 crate::ParamHead::for_test("T"),
                 crate::ParamHead::for_test("U"),
             ],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([
                 (
                     "first".to_string(),
@@ -2815,7 +2815,7 @@ fn register_generic_wrapper(checker: &mut Checker) {
             kind: TypeDefKind::Struct,
             name: "Wrapper".to_string(),
             type_params: vec![crate::ParamHead::for_test("T")],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields,
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -3044,7 +3044,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
             type_params: vec![crate::ParamHead::for_test("T")],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             variants: variant_fields,
             methods: HashMap::new(),
@@ -3100,7 +3100,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
             type_params: vec![crate::ParamHead::for_test("T")],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             variants: variant_fields_map,
             methods: HashMap::new(),
@@ -3449,11 +3449,20 @@ fn main() {
         "valid Display instantiation should type-check: {:#?}",
         output.errors
     );
-    let bounds = output
-        .type_def_at_path("Box")
-        .and_then(|type_def| type_def.bounds.get("T"))
-        .expect("Box<T: Display> should retain the T bound on TypeDef");
-    assert_eq!(bounds, &vec!["std.builtins.Display".to_string()]);
+    let type_def = output.type_def_at_path("Box").expect("Box is registered");
+    let display = output
+        .defs
+        .lookup_path("std.builtins.Display")
+        .expect("prelude Display");
+    assert_eq!(
+        type_def
+            .bounds
+            .of(type_def.type_params[0].id)
+            .map(|bound| bound.trait_id)
+            .collect::<Vec<_>>(),
+        vec![display],
+        "Box<T: Display> should retain the T bound on TypeDef"
+    );
 }
 
 #[test]

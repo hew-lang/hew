@@ -153,78 +153,6 @@ impl Checker {
         }
     }
 
-    /// Validate that no trait bound in the given type parameters or
-    /// where-clause carries positional type arguments (e.g. `T: Eq<U>`).
-    /// Such forms are not valid in Hew — the checker cannot enforce
-    /// phantom-parameterised marker bounds, and admitting them would silently
-    /// erase the type arguments in `collect_type_param_bounds`, reducing
-    /// `Eq<U>` to bare `Eq` without any diagnostic.
-    ///
-    /// Emits `UnknownTraitBoundShape` at `span` for every offending bound.
-    /// Must be called before `collect_type_param_bounds` erases `type_args`.
-    /// Covers fn/impl/impl-method/machine declaration positions.
-    pub(in crate::check) fn validate_type_param_bound_shapes(
-        &mut self,
-        type_params: Option<&Vec<TypeParam>>,
-        where_clause: Option<&WhereClause>,
-        span: &Span,
-    ) {
-        // Check inline type-param bounds: e.g. `<T: Eq<U>>`.
-        if let Some(params) = type_params {
-            for param in params {
-                for bound in &param.bounds {
-                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
-                        self.report_error(
-                            TypeErrorKind::UnknownTraitBoundShape {
-                                trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            },
-                            span,
-                            format!(
-                                "trait bound `{}` on type parameter `{}` carries positional \
-                                 type arguments, which are not supported; use associated-type \
-                                 bindings (`Trait<Assoc = Ty>`) instead",
-                                bound.path,
-                                param.name, // TRANSITION(P1): deleted by A1 commit 2
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-        // Check where-clause bounds: `where T: Eq<U>`.
-        if let Some(wc) = where_clause {
-            for predicate in &wc.predicates {
-                for bound in &predicate.bounds {
-                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
-                        self.report_error(
-                            TypeErrorKind::UnknownTraitBoundShape {
-                                trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            },
-                            span,
-                            format!(
-                                "trait bound `{}` in where-clause carries positional \
-                                 type arguments, which are not supported; use associated-type \
-                                 bindings (`Trait<Assoc = Ty>`) instead",
-                                bound.path, // TRANSITION(P1): deleted by A1 commit 2
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Thin wrapper for the fn-decl path; delegates to
-    /// `validate_type_param_bound_shapes` using the function's own
-    /// type-param list, where-clause, and declaration span.
-    pub(in crate::check) fn validate_fn_type_param_bound_shapes(&mut self, fd: &FnDecl) {
-        self.validate_type_param_bound_shapes(
-            fd.type_params.as_ref(),
-            fd.where_clause.as_ref(),
-            &fd.decl_span,
-        );
-    }
-
     /// Pass 2: Collect function signatures
     #[expect(
         clippy::too_many_lines,
@@ -355,7 +283,6 @@ impl Checker {
             self.current_item_ordinal = item_ordinal;
             self.collect_function_item(item, span);
         }
-        self.canonicalize_root_super_trait_edges(program);
         self.current_module_direct_imports.clear();
         self.current_module_direct_import_bindings.clear();
     }
@@ -470,8 +397,7 @@ impl Checker {
                 }
                 // Register impl methods with Type::method naming
                 if let TypeExpr::Named {
-                    path: named_path,
-                    type_args,
+                    path: named_path, ..
                 } = &id.target_type.0
                 {
                     let target_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
@@ -494,11 +420,12 @@ impl Checker {
 
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args: Vec<Ty> =
-                        self.resolve_impl_target_type_args(id, type_args.as_ref());
-                    self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
+                    let self_ty = self.resolve_impl_target(id);
+                    let self_type_args = Self::impl_target_args(&self_ty);
+                    self.current_self_type = Some((type_name.clone(), self_ty));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
+                    let impl_trait = self.impl_trait_ref(id);
 
                     let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                         self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
@@ -528,31 +455,25 @@ impl Checker {
                         // wrote them, not as a confusing "type does not satisfy
                         // trait" downstream. See LESSONS row `diagnostic-trust`.
                         if let Some(tb) = id.trait_bound.as_ref() {
-                            self.check_impl_method_against_trait(
-                                type_name,
-                                &self_type_args,
-                                tb,
-                                method,
-                                &sig,
-                            );
+                            self.check_impl_method_against_trait(type_name, tb, method, &sig);
                         }
                         // When the receiver is a primitive or compiler-builtin
                         // generic, `lookup_type_def_mut(type_name)` returns `None` so the
                         // sig has nowhere to live for later dispatch.  Mirror it onto the
                         // side table keyed by the canonical receiver kind + trait name so
                         // method-resolution can find it.
-                        if let (Some(canonical), Some(tb)) =
-                            (primitive_key.clone(), id.trait_bound.as_ref())
+                        if let (Some(canonical), Some(trait_ref)) =
+                            (primitive_key.clone(), impl_trait.as_ref())
                         {
                             self.record_primitive_trait_impl_self_args(
                                 canonical.clone(),
-                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                trait_ref.trait_id,
                                 self_type_args.clone(),
                                 &id.target_type.1,
                             );
                             self.record_primitive_trait_impl_method(
                                 canonical,
-                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                trait_ref.trait_id,
                                 method.name.to_string(),
                                 sig,
                             );
@@ -560,20 +481,16 @@ impl Checker {
                     }
 
                     // Register default trait methods not overridden in this impl
-                    if let Some(tb) = &id.trait_bound {
-                        self.record_trait_impl_methods(
-                            type_name,
-                            &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            id.methods.iter().map(|method| method.name.to_string()),
-                        );
-                        self.record_trait_impl(type_name, &tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                    if let Some(trait_ref) = &impl_trait {
+                        let trait_id = trait_ref.trait_id;
+                        let target = self
+                            .current_impl_target()
+                            .expect("impl registration publishes its resolved target");
+                        self.record_trait_impl_from_decl(id, trait_ref, span);
 
                         let overridden: HashSet<&str> =
                             id.methods.iter().map(|m| m.name.name.as_str()).collect();
-                        // Owner-qualified key so a same-name trait in another
-                        // module cannot inject the wrong default-method bodies.
-                        let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-                        if let Some(trait_methods) = self.trait_def_at(&trait_key) {
+                        if let Some(trait_methods) = self.trait_info(trait_id) {
                             let defaults: Vec<_> = trait_methods
                                 .methods
                                 .iter()
@@ -592,63 +509,57 @@ impl Checker {
                                     .skip(skip)
                                     .map(|p| p.name.to_string())
                                     .collect();
-                                self.register_trait_method_sig(&tb.path.to_string(), &m, span); // TRANSITION(P1): deleted by A1 commit 2
-                                let trait_method_key = format!("{}::{}", tb.path, m.name); // TRANSITION(P1): deleted by A1 commit 2
+                                self.register_trait_method_sig(trait_id, &m, span);
                                 let consumes_receiver = m.consumes_self;
                                 let returns_receiver_identity =
                                     Self::trait_receiver_identity_is_structurally_valid(&m);
-                                let concrete_self =
-                                    self.named_ty_for_key(type_name, self_type_args.clone());
-                                let (params, return_type) =
-                                    if let Some(sig) = self.fn_sig(&trait_method_key).cloned() {
-                                        // Qualified trait signatures registered outside an impl
-                                        // scope can still include a concrete receiver
-                                        // (`fn bump(box: CounterBox)`) because receiver
-                                        // detection there only knows about `Self`.
-                                        // When copying defaults onto a concrete impl,
-                                        // drop that leading receiver iff the trait sig
-                                        // still has it.
-                                        let sig_skip = usize::from(
-                                            skip == 1 && sig.params.len() == m.params.len(),
-                                        );
-                                        (
-                                            sig.params
-                                                .iter()
-                                                .skip(sig_skip)
-                                                .map(|ty| {
-                                                    ty.substitute_type_param(
-                                                        crate::ParamHead::receiver(
-                                                            self.lookup_declaration(&trait_key)
-                                                                .expect("resolved trait owns Self"),
-                                                        ),
-                                                        &concrete_self,
-                                                    )
-                                                })
-                                                .collect::<Vec<_>>(),
-                                            sig.return_type.substitute_type_param(
-                                                crate::ParamHead::receiver(
-                                                    self.lookup_declaration(&trait_key)
-                                                        .expect("resolved trait owns Self"),
-                                                ),
-                                                &concrete_self,
-                                            ),
-                                        )
-                                    } else {
-                                        (
-                                            m.params
-                                                .iter()
-                                                .skip(skip)
-                                                .map(|p| {
-                                                    self.resolve_registered_annotation_ty_no_holes(
-                                                        &p.ty,
-                                                    )
-                                                })
-                                                .collect(),
-                                            m.return_type.as_ref().map_or(Ty::Unit, |ret| {
-                                                self.resolve_registered_annotation_ty_no_holes(ret)
-                                            }),
-                                        )
-                                    };
+                                let concrete_self = target.clone();
+                                let registered = self
+                                    .trait_method_ids_of(trait_id, m.name.name.as_str())
+                                    .and_then(|(_, method)| self.fn_sigs.get(&method).cloned());
+                                let (params, return_type) = if let Some(sig) = registered {
+                                    // Qualified trait signatures registered outside an impl
+                                    // scope can still include a concrete receiver
+                                    // (`fn bump(box: CounterBox)`) because receiver
+                                    // detection there only knows about `Self`.
+                                    // When copying defaults onto a concrete impl,
+                                    // drop that leading receiver iff the trait sig
+                                    // still has it.
+                                    let sig_skip = usize::from(
+                                        skip == 1 && sig.params.len() == m.params.len(),
+                                    );
+                                    (
+                                        sig.params
+                                            .iter()
+                                            .skip(sig_skip)
+                                            .map(|ty| {
+                                                ty.substitute_type_param(
+                                                    crate::ParamHead::receiver(trait_id),
+                                                    &concrete_self,
+                                                )
+                                            })
+                                            .collect::<Vec<_>>(),
+                                        sig.return_type.substitute_type_param(
+                                            crate::ParamHead::receiver(trait_id),
+                                            &concrete_self,
+                                        ),
+                                    )
+                                } else {
+                                    (
+                                        m.params
+                                            .iter()
+                                            .skip(skip)
+                                            .map(|p| {
+                                                self.resolve_registered_annotation_ty_no_holes(
+                                                    &p.ty,
+                                                )
+                                            })
+                                            .collect(),
+                                        m.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                                            self.resolve_registered_annotation_ty_no_holes(ret)
+                                        }),
+                                    )
+                                };
                                 let sig = FnSig {
                                     param_names: param_names.clone(),
                                     params: params.clone(),
@@ -660,18 +571,13 @@ impl Checker {
                                 // The materialized default belongs to the impl's
                                 // receiver identity: a declaration, a builtin or
                                 // a primitive's anchor row.
-                                let receiver = ResolvedTy::from_ty(
-                                    &self.named_ty_for_key(type_name, self_type_args.clone()),
-                                )
-                                .ok()
-                                .and_then(|ty| ty.impl_receiver_instance(&self.defs));
+                                let receiver = ResolvedTy::from_ty(&target)
+                                    .ok()
+                                    .and_then(|ty| ty.impl_receiver_instance(&self.defs));
                                 let default_body =
                                     if let (Some(receiver), Some((declaring_trait, _))) = (
                                         receiver,
-                                        self.trait_method_call_target_ids(
-                                            &tb.path.to_string(),
-                                            m.name.name.as_str(),
-                                        ), // TRANSITION(P1): deleted by A1 commit 2
+                                        self.trait_method_ids_of(trait_id, m.name.name.as_str()),
                                     ) {
                                         Some(self.defs.mint_default_impl_body(
                                             declaring_trait,
@@ -688,15 +594,11 @@ impl Checker {
                                     None => self.insert_fn_sig_at(&method_key, sig),
                                 }
                                 if let Some(declaration) = default_body {
-                                    if let Some((declaring_trait, _)) = self
-                                        .trait_method_call_target_ids(
-                                            &tb.path.to_string(),
-                                            m.name.name.as_str(),
-                                        )
-                                    // TRANSITION(P1): deleted by A1 commit 2
+                                    if let Some((declaring_trait, _)) =
+                                        self.trait_method_ids_of(trait_id, m.name.name.as_str())
                                     {
                                         self.file_dispatch_method(
-                                            type_name,
+                                            &target,
                                             id.type_params
                                                 .as_ref()
                                                 .is_some_and(|params| !params.is_empty()),
@@ -733,7 +635,7 @@ impl Checker {
                                 if let Some(canonical) = primitive_key.clone() {
                                     self.record_primitive_trait_impl_method(
                                         canonical,
-                                        &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                        trait_id,
                                         m.name.to_string(),
                                         sig.clone(),
                                     );
@@ -809,18 +711,25 @@ impl Checker {
                         self.exit_primary_sig_scope(method_sig_scope);
                         let method_name = method.name;
                         let type_name = td.name;
-                        if let Some(member) = self
+                        if let Some((owner, member)) = self
                             .lookup_declaration(&self.declaration_identity(type_name.name.as_str()))
                             .and_then(|owner| {
-                                self.defs.member_of_kind(
-                                    owner,
-                                    method_name.name,
-                                    crate::DeclarationKind::TypeMethod,
-                                )
+                                self.defs
+                                    .member_of_kind(
+                                        owner,
+                                        method_name.name,
+                                        crate::DeclarationKind::TypeMethod,
+                                    )
+                                    .map(|member| (owner, member))
                             })
                         {
                             self.file_dispatch_method(
-                                type_name.name.as_str(),
+                                &Ty::named_head(
+                                    self.head_of_declaration(
+                                        crate::NominalId::from_minted_declaration(owner),
+                                    ),
+                                    Vec::new(),
+                                ),
                                 true,
                                 crate::check::dispatch_table::MethodOwner::Inherent,
                                 method_name.name,
@@ -843,11 +752,10 @@ impl Checker {
                 }
             }
             Item::Trait(td) => {
-                if let Some(supers) = &td.super_traits {
-                    for super_trait in supers {
-                        self.note_trait_use(&super_trait.path.to_string());
-                    }
-                }
+                let trait_path = self.declaration_identity(td.name.name.as_str());
+                let Some(trait_id) = self.require_declaration_path(&trait_path, span) else {
+                    return;
+                };
                 // A generic trait's own params (`trait Foo<T>`) are in scope for
                 // every method signature; push them and resolve those signatures
                 // scope-locally so an out-of-scope generic name is rejected at
@@ -857,7 +765,7 @@ impl Checker {
                     self.enter_primary_sig_scope(&[(td.type_params.as_ref(), None)]);
                 for trait_item in &td.items {
                     if let TraitItem::Method(method) = trait_item {
-                        self.register_trait_method_sig(td.name.name.as_str(), method, span);
+                        self.register_trait_method_sig(trait_id, method, span);
                     }
                 }
                 self.exit_primary_sig_scope(trait_sig_scope);
@@ -926,31 +834,21 @@ impl Checker {
     /// rebuilds the method's `FnSig` sees it). Pass `&[]` for items with no
     /// enclosing generics (free functions) or where the enclosing frame is
     /// already on the stack (impl methods, whose impl params `register_impl_method`
-    /// pushes itself) — then only the scope-local flag is armed. The frame is
-    /// names-only (`collect_type_param_scope_with_bounds` is pure) so opening the
-    /// scope has no resolution side effects. Pair every call with
-    /// [`Self::exit_primary_sig_scope`].
+    /// pushes itself) — then only the scope-local flag is armed. Pair every
+    /// call with [`Self::exit_primary_sig_scope`].
     pub(in crate::check) fn enter_primary_sig_scope(
         &mut self,
         scopes: &[(Option<&Vec<TypeParam>>, Option<&WhereClause>)],
     ) -> PrimarySigScope {
-        let mut bounds: HashMap<String, Vec<String>> = HashMap::new();
+        let mut bounds = ParamBounds::default();
         for (type_params, where_clause) in scopes {
-            for (name, param_bounds) in
-                self.collect_type_param_scope_with_bounds(*type_params, *where_clause)
-            {
-                let entry = bounds.entry(name).or_default();
-                for bound in param_bounds {
-                    if !entry.iter().any(|existing| existing == &bound) {
-                        entry.push(bound);
-                    }
-                }
-            }
+            let frame =
+                self.collect_type_param_bounds(*type_params, *where_clause, &mut Vec::new());
+            bounds.extend(&frame);
         }
         let pushed_frame = !bounds.is_empty();
         if pushed_frame {
-            self.current_type_param_bounds
-                .push(TypeParamScope::new(bounds, HashMap::new()));
+            self.current_type_param_bounds.push(bounds);
         }
         let prev_scope_local = self.scope_local_type_params_only;
         self.scope_local_type_params_only = true;
@@ -1048,174 +946,6 @@ impl Checker {
         }
     }
 
-    /// Collect the full resolver scope for declared type params: trait-bound
-    /// names plus any associated-type bindings attached to those bounds.
-    pub(in crate::check) fn collect_type_param_scope_with_assoc_bindings(
-        &mut self,
-        type_params: Option<&Vec<TypeParam>>,
-        where_clause: Option<&WhereClause>,
-        hole_vars: &mut Vec<TypeVar>,
-    ) -> TypeParamScope {
-        let bounds = self.collect_type_param_scope_with_bounds(type_params, where_clause);
-        let pushed_bounds_for_assoc = !bounds.is_empty();
-        if pushed_bounds_for_assoc {
-            self.current_type_param_bounds
-                .push(TypeParamScope::new(bounds.clone(), HashMap::new()));
-        }
-        let assoc_bindings =
-            self.collect_type_param_assoc_bindings(type_params, where_clause, hole_vars);
-        if pushed_bounds_for_assoc {
-            self.current_type_param_bounds.pop();
-        }
-        TypeParamScope::new(bounds, assoc_bindings)
-    }
-
-    /// Like `collect_type_param_bounds` but always includes a key for every
-    /// declared type param, with an empty `Vec` when no bounds are
-    /// declared. Used by the resolver to distinguish "type param in scope
-    /// with no bounds" (emit missing-bound diagnostic) from "name is not a
-    /// type param at all" (fall through to other resolution paths).
-    pub(in crate::check) fn collect_type_param_scope_with_bounds(
-        &self,
-        type_params: Option<&Vec<TypeParam>>,
-        where_clause: Option<&WhereClause>,
-    ) -> HashMap<String, Vec<String>> {
-        let mut map: HashMap<String, Vec<String>> = HashMap::new();
-        if let Some(params) = type_params {
-            for param in params {
-                map.entry(param.name.to_string()).or_default();
-            }
-        }
-        let with_bounds = self.collect_type_param_bounds(type_params, where_clause);
-        for (k, v) in with_bounds {
-            let entry = map.entry(k).or_default();
-            for b in v {
-                if !entry.iter().any(|existing| existing == &b) {
-                    entry.push(b);
-                }
-            }
-        }
-        map
-    }
-
-    pub(in crate::check) fn collect_type_param_bounds(
-        &self,
-        type_params: Option<&Vec<TypeParam>>,
-        where_clause: Option<&WhereClause>,
-    ) -> HashMap<String, Vec<String>> {
-        let mut bounds = HashMap::new();
-        let mut declared = HashSet::new();
-        if let Some(params) = type_params {
-            for param in params {
-                declared.insert(param.name.to_string());
-                if param.bounds.is_empty() {
-                    continue;
-                }
-                let entry = bounds.entry(param.name.to_string()).or_default();
-                for bound in &param.bounds {
-                    Self::push_unique_bound(
-                        entry,
-                        &self.trait_defs_key_for_bound(&bound.path.to_string()),
-                    ); // TRANSITION(P1): deleted by A1 commit 2
-                }
-            }
-        }
-        if let Some(wc) = where_clause {
-            for predicate in &wc.predicates {
-                if let TypeExpr::Named {
-                    path: named_path,
-                    type_args,
-                } = &predicate.ty.0
-                {
-                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                    if !declared.contains(name) {
-                        continue;
-                    }
-                    if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
-                        continue;
-                    }
-                    let entry = bounds.entry(name.clone()).or_default();
-                    for bound in &predicate.bounds {
-                        Self::push_unique_bound(
-                            entry,
-                            &self.trait_defs_key_for_bound(&bound.path.to_string()),
-                        ); // TRANSITION(P1): deleted by A1 commit 2
-                    }
-                }
-            }
-        }
-        bounds
-    }
-
-    pub(in crate::check) fn collect_type_param_assoc_bindings(
-        &mut self,
-        type_params: Option<&Vec<TypeParam>>,
-        where_clause: Option<&WhereClause>,
-        hole_vars: &mut Vec<TypeVar>,
-    ) -> HashMap<(String, String, String), Ty> {
-        let mut bindings = HashMap::new();
-        let mut declared = HashSet::new();
-        if let Some(params) = type_params {
-            for param in params {
-                declared.insert(param.name.to_string());
-                for bound in &param.bounds {
-                    self.collect_type_param_bound_assoc_bindings(
-                        param.name.name.as_str(),
-                        bound,
-                        &mut bindings,
-                        hole_vars,
-                    );
-                }
-            }
-        }
-        if let Some(wc) = where_clause {
-            for predicate in &wc.predicates {
-                if let TypeExpr::Named {
-                    path: named_path,
-                    type_args,
-                } = &predicate.ty.0
-                {
-                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                    if !declared.contains(name) {
-                        continue;
-                    }
-                    if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
-                        continue;
-                    }
-                    for bound in &predicate.bounds {
-                        self.collect_type_param_bound_assoc_bindings(
-                            name,
-                            bound,
-                            &mut bindings,
-                            hole_vars,
-                        );
-                    }
-                }
-            }
-        }
-        bindings
-    }
-
-    pub(super) fn collect_type_param_bound_assoc_bindings(
-        &mut self,
-        param_name: &str,
-        bound: &TraitBound,
-        bindings: &mut HashMap<(String, String, String), Ty>,
-        hole_vars: &mut Vec<TypeVar>,
-    ) {
-        let trait_key = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-        for binding in &bound.assoc_type_bindings {
-            let key = (
-                param_name.to_string(),
-                trait_key.clone(),
-                binding.name.to_string(),
-            );
-            bindings
-                .entry(key)
-                .or_insert_with(|| self.resolve_registered_annotation_ty(&binding.ty, hole_vars));
-        }
-    }
-
     /// Register a signature under `name`, filed under `declaration` when the
     /// caller holds it and otherwise under the declaration `name` spells.
     pub(in crate::check) fn register_fn_sig_with_name(
@@ -1225,23 +955,17 @@ impl Checker {
         declaration: Option<crate::DefId>,
     ) {
         let skip = usize::from(fd.params.first().is_some_and(|p| p.is_receiver));
-        // Validate that no bound carries unsupported positional type arguments
-        // (e.g. `T: Eq<U>`) before `collect_type_param_bounds` erases them.
-        self.validate_fn_type_param_bound_shapes(fd);
-        // Push the type-param bounds map BEFORE resolving the signature so
-        // the resolver can validate `T::Bar` projections that appear in
-        // param/return types. Includes type params with no bounds so the
-        // resolver can distinguish "in scope with no bounds" (emit
-        // missing-bound diagnostic) from "not in scope" (fall through).
+        // Push the bounds BEFORE resolving the signature so the resolver can
+        // validate `T.Bar` projections that appear in param/return types.
         let mut hole_vars = Vec::new();
-        let fn_scope = self.collect_type_param_scope_with_assoc_bindings(
+        let bounds = self.collect_type_param_bounds(
             fd.type_params.as_ref(),
             fd.where_clause.as_ref(),
             &mut hole_vars,
         );
-        let pushed_bounds = !fn_scope.bounds.is_empty();
+        let pushed_bounds = !bounds.is_empty();
         if pushed_bounds {
-            self.current_type_param_bounds.push(fn_scope.clone());
+            self.current_type_param_bounds.push(bounds.clone());
         }
         let param_names = fd
             .params
@@ -1266,11 +990,9 @@ impl Checker {
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
 
         let sig = FnSig {
-            type_param_assoc_bindings: fn_scope.assoc_bindings,
             type_params: self
                 .source_parameter_heads(fd.type_params.as_deref().unwrap_or_default(), &fd.fn_span),
-            type_param_bounds: self
-                .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
+            bounds,
             param_ownership: fd
                 .params
                 .iter()
@@ -1554,9 +1276,10 @@ impl Checker {
             {
                 self.current_self_type
                     .as_ref()
-                    .is_none_or(|(_, self_args)| {
+                    .map(|(_, self_ty)| Self::impl_target_args(self_ty))
+                    .is_none_or(|self_args| {
                         args.len() == self_args.len()
-                            && args.iter().zip(self_args).all(|(actual, expected)| {
+                            && args.iter().zip(&self_args).all(|(actual, expected)| {
                                 self.subst.resolve(actual) == self.subst.resolve(expected)
                             })
                     })
@@ -1589,57 +1312,34 @@ impl Checker {
     /// Other trait/associated-type predicates require the live solver and are
     /// explicitly refused by concrete value-method selection.
     pub(super) fn value_method_obligations(
-        &self,
+        &mut self,
         impl_params: Option<&Vec<TypeParam>>,
         impl_where: Option<&WhereClause>,
         method: &FnDecl,
-    ) -> Option<Vec<(String, crate::type_facts::ImplMethodObligation)>> {
-        let params: Vec<_> = impl_params
-            .into_iter()
-            .flatten()
-            .chain(method.type_params.iter().flatten())
-            .collect();
-        let mut obligations = Vec::new();
-        let mut add_bounds = |name: &str, bounds: &[TraitBound]| -> Option<()> {
-            for bound in bounds {
-                if bound
-                    .type_args
-                    .as_ref()
-                    .is_some_and(|args| !args.is_empty())
-                    || !bound.assoc_type_bindings.is_empty()
-                {
+    ) -> Option<Vec<(crate::TypeParamId, crate::type_facts::ImplMethodObligation)>> {
+        let mut bounds = self.collect_type_param_bounds(impl_params, impl_where, &mut Vec::new());
+        let method_bounds = self.collect_type_param_bounds(
+            method.type_params.as_ref(),
+            method.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
+        bounds.extend(&method_bounds);
+        bounds
+            .iter()
+            .map(|(param, bound)| {
+                if !bound.args.is_empty() || !bound.assoc.is_empty() {
                     return None;
                 }
-                let obligation = match self.bound_marker(&bound.path.to_string())? {
-                    // TRANSITION(P1): deleted by A1 commit 2
+                let obligation = match self.trait_marker(bound.trait_id)? {
                     MarkerTrait::Display => crate::type_facts::ImplMethodObligation::Display,
                     MarkerTrait::Serializable => {
                         crate::type_facts::ImplMethodObligation::Serializable
                     }
                     marker => crate::type_facts::ImplMethodObligation::Marker(marker),
                 };
-                obligations.push((name.to_string(), obligation));
-            }
-            Some(())
-        };
-        for param in &params {
-            add_bounds(param.name.name.as_str(), &param.bounds)?;
-        }
-        for clause in impl_where.into_iter().chain(method.where_clause.as_ref()) {
-            for predicate in &clause.predicates {
-                let TypeExpr::Named { path, type_args } = &predicate.ty.0 else {
-                    return None;
-                };
-                let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                if type_args.as_ref().is_some_and(|args| !args.is_empty())
-                    || !params.iter().any(|param| param.name == Ident::new(&*name))
-                {
-                    return None;
-                }
-                add_bounds(name, &predicate.bounds)?;
-            }
-        }
-        Some(obligations)
+                Some((*param, obligation))
+            })
+            .collect()
     }
 
     /// Register an impl method on a type's method table and `fn_sigs`.
@@ -1678,9 +1378,12 @@ impl Checker {
         else {
             return FnSig::default();
         };
+        let receiver = self
+            .current_impl_target()
+            .expect("impl registration publishes its resolved target");
         if let Some(owner) = self.impl_method_owner(trait_bound) {
             self.file_dispatch_method(
-                type_name,
+                &receiver,
                 impl_type_params.is_some_and(|params| !params.is_empty()),
                 owner,
                 method.name.name,
@@ -1695,15 +1398,8 @@ impl Checker {
         // unambiguous without publishing it as an ordinary named import; HIR
         // still needs the checker-owned identity for static dispatch and must
         // not reconstruct it from the trait's leaf spelling.
+        let implemented_trait = trait_bound.and_then(|bound| self.resolve_trait_path(&bound.path));
         if let Some(bound) = trait_bound {
-            let type_identity = self.trait_impl_type_identity(type_name);
-            let receiver_args = self
-                .current_self_type
-                .as_ref()
-                .map(|(_, args)| args.clone())
-                .unwrap_or_default();
-            let receiver = Ty::from_name(&type_identity)
-                .unwrap_or_else(|| self.named_ty_for_key(&type_identity, receiver_args));
             let impl_parameters = self.source_parameter_heads(
                 impl_type_params.map_or(&[], Vec::as_slice),
                 &method.fn_span,
@@ -1715,21 +1411,21 @@ impl Checker {
                 method.type_params.as_deref().unwrap_or_default(),
                 &method.fn_span,
             );
+            let obligations =
+                self.value_method_obligations(impl_type_params, impl_where_clause, method);
             self.trait_impl_method_binders.insert(
                 declaration_id,
                 crate::type_facts::ImplMethodBinders {
                     receiver: self.normalize_for_use(&receiver),
-                    obligations: self.value_method_obligations(
-                        impl_type_params,
-                        impl_where_clause,
-                        method,
-                    ),
+                    obligations,
                     impl_params: impl_parameters,
                     method_params: method_parameters,
                 },
             );
             if let (Some(slot), Ok(receiver)) = (
-                self.impl_method_slot(&bound.path.to_string(), method.name.name.as_str()),
+                implemented_trait.and_then(|trait_id| {
+                    self.impl_method_slot(trait_id, method.name.name.as_str())
+                }),
                 ResolvedTy::from_ty(&receiver),
             ) {
                 self.trait_impl_method_declaration_ids.insert(
@@ -1741,10 +1437,9 @@ impl Checker {
                     declaration_id,
                 );
             }
-            if let Some(ids) = self
-                .trait_method_call_target_ids(&bound.path.to_string(), method.name.name.as_str())
+            if let Some(ids) = implemented_trait
+                .and_then(|trait_id| self.trait_method_ids_of(trait_id, method.name.name.as_str()))
             {
-                // TRANSITION(P1): deleted by A1 commit 2
                 self.trait_method_ids_by_binding.insert(
                     (
                         self.current_module.clone(),
@@ -1757,17 +1452,13 @@ impl Checker {
             }
         }
         // Push impl-level bounds onto the resolver's stack so the method
-        // signature can reference `T::Bar` where `T` is an impl type param
-        // (e.g. `impl<I: Iterator> Foo for X { fn next() -> I::Item }`).
-        let mut impl_scope_holes = Vec::new();
-        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
-            impl_type_params,
-            impl_where_clause,
-            &mut impl_scope_holes,
-        );
-        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
+        // signature can reference `T.Bar` where `T` is an impl type param
+        // (e.g. `impl<I: Iterator> Foo for X { fn next() -> I.Item }`).
+        let impl_bounds =
+            self.collect_type_param_bounds(impl_type_params, impl_where_clause, &mut Vec::new());
+        let pushed_impl_bounds = !impl_bounds.is_empty();
         if pushed_impl_bounds {
-            self.current_type_param_bounds.push(impl_bounds_map);
+            self.current_type_param_bounds.push(impl_bounds.clone());
         }
         // The impl's own params are already pushed above; `register_fn_sig_with_name`
         // pushes the method's own params internally. Enable scope-local resolution
@@ -1784,17 +1475,9 @@ impl Checker {
 
         // Patch the fn_sigs entry to include impl-level type params and their
         // bounds. `register_fn_sig_with_name` only records method-level params,
-        // so `type_param_carries_bound` would otherwise miss impl-level bounds
-        // such as `T: Display` in `impl<T: Display> Holder<T>`.
+        // so a body would otherwise miss impl-level bounds such as `T: Display`
+        // in `impl<T: Display> Holder<T>`.
         if let Some(impl_tps) = impl_type_params {
-            let mut impl_scope_holes = Vec::new();
-            let impl_scope = self.collect_type_param_scope_with_assoc_bindings(
-                impl_type_params,
-                impl_where_clause,
-                &mut impl_scope_holes,
-            );
-            let impl_bounds = impl_scope.bounds;
-            let impl_assoc_bindings = impl_scope.assoc_bindings;
             let impl_parameters = self.source_parameter_heads(impl_tps, &method.fn_span);
             if let Some(sig) = self.fn_sigs.get_mut(&declaration_id) {
                 for parameter in impl_parameters {
@@ -1802,13 +1485,7 @@ impl Checker {
                         sig.type_params.push(parameter);
                     }
                 }
-                for (param, bounds) in impl_bounds {
-                    let entry = sig.type_param_bounds.entry(param).or_default();
-                    for bound in bounds {
-                        Self::push_unique_bound(entry, &bound);
-                    }
-                }
-                sig.type_param_assoc_bindings.extend(impl_assoc_bindings);
+                sig.bounds.extend(&impl_bounds);
             }
         }
 
@@ -1834,11 +1511,10 @@ impl Checker {
                 shadow_owners.push((params, format!("the `impl` block on `{type_name}`")));
             }
         }
-        if let Some(bound) = trait_bound {
-            let params = self.trait_type_param_names(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+        if let Some(trait_id) = implemented_trait {
+            let params = self.trait_type_param_names(trait_id);
             if !params.is_empty() {
-                shadow_owners.push((params, format!("trait `{}`", bound.path)));
-                // TRANSITION(P1): deleted by A1 commit 2
+                shadow_owners.push((params, format!("trait `{}`", self.defs.display(trait_id))));
             }
         }
         if !shadow_owners.is_empty() {
@@ -1865,30 +1541,6 @@ impl Checker {
             &method.fn_span,
         ));
 
-        // Collect bounds from both the impl's type params/where-clause and the
-        // method's own where-clause. Impl-level bounds cover both inline
-        // (`impl<T: Display>`) and where-clause (`impl<T> … where T: Display`)
-        // shapes because `collect_type_param_bounds` reads both sources.
-        let mut type_param_bounds =
-            self.collect_type_param_bounds(impl_type_params, impl_where_clause);
-        for (type_param, bounds) in self
-            .collect_type_param_bounds(method.type_params.as_ref(), method.where_clause.as_ref())
-        {
-            let entry = type_param_bounds.entry(type_param).or_default();
-            for bound in bounds {
-                Self::push_unique_bound(entry, &bound);
-            }
-        }
-        // Method where-clause may also constrain impl-level type params (e.g.
-        // an additional bound on T added at the method level).
-        for (type_param, bounds) in
-            self.collect_type_param_bounds(impl_type_params, method.where_clause.as_ref())
-        {
-            let entry = type_param_bounds.entry(type_param).or_default();
-            for bound in bounds {
-                Self::push_unique_bound(entry, &bound);
-            }
-        }
         // Re-use the primary signature registered above. Besides keeping
         // `extern_symbol` validation single-shot, this preserves the exact
         // tracked inference variables shared with body checking. Every method
@@ -1912,10 +1564,7 @@ impl Checker {
                         .canonical_nominal_name(type_name)
                         .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
                 ),
-                receiver_args: self
-                    .current_self_type
-                    .as_ref()
-                    .map_or_else(Vec::new, |(_, args)| args.clone()),
+                receiver_args: Self::impl_target_args(&receiver),
                 receiver_parameters: all_type_params
                     .iter()
                     .take(impl_type_params.map_or(0, Vec::len))
@@ -1930,9 +1579,8 @@ impl Checker {
                 },
             }),
             param_ownership: registered.param_ownership.clone(),
-            type_param_assoc_bindings: registered.type_param_assoc_bindings.clone(),
+            bounds: registered.bounds.clone(),
             type_params: all_type_params,
-            type_param_bounds,
             param_names,
             params,
             return_type,
@@ -2067,29 +1715,20 @@ impl Checker {
     /// for a concrete specialisation (`impl Show for Box<i64>`).
     pub(super) fn file_dispatch_method(
         &mut self,
-        type_name: &str,
+        receiver: &Ty,
         impl_is_generic: bool,
         owner: crate::check::dispatch_table::MethodOwner,
         name: Symbol,
         method: crate::DefId,
     ) {
-        let args = self
-            .current_self_type
-            .as_ref()
-            .filter(|(self_type, _)| self_type == type_name)
-            .map(|(_, args)| args.clone())
-            .unwrap_or_default();
-        let instance_of = |checker: &Self, args: Vec<Ty>| {
-            ResolvedTy::from_ty(&checker.named_ty_for_key(type_name, args))
-                .ok()
-                .and_then(|ty| ty.impl_receiver_instance(&checker.defs))
+        let receiver = match receiver {
+            Ty::Named { head, .. } if impl_is_generic => Ty::named_head(*head, Vec::new()),
+            receiver => receiver.clone(),
         };
-        let instance = if impl_is_generic || args.is_empty() {
-            instance_of(self, Vec::new())
-        } else {
-            instance_of(self, args)
-        };
-        let Some(instance) = instance else {
+        let Some(instance) = ResolvedTy::from_ty(&receiver)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance(&self.defs))
+        else {
             return;
         };
         if impl_is_generic || instance.args.is_empty() {
@@ -2101,15 +1740,22 @@ impl Checker {
         }
     }
 
+    /// The type the active impl block's target resolved to.
+    pub(in crate::check) fn current_impl_target(&self) -> Option<Ty> {
+        self.current_self_type
+            .as_ref()
+            .map(|(_, self_ty)| self_ty.clone())
+    }
+
     /// The dispatch owner of an impl's methods.
     pub(super) fn impl_method_owner(
-        &self,
+        &mut self,
         trait_bound: Option<&TraitBound>,
     ) -> Option<crate::check::dispatch_table::MethodOwner> {
         match trait_bound {
             None => Some(crate::check::dispatch_table::MethodOwner::Inherent),
             Some(bound) => self
-                .trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string())) // TRANSITION(P1): deleted by A1 commit 2
+                .resolve_trait_path(&bound.path)
                 .map(crate::check::dispatch_table::MethodOwner::Trait),
         }
     }
@@ -2179,8 +1825,9 @@ impl Checker {
         let concrete_receiver_args = self
             .current_self_type
             .as_ref()
-            .filter(|(self_type_name, args)| self_type_name == type_name && !args.is_empty())
-            .map(|(_, args)| args.clone());
+            .filter(|(self_type_name, _)| self_type_name == type_name)
+            .map(|(_, self_ty)| Self::impl_target_args(self_ty))
+            .filter(|args| !args.is_empty());
         let Some(self_type_args) = concrete_receiver_args.filter(|_| is_concrete_specialised_impl)
         else {
             return ImplMethodDeclarationKeys {
@@ -2272,7 +1919,7 @@ impl Checker {
             .current_self_type
             .as_ref()
             .filter(|(self_type_name, _)| self_type_name == type_name)
-            .map(|(_, args)| args)
+            .map(|(_, self_ty)| Self::impl_target_args(self_ty))
             .filter(|args| !args.is_empty())
             .map(|args| {
                 args.iter()
@@ -2282,21 +1929,18 @@ impl Checker {
             });
         let declared_receiver =
             declared_args.map_or_else(|| receiver.clone(), |args| format!("{receiver}<{args}>"));
-        let trait_identity = trait_bound.map_or_else(
-            || "inherent".to_string(),
-            |bound| {
-                if let Some(declared) =
-                    self.trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string()))
-                // TRANSITION(P1): deleted by A1 commit 2
-                {
-                    self.defs.path(declared).to_string()
-                } else if self.registration_is_flat_file_import {
-                    bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
-                } else {
-                    self.trait_defs_key_for_bound(&bound.path.to_string()) // TRANSITION(P1): deleted by A1 commit 2
-                }
-            },
-        );
+        let trait_identity = match trait_bound {
+            None => "inherent".to_string(),
+            // An impl of a trait no path resolves is reported by the method-set
+            // check; its methods keep keys apart by the written spelling.
+            // TRANSITION(A1c4): WHY impl method keys are still rendered
+            // strings. WHEN impl methods are keyed by their declarations
+            // alone, an unresolved trait mints no key. WHAT: keys by `DefId`.
+            Some(bound) => self.resolve_trait_path(&bound.path).map_or_else(
+                || bound.path.to_string(),
+                |declared| self.defs.path(declared).to_string(),
+            ),
+        };
         // A type may implement one generic trait at several arguments
         // (`impl From<A> for E` beside `impl From<B> for E`); the trait
         // arguments name which impl this method belongs to.
@@ -2395,14 +2039,14 @@ impl Checker {
         }
 
         let mut hole_vars = Vec::new();
-        let rf_scope = self.collect_type_param_scope_with_assoc_bindings(
+        let bounds = self.collect_type_param_bounds(
             rf.type_params.as_ref(),
             rf.where_clause.as_ref(),
             &mut hole_vars,
         );
-        let pushed_rf_bounds = !rf_scope.bounds.is_empty();
+        let pushed_rf_bounds = !bounds.is_empty();
         if pushed_rf_bounds {
-            self.current_type_param_bounds.push(rf_scope.clone());
+            self.current_type_param_bounds.push(bounds.clone());
         }
 
         let param_names = rf.params.iter().map(|p| p.name.to_string()).collect();
@@ -2427,13 +2071,10 @@ impl Checker {
             self.generic_ctx.pop();
         }
 
-        let type_param_bounds =
-            self.collect_type_param_bounds(rf.type_params.as_ref(), rf.where_clause.as_ref());
         let sig = FnSig {
-            type_param_assoc_bindings: rf_scope.assoc_bindings,
             type_params: self
                 .source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span),
-            type_param_bounds,
+            bounds,
             param_names,
             params,
             return_type,
@@ -2472,14 +2113,14 @@ impl Checker {
     /// Build a `FnSig` from a function declaration (used for user module registration).
     pub(in crate::check) fn build_fn_sig_from_decl(&mut self, fd: &FnDecl) -> FnSig {
         let mut hole_vars = Vec::new();
-        let scope = self.collect_type_param_scope_with_assoc_bindings(
+        let bounds = self.collect_type_param_bounds(
             fd.type_params.as_ref(),
             fd.where_clause.as_ref(),
             &mut hole_vars,
         );
-        let pushed_bounds = !scope.bounds.is_empty();
+        let pushed_bounds = !bounds.is_empty();
         if pushed_bounds {
-            self.current_type_param_bounds.push(scope.clone());
+            self.current_type_param_bounds.push(bounds.clone());
         }
         let param_names = fd.params.iter().map(|p| p.name.to_string()).collect();
         let params = fd
@@ -2499,10 +2140,8 @@ impl Checker {
         let return_type =
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
         FnSig {
-            type_param_assoc_bindings: scope.assoc_bindings,
             type_params,
-            type_param_bounds: self
-                .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
+            bounds,
             param_ownership: fd
                 .params
                 .iter()

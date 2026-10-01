@@ -311,6 +311,14 @@ impl Scopes {
         self.own_leaves.insert(namespace, leaf);
     }
 
+    /// Withdraw the item `name` binds in `namespace`: a declaration the
+    /// checker refused, so the name keeps reaching what it reached before.
+    pub fn unbind_item(&mut self, namespace: ModuleId, name: Symbol) {
+        if let Some(items) = self.items.get_mut(&namespace) {
+            items.remove(&name);
+        }
+    }
+
     /// The item `name` binds in `namespace`.
     #[must_use]
     pub fn item(&self, namespace: ModuleId, name: Symbol) -> Option<Binding> {

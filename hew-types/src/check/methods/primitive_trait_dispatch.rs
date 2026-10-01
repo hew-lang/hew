@@ -103,7 +103,7 @@ impl Checker {
         // otherwise diagnose, never eagerly upstream.
         let defaulted_receiver = resolved_receiver.materialize_literal_defaults();
         let canonical = Checker::canonical_primitive_or_builtin_key(&defaulted_receiver)?;
-        let (trait_name, sig) = self.lookup_primitive_trait_method(&defaulted_receiver, method)?;
+        let (trait_id, sig) = self.lookup_primitive_trait_method(&defaulted_receiver, method)?;
         // Bind the impl's type parameters from the concrete receiver's type
         // arguments BEFORE applying the signature, and PROVE the impl's `Self`
         // structurally matches the receiver. Without the binding a generic
@@ -120,10 +120,10 @@ impl Checker {
         let sig = self.instantiate_primitive_trait_method_sig(
             sig,
             &canonical,
-            &trait_name,
+            trait_id,
             &defaulted_receiver,
         )?;
-        let applied_sig = self.apply_instantiated_call_signature(
+        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             None,
             args,
@@ -186,7 +186,7 @@ impl Checker {
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {
-                trait_name,
+                trait_name: self.defs.path(trait_id).to_string(),
                 canonical_receiver: canonical,
             },
         );
@@ -253,7 +253,7 @@ impl Checker {
         &mut self,
         mut sig: FnSig,
         canonical: &str,
-        trait_name: &str,
+        trait_id: crate::DefId,
         receiver_ty: &Ty,
     ) -> Option<FnSig> {
         let mut subst: HashMap<crate::ParamHead, Ty> = HashMap::new();
@@ -261,7 +261,7 @@ impl Checker {
         // self` (it unifies unbound receiver vars against concrete `Self` args).
         if let Some(self_args) = self
             .primitive_trait_impl_self_args
-            .get(&(canonical.to_string(), trait_name.to_string()))
+            .get(&(canonical.to_string(), trait_id))
             .cloned()
         {
             let receiver_args: Vec<Ty> = match receiver_ty {
@@ -295,25 +295,23 @@ impl Checker {
         }
         for param_ty in &mut sig.params {
             *param_ty = param_ty
-                .substitute_type_param(
-                    crate::ParamHead::receiver(self.lookup_declaration(trait_name)?),
-                    receiver_ty,
-                )
+                .substitute_type_param(crate::ParamHead::receiver(trait_id), receiver_ty)
                 .substitute_type_params_parallel(&subst);
         }
         sig.return_type = sig
             .return_type
-            .substitute_type_param(
-                crate::ParamHead::receiver(self.lookup_declaration(trait_name)?),
-                receiver_ty,
-            )
+            .substitute_type_param(crate::ParamHead::receiver(trait_id), receiver_ty)
             .substitute_type_params_parallel(&subst);
         sig.type_params.retain(|tp| !subst.contains_key(tp));
-        sig.type_param_bounds.retain(|name, _| {
-            sig.type_params
-                .iter()
-                .any(|parameter| parameter.spelling.as_str() == name)
-        });
+        sig.bounds = sig
+            .bounds
+            .map_types(|ty| ty.substitute_type_params_parallel(&subst));
+        let remaining: HashSet<crate::TypeParamId> = sig
+            .type_params
+            .iter()
+            .map(|parameter| parameter.id)
+            .collect();
+        sig.bounds.retain(|param, _| remaining.contains(&param));
         Some(sig)
     }
 
@@ -430,13 +428,12 @@ impl Checker {
     /// dispatch in `calls.rs`, which keeps emitting today's diagnostics.
     pub(in crate::check) fn try_dispatch_ufcs_primitive_trait_method(
         &mut self,
-        trait_name: &str,
+        trait_id: crate::DefId,
         method_name: &str,
         args: &[CallArg],
         span: &Span,
     ) -> Option<Ty> {
         let first_arg = args.first()?;
-        let trait_key = self.trait_ref_lookup_key(trait_name);
         // Short-circuit before synthesising first_arg: if trait_name has no
         // primitive impls registered at all, return immediately.  This
         // prevents the fallback trait-qualified path from synthesising
@@ -447,7 +444,7 @@ impl Checker {
         let has_primitive_impl = self
             .primitive_trait_impls
             .keys()
-            .any(|(_, tn)| tn == &trait_key);
+            .any(|(_, implemented)| *implemented == trait_id);
         if !has_primitive_impl {
             return None;
         }
@@ -474,7 +471,7 @@ impl Checker {
         // this call site and there is no ambiguity to resolve.
         let sig = self
             .primitive_trait_impls
-            .get(&(canonical.clone(), trait_key.clone()))
+            .get(&(canonical.clone(), trait_id))
             .and_then(|methods| methods.get(method_name))
             .cloned()?;
         // Bind the impl's type params from the concrete receiver before
@@ -487,7 +484,7 @@ impl Checker {
         let sig = self.instantiate_primitive_trait_method_sig(
             sig,
             &canonical,
-            &trait_key,
+            trait_id,
             &resolved_receiver,
         )?;
         // Do not add an outer check_arity here.  apply_instantiated_call_signature
@@ -499,13 +496,13 @@ impl Checker {
         // Type-check remaining args against the (receiver-stripped)
         // params using the same machinery as method-form dispatch.
         let trailing_args = &args[1.min(args.len())..];
-        let applied = self.apply_instantiated_call_signature(
+        let applied = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             None,
             trailing_args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method `{trait_name}.{method_name}`"),
+                arity_context: format!("method `{}.{method_name}`", self.defs.display(trait_id)),
             },
             true,
             Some(GenericCallee::Method {
@@ -517,7 +514,7 @@ impl Checker {
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {
-                trait_name: trait_name.to_string(),
+                trait_name: self.defs.path(trait_id).to_string(),
                 canonical_receiver: canonical,
             },
         );

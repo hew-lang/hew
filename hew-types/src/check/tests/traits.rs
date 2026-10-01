@@ -517,8 +517,10 @@ fn main() {
 #[test]
 fn structural_satisfies_returns_false_for_unknown_trait() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let unknown = checker.defs.mint_for_test("NoSuchTrait");
+    let ty = checker.test_named("MyType", vec![]);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "NoSuchTrait"),
+        !checker.type_structurally_satisfies(&ty, unknown),
         "unknown trait must not satisfy structural check"
     );
 }
@@ -746,18 +748,18 @@ fn maybe_person() -> Option<dyn Named> {
 
 #[test]
 fn structural_satisfies_e1_guard_associated_types() {
-    let mut checker = make_checker_with_trait("Indexed", &["get"], true, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Indexed", &["get"], true, false);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "Indexed"),
+        !checker.type_structurally_satisfies(&checker.test_named("MyType", vec![]), trait_id),
         "E1 guard: traits with associated types must return false"
     );
 }
 
 #[test]
 fn structural_satisfies_e1_guard_generic_methods() {
-    let mut checker = make_checker_with_trait("Mapper", &["map"], false, true);
+    let (mut checker, trait_id) = make_checker_with_trait("Mapper", &["map"], false, true);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "Mapper"),
+        !checker.type_structurally_satisfies(&checker.test_named("MyType", vec![]), trait_id),
         "E1 guard: traits with generic methods must return false"
     );
 }
@@ -766,9 +768,9 @@ fn structural_satisfies_e1_guard_generic_methods() {
 fn structural_satisfies_e1_guard_method_only_trait_unknown_type_returns_false() {
     // In E2, the placeholder is replaced with real method-presence matching.
     // An unregistered type still returns false because no methods are found.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Greet", &["hello"], false, false);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "Greet"),
+        !checker.type_structurally_satisfies(&checker.test_named("MyType", vec![]), trait_id),
         "unregistered type must not satisfy structural check even after E2"
     );
 }
@@ -2196,16 +2198,18 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
         .and_then(|type_def| type_def.methods.get("map"))
         .expect("impl method must populate type_def.methods");
 
-    assert_eq!(
-        fn_sig.type_param_bounds.get("U"),
-        Some(&vec!["Show".to_string()]),
-        "fn_sigs surface must retain method-inline bounds"
-    );
-    assert_eq!(
-        method_sig.type_param_bounds.get("U"),
-        Some(&vec!["Show".to_string()]),
-        "type_def.methods surface must retain method-inline bounds"
-    );
+    for (surface, sig) in [("fn_sigs", fn_sig), ("type_def.methods", method_sig)] {
+        let u = sig
+            .type_params
+            .iter()
+            .find(|parameter| parameter.spelling.as_str() == "U")
+            .expect("map declares U");
+        assert_eq!(
+            sig.bounds.of(u.id).count(),
+            1,
+            "{surface} surface must retain the method-inline `U: Show` bound"
+        );
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -2214,22 +2218,23 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
 
 #[test]
 fn structural_hardening_uses_fn_sigs_named_method_fallback() {
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Greet", &["hello"], false, false);
     let __id = checker.test_declaration("Speaker");
     checker
         .type_defs
         .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
     checker.test_fn_sig("Speaker::hello", FnSig::default());
 
+    let speaker = checker.test_named("Speaker", vec![]);
     assert!(
-        checker.type_structurally_satisfies("Speaker", "Greet"),
+        checker.type_structurally_satisfies(&speaker, trait_id),
         "structural check should reuse named-method fn_sigs fallback"
     );
 }
 
 #[test]
 fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
-    let mut checker = make_checker_with_trait("Closer", &["close"], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Closer", &["close"], false, false);
 
     let mut methods = HashMap::new();
     methods.insert(
@@ -2251,122 +2256,10 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
         },
     );
 
+    let sink = Ty::named_head(crate::TypeHead::Builtin(crate::BuiltinType::Sink), vec![]);
     assert!(
-        checker.type_structurally_satisfies("std.stream.Sink", "Closer"),
+        checker.type_structurally_satisfies(&sink, trait_id),
         "structural check should prefer builtin Sink::close over imported stubs"
-    );
-}
-
-#[test]
-fn structural_hardening_qualified_trait_name_matches() {
-    // A type registered under "Speaker" must structurally satisfy a bound
-    // expressed as "greet.Greet" once "greet" is a known module.
-    // We build the checker state manually because check_program drains
-    // type_defs/fn_sigs at the end of the pass.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    checker.modules.insert("greet".to_string());
-
-    // Register a TypeDef for Speaker.  The trait `hello(val: Self)` has its
-    // receiver stripped by lookup_trait_method, so the effective trait_sig has
-    // params=[].  The concrete method entry must match: receiver already stripped.
-    let type_def = TypeDef {
-        kind: TypeDefKind::Struct,
-        name: "Speaker".to_string(),
-        type_params: vec![],
-        bounds: HashMap::new(),
-        fields: HashMap::new(),
-        variants: HashMap::new(),
-        methods: {
-            let mut m = HashMap::new();
-            m.insert("hello".to_string(), FnSig::default()); // params=[], return=Unit
-            m
-        },
-        doc_comment: None,
-        field_order: vec![],
-        is_indirect: false,
-    };
-    let __id = checker.test_declaration("Speaker");
-    checker.type_defs.insert(__id, type_def);
-
-    assert!(
-        checker.type_structurally_satisfies("Speaker", "greet.Greet"),
-        "structural check with qualified trait name must succeed after normalization"
-    );
-    // Unqualified form must still work too.
-    assert!(
-        checker.type_structurally_satisfies("Speaker", "Greet"),
-        "structural check with unqualified trait name must still succeed"
-    );
-}
-
-#[test]
-fn structural_hardening_qualified_type_name_matches() {
-    // A bound check with the type expressed as "mymod.Speaker" must succeed
-    // when "mymod" is a known module and "Speaker" is registered in type_defs.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    checker.modules.insert("mymod".to_string());
-
-    let type_def = TypeDef {
-        kind: TypeDefKind::Struct,
-        name: "Speaker".to_string(),
-        type_params: vec![],
-        bounds: HashMap::new(),
-        fields: HashMap::new(),
-        variants: HashMap::new(),
-        methods: {
-            let mut m = HashMap::new();
-            m.insert("hello".to_string(), FnSig::default());
-            m
-        },
-        doc_comment: None,
-        field_order: vec![],
-        is_indirect: false,
-    };
-    let __id = checker.test_declaration("Speaker");
-    checker.type_defs.insert(__id, type_def);
-
-    assert!(
-        checker.type_structurally_satisfies("mymod.Speaker", "Greet"),
-        "structural check with qualified type name must succeed after normalization"
-    );
-    // Unqualified form must still work too.
-    assert!(
-        checker.type_structurally_satisfies("Speaker", "Greet"),
-        "unqualified type name must still succeed"
-    );
-}
-
-#[test]
-fn structural_hardening_unknown_module_qualifier_is_rejected() {
-    // If the prefix is not a known module, we must not strip it and must
-    // not accidentally match a same-suffix type/trait.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    // "unknown" is NOT inserted into modules.
-
-    let type_def = TypeDef {
-        kind: TypeDefKind::Struct,
-        name: "Speaker".to_string(),
-        type_params: vec![],
-        bounds: HashMap::new(),
-        fields: HashMap::new(),
-        variants: HashMap::new(),
-        methods: {
-            let mut m = HashMap::new();
-            m.insert("hello".to_string(), FnSig::default());
-            m
-        },
-        doc_comment: None,
-        field_order: vec![],
-        is_indirect: false,
-    };
-    let __id = checker.test_declaration("Speaker");
-    checker.type_defs.insert(__id, type_def);
-
-    // Trait "unknown.Greet" should not resolve to "Greet" because "unknown" is
-    // not a registered module.
-    assert!(
-        !checker.type_structurally_satisfies("Speaker", "unknown.Greet"),
-        "unrecognised module prefix must not be stripped"
     );
 }
 
@@ -2610,7 +2503,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_super = checker.trait_info_from_decl(&assoc_super, None, 0);
-    checker.test_trait_def("AssocSuper", info_super);
+    let super_id = checker.test_trait_def("AssocSuper", info_super);
 
     // Child trait with no assoc types of its own.
     let child = TraitDecl {
@@ -2656,11 +2549,12 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_child = checker.trait_info_from_decl(&child, None, 0);
-    checker.test_trait_def("ChildTrait", info_child);
-    checker.set_trait_supers("ChildTrait", vec!["AssocSuper".to_string()]);
+    let child_id = checker.test_trait_def("ChildTrait", info_child);
+    checker.trait_super.insert(child_id, vec![super_id]);
 
+    let any = checker.test_named("AnyType", vec![]);
     assert!(
-        !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
+        !checker.type_structurally_satisfies(&any, child_id),
         "E1 guard in super-trait must veto structural check for child trait"
     );
 }
@@ -2714,7 +2608,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_super = checker.trait_info_from_decl(&generic_super, None, 0);
-    checker.test_trait_def("GenericSuper", info_super);
+    let super_id = checker.test_trait_def("GenericSuper", info_super);
 
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
@@ -2759,11 +2653,12 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_child = checker.trait_info_from_decl(&child, None, 0);
-    checker.test_trait_def("ChildTrait", info_child);
-    checker.set_trait_supers("ChildTrait", vec!["GenericSuper".to_string()]);
+    let child_id = checker.test_trait_def("ChildTrait", info_child);
+    checker.trait_super.insert(child_id, vec![super_id]);
 
+    let any = checker.test_named("AnyType", vec![]);
     assert!(
-        !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
+        !checker.type_structurally_satisfies(&any, child_id),
         "generic-method guard in super-trait must veto structural check for child trait"
     );
 }
@@ -2771,38 +2666,38 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 #[test]
 fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    for name in ["TraitA", "TraitB"] {
-        checker.test_trait_def(
-            name,
-            TraitInfo {
-                source_module: None,
-                file_index: 0,
-                methods: Vec::new(),
-                associated_types: Vec::new(),
-                type_params: Vec::new(),
-            },
-        );
-    }
-    checker.set_trait_supers("TraitA", vec!["TraitB".to_string()]);
-    checker.set_trait_supers("TraitB", vec!["TraitA".to_string()]);
-    checker
-        .trait_impls_set
-        .insert(("Thing".to_string(), "TraitA".to_string()));
+    let empty = || TraitInfo {
+        source_module: None,
+        file_index: 0,
+        methods: Vec::new(),
+        associated_types: Vec::new(),
+        type_params: Vec::new(),
+    };
+    let trait_a = checker.test_trait_def("TraitA", empty());
+    let trait_b = checker.test_trait_def("TraitB", empty());
+    let missing = checker.test_trait_def("MissingTrait", empty());
+    checker.trait_super.insert(trait_a, vec![trait_b]);
+    checker.trait_super.insert(trait_b, vec![trait_a]);
+    let thing = checker.test_named("Thing", vec![]);
+    checker.record_trait_impl(&thing, &crate::check::TraitRef::bare(trait_a), Vec::new());
 
+    let param = crate::ParamHead::for_test("T");
+    let mut bounds = crate::check::ParamBounds::default();
+    bounds.push(param.id, crate::check::TraitRef::bare(missing));
     let sig = FnSig {
-        type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["MissingTrait".to_string()])]),
+        type_params: vec![param],
+        bounds,
         ..Default::default()
     };
 
-    checker.enforce_type_param_bounds(&sig, &[Ty::named_for_test("Thing", vec![])], &(0..0));
+    checker.enforce_type_param_bounds(&sig, &[thing], &(0..0));
 
     assert!(
         checker
             .errors
             .iter()
-            .any(|error| error.kind == TypeErrorKind::UndefinedType
-                && error.message.contains("unknown trait `MissingTrait`")),
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("MissingTrait")),
         "expected cyclic trait hierarchy bound check to fail with a diagnostic; got {:?}",
         checker.errors
     );

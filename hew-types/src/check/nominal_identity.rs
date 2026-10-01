@@ -261,7 +261,7 @@ impl Checker {
         // A trait written in type position names the trait's declaration; a
         // handler-style trait becomes the actor handle it types.
         if let Some(id) = self
-            .lookup_declaration(&self.trait_ref_lookup_key(key))
+            .lookup_declaration(key)
             .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
         {
             return Ty::named_head(
@@ -271,20 +271,6 @@ impl Checker {
                 )),
                 args,
             );
-        }
-        // A spelling two modules claim has no unique registry row; the
-        // current file's own Scope binding names the declaration.
-        // TRANSITION(A1c3): obsolete when impl registration carries the
-        // impl target's resolved type instead of its spelling.
-        if let Some(super::scope::Resolution::Nominal(id)) = self
-            .current_declaration_module()
-            .and_then(|module| {
-                self.scopes
-                    .item(self.scopes.namespace_of(module), crate::Symbol::intern(key))
-            })
-            .map(super::scope::Binding::resolution)
-        {
-            return Ty::named_head(self.head_of_declaration(id), args);
         }
         Ty::Named {
             head: crate::TypeHead::Unresolved(crate::Symbol::intern(key)),
@@ -588,6 +574,18 @@ impl Checker {
             return;
         };
         self.scopes.record_resolution(site, callee_span, resolution);
+    }
+
+    /// The program's entry function: the `main` its root module declares.
+    pub(super) fn entry_function(&self) -> Option<crate::DefId> {
+        let root = self.defs.root_module()?;
+        match self
+            .scopes
+            .item(self.scopes.namespace_of(root), hew_parser::ast::sym::MAIN)?
+        {
+            super::scope::Binding::Fn(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// The trait or predicate a written bound path names, resolved through
@@ -918,7 +916,7 @@ impl Checker {
     }
 
     /// The declaration path a binding names, for diagnostics.
-    fn binding_path(&self, binding: super::scope::Binding) -> Option<String> {
+    pub(super) fn binding_path(&self, binding: super::scope::Binding) -> Option<String> {
         use super::scope::Binding;
         match binding {
             Binding::Type(id) | Binding::Actor(id) => {

@@ -495,6 +495,7 @@ pub trait Iterator {
 /// `<T as IntoIterator>.Item`. Concrete `IntoIterator` impls live next to
 /// each collection (`Vec`, `HashSet`, `HashMap`); this trait declaration
 /// reserves the surface only.
+#[lang_item("into_iterator")]
 pub trait IntoIterator {
     type Item;
 
@@ -752,6 +753,7 @@ pub trait Display {
 /// `Error` adds no methods of its own: an error is a value that can say what
 /// went wrong, so `Display` is the whole obligation. Declaring
 /// `impl Error for MyError {}` therefore requires `impl Display for MyError`.
+#[lang_item("error")]
 pub trait Error: Display {
 }
 
@@ -762,6 +764,7 @@ pub trait Error: Display {
 /// A conversion never chains, and erasure into `dyn Error` needs no impl.
 #[lang_item("from")]
 pub trait From<Source> {
+    #[lang_item("from.from")]
     fn from(value: Source) -> Self;
 }
 

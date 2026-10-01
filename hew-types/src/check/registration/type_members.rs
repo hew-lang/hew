@@ -203,13 +203,19 @@ impl Checker {
                             // identity only.
                             Item::Trait(td) => {
                                 let qualified = format!("{module_name}.{}", td.name);
-                                if !self.trait_def_keys.contains_key(&qualified) {
+                                let registered = self
+                                    .lookup_declaration(&qualified)
+                                    .is_some_and(|id| self.trait_defs.contains_key(&id));
+                                if !registered {
                                     let info = self.trait_info_from_decl(
                                         td,
                                         Some(module_name.clone()),
                                         self.current_module_idx,
                                     );
-                                    self.insert_trait_def(&qualified, &qualified, info);
+                                    if let Some(trait_id) = self.insert_trait_def(&qualified, info)
+                                    {
+                                        self.register_trait_supers(trait_id, td);
+                                    }
                                 }
                             }
                             // Register machine state/event binding tables for the
@@ -294,19 +300,10 @@ impl Checker {
                     );
                     self.errors.extend(trait_errors);
                     let declaration = self.declaration_identity(td.name.name.as_str());
-                    self.insert_trait_def(td.name.name.as_str(), &declaration, info);
-                    self.local_trait_defs.insert(td.name.to_string());
-                    // Record super-trait relationships
-                    if let Some(supers) = &td.super_traits {
-                        let super_names: Vec<String> = supers
-                            .iter()
-                            .map(|s| {
-                                self.note_trait_use(&s.path.to_string());
-                                s.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
-                            })
-                            .collect();
-                        self.set_trait_supers(td.name.name.as_str(), super_names);
+                    if let Some(trait_id) = self.insert_trait_def(&declaration, info) {
+                        self.register_trait_supers(trait_id, td);
                     }
+                    self.local_trait_defs.insert(td.name.to_string());
                     // Harvest `#[lang_item("…")]` attributes into the
                     // lang-item registry so downstream passes (HIR f-string
                     // lowering) can discover the trait/method names by role
@@ -579,9 +576,9 @@ impl Checker {
     pub(super) fn reresolve_actor_members(&mut self, ad: &ActorDecl) {
         let has_type_params = !ad.type_params.is_empty();
         if has_type_params {
-            let bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
-            self.current_type_param_bounds
-                .push(TypeParamScope::new(bounds, HashMap::new()));
+            let bounds =
+                self.collect_type_param_bounds(Some(&ad.type_params), None, &mut Vec::new());
+            self.current_type_param_bounds.push(bounds);
         }
         let mut hole_vars = Vec::new();
         let mut fields: HashMap<String, Ty> = HashMap::new();
@@ -1038,8 +1035,11 @@ impl Checker {
         } else {
             self.declaration_parameter_heads(td.name.name.as_str())
         };
-        let type_param_bounds =
-            self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
+        let type_param_bounds = self.collect_type_param_bounds(
+            td.type_params.as_ref(),
+            td.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
 
         // Reject duplicate type parameter names — same check as `register_type_decl`.
         {
@@ -1099,7 +1099,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
@@ -1124,7 +1124,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     params: variant_tys,
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
@@ -1382,8 +1382,11 @@ impl Checker {
             }
         }
 
-        let type_param_bounds =
-            self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
+        let type_param_bounds = self.collect_type_param_bounds(
+            td.type_params.as_ref(),
+            td.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::param(*name))
@@ -1420,7 +1423,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
@@ -1447,7 +1450,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     params: variant_tys,
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
@@ -1575,8 +1578,11 @@ impl Checker {
         } else {
             self.declaration_parameter_heads(rd.name.name.as_str())
         };
-        let type_param_bounds =
-            self.collect_type_param_bounds(rd.type_params.as_ref(), rd.where_clause.as_ref());
+        let type_param_bounds = self.collect_type_param_bounds(
+            rd.type_params.as_ref(),
+            rd.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
 
         // Build the return type for constructors: `R` or `R<T1, T2, …>`
         let enum_return_args: Vec<Ty> = type_param_names
@@ -1621,7 +1627,7 @@ impl Checker {
                 // `.0`/`.1` access is not permitted on tuple records (A-D2).
                 let signature = FnSig {
                     type_params: type_param_names.clone(),
-                    type_param_bounds: type_param_bounds.clone(),
+                    bounds: type_param_bounds.clone(),
                     params: param_tys,
                     return_type: return_type.clone(),
                     ..FnSig::default()
@@ -1793,35 +1799,18 @@ impl Checker {
     )]
     pub(in crate::check) fn register_machine_decl(&mut self, md: &MachineDecl, span: &Span) {
         // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
-        // MachineDecl.type_params is Vec<TypeParam> — we extract bare names
-        // here for the self-type and collect declared trait bounds into a
-        // side table consulted at use sites (struct-state brace init) and
-        // mirrored onto unit-state constructor FnSigs for the call path.
-        //
-        // Validate before collect_type_param_bounds erases positional type args.
-        self.validate_type_param_bound_shapes(
+        // The declared trait bounds live on the machine's `TypeDef`, consulted
+        // at use sites (struct-state brace init), and are mirrored onto
+        // unit-state constructor FnSigs for the call path.
+        let type_param_names = self.source_parameter_heads(&md.type_params, span);
+        // Inline `<T: Trait>` and `where T: Trait` bounds are one set: the
+        // bound is satisfied at the instantiation site iff the substituted
+        // type implements the trait, wherever it was written.
+        let type_param_bounds = self.collect_type_param_bounds(
             Some(&md.type_params),
             md.where_clause.as_ref(),
-            span,
+            &mut Vec::new(),
         );
-        let type_param_names = self.source_parameter_heads(&md.type_params, span);
-        // Collect inline `<T: Trait>` and `where T: Trait` bounds into a
-        // single side table keyed by machine name then param name. At
-        // the checker layer, a bound's source (inline vs where clause)
-        // does not affect the enforcement question — the bound is
-        // "satisfied at the instantiation site iff the substituted
-        // type implements the trait" regardless of where the bound
-        // was authored — so duplicates on the same (param, trait) pair
-        // dedupe. Source provenance is preserved at the parser layer
-        // (separate `type_params` / `where_clause` fields on
-        // `MachineDecl`) so future lowering layers that want to point
-        // diagnostics at the predicate's span can recover it.
-        let type_param_bounds =
-            self.collect_type_param_bounds(Some(&md.type_params), md.where_clause.as_ref());
-        if !type_param_bounds.is_empty() {
-            self.machine_type_param_bounds
-                .insert(md.name.to_string(), type_param_bounds.clone());
-        }
         // W3.039 Stage 2: register const-generic parameter declarations
         // into the side table so instantiation-site validation
         // (Stage 3 — gated on W3.033c) can recover arity, types, and
@@ -1904,7 +1893,7 @@ impl Checker {
                     crate::DeclarationKind::MachineState,
                     FnSig {
                         type_params: type_param_names.clone(),
-                        type_param_bounds: type_param_bounds.clone(),
+                        bounds: type_param_bounds.clone(),
                         return_type: machine_ty.clone(),
                         ..FnSig::default()
                     },

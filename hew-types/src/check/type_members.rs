@@ -502,7 +502,7 @@ impl Checker {
         } else {
             (raw_sig, Vec::new())
         };
-        let applied = self.apply_instantiated_call_signature(
+        let applied = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             None,
             args,

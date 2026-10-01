@@ -524,37 +524,9 @@ impl Checker {
         clippy::too_many_arguments,
         reason = "call application needs the signature, source args, span, arity mode, and the callee identity that makes generic obligations discoverable"
     )]
-    pub(super) fn apply_instantiated_call_signature(
-        &mut self,
-        sig: &FnSig,
-        type_args: Option<&[Spanned<TypeExpr>]>,
-        args: &[CallArg],
-        span: &Span,
-        arg_application: SignatureArgApplication<'_>,
-        record_call_type_args: bool,
-        callee: Option<GenericCallee<'_>>,
-    ) -> AppliedCallSignature {
-        let empty_assoc_bindings = HashMap::new();
-        self.apply_instantiated_call_signature_with_assoc(
-            sig,
-            &empty_assoc_bindings,
-            type_args,
-            args,
-            span,
-            arg_application,
-            record_call_type_args,
-            callee,
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "call application needs the signature, its associated-type side table, source args, span, and arity mode"
-    )]
     pub(super) fn apply_instantiated_call_signature_with_assoc(
         &mut self,
         sig: &FnSig,
-        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
         type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
@@ -612,12 +584,7 @@ impl Checker {
             }
         }
 
-        self.enforce_type_param_bounds_with_assoc(
-            sig,
-            type_param_assoc_bindings,
-            &resolved_type_args,
-            span,
-        );
+        self.enforce_signature_bounds(sig, &resolved_type_args, span);
 
         if record_call_type_args && !sig.type_params.is_empty() {
             self.record_concrete_call_type_args(span, &resolved_type_args);
@@ -913,7 +880,7 @@ impl Checker {
                 // let the per-monomorphisation resolver classify the substituted
                 // element (fail-closed there if genuinely unsupported) — the
                 // same deferral the element-typed method resolution takes (#2737).
-                && !self.vec_element_contains_abstract_type_param(&elem_ty)
+                && !Self::vec_element_contains_abstract_type_param(&elem_ty)
             {
                 // The element's value class decides: a `BitCopy` element takes
                 // the plain layout family, every other class the owned-element
@@ -1270,7 +1237,7 @@ impl Checker {
         let (module_name, method) = func_name.split_once("::")?;
         // A trait-qualified call (`Trait::method`) is handled by the dedicated
         // paths above and must not be re-interpreted as a module call.
-        if self.has_trait_def(module_name) {
+        if self.trait_spelled_here(module_name).is_some() {
             return None;
         }
         if method.contains("::") {
@@ -1338,10 +1305,8 @@ impl Checker {
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
-        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
-            &assoc_bindings,
             type_args,
             args,
             span,
@@ -2016,13 +1981,20 @@ impl Checker {
             return result_ty;
         }
 
-        if matches!(func_name.as_str(), "link" | "monitor")
-            && self
-                .current_function
-                .as_deref()
-                .and_then(|function| self.root_owned_fn_leaf(function))
-                == Some("main")
-            && !self.declares_function(&func_name)
+        // Observing an actor needs a mailbox to deliver to; the entry
+        // function has none. The file's own declaration of the name is the
+        // callee before any builtin of that spelling.
+        let observes_an_actor = self.scoped_fn_declaration(&func_name, false).is_none()
+            && matches!(
+                self.call_target_for_signature(&func_name),
+                CallTarget::Runtime(
+                    crate::runtime_call::RuntimeCallFamily::ActorLink
+                        | crate::runtime_call::RuntimeCallFamily::ActorMonitor
+                )
+            );
+        if observes_an_actor
+            && self.checking_declaration.is_some()
+            && self.checking_declaration == self.entry_function()
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -2355,13 +2327,10 @@ impl Checker {
         // receiver param on the resolved sig so arity matches and the
         // first arg is type-checked against the canonical receiver.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.has_trait_def(trait_name) {
-                if let Some(ret_ty) = self.try_dispatch_ufcs_primitive_trait_method(
-                    trait_name,
-                    method_name,
-                    args,
-                    span,
-                ) {
+            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
+                if let Some(ret_ty) =
+                    self.try_dispatch_ufcs_primitive_trait_method(trait_id, method_name, args, span)
+                {
                     return ret_ty;
                 }
             }
@@ -2480,7 +2449,6 @@ impl Checker {
                     .materialize_literal_defaults();
                 self.require_actor_handle_argument(&resolved, "Node.register", handle_span);
             }
-            let assoc_bindings = sig.type_param_assoc_bindings.clone();
             // `assert` takes one optional parameter, the failure message.
             let assertion = self.call_target_for_signature(&resolved_fn_name)
                 == CallTarget::Builtin {
@@ -2493,7 +2461,6 @@ impl Checker {
             };
             let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                 &sig,
-                &assoc_bindings,
                 type_args,
                 args,
                 span,
@@ -2636,7 +2603,7 @@ impl Checker {
                 .cloned()
             {
                 let result = self
-                    .apply_instantiated_call_signature(
+                    .apply_instantiated_call_signature_with_assoc(
                         &sig.call_sig,
                         type_args,
                         args,
@@ -2713,9 +2680,9 @@ impl Checker {
         // If the function name has the form `TraitName::method` and TraitName
         // is a known trait, resolve the method from the trait definition.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.has_trait_def(trait_name) {
+            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
                 // Use the full signature (receiver included) for qualified calls.
-                if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
+                if let Some(sig) = self.lookup_trait_method_inner(trait_id, method_name, false) {
                     // The trait sig includes all non-receiver params.
                     // For qualified calls the first positional arg is the receiver.
                     if self.refuse_named_arguments(args, &format!("`{func_name}`"), span) {

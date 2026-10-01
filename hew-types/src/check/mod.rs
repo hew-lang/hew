@@ -26,6 +26,7 @@ mod actor_codec;
 mod actor_delivery;
 pub(crate) mod admissibility;
 pub(crate) mod assertion;
+mod bounds;
 mod branch_join;
 mod callables;
 mod calls;
@@ -80,25 +81,25 @@ use self::types::{
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
     DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext,
     IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo,
-    TraitInfo, TypeParamScope,
+    TraitImplArgs, TraitInfo,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, CallableArgumentFlow, CallableCandidate, CallableDispatchActual,
-    CallableFieldFlow, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
-    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat,
-    DynCoercion, DynMethodCall, EntryCallableInstance, EntryDisplayTarget, EntryExitAction,
-    EntryExitPlan, EntryIntegerType, ErrorConversion, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, FromImpl,
-    ImplMethodProvenance, ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind,
-    MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
-    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
-    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
-    ResultReturnKind, SpanKey, StackHint, StructuralWitness, TryConversionKind,
-    TryWidthCastLowering, TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    AssignTargetShape, BinderTraitCall, CallableArgumentFlow, CallableCandidate,
+    CallableDispatchActual, CallableFieldFlow, CheckedSelectSource, Checker, ChildKind, ChildSlot,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec,
+    CodecDirection, CodecFormat, DynCoercion, DynMethodCall, EntryCallableInstance,
+    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion,
+    ExecutionContextReader, ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView,
+    FromImpl, ImplMethodProvenance, ImportedImplBodyFact, IndirectCallCandidates,
+    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
+    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind,
+    PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
+    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind,
+    ResolvedTraitDefault, ResultReturnKind, SpanKey, StackHint, StructuralWitness, TraitRef,
+    TryConversionKind, TryWidthCastLowering, TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind,
+    TypeDefView, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
     WidthCastLowering,
 };
 use self::util::{
@@ -708,12 +709,8 @@ impl Checker {
                 self.trait_impl_method_binders.clone(),
             )
             .with_display_method(
-                self.lang_items
-                    .get(crate::LANG_ITEM_DISPLAY)
-                    .and_then(|binding| {
-                        self.trait_method_ids_for_key(self.defs.path(binding.trait_id), "fmt")
-                    })
-                    .or_else(|| self.trait_method_call_target_ids("Display", "fmt"))
+                self.lang_trait(crate::LangItem::Display)
+                    .and_then(|display| self.trait_method_ids_of(display, "fmt"))
                     .map(|(_, method)| method),
             )
     }
@@ -1115,16 +1112,22 @@ impl Checker {
     }
 
     /// Bind `std.builtins` in the prelude scope.
-    fn bind_builtins_prelude_in_scope(&mut self) {
+    pub(super) fn bind_builtins_prelude_in_scope(&mut self) {
         // `std.builtins` publishes every type and trait bare; its functions
-        // are reached through the builtin call catalog.
+        // are reached through the builtin call catalog. A declared trait
+        // takes its spelling over a compiler-internal builtin type of the
+        // same name (`Iterator`), which is never the type of a value.
         if let Some(builtins) = self.defs.module_for_path("std.builtins") {
             for (name, binding) in self.scopes.items(self.scopes.namespace_of(builtins)) {
-                if matches!(
-                    binding,
-                    scope::Binding::Type(_) | scope::Binding::Actor(_) | scope::Binding::Trait(_)
-                ) && self.scopes.prelude_binding(name).is_none()
-                {
+                let existing = self.scopes.prelude_binding(name);
+                let publish = match binding {
+                    scope::Binding::Type(_) | scope::Binding::Actor(_) => existing.is_none(),
+                    scope::Binding::Trait(_) => {
+                        existing.is_none() || matches!(existing, Some(scope::Binding::Builtin(_)))
+                    }
+                    _ => false,
+                };
+                if publish {
                     self.scopes.bind_prelude(name, binding);
                 }
             }
@@ -1437,7 +1440,7 @@ impl Checker {
                 ..
             } if matches!(args.as_slice(), [Ty::Unit, _]) => {
                 let error_ty = args[1].clone();
-                if !self.type_satisfies_trait_bound(&error_ty, "Error") {
+                if !self.type_satisfies_lang_trait(&error_ty, crate::LangItem::Error) {
                     let error_name = error_ty.user_facing();
                     self.report_error_with_suggestions(
                         TypeErrorKind::BoundsNotSatisfied,
@@ -1455,8 +1458,9 @@ impl Checker {
                 // than a concrete declaration: the slot the coercion site
                 // published is the whole realization.
                 if let Ty::TraitObject { traits } = &error_ty {
+                    let display = self.lang_trait(crate::LangItem::Display)?;
                     let generics::DynLayoutSlot { slot, method, .. } =
-                        self.dyn_layout_slot_of(traits, "std.builtins.Display", "fmt", span)?;
+                        self.dyn_layout_slot_of(traits, display, "fmt", span)?;
                     return Some(EntryExitAction::Result {
                         result_ty: resolved_return_type?,
                         error_ty: ResolvedTy::from_ty(&error_ty).ok()?,
@@ -1464,7 +1468,10 @@ impl Checker {
                     });
                 }
                 let Some(display_declaration) =
-                    self.trait_impl_method_declaration(&error_ty, "Display", "fmt")
+                    self.lang_trait(crate::LangItem::Display)
+                        .and_then(|display| {
+                            self.trait_impl_method_declaration(&error_ty, display, "fmt")
+                        })
                 else {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::BoundsNotSatisfied,
@@ -1571,7 +1578,8 @@ impl Checker {
         if matches!(error_ty, Ty::String) {
             return Some(crate::actor_protocol::ReceiveFailureDisplay::Identity);
         }
-        let declaration = self.trait_impl_method_declaration(error_ty, "Display", "fmt")?;
+        let display = self.lang_trait(crate::LangItem::Display)?;
+        let declaration = self.trait_impl_method_declaration(error_ty, display, "fmt")?;
         let signature = resolved_fn_sigs.of(declaration)?;
         let instance = if signature.type_params.is_empty() {
             EntryCallableInstance::Declared
@@ -3438,6 +3446,7 @@ impl Checker {
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             structural_witnesses: std::mem::take(&mut self.structural_witnesses),
             error_conversions: std::mem::take(&mut self.error_conversions),
+            binder_trait_calls: std::mem::take(&mut self.binder_trait_calls),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             trait_object_layouts,
             closure_capture_facts: resolved_closure_capture_facts,

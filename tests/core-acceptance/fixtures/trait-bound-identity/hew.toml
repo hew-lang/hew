@@ -1,0 +1,4 @@
+[package]
+name = "bound_identity"
+edition = "2026"
+version = "0.1.0"

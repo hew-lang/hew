@@ -610,10 +610,8 @@ impl Checker {
         let sig = self.lookup_named_method_sig(receiver_type_name, type_args, method)?;
         sig.extern_symbol.as_ref()?;
         let method_key = format!("{receiver_type_name}::{method}");
-        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
-            &assoc_bindings,
             None,
             args,
             span,

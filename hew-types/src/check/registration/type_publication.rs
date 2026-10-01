@@ -159,7 +159,7 @@ impl Checker {
                 .iter()
                 .map(|param| (*param).to_string())
                 .collect(),
-            HashMap::new(),
+            None,
             vec![],
             &Ty::Named {
                 head: crate::TypeHead::Builtin(builtin),
@@ -176,7 +176,7 @@ impl Checker {
             .insert(name.to_string(), CallTarget::Runtime(family));
     }
 
-    pub(super) fn resolve_registered_annotation_ty(
+    pub(in crate::check) fn resolve_registered_annotation_ty(
         &mut self,
         type_expr: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
@@ -376,9 +376,13 @@ impl Checker {
                 },
             );
         }
-        if let Some(tb) = &id.trait_bound {
-            let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-            if let Some(trait_info) = self.trait_def_at(&trait_key) {
+        if let Some(trait_info) = id
+            .trait_bound
+            .as_ref()
+            .and_then(|tb| self.resolve_trait_path(&tb.path))
+            .and_then(|trait_id| self.trait_info(trait_id))
+        {
+            {
                 for assoc in &trait_info.associated_types {
                     if entries.contains_key(&assoc.name) {
                         continue;
@@ -440,28 +444,6 @@ impl Checker {
             .unwrap_or_else(|| name.to_string())
     }
 
-    pub(in crate::check) fn push_unique_bound(entry: &mut Vec<String>, bound: &str) {
-        if !entry.iter().any(|b| b == bound) {
-            entry.push(bound.to_string());
-        }
-    }
-
-    /// The `trait_impls_set` / `trait_impl_method_names` identity for an impl
-    /// target named `type_name`.
-    ///
-    /// A generated monomorphic builtin enum (`SendError`, `TimeoutError`,
-    /// `LinkError`, `Delivery`, …) is declared in a stdlib `.hew` source and
-    /// carries exactly one identity: the catalog's `canonical_name`. The
-    /// resolver already stamps that spelling onto every annotation, field and
-    /// variant payload naming the declaration, so registering its impls under
-    /// the bare leaf mints an entry lookup can never find — which is why
-    /// `ActorError.Rejected(reason)` could not interpolate `reason` while a
-    /// bare `SendError.Full` could. Both sides now select the catalog identity.
-    ///
-    /// Every other receiver kind (primitives, `Vec`/`HashMap`/generics, the
-    /// synthetic cursors) has its own arm in
-    /// `canonical_primitive_or_builtin_key_for_impl_name` and never reaches
-    /// the module-qualifying fallback.
     /// The canonical identity of an `impl` target spelled through a module
     /// binding, or `None` when the spelling is already an identity (a bare
     /// local name, a builtin, an exact owner-qualified path).
@@ -634,8 +616,6 @@ impl Checker {
             }
         }
 
-        self.record_trait_import_bindings(module_full_path, items);
-
         // Resolve imported declarations in the defining module's lexical scope.
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
@@ -792,11 +772,6 @@ impl Checker {
                     self.record_module_type_export(module_full_path, &event_name);
                 }
                 Item::Trait(tr) => {
-                    if let Some(supers) = &tr.super_traits {
-                        for super_trait in supers {
-                            self.note_trait_use(&super_trait.path.to_string());
-                        }
-                    }
                     // Record visibility for all traits (both pub and non-pub) so a
                     // cross-module qualified reference to a non-pub trait produces a
                     // precise E_VISIBILITY at the reference site instead of leaking an
@@ -826,11 +801,9 @@ impl Checker {
                         self.current_module_idx,
                     );
                     let qualified = format!("{module_full_path}.{}", tr.name);
-                    self.insert_trait_def(tr.name.name.as_str(), &qualified, info.clone());
-                    self.insert_trait_def(&qualified, &qualified, info.clone());
-                    // Retain the lexical import surface as a lookup index only;
-                    // trait resolution and impl facts select the exact full owner.
-                    self.alias_trait_def(&format!("{module_short}.{}", tr.name), &qualified);
+                    if let Some(trait_id) = self.insert_trait_def(&qualified, info) {
+                        self.register_trait_supers(trait_id, tr);
+                    }
                 }
                 Item::Function(fd) => {
                     let qualified =
@@ -963,8 +936,7 @@ impl Checker {
                     continue;
                 }
                 if let TypeExpr::Named {
-                    path: named_path,
-                    type_args,
+                    path: named_path, ..
                 } = &id.target_type.0
                 {
                     let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
@@ -972,15 +944,16 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args: Vec<Ty> =
-                        self.resolve_impl_target_type_args(id, type_args.as_ref());
-                    self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
+                    let self_ty = self.resolve_impl_target(id);
+                    let self_type_args = Self::impl_target_args(&self_ty);
+                    self.current_self_type = Some((type_name.clone(), self_ty));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
                     let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                         self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                     });
+                    let impl_trait = self.impl_trait_ref(id);
                     // Compiled-in stdlib impls are the origin of the builtin
                     // Result/Option/Vec receiver surfaces. Snapshot their
                     // canonical signatures before a user same-named type can
@@ -1023,32 +996,25 @@ impl Checker {
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
                             td.methods.insert(method.name.to_string(), sig.clone());
                         }
-                        if let (Some(canonical), Some(tb)) =
-                            (primitive_key.clone(), id.trait_bound.as_ref())
+                        if let (Some(canonical), Some(trait_ref)) =
+                            (primitive_key.clone(), impl_trait.as_ref())
                         {
                             self.record_primitive_trait_impl_self_args(
                                 canonical.clone(),
-                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                trait_ref.trait_id,
                                 self_type_args.clone(),
                                 &id.target_type.1,
                             );
                             self.record_primitive_trait_impl_method(
                                 canonical,
-                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                trait_ref.trait_id,
                                 method.name.to_string(),
                                 sig,
                             );
                         }
                     }
-                    if let Some(tb) = &id.trait_bound {
-                        self.note_trait_use(&tb.path.to_string());
-                        self.record_trait_impl_methods(
-                            type_name,
-                            &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                            id.methods.iter().map(|method| method.name.to_string()),
-                        );
-                        self.record_trait_impl(type_name, &tb.path.to_string());
-                        // TRANSITION(P1): deleted by A1 commit 2
+                    if let Some(trait_ref) = &impl_trait {
+                        self.record_trait_impl_from_decl(id, trait_ref, span);
                     }
 
                     // Restore previous self type
@@ -1267,13 +1233,6 @@ impl Checker {
         item_source_paths: &[std::path::PathBuf],
         spec: &Option<ImportSpec>,
     ) {
-        // Record this module's own trait import bindings BEFORE any of its trait
-        // declarations are registered, so a supertrait edge (`trait Sub: Base`)
-        // that names a re-imported `Base` resolves through the chain to the
-        // original owner (the H11 fix). Topo order guarantees the owner's def is
-        // already registered by the time this module's sub-trait edge is built.
-        self.record_trait_import_bindings(module_full_path, items);
-
         // Match the defining module's lexical scope during registration.
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
@@ -1704,16 +1663,6 @@ impl Checker {
                     }
                 }
                 Item::Trait(tr) => {
-                    if let Some(supers) = &tr.super_traits {
-                        let saved_importer_module =
-                            self.current_module.replace(module_full_path.to_string());
-                        self.current_module_idx = declaring_file_idx;
-                        for super_trait in supers {
-                            self.note_trait_use(&super_trait.path.to_string());
-                        }
-                        self.current_module = saved_importer_module;
-                        self.current_module_idx = importer_file_idx;
-                    }
                     // Record visibility for all traits so the enforcement check can
                     // distinguish "private, not accessible" from "unknown symbol".
                     // Use module_full_path (matching TypeDecl/Machine) so cross-package
@@ -1734,11 +1683,22 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
+                    // The declaration's bounds and super-traits resolve where it
+                    // is written.
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     let info = self.trait_info_from_decl(
                         tr,
                         Some(module_full_path.to_string()),
                         declaring_file_idx,
                     );
+                    let qualified = format!("{module_full_path}.{}", tr.name);
+                    if let Some(trait_id) = self.insert_trait_def(&qualified, info) {
+                        self.register_trait_supers(trait_id, tr);
+                    }
+                    self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     let import_binding = if Self::should_import_name(tr.name.name.as_str(), spec) {
                         let binding_name = Self::resolve_import_name(spec, tr.name.name.as_str())
                             .unwrap_or_else(|| tr.name.to_string());
@@ -1758,12 +1718,6 @@ impl Checker {
                         None
                     };
 
-                    // Register under qualified name (e.g. "mymod.Drawable")
-                    let qualified = format!("{module_full_path}.{}", tr.name);
-                    self.insert_trait_def(&qualified, &qualified, info.clone());
-                    if spec.is_none() {
-                        self.alias_trait_def(&format!("{module_short}.{}", tr.name), &qualified);
-                    }
                     // A whole-module import exposes the trait through the exact
                     // qualified source binding (`alias.Trait`) rather than a
                     // published bare name. Record the checker-owned declaration
@@ -1794,51 +1748,8 @@ impl Checker {
                         );
                     }
 
-                    // Record super-trait relationships for both qualified and
-                    // unqualified bindings. A supertrait reference written inside
-                    // the source module (`trait Sub: Base`) is bare in the source
-                    // spelling, but it names the trait `module_short` resolves
-                    // `Base` to: its own same-package `Base` (`{module_short}.Base`),
-                    // OR a re-imported `Base` followed through this module's import
-                    // bindings to the original owner. Store the OWNER-QUALIFIED
-                    // identity so `trait_super` values are collision-free
-                    // `trait_defs` keys. Resolving the bare source spelling in the
-                    // IMPORTER's namespace instead is both collision-unsafe (binds
-                    // whatever `Base` the importer has) and over-strict (an
-                    // import-only-`Sub` would fail to find its supertrait's method
-                    // set, falsely rejecting an inline supermethod as extra).
-                    if let Some(supers) = &tr.super_traits {
-                        let saved_importer_module =
-                            self.current_module.replace(module_full_path.to_string());
-                        self.current_module_idx = declaring_file_idx;
-                        let super_keys: Vec<String> = supers
-                            .iter()
-                            .map(|s| {
-                                self.note_trait_use(&s.path.to_string());
-                                self.resolve_super_trait_edge(module_full_path, &s.path.to_string())
-                                // TRANSITION(P1): deleted by A1 commit 2
-                            })
-                            .collect();
-                        self.current_module = saved_importer_module;
-                        self.current_module_idx = importer_file_idx;
-                        self.set_trait_supers(&qualified, super_keys);
-                    }
-
                     // If glob or named import, also register unqualified (using alias if present)
                     if let Some(binding_name) = import_binding {
-                        self.rebind_trait_def(&binding_name, &qualified);
-                        // Record the SOURCE identity (`module_short.tr.name`) under
-                        // the binding so trait-conformance can recover the owner +
-                        // original trait name for an aliased import. `qualified` is
-                        // the source identity even when `binding_name` is an alias.
-                        self.published_bare_trait_owners
-                            .entry((
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                binding_name.clone(),
-                            ))
-                            .or_default()
-                            .insert(format!("{module_full_path}.{}", tr.name));
                         for trait_item in &tr.items {
                             let TraitItem::Method(method) = trait_item else {
                                 continue;
@@ -1906,22 +1817,22 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     if let TypeExpr::Named {
-                        path: named_path,
-                        type_args,
+                        path: named_path, ..
                     } = &id.target_type.0
                     {
                         let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                                                                  // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
-                        let self_type_args: Vec<Ty> =
-                            self.resolve_impl_target_type_args(id, type_args.as_ref());
-                        self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
+                        let self_ty = self.resolve_impl_target(id);
+                        let self_type_args = Self::impl_target_args(&self_ty);
+                        self.current_self_type = Some((type_name.clone(), self_ty));
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                         });
+                        let impl_trait = self.impl_trait_ref(id);
                         for method in &id.methods {
                             // Register the declaring module's complete method
                             // set. Visibility is enforced when a caller selects
@@ -1935,26 +1846,25 @@ impl Checker {
                                 id.where_clause.as_ref(),
                                 id.trait_bound.as_ref(),
                             );
-                            if let (Some(canonical), Some(tb)) =
-                                (primitive_key.clone(), id.trait_bound.as_ref())
+                            if let (Some(canonical), Some(trait_ref)) =
+                                (primitive_key.clone(), impl_trait.as_ref())
                             {
                                 self.record_primitive_trait_impl_self_args(
                                     canonical.clone(),
-                                    &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                    trait_ref.trait_id,
                                     self_type_args.clone(),
                                     &id.target_type.1,
                                 );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
-                                    &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                    trait_ref.trait_id,
                                     method.name.to_string(),
                                     sig,
                                 );
                             }
                         }
-                        if let Some(tb) = &id.trait_bound {
-                            self.record_trait_impl(type_name, &tb.path.to_string());
-                            // TRANSITION(P1): deleted by A1 commit 2
+                        if let Some(trait_ref) = &impl_trait {
+                            self.record_trait_impl_from_decl(id, trait_ref, span);
                         }
 
                         // Restore previous self type

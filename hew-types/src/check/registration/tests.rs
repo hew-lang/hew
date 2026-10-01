@@ -17,7 +17,7 @@ mod canonical_type_publication_tests {
             kind: TypeDefKind::Struct,
             name: "Dog".to_string(),
             type_params: Vec::new(),
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             field_order: Vec::new(),
             variants: HashMap::new(),

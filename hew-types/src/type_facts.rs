@@ -144,7 +144,7 @@ pub(crate) struct ImplMethodBinders {
     pub receiver: crate::Ty,
     pub impl_params: Vec<crate::ParamHead>,
     pub method_params: Vec<crate::ParamHead>,
-    pub obligations: Option<Vec<(String, ImplMethodObligation)>>,
+    pub obligations: Option<Vec<(crate::TypeParamId, ImplMethodObligation)>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -177,9 +177,7 @@ impl ImplMethodBinders {
         decide: &mut dyn FnMut(&ResolvedTy, ImplMethodObligation) -> Result<bool, ClassError>,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
         if let Some(name) = self.method_params.first() {
-            return Err(ClassError::TypeParam {
-                name: name.spelling.to_string(),
-            });
+            return Err(ClassError::TypeParam { param: *name });
         }
         let variables: Vec<_> = self
             .impl_params
@@ -217,9 +215,7 @@ impl ImplMethodBinders {
                     }
                     push_type_components(&component, &mut components);
                 }
-                Err(ClassError::TypeParam {
-                    name: name.spelling.to_string(),
-                })
+                Err(ClassError::TypeParam { param: *name })
             })
             .collect::<Result<_, _>>()?;
         let refusal = || ClassError::UnknownDeclaration {
@@ -229,7 +225,7 @@ impl ImplMethodBinders {
             let position = self
                 .impl_params
                 .iter()
-                .position(|name| name.spelling.as_str() == param)
+                .position(|name| name.id == *param)
                 .ok_or_else(refusal)?;
             let satisfied = match obligation {
                 ImplMethodObligation::Marker(marker) => {
@@ -247,9 +243,7 @@ impl ImplMethodBinders {
 
 fn require_concrete_capability_type(ty: &ResolvedTy) -> Result<(), ClassError> {
     if let ResolvedTy::TypeParam { name } = ty {
-        return Err(ClassError::TypeParam {
-            name: name.spelling.to_string(),
-        });
+        return Err(ClassError::TypeParam { param: *name });
     }
     let mut components = Vec::new();
     push_type_components(ty, &mut components);
@@ -954,7 +948,7 @@ impl TypeFactService {
     pub(crate) fn is_serializable(
         &self,
         ty: &ResolvedTy,
-        param: &dyn Fn(&str, MarkerTrait) -> bool,
+        param: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> bool {
         self.data_error(ty, false, param).is_none()
     }
@@ -970,11 +964,10 @@ impl TypeFactService {
     pub(crate) fn is_codec_key(
         &self,
         ty: &ResolvedTy,
-        param: &dyn Fn(&str, MarkerTrait) -> bool,
+        param: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> bool {
         if let ResolvedTy::TypeParam { name } = ty {
-            return param(name.spelling.as_str(), MarkerTrait::Hash)
-                && param(name.spelling.as_str(), MarkerTrait::Eq);
+            return param(*name, MarkerTrait::Hash) && param(*name, MarkerTrait::Eq);
         }
         [ValueCapability::Hash, ValueCapability::Eq]
             .into_iter()
@@ -1734,7 +1727,7 @@ mod tests {
                 &context
             ),
             Err(ClassError::TypeParam {
-                name: "T".to_string()
+                param: crate::ParamHead::for_test("T")
             })
         );
     }

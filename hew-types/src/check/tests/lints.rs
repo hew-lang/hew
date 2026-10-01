@@ -428,11 +428,10 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
     let mut checker = Checker::new(test_registry());
     checker.register_builtins();
 
-    for (name, bounds) in [
-        ("print", vec!["Display".to_string()]),
-        ("println", vec!["Display".to_string()]),
-        ("to_string", vec!["Display".to_string()]),
-    ] {
+    let display = checker
+        .lang_trait(crate::LangItem::Display)
+        .expect("builtins register Display");
+    for name in ["print", "println", "to_string"] {
         let sig = checker
             .sigs()
             .get(name)
@@ -446,15 +445,15 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
             "{name} should expose a single generic parameter"
         );
         assert_eq!(
-            sig.type_param_bounds.get("T"),
-            Some(&bounds),
-            "{name} should keep its bare-name registration bounds"
+            sig.bounds.of(sig.type_params[0].id).collect::<Vec<_>>(),
+            vec![&crate::check::TraitRef::bare(display)],
+            "{name} should bound its parameter by the prelude Display"
         );
     }
 
     let len_sig = checker.sigs().get("len").expect("missing len builtin");
     assert!(
-        len_sig.type_param_bounds.is_empty(),
+        len_sig.bounds.is_empty(),
         "len must stay out of the Display migration"
     );
 }
@@ -552,14 +551,24 @@ fn main() {
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
 }
 
+/// `T`'s bound by `trait_id` in a hand-built signature.
+fn param_bound(param: &str, trait_id: crate::DefId) -> crate::check::ParamBounds {
+    let mut bounds = crate::check::ParamBounds::default();
+    bounds.push(
+        crate::ParamHead::for_test(param).id,
+        crate::check::TraitRef::bare(trait_id),
+    );
+    bounds
+}
+
 #[test]
 fn deferred_bound_check_drains_after_defaulting() {
-    let mut checker = make_checker_with_trait("MyTrait", &[], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("MyTrait", &[], false, false);
     let span = 0..0;
     let var = TypeVar::fresh();
     let sig = FnSig {
         type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
+        bounds: param_bound("T", trait_id),
         ..Default::default()
     };
 
@@ -597,12 +606,12 @@ fn deferred_bound_check_drains_after_defaulting() {
 
 #[test]
 fn deferred_bound_check_skips_when_var_remains_unresolved() {
-    let mut checker = make_checker_with_trait("MyTrait", &[], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("MyTrait", &[], false, false);
     let span = 0..0;
     let var = TypeVar::fresh();
     let sig = FnSig {
         type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
+        bounds: param_bound("T", trait_id),
         ..Default::default()
     };
 
@@ -651,7 +660,12 @@ fn deferred_bound_check_drains_when_var_resolves_to_satisfying_type() {
     let var = TypeVar::fresh();
     let sig = FnSig {
         type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+        bounds: param_bound(
+            "T",
+            checker
+                .lang_trait(crate::LangItem::Display)
+                .expect("builtins register Display"),
+        ),
         ..Default::default()
     };
 
@@ -3150,13 +3164,16 @@ pub fn describe<T: Describable>(item: T) -> string {
         inferred,
         &vec![Ty::named_in(&output.defs, "std.text.semver.Label", vec![])]
     );
+    let describable = output
+        .defs
+        .lookup_path("std.text.semver.Describable")
+        .expect("Describable is declared");
     assert!(
-        checker.trait_impls_set.contains(&(
-            "std.text.semver.Label".to_string(),
-            "std.text.semver.Describable".to_string()
-        )),
-        "stdlib Hew items should register trait impls under their exact source owners for downstream generic bound checks: {:?}",
-        checker.trait_impls_set
+        checker.has_trait_impl(
+            &Ty::named_in(&output.defs, "std.text.semver.Label", vec![]),
+            describable
+        ),
+        "stdlib Hew items should register trait impls under their exact source owners for downstream generic bound checks"
     );
 }
 
@@ -3189,9 +3206,12 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
     checker.checking_embedded_builtins = true;
     let _output = checker.check_program(&parsed.program);
 
+    let display = checker
+        .lookup_declaration("Display")
+        .expect("the source declares Display");
     let methods = checker
         .primitive_trait_impls
-        .get(&("i64".to_string(), "Display".to_string()))
+        .get(&("i64".to_string(), display))
         .expect("primitive trait impl table should have entry for (i64, Display)");
     let fmt_sig = methods
         .get("fmt")
@@ -3230,10 +3250,13 @@ fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
     checker.checking_embedded_builtins = true;
     let _output = checker.check_program(&parsed.program);
 
+    let display = checker
+        .lookup_declaration("Display")
+        .expect("the source declares Display");
     assert!(
         checker
             .primitive_trait_impls
-            .contains_key(&("Vec".to_string(), "Display".to_string())),
+            .contains_key(&("Vec".to_string(), display)),
         "primitive trait impl table should record impls keyed on the bare \
          builtin generic name (Vec) regardless of element type"
     );
@@ -3936,9 +3959,10 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // trait_defs (i.e. our builtins-blanket loader did NOT register
     // Display first and force the user declaration to be skipped).
     assert!(
-        checker.has_trait_def("Display"),
-        "user trait Display must remain registered; trait_defs keys: {:?}",
-        checker.trait_def_keys.keys().collect::<Vec<_>>()
+        checker
+            .lookup_declaration("Display")
+            .is_some_and(|id| checker.trait_defs.contains_key(&id)),
+        "user trait Display must remain registered"
     );
 }
 
@@ -4014,13 +4038,16 @@ fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_bu
     // source needing to fail, so we pin the table contents here.
     let mut checker = Checker::new(test_registry());
     checker.register_builtins();
+    let display = checker
+        .lang_trait(crate::LangItem::Display)
+        .expect("builtins register Display");
     let expected_canonical_keys = [
         "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "bool", "char",
     ];
     for key in expected_canonical_keys {
         let entry = checker
             .primitive_trait_impls
-            .get(&(key.to_string(), "std.builtins.Display".to_string()))
+            .get(&(key.to_string(), display))
             .unwrap_or_else(|| {
                 panic!(
                     "missing builtins-blanket Display impl for primitive `{key}`; \

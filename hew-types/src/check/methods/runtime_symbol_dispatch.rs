@@ -84,21 +84,23 @@ impl Checker {
     /// dispatch at the named-type
     /// site doesn't carry the originating trait. To honour
     /// `consumes_receiver` declared on the trait, we walk the
-    /// `trait_impls_set` for matching `(type, trait)` pairs and check the
-    /// qualified `Trait::method` form against the consume set.
-    pub(super) fn named_type_method_consumes_receiver(
-        &self,
-        type_name: &str,
-        method: &str,
-    ) -> bool {
+    /// traits `receiver` implements and check each qualified
+    /// `Trait::method` form against the consume set.
+    pub(super) fn named_type_method_consumes_receiver(&self, receiver: &Ty, method: &str) -> bool {
         if self.consume_receiver_methods.is_empty() {
             return false;
         }
-        self.trait_impls_set
-            .iter()
-            .filter(|(ty, _)| ty == type_name)
-            .any(|(_, trait_name)| {
-                self.is_consume_receiver_method(&format!("{trait_name}::{method}"))
+        let Some(key) = Self::impl_self_key(receiver) else {
+            return false;
+        };
+        self.trait_impls
+            .keys()
+            .filter(|(implemented, _)| *implemented == key)
+            .any(|(_, trait_id)| {
+                self.trait_method_ids_of(*trait_id, method)
+                    .is_some_and(|(_, method)| {
+                        self.is_consume_receiver_method(self.defs.path(method))
+                    })
             })
     }
 

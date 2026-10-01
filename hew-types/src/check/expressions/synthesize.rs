@@ -1435,52 +1435,18 @@ impl Checker {
             return Ty::Error;
         }
 
-        let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-        let mut candidates = Vec::new();
-        if self.has_trait_def(&trait_name) {
-            candidates.push(trait_name.clone());
-        } else if !trait_name.contains('.') && !trait_name.contains("::") {
-            if let Some(owners) = self.published_bare_trait_owners.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                trait_name.clone(),
-            )) {
-                candidates.extend(
-                    owners
-                        .iter()
-                        .filter(|owner| self.has_trait_def(owner))
-                        .cloned(),
-                );
-            }
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-
-        if candidates.len() > 1 {
-            self.report_error_with_suggestions(
-                TypeErrorKind::AssocItemAmbiguous,
-                span,
-                format!(
-                    "associated item `{member}` is ambiguous because trait `{trait_name}` has multiple imported owners"
-                ),
-                candidates
-                    .iter()
-                    .map(|candidate| format!("qualify the trait as `{candidate}`"))
-                    .collect(),
-            );
+        let Some(trait_id) = self.resolve_qualified_trait(&path.trait_path, *member, span) else {
             return Ty::Error;
-        }
-        let Some(trait_key) = candidates.first() else {
+        };
+        let trait_key = self.defs.path(trait_id).to_string();
+        let Some(info) = self.trait_info(trait_id).cloned() else {
             self.report_error(
                 TypeErrorKind::PathMemberNotFound,
                 span,
-                format!("cannot resolve trait `{trait_name}` for associated item `{member}`"),
+                format!("trait `{trait_key}` has no associated item `{member}`"),
             );
             return Ty::Error;
         };
-        let info = self
-            .trait_def_at(trait_key)
-            .unwrap_or_else(|| panic!("trait `{trait_key}` is registered"));
         if info
             .associated_types
             .iter()
@@ -1775,7 +1741,10 @@ impl Checker {
             }
             Ty::Named { head, args } => {
                 let name = head.registry_key();
-                if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
+                if let Some(index_trait) = self
+                    .lang_trait(crate::LangItem::Index)
+                    .filter(|index_trait| self.type_satisfies_trait(&resolved_obj, *index_trait))
+                {
                     let expected_key = self
                         .lookup_named_method_sig(name, args, "at")
                         .and_then(|sig| sig.params.first().cloned())
@@ -1783,7 +1752,7 @@ impl Checker {
                     self.check_against(&index.0, &index.1, &expected_key);
                     let output = self.project_assoc_types(&Ty::AssocType {
                         base: Box::new(resolved_obj.clone()),
-                        trait_name: "Index".into(),
+                        trait_name: self.defs.path(index_trait).into(),
                         assoc_name: "Output".into(),
                     });
                     if matches!(output, Ty::AssocType { .. }) {

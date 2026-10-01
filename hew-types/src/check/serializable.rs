@@ -16,9 +16,8 @@ use crate::{ResolvedTy, Ty, TypeFactService};
 
 impl Checker {
     fn data_error(&self, ty: &ResolvedTy, tagged: bool) -> Option<NotData> {
-        let param = |name: &str, marker: MarkerTrait| match marker {
-            MarkerTrait::Serializable => self.type_param_carries_bound(name, "Serializable"),
-            marker => self.type_param_has_marker_bound(name, marker),
+        let param = |param: crate::ParamHead, marker: MarkerTrait| {
+            self.param_carries_marker(param.id, marker)
         };
         TypeFactService::new(self.type_fact_context(), BTreeMap::new())
             .data_error(ty, tagged, &param)

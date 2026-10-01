@@ -114,15 +114,16 @@ impl Checker {
 
     fn validate_dyn_assoc_binding_projections(
         &mut self,
-        trait_name: &str,
+        trait_id: crate::DefId,
         bound: &crate::ty::TraitObjectBound,
         concrete_type: &Ty,
         span: &Span,
     ) -> bool {
+        let trait_name = bound.trait_name.as_str();
         for (assoc_name, binding_ty) in &bound.assoc_bindings {
             let projected = self.project_assoc_types(&Ty::AssocType {
                 base: Box::new(concrete_type.clone()),
-                trait_name: trait_name.to_string().into_boxed_str(),
+                trait_name: self.defs.path(trait_id).into(),
                 assoc_name: assoc_name.clone().into_boxed_str(),
             });
             if matches!(projected, Ty::AssocType { .. }) {
@@ -246,9 +247,9 @@ impl Checker {
     pub(super) fn actor_satisfies_handler_trait(
         &mut self,
         actor_name: &str,
-        trait_name: &str,
+        trait_id: crate::DefId,
     ) -> bool {
-        let Some(trait_info) = self.trait_def_at(trait_name).cloned() else {
+        let Some(trait_info) = self.trait_info(trait_id).cloned() else {
             return false;
         };
         // A trait with no methods is never "satisfied" implicitly (mirrors the
@@ -267,7 +268,7 @@ impl Checker {
             else {
                 return false;
             };
-            let Some(trait_sig) = self.lookup_trait_method(trait_name, method.name.name.as_str())
+            let Some(trait_sig) = self.lookup_trait_method(trait_id, method.name.name.as_str())
             else {
                 return false;
             };
@@ -301,8 +302,8 @@ impl Checker {
     /// `Handler`'s coercion honest: for a handler trait, only the structural receive-fn
     /// satisfaction is lowerable, so an explicit `impl` must not admit the
     /// coercion.
-    pub(super) fn trait_is_handler_style(&self, trait_name: &str) -> bool {
-        let Some(trait_info) = self.trait_def_at(trait_name) else {
+    pub(super) fn trait_is_handler_style(&self, trait_id: crate::DefId) -> bool {
+        let Some(trait_info) = self.trait_info(trait_id) else {
             return false;
         };
         if trait_info.methods.is_empty() {
@@ -511,7 +512,10 @@ impl Checker {
                     },
                 ) = (expected_inner, actual_inner)
                 {
-                    let trait_name = trait_head.registry_key();
+                    let trait_id = trait_head
+                        .nominal()
+                        .map(crate::NominalId::declaration)
+                        .filter(|id| self.trait_info(*id).is_some());
                     let concrete_name = concrete_head.registry_key();
                     // Only a true trait-implementation narrowing is admitted.
                     // Identical inner names would have unified above; reaching
@@ -532,12 +536,12 @@ impl Checker {
                     //    `E_CODEGEN`. Reject it here with an honest type error.
                     //  - Ordinary (receiver-method) trait: an explicit or
                     //    structural impl is the satisfaction authority.
-                    if trait_name != concrete_name && self.has_trait_def(trait_name) {
-                        let satisfied = if self.trait_is_handler_style(trait_name) {
-                            self.actor_satisfies_handler_trait(concrete_name, trait_name)
+                    if let Some(trait_id) = trait_id {
+                        let satisfied = if self.trait_is_handler_style(trait_id) {
+                            self.actor_satisfies_handler_trait(concrete_name, trait_id)
                         } else {
-                            self.type_implements_trait_for_ty(actual_inner, trait_name)
-                                || self.actor_satisfies_handler_trait(concrete_name, trait_name)
+                            self.type_implements_trait(actual_inner, trait_id)
+                                || self.actor_satisfies_handler_trait(concrete_name, trait_id)
                         };
                         if satisfied {
                             return;
@@ -609,12 +613,11 @@ impl Checker {
         concrete_type: &Ty,
         span: &Span,
     ) -> Option<bool> {
-        let trait_name = bound.trait_name.as_str();
-        let trait_lookup_key = self.dyn_bound_trait_key(bound);
         // Resolve the trait declaration; an unregistered trait can never be
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
-        let trait_info = self.trait_def_at(&trait_lookup_key).cloned()?;
+        let trait_id = bound.trait_id?;
+        let trait_info = self.trait_info(trait_id).cloned()?;
         if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
             return None;
         }
@@ -626,17 +629,18 @@ impl Checker {
         // Every trait whose methods reach the vtable must be object safe,
         // including the supertraits whose slots this bound publishes.
         let layout = self.dyn_layout(std::slice::from_ref(bound), span)?;
-        let declaring_keys: Vec<String> = {
+        let declaring: Vec<crate::DefId> = {
             let mut seen = std::collections::HashSet::new();
-            std::iter::once(trait_lookup_key.clone())
-                .chain(layout.into_iter().map(|slot| slot.trait_key))
-                .filter(|key| seen.insert(key.clone()))
+            std::iter::once(trait_id)
+                .chain(layout.into_iter().map(|slot| slot.trait_id))
+                .filter(|id| seen.insert(*id))
                 .collect()
         };
-        for key in declaring_keys {
-            let Some(info) = self.trait_def_at(&key).cloned() else {
+        for declaring_id in declaring {
+            let Some(info) = self.trait_info(declaring_id).cloned() else {
                 continue;
             };
+            let key = self.defs.path(declaring_id).to_string();
             if !self.validate_dyn_object_safety(&key, &info, span) {
                 return None;
             }
@@ -645,19 +649,16 @@ impl Checker {
         // Prefer the nominal impl registries; fall back to the structural
         // match path so a bare `impl T { fn ... }` that structurally
         // satisfies a trait also fills the table.
-        let nominal_impl = self.type_implements_trait_for_ty(concrete_type, &trait_lookup_key)
+        let nominal_impl = self.type_implements_trait(concrete_type, trait_id)
             || self
                 .primitive_trait_impls
-                .contains_key(&(concrete_type_name.to_string(), trait_lookup_key.clone()))
-            || self
-                .primitive_trait_impls
-                .contains_key(&(concrete_type_name.to_string(), trait_name.to_string()));
-        let structural_ok = !nominal_impl
-            && self.type_structurally_satisfies(concrete_type_name, &trait_lookup_key);
+                .contains_key(&(concrete_type_name.to_string(), trait_id));
+        let structural_ok =
+            !nominal_impl && self.type_structurally_satisfies(concrete_type, trait_id);
         if !nominal_impl && !structural_ok {
             return None;
         }
-        if !self.validate_dyn_assoc_binding_projections(trait_name, bound, concrete_type, span) {
+        if !self.validate_dyn_assoc_binding_projections(trait_id, bound, concrete_type, span) {
             return None;
         }
         Some(structural_ok)
@@ -715,11 +716,7 @@ impl Checker {
             let impl_method = if structural_by_bound[slot.bound] {
                 self.inherent_impl_method_declaration(concrete_type, &slot.method_name)
             } else {
-                self.trait_impl_method_declaration(
-                    concrete_type,
-                    &slot.trait_key,
-                    &slot.method_name,
-                )
+                self.trait_impl_method_declaration(concrete_type, slot.trait_id, &slot.method_name)
             };
             fillers.extend(impl_method.map(|impl_method| (slot.method, impl_method)));
         }
@@ -852,6 +849,24 @@ impl Checker {
                     })
             }
         };
+        // A binder bounded `F: From<E>` converts through the bound; each
+        // instantiation of `F` supplies the impl.
+        if conversion.is_none() {
+            if let Some(call) = Self::bare_param(&target)
+                .and_then(|param| self.binder_from_conversion(param, &source))
+            {
+                self.record_binder_trait_call(
+                    span,
+                    call,
+                    &format!(
+                        "{} converts into `{}`",
+                        edge.spelling(),
+                        target.user_facing()
+                    ),
+                );
+                return true;
+            }
+        }
         if let Some(conversion) = conversion {
             self.error_conversions.insert(
                 SpanKey::in_module(span, self.current_module_idx),
@@ -915,7 +930,10 @@ impl Checker {
 
 /// `ty` with each generic binder replaced by one fresh variable, shared
 /// through `opened` so a binder that appears twice stays one variable.
-fn open_type_params(ty: &Ty, opened: &std::cell::RefCell<HashMap<crate::ParamHead, Ty>>) -> Ty {
+pub(super) fn open_type_params(
+    ty: &Ty,
+    opened: &std::cell::RefCell<HashMap<crate::ParamHead, Ty>>,
+) -> Ty {
     if let Ty::Named {
         head: crate::TypeHead::Param(parameter),
         args,

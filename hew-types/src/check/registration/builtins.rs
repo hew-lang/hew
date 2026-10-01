@@ -32,42 +32,11 @@ impl Checker {
         self.register_builtin_fn("println_bool", vec![Ty::Bool], Ty::Unit);
         self.register_builtin_fn("print_float", vec![Ty::F64], Ty::Unit);
         self.register_builtin_fn("print_bool", vec![Ty::Bool], Ty::Unit);
-        // Generic print/println require Display.
-        self.register_builtin_fn_with_bounds(
-            "println",
-            vec!["T".to_string()],
-            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::Named {
-                head: crate::TypeHead::Unresolved(Symbol::intern("T")),
-                args: vec![],
-            }],
-            &Ty::Unit,
-        );
-        self.register_builtin_fn_with_bounds(
-            "print",
-            vec!["T".to_string()],
-            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::Named {
-                head: crate::TypeHead::Unresolved(Symbol::intern("T")),
-                args: vec![],
-            }],
-            &Ty::Unit,
-        );
 
         // Numeric conversion. The math functions live in `std.math`; there is
         // no bare spelling for them (A409).
 
         // String operations
-        self.register_builtin_fn_with_bounds(
-            "to_string",
-            vec!["T".to_string()],
-            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::Named {
-                head: crate::TypeHead::Unresolved(Symbol::intern("T")),
-                args: vec![],
-            }],
-            &Ty::String,
-        );
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
 
         // I/O and system
@@ -176,7 +145,7 @@ impl Checker {
         self.register_builtin_fn_with_bounds(
             "Vec::with_capacity",
             vec!["T".to_string()],
-            HashMap::new(),
+            None,
             vec![Ty::I64],
             &Ty::Named {
                 head: crate::TypeHead::Builtin(BuiltinType::Vec),
@@ -255,7 +224,7 @@ impl Checker {
         self.register_builtin_fn_with_bounds(
             "Node::lookup",
             vec!["T".to_string()],
-            HashMap::new(),
+            None,
             vec![Ty::String],
             &Ty::result(
                 Ty::remote_pid(Ty::Named {
@@ -272,6 +241,24 @@ impl Checker {
         // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
         // methods from `std/string.hew` and `std/io.hew`.
         self.register_builtins_hew_impls();
+        // Generic print/println/to_string require the prelude's Display,
+        // whose declaration the compiled-in builtins source just registered.
+        for (name, ret) in [
+            ("println", Ty::Unit),
+            ("print", Ty::Unit),
+            ("to_string", Ty::String),
+        ] {
+            self.register_builtin_fn_with_bounds(
+                name,
+                vec!["T".to_string()],
+                Some(crate::LangItem::Display),
+                vec![Ty::Named {
+                    head: crate::TypeHead::Unresolved(Symbol::intern("T")),
+                    args: vec![],
+                }],
+                &ret,
+            );
+        }
         self.register_builtin_error_prelude_bindings();
         // Crash-hook signatures are an import-free language surface in both
         // inline and on-disk programs. Register only their `CrashInfo` and
@@ -335,6 +322,11 @@ impl Checker {
                 span,
             );
         }
+        // The builtins' own declarations name each other (`trait Error:
+        // Display`), and the compiled-in std sources registered below name
+        // them through the prelude.
+        self.declare_minted_items_in_scope(&[builtins_module], builtins_module);
+        self.bind_builtins_prelude_in_scope();
         // Pre-register the public trait/type definitions from builtins.hew
         // into `trait_defs` / `type_defs` WITHOUT claiming `type_def_spans`
         // for them.  The
@@ -480,52 +472,40 @@ impl Checker {
     /// file under check) must re-register cleanly rather than collide with the
     /// seed.
     pub(super) fn pre_register_builtin_trait(&mut self, tr: &TraitDecl, span: &Span) {
+        // The declaration's bounds and signatures resolve in its own module,
+        // as stdlib registration.
+        let saved_module = self.current_module.replace("std.builtins".to_string());
+        let saved_registration = std::mem::replace(&mut self.in_stdlib_registration, true);
         let info = self.trait_info_from_decl(
             tr,
             Some("std.builtins".to_string()),
             self.current_module_idx,
         );
         let canonical = format!("std.builtins.{}", tr.name);
-        if !self.trait_def_keys.contains_key(&canonical) {
-            self.insert_trait_def(&canonical, &canonical, info);
-        }
-        self.alias_trait_def(tr.name.name.as_str(), &canonical);
-        self.alias_trait_def(&format!("builtins.{}", tr.name), &canonical);
+        let registered = self
+            .lookup_declaration(&canonical)
+            .filter(|id| self.trait_defs.contains_key(id));
+        let trait_id = registered.or_else(|| self.insert_trait_def(&canonical, info));
         // A builtin trait's supertraits are part of its obligation
-        // (`trait Error: Display`), so record the same owner-qualified edges
-        // the ordinary registration path records. All three trait_defs
-        // spellings carry them, because an impl site keys off whichever
-        // spelling `trait_defs_key_for_bound` resolves.
-        if let Some(supers) = &tr.super_traits {
-            let super_keys: Vec<String> = supers
-                .iter()
-                .map(|s| format!("std.builtins.{}", s.path)) // TRANSITION(P1): deleted by A1 commit 2
-                .collect();
-            if self.trait_supers(&canonical).is_none() {
-                self.set_trait_supers(&canonical, super_keys);
-            }
+        // (`trait Error: Display`).
+        if let Some(trait_id) = trait_id.filter(|_| registered.is_none()) {
+            self.register_trait_supers(trait_id, tr);
         }
-        self.published_bare_trait_owners
-            .entry((
-                self.current_module.clone(),
-                self.current_module_idx,
-                tr.name.to_string(),
-            ))
-            .or_default()
-            .insert(canonical);
         // Builtin traits are parsed outside the ordinary program collection
         // pass, so mint their exact declaration IDs here as well as their
         // TraitInfo. Dynamic dispatch (for example `dyn Index::at`) consumes
         // these IDs and must not reconstruct them from the bare trait
         // spelling.
-        let saved_module = self.current_module.replace("std.builtins".to_string());
-        let trait_scope = self.enter_primary_sig_scope(&[(tr.type_params.as_ref(), None)]);
-        for trait_item in &tr.items {
-            if let TraitItem::Method(method) = trait_item {
-                self.register_trait_method_sig(tr.name.name.as_str(), method, span);
+        if let Some(trait_id) = trait_id {
+            let trait_scope = self.enter_primary_sig_scope(&[(tr.type_params.as_ref(), None)]);
+            for trait_item in &tr.items {
+                if let TraitItem::Method(method) = trait_item {
+                    self.register_trait_method_sig(trait_id, method, span);
+                }
             }
+            self.exit_primary_sig_scope(trait_scope);
         }
-        self.exit_primary_sig_scope(trait_scope);
+        self.in_stdlib_registration = saved_registration;
         self.current_module = saved_module;
         // Harvest #[lang_item("...")] from the stdlib-shipped trait
         // declaration so HIR f-string lowering can discover the canonical
@@ -695,7 +675,7 @@ impl Checker {
         &mut self,
         name: &str,
         type_params: Vec<String>,
-        type_param_bounds: HashMap<String, Vec<String>>,
+        bounded_by: Option<crate::LangItem>,
         params: Vec<Ty>,
         return_type: &Ty,
     ) {
@@ -712,11 +692,17 @@ impl Checker {
             .map(|ty| self.canonicalize_registry_signature(&ty, "", &type_params))
             .collect();
         let return_type = self.canonicalize_registry_signature(return_type, "", &type_params);
+        let mut bounds = ParamBounds::default();
+        if let Some(trait_id) = bounded_by.and_then(|item| self.lang_trait(item)) {
+            for param in &type_params {
+                bounds.push(param.id, TraitRef::bare(trait_id));
+            }
+        }
         self.register_builtin_sig(
             name,
             FnSig {
                 type_params,
-                type_param_bounds,
+                bounds,
                 params,
                 return_type,
                 ..FnSig::default()
@@ -924,6 +910,15 @@ impl Checker {
             || (declaration_owner.is_none() && !self.canonical_std_root_sources.is_empty());
         if compiling_canonical_stdlib || !self.protected_prelude_bindings.contains_key(name) {
             return false;
+        }
+        // The refused declaration binds nothing: the name keeps naming the
+        // prelude's declaration.
+        if let Some(module) = declaration_owner.map_or_else(
+            || self.defs.root_module(),
+            |owner| self.defs.module_for_path(owner),
+        ) {
+            let namespace = self.scopes.namespace_of(module);
+            self.scopes.unbind_item(namespace, Symbol::intern(name));
         }
         let declaration_key = (declaration_owner.map(str::to_string), name.to_string());
         if self

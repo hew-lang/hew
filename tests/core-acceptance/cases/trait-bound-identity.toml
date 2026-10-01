@@ -1,0 +1,10 @@
+[[case]]
+id = "trait-bound-identity"
+intent = "Two modules declare a same-leaf trait; a qualified bound and an aliased bound each dispatch to the impl of the trait they name."
+source = "fixtures/trait-bound-identity/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "item 4\n8\n"
+exit = 0

@@ -99,6 +99,29 @@ impl MarkerTrait {
         })
     }
 
+    /// The marker a compiler predicate decides.
+    #[must_use]
+    pub fn of_predicate(predicate: crate::Predicate) -> Self {
+        use crate::Predicate as P;
+        match predicate {
+            P::Send => Self::Send,
+            P::Sync => Self::Sync,
+            P::Frozen => Self::Frozen,
+            P::Copy => Self::Copy,
+            P::Clone => Self::Clone,
+            P::Eq => Self::Eq,
+            P::PartialOrd => Self::PartialOrd,
+            P::Ord => Self::Ord,
+            P::Num => Self::Num,
+            P::Hash => Self::Hash,
+            P::Debug => Self::Debug,
+            P::Decode => Self::Decode,
+            P::Encode => Self::Encode,
+            P::Serializable => Self::Serializable,
+            P::Resource => Self::Resource,
+        }
+    }
+
     /// Parse a trait name string into the corresponding `MarkerTrait`, if it is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
@@ -174,7 +197,7 @@ pub struct TraitRegistry {
 
 struct MarkerDerivation<'a> {
     visiting: HashSet<crate::TypeHead>,
-    type_param_bound: &'a dyn Fn(&str, MarkerTrait) -> bool,
+    type_param_bound: &'a dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
 }
 
 impl TraitRegistry {
@@ -321,7 +344,7 @@ impl TraitRegistry {
         &self,
         ty: &Ty,
         marker: MarkerTrait,
-        type_param_bound: &dyn Fn(&str, MarkerTrait) -> bool,
+        type_param_bound: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> bool {
         let mut visiting = MarkerDerivation {
             visiting: HashSet::new(),
@@ -353,7 +376,7 @@ impl TraitRegistry {
         marker: MarkerTrait,
         visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
-        if matches!(ty, Ty::Named { head: crate::TypeHead::Param(param), args } if args.is_empty() && (visiting.type_param_bound)(param.spelling.as_str(), marker))
+        if matches!(ty, Ty::Named { head: crate::TypeHead::Param(param), args } if args.is_empty() && (visiting.type_param_bound)(*param, marker))
         {
             return true;
         }

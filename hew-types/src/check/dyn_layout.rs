@@ -79,7 +79,7 @@ impl Checker {
         }
         let mut slots = Vec::with_capacity(walk.len());
         for slot in walk {
-            let Some(mut signature) = self.lookup_trait_method(&slot.trait_key, &slot.method_name)
+            let Some(mut signature) = self.lookup_trait_method(slot.trait_id, &slot.method_name)
             else {
                 return;
             };

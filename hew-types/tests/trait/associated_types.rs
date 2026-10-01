@@ -34,8 +34,8 @@ impl Iterator for Counter {
 
 #[test]
 fn impl_type_aliases_resolve_in_methods() {
-    let output = typecheck_builtin(
-        r"trait Iterator {
+    let output = typecheck_isolated(
+        r"trait Source {
     type Item;
     fn next(self) -> Self.Item;
 }
@@ -44,7 +44,7 @@ type Counter {
     value: i64;
 }
 
-impl Iterator for Counter {
+impl Source for Counter {
     type Item = i64;
     fn next(self) -> Self.Item {
         self.value

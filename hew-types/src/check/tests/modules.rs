@@ -15,7 +15,7 @@ fn root_enum_shadows_generated_delivery_type_member() {
             kind: TypeDefKind::Enum,
             name: "Delivery".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             field_order: vec![],
             variants: HashMap::from([(String::from("Idle"), VariantDef::Unit)]),
@@ -71,7 +71,7 @@ fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
             kind: TypeDefKind::Enum,
             name: "ParseError".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             field_order: vec![],
             variants: HashMap::new(),
@@ -103,7 +103,7 @@ fn private_imported_result_cannot_rename_the_builtin_in_another_module() {
             kind: TypeDefKind::Struct,
             name: "Result".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             field_order: vec![],
             variants: HashMap::new(),
@@ -2220,10 +2220,9 @@ mod warning_source_attribution {
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let info = checker.trait_info_from_decl(&fake_trait, None, 0);
-        checker.test_trait_def("fakemod.FakeTrait", info);
-        checker
-            .trait_impls_set
-            .insert(("SomeType".to_string(), "FakeTrait".to_string()));
+        let fake = checker.test_trait_def("fakemod.FakeTrait", info);
+        let some_type = checker.test_named("SomeType", vec![]);
+        checker.record_trait_impl(&some_type, &crate::check::TraitRef::bare(fake), Vec::new());
 
         let output = checker.check_program(&program);
         let unused: Vec<_> = output

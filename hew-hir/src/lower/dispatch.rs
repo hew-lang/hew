@@ -185,6 +185,11 @@ impl LowerCtx {
     ///   sentinel — the checker's `require_display_impl` gate is the
     ///   authoritative reject point. Reaching the sentinel means
     ///   compilation halts: never a silent empty-string substitute.
+    pub(super) fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        let dispatch_ty = value.ty.clone();
+        self.lower_display_dispatch_for_type(value, dispatch_ty, span)
+    }
+
     /// Render a trait object through the `Display::fmt` slot of its
     /// supertrait closure (R6), read from the checker's layout.
     fn lower_dyn_display(
@@ -231,11 +236,6 @@ impl LowerCtx {
             },
             span,
         }
-    }
-
-    pub(super) fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
-        let dispatch_ty = value.ty.clone();
-        self.lower_display_dispatch_for_type(value, dispatch_ty, span)
     }
 
     #[expect(

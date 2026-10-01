@@ -2949,8 +2949,8 @@ class ExecutorV1 {
     };
     if (protocol.deadline_ns != null)
       cancelTimer = this.scheduler.after(BigInt(protocol.deadline_ns), () => {
-        if (admitted) finish(null, "Timeout");
-        else reject("Timeout");
+        if (admitted) finish(null, "TimedOut");
+        else reject("TimedOut");
       });
     const attempt = () => {
       if (settled || closing) return;
@@ -3733,8 +3733,8 @@ function actorErrorRole(reason: string): RuntimeVariantRole {
       return "ActorErrorTrapped";
     case "Dead":
       return "ActorErrorDead";
-    case "Timeout":
-      return "ActorErrorTimeout";
+    case "TimedOut":
+      return "ActorErrorTimedOut";
     case "NodeNotRunning":
       return "ActorErrorNodeNotRunning";
     case "RoutingFailed":
@@ -3756,8 +3756,6 @@ function sendErrorRole(reason: string): RuntimeVariantRole {
       return "SendErrorFull";
     case "Closed":
       return "SendErrorClosed";
-    case "NodeRoutingNotWired":
-      return "SendErrorNodeRoutingNotWired";
     case "Partition":
       return "SendErrorPartition";
     case "StaleRef":

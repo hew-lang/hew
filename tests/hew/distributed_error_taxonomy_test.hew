@@ -6,7 +6,6 @@ fn send_error_id(err: SendError) -> i64 {
     match err {
         SendError.Full => 1,
         SendError.Closed => 2,
-        SendError.NodeRoutingNotWired => 3,
         SendError.Partition => 4,
         SendError.StaleRef => 5,
         SendError.LocalShutdown => 6,
@@ -22,7 +21,6 @@ fn lookup_error_id(err: LookupError) -> i64 {
     match err {
         LookupError.NotFound => 1,
         LookupError.Partition => 2,
-        LookupError.Timeout => 3,
         LookupError.StaleRef => 4,
         LookupError.Cancelled => 5,
         LookupError.LocalShutdown => 6,
@@ -41,7 +39,7 @@ fn ask_error_id(err: ActorError) -> i64 {
         ActorError.Failed(_) => 2,
         ActorError.Trapped => 3,
         ActorError.Dead => 4,
-        ActorError.Timeout => 5,
+        ActorError.TimedOut => 5,
         ActorError.NodeNotRunning => 6,
         ActorError.RoutingFailed => 7,
         ActorError.EncodeFailed => 8,
@@ -80,7 +78,6 @@ fn partition_policy_id(policy: PartitionPolicy) -> i64 {
 fn test_send_error_taxonomy_variants() {
     assert(send_error_id(SendError.Full) == 1);
     assert(send_error_id(SendError.Closed) == 2);
-    assert(send_error_id(SendError.NodeRoutingNotWired) == 3);
     assert(send_error_id(SendError.Partition) == 4);
     assert(send_error_id(SendError.StaleRef) == 5);
     assert(send_error_id(SendError.LocalShutdown) == 6);
@@ -95,7 +92,6 @@ fn test_send_error_taxonomy_variants() {
 fn test_lookup_error_taxonomy_variants() {
     assert(lookup_error_id(LookupError.NotFound) == 1);
     assert(lookup_error_id(LookupError.Partition) == 2);
-    assert(lookup_error_id(LookupError.Timeout) == 3);
     assert(lookup_error_id(LookupError.StaleRef) == 4);
     assert(lookup_error_id(LookupError.Cancelled) == 5);
     assert(lookup_error_id(LookupError.LocalShutdown) == 6);
@@ -109,7 +105,7 @@ fn test_ask_error_taxonomy_variants() {
     // be fabricated for this transport-only envelope.
     assert(ask_error_id(ActorError.Trapped) == 3);
     assert(ask_error_id(ActorError.Dead) == 4);
-    assert(ask_error_id(ActorError.Timeout) == 5);
+    assert(ask_error_id(ActorError.TimedOut) == 5);
     assert(ask_error_id(ActorError.NodeNotRunning) == 6);
     assert(ask_error_id(ActorError.RoutingFailed) == 7);
     assert(ask_error_id(ActorError.EncodeFailed) == 8);

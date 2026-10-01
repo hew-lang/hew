@@ -1,4 +1,4 @@
-//! Structured concurrency support types.
+//! Structured concurrency: tasks, `await` and `scope`.
 //!
 //! A plain call waits for its result. `fork expression` creates a `Task<T>`;
 //! `await task` returns `T`, and awaiting `Vec<Task<T>>` returns `Vec<T>`.
@@ -9,14 +9,4 @@
 //! deadline and recovery after cleanup. Ordinary `Err` values remain values;
 //! structured faults and cancellation determine scope failure and sibling
 //! cancellation. Parent cancellation propagates to the enclosing scope.
-//!
-//! `ScopeError<E>` below is a legacy aggregation record. Current scope recovery
-//! uses the built-in `ScopeFailure`; it does not automatically aggregate every
-//! application's `Err` into this record.
 
-/// Legacy aggregation record; current scope recovery uses `ScopeFailure`.
-pub type ScopeError<E> {
-    primary: E;
-    also_failed: Vec<E>;
-    cancelled_count: i64;
-}

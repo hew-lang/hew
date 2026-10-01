@@ -750,7 +750,6 @@ fn classify(
             | BuiltinType::Duration
             | BuiltinType::Range
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError
             | BuiltinType::CrashAction
             | BuiltinType::CrashKind
             | BuiltinType::SendError

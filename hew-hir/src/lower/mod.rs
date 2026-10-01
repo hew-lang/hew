@@ -281,19 +281,14 @@ const REMOTE_SEND_STATUS: SendStatusCodes = SendStatusCodes {
 };
 
 /// `SendError` is also declared in `std/builtins.hew` and likewise invisible
-/// to the user-enum walk. Surface it so `match e { SendError::NodeRoutingNotWired
+/// to the user-enum walk. Surface it so `match e { SendError::Full
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via
 /// `machine_ctor_registry`.
 const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 const SYNTHETIC_NODE_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1010);
-/// `TimeoutError` is declared in `std/builtins.hew` and likewise invisible to
-/// the user-enum walk. Surface it so `match e { TimeoutError::Timeout => ... }`
-/// arms inside `Result<Option<T>, TimeoutError>` matches resolve via
-/// `machine_ctor_registry`.
-const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 /// `LinkError` is the `Err` variant of `Result<(), LinkError>` returned by
 /// `link()` in value position. Declared in `std/builtins.hew` and — like
-/// `SendError` / `TimeoutError` — invisible to the user-enum walk in
+/// `SendError` — invisible to the user-enum walk in
 /// `lower_program` (builtins.hew is loaded out-of-band, not via `module_graph`).
 /// Surface it through the same builtin-enum path so
 /// `Err(LinkError::AlreadyLinked)` / `Err(LinkError::TargetDead)` match arms
@@ -542,7 +537,6 @@ const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
     ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
     ("std.builtins.NodeError", SYNTHETIC_NODE_ERROR_ITEM),
-    ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
     ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
     ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
     ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),

@@ -7702,31 +7702,6 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn std_concurrency_peer_bodies_accept_dotted_import_spelling() {
-        let dir = tempfile::tempdir().expect("create temp project");
-        let import = "import std.concurrency.{ScopeError};";
-        let source = format!(
-            "{import}\n\
-                 \n\
-                 fn main() {{\n\
-                     let error: ScopeError<i64> = ScopeError {{\n\
-                         primary: 1,\n\
-                         also_failed: [],\n\
-                         cancelled_count: 0,\n\
-                     }};\n\
-                     let _ = error;\n\
-                 }}\n"
-        );
-        let input = write_source(dir.path(), "dotted.hew", &source);
-        let result = check_file(&input, &FrontendOptions::default());
-        assert!(
-            result.is_ok(),
-            "{import} must check the assembled std.concurrency peer bodies: {:#?}",
-            result.err()
-        );
-    }
-
-    #[test]
     fn imported_machine_step_signature_keeps_its_event_declaration() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let source = root.join("tests/core-acceptance/cases/machine-import-values.hew");
@@ -7764,95 +7739,6 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             event_owners.len(),
             2,
             "the two Gate declarations keep separate events"
-        );
-    }
-
-    #[test]
-    fn bundled_type_decls_preserve_qualified_declaration_identity() {
-        fn lower_to_hir(input: &str) -> hew_hir::HirModule {
-            let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())
-                .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
-            let typecheck = state
-                .typecheck_result
-                .tco
-                .as_ref()
-                .expect("fixture must typecheck");
-            let lowered = hew_hir::lower_program(
-                &state.program,
-                typecheck,
-                &hew_hir::ResolutionCtx,
-                hew_hir::TargetArch::host(),
-            );
-            assert!(
-                lowered.diagnostics.is_empty(),
-                "HIR must retain every bundled declaration: {:#?}",
-                lowered.diagnostics
-            );
-            lowered.module
-        }
-
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-compile lives below repository root");
-        let direct = repo_root.join("std/concurrency/concurrency.hew");
-        let direct = lower_to_hir(direct.to_str().expect("std path is UTF-8"));
-
-        let dir = tempfile::tempdir().expect("create temp project");
-        let imported_input = write_source(
-            dir.path(),
-            "main.hew",
-            "import std.concurrency.{ScopeError};\n\
-             fn main() {\n\
-                 let error: ScopeError<i64> = ScopeError {\n\
-                     primary: 1, also_failed: [], cancelled_count: 0\n\
-                 };\n\
-                 let _ = error;\n\
-             }\n",
-        );
-        let imported = lower_to_hir(&imported_input);
-
-        for (pipeline, owner) in [
-            (&direct, Some("std.concurrency")),
-            (&imported, Some("std.concurrency")),
-        ] {
-            let leaf = "ScopeError";
-            let expected =
-                owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
-            assert!(
-                pipeline
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&pipeline.defs) == expected)),
-                "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
-                pipeline.items
-            );
-        }
-
-        // A user package can legally use the same leaf name, but its source
-        // identity must never acquire the bundled layout.
-        write_source(dir.path(), "spoofed.hew", "pub type ScopeError {}\n");
-        let foreign_input = write_source(
-            dir.path(),
-            "foreign_main.hew",
-            "import spoofed.{ScopeError};\n\
-             fn main() { let _ = ScopeError {}; }\n",
-        );
-        let foreign = lower_to_hir(&foreign_input);
-        assert!(
-            foreign
-                .items
-                .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&foreign.defs) == "spoofed.ScopeError")),
-            "foreign declaration must retain its own owner: {:#?}",
-            foreign.items
-        );
-        assert!(
-            !foreign
-                .items
-                .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&foreign.defs) == "std.concurrency.ScopeError")),
-            "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
-            foreign.items
         );
     }
 

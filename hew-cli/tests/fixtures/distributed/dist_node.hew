@@ -1484,7 +1484,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
             }
             Result.Err(e) => {
                 let timed_out = match e {
-                    ActorError.Timeout => true,
+                    ActorError.TimedOut => true,
                     _ => elapsed_ms >= fast_fail_ceiling_ms,
                 };
                 if timed_out {

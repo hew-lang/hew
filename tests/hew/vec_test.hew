@@ -2,7 +2,6 @@
 
 import std.vec;
 
-import std.option;
 
 // ── index_of_i32 ──────────────────────────────────────────────────────────
 #[test]
@@ -12,8 +11,8 @@ fn test_index_of_i32_found_first() {
     v.push(20);
     v.push(30);
     let result = vec.index_of_i32(v, 10);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 0);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 0);
 }
 
 #[test]
@@ -23,8 +22,8 @@ fn test_index_of_i32_found_middle() {
     v.push(20);
     v.push(30);
     let result = vec.index_of_i32(v, 20);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 1);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 1);
 }
 
 #[test]
@@ -34,8 +33,8 @@ fn test_index_of_i32_found_last() {
     v.push(20);
     v.push(30);
     let result = vec.index_of_i32(v, 30);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 2);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 2);
 }
 
 #[test]
@@ -43,13 +42,13 @@ fn test_index_of_i32_not_found() {
     var v: Vec<i32> = Vec.new();
     v.push(10);
     v.push(20);
-    assert(option.is_none_int(vec.index_of_i32(v, 99)));
+    assert(vec.index_of_i32(v, 99).is_none());
 }
 
 #[test]
 fn test_index_of_i32_empty() {
     let v: Vec<i32> = Vec.new();
-    assert(option.is_none_int(vec.index_of_i32(v, 5)));
+    assert(vec.index_of_i32(v, 5).is_none());
 }
 
 #[test]
@@ -59,8 +58,8 @@ fn test_index_of_i32_returns_first_occurrence() {
     v.push(7);
     v.push(7);
     let result = vec.index_of_i32(v, 7);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 0);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 0);
 }
 
 // ── index_of_i64 ──────────────────────────────────────────────────────────
@@ -71,21 +70,21 @@ fn test_index_of_i64_found() {
     v.push(200);
     v.push(300);
     let result = vec.index_of_i64(v, 200);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 1);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 1);
 }
 
 #[test]
 fn test_index_of_i64_not_found() {
     var v: Vec<i64> = Vec.new();
     v.push(100);
-    assert(option.is_none_int(vec.index_of_i64(v, 999)));
+    assert(vec.index_of_i64(v, 999).is_none());
 }
 
 #[test]
 fn test_index_of_i64_empty() {
     let v: Vec<i64> = Vec.new();
-    assert(option.is_none_int(vec.index_of_i64(v, 0)));
+    assert(vec.index_of_i64(v, 0).is_none());
 }
 
 #[test]
@@ -95,8 +94,8 @@ fn test_index_of_i64_returns_first_occurrence() {
     v.push(9);
     v.push(9);
     let result = vec.index_of_i64(v, 9);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 0);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 0);
 }
 
 // ── index_of_f64 ──────────────────────────────────────────────────────────
@@ -107,8 +106,8 @@ fn test_index_of_f64_found() {
     v.push(2.5);
     v.push(3.5);
     let result = vec.index_of_f64(v, 2.5);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 1);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 1);
 }
 
 #[test]
@@ -116,13 +115,13 @@ fn test_index_of_f64_not_found() {
     var v: Vec<f64> = Vec.new();
     v.push(1.0);
     v.push(2.0);
-    assert(option.is_none_int(vec.index_of_f64(v, 9.9)));
+    assert(vec.index_of_f64(v, 9.9).is_none());
 }
 
 #[test]
 fn test_index_of_f64_empty() {
     let v: Vec<f64> = Vec.new();
-    assert(option.is_none_int(vec.index_of_f64(v, 0.0)));
+    assert(vec.index_of_f64(v, 0.0).is_none());
 }
 
 #[test]
@@ -132,8 +131,8 @@ fn test_index_of_f64_returns_first_occurrence() {
     v.push(7.7);
     v.push(7.7);
     let result = vec.index_of_f64(v, 7.7);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 0);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 0);
 }
 
 // ── index_of_str ──────────────────────────────────────────────────────────
@@ -144,8 +143,8 @@ fn test_index_of_str_found() {
     v.push("beta");
     v.push("gamma");
     let result = vec.index_of_str(v, "beta");
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 1);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 1);
 }
 
 #[test]
@@ -153,13 +152,13 @@ fn test_index_of_str_not_found() {
     var v: Vec<string> = Vec.new();
     v.push("foo");
     v.push("bar");
-    assert(option.is_none_int(vec.index_of_str(v, "baz")));
+    assert(vec.index_of_str(v, "baz").is_none());
 }
 
 #[test]
 fn test_index_of_str_empty() {
     let v: Vec<string> = Vec.new();
-    assert(option.is_none_int(vec.index_of_str(v, "x")));
+    assert(vec.index_of_str(v, "x").is_none());
 }
 
 #[test]
@@ -169,8 +168,8 @@ fn test_index_of_str_returns_first_occurrence() {
     v.push("dup");
     v.push("dup");
     let result = vec.index_of_str(v, "dup");
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 0);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 0);
 }
 
 // ── first_i64 ─────────────────────────────────────────────────────────────
@@ -180,8 +179,8 @@ fn test_first_i64_non_empty() {
     v.push(1000);
     v.push(2000);
     let result = vec.first_i64(v);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 1000);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 1000);
 }
 
 #[test]
@@ -189,14 +188,14 @@ fn test_first_i64_single_element_returns_some() {
     var v: Vec<i64> = Vec.new();
     v.push(55);
     let result = vec.first_i64(v);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 55);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 55);
 }
 
 #[test]
 fn test_first_i64_empty_returns_none() {
     let v: Vec<i64> = Vec.new();
-    assert(option.is_none_int(vec.first_i64(v)));
+    assert(vec.first_i64(v).is_none());
 }
 
 // ── first_f64 ─────────────────────────────────────────────────────────────
@@ -206,8 +205,8 @@ fn test_first_f64_non_empty() {
     v.push(3.14);
     v.push(2.71);
     let result = vec.first_f64(v);
-    assert(option.is_some_f64(result));
-    assert(option.unwrap_or_f64(result, 0.0) == 3.14);
+    assert(result.is_some());
+    assert(result.unwrap_or(0.0) == 3.14);
 }
 
 #[test]
@@ -215,14 +214,14 @@ fn test_first_f64_single_element_returns_some() {
     var v: Vec<f64> = Vec.new();
     v.push(1.5);
     let result = vec.first_f64(v);
-    assert(option.is_some_f64(result));
-    assert(option.unwrap_or_f64(result, 0.0) == 1.5);
+    assert(result.is_some());
+    assert(result.unwrap_or(0.0) == 1.5);
 }
 
 #[test]
 fn test_first_f64_empty_returns_none() {
     let v: Vec<f64> = Vec.new();
-    assert(option.is_none_f64(vec.first_f64(v)));
+    assert(vec.first_f64(v).is_none());
 }
 
 // ── first_str ─────────────────────────────────────────────────────────────
@@ -232,8 +231,8 @@ fn test_first_str_non_empty() {
     v.push("hello");
     v.push("world");
     let result = vec.first_str(v);
-    assert(option.is_some_str(result));
-    assert(option.unwrap_or_str(result, "") == "hello");
+    assert(result.is_some());
+    assert(result.unwrap_or("") == "hello");
 }
 
 #[test]
@@ -241,14 +240,14 @@ fn test_first_str_single_element_returns_some() {
     var v: Vec<string> = Vec.new();
     v.push("only");
     let result = vec.first_str(v);
-    assert(option.is_some_str(result));
-    assert(option.unwrap_or_str(result, "") == "only");
+    assert(result.is_some());
+    assert(result.unwrap_or("") == "only");
 }
 
 #[test]
 fn test_first_str_empty_returns_none() {
     let v: Vec<string> = Vec.new();
-    assert(option.is_none_str(vec.first_str(v)));
+    assert(vec.first_str(v).is_none());
 }
 
 // ── last_i64 ──────────────────────────────────────────────────────────────
@@ -258,8 +257,8 @@ fn test_last_i64_non_empty() {
     v.push(100);
     v.push(200);
     let result = vec.last_i64(v);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 200);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 200);
 }
 
 #[test]
@@ -267,14 +266,14 @@ fn test_last_i64_single_element_returns_some() {
     var v: Vec<i64> = Vec.new();
     v.push(77);
     let result = vec.last_i64(v);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 77);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 77);
 }
 
 #[test]
 fn test_last_i64_empty_returns_none() {
     let v: Vec<i64> = Vec.new();
-    assert(option.is_none_int(vec.last_i64(v)));
+    assert(vec.last_i64(v).is_none());
 }
 
 // ── last_f64 ──────────────────────────────────────────────────────────────
@@ -285,8 +284,8 @@ fn test_last_f64_non_empty() {
     v.push(2.2);
     v.push(3.3);
     let result = vec.last_f64(v);
-    assert(option.is_some_f64(result));
-    assert(option.unwrap_or_f64(result, 0.0) == 3.3);
+    assert(result.is_some());
+    assert(result.unwrap_or(0.0) == 3.3);
 }
 
 #[test]
@@ -294,14 +293,14 @@ fn test_last_f64_single_element_returns_some() {
     var v: Vec<f64> = Vec.new();
     v.push(9.9);
     let result = vec.last_f64(v);
-    assert(option.is_some_f64(result));
-    assert(option.unwrap_or_f64(result, 0.0) == 9.9);
+    assert(result.is_some());
+    assert(result.unwrap_or(0.0) == 9.9);
 }
 
 #[test]
 fn test_last_f64_empty_returns_none() {
     let v: Vec<f64> = Vec.new();
-    assert(option.is_none_f64(vec.last_f64(v)));
+    assert(vec.last_f64(v).is_none());
 }
 
 // ── last_str ──────────────────────────────────────────────────────────────
@@ -312,8 +311,8 @@ fn test_last_str_non_empty() {
     v.push("two");
     v.push("three");
     let result = vec.last_str(v);
-    assert(option.is_some_str(result));
-    assert(option.unwrap_or_str(result, "") == "three");
+    assert(result.is_some());
+    assert(result.unwrap_or("") == "three");
 }
 
 #[test]
@@ -321,14 +320,14 @@ fn test_last_str_single_element_returns_some() {
     var v: Vec<string> = Vec.new();
     v.push("only");
     let result = vec.last_str(v);
-    assert(option.is_some_str(result));
-    assert(option.unwrap_or_str(result, "") == "only");
+    assert(result.is_some());
+    assert(result.unwrap_or("") == "only");
 }
 
 #[test]
 fn test_last_str_empty_returns_none() {
     let v: Vec<string> = Vec.new();
-    assert(option.is_none_str(vec.last_str(v)));
+    assert(vec.last_str(v).is_none());
 }
 
 // ── min_i32 ───────────────────────────────────────────────────────────────
@@ -338,14 +337,14 @@ fn test_min_i32_several_elements() {
     v.push(3);
     v.push(1);
     v.push(2);
-    assert(option.unwrap_or_int(vec.min_i32(v), -999) == 1);
+    assert(vec.min_i32(v).unwrap_or(-999) == 1);
 }
 
 #[test]
 fn test_min_i32_single_element() {
     var v: Vec<i32> = Vec.new();
     v.push(42);
-    assert(option.unwrap_or_int(vec.min_i32(v), -999) == 42);
+    assert(vec.min_i32(v).unwrap_or(-999) == 42);
 }
 
 #[test]
@@ -354,7 +353,7 @@ fn test_min_i32_all_same() {
     v.push(5);
     v.push(5);
     v.push(5);
-    assert(option.unwrap_or_int(vec.min_i32(v), -999) == 5);
+    assert(vec.min_i32(v).unwrap_or(-999) == 5);
 }
 
 #[test]
@@ -363,7 +362,7 @@ fn test_min_i32_min_is_first() {
     v.push(1);
     v.push(9);
     v.push(7);
-    assert(option.unwrap_or_int(vec.min_i32(v), -999) == 1);
+    assert(vec.min_i32(v).unwrap_or(-999) == 1);
 }
 
 #[test]
@@ -372,7 +371,7 @@ fn test_min_i32_min_is_last() {
     v.push(9);
     v.push(7);
     v.push(1);
-    assert(option.unwrap_or_int(vec.min_i32(v), -999) == 1);
+    assert(vec.min_i32(v).unwrap_or(-999) == 1);
 }
 
 // ── min_i64 ───────────────────────────────────────────────────────────────
@@ -382,14 +381,14 @@ fn test_min_i64_several_elements() {
     v.push(300);
     v.push(100);
     v.push(200);
-    assert(option.unwrap_or_int(vec.min_i64(v), -999) == 100);
+    assert(vec.min_i64(v).unwrap_or(-999) == 100);
 }
 
 #[test]
 fn test_min_i64_single_element() {
     var v: Vec<i64> = Vec.new();
     v.push(77);
-    assert(option.unwrap_or_int(vec.min_i64(v), -999) == 77);
+    assert(vec.min_i64(v).unwrap_or(-999) == 77);
 }
 
 // ── min_f64 ───────────────────────────────────────────────────────────────
@@ -399,14 +398,14 @@ fn test_min_f64_several_elements() {
     v.push(3.0);
     v.push(1.5);
     v.push(2.0);
-    assert(option.unwrap_or_f64(vec.min_f64(v), 0.0) == 1.5);
+    assert(vec.min_f64(v).unwrap_or(0.0) == 1.5);
 }
 
 #[test]
 fn test_min_f64_single_element() {
     var v: Vec<f64> = Vec.new();
     v.push(9.9);
-    assert(option.unwrap_or_f64(vec.min_f64(v), 0.0) == 9.9);
+    assert(vec.min_f64(v).unwrap_or(0.0) == 9.9);
 }
 
 // ── max_i32 ───────────────────────────────────────────────────────────────
@@ -416,14 +415,14 @@ fn test_max_i32_several_elements() {
     v.push(3);
     v.push(1);
     v.push(2);
-    assert(option.unwrap_or_int(vec.max_i32(v), -999) == 3);
+    assert(vec.max_i32(v).unwrap_or(-999) == 3);
 }
 
 #[test]
 fn test_max_i32_single_element() {
     var v: Vec<i32> = Vec.new();
     v.push(42);
-    assert(option.unwrap_or_int(vec.max_i32(v), -999) == 42);
+    assert(vec.max_i32(v).unwrap_or(-999) == 42);
 }
 
 #[test]
@@ -432,7 +431,7 @@ fn test_max_i32_all_same() {
     v.push(4);
     v.push(4);
     v.push(4);
-    assert(option.unwrap_or_int(vec.max_i32(v), -999) == 4);
+    assert(vec.max_i32(v).unwrap_or(-999) == 4);
 }
 
 #[test]
@@ -441,7 +440,7 @@ fn test_max_i32_max_is_first() {
     v.push(9);
     v.push(1);
     v.push(5);
-    assert(option.unwrap_or_int(vec.max_i32(v), -999) == 9);
+    assert(vec.max_i32(v).unwrap_or(-999) == 9);
 }
 
 #[test]
@@ -450,7 +449,7 @@ fn test_max_i32_max_is_last() {
     v.push(1);
     v.push(5);
     v.push(9);
-    assert(option.unwrap_or_int(vec.max_i32(v), -999) == 9);
+    assert(vec.max_i32(v).unwrap_or(-999) == 9);
 }
 
 // ── max_i64 ───────────────────────────────────────────────────────────────
@@ -460,14 +459,14 @@ fn test_max_i64_several_elements() {
     v.push(300);
     v.push(100);
     v.push(200);
-    assert(option.unwrap_or_int(vec.max_i64(v), -999) == 300);
+    assert(vec.max_i64(v).unwrap_or(-999) == 300);
 }
 
 #[test]
 fn test_max_i64_single_element() {
     var v: Vec<i64> = Vec.new();
     v.push(77);
-    assert(option.unwrap_or_int(vec.max_i64(v), -999) == 77);
+    assert(vec.max_i64(v).unwrap_or(-999) == 77);
 }
 
 // ── max_f64 ───────────────────────────────────────────────────────────────
@@ -477,14 +476,14 @@ fn test_max_f64_several_elements() {
     v.push(3.0);
     v.push(1.5);
     v.push(2.0);
-    assert(option.unwrap_or_f64(vec.max_f64(v), 0.0) == 3.0);
+    assert(vec.max_f64(v).unwrap_or(0.0) == 3.0);
 }
 
 #[test]
 fn test_max_f64_single_element() {
     var v: Vec<f64> = Vec.new();
     v.push(9.9);
-    assert(option.unwrap_or_f64(vec.max_f64(v), 0.0) == 9.9);
+    assert(vec.max_f64(v).unwrap_or(0.0) == 9.9);
 }
 
 // ── negative-value edge cases ─────────────────────────────────────────────
@@ -494,7 +493,7 @@ fn test_min_i32_with_negatives() {
     v.push(5);
     v.push(-3);
     v.push(2);
-    assert(option.unwrap_or_int(vec.min_i32(v), -999) == -3);
+    assert(vec.min_i32(v).unwrap_or(-999) == -3);
 }
 
 #[test]
@@ -503,7 +502,7 @@ fn test_max_i32_with_negatives() {
     v.push(-5);
     v.push(-1);
     v.push(-9);
-    assert(option.unwrap_or_int(vec.max_i32(v), -999) == -1);
+    assert(vec.max_i32(v).unwrap_or(-999) == -1);
 }
 
 #[test]
@@ -512,7 +511,7 @@ fn test_min_f64_with_negatives() {
     v.push(1.0);
     v.push(-2.5);
     v.push(0.5);
-    assert(option.unwrap_or_f64(vec.min_f64(v), 0.0) == -2.5);
+    assert(vec.min_f64(v).unwrap_or(0.0) == -2.5);
 }
 
 #[test]
@@ -521,7 +520,7 @@ fn test_max_f64_with_negatives() {
     v.push(-1.0);
     v.push(-0.5);
     v.push(-3.0);
-    assert(option.unwrap_or_f64(vec.max_f64(v), 0.0) == -0.5);
+    assert(vec.max_f64(v).unwrap_or(0.0) == -0.5);
 }
 
 #[test]
@@ -531,8 +530,8 @@ fn test_index_of_i32_negative_value() {
     v.push(-7);
     v.push(3);
     let result = vec.index_of_i32(v, -7);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 1);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 1);
 }
 
 #[test]
@@ -542,43 +541,43 @@ fn test_index_of_i32_zero_value() {
     v.push(0);
     v.push(2);
     let result = vec.index_of_i32(v, 0);
-    assert(option.is_some_int(result));
-    assert(option.unwrap_or_int(result, -1) == 1);
+    assert(result.is_some());
+    assert(result.unwrap_or(-1) == 1);
 }
 
 // ── min/max empty-vector returns None ─────────────────────────────────────
 #[test]
 fn test_min_i32_empty_none() {
     let v: Vec<i32> = Vec.new();
-    assert(option.is_none_int(vec.min_i32(v)));
+    assert(vec.min_i32(v).is_none());
 }
 
 #[test]
 fn test_max_i32_empty_none() {
     let v: Vec<i32> = Vec.new();
-    assert(option.is_none_int(vec.max_i32(v)));
+    assert(vec.max_i32(v).is_none());
 }
 
 #[test]
 fn test_min_i64_empty_none() {
     let v: Vec<i64> = Vec.new();
-    assert(option.is_none_int(vec.min_i64(v)));
+    assert(vec.min_i64(v).is_none());
 }
 
 #[test]
 fn test_max_i64_empty_none() {
     let v: Vec<i64> = Vec.new();
-    assert(option.is_none_int(vec.max_i64(v)));
+    assert(vec.max_i64(v).is_none());
 }
 
 #[test]
 fn test_min_f64_empty_none() {
     let v: Vec<f64> = Vec.new();
-    assert(option.is_none_f64(vec.min_f64(v)));
+    assert(vec.min_f64(v).is_none());
 }
 
 #[test]
 fn test_max_f64_empty_none() {
     let v: Vec<f64> = Vec.new();
-    assert(option.is_none_f64(vec.max_f64(v)));
+    assert(vec.max_f64(v).is_none());
 }

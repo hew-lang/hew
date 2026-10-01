@@ -66,7 +66,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue,
         )
@@ -1455,20 +1454,6 @@ impl Ty {
     #[must_use]
     pub fn never_type() -> Ty {
         crate::actor_delivery::nominal(crate::KnownDecl::Never, Vec::new())
-    }
-
-    /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
-    /// and `await stream.recv() | after d`.  A unit enum with one variant
-    /// (`Timeout`) distinguishing deadline expiry from a closed channel
-    /// (`Ok(None)`).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
-    #[must_use]
-    pub fn timeout_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("TimeoutError")
-            .expect("generated builtin enum catalog must contain TimeoutError")
     }
 
     /// Construct `LinkError` — error type for `link(handle)` calls.

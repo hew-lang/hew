@@ -89,11 +89,6 @@ pub enum BuiltinType {
     Instant,
     Trap,
     CancellationToken,
-    /// `TimeoutError` — the error arm of `await rx.recv() | after d` /
-    /// `await stream.recv() | after d`.  A unit enum with one variant
-    /// (`Timeout`) that distinguishes a deadline expiry from a closed channel
-    /// (`Ok(None)`).
-    TimeoutError,
 }
 
 /// One constructor variant registered by a compiler-known generic enum.
@@ -247,7 +242,6 @@ builtin_types! {
     Instant => "instant",
     Trap => "Trap",
     CancellationToken => "CancellationToken",
-    TimeoutError => "TimeoutError",
 }
 
 impl BuiltinType {
@@ -413,7 +407,6 @@ impl BuiltinType {
             | Self::Duration
             | Self::Range
             | Self::Trap
-            | Self::TimeoutError
             | Self::CrashAction
             | Self::CrashKind
             | Self::SendError
@@ -540,7 +533,6 @@ impl BuiltinType {
             | Self::Instant
             | Self::Trap
             | Self::CancellationToken
-            | Self::TimeoutError
             // An actor handle carries the actor declaration's own type
             // arguments, so it has no fixed builtin arity.
             | Self::ActorHandle => 0,

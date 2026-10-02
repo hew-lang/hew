@@ -1,0 +1,29 @@
+// `handle _ { fallback }` recovers a Result without naming the error: the
+// wildcard binds nothing, composes with a named binder in a nested handler,
+// and an owned error payload is still released.
+type Failure {
+    code: i64;
+    note: string;
+}
+
+fn parse(text: string) -> Result<i64, string> {
+    if text == "7" { .Ok(7) } else { .Err(f"bad {text}") }
+}
+
+fn lookup(key: i64) -> Result<string, Failure> {
+    if key > 0 { .Ok(f"key {key}") } else { .Err(Failure { code: key, note: f"missing {key}" }) }
+}
+
+fn main() {
+    println(parse("7") handle _ { 0 });
+    println(parse("x") handle _ { -1 });
+    println(lookup(-4) handle _ { "none" });
+    println(lookup(3) handle _ { "none" });
+    let nested = parse("y") handle first {
+        println(first);
+        parse("7") handle _ { 99 }
+    };
+    println(nested);
+    let shown = lookup(-2) handle failure { f"{failure.note}/{failure.code}" };
+    println(shown);
+}

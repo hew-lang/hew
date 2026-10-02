@@ -257,7 +257,7 @@ fn esc_visit_expr(
             body,
         } => {
             esc_visit_expr(&operand.0, name, in_fork, acc, false);
-            if error.0 != Ident::new(name) {
+            if error.0 != Some(Ident::new(name)) {
                 esc_visit_expr(&body.0, name, in_fork, acc, is_tail);
             }
         }

@@ -1,0 +1,14 @@
+[[case]]
+id = "handle-wildcard-binder-refused"
+intent = "The `_` error binder names nothing: a recovery block that reads it is refused as an undefined variable."
+source = "cases/handle-wildcard-binder-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedVariable"
+line = 8
+column = 38
+message = "undefined variable `_`"

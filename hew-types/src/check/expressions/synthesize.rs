@@ -903,7 +903,7 @@ impl Checker {
         &mut self,
         operand: &Spanned<Expr>,
         body: &Spanned<Expr>,
-        error: Option<&Spanned<Ident>>,
+        error: Option<&Spanned<Option<Ident>>>,
         span: &Span,
     ) -> Ty {
         let container = self.synthesize(&operand.0, &operand.1);
@@ -958,7 +958,7 @@ impl Checker {
         );
         let entry = self.env.ownership_snapshot();
         self.env.push_scope();
-        if let Some((name, binding_span)) = error {
+        if let Some((Some(name), binding_span)) = error {
             self.check_shadowing(name.name.as_str(), binding_span);
             self.env
                 .define_with_span(name.to_string(), error_ty, false, binding_span.clone());

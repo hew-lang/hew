@@ -29,6 +29,8 @@ mod partial;
 #[path = "../physical_tcp.rs"]
 mod tcp;
 
+#[path = "../physical_build_info.rs"]
+mod build_info;
 #[path = "../physical_coro.rs"]
 mod coro;
 #[path = "../physical_debug.rs"]
@@ -142,6 +144,9 @@ pub struct PhysicalEmitOptions<'a> {
     /// module with `wasm-ld --no-entry`. Ignored on every other triple: a WASI
     /// module is linked against the runtime archives by `hew-cli`'s linker.
     pub link_freestanding_wasm: bool,
+    /// Compiler version to embed as a `HEW-BUILD-INFO` provenance string in
+    /// native objects; `None` embeds nothing. Ignored on wasm32 triples.
+    pub build_info: Option<&'a str>,
 }
 
 /// Resolve primitive physical layouts from the exact LLVM target machine.
@@ -567,6 +572,7 @@ fn emit_physical_object_with_host(
         Some(&object_path),
         host,
         options.debug_source,
+        options.build_info,
     )?;
     if !wasm {
         return Ok(EmitArtefacts {
@@ -615,6 +621,7 @@ pub fn validate_physical_codegen(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -632,6 +639,7 @@ fn emit_physical_to_paths(
     object_path: Option<&Path>,
     host: Option<&HostExport<'_>>,
     debug_source: Option<&Path>,
+    build_info: Option<&str>,
 ) -> CodegenResult<()> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, opt_level)?;
     let ctx = Context::create();
@@ -644,6 +652,9 @@ fn emit_physical_to_paths(
     };
     let llvm_module =
         build_module_with_host(&ctx, verified.module(), module_name, &machine, host, debug)?;
+    if let Some(version) = build_info.filter(|_| !triple.starts_with("wasm32")) {
+        build_info::emit_build_info(&llvm_module, version, triple);
+    }
     crate::llvm::run_module_pipeline(&llvm_module, &machine, opt_level)?;
     if address_sanitizer {
         crate::sanitizer::instrument_address_sanitizer(&llvm_module, &machine)

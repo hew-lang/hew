@@ -339,12 +339,20 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 4. Let the release workflow build and publish seven platform archives and one
    checksum manifest from the signed tag. Its curated body must be the exact
    `docs/releases/<tag>.md` file for that tag.
-5. After the assets exist, complete the npm publication arm:
-   - Manually dispatch `.github/workflows/publish-npm-packages.yml` with
-     `release_tag="${release_tag}"` for
-     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@${release_version}`, and wait for each
-     result. The workflow checks out that immutable tag and rejects a workspace
-     or sandbox package version mismatch. A tag does not publish these packages.
+5. The release workflow's `npm-packages` job dispatches
+   `.github/workflows/publish-npm-packages.yml` on the tag once the GitHub
+   Release exists. That workflow builds `@hew-lang/{wasm,sandbox-vm}@${release_version}`
+   from the immutable tag, then publishes to npmjs (primary, OIDC trusted
+   publishing with provenance, behind the `npm` environment approval) and
+   mirrors to GitHub Packages as an independent job. Prereleases take
+   dist-tag `next`; only final versions take `latest`. Approve the `npm`
+   environment run, then verify with
+   `npm view @hew-lang/wasm@${release_version} dist-tags version` and
+   `npm audit signatures`. To recover a failed or skipped publication,
+   dispatch the same workflow from the tag ref
+   (`gh workflow run publish-npm-packages.yml --ref "${release_tag}" -f release_tag="${release_tag}" -f dry_run=false`);
+   versions already on a registry are skipped. The workflow
+   rejects a workspace or sandbox package version mismatch.
 6. The tag-push release workflow only observes the pre-tag candidate image; it
    never dispatches mutable downstream state. The tag must resolve to the exact
    digest recorded in `PLAYGROUND_RELEASE_IMAGE_LOCK`, expose exactly the

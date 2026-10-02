@@ -34,7 +34,6 @@
     "directory": "hew-sandbox-vm"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
     "access": "public"
   },
   "devDependencies": {

@@ -11,12 +11,13 @@
 // the harness without changing the program's command-line shape:
 //
 //   HEW_DIST_ROLE     "server" | "client"   (required)
-//   HEW_DIST_PORT     loopback TCP port the harness pre-allocated  (required)
 //   HEW_DIST_SCENARIO scenario name for the client role  (default "remote_ask")
 //
 // Readiness protocol (deterministic, no fixed sleeps for correctness):
-//   - The server prints "READY <port>" on a line of its own AFTER the actor is
-//     registered. The harness blocks on that line before launching the client.
+//   - The server binds an ephemeral loopback port and, AFTER the actor is
+//     registered, publishes it in `<kx>/server.ready` and prints "READY <port>"
+//     on a line of its own. A replacement server rebinds the published port.
+//     A node that cannot start prints FAIL and exits 2 without either signal.
 //   - The client retries Node::lookup in a bounded poll loop until registry
 //     gossip resolves the remote actor (or a deadline elapses), rather than
 //     sleeping a fixed interval and hoping gossip arrived.
@@ -222,6 +223,7 @@ impl ActorMsg for IdentityProbe {
 // cascade records Crashed (5); a survivor never reaches terminal (sentinel).
 extern "C" {
     fn hew_link_probe_terminal_state(actor_id: i64) -> i64;
+    fn hew_dist_bound_port() -> i64;
 }
 
 // Test-introspection probes for the SWIM rejoin-admission gate: drive a gossip
@@ -890,7 +892,10 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     let mint = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: key, trust: "pinned", peers: [], seeds: [] };
     match Node.start(mint) {
         Result.Ok(_) => {}
-        Result.Err(_) => println(f"FAIL {my_role} identity-mint"),
+        Result.Err(_) => {
+            println(f"FAIL {my_role} identity-mint");
+            exit(2);
+        }
     }
     let me = Node.identity_key();
     Node.shutdown();
@@ -904,16 +909,23 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     let config = NodeConfig { bind: bind, transport: "tcp", key: key, trust: "pinned", peers: [configured_peer_key], seeds: [] };
     match Node.start(config) {
         Result.Ok(_) => {}
-        Result.Err(_) => println(f"FAIL {my_role} pinned-start"),
+        Result.Err(_) => {
+            println(f"FAIL {my_role} pinned-start");
+            exit(2);
+        }
     }
 }
 
-fn signal_server_listening(kx: string) {
-    publish_atomic(kx, "server.ready", "1");
+/// The port the server's listener is bound to, published for the client.
+fn signal_server_listening(kx: string) -> string {
+    let port = f"{unsafe { hew_dist_bound_port() }}";
+    publish_atomic(kx, "server.ready", port);
+    port
 }
 
-fn wait_for_server_listening(kx: string) {
-    let _ = wait_for_file(f"{kx}/server.ready");
+/// The port the server published once it was listening.
+fn wait_for_server_listening(kx: string) -> string {
+    wait_for_file(f"{kx}/server.ready")
 }
 
 fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
@@ -979,9 +991,14 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
     }
 }
 
-fn run_server(port: string, scenario: string) {
-    let addr = f"127.0.0.1:{port}";
+fn run_server(scenario: string) {
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
+    // A replacement server comes back on the port its predecessor published.
+    let addr = if os.env("HEW_DIST_RESTARTED").unwrap_or("") == "1" {
+        f"127.0.0.1:{wait_for_server_listening(kx)}"
+    } else {
+        "127.0.0.1:0"
+    };
     start_pinned(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
@@ -1000,7 +1017,7 @@ fn run_server(port: string, scenario: string) {
         let stopper = spawn SetupRaceStopper(monitor_target: monitor_target, link_target: link_target);
         let _ = fork stopper.run();
     }
-    signal_server_listening(kx);
+    let port = signal_server_listening(kx);
     if os.env("HEW_DIST_RESTARTED").unwrap_or("") == "1" {
         publish_atomic(kx, "server.restarted", "1");
     }
@@ -2186,10 +2203,10 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
     }
 }
 
-fn run_client(port: string, scenario: string) -> i64 {
+fn run_client(scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
     start_pinned(kx, "client", "server", "127.0.0.1:0");
-    wait_for_server_listening(kx);
+    let port = wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
     let _ = Node.connect(remote_addr);
     let status = if scenario == "handshake_reject" {
@@ -2331,17 +2348,16 @@ fn run_client(port: string, scenario: string) -> i64 {
 
 fn main() -> i64 {
     let role = os.env("HEW_DIST_ROLE").unwrap_or("");
-    let port = os.env("HEW_DIST_PORT").unwrap_or("");
     var scenario = os.env("HEW_DIST_SCENARIO").unwrap_or("");
     if scenario == "" {
         scenario = "remote_ask";
     }
     if role == "server" {
-        run_server(port, scenario);
+        run_server(scenario);
         0
     } else {
         if role == "client" {
-            run_client(port, scenario)
+            run_client(scenario)
         } else {
             println(f"FAIL config unknown-role={role}");
             99

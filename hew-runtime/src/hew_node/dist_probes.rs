@@ -139,6 +139,26 @@ pub extern "C" fn hew_dist_member_state(node_id: u16) -> i64 {
     })
 }
 
+/// Return the port this node's TCP listener is bound to, or -1 when no node or
+/// TCP listener is installed.
+///
+/// Test-introspection probe for the two-process fixture: the server binds port
+/// 0 and publishes the port it got, so no port is chosen ahead of the bind.
+/// Not user-callable.
+#[no_mangle]
+pub extern "C" fn hew_dist_bound_port() -> i64 {
+    with_current_node_read(|guard| {
+        let node_ptr = *guard as *const HewNode;
+        if node_ptr.is_null() {
+            return -1;
+        }
+        // SAFETY: the read lock pins CURRENT_NODE, and with it its transport,
+        // for the duration of this call.
+        unsafe { crate::transport::hew_transport_tcp_bound_port((*node_ptr).transport) }
+            .map_or(-1, i64::from)
+    })
+}
+
 /// Return 1 if `node_id` is currently in the quarantine set, 0 if not, -1 when no
 /// node is installed.
 ///

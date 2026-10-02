@@ -30,9 +30,9 @@
 //!
 //! # Determinism
 //!
-//! * The harness pre-allocates a loopback port (`bind(:0)` → read → drop) and
-//!   hands it to the server, because a compiled Hew node cannot yet report its
-//!   own `:0`-bound port back to the harness.
+//! * The server binds an ephemeral loopback port and publishes the port it got
+//!   in the shared key-exchange directory, where the client reads it; no port
+//!   is chosen ahead of the bind, so no other socket can take it in between.
 //! * The server prints `READY <port>` only after its actor is registered; the
 //!   harness blocks on that line before launching the client (readiness signal,
 //!   not a fixed sleep).
@@ -42,7 +42,6 @@
 mod support;
 
 use std::io::{BufRead, BufReader, Read};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -168,19 +167,6 @@ fn compiled_node_binary() -> &'static Path {
         .path
 }
 
-/// Pre-allocate an ephemeral loopback port and release it so the server can
-/// bind it. There is a small TOCTOU window between release and the server's
-/// rebind; on serialized loopback test execution it is negligible, and a bind
-/// failure surfaces as the server dying before `READY` (a loud, retryable
-/// failure rather than a silent wrong answer).
-fn allocate_loopback_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind ephemeral loopback listener")
-        .local_addr()
-        .expect("read ephemeral loopback address")
-        .port()
-}
-
 /// A child process whose stdout/stderr are captured and that is force-killed on
 /// drop, so a wedged node never leaks past the test.
 struct ManagedChild {
@@ -205,26 +191,23 @@ impl Drop for ManagedChild {
 /// session journal and is reclaimed when this value drops.
 struct SecureScenario {
     kx_dir: tempfile::TempDir,
-    port: u16,
 }
 
 impl SecureScenario {
     fn new() -> Self {
         Self {
             kx_dir: tempfile::tempdir().expect("create key-exchange dir for scenario"),
-            port: allocate_loopback_port(),
         }
     }
 
     /// Spawn one node process with the strict-binding environment, shared
-    /// key-exchange directory, and fixture role/port/scenario.
+    /// key-exchange directory, and fixture role and scenario.
     fn spawn(&self, role: &str, scenario: &str, extra_env: &[(&str, &str)]) -> ManagedChild {
         let binary = compiled_node_binary();
         let mut command = Command::new(binary);
         command
             .env("HEW_TRANSPORT", "tcp")
             .env("HEW_DIST_ROLE", role)
-            .env("HEW_DIST_PORT", self.port.to_string())
             .env("HEW_DIST_SCENARIO", scenario)
             .env("HEW_DIST_KX_DIR", self.kx_dir.path())
             .stdout(Stdio::piped())

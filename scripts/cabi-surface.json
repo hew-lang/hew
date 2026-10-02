@@ -5648,6 +5648,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_dist_bound_port() -> i64"
+      },
+      "symbol": "hew_dist_bound_port"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_dist_inject_swim_gossip( u16, i32, u64) -> i64"
       },
       "symbol": "hew_dist_inject_swim_gossip"

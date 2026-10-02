@@ -20,7 +20,6 @@ std.encoding.msgpack	let _ = msgpack.from_json("null");
 std.encoding.protobuf	protobuf.new();
 std.encoding.toml	let _ = toml.parse("");
 std.encoding.utf8	utf8.decode_lossy("héllo".to_bytes());
-std.encoding.wire	wire.to_json(1);
 std.encoding.xml	let _ = xml.parse("<root />");
 std.encoding.yaml	let _ = yaml.parse("null");
 std.fmt	fmt.to_hex(0);

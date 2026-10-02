@@ -59,7 +59,7 @@ impl Display for DecodeError {
     fn fmt(self) -> string {
         match self {
             DecodeError.Syntax { offset, line, column, reason } => match (line, column) {
-                (.Some(line), .Some(column)) => f"Syntax: line {line}, column {column}: {reason}",
+                (.Some(row), .Some(col)) => f"Syntax: line {row}, column {col}: {reason}",
                 _ => f"Syntax: offset {offset}: {reason}",
             }
             DecodeError.Type { path, expected, found } => f"Type: {at(path)}expected {expected}, found {found}",

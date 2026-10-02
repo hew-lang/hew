@@ -3,8 +3,8 @@
 // trait declaration. The same two impls are reached dynamically through a
 // `dyn` value so the static and erased paths can be compared side by side.
 trait Shape {
-    fn area(val: Self) -> i64;
-    fn label(val: Self) -> string;
+    fn area(self) -> i64;
+    fn label(self) -> string;
 }
 
 type Square {
@@ -12,11 +12,11 @@ type Square {
 }
 
 impl Shape for Square {
-    fn area(val: Square) -> i64 {
-        val.side * val.side
+    fn area(self) -> i64 {
+        self.side * self.side
     }
-    fn label(val: Square) -> string {
-        f"square({val.side})"
+    fn label(self) -> string {
+        f"square({self.side})"
     }
 }
 
@@ -26,11 +26,11 @@ type Rect {
 }
 
 impl Shape for Rect {
-    fn area(val: Rect) -> i64 {
-        val.width * val.height
+    fn area(self) -> i64 {
+        self.width * self.height
     }
-    fn label(val: Rect) -> string {
-        f"rect({val.width}x{val.height})"
+    fn label(self) -> string {
+        f"rect({self.width}x{self.height})"
     }
 }
 
@@ -48,11 +48,11 @@ type Tag {
 }
 
 impl Shape for Tag {
-    fn area(val: Tag) -> i64 {
-        val.weight
+    fn area(self) -> i64 {
+        self.weight
     }
-    fn label(val: Tag) -> string {
-        f"tag({val.text})"
+    fn label(self) -> string {
+        f"tag({self.text})"
     }
 }
 
@@ -65,10 +65,10 @@ type Pair<L, R> {
 }
 
 impl<A, B> Shape for Pair<B, A> {
-    fn area(val: Pair<B, A>) -> i64 {
+    fn area(self) -> i64 {
         7
     }
-    fn label(val: Pair<B, A>) -> string {
+    fn label(self) -> string {
         "pair"
     }
 }

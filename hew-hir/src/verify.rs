@@ -416,16 +416,6 @@ impl Verifier {
             HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
                 self.expr(operand);
             }
-            HirExprKind::ConnAwaitRead { conn, .. } => {
-                self.expr(conn);
-            }
-            HirExprKind::AwaitRestart { child } => self.expr(child),
-            HirExprKind::ListenerAwaitAccept { listener, .. } => {
-                self.expr(listener);
-            }
-            HirExprKind::StreamRecvAwait { stream, .. } => {
-                self.expr(stream);
-            }
             HirExprKind::NumericCast {
                 value,
                 from_ty,
@@ -609,18 +599,23 @@ impl Verifier {
                 receiver,
                 args,
                 ..
-            }
-            | HirExprKind::CallTraitMethodStatic {
-                target,
-                receiver,
-                args,
-                ..
             } => {
                 self.executable_call_target(target, expr);
 
                 self.expr(receiver);
                 for arg in args {
                     self.expr(arg);
+                }
+            }
+            HirExprKind::CallTraitMethodStatic {
+                target,
+                receiver,
+                args,
+                ..
+            } => {
+                self.executable_call_target(target, expr);
+                for operand in receiver.receiver().into_iter().chain(args) {
+                    self.expr(operand);
                 }
             }
             HirExprKind::VarSelfMethodCall {
@@ -1286,7 +1281,8 @@ mod tests {
             items,
             diagnostic_source_modules: HashMap::new(),
             root_item_ids: HashSet::default(),
-            wire_layouts: Arc::new(HashMap::new()),
+            trait_object_layouts: Arc::default(),
+            structural_witnesses: Vec::new(),
             type_classes: TypeClassTable::default(),
             monomorphisations: Vec::new(),
             call_site_type_args: HashMap::new(),
@@ -1365,7 +1361,8 @@ mod tests {
         let static_trait = executable_expr(
             &mut ids,
             HirExprKind::CallTraitMethodStatic {
-                receiver: Box::new(static_trait_receiver),
+                receiver: crate::StaticTraitSelf::Receiver(Box::new(static_trait_receiver)),
+                trait_args: Vec::new(),
                 target: unsupported("static trait call"),
                 receiver_type_param: hew_types::ParamHead::for_test("T"),
                 args: Vec::new(),

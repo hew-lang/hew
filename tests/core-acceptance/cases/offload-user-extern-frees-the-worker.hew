@@ -1,0 +1,39 @@
+// A package-level `#[offload]` extern parks only its own task. With one
+// worker, the reader blocks in the OS until the writer, forked onto the same
+// worker, opens the pipe: without offload the writer could never run.
+import std.fs;
+
+import std.os;
+
+import std.path;
+
+import std.process;
+
+extern "C" {
+    #[offload]
+    fn hew_file_read(path: string) -> string;
+}
+
+fn reader(fifo: string) -> string {
+    unsafe {
+        hew_file_read(fifo)
+    }
+}
+
+fn writer(fifo: string) {
+    fs.write(fifo, "through the pipe").expect("write the pipe");
+}
+
+fn main() {
+    let fifo = path.combine(os.temp_dir(), f"hew-offload-worker-{os.pid()}");
+    process.run(f"mkfifo {fifo}").expect("create fifo");
+    var text = "";
+    scope {
+        let read = fork reader(fifo);
+        let wrote = fork writer(fifo);
+        text = await read;
+        await wrote;
+    };
+    fs.delete(fifo).expect("remove fifo");
+    println(text);
+}

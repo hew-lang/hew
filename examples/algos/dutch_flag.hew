@@ -36,7 +36,7 @@ fn main() {
     expected.push(2);
     expected.push(2);
     var pass = true;
-    for i in 0 .. 6 {
+    for i in 0..6 {
         if arr[i] != expected[i] {
             pass = false;
             println("FAIL at index:");

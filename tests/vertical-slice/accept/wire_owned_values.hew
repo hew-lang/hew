@@ -1,23 +1,27 @@
-import std.encoding.wire;
 // Decode-only construction demands nested value glue and byte-key callbacks.
 // All three formats preserve complete UTF-8, optional elements and byte keys.
-#[json(camelCase)]
-#[yaml("kebab-case")]
+import std.encoding.cbor;
+
+import std.encoding.json;
+
+import std.encoding.yaml;
+
+#[serial(case = "camelCase")]
 #[wire]
 enum DispatchMode {
-    Idle;
-    SendNow(string, Vec<string>);
+    Idle @0;
+    SendNow(string, Vec<string>) @1;
 }
 
-#[json(camelCase)]
-#[yaml("kebab-case")]
+#[serial(case = "camelCase")]
 #[wire]
 type Settings {
     display_labels: Vec<Option<string>> @7;
     rows: Vec<Vec<string>> @2;
     binary_keys: HashMap<bytes, Vec<string>> @5;
     delivery: DispatchMode @9;
-    comment: Option<string> @12 optional json("remark") yaml("note");
+    #[serial(key = "remark")]
+    comment: Option<string> @12 optional;
 }
 
 fn valid(settings: Settings) -> bool {
@@ -71,27 +75,27 @@ fn valid(settings: Settings) -> bool {
 }
 
 fn main() -> i64 {
-    let document = "{\"displayLabels\":[\"admin\\u0000é\",null],\"rows\":[[\"first\",\"雪\"],[]],\"binaryKeys\":[[[0,255],[\"byte\\u0000key\"]]],\"delivery\":{\"sendNow\":[\"packet\\u0000name\",[\"Montréal\"]]}}";
-    let settings = Settings.from_json(document) handle error {
+    let document = "{\"displayLabels\":[\"admin\\u0000é\",null],\"rows\":[[\"first\",\"雪\"],[]],\"binaryKeys\":[[\"AP8=\",[\"byte\\u0000key\"]]],\"delivery\":{\"sendNow\":[\"packet\\u0000name\",[\"Montréal\"]]}}";
+    let settings = json.decode<Settings>(document) handle error {
         return 1;
     };
     if !valid(settings) {
         return 2;
     }
-    let binary = Settings.decode(settings.encode());
+    let binary = cbor.decode<Settings>(cbor.encode(settings)).expect("decode");
     if !valid(binary) {
         return 3;
     }
-    let json = Settings.from_json(binary.to_json()) handle error {
+    let json_text = json.decode<Settings>(json.encode(binary)) handle error {
         return 4;
     };
-    if !valid(json) {
+    if !valid(json_text) {
         return 5;
     }
-    let yaml = Settings.from_yaml(json.to_yaml()) handle error {
+    let yaml_text = yaml.decode<Settings>(yaml.encode(json_text)) handle error {
         return 6;
     };
-    if !valid(yaml) || !valid(settings) {
+    if !valid(yaml_text) || !valid(settings) {
         return 7;
     }
     // The same byte-key contract supports ordinary source operations.
@@ -117,13 +121,13 @@ fn main() -> i64 {
     if unique.len() != 1 || !unique.contains(key) {
         return 11;
     }
-    let blobs = wire.from_json<Vec<bytes>>("[[0,255],[1]]") handle error {
+    let blobs = json.decode<Vec<bytes>>("[\"AP8=\",\"AQ==\"]") handle error {
         return 12;
     };
     if blobs[0][1] != 255 || blobs[1][0] != 1 {
         return 13;
     }
-    let copied = wire.decode<Vec<bytes>>(wire.encode(blobs));
+    let copied = cbor.decode<Vec<bytes>>(cbor.encode(blobs)).expect("decode");
     if copied[0] != blobs[0] {
         return 14;
     }

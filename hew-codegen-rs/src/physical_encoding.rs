@@ -188,15 +188,56 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         result: Option<StorageId>,
         result_abi: &PhysicalExternResultAbi,
     ) -> CodegenResult<()> {
+        let destination = result
+            .map(|id| {
+                let layout = &self.storage(id)?.layout;
+                Ok::<_, CodegenError>(ForeignResult {
+                    destination: self.slots[id.0 as usize],
+                    storage: llvm_type(self.ctx, &layout.repr)?,
+                    align: layout.align,
+                })
+            })
+            .transpose()?;
+        for transfer in transfers {
+            if let ArgumentTransfer::Move(source) = transfer {
+                self.clear_owned(*source)?;
+            }
+        }
+        self.value_emitter()
+            .call_foreign(symbol, values, destination, result_abi)?;
+        if let Some(result) = result {
+            // Mark the result initialized through the ordinary storage
+            // contract, after the foreign function has written it.
+            self.store(result, self.load(result, "extern.result")?)?;
+        }
+        Ok(())
+    }
+}
+
+/// Where a foreign call's result lands: aligned storage of one value.
+pub(super) struct ForeignResult<'ctx> {
+    pub destination: PointerValue<'ctx>,
+    pub storage: BasicTypeEnum<'ctx>,
+    pub align: u32,
+}
+
+impl<'ctx> ValueEmitter<'_, 'ctx> {
+    /// Declare and call a C symbol under the target-classified result ABI,
+    /// writing its result to `result`. This is the one realization of the
+    /// extern call ABI, shared by direct calls and offloaded call thunks.
+    pub(super) fn call_foreign(
+        &self,
+        symbol: &str,
+        values: &[BasicValueEnum<'ctx>],
+        result: Option<ForeignResult<'ctx>>,
+        result_abi: &PhysicalExternResultAbi,
+    ) -> CodegenResult<()> {
         let mut parameters = values
             .iter()
             .map(|value| value.get_type().into())
             .collect::<Vec<_>>();
-        let storage_type = result
-            .map(|id| llvm_type(self.ctx, &self.storage(id)?.layout.repr))
-            .transpose()?;
         let return_type = match result_abi {
-            PhysicalExternResultAbi::Direct => storage_type,
+            PhysicalExternResultAbi::Direct => result.as_ref().map(|result| result.storage),
             PhysicalExternResultAbi::Coerce(repr) => Some(llvm_type(self.ctx, repr)?),
             PhysicalExternResultAbi::Indirect => {
                 parameters.insert(0, self.ctx.ptr_type(AddressSpace::default()).into());
@@ -208,61 +249,54 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             |ty| ty.fn_type(&parameters, false),
         );
         let function = get_or_declare_external(self.llvm, symbol, signature)?;
-        let indirect_result = if *result_abi == PhysicalExternResultAbi::Indirect {
-            let result = result.ok_or_else(|| {
-                CodegenError::FailClosed("indirect extern result lacks storage".into())
-            })?;
-            let sret = self.ctx.create_type_attribute(
-                Attribute::get_named_enum_kind_id("sret"),
-                storage_type
-                    .expect("indirect result storage")
-                    .as_any_type_enum(),
-            );
-            let align = self.ctx.create_enum_attribute(
-                Attribute::get_named_enum_kind_id("align"),
-                u64::from(self.storage(result)?.layout.align),
-            );
-            function.add_attribute(AttributeLoc::Param(0), sret);
-            function.add_attribute(AttributeLoc::Param(0), align);
-            Some((result, sret, align))
-        } else {
-            None
-        };
-        for transfer in transfers {
-            if let ArgumentTransfer::Move(source) = transfer {
-                self.clear_owned(*source)?;
-            }
-        }
         let mut arguments = values.iter().copied().map(Into::into).collect::<Vec<_>>();
-        if let Some((result, sret, align)) = indirect_result {
-            arguments.insert(0, self.slots[result.0 as usize].into());
-            let call = self
-                .builder
-                .build_call(function, &arguments, "extern.call")
-                .llvm_ctx("emit indirect extern result call")?;
-            call.add_attribute(AttributeLoc::Param(0), sret);
-            call.add_attribute(AttributeLoc::Param(0), align);
-            // Mark the result initialized through the same storage contract
-            // as a direct result, after the foreign function has written it.
-            self.store(result, self.load(result, "extern.result")?)?;
-        } else if let Some(result) = result {
-            let mut value = self.runtime_call_value(function, &arguments, "extern.result")?;
-            if matches!(result_abi, PhysicalExternResultAbi::Coerce(_)) {
+        let call_value = |arguments: &[BasicMetadataValueEnum<'ctx>]| {
+            self.builder
+                .build_call(function, arguments, "extern.result")
+                .llvm_ctx("emit extern call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("extern call returned no value".into()))
+        };
+        match (result, result_abi) {
+            (Some(result), PhysicalExternResultAbi::Indirect) => {
+                let sret = self.ctx.create_type_attribute(
+                    Attribute::get_named_enum_kind_id("sret"),
+                    result.storage.as_any_type_enum(),
+                );
+                let align = self.ctx.create_enum_attribute(
+                    Attribute::get_named_enum_kind_id("align"),
+                    u64::from(result.align),
+                );
+                function.add_attribute(AttributeLoc::Param(0), sret);
+                function.add_attribute(AttributeLoc::Param(0), align);
+                arguments.insert(0, result.destination.into());
+                let call = self
+                    .builder
+                    .build_call(function, &arguments, "extern.call")
+                    .llvm_ctx("emit indirect extern result call")?;
+                call.add_attribute(AttributeLoc::Param(0), sret);
+                call.add_attribute(AttributeLoc::Param(0), align);
+            }
+            (None, PhysicalExternResultAbi::Indirect) => {
+                return Err(CodegenError::FailClosed(
+                    "indirect extern result lacks storage".into(),
+                ));
+            }
+            (Some(result), PhysicalExternResultAbi::Coerce(_)) => {
+                let value = call_value(&arguments)?;
                 // The ABI carrier may include tail padding absent from storage
                 // (AAPCS64's two integer registers for a 12-byte record), or vice
                 // versa. Allocate enough space and alignment for both views.
-                let storage = storage_type.expect("result storage");
                 let data = TargetData::create(&self.module.target.data_layout);
-                let (storage_size, storage_align) = measure_layout(&data, storage);
+                let (storage_size, storage_align) = measure_layout(&data, result.storage);
                 let (carrier_size, carrier_align) = measure_layout(&data, value.get_type());
                 let scratch_type = if storage_size >= carrier_size {
-                    storage
+                    result.storage
                 } else {
                     value.get_type()
                 };
-                let scratch = self
-                    .value_emitter()
-                    .entry_scratch(scratch_type, "extern.result.slot")?;
+                let scratch = self.entry_scratch(scratch_type, "extern.result.slot")?;
                 scratch
                     .as_instruction()
                     .expect("entry allocation")
@@ -271,18 +305,31 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.builder
                     .build_store(scratch, value)
                     .llvm_ctx("store extern result register carrier")?;
-                value = self
+                let value = self
                     .builder
-                    .build_load(
-                        storage_type.expect("result storage"),
-                        scratch,
-                        "extern.aggregate",
-                    )
+                    .build_load(result.storage, scratch, "extern.aggregate")
                     .llvm_ctx("load extern aggregate result")?;
+                self.builder
+                    .build_store(result.destination, value)
+                    .llvm_ctx("store extern aggregate result")?;
             }
-            self.store(result, value)?;
-        } else {
-            self.runtime_call_void(function, &arguments, "extern.call")?;
+            (Some(result), PhysicalExternResultAbi::Direct) => {
+                let value = call_value(&arguments)?;
+                self.builder
+                    .build_store(result.destination, value)
+                    .llvm_ctx("store extern result")?;
+            }
+            (None, _) => {
+                let call = self
+                    .builder
+                    .build_call(function, &arguments, "")
+                    .llvm_ctx("emit extern call")?;
+                if call.try_as_basic_value().basic().is_some() {
+                    return Err(CodegenError::FailClosed(
+                        "unit extern call unexpectedly returned a value".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }

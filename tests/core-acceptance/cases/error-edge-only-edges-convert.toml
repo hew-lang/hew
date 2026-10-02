@@ -1,0 +1,13 @@
+[[case]]
+id = "error-edge-only-edges-convert"
+intent = "A constructed `.Err(low)` keeps its exact type: only failure edges apply `From`."
+source = "cases/error-edge-only-edges-convert.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 38
+column = 10
+message = "expected `High`, found `Low`"

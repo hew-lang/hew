@@ -1,12 +1,5 @@
 # Generated from #[runtime] stdlib declarations; do not edit.
-non-declarable = [
-  "hew_tcp_attach_native",
-]
-
-non-declarable-stdlib = [
-  "hew_tls_attach_native",
-  "hew_ws_attach_native",
-]
+non-declarable-stdlib = ["hew_tls_attach_native", "hew_ws_attach_native"]
 
 stable = [
   "hew_bytes_contains",
@@ -43,14 +36,6 @@ discharge-depth = "none"
 symbol = "hew_bytes_len"
 result = "none"
 params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_tcp_attach_native"
-result = "none"
-params = ["consume", "borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.Connection", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 

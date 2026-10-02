@@ -1,5 +1,5 @@
 trait Show {
-    fn show(val: Self) -> i64;
+    fn show(self) -> i64;
 }
 
 type Holder {
@@ -7,8 +7,8 @@ type Holder {
 }
 
 impl Show for Holder {
-    fn show(h: Holder) -> i64 {
-        h.r.get()
+    fn show(self) -> i64 {
+        self.r.get()
     }
 }
 

@@ -33,7 +33,18 @@ pub struct TraitImplMethodEntry {
     /// `impl<U> Show for Wrapper<U>`). Empty for non-generic impls.
     /// Order matches the impl-method's `HirFn::type_params` prefix.
     pub impl_type_params: Vec<hew_types::ParamHead>,
+    /// The impl target's type arguments as written; a generic impl binds
+    /// `impl_type_params` by matching them against the concrete `Self`.
+    pub self_type_args: Vec<hew_types::ResolvedTy>,
+    /// The implemented trait's arguments as the impl writes them; they tell
+    /// `impl From<Low> for E` from `impl From<High> for E`.
+    pub trait_args: Vec<hew_types::ResolvedTy>,
 }
+
+/// Every impl method that can answer one `(trait, Self, method)` key, in
+/// declaration order. More than one exists only for a generic trait the type
+/// implements at several argument lists.
+pub type TraitImplIndex = HashMap<TraitImplKey, Vec<TraitImplMethodEntry>>;
 
 /// Key into the static-dispatch registry. Every field is structured —
 /// `declaring_trait` and `method` come straight from declaration/call-site
@@ -53,14 +64,18 @@ pub struct TraitImplKey {
 /// dispatch.
 ///
 /// A concrete specialised impl (empty `type_params`, non-empty
-/// `self_type_concrete_args`) keys on its concrete args, so
+/// `self_type_args`) keys on its concrete args, so
 /// `impl Describe for Wrapper<i64>` and `impl Describe for Wrapper<string>`
 /// never collide in the index.
+///
+/// A structural witness files the method that satisfies a trait method,
+/// unless a nominal impl already provides it.
 #[must_use]
 pub fn build_trait_impl_method_index(
     items: &[HirItem],
-) -> HashMap<TraitImplKey, TraitImplMethodEntry> {
-    let mut index: HashMap<TraitImplKey, TraitImplMethodEntry> = HashMap::new();
+    structural_witnesses: &[hew_types::StructuralWitness],
+) -> TraitImplIndex {
+    let mut index = TraitImplIndex::new();
     let functions: HashMap<ItemId, _> = items
         .iter()
         .filter_map(|item| match item {
@@ -81,7 +96,7 @@ pub fn build_trait_impl_method_index(
         let self_type = NominalInstance {
             nominal: *nominal,
             args: if block.type_params.is_empty() {
-                block.self_type_concrete_args.clone()
+                block.self_type_args.clone()
             } else {
                 Vec::new()
             },
@@ -112,15 +127,48 @@ pub fn build_trait_impl_method_index(
                 declaring_trait: *declaring_trait,
                 self_type: self_type.clone(),
             };
-            index.insert(
-                key,
-                TraitImplMethodEntry {
-                    item: *method_item,
-                    method: *impl_method_id,
-                    method_symbol: function.name.clone(),
-                    impl_type_params: block.type_params.clone(),
-                },
-            );
+            index.entry(key).or_default().push(TraitImplMethodEntry {
+                item: *method_item,
+                method: *impl_method_id,
+                method_symbol: function.name.clone(),
+                impl_type_params: block.type_params.clone(),
+                self_type_args: block.self_type_args.clone(),
+                trait_args: block.trait_args.clone(),
+            });
+        }
+    }
+    for item in items {
+        // The filler is the method the checker matched: an inherent one, or
+        // another trait's impl method of the same signature.
+        let HirItem::Impl(block) = item else { continue };
+        for (method_id, method_item) in block.method_ids.iter().zip(&block.method_item_ids) {
+            let (Some(method_id), Some(function)) = (method_id, functions.get(method_item)) else {
+                continue;
+            };
+            for witness in structural_witnesses
+                .iter()
+                .filter(|witness| witness.inherent == *method_id)
+            {
+                let key = TraitImplKey {
+                    declaring_trait: witness.declaring_trait,
+                    self_type: NominalInstance {
+                        nominal: witness.self_type,
+                        args: Vec::new(),
+                    },
+                    method: witness.method,
+                };
+                let entries = index.entry(key).or_default();
+                if entries.is_empty() {
+                    entries.push(TraitImplMethodEntry {
+                        item: *method_item,
+                        method: *method_id,
+                        method_symbol: function.name.clone(),
+                        impl_type_params: block.type_params.clone(),
+                        self_type_args: block.self_type_args.clone(),
+                        trait_args: Vec::new(),
+                    });
+                }
+            }
         }
     }
     index
@@ -150,31 +198,43 @@ pub fn build_direct_call_symbol_index(items: &[HirItem]) -> HashMap<DefId, Strin
 /// Resolve canonical trait, nominal-instance, and method identities against
 /// the static-dispatch index. Concrete specialisations are tried first; the
 /// only permitted fallback is the exact same nominal's generic impl entry.
+///
+/// Within a key, a sole entry answers: the checker proved the bound the call
+/// relies on. Several entries are impls of one generic trait at different
+/// arguments, and `trait_args` (the call's, substituted) must name exactly
+/// one; otherwise the lookup fails closed.
 #[must_use]
 pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
-    index: &'a HashMap<TraitImplKey, TraitImplMethodEntry, S>,
+    index: &'a HashMap<TraitImplKey, Vec<TraitImplMethodEntry>, S>,
     declaring_trait: &DefId,
     self_type: &NominalInstance,
+    trait_args: &[hew_types::ResolvedTy],
     method: &DefId,
 ) -> Option<&'a TraitImplMethodEntry> {
-    let key = TraitImplKey {
-        declaring_trait: *declaring_trait,
-        self_type: self_type.clone(),
-        method: *method,
+    let select = |self_type: NominalInstance| {
+        let entries = index.get(&TraitImplKey {
+            declaring_trait: *declaring_trait,
+            self_type,
+            method: *method,
+        })?;
+        if let [only] = entries.as_slice() {
+            return Some(only);
+        }
+        let mut matching = entries
+            .iter()
+            .filter(|entry| entry.trait_args == trait_args);
+        let selected = matching.next()?;
+        matching.next().is_none().then_some(selected)
     };
-    if let Some(entry) = index.get(&key) {
+    if let Some(entry) = select(self_type.clone()) {
         return Some(entry);
     }
     if self_type.args.is_empty() {
         return None;
     }
-    index.get(&TraitImplKey {
-        declaring_trait: *declaring_trait,
-        self_type: NominalInstance {
-            nominal: self_type.nominal,
-            args: Vec::new(),
-        },
-        method: *method,
+    select(NominalInstance {
+        nominal: self_type.nominal,
+        args: Vec::new(),
     })
 }
 
@@ -190,6 +250,8 @@ mod tests {
             method,
             method_symbol: symbol.to_string(),
             impl_type_params: Vec::new(),
+            self_type_args: Vec::new(),
+            trait_args: Vec::new(),
         }
     }
 
@@ -214,7 +276,7 @@ mod tests {
                 self_type: alpha_thing.clone(),
                 method: alpha_method,
             },
-            entry(alpha_method, "Thing::show__alpha"),
+            vec![entry(alpha_method, "Thing::show__alpha")],
         );
         index.insert(
             TraitImplKey {
@@ -222,23 +284,27 @@ mod tests {
                 self_type: beta_thing.clone(),
                 method: beta_method,
             },
-            entry(beta_method, "Thing::show__beta"),
+            vec![entry(beta_method, "Thing::show__beta")],
         );
 
         assert_eq!(
-            lookup_trait_impl_entry_by_id(&index, &alpha_trait, &alpha_thing, &alpha_method)
+            lookup_trait_impl_entry_by_id(&index, &alpha_trait, &alpha_thing, &[], &alpha_method)
                 .map(|entry| entry.method_symbol.as_str()),
             Some("Thing::show__alpha")
         );
         assert_eq!(
-            lookup_trait_impl_entry_by_id(&index, &beta_trait, &beta_thing, &beta_method)
+            lookup_trait_impl_entry_by_id(&index, &beta_trait, &beta_thing, &[], &beta_method)
                 .map(|entry| entry.method_symbol.as_str()),
             Some("Thing::show__beta")
         );
-        assert!(
-            lookup_trait_impl_entry_by_id(&index, &alpha_trait, &beta_thing, &alpha_method)
-                .is_none()
-        );
+        assert!(lookup_trait_impl_entry_by_id(
+            &index,
+            &alpha_trait,
+            &beta_thing,
+            &[],
+            &alpha_method
+        )
+        .is_none());
     }
 
     #[test]
@@ -264,7 +330,7 @@ mod tests {
                 self_type: generic,
                 method: method_id,
             },
-            entry(method_id, "Box::show__generic"),
+            vec![entry(method_id, "Box::show__generic")],
         );
         index.insert(
             TraitImplKey {
@@ -272,16 +338,16 @@ mod tests {
                 self_type: i64_instance.clone(),
                 method: method_id,
             },
-            entry(method_id, "Box::show__i64"),
+            vec![entry(method_id, "Box::show__i64")],
         );
 
         assert_eq!(
-            lookup_trait_impl_entry_by_id(&index, &trait_id, &i64_instance, &method_id)
+            lookup_trait_impl_entry_by_id(&index, &trait_id, &i64_instance, &[], &method_id)
                 .map(|entry| entry.method_symbol.as_str()),
             Some("Box::show__i64")
         );
         assert_eq!(
-            lookup_trait_impl_entry_by_id(&index, &trait_id, &string_instance, &method_id)
+            lookup_trait_impl_entry_by_id(&index, &trait_id, &string_instance, &[], &method_id)
                 .map(|entry| entry.method_symbol.as_str()),
             Some("Box::show__generic")
         );
@@ -314,5 +380,40 @@ mod tests {
                 .declaration(),
             shadow
         );
+    }
+
+    #[test]
+    fn impls_of_one_generic_trait_are_told_apart_by_their_arguments() {
+        let from = DefId::for_test("std.From");
+        let from_method = DefId::for_test("std.From::from");
+        let app_error = NominalInstance {
+            nominal: NominalId::for_test("app.AppError"),
+            args: Vec::new(),
+        };
+        let low = ResolvedTy::named_for_test("app.LowError", Vec::new());
+        let io = ResolvedTy::named_for_test("app.IoError", Vec::new());
+        let at = |args: Vec<ResolvedTy>, symbol: &str| TraitImplMethodEntry {
+            trait_args: args,
+            ..entry(from_method, symbol)
+        };
+        let mut index = HashMap::new();
+        index.insert(
+            TraitImplKey {
+                declaring_trait: from,
+                self_type: app_error.clone(),
+                method: from_method,
+            },
+            vec![
+                at(vec![low.clone()], "AppError::from__low"),
+                at(vec![io.clone()], "AppError::from__io"),
+            ],
+        );
+        let select = |args: &[ResolvedTy]| {
+            lookup_trait_impl_entry_by_id(&index, &from, &app_error, args, &from_method)
+                .map(|entry| entry.method_symbol.as_str())
+        };
+        assert_eq!(select(&[low]), Some("AppError::from__low"));
+        assert_eq!(select(&[io]), Some("AppError::from__io"));
+        assert_eq!(select(&[]), None, "unknown arguments cannot choose an impl");
     }
 }

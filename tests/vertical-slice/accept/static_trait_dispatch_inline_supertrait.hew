@@ -1,5 +1,5 @@
 trait Super {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 trait Sub: Super {
@@ -10,7 +10,7 @@ type Widget {
 }
 
 impl Super for Widget {
-    fn name(w: Widget) -> string {
+    fn name(self) -> string {
         "inline"
     }
 }

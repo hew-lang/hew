@@ -129,9 +129,44 @@ impl Checker {
         })
     }
 
+    /// The member `method` of the actor a head names, of declaration `kind`
+    /// (a `receive fn` or a private `fn`).
+    pub(in crate::check) fn actor_member(
+        &self,
+        head: crate::TypeHead,
+        method: &str,
+        kind: crate::DeclarationKind,
+    ) -> Option<crate::DefId> {
+        let actor = head.nominal()?.declaration();
+        self.defs
+            .member_of_kind(actor, Symbol::intern(method), kind)
+    }
+
     /// This compilation's type definitions, read by declaration.
     pub(in crate::check) fn type_def_view(&self) -> crate::check::TypeDefView<'_> {
         crate::check::TypeDefView::new(&self.defs, &self.type_defs)
+    }
+
+    /// The definition a type head names: a nominal's or actor's own, a
+    /// builtin's std declaration.
+    pub(in crate::check) fn head_type_def(&self, head: crate::TypeHead) -> Option<&TypeDef> {
+        match head {
+            // TRANSITION(A1c4): WHY the module registry's signature mirror
+            // still writes spellings no declaration was found for. WHEN its
+            // signatures resolve through `Scope`, `TypeHead::Unresolved` and
+            // this arm are deleted. WHAT: the mirror reads the checker's
+            // resolved signatures.
+            crate::TypeHead::Unresolved(spelling) => self.type_def_at(spelling.as_str()),
+            _ => self.type_defs.get(&head.declaration(&self.defs)?),
+        }
+    }
+
+    /// The definition the head of a named type names.
+    pub(in crate::check) fn ty_type_def(&self, ty: &Ty) -> Option<&TypeDef> {
+        match ty {
+            Ty::Named { head, .. } => self.head_type_def(*head),
+            _ => None,
+        }
     }
 
     /// The declaration a registry key spells: the current module's
@@ -285,26 +320,18 @@ impl Checker {
         }
     }
 
-    /// The trait declaration a spelling names.
-    ///
-    /// TRANSITION(A1 commit 4): see [`Checker::trait_def_keys`].
-    pub(in crate::check) fn trait_key_id(&self, key: &str) -> Option<crate::DefId> {
-        self.trait_def_keys.get(key).copied()
+    /// The trait declaration `id` names, when registered.
+    pub(in crate::check) fn trait_info(&self, id: crate::DefId) -> Option<&TraitInfo> {
+        self.trait_defs.get(&id)
     }
 
-    /// The trait a spelling names.
-    pub(in crate::check) fn trait_def_at(&self, key: &str) -> Option<&TraitInfo> {
-        self.trait_defs.get(&self.trait_key_id(key)?)
-    }
-
-    /// Whether a spelling names a trait.
-    pub(in crate::check) fn has_trait_def(&self, key: &str) -> bool {
-        self.trait_def_at(key).is_some()
-    }
-
-    /// File `info` under the trait declaration at `path`, reachable by `key`.
-    /// A path that names no declaration is an internal error, never dropped.
-    pub(in crate::check) fn insert_trait_def(&mut self, key: &str, path: &str, info: TraitInfo) {
+    /// File `info` under the trait declaration at `path`. A path that names
+    /// no declaration is an internal error, never dropped.
+    pub(in crate::check) fn insert_trait_def(
+        &mut self,
+        path: &str,
+        info: TraitInfo,
+    ) -> Option<crate::DefId> {
         // A module trait a route registers before the module's declarations
         // are minted gets a sourceless row its declaration adopts.
         let declaration = self.lookup_declaration(path).or_else(|| {
@@ -313,48 +340,21 @@ impl Checker {
                     .mint_sourceless(path, crate::DeclarationKind::Trait)
             })
         });
-        match declaration {
-            Some(declaration) => {
-                self.trait_def_keys.insert(key.to_string(), declaration);
-                self.trait_def_keys
-                    .insert(self.defs.path(declaration).to_string(), declaration);
-                self.trait_defs.insert(declaration, info);
-            }
-            None => self.errors.push(crate::error::TypeError::new(
+        if let Some(declaration) = declaration {
+            self.trait_defs.insert(declaration, info);
+        } else {
+            self.errors.push(crate::error::TypeError::new(
                 crate::error::TypeErrorKind::InvalidOperation,
                 0..0,
                 format!("internal: trait `{path}` names no declaration"),
-            )),
+            ));
         }
+        declaration
     }
 
-    /// Make `key` spell the trait `source` spells.
-    pub(in crate::check) fn rebind_trait_def(&mut self, key: &str, source: &str) {
-        if let Some(declaration) = self.trait_key_id(source) {
-            self.trait_def_keys.insert(key.to_string(), declaration);
-        }
-    }
-
-    /// Make `key` spell the trait `source` spells, unless `key` already
-    /// names one.
-    pub(in crate::check) fn alias_trait_def(&mut self, key: &str, source: &str) {
-        if let Some(declaration) = self.trait_key_id(source) {
-            self.trait_def_keys
-                .entry(key.to_string())
-                .or_insert(declaration);
-        }
-    }
-
-    /// The super-trait spellings of the trait a spelling names.
-    pub(in crate::check) fn trait_supers(&self, key: &str) -> Option<&Vec<String>> {
-        self.trait_super.get(&self.trait_key_id(key)?)
-    }
-
-    /// Record the super-traits of the trait a spelling names.
-    pub(in crate::check) fn set_trait_supers(&mut self, key: &str, supers: Vec<String>) {
-        if let Some(declaration) = self.trait_key_id(key) {
-            self.trait_super.insert(declaration, supers);
-        }
+    /// The direct super-traits of trait `id`.
+    pub(in crate::check) fn trait_supers(&self, id: crate::DefId) -> &[crate::DefId] {
+        self.trait_super.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// Look up a type definition by registry key.
@@ -470,7 +470,7 @@ impl Checker {
     /// declaration authored in the current scope wins before an import, and a
     /// bare import resolves only when that exact binding published one source
     /// identity. There is deliberately no scan over globally loaded exports.
-    pub(in crate::check) fn resolve_supervisor_child_type(&self, raw: &str) -> Option<String> {
+    pub(in crate::check) fn resolve_supervisor_child_type(&mut self, raw: &str) -> Option<String> {
         if let Some((module_short, type_name)) = raw.split_once('.') {
             return self
                 .resolve_module_type(module_short, type_name)
@@ -518,19 +518,23 @@ impl Checker {
         }
 
         if let Some(identity) = self.published_bare_type_qualified(raw) {
-            if let Some(owner) = self.unqualified_to_module.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                raw.to_string(),
-            )) {
-                self.mark_module_owner_bindings_used(owner);
+            if let Some(owner) = self
+                .unqualified_to_module
+                .get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    raw.to_string(),
+                ))
+                .cloned()
+            {
+                self.note_path_use(&owner);
             }
             return Some(identity);
         }
         None
     }
 
-    pub(in crate::check) fn canonical_supervisor_child_type(&self, raw: &str) -> String {
+    pub(in crate::check) fn canonical_supervisor_child_type(&mut self, raw: &str) -> String {
         self.resolve_supervisor_child_type(raw)
             .unwrap_or_else(|| raw.to_string())
     }
@@ -582,18 +586,6 @@ impl Checker {
             || bare_name.to_string(),
             |module| format!("{module}.{bare_name}"),
         )
-    }
-
-    /// Resolve a bare actor reference to its registered checker identity.
-    ///
-    /// Resolution order (local-first, mirroring `per-module-type-identity`):
-    /// 1. the current module's own actor (`{current_full_path}.{name}`)
-    /// 2. a root/flat actor registered under the bare name
-    /// 3. a named-import binding (`unqualified_to_module`)
-    /// 4. the modules exporting an actor of that name: exactly one resolves
-    ///    to it; two or more is `Ambiguous` (never silent first-wins).
-    pub(in crate::check) fn resolve_bare_actor_identity(&self, name: &str) -> BareActorResolution {
-        self.resolve_bare_declaration_identity(name, &[TypeDefKind::Actor])
     }
 
     /// Resolve a bare `spawn` target. A supervisor is spawned exactly as an

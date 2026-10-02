@@ -107,14 +107,14 @@ trait ConnMethods {
 }
 
 impl ConnMethods for Conn {
-    fn send_text(conn: Conn, msg: string) -> i64 {
+    fn send_text(self, msg: string) -> i64 {
         unsafe {
-            hew_ws_send_text(conn, msg) as i64
+            hew_ws_send_text(self, msg) as i64
         }
     }
-    fn try_send_text(conn: Conn, msg: string) -> Result<(), net.NetError> {
+    fn try_send_text(self, msg: string) -> Result<(), net.NetError> {
         let n: i64 = unsafe {
-            hew_ws_send_text(conn, msg) as i64
+            hew_ws_send_text(self, msg) as i64
         };
         if n < 0 {
             .Err(net.net_error_from_errno(0))
@@ -122,15 +122,15 @@ impl ConnMethods for Conn {
             .Ok(())
         } // WebSocket errors carry no OS errno
     }
-    fn recv(conn: Conn) -> Message {
+    fn recv(self) -> Message {
         unsafe {
-            hew_ws_recv(conn)
+            hew_ws_recv(self)
         }
     }
-    fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, net.NetError> {
+    fn recv_timeout(self, deadline_ms: i64) -> Result<Message, net.NetError> {
         let deadline = checked_recv_deadline(deadline_ms)?;
         let msg = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI, range-checked above
-            hew_ws_recv_timeout(conn, deadline as i32)
+            hew_ws_recv_timeout(self, deadline as i32)
         };
         let valid: bool = unsafe {
             hew_ws_message_is_valid(msg)
@@ -149,8 +149,8 @@ impl ConnMethods for Conn {
     /// Compiler-lowered active-mode attach.
     ///
     /// The runtime delivers owned messages using the selected actor handlers.
-    #[runtime(family = WebSocketAttachLocal, symbol = hew_ws_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_message, close = on_close, result = discard_status)]
-    fn attach(conn: Conn, handler: WebSocketHandler) {}
+    #[runtime(family = WebSocketAttachLocal, symbol = hew_ws_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_message, close = on_close)]
+    fn attach(self, handler: WebSocketHandler) {}
 }
 
 impl Conn {
@@ -180,14 +180,14 @@ trait MessageMethods {
 }
 
 impl MessageMethods for Message {
-    fn msg_type(msg: Message) -> i32 { // INTERNAL-ABI: opaque frame-type enum; planned enum migration
+    fn msg_type(self) -> i32 { // INTERNAL-ABI: opaque frame-type enum; planned enum migration
         unsafe {
-            hew_ws_message_type(msg)
+            hew_ws_message_type(self)
         }
     }
-    fn text(msg: Message) -> string {
+    fn text(self) -> string {
         unsafe {
-            hew_ws_message_text(msg)
+            hew_ws_message_text(self)
         }
     }
 }
@@ -223,14 +223,14 @@ trait ServerMethods {
 }
 
 impl ServerMethods for Server {
-    fn accept(server: Server) -> Conn {
+    fn accept(self) -> Conn {
         unsafe {
-            hew_ws_server_accept(server)
+            hew_ws_server_accept(self)
         }
     }
-    fn port(server: Server) -> i64 {
+    fn port(self) -> i64 {
         unsafe {
-            hew_ws_server_port(server) as i64
+            hew_ws_server_port(self) as i64
         }
     }
 }

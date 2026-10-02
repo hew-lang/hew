@@ -1,0 +1,14 @@
+[[case]]
+id = "example-net-supervised_listener"
+intent = "A supervised acceptor gives each admitted connection its own session actor, stays responsive on one scheduler worker, closes overload, cancels its blocked accept on shutdown, and leaves established sessions serving until their peers finish."
+source = "../../examples/net/supervised_listener.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_IO_LEAK_CHECK = "1"
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "session echoed\nscheduler live\nsupervisor stopped\nsessions outlive the acceptor\nsessions finished\n"
+exit = 0

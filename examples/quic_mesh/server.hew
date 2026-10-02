@@ -9,7 +9,7 @@
 // Then: hew run examples/quic_mesh/client.hew
 #[wire]
 enum CounterMsg {
-    Increment(i64);
+    Increment(i64) @0;
 }
 
 actor Counter {

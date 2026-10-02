@@ -2719,8 +2719,8 @@ mod tests {
         let inner = WouldBlockReader {
             cancel: Arc::clone(&cancel),
         };
-        let mut reader = DeadlineReader::new(inner, Duration::from_millis(100));
         let started = Instant::now();
+        let mut reader = DeadlineReader::new(inner, Duration::from_millis(100));
         let mut buf = [0u8; 16];
         // Loop because the WouldBlock errors propagate; we want to see TimedOut
         // eventually within the deadline.

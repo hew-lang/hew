@@ -1,6 +1,8 @@
 // Validation: a `bytes` field round-trips through the CBOR body codec as a CBOR
 // byte string, preserving length and every element (including the high byte
 // 255). A mismatch returns a distinct code per assertion.
+import std.encoding.cbor;
+
 #[wire]
 type Blob {
     data: bytes @1;
@@ -12,7 +14,7 @@ fn main() -> i64 {
     b.push(2);
     b.push(255);
     let v = Blob { data: b };
-    let back = Blob.decode(v.encode());
+    let back = cbor.decode<Blob>(cbor.encode(v)).expect("decode");
     let d = back.data;
     if d.len() != 3 {
         return 1;

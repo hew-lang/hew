@@ -35,28 +35,6 @@ mod runtime_symbol_dispatch;
 mod tests;
 
 impl Checker {
-    /// Return the checker-minted trait declaration IDs for a call-site trait
-    /// spelling. Import aliases are resolved through their full source owner;
-    /// short registry keys remain compatibility-only and are never used to mint
-    /// a fresh ID here.
-    pub(in crate::check) fn trait_method_call_target_ids(
-        &self,
-        trait_name: &str,
-        method_name: &str,
-    ) -> Option<(crate::DefId, crate::DefId)> {
-        self.trait_method_ids_by_binding
-            .get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                trait_name.to_string(),
-                method_name.to_string(),
-            ))
-            .copied()
-            .or_else(|| {
-                self.trait_method_ids_for_key(&self.trait_ref_lookup_key(trait_name), method_name)
-            })
-    }
-
     /// The trait and method declaration IDs for `method_name` declared by the
     /// trait registered under `trait_defs` key `key`.
     pub(in crate::check) fn trait_method_ids_for_key(
@@ -80,7 +58,7 @@ impl Checker {
 
 /// Peel the `Ok` payload type out of a `Result<T, E>` `Ty`. Returns `None` for a
 /// non-`Result` type or a malformed (wrong-arity) one. Used to recover the wire
-/// type from a `from_json`/`from_yaml` `Result<Self, string>` return so the codec
+/// type from a `decode` `Result<T, wire.DecodeError>` return so the codec
 /// rewrite carries the produced wire type, not the `Result` wrapper.
 fn result_ok_payload(ty: &Ty) -> Option<Ty> {
     if let Ty::Named {

@@ -1,0 +1,13 @@
+[[case]]
+id = "spawn-undefined-actor-reject"
+intent = "Spawning a name that resolves to no actor is an ordinary unresolved-name error at the target, with a suggestion, not an internal compiler error (#3623)."
+source = "cases/spawn-undefined-actor-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 6
+column = 14
+message = "undefined actor `Countr`"

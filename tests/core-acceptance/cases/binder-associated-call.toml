@@ -1,0 +1,11 @@
+[[case]]
+id = "binder-associated-call"
+intent = "`T.make(n)` under `T: Make` calls the impl each instantiation of `T` provides, including a generic impl, and a trait default builds through `Self.make`."
+source = "cases/binder-associated-call.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n1007\n40\n14\n3014\n"
+exit = 0

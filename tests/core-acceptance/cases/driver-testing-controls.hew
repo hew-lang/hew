@@ -6,7 +6,7 @@ actor Worker {
     }
 }
 
-fn send_ping(worker: Worker) -> () fails ActorError {
+fn send_ping(worker: Worker) fails ActorError {
     worker.ping()?;
 }
 

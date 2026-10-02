@@ -113,15 +113,16 @@ impl LowerCtx {
         // Generic impls (`impl<U> Describe for Wrapper<U>`, non-empty type_params)
         // are excluded: their method symbols stay bare (`"Wrapper::describe"`)
         // and monomorphisation suffixes them at instantiation time.
-        let self_type_concrete_args: Vec<hew_types::ResolvedTy> = if type_params.is_empty() {
-            target_type_args
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(|a| self.lower_type(a))
-                .collect()
+        let self_type_args: Vec<hew_types::ResolvedTy> = target_type_args
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|a| self.lower_type(a))
+            .collect();
+        let self_type_concrete_args: &[hew_types::ResolvedTy] = if type_params.is_empty() {
+            &self_type_args
         } else {
-            Vec::new()
+            &[]
         };
         // Symbol name for this impl's methods: mangled when the impl is a concrete
         // specialisation of a generic type, bare otherwise.
@@ -143,7 +144,7 @@ impl LowerCtx {
         } else {
             std::borrow::Cow::Owned(crate::monomorph::mangle(
                 base_symbol_self_name,
-                &self_type_concrete_args,
+                self_type_concrete_args,
             ))
         };
         // Blanket-impl guard: reject `impl<T> Trait for T` (target name is
@@ -441,7 +442,6 @@ impl LowerCtx {
                 &symbol,
                 span.clone(),
                 &type_params,
-                Some(&symbol_self_name),
                 Some(declaration),
             ) else {
                 continue;
@@ -580,7 +580,6 @@ impl LowerCtx {
                                     &symbol,
                                     span.clone(),
                                     &type_params,
-                                    Some(&symbol_self_name),
                                     synthetic_default_declaration,
                                 )
                             });
@@ -628,6 +627,12 @@ impl LowerCtx {
             .iter()
             .map(|alias| (alias.name.to_string(), self.lower_type(&alias.ty)))
             .collect();
+        let trait_args: Vec<ResolvedTy> = decl
+            .trait_bound
+            .iter()
+            .flat_map(|bound| bound.type_args.iter().flatten())
+            .map(|arg| self.lower_type(arg))
+            .collect();
 
         items.push(HirItem::Impl(crate::node::HirImplBlock {
             id: self.ids.item(),
@@ -636,7 +641,8 @@ impl LowerCtx {
             self_type_name: hir_impl_self_type_name,
             self_type: impl_self_nominal,
             type_params,
-            self_type_concrete_args,
+            self_type_args,
+            trait_args,
             type_aliases,
             method_names,
             method_declaring_traits,
@@ -654,7 +660,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> Option<HirFn> {
-        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None, None)
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
     }
 
     /// Lower an imported actor under its checker's current module and file scope.
@@ -696,19 +702,19 @@ impl LowerCtx {
             .map(|(module, _actor)| module)
     }
 
-    pub(super) fn qualify_imported_actor_method_id(&self, method_id: String) -> String {
-        let Some((actor, method)) = method_id.rsplit_once("::") else {
-            return method_id;
-        };
-        if actor.contains('.') {
-            return method_id;
-        }
-        self.imported_actor_rewrites
-            .as_ref()
-            .and_then(|rewrites| rewrites.get(actor))
-            .map_or(method_id.clone(), |qualified| {
-                format!("{qualified}::{method}")
-            })
+    /// The rendered path HIR actor nodes carry for a dispatched handler (a
+    /// lambda actor's `call` protocol row renders as the shared method id).
+    ///
+    /// TRANSITION(IDENT-B1): WHY HIR actor nodes still carry the handler's
+    /// rendered path. WHEN they carry the declaration, this render goes.
+    /// WHAT: HIR actor nodes keyed by handler id.
+    pub(super) fn actor_method_id(&self, method: hew_types::DefId) -> String {
+        self.defs.path(method).to_string()
+    }
+
+    /// Whether a dispatched handler is a lambda actor's `call` protocol.
+    pub(super) fn is_lambda_actor_method(&self, method: hew_types::DefId) -> bool {
+        self.defs.kind(method) == hew_types::DeclarationKind::RequestProtocol
     }
 
     /// Qualify a bare user-record type reference to `{module_short}.{name}` when
@@ -852,7 +858,6 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
         impl_type_params: &[hew_types::ParamHead],
-        impl_self_type_name: Option<&str>,
         known_declaration: Option<hew_types::DefId>,
     ) -> Option<HirFn> {
         // Use the stable ItemId pre-allocated during the first pass.
@@ -938,8 +943,7 @@ impl LowerCtx {
         // already carries the dual-return `(ret, Self)` tuple when this fires,
         // so the wrapped body below is what makes the emitted return type
         // match the ABI every call site was told about.
-        let bare_self_type_name = impl_self_type_name.map(Self::bare_impl_self_type_name);
-        let var_self_receiver = if Self::is_var_self_method_for_type(func, bare_self_type_name) {
+        let var_self_receiver = if Self::is_var_self_method(func) {
             params.first().cloned()
         } else {
             None
@@ -1191,7 +1195,16 @@ impl LowerCtx {
                     .all(|part| self.imported_signature_type_available(part, receiver))
                     && self.imported_signature_type_available(ret, receiver)
             }
-            ResolvedTy::TraitObject { .. } => false,
+            // A trait object names its traits by checked identity; its
+            // arguments and bindings must be available like any other type.
+            ResolvedTy::TraitObject { traits } => traits.iter().all(|bound| {
+                bound.trait_id.is_some()
+                    && bound
+                        .args
+                        .iter()
+                        .chain(bound.assoc_bindings.iter().map(|(_, ty)| ty))
+                        .all(|ty| self.imported_signature_type_available(ty, receiver))
+            }),
             _ => true,
         }
     }

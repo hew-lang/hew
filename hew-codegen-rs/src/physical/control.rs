@@ -22,7 +22,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 actor,
                 message,
                 policy,
-                deadline_ns,
                 sealed,
                 args,
                 result,
@@ -30,16 +29,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_actor_ask(
-                *actor,
-                *message,
-                *policy,
-                *deadline_ns,
-                *sealed,
-                args,
-                *result,
-                normal,
-                cancel,
-                unwind,
+                *actor, *message, *policy, *sealed, args, *result, normal, cancel, unwind,
             ),
             PhysicalTerminator::TaskSelect {
                 order,
@@ -86,6 +76,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 ..
             } => self.emit_native_io(*operation, args, *result, normal, cancel),
+            PhysicalTerminator::Offload {
+                function,
+                args,
+                result,
+                normal,
+                cancel,
+                ..
+            } => self.emit_offload(*function, args, *result, normal, cancel),
             PhysicalTerminator::Sleep {
                 duration,
                 normal,
@@ -127,7 +125,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalTerminator::DynCall {
                 receiver,
-                slot,
+                word,
                 method: _,
                 signature,
                 args,
@@ -136,7 +134,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind,
             } => self.emit_dyn_call(
                 *receiver,
-                *slot,
+                *word,
                 signature,
                 args,
                 *result,
@@ -222,19 +220,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind.as_ref(),
             ),
             PhysicalTerminator::WireCodec {
-                direction,
+                codec,
                 plan,
                 recipes,
-                text_result,
+                decode_result,
                 input,
                 result,
                 normal,
                 unwind,
             } => self.emit_wire_codec(
-                *direction,
+                *codec,
                 plan,
                 recipes,
-                *text_result,
+                decode_result.as_ref(),
                 *input,
                 *result,
                 normal,

@@ -146,7 +146,7 @@ fn height(nodes: Vec<i64>, NIL: i64) -> i64 {
     }
     // Compute height for each node bottom-up
     var heights: Vec<i64> = Vec.new();
-    for i in 0 .. count {
+    for i in 0..count {
         heights.push(0);
     }
     // Process nodes in reverse order (leaves first)

@@ -1,7 +1,7 @@
 // Hamming distance: count positions where characters differ
 fn hamming(a: string, b: string) -> i32 {
     var dist: i32 = 0;
-    for i in 0 .. a.len() {
+    for i in 0..a.len() {
         if a.char_at(i) != b.char_at(i) {
             dist = dist + 1;
         }

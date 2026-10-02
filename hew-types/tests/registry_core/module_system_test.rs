@@ -187,7 +187,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         }
     "#;
     let module_source = r"pub trait Describable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 pub type Label {
@@ -195,8 +195,8 @@ pub type Label {
 }
 
 impl Describable for Label {
-    fn describe(label: Label) -> string {
-        label.text
+    fn describe(self) -> string {
+        self.text
     }
 }
 
@@ -353,6 +353,7 @@ fn test_pub_type_accessible_qualified() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -398,6 +399,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -414,6 +416,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -469,6 +472,7 @@ fn pub_struct(name: &str) -> TypeDecl {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -611,16 +615,19 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
             name_span: 0..0,
             ty: (
                 TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(
-                        hew_parser::ast::Ident::new("alpha.Value"),
-                        0..0,
-                    ),
+                    path: hew_parser::ast::Path {
+                        segments: vec![
+                            (hew_parser::ast::Ident::new("alpha"), 0..0),
+                            (hew_parser::ast::Ident::new("Value"), 0..0),
+                        ],
+                    },
                     type_args: None,
                 },
                 0..0,
             ),
             is_mutable: false,
             is_consume: false,
+            is_receiver: false,
         }],
         return_type: None,
         where_clause: None,
@@ -690,6 +697,7 @@ fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDe
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -724,6 +732,7 @@ fn pub_holder_with_named_field(name: &str, field: &str, member: &str) -> TypeDec
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -933,6 +942,7 @@ fn colliding_unqualified_imports_are_typed_error() {
             ),
             is_mutable: false,
             is_consume: false,
+            is_receiver: false,
         }],
         return_type: None,
         where_clause: None,
@@ -1011,6 +1021,7 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
             ),
             is_mutable: false,
             is_consume: false,
+            is_receiver: false,
         }],
         return_type: None,
         where_clause: None,
@@ -1181,6 +1192,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             })
             .collect(),
         return_type: ret.map(|r| {

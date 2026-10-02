@@ -1,5 +1,5 @@
 trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Person {
@@ -7,8 +7,8 @@ type Person {
 }
 
 impl Named for Person {
-    fn name(person: Person) -> string {
-        person.name
+    fn name(self) -> string {
+        self.name
     }
 }
 

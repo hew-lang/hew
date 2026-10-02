@@ -1,0 +1,13 @@
+[[case]]
+id = "worker-held-delays-sleeps"
+intent = "Control for the silent-peer case: a task holding the only worker delays another task's sleeps by at least the hold."
+source = "cases/worker-held-delays-sleeps.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "held worker delayed the sleeps\n"
+exit = 0

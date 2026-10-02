@@ -48,8 +48,8 @@ pub enum PathError {
 
 /// Print the human-readable detail carried by a `PathError`.
 impl Display for PathError {
-    fn fmt(err: PathError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             PathError.GlobFailed(message) => message,
             PathError.IndexOutOfRange(message) => message,
         }
@@ -71,33 +71,33 @@ trait GlobResultMethods {
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
-    fn len(res: GlobResult) -> i64 {
+    fn len(self) -> i64 {
         unsafe {
-            hew_glob_count(res.handle) as i64
+            hew_glob_count(self.handle) as i64
         }
     }
     /// Return the matched path at the given index.
     ///
     /// Panics when `index` is outside `0 .. len()`. Use `try_get` to handle an
     /// out-of-range index without terminating.
-    fn get(res: GlobResult, index: i64) -> string {
-        match res.try_get(index) {
+    fn get(self, index: i64) -> string {
+        match self.try_get(index) {
             .Some(matched) => matched,
             .None => {
-                panic(f"path.GlobResult.get: index {index} out of range for {res.len()} match(es)");
+                panic(f"path.GlobResult.get: index {index} out of range for {self.len()} match(es)");
                 ""
             }
         }
     }
     /// Return the matched path at the given index, or `None` when out of range.
-    fn try_get(res: GlobResult, index: i64) -> Option<string> {
+    fn try_get(self, index: i64) -> Option<string> {
         // The range check runs in `i64` so an index above `i32` range is
         // rejected as out of range rather than wrapping into a valid slot.
-        if index < 0 || index >= res.len() {
+        if index < 0 || index >= self.len() {
             return .None;
         }
         unsafe {
-            .Some(hew_glob_get(res.handle, index as i32))
+            .Some(hew_glob_get(self.handle, index as i32))
         }
     } // INTERNAL-ABI: C ABI takes i32 index; the i64 range check above precedes it
 }
@@ -322,7 +322,7 @@ pub fn normalize(p: string) -> string {
     let rooted = p.starts_with("/");
     let parts = p.split("/");
     var stack: Vec<string> = Vec.new();
-    for i in 0 .. parts.len() {
+    for i in 0..parts.len() {
         let seg = parts[i];
         if seg == "" || seg == "." {
             continue;

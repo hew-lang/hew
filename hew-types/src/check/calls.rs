@@ -524,37 +524,9 @@ impl Checker {
         clippy::too_many_arguments,
         reason = "call application needs the signature, source args, span, arity mode, and the callee identity that makes generic obligations discoverable"
     )]
-    pub(super) fn apply_instantiated_call_signature(
-        &mut self,
-        sig: &FnSig,
-        type_args: Option<&[Spanned<TypeExpr>]>,
-        args: &[CallArg],
-        span: &Span,
-        arg_application: SignatureArgApplication<'_>,
-        record_call_type_args: bool,
-        callee: Option<GenericCallee<'_>>,
-    ) -> AppliedCallSignature {
-        let empty_assoc_bindings = HashMap::new();
-        self.apply_instantiated_call_signature_with_assoc(
-            sig,
-            &empty_assoc_bindings,
-            type_args,
-            args,
-            span,
-            arg_application,
-            record_call_type_args,
-            callee,
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "call application needs the signature, its associated-type side table, source args, span, and arity mode"
-    )]
     pub(super) fn apply_instantiated_call_signature_with_assoc(
         &mut self,
         sig: &FnSig,
-        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
         type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
@@ -612,12 +584,7 @@ impl Checker {
             }
         }
 
-        self.enforce_type_param_bounds_with_assoc(
-            sig,
-            type_param_assoc_bindings,
-            &resolved_type_args,
-            span,
-        );
+        self.enforce_signature_bounds(sig, &resolved_type_args, span);
 
         if record_call_type_args && !sig.type_params.is_empty() {
             self.record_concrete_call_type_args(span, &resolved_type_args);
@@ -913,7 +880,7 @@ impl Checker {
                 // let the per-monomorphisation resolver classify the substituted
                 // element (fail-closed there if genuinely unsupported) — the
                 // same deferral the element-typed method resolution takes (#2737).
-                && !self.vec_element_contains_abstract_type_param(&elem_ty)
+                && !Self::vec_element_contains_abstract_type_param(&elem_ty)
             {
                 // The element's value class decides: a `BitCopy` element takes
                 // the plain layout family, every other class the owned-element
@@ -1198,15 +1165,16 @@ impl Checker {
     /// is called from inside an actor receive function.
     ///
     /// Actor receive functions run synchronously on scheduler worker threads.
-    /// A blocking call (e.g. `recv`, `read`, `accept`) will stall that thread
+    /// A blocking call will stall that thread
     /// for the duration of the wait, preventing other actors from being
     /// scheduled and potentially causing deadlocks when all worker threads
     /// are occupied by blocked receive handlers.
     ///
     /// `op_desc` should be a short human-readable label such as
-    /// `"Receiver.recv"` or `"std.net.Connection.read"`. None of these ops has
-    /// a drop-in suspending spelling, so the remedy is to move the wait off
-    /// the receive function.
+    /// `"http.Server.accept"`. A plain function, forked task, or another actor
+    /// still runs on scheduler workers, so none of those is generic blocking
+    /// isolation. Prefer a runtime-backed suspending operation; otherwise the
+    /// native integration must deliver readiness or work as a message.
     pub(super) fn warn_if_blocking_in_receive_fn(&mut self, op_desc: &str, span: &Span) {
         if !self.in_receive_fn {
             return;
@@ -1226,8 +1194,9 @@ impl Checker {
                 self.current_module.clone(),
             )],
             suggestions: vec![
-                "send the blocking work to a dedicated actor or async task and \
-                 deliver the result as a message"
+                "use a runtime-backed suspending operation, or arrange for the \
+                 native integration to deliver readiness as a message; moving \
+                 the blocking call to a task or another actor does not isolate it"
                     .to_string(),
             ],
             source_module: self.current_module.clone(),
@@ -1240,11 +1209,11 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        if matches!(
-            (type_name, method),
-            ("http.Server" | crate::stdlib::STD_NET_LISTENER, "accept")
-                | (crate::stdlib::STD_NET_CONNECTION, "read")
-        ) {
+        // `std.net.Listener.accept` and the current connection receive path
+        // are canonical AsyncIo operations. They park on the reactor even
+        // when called from a receive handler, so warning for them would direct
+        // programmers away from the supported scheduler-safe spelling.
+        if matches!((type_name, method), ("std.net.http.Server", "accept")) {
             self.warn_if_blocking_in_receive_fn(&format!("{type_name}.{method}"), span);
         }
     }
@@ -1268,7 +1237,7 @@ impl Checker {
         let (module_name, method) = func_name.split_once("::")?;
         // A trait-qualified call (`Trait::method`) is handled by the dedicated
         // paths above and must not be re-interpreted as a module call.
-        if self.has_trait_def(module_name) {
+        if self.trait_spelled_here(module_name).is_some() {
             return None;
         }
         if method.contains("::") {
@@ -1286,11 +1255,7 @@ impl Checker {
             return None;
         }
         if self.module_binding_in_current_file(module_name) {
-            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                self.current_module.clone(),
-                self.current_module_idx,
-                module_name.to_string(),
-            ));
+            self.note_import_use(module_name);
         }
         // Export gate: only `pub` functions are reachable across the module
         // boundary, mirroring the dot-form path. A `package fn` accessible
@@ -1340,10 +1305,8 @@ impl Checker {
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
-        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
-            &assoc_bindings,
             type_args,
             args,
             span,
@@ -1554,6 +1517,37 @@ impl Checker {
         }
     }
 
+    /// The target a record or extern declaration publishes by its identity
+    /// alone; `None` for a declaration the signature ladder classifies.
+    pub(super) fn declared_call_target(&self, declaration: crate::DefId) -> Option<CallTarget> {
+        if self.defs.kind(declaration) == crate::DeclarationKind::Record {
+            return Some(CallTarget::RecordConstructor(declaration));
+        }
+        let extern_decl = self.extern_table.declaration(declaration)?;
+        if extern_decl.symbol.is_empty() {
+            return Some(CallTarget::Unsupported {
+                reason: format!(
+                    "generic extern declaration `{}` has no monomorphic endpoint",
+                    self.defs.path(declaration)
+                ),
+            });
+        }
+        // Provenance is per DECLARATION: `trusted_compiled_stdlib` derives
+        // from the declaring module of the declaration used at the call site,
+        // never from whichever declaration minted the symbol's ABI contract.
+        if let Some(family) = self.source_runtime_target(declaration, extern_decl) {
+            return Some(CallTarget::Runtime(family));
+        }
+        Some(CallTarget::Extern {
+            declaration,
+            endpoint: extern_decl.symbol.clone(),
+            trusted_compiled_stdlib: extern_decl
+                .declaring_module
+                .as_deref()
+                .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
+        })
+    }
+
     fn user_call_target_for_declared_fn(&self, signature_key: &str) -> Option<CallTarget> {
         let (_, declaring_module) = self.fn_def_spans.get(signature_key)?;
         let declaration = declaring_module.as_ref().map_or_else(
@@ -1567,10 +1561,6 @@ impl Checker {
             .map(|declaration| self.source_call_target(declaration))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "call-target precedence stays explicit in one resolution ladder"
-    )]
     pub(super) fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1582,49 +1572,11 @@ impl Checker {
         // is also importable in its own right publishes both `pkg.f` and
         // `pkg.file.f`), and the extern table is keyed by the identity, not by
         // a spelling. Resolve the key first, then read the extern row.
-        let resolved = self.lookup_declaration(signature_key);
-        if self.defs.declaration_kind_by_path(signature_key) == Some(crate::DeclarationKind::Record)
+        if let Some(target) = self
+            .lookup_declaration(signature_key)
+            .and_then(|declaration| self.declared_call_target(declaration))
         {
-            if let Some(declaration) = resolved {
-                return CallTarget::RecordConstructor(declaration);
-            }
-        }
-        if let Some(extern_decl) = resolved
-            .as_ref()
-            .and_then(|declaration| self.extern_table.declaration(*declaration))
-        {
-            if extern_decl.symbol.is_empty() {
-                return CallTarget::Unsupported {
-                    reason: format!(
-                        "generic extern declaration `{signature_key}` has no monomorphic endpoint"
-                    ),
-                };
-            }
-            // Provenance is per DECLARATION: the published identity is the
-            // declaration used at the call site, and `trusted_compiled_stdlib`
-            // derives from ITS declaring module — never from whichever
-            // declaration minted the symbol's ABI contract (a user extern
-            // stays user-provenance even when its spelling collides with an
-            // audited runtime endpoint, in either registration order).
-            //
-            let Some(declaration) = resolved else {
-                return CallTarget::Unsupported {
-                    reason: format!(
-                        "checker identity table has no extern declaration `{signature_key}`"
-                    ),
-                };
-            };
-            if let Some(family) = self.source_runtime_target(declaration, extern_decl) {
-                return CallTarget::Runtime(family);
-            }
-            return CallTarget::Extern {
-                declaration,
-                endpoint: extern_decl.symbol.clone(),
-                trusted_compiled_stdlib: extern_decl
-                    .declaring_module
-                    .as_deref()
-                    .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
-            };
+            return target;
         }
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
             return CallTarget::Runtime(family);
@@ -1958,7 +1910,7 @@ impl Checker {
             // this call-form constructor is its own resolution path. Credit
             // the lexical binding the same way, via the resolved owner.
             if let Some((owner, _)) = type_name.rsplit_once('.') {
-                self.mark_module_owner_bindings_used(owner);
+                self.note_path_use(owner);
             }
             let type_param_count = type_params.len();
             if type_param_count == 0 {
@@ -2029,13 +1981,20 @@ impl Checker {
             return result_ty;
         }
 
-        if matches!(func_name.as_str(), "link" | "monitor")
-            && self
-                .current_function
-                .as_deref()
-                .and_then(|function| self.root_owned_fn_leaf(function))
-                == Some("main")
-            && !self.declares_function(&func_name)
+        // Observing an actor needs a mailbox to deliver to; the entry
+        // function has none. The file's own declaration of the name is the
+        // callee before any builtin of that spelling.
+        let observes_an_actor = self.scoped_fn_declaration(&func_name, false).is_none()
+            && matches!(
+                self.call_target_for_signature(&func_name),
+                CallTarget::Runtime(
+                    crate::runtime_call::RuntimeCallFamily::ActorLink
+                        | crate::runtime_call::RuntimeCallFamily::ActorMonitor
+                )
+            );
+        if observes_an_actor
+            && self.checking_declaration.is_some()
+            && self.checking_declaration == self.entry_function()
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -2199,28 +2158,6 @@ impl Checker {
                 );
                 return Ty::Error;
             }
-            "close" | "closed" | "supervisor_stop" if !self.declares_function(&func_name) => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                let replacement = if func_name == "closed" {
-                    "stopped(handle)"
-                } else {
-                    "stop(handle); stopped(handle);"
-                };
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorLifecycleRetired,
-                    format!("E_ACTOR_LIFECYCLE_RETIRED: `{func_name}` is retired for actors"),
-                    format!("write `{replacement}` using the original handle expression"),
-                    span,
-                );
-                return if self.migration_mode {
-                    Ty::Unit
-                } else {
-                    Ty::Error
-                };
-            }
             "bytes::from" => {
                 self.check_arity(args, 1, "`bytes.from`", span);
                 if let Some(arg) = args.first() {
@@ -2300,7 +2237,7 @@ impl Checker {
             // `monitor(<actor handle>)` form stays on the generic `fn_sigs` path
             // below (registered with an actor-handle receiver). When the argument
             // resolves to a `RemotePid<T>`, accept it here and return
-            // `Result<MonitorRef, MonitorError>` — remote setup can fail before
+            // `Result<MonitorRef, LinkError>` — remote setup can fail before
             // a registration exists, so it must not manufacture a zero-valued
             // handle. The remote form is its own runtime family, the node
             // monitor ABI (`hew_node_monitor_location`).
@@ -2313,7 +2250,7 @@ impl Checker {
                 let arg_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&arg_ty);
                 if resolved.as_remote_pid().is_some() {
-                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::monitor_error());
+                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::link_error());
                     self.record_type(span, &result_ty);
                     self.record_direct_call_target(
                         span,
@@ -2390,13 +2327,10 @@ impl Checker {
         // receiver param on the resolved sig so arity matches and the
         // first arg is type-checked against the canonical receiver.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.has_trait_def(trait_name) {
-                if let Some(ret_ty) = self.try_dispatch_ufcs_primitive_trait_method(
-                    trait_name,
-                    method_name,
-                    args,
-                    span,
-                ) {
+            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
+                if let Some(ret_ty) =
+                    self.try_dispatch_ufcs_primitive_trait_method(trait_id, method_name, args, span)
+                {
                     return ret_ty;
                 }
             }
@@ -2493,7 +2427,7 @@ impl Checker {
                 ))
                 .cloned()
             {
-                self.mark_module_owner_bindings_used(&module);
+                self.note_path_use(&module);
             }
             // `Node.register` hands the actor's own handle to the node
             // registry; codegen calls `hew_actor_pid` on it. An actor is the
@@ -2515,7 +2449,6 @@ impl Checker {
                     .materialize_literal_defaults();
                 self.require_actor_handle_argument(&resolved, "Node.register", handle_span);
             }
-            let assoc_bindings = sig.type_param_assoc_bindings.clone();
             // `assert` takes one optional parameter, the failure message.
             let assertion = self.call_target_for_signature(&resolved_fn_name)
                 == CallTarget::Builtin {
@@ -2528,7 +2461,6 @@ impl Checker {
             };
             let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                 &sig,
-                &assoc_bindings,
                 type_args,
                 args,
                 span,
@@ -2554,8 +2486,8 @@ impl Checker {
                 self.record_unrendered_assertion_operands(args);
             }
 
-            // A codec imported by name (`import std.encoding.wire.{to_json}`)
-            // is the same compiler operation as `wire.to_json(..)`.
+            // A codec imported by name (`import std.encoding.json.{encode}`)
+            // is the same compiler operation as `json.encode(..)`.
             self.record_generic_wire_codec_rewrite(
                 &resolved_fn_name,
                 &applied_sig.params,
@@ -2563,7 +2495,12 @@ impl Checker {
                 span,
             );
 
-            let target = self.call_target_for_signature(&resolved_fn_name);
+            // The file's own binding is the callee's identity; its spelling
+            // may name a peer file's declaration of the same leaf.
+            let target = self
+                .scoped_fn_declaration(&func_name, lexical_shadow_of_item)
+                .and_then(|declaration| self.declared_call_target(declaration))
+                .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
             if matches!(
                 &target,
                 CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::RcNew)
@@ -2666,7 +2603,7 @@ impl Checker {
                 .cloned()
             {
                 let result = self
-                    .apply_instantiated_call_signature(
+                    .apply_instantiated_call_signature_with_assoc(
                         &sig.call_sig,
                         type_args,
                         args,
@@ -2743,9 +2680,9 @@ impl Checker {
         // If the function name has the form `TraitName::method` and TraitName
         // is a known trait, resolve the method from the trait definition.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.has_trait_def(trait_name) {
+            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
                 // Use the full signature (receiver included) for qualified calls.
-                if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
+                if let Some(sig) = self.lookup_trait_method_inner(trait_id, method_name, false) {
                     // The trait sig includes all non-receiver params.
                     // For qualified calls the first positional arg is the receiver.
                     if self.refuse_named_arguments(args, &format!("`{func_name}`"), span) {
@@ -2894,7 +2831,9 @@ impl Checker {
             return false;
         }
         let candidates: Vec<String> = owners.iter().cloned().collect();
-        self.mark_ambiguous_import_owners_used(&candidates);
+        for candidate in &candidates {
+            self.note_path_use(candidate);
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousType,
             span,
@@ -3057,7 +2996,7 @@ impl Checker {
             }
             vec![msg_ty]
         };
-        let method_id = crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID.to_string();
+        let method = self.lambda_actor_method();
         let key = SpanKey::in_module(span, self.current_module_idx);
         let Some((policy, one_way)) = view else {
             // `handle(msg)` is the completion call: it waits for the
@@ -3066,7 +3005,7 @@ impl Checker {
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
-                    method_id,
+                    method,
                     reply_ty: reply_ty.clone(),
                     policy: crate::actor_delivery::SendPolicy::Wait,
                 },
@@ -3075,11 +3014,11 @@ impl Checker {
         };
         if !one_way {
             let completion =
-                self.completion_request_type(&method_id, &reply_ty, target, policy, &payload);
+                self.completion_request_type(method, &reply_ty, target, policy, &payload);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
-                    method_id,
+                    method,
                     reply_ty: reply_ty.clone(),
                     policy,
                 },
@@ -3101,7 +3040,7 @@ impl Checker {
             return Ty::Error;
         }
         self.actor_method_dispatch
-            .insert(key, ActorMethodKind::Message { method_id, policy });
+            .insert(key, ActorMethodKind::Message { method, policy });
         self.record_submission_suspension(span, policy.may_suspend());
         crate::actor_delivery::result_type(crate::actor_delivery::message_type(
             target.clone(),

@@ -11,16 +11,16 @@ type W {
 }
 
 impl Sub for W {
-    fn base(w: W) -> i64 {
-        w.id
+    fn base(self) -> i64 {
+        self.id
     }
 
-    fn tag(w: W) -> i64 {
-        w.id
+    fn tag(self) -> i64 {
+        self.id
     }
 
-    fn nope(w: W) -> i64 {
-        w.id
+    fn nope(self) -> i64 {
+        self.id
     }
 }
 

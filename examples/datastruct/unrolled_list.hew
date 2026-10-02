@@ -87,7 +87,7 @@ fn unrolled_iterate(n: Vec<i64>, head: i64) -> Vec<i64> {
     var b = head;
     while b != -1 {
         let cnt = block_count(n, b);
-        for i in 0 .. cnt {
+        for i in 0..cnt {
             result.push(block_elem(n, b, i));
         }
         b = block_next(n, b);
@@ -136,7 +136,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
     if a.len() != b.len() {
         return 0;
     }
-    for i in 0 .. a.len() {
+    for i in 0..a.len() {
         if a[i] != b[i] {
             return 0;
         }
@@ -181,14 +181,14 @@ fn test_cross_block_iteration() -> i64 {
     var n: Vec<i64> = Vec.new();
     var head = -1;
     // Insert 10 elements across 3 blocks (4+4+2)
-    for i in 0 .. 10 {
+    for i in 0..10 {
         let (grown, new_head) = unrolled_insert(n, head, (i + 1) * 10);
         n = grown;
         head = new_head;
     }
     let r = unrolled_iterate(n, head);
     var ok = 1;
-    for i in 0 .. 10 {
+    for i in 0..10 {
         if r[i] != (i + 1) * 10 {
             ok = 0;
         }
@@ -206,7 +206,7 @@ fn test_cross_block_iteration() -> i64 {
 fn test_random_access() -> i64 {
     var n: Vec<i64> = Vec.new();
     var head = -1;
-    for i in 0 .. 8 {
+    for i in 0..8 {
         let (grown, new_head) = unrolled_insert(n, head, i * 100);
         n = grown;
         head = new_head;
@@ -246,7 +246,7 @@ fn test_many_blocks() -> i64 {
     var n: Vec<i64> = Vec.new();
     var head = -1;
     // 20 elements = 5 blocks of 4
-    for i in 0 .. 20 {
+    for i in 0..20 {
         let (grown, new_head) = unrolled_insert(n, head, i);
         n = grown;
         head = new_head;
@@ -256,7 +256,7 @@ fn test_many_blocks() -> i64 {
             // Verify order
             let r = unrolled_iterate(n, head);
             var ok = 1;
-            for i in 0 .. 20 {
+            for i in 0..20 {
                 if r[i] != i {
                     ok = 0;
                 }

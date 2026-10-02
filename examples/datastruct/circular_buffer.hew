@@ -11,7 +11,7 @@ fn cb_new(capacity: i64) -> Vec<i64> {
     buf.push(0); // index 2: tail
     buf.push(0); // index 3: count
     // Pre-allocate data slots
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         buf.push(0);
     }
     buf

@@ -6,8 +6,10 @@ use super::*;
 /// Carries enough info to derive the impl-method monomorphisation once the
 /// surrounding function's type params have been substituted.
 pub(super) struct TraitMethodStaticSite {
-    /// Type-parameter name of the receiver (e.g. "T" in `fn display<T: Show>`).
-    pub(super) receiver_type_param: hew_types::ParamHead,
+    /// The type that is `Self` at the call (`T` in `fn display<T: Show>`).
+    pub(super) self_ty: ResolvedTy,
+    /// The declaring trait's arguments at the call.
+    pub(super) trait_args: Vec<ResolvedTy>,
     /// Checker-selected trait-method identity. The monomorphisation lookup
     /// consumes its ids directly rather than rebuilding them from spellings.
     pub(super) target: hew_types::CallTarget,
@@ -20,6 +22,7 @@ pub(super) struct TraitMethodStaticSite {
 pub(super) fn closure_under_substitution(
     defs: &hew_types::DefTable,
     items: &[HirItem],
+    structural_witnesses: &[hew_types::StructuralWitness],
     call_site_type_args: &HashMap<SiteId, Vec<ResolvedTy>>,
     monomorphisations: &mut Vec<crate::monomorph::MonomorphizedFn>,
     cap: usize,
@@ -44,7 +47,7 @@ pub(super) fn closure_under_substitution(
     // built from `HirItem::Impl` metadata. Static-dispatch monomorphisation
     // resolves trait method calls through this rather than reconstructing
     // the impl symbol from a receiver display name.
-    let impl_index = crate::dispatch::build_trait_impl_method_index(items);
+    let impl_index = crate::dispatch::build_trait_impl_method_index(items, structural_witnesses);
 
     let mut seen: HashSet<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
     let mut worklist: Vec<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
@@ -123,13 +126,19 @@ pub(super) fn closure_under_substitution(
         // the structured registry — `(declaring_trait, self_type_name,
         // method_name)` — and register the impl method's monomorphisation.
         for tms in trait_method_sites {
-            let Some(concrete_ty) = subst.get(&tms.receiver_type_param) else {
+            let concrete_ty = substitute_ty(&tms.self_ty, &subst);
+            if contains_abstract_symbol(&concrete_ty) {
                 continue;
-            };
+            }
             // Canonical nominal instance for impl lookup.
             let Some(self_type) = concrete_ty.impl_receiver_instance(defs) else {
                 continue;
             };
+            let trait_args: Vec<ResolvedTy> = tms
+                .trait_args
+                .iter()
+                .map(|arg| substitute_ty(arg, &subst))
+                .collect();
             let type_args = self_type.args.clone();
             // Structured registry lookup. The key is built from HIR-side
             // structured identities only — no symbol-name parsing or leaf
@@ -146,6 +155,7 @@ pub(super) fn closure_under_substitution(
                 &impl_index,
                 declaring_trait,
                 &self_type,
+                &trait_args,
                 method,
             ) else {
                 continue;
@@ -344,14 +354,8 @@ pub(super) fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            collect_call_sites_in_expr(conn, out, trait_out);
-        }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             collect_call_sites_in_expr(child, out, trait_out);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            collect_call_sites_in_expr(listener, out, trait_out);
         }
         HirExprKind::RemoteActorAsk {
             receiver,
@@ -369,7 +373,7 @@ pub(super) fn collect_call_sites_in_expr(
         }
         HirExprKind::CallTraitMethodStatic {
             receiver,
-            receiver_type_param,
+            trait_args,
             target,
             args,
             ..
@@ -378,11 +382,11 @@ pub(super) fn collect_call_sites_in_expr(
             // monomorphisation closure to resolve once the enclosing
             // function's type params are substituted.
             trait_out.push(TraitMethodStaticSite {
-                receiver_type_param: *receiver_type_param,
+                self_ty: receiver.self_ty().clone(),
+                trait_args: trait_args.clone(),
                 target: target.clone(),
             });
-            collect_call_sites_in_expr(receiver, out, trait_out);
-            for arg in args {
+            for arg in receiver.receiver().into_iter().chain(args) {
                 collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
@@ -402,7 +406,8 @@ pub(super) fn collect_call_sites_in_expr(
                     receiver_type_param,
                     ..
                 } => trait_out.push(TraitMethodStaticSite {
-                    receiver_type_param: *receiver_type_param,
+                    self_ty: ResolvedTy::param(*receiver_type_param),
+                    trait_args: Vec::new(),
                     target: call_target.clone(),
                 }),
             }
@@ -533,9 +538,6 @@ pub(super) fn collect_call_sites_in_expr(
             source: receiver, ..
         } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            collect_call_sites_in_expr(stream, out, trait_out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             if let Some(fields) = payload {

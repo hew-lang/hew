@@ -47,9 +47,6 @@ fn main() {
             .Fault { message } => panic(message),
         }
     };
-    {
-        let __hew_migrated_actor_1113 = audit;
-        stop(__hew_migrated_actor_1113);
-        stopped(__hew_migrated_actor_1113);
-    };
+    stop(audit);
+    stopped(audit);
 }

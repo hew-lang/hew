@@ -44,7 +44,7 @@ actor Coordinator {
     // A call inside a loop: `rounds` (4) calls accumulate 42 each -> 168.
     receive fn loop_sum(n: i64) -> i64 {
         var total: i64 = 0;
-        for i in 0 .. rounds {
+        for i in 0..rounds {
             let r = worker.compute(n);
             match r {
                 .Ok(v) => {

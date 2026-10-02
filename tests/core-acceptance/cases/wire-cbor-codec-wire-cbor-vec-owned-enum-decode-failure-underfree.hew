@@ -1,7 +1,9 @@
+import std.encoding.cbor;
+
 #[wire]
 enum Payload {
-    Empty;
-    Full(string);
+    Empty @0;
+    Full(string) @1;
 }
 
 #[wire]
@@ -19,8 +21,10 @@ type BagBad {
 actor Decoder {
     let seq: i64;
     receive fn decode_it(raw: bytes) -> i64 {
-        let bad = BagBad.decode(raw);
-        bad.tail
+        match cbor.decode<BagBad>(raw) {
+            .Ok(bad) => bad.tail,
+            .Err(_) => 1,
+        }
     }
 }
 
@@ -33,7 +37,7 @@ fn main() -> i64 {
         xs.push(Payload.Empty);
         xs.push(Payload.Full("second-owned-element"));
         let g = BagGood { items: xs, tail: "owned-tail-value" };
-        let raw = g.encode();
+        let raw = cbor.encode(g);
         let a = spawn Decoder(seq: i);
         let r = a.decode_it(raw);
         match r {

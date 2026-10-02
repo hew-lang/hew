@@ -1,0 +1,30 @@
+// terminate() lands while the target's turn is between a stream send and its
+// park on sleep. The park rechecks the stop latch, so the turn is cancelled
+// at once instead of after the sleep. Many rounds make the window likely.
+import std.stream;
+
+actor Target {
+    let ready: stream.Sink<i64>;
+    receive fn work(round: i64) {
+        ready.send(round).expect("send");
+        sleep(60s);
+    }
+}
+
+fn main() {
+    var ended = 0;
+    for round in 0..40 {
+        let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+        let target = spawn Target(ready: tx);
+        mailbox(target, on_full: .Wait).work(round).expect("submit");
+        match rx.recv() {
+            .Some(_) => {}
+            .None => panic("no round"),
+        }
+        terminate(target);
+        stopped(target);
+        rx.close();
+        ended += 1;
+    }
+    println(f"terminated {ended}");
+}

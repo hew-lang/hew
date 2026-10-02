@@ -1,0 +1,35 @@
+// An offloaded call owns copies of its arguments and result, so a handle or
+// pointer a caller-side owner keeps is refused even inside a record, an enum
+// payload or a collection. A record of plain values is accepted.
+#[opaque]
+type Db {}
+
+type Wrap {
+    db: Db;
+    n: i64;
+}
+
+enum Slot {
+    Empty;
+    Held(Wrap);
+}
+
+type Labels {
+    name: string;
+    tags: Vec<string>;
+}
+
+extern "C" {
+    #[offload]
+    fn q_wrap(w: Wrap) -> i32;
+    #[offload]
+    fn q_slots(s: Vec<Slot>) -> i32;
+    #[offload]
+    fn q_open(path: string) -> Wrap;
+    #[offload]
+    fn q_fill(buf: *mut u8, n: i64) -> i64;
+    #[offload]
+    fn q_labels(l: Labels) -> Labels;
+}
+
+fn main() {}

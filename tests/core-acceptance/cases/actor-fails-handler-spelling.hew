@@ -25,7 +25,7 @@ actor Ledger {
         balance
     }
 
-    receive fn note(amount: i64) -> () fails string {
+    receive fn note(amount: i64) fails string {
         if amount < 0 {
             return error "a note cannot be negative";
         }
@@ -52,7 +52,7 @@ fn main() {
             ActorError.Rejected(_) => println("rejected"),
             ActorError.Trapped => println("trapped"),
             ActorError.Dead => println("dead"),
-            ActorError.Timeout => println("timeout"),
+            ActorError.TimedOut => println("timeout"),
             ActorError.NodeNotRunning => println("node not running"),
             ActorError.RoutingFailed => println("routing failed"),
             ActorError.EncodeFailed => println("encode failed"),
@@ -68,10 +68,7 @@ fn main() {
         .Ok(_) => println("noted"),
         .Err(problem) => println(f"{problem}"),
     }
-    {
-        let __hew_migrated_actor_2353 = ledger;
-        stop(__hew_migrated_actor_2353);
-        stopped(__hew_migrated_actor_2353);
-    };
+    stop(ledger);
+    stopped(ledger);
     println("closed");
 }

@@ -2,13 +2,13 @@ fn floyd_warshall(n: i64, edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i
     let INF = 999999;
     let total = n * n;
     var dist: Vec<i64> = Vec.new();
-    for idx in 0 .. total {
+    for idx in 0..total {
         dist.push(INF);
     }
-    for i in 0 .. n {
+    for i in 0..n {
         dist.set(i * n + i, 0);
     }
-    for e in 0 .. num_edges {
+    for e in 0..num_edges {
         let u = edge_src[e];
         let v = edge_dst[e];
         let w = edge_wt[e];
@@ -16,9 +16,9 @@ fn floyd_warshall(n: i64, edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i
             dist.set(u * n + v, w);
         }
     }
-    for k in 0 .. n {
-        for i in 0 .. n {
-            for j in 0 .. n {
+    for k in 0..n {
+        for i in 0..n {
+            for j in 0..n {
                 let through_k = dist[i * n + k] + dist[k * n + j];
                 if through_k < dist[i * n + j] {
                     dist.set(i * n + j, through_k);
@@ -27,8 +27,8 @@ fn floyd_warshall(n: i64, edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i
         }
     }
     var sum = 0;
-    for i in 0 .. n {
-        for j in 0 .. n {
+    for i in 0..n {
+        for j in 0..n {
             let d = dist[i * n + j];
             if d < INF {
                 sum = sum + d;
@@ -45,7 +45,7 @@ fn main() {
     var edge_src: Vec<i64> = Vec.new();
     var edge_dst: Vec<i64> = Vec.new();
     var edge_wt: Vec<i64> = Vec.new();
-    for src in 0 .. n {
+    for src in 0..n {
         var dst = 1;
         while dst <= 3 {
             let neighbour = (src + dst) % n;
@@ -63,7 +63,7 @@ fn main() {
     }
     let num_edges = edge_src.len();
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + floyd_warshall(n, edge_src, edge_dst, edge_wt, num_edges);
     }
     println("bench_floyd_warshall");

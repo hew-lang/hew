@@ -338,7 +338,7 @@ fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
 #[test]
 fn a_unit_fails_handler_submits_through_a_mailbox_view() {
     let output = check_source(
-        "actor Worker { receive fn note(n: i64) -> () fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
+        "actor Worker { receive fn note(n: i64) fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
     );
     assert!(
         output.errors.is_empty(),
@@ -352,7 +352,7 @@ fn a_unit_fails_handler_submits_through_a_mailbox_view() {
 #[test]
 fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
     let output = check_source(
-        "type Opaque {\n    code: i64;\n}\n\nactor Worker {\n    receive fn note(n: i64) -> () fails Opaque {\n        if n < 0 {\n            return error Opaque { code: n };\n        }\n    }\n}\n\nfn main() {\n    let w = mailbox(spawn Worker(), on_full: .Reject);\n    let _ = w.note(1);\n}\n",
+        "type Opaque {\n    code: i64;\n}\n\nactor Worker {\n    receive fn note(n: i64) fails Opaque {\n        if n < 0 {\n            return error Opaque { code: n };\n        }\n    }\n}\n\nfn main() {\n    let w = mailbox(spawn Worker(), on_full: .Reject);\n    let _ = w.note(1);\n}\n",
     );
     assert!(
         output
@@ -369,7 +369,7 @@ fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
 #[test]
 fn an_infallible_completion_envelope_needs_no_failed_arm() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker();\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.Timeout => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker();\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -379,7 +379,7 @@ fn an_infallible_completion_envelope_needs_no_failed_arm() {
 #[test]
 fn a_fails_completion_envelope_still_requires_its_failed_arm() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 fails string {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker();\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.Timeout => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 fails string {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker();\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
     );
     assert!(
         output

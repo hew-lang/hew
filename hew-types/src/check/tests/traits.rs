@@ -286,7 +286,7 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
 }
 
 impl<T> Box<T> {
-    fn get(boxed: Box<T>, value: T) -> _ {
+    fn get(self, value: T) -> _ {
         value
     }
 }
@@ -517,8 +517,10 @@ fn main() {
 #[test]
 fn structural_satisfies_returns_false_for_unknown_trait() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let unknown = checker.defs.mint_for_test("NoSuchTrait");
+    let ty = checker.test_named("MyType", vec![]);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "NoSuchTrait"),
+        !checker.type_structurally_satisfies(&ty, unknown),
         "unknown trait must not satisfy structural check"
     );
 }
@@ -527,7 +529,7 @@ fn structural_satisfies_returns_false_for_unknown_trait() {
 fn module_local_dyn_trait_method_records_vtable_call() {
     let module_source = r#"
         pub trait Drawable {
-            fn draw(val: Self) -> string;
+            fn draw(self) -> string;
         }
 
         pub type Circle {}
@@ -537,7 +539,7 @@ fn module_local_dyn_trait_method_records_vtable_call() {
         }
 
         impl Drawable for Circle {
-            fn draw(circle: Circle) -> string { "Circle" }
+            fn draw(self) -> string { "Circle" }
         }
 
         pub fn render(item: dyn Drawable) -> string {
@@ -672,25 +674,26 @@ fn qualified_dyn_trait_keeps_foreign_method_order_and_identity() {
         .values()
         .next()
         .expect("concrete argument to foreign trait object");
-    assert_eq!(coercion.trait_bounds[0].trait_id, Some(foreign_trait));
+    let layout = &output.trait_object_layouts[&coercion.target];
+    assert_eq!(layout.closure, [foreign_trait]);
     assert_eq!(
-        coercion
-            .vtable_entries
+        layout
+            .slots
             .iter()
-            .map(|entry| entry.method_name.as_str())
+            .map(|slot| output.defs.name(slot.method).to_string())
             .collect::<Vec<_>>(),
         ["name", "kind"]
     );
-    assert!(coercion
-        .vtable_entries
+    assert!(layout
+        .slots
         .iter()
-        .all(|entry| output.defs.owner(entry.method) == Some(foreign_trait)));
+        .all(|slot| output.defs.owner(slot.method) == Some(foreign_trait)));
 }
 
 #[test]
 fn dyn_trait_return_signature_is_admitted() {
     let source = r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Person {
@@ -698,8 +701,8 @@ type Person {
 }
 
 impl Named for Person {
-    fn name(person: Person) -> string {
-        person.name
+    fn name(self) -> string {
+        self.name
     }
 }
 
@@ -718,7 +721,7 @@ fn make_person() -> dyn Named {
 #[test]
 fn nested_dyn_trait_return_signature_is_admitted() {
     let source = r#"trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Person {
@@ -726,8 +729,8 @@ type Person {
 }
 
 impl Named for Person {
-    fn name(person: Person) -> string {
-        person.name
+    fn name(self) -> string {
+        self.name
     }
 }
 
@@ -745,18 +748,18 @@ fn maybe_person() -> Option<dyn Named> {
 
 #[test]
 fn structural_satisfies_e1_guard_associated_types() {
-    let mut checker = make_checker_with_trait("Indexed", &["get"], true, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Indexed", &["get"], true, false);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "Indexed"),
+        !checker.type_structurally_satisfies(&checker.test_named("MyType", vec![]), trait_id),
         "E1 guard: traits with associated types must return false"
     );
 }
 
 #[test]
 fn structural_satisfies_e1_guard_generic_methods() {
-    let mut checker = make_checker_with_trait("Mapper", &["map"], false, true);
+    let (mut checker, trait_id) = make_checker_with_trait("Mapper", &["map"], false, true);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "Mapper"),
+        !checker.type_structurally_satisfies(&checker.test_named("MyType", vec![]), trait_id),
         "E1 guard: traits with generic methods must return false"
     );
 }
@@ -765,9 +768,9 @@ fn structural_satisfies_e1_guard_generic_methods() {
 fn structural_satisfies_e1_guard_method_only_trait_unknown_type_returns_false() {
     // In E2, the placeholder is replaced with real method-presence matching.
     // An unregistered type still returns false because no methods are found.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Greet", &["hello"], false, false);
     assert!(
-        !checker.type_structurally_satisfies("MyType", "Greet"),
+        !checker.type_structurally_satisfies(&checker.test_named("MyType", vec![]), trait_id),
         "unregistered type must not satisfy structural check even after E2"
     );
 }
@@ -778,13 +781,13 @@ fn type_satisfies_trait_bound_nominal_path_unchanged() {
     // structural fallback was wired into type_satisfies_trait_bound.
     let source = r"
         trait Greet {
-            fn hello(val: Self);
+            fn hello(self);
         }
 
         type Greeter {}
 
         impl Greet for Greeter {
-            fn hello(val: Greeter) {}
+            fn hello(self) {}
         }
 
         fn use_greet<T: Greet>(t: T) {}
@@ -816,7 +819,7 @@ fn type_satisfies_trait_bound_missing_impl_still_fails() {
     // bound — E1 must not silently accept it.
     let source = r"
         trait Greet {
-            fn hello(val: Self);
+            fn hello(self);
         }
 
         type Stranger {}
@@ -859,11 +862,11 @@ fn primitive_i64_with_impl_satisfies_user_trait_bound() {
     // the `T: Show` bound on a generic function.
     let source = r#"
         trait Show {
-            fn show(val: Self) -> string;
+            fn show(self) -> string;
         }
 
         impl Show for i64 {
-            fn show(val: i64) -> string { "i64" }
+            fn show(self) -> string { "i64" }
         }
 
         fn display<T: Show>(x: T) -> string {
@@ -900,12 +903,12 @@ fn primitive_f64_bool_string_with_impl_satisfy_user_trait_bound() {
     // Positive: f64, bool, and string each satisfy the bound when an impl exists.
     let source = r#"
         trait Label {
-            fn label(val: Self) -> string;
+            fn label(self) -> string;
         }
 
-        impl Label for f64    { fn label(val: f64)    -> string { "f64"    } }
-        impl Label for bool   { fn label(val: bool)   -> string { "bool"   } }
-        impl Label for string { fn label(val: string) -> string { "string" } }
+        impl Label for f64    { fn label(self)    -> string { "f64"    } }
+        impl Label for bool   { fn label(self)   -> string { "bool"   } }
+        impl Label for string { fn label(self) -> string { "string" } }
 
         fn tag<T: Label>(x: T) -> string {
             x.label()
@@ -944,7 +947,7 @@ fn primitive_without_impl_still_rejected_for_user_trait_bound() {
     // produce a `BoundsNotSatisfied` error — the fix must not weaken the gate.
     let source = r"
         trait Show {
-            fn show(val: Self) -> string;
+            fn show(self) -> string;
         }
 
         fn display<T: Show>(x: T) -> string {
@@ -1107,13 +1110,13 @@ fn structural_e2_single_method_match_satisfies_bound() {
     // (no explicit `impl Trait for Type`) must satisfy the bound structurally.
     let source = r"
         trait Area {
-            fn area(val: Self) -> i64;
+            fn area(self) -> i64;
         }
 
         type Square {}
 
         impl Square {
-            fn area(s: Square) -> i64 { 1 }
+            fn area(self) -> i64 { 1 }
         }
 
         fn measure<T: Area>(s: T) -> i64 {
@@ -1150,15 +1153,15 @@ fn structural_e2_multi_method_trait_all_present_satisfies_bound() {
     // Positive: all required methods present → bound satisfied.
     let source = r#"
         trait Named {
-            fn label(val: Self) -> string;
-            fn code(val: Self) -> i64;
+            fn label(self) -> string;
+            fn code(self) -> i64;
         }
 
         type Widget {}
 
         impl Widget {
-            fn label(w: Widget) -> string { "w" }
-            fn code(w: Widget) -> i64 { 0 }
+            fn label(self) -> string { "w" }
+            fn code(self) -> i64 { 0 }
         }
 
         fn print_label<T: Named>(t: T) -> string {
@@ -1196,13 +1199,13 @@ fn structural_e2_method_with_non_self_param_satisfies_bound() {
     // must have the same arity and parameter type.
     let source = r"
         trait Scalable {
-            fn scale(val: Self, factor: i64) -> i64;
+            fn scale(self, factor: i64) -> i64;
         }
 
         type Brick {}
 
         impl Brick {
-            fn scale(b: Brick, factor: i64) -> i64 { factor }
+            fn scale(self, factor: i64) -> i64 { factor }
         }
 
         fn resize<T: Scalable>(t: T) -> i64 {
@@ -1240,13 +1243,13 @@ fn structural_e2_nominal_impl_still_preferred_over_structural() {
     // break the nominal path.
     let source = r"
         trait Area {
-            fn area(val: Self) -> i64;
+            fn area(self) -> i64;
         }
 
         type Circle {}
 
         impl Area for Circle {
-            fn area(c: Circle) -> i64 { 3 }
+            fn area(self) -> i64 { 3 }
         }
 
         fn measure<T: Area>(s: T) -> i64 {
@@ -1284,13 +1287,13 @@ fn structural_e2_wrong_return_type_does_not_satisfy_bound() {
     // the bound must not be satisfied.
     let source = r#"
         trait Area {
-            fn area(val: Self) -> i64;
+            fn area(self) -> i64;
         }
 
         type Triangle {}
 
         impl Triangle {
-            fn area(t: Triangle) -> string { "big" }
+            fn area(self) -> string { "big" }
         }
 
         fn measure<T: Area>(s: T) -> i64 {
@@ -1327,13 +1330,13 @@ fn structural_e2_wrong_arity_does_not_satisfy_bound() {
     // the arity mismatch must cause the bound to fail.
     let source = r"
         trait Ping {
-            fn ping(val: Self) -> i64;
+            fn ping(self) -> i64;
         }
 
         type Server {}
 
         impl Server {
-            fn ping(s: Server, timeout: i64) -> i64 { 1 }
+            fn ping(self, timeout: i64) -> i64 { 1 }
         }
 
         fn use_ping<T: Ping>(t: T) -> i64 {
@@ -1369,14 +1372,14 @@ fn structural_e2_missing_one_of_two_methods_does_not_satisfy_bound() {
     // Negative: a multi-method trait where only one of two required methods is present.
     let source = r#"
         trait Named {
-            fn label(val: Self) -> string;
-            fn code(val: Self) -> i64;
+            fn label(self) -> string;
+            fn code(self) -> i64;
         }
 
         type Partial {}
 
         impl Partial {
-            fn label(p: Partial) -> string { "p" }
+            fn label(self) -> string { "p" }
             // `code` is intentionally missing
         }
 
@@ -1416,13 +1419,13 @@ fn structural_e2_all_default_methods_still_requires_explicit_impl() {
     // for default-only and marker-like traits.
     let source = r#"
         trait WithDefault {
-            fn greet(val: Self) -> string { "hello" }
+            fn greet(self) -> string { "hello" }
         }
 
         type Thingy {}
 
         impl Thingy {
-            fn greet(t: Thingy) -> string { "world" }
+            fn greet(self) -> string { "world" }
         }
 
         fn use_it<T: WithDefault>(t: T) {}
@@ -1467,7 +1470,7 @@ fn bound_diagnostic_missing_method_hint() {
     // A type that has no method at all should produce a hint naming the missing method.
     let source = r"
         trait Ping {
-            fn ping(val: Self) -> i64;
+            fn ping(self) -> i64;
         }
 
         type Widget {}
@@ -1510,13 +1513,13 @@ fn bound_diagnostic_arity_mismatch_hint() {
     // should produce a hint mentioning the arity mismatch.
     let source = r"
         trait Measure {
-            fn measure(val: Self) -> i64;
+            fn measure(self) -> i64;
         }
 
         type Ruler {}
 
         impl Ruler {
-            fn measure(r: Ruler, scale: i64) -> i64 { scale }
+            fn measure(self, scale: i64) -> i64 { scale }
         }
 
         fn use_measure<T: Measure>(t: T) -> i64 { 0 }
@@ -1555,13 +1558,13 @@ fn bound_diagnostic_return_type_mismatch_hint() {
     // should produce a hint mentioning the return-type mismatch.
     let source = r#"
         trait Label {
-            fn label(val: Self) -> string;
+            fn label(self) -> string;
         }
 
         type Tag {}
 
         impl Tag {
-            fn label(t: Tag) -> i64 { 0 }
+            fn label(self) -> i64 { 0 }
         }
 
         fn use_label<T: Label>(t: T) -> string { "" }
@@ -1601,7 +1604,7 @@ fn bound_diagnostic_e1_associated_type_requires_explicit_impl_hint() {
     let source = r"
         trait Container {
             type Item;
-            fn get(val: Self) -> i64;
+            fn get(self) -> i64;
         }
 
         type Box {}
@@ -1642,11 +1645,11 @@ fn bound_diagnostic_e1_associated_type_requires_explicit_impl_hint() {
 fn trait_method_where_clause_bound_enforced_negative() {
     let source = r#"
         trait Printable {
-            fn print(val: Self) -> string;
+            fn print(self) -> string;
         }
 
         trait Formatter {
-            fn apply<U>(item: Self, value: U) -> string where U: Printable;
+            fn apply<U>(self, value: U) -> string where U: Printable;
         }
 
         type Printer {}
@@ -1654,11 +1657,11 @@ fn trait_method_where_clause_bound_enforced_negative() {
         type Rock {}
 
         impl Printable for Page {
-            fn print(val: Page) -> string { "page" }
+            fn print(self) -> string { "page" }
         }
 
         impl Formatter for Printer {
-            fn apply<U>(item: Printer, value: U) -> string where U: Printable {
+            fn apply<U>(self, value: U) -> string where U: Printable {
                 "formatted"
             }
         }
@@ -1693,22 +1696,22 @@ fn trait_method_where_clause_bound_enforced_negative() {
 fn trait_method_where_clause_bound_enforced_positive() {
     let source = r#"
         trait Printable {
-            fn print(val: Self) -> string;
+            fn print(self) -> string;
         }
 
         trait Formatter {
-            fn apply<U>(item: Self, value: U) -> string where U: Printable;
+            fn apply<U>(self, value: U) -> string where U: Printable;
         }
 
         type Printer {}
         type Page {}
 
         impl Printable for Page {
-            fn print(val: Page) -> string { "page" }
+            fn print(self) -> string { "page" }
         }
 
         impl Formatter for Printer {
-            fn apply<U>(item: Printer, value: U) -> string where U: Printable {
+            fn apply<U>(self, value: U) -> string where U: Printable {
                 "formatted"
             }
         }
@@ -1944,12 +1947,12 @@ fn index_trait_user_impl_runs() {
 impl Index<i32> for Grid {
     type Output = i32;
 
-    fn get(g: Grid, index: i32) -> Option<i32> {
-        .Some(g.bias + index)
+    fn get(self, index: i32) -> Option<i32> {
+        .Some(self.bias + index)
     }
 
-    fn at(g: Grid, index: i32) -> i32 {
-        g.bias + index
+    fn at(self, index: i32) -> i32 {
+        self.bias + index
     }
 }
 
@@ -2116,8 +2119,8 @@ fn generic_named_method_calls_record_method_type_args() {
 }
 
 impl<T> Wrapper<T> {
-    fn map<U>(wrapper: Wrapper<T>, mapper: fn(T) -> U) -> U {
-        mapper(wrapper.value)
+    fn map<U>(self, mapper: fn(T) -> U) -> U {
+        mapper(self.value)
     }
 }
 
@@ -2159,13 +2162,13 @@ fn main() {
 fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
     let source = r"
         trait Show {
-            fn show(value: Self);
+            fn show(self);
         }
 
         type Wrapper {}
 
         impl Wrapper {
-            fn map<U: Show>(wrapper: Wrapper, value: U) -> U {
+            fn map<U: Show>(self, value: U) -> U {
                 value
             }
         }
@@ -2195,16 +2198,18 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
         .and_then(|type_def| type_def.methods.get("map"))
         .expect("impl method must populate type_def.methods");
 
-    assert_eq!(
-        fn_sig.type_param_bounds.get("U"),
-        Some(&vec!["Show".to_string()]),
-        "fn_sigs surface must retain method-inline bounds"
-    );
-    assert_eq!(
-        method_sig.type_param_bounds.get("U"),
-        Some(&vec!["Show".to_string()]),
-        "type_def.methods surface must retain method-inline bounds"
-    );
+    for (surface, sig) in [("fn_sigs", fn_sig), ("type_def.methods", method_sig)] {
+        let u = sig
+            .type_params
+            .iter()
+            .find(|parameter| parameter.spelling.as_str() == "U")
+            .expect("map declares U");
+        assert_eq!(
+            sig.bounds.of(u.id).count(),
+            1,
+            "{surface} surface must retain the method-inline `U: Show` bound"
+        );
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -2213,22 +2218,23 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
 
 #[test]
 fn structural_hardening_uses_fn_sigs_named_method_fallback() {
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Greet", &["hello"], false, false);
     let __id = checker.test_declaration("Speaker");
     checker
         .type_defs
         .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
     checker.test_fn_sig("Speaker::hello", FnSig::default());
 
+    let speaker = checker.test_named("Speaker", vec![]);
     assert!(
-        checker.type_structurally_satisfies("Speaker", "Greet"),
+        checker.type_structurally_satisfies(&speaker, trait_id),
         "structural check should reuse named-method fn_sigs fallback"
     );
 }
 
 #[test]
 fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
-    let mut checker = make_checker_with_trait("Closer", &["close"], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("Closer", &["close"], false, false);
 
     let mut methods = HashMap::new();
     methods.insert(
@@ -2250,122 +2256,10 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
         },
     );
 
+    let sink = Ty::named_head(crate::TypeHead::Builtin(crate::BuiltinType::Sink), vec![]);
     assert!(
-        checker.type_structurally_satisfies("std.stream.Sink", "Closer"),
+        checker.type_structurally_satisfies(&sink, trait_id),
         "structural check should prefer builtin Sink::close over imported stubs"
-    );
-}
-
-#[test]
-fn structural_hardening_qualified_trait_name_matches() {
-    // A type registered under "Speaker" must structurally satisfy a bound
-    // expressed as "greet.Greet" once "greet" is a known module.
-    // We build the checker state manually because check_program drains
-    // type_defs/fn_sigs at the end of the pass.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    checker.modules.insert("greet".to_string());
-
-    // Register a TypeDef for Speaker.  The trait `hello(val: Self)` has its
-    // receiver stripped by lookup_trait_method, so the effective trait_sig has
-    // params=[].  The concrete method entry must match: receiver already stripped.
-    let type_def = TypeDef {
-        kind: TypeDefKind::Struct,
-        name: "Speaker".to_string(),
-        type_params: vec![],
-        bounds: HashMap::new(),
-        fields: HashMap::new(),
-        variants: HashMap::new(),
-        methods: {
-            let mut m = HashMap::new();
-            m.insert("hello".to_string(), FnSig::default()); // params=[], return=Unit
-            m
-        },
-        doc_comment: None,
-        field_order: vec![],
-        is_indirect: false,
-    };
-    let __id = checker.test_declaration("Speaker");
-    checker.type_defs.insert(__id, type_def);
-
-    assert!(
-        checker.type_structurally_satisfies("Speaker", "greet.Greet"),
-        "structural check with qualified trait name must succeed after normalization"
-    );
-    // Unqualified form must still work too.
-    assert!(
-        checker.type_structurally_satisfies("Speaker", "Greet"),
-        "structural check with unqualified trait name must still succeed"
-    );
-}
-
-#[test]
-fn structural_hardening_qualified_type_name_matches() {
-    // A bound check with the type expressed as "mymod.Speaker" must succeed
-    // when "mymod" is a known module and "Speaker" is registered in type_defs.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    checker.modules.insert("mymod".to_string());
-
-    let type_def = TypeDef {
-        kind: TypeDefKind::Struct,
-        name: "Speaker".to_string(),
-        type_params: vec![],
-        bounds: HashMap::new(),
-        fields: HashMap::new(),
-        variants: HashMap::new(),
-        methods: {
-            let mut m = HashMap::new();
-            m.insert("hello".to_string(), FnSig::default());
-            m
-        },
-        doc_comment: None,
-        field_order: vec![],
-        is_indirect: false,
-    };
-    let __id = checker.test_declaration("Speaker");
-    checker.type_defs.insert(__id, type_def);
-
-    assert!(
-        checker.type_structurally_satisfies("mymod.Speaker", "Greet"),
-        "structural check with qualified type name must succeed after normalization"
-    );
-    // Unqualified form must still work too.
-    assert!(
-        checker.type_structurally_satisfies("Speaker", "Greet"),
-        "unqualified type name must still succeed"
-    );
-}
-
-#[test]
-fn structural_hardening_unknown_module_qualifier_is_rejected() {
-    // If the prefix is not a known module, we must not strip it and must
-    // not accidentally match a same-suffix type/trait.
-    let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    // "unknown" is NOT inserted into modules.
-
-    let type_def = TypeDef {
-        kind: TypeDefKind::Struct,
-        name: "Speaker".to_string(),
-        type_params: vec![],
-        bounds: HashMap::new(),
-        fields: HashMap::new(),
-        variants: HashMap::new(),
-        methods: {
-            let mut m = HashMap::new();
-            m.insert("hello".to_string(), FnSig::default());
-            m
-        },
-        doc_comment: None,
-        field_order: vec![],
-        is_indirect: false,
-    };
-    let __id = checker.test_declaration("Speaker");
-    checker.type_defs.insert(__id, type_def);
-
-    // Trait "unknown.Greet" should not resolve to "Greet" because "unknown" is
-    // not a registered module.
-    assert!(
-        !checker.type_structurally_satisfies("Speaker", "unknown.Greet"),
-        "unrecognised module prefix must not be stripped"
     );
 }
 
@@ -2376,17 +2270,17 @@ fn structural_hardening_super_trait_methods_required() {
     // checked and A's were silently skipped.
     let source = r"
         trait Printable {
-            fn print(val: Self);
+            fn print(self);
         }
 
         trait PrettyPrintable: Printable {
-            fn pretty_print(val: Self);
+            fn pretty_print(self);
         }
 
         type Doc {}
 
         impl Doc {
-            fn pretty_print(d: Doc) {}
+            fn pretty_print(self) {}
             // `print` (from super-trait Printable) is intentionally missing
         }
 
@@ -2422,18 +2316,18 @@ fn structural_hardening_super_trait_methods_all_present_succeeds() {
     // structural check must succeed without an explicit impl.
     let source = r"
         trait Printable {
-            fn print(val: Self);
+            fn print(self);
         }
 
         trait PrettyPrintable: Printable {
-            fn pretty_print(val: Self);
+            fn pretty_print(self);
         }
 
         type Doc {}
 
         impl Doc {
-            fn print(d: Doc) {}
-            fn pretty_print(d: Doc) {}
+            fn print(self) {}
+            fn pretty_print(self) {}
         }
 
         fn use_pp<T: PrettyPrintable>(t: T) {}
@@ -2466,18 +2360,18 @@ fn structural_hardening_child_default_overrides_super_required_method() {
     // must not be re-required structurally from the concrete type.
     let source = r"
         trait Printable {
-            fn print(val: Self);
+            fn print(self);
         }
 
         trait PrettyPrintable: Printable {
-            fn print(val: Self) {}
-            fn pretty_print(val: Self);
+            fn print(self) {}
+            fn pretty_print(self);
         }
 
         type Doc {}
 
         impl Doc {
-            fn pretty_print(d: Doc) {}
+            fn pretty_print(self) {}
         }
 
         fn use_pp<T: PrettyPrintable>(t: T) {}
@@ -2509,26 +2403,26 @@ fn structural_hardening_diamond_sibling_shadowing_merges_across_supers() {
     // collectively so only the root trait's still-required methods remain.
     let source = r"
         trait A {
-            fn a(val: Self);
-            fn b(val: Self);
+            fn a(self);
+            fn b(self);
         }
 
         trait B: A {
-            fn a(val: Self) {}
+            fn a(self) {}
         }
 
         trait C: A {
-            fn b(val: Self) {}
+            fn b(self) {}
         }
 
         trait D: B + C {
-            fn d(val: Self);
+            fn d(self);
         }
 
         type Doc {}
 
         impl Doc {
-            fn d(d: Doc) {}
+            fn d(self) {}
         }
 
         fn use_d<T: D>(t: T) {}
@@ -2577,6 +2471,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
+                suspends: false,
                 name: Ident::new("do_it"),
                 type_params: None,
                 params: vec![Param {
@@ -2594,6 +2489,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: true,
                 }],
                 return_type: None,
                 where_clause: None,
@@ -2607,7 +2503,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_super = checker.trait_info_from_decl(&assoc_super, None, 0);
-    checker.test_trait_def("AssocSuper", info_super);
+    let super_id = checker.test_trait_def("AssocSuper", info_super);
 
     // Child trait with no assoc types of its own.
     let child = TraitDecl {
@@ -2622,6 +2518,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
@@ -2639,6 +2536,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: true,
             }],
             return_type: None,
             where_clause: None,
@@ -2651,11 +2549,12 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_child = checker.trait_info_from_decl(&child, None, 0);
-    checker.test_trait_def("ChildTrait", info_child);
-    checker.set_trait_supers("ChildTrait", vec!["AssocSuper".to_string()]);
+    let child_id = checker.test_trait_def("ChildTrait", info_child);
+    checker.trait_super.insert(child_id, vec![super_id]);
 
+    let any = checker.test_named("AnyType", vec![]);
     assert!(
-        !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
+        !checker.type_structurally_satisfies(&any, child_id),
         "E1 guard in super-trait must veto structural check for child trait"
     );
 }
@@ -2675,6 +2574,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("map"),
             type_params: Some(vec![TypeParam {
                 name: Ident::new("U"),
@@ -2695,6 +2595,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: true,
             }],
             return_type: None,
             where_clause: None,
@@ -2707,7 +2608,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_super = checker.trait_info_from_decl(&generic_super, None, 0);
-    checker.test_trait_def("GenericSuper", info_super);
+    let super_id = checker.test_trait_def("GenericSuper", info_super);
 
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
@@ -2721,6 +2622,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
@@ -2738,6 +2640,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: true,
             }],
             return_type: None,
             where_clause: None,
@@ -2750,11 +2653,12 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_child = checker.trait_info_from_decl(&child, None, 0);
-    checker.test_trait_def("ChildTrait", info_child);
-    checker.set_trait_supers("ChildTrait", vec!["GenericSuper".to_string()]);
+    let child_id = checker.test_trait_def("ChildTrait", info_child);
+    checker.trait_super.insert(child_id, vec![super_id]);
 
+    let any = checker.test_named("AnyType", vec![]);
     assert!(
-        !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
+        !checker.type_structurally_satisfies(&any, child_id),
         "generic-method guard in super-trait must veto structural check for child trait"
     );
 }
@@ -2762,38 +2666,38 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 #[test]
 fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    for name in ["TraitA", "TraitB"] {
-        checker.test_trait_def(
-            name,
-            TraitInfo {
-                source_module: None,
-                file_index: 0,
-                methods: Vec::new(),
-                associated_types: Vec::new(),
-                type_params: Vec::new(),
-            },
-        );
-    }
-    checker.set_trait_supers("TraitA", vec!["TraitB".to_string()]);
-    checker.set_trait_supers("TraitB", vec!["TraitA".to_string()]);
-    checker
-        .trait_impls_set
-        .insert(("Thing".to_string(), "TraitA".to_string()));
+    let empty = || TraitInfo {
+        source_module: None,
+        file_index: 0,
+        methods: Vec::new(),
+        associated_types: Vec::new(),
+        type_params: Vec::new(),
+    };
+    let trait_a = checker.test_trait_def("TraitA", empty());
+    let trait_b = checker.test_trait_def("TraitB", empty());
+    let missing = checker.test_trait_def("MissingTrait", empty());
+    checker.trait_super.insert(trait_a, vec![trait_b]);
+    checker.trait_super.insert(trait_b, vec![trait_a]);
+    let thing = checker.test_named("Thing", vec![]);
+    checker.record_trait_impl(&thing, &crate::check::TraitRef::bare(trait_a), Vec::new());
 
+    let param = crate::ParamHead::for_test("T");
+    let mut bounds = crate::check::ParamBounds::default();
+    bounds.push(param.id, crate::check::TraitRef::bare(missing));
     let sig = FnSig {
-        type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["MissingTrait".to_string()])]),
+        type_params: vec![param],
+        bounds,
         ..Default::default()
     };
 
-    checker.enforce_type_param_bounds(&sig, &[Ty::named_for_test("Thing", vec![])], &(0..0));
+    checker.enforce_type_param_bounds(&sig, &[thing], &(0..0));
 
     assert!(
         checker
             .errors
             .iter()
-            .any(|error| error.kind == TypeErrorKind::UndefinedType
-                && error.message.contains("unknown trait `MissingTrait`")),
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("MissingTrait")),
         "expected cyclic trait hierarchy bound check to fail with a diagnostic; got {:?}",
         checker.errors
     );
@@ -2844,11 +2748,11 @@ fn vec_iter_satisfies_iterator_bound_through_its_explicit_impl() {
 fn identity_builtins_reach_explicit_display_impl_lookup() {
     let source = r#"
         impl Display for NodeId {
-            fn fmt(value: NodeId) -> string { "node" }
+            fn fmt(self) -> string { "node" }
         }
 
         impl Display for Location {
-            fn fmt(value: Location) -> string { "location" }
+            fn fmt(self) -> string { "location" }
         }
 
         fn accepts_display<T>(value: T) where T: Display {}
@@ -3090,8 +2994,8 @@ fn impl_of_undeclared_trait_is_rejected() {
 }
 
 impl Nonexistent for Point {
-    fn shift(pt: Point) -> i64 {
-        pt.x
+    fn shift(self) -> i64 {
+        self.x
     }
 }
 
@@ -3130,8 +3034,8 @@ fn impl_of_marker_trait_without_declared_methods_is_accepted() {
 }
 
 impl Eq for Key {
-    fn eq(left: Key, right: Key) -> bool {
-        left.id == right.id
+    fn eq(self, right: Key) -> bool {
+        self.id == right.id
     }
 }
 
@@ -3317,4 +3221,84 @@ fn imported_type_without_the_implemented_method_still_fails() {
         "diagnostic names the missing method: {}",
         error.message
     );
+}
+
+/// R6: a trait object renders when `Display` is in its bounds' supertrait
+/// closure (`dyn Error` through `Error: Display`).
+#[test]
+fn dyn_error_is_display_through_its_supertrait_closure() {
+    let output = check_source(
+        r#"
+type Boom { code: i64; }
+impl Display for Boom { fn fmt(self) -> string { f"boom {self.code}" } }
+impl Error for Boom {}
+fn show(e: dyn Error) -> string { f"got {e}" }
+fn shout(e: dyn Error) { println(e); }
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+/// Control: a trait object whose closure lacks `Display` does not render.
+#[test]
+fn dyn_without_display_in_its_closure_is_not_display() {
+    let output = check_source(
+        r#"
+trait Tick { fn tick(self) -> i64; }
+fn show(t: dyn Tick) -> string { f"{t}" }
+fn shout(t: dyn Tick) { println(t); }
+"#,
+    );
+    let messages: Vec<_> = output.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages.iter().all(|m| m.contains("does not implement")),
+        "{messages:?}"
+    );
+}
+
+/// R11: a trait object in a `receive fn` signature cannot cross the actor
+/// boundary; the hint points at a declared failure enum.
+#[test]
+fn receive_fn_refuses_a_trait_object_in_its_signature() {
+    let output = check_source(
+        r#"
+type Boom { code: i64; }
+impl Display for Boom { fn fmt(self) -> string { f"boom {self.code}" } }
+impl Error for Boom {}
+actor Store {
+    receive fn put(n: i64) fails dyn Error {
+        if n < 0 { return error Boom { code: n }; }
+    }
+    receive fn take(e: dyn Error) {}
+}
+"#,
+    );
+    let refusals: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.starts_with("E_DYN_NOT_SEND"))
+        .collect();
+    assert_eq!(refusals.len(), 2, "{:?}", output.errors);
+    assert!(refusals
+        .iter()
+        .all(|e| e.suggestions.iter().any(|s| s.contains("declare an enum"))));
+}
+
+/// Control: a declared failure enum crosses the boundary.
+#[test]
+fn receive_fn_admits_a_declared_failure_enum() {
+    let output = check_source(
+        r#"
+enum StoreError { Full; Closed; }
+impl Display for StoreError { fn fmt(self) -> string { "store" } }
+impl Error for StoreError {}
+actor Store {
+    receive fn put(n: i64) fails StoreError {
+        if n < 0 { return error StoreError.Full; }
+    }
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

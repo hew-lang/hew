@@ -4,12 +4,12 @@ type Reading {
 }
 
 impl Display for Reading {
-    fn fmt(value: Reading) -> string {
-        if value.label == "skipped" {
+    fn fmt(self) -> string {
+        if self.label == "skipped" {
             println("unexpected formatter after failure");
         }
-        let text = value.label.to_upper();
-        let count = text.len() / value.divisor;
+        let text = self.label.to_upper();
+        let count = text.len() / self.divisor;
         f"{text}:{count}"
     }
 }

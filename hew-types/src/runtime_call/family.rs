@@ -49,7 +49,7 @@ pub enum RuntimeCallFamily {
     /// fn` stream-producer pump's clean (generator-exhausted) exit:
     /// deregisters the actor's gen-sink slot and frees the sink (decision
     /// 7). Emitted only by `build_stream_producer_pump`
-    /// (`hew-mir/src/lower.rs`); no user-facing Hew syntax reaches it.
+    /// (the MIR stream-producer lowering); no user-facing Hew syntax reaches it.
     /// Pre-staged like `SinkClose`, which it replaces in the pump.
     ActorGenSinkComplete,
     /// `hew_actor_gen_sink_register(actor, sink) -> void` — a `receive gen
@@ -213,8 +213,8 @@ pub enum RuntimeCallFamily {
     /// `monitor(RemotePid<T>)` →
     /// `hew_node_monitor_location(target, out_monitor_id) -> i32`.
     /// Zero returns success and writes the distributed-monitor id; non-zero is
-    /// one plus the `MonitorError` discriminant. Codegen assembles
-    /// `Result<MonitorRef, MonitorError>`. The current node is resolved
+    /// one plus the `LinkError` discriminant. Codegen assembles
+    /// `Result<MonitorRef, LinkError>`. The current node is resolved
     /// internally, so the single runtime argument is a pointer to the carried
     /// full `Location`; non-consuming.
     NodeMonitor,
@@ -422,7 +422,6 @@ pub enum RuntimeCallFamily {
     // --- Active transport attach (network actor binding) -------------------
     // Pre-staged method calls dispatch via callee-name intercepts that
     // synthesize concrete actor protocol IDs at codegen time.
-    TcpAttachLocal,
     TlsAttachLocal,
     WebSocketAttachLocal,
 
@@ -484,7 +483,6 @@ pub enum RuntimeCallFamily {
 /// Module-level runtime authorities implied by typed runtime-call families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCapability {
-    BlockingOffload,
     Metrics,
     Node,
 }

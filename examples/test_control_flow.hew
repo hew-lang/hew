@@ -115,7 +115,7 @@ fn test_match_result() -> i64 {
 
 fn test_for_loop() -> i64 {
     var sum = 0;
-    for i in 0 .. 5 {
+    for i in 0..5 {
         sum = sum + i;
     }
     // 0+1+2+3+4 = 10
@@ -129,7 +129,7 @@ fn test_for_loop() -> i64 {
 
 fn test_while_loop() -> i64 {
     var sum = 0;
-    for i in 0 .. 5 {
+    for i in 0..5 {
         sum = sum + i;
     }
     // 0+1+2+3+4 = 10

@@ -46,10 +46,10 @@ impl InstanceService<'_> {
         Ok(crate::actor::SemActorCodec {
             params: params
                 .iter()
-                .map(|ty| self.wire_plan(ty, &mut Vec::new()))
+                .map(|ty| self.wire_plans(ty))
                 .collect::<Result<_, _>>()?,
             reply: (*reply != ResolvedTy::Unit)
-                .then(|| self.wire_plan(reply, &mut Vec::new()))
+                .then(|| self.wire_plans(reply))
                 .transpose()?,
         })
     }

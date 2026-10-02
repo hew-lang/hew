@@ -1,0 +1,19 @@
+[[case]]
+id = "from-invalid"
+intent = "A `From` impl targeting a trait object or converting from a bare type parameter is refused where it is declared."
+source = "cases/from-invalid.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_FROM_INVALID"
+line = 16
+column = 1
+message = "cannot target a trait object"
+
+[[case.expected.diagnostics]]
+code = "E_FROM_INVALID"
+line = 22
+column = 1
+message = "bare type parameter"

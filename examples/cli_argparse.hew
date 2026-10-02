@@ -32,7 +32,7 @@ fn print_flags(flags: Vec<string>) {
 
 fn print_options(opt_keys: Vec<string>, opt_vals: Vec<string>) {
     println("Options:");
-    for i in 0 .. opt_keys.len() {
+    for i in 0..opt_keys.len() {
         print("  ");
         print(opt_keys[i]);
         print(" = ");
@@ -63,7 +63,7 @@ fn main() {
     var positional: Vec<string> = Vec.new();
     var show_help = 0;
     // Parse arguments (skip argv[0] which is the program name)
-    for i in 1 .. argc {
+    for i in 1..argc {
         let arg = match arguments.get(i) {
             .Some(value) => value,
             .None => {

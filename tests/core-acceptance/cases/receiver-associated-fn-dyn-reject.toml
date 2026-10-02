@@ -1,0 +1,13 @@
+[[case]]
+id = "receiver-associated-fn-dyn-reject"
+intent = "A trait that declares an associated function (no `self` receiver) is not object-safe, so erasing to `dyn` is refused at the coercion."
+source = "cases/receiver-associated-fn-dyn-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "TraitNotObjectSafe"
+line = 16
+column = 23
+message = "trait `Zero` is not object-safe: `zero` has no `self` receiver"

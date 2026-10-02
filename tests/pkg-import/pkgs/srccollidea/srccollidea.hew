@@ -18,5 +18,5 @@ pub type Payload {
 
 /// A closable source whose `close` surfaces a structured `Result`.
 pub trait Source {
-    fn close(val: Self) -> Result<Payload, ErrA>;
+    fn close(self) -> Result<Payload, ErrA>;
 }

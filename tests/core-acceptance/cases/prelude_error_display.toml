@@ -1,6 +1,6 @@
 [[case]]
 id = "prelude_error_display"
-intent = "#3224: the five prelude error enums declared in `std/builtins.hew` (SendError, LookupError, ActorError, TimeoutError, LinkError) carry `impl Display for <X>` and print via `f\"{e}\"` like any other public `std/` error enum."
+intent = "The prelude error enums declared in `std/builtins.hew` print variant-first: the variant name, then the detail."
 source = "../vertical-slice/accept/prelude_error_display.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "the sink or connection is closed\nno actor is registered under the requested name\nthe local node is not running\nthe deadline fired before the recv completed\nthe target actor has already exited\n"
+stdout = "Closed: the sink or connection is closed\nNotFound: no actor is registered under the requested name\nNodeNotRunning: the local node is not running\nNoContext: the operation requires an actor context\n"
 exit = 0

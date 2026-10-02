@@ -303,21 +303,19 @@ impl LowerCtx {
     ) {
         let symbol =
             crate::node::HirImplBlock::method_symbol(self_type_name, method.name.name.as_str());
-        self.register_impl_method_fn_entry_at(self_type_name, method, impl_type_params, &symbol);
+        self.register_impl_method_fn_entry_at(method, impl_type_params, &symbol);
     }
 
     /// Register a declaration-disambiguated method body under its exact
     /// emitted symbol, preserving the ordinary method signature rules.
     pub(super) fn register_impl_method_fn_entry_at(
         &mut self,
-        self_type_name: &str,
         method: &FnDecl,
         impl_type_params: &[hew_types::ParamHead],
         symbol: &str,
     ) {
-        let bare_type_name = Self::bare_impl_self_type_name(self_type_name);
         self.register_fn_entry(symbol, method);
-        if Self::is_var_self_method_for_type(method, Some(bare_type_name)) {
+        if Self::is_var_self_method(method) {
             if let Some(entry) = self.fn_registry.get_mut(symbol) {
                 let Some(receiver_ty) = entry.param_tys.first().cloned() else {
                     unreachable!(

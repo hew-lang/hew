@@ -42,16 +42,10 @@ fn show(worker: Worker) {
 fn main() {
     let quick = spawn Worker(name: "ready", size: 6, fast: true);
     show(quick);
-    {
-        let __hew_migrated_actor_1023 = quick;
-        stop(__hew_migrated_actor_1023);
-        stopped(__hew_migrated_actor_1023);
-    };
+    stop(quick);
+    stopped(quick);
     let slow = spawn Worker(name: "later", size: 41, fast: false);
     show(slow);
-    {
-        let __hew_migrated_actor_1124 = slow;
-        stop(__hew_migrated_actor_1124);
-        stopped(__hew_migrated_actor_1124);
-    };
+    stop(slow);
+    stopped(slow);
 }

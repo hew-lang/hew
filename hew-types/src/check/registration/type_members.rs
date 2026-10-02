@@ -14,20 +14,8 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
-use heck::{ToKebabCase, ToLowerCamelCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use hew_parser::ast::Ident;
-use hew_parser::ast::{NamingCase, WireMetadata};
-
-fn wire_name(name: &str, case: Option<NamingCase>) -> String {
-    match case {
-        None => name.to_owned(),
-        Some(NamingCase::CamelCase) => name.to_lower_camel_case(),
-        Some(NamingCase::PascalCase) => name.to_upper_camel_case(),
-        Some(NamingCase::SnakeCase) => name.to_snake_case(),
-        Some(NamingCase::ScreamingSnake) => name.to_shouty_snake_case(),
-        Some(NamingCase::KebabCase) => name.to_kebab_case(),
-    }
-}
+use hew_parser::ast::WireMetadata;
 
 impl Checker {
     pub(super) fn refresh_handle_bearing_structs(&mut self) {
@@ -215,13 +203,19 @@ impl Checker {
                             // identity only.
                             Item::Trait(td) => {
                                 let qualified = format!("{module_name}.{}", td.name);
-                                if !self.trait_def_keys.contains_key(&qualified) {
+                                let registered = self
+                                    .lookup_declaration(&qualified)
+                                    .is_some_and(|id| self.trait_defs.contains_key(&id));
+                                if !registered {
                                     let info = self.trait_info_from_decl(
                                         td,
                                         Some(module_name.clone()),
                                         self.current_module_idx,
                                     );
-                                    self.insert_trait_def(&qualified, &qualified, info);
+                                    if let Some(trait_id) = self.insert_trait_def(&qualified, info)
+                                    {
+                                        self.register_trait_supers(trait_id, td);
+                                    }
                                 }
                             }
                             // Register machine state/event binding tables for the
@@ -306,19 +300,10 @@ impl Checker {
                     );
                     self.errors.extend(trait_errors);
                     let declaration = self.declaration_identity(td.name.name.as_str());
-                    self.insert_trait_def(td.name.name.as_str(), &declaration, info);
-                    self.local_trait_defs.insert(td.name.to_string());
-                    // Record super-trait relationships
-                    if let Some(supers) = &td.super_traits {
-                        let super_names: Vec<String> = supers
-                            .iter()
-                            .map(|s| {
-                                self.mark_imported_trait_used(None, &s.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-                                s.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
-                            })
-                            .collect();
-                        self.set_trait_supers(td.name.name.as_str(), super_names);
+                    if let Some(trait_id) = self.insert_trait_def(&declaration, info) {
+                        self.register_trait_supers(trait_id, td);
                     }
+                    self.local_trait_defs.insert(td.name.to_string());
                     // Harvest `#[lang_item("…")]` attributes into the
                     // lang-item registry so downstream passes (HIR f-string
                     // lowering) can discover the trait/method names by role
@@ -392,7 +377,7 @@ impl Checker {
         let target = self.resolve_type_expr_tracking_holes(&decl.ty, &mut holes);
         self.generic_ctx.pop();
         self.type_aliases.insert(
-            identity.clone(),
+            declaration,
             TypeAliasDef {
                 declaration,
                 type_params,
@@ -591,9 +576,9 @@ impl Checker {
     pub(super) fn reresolve_actor_members(&mut self, ad: &ActorDecl) {
         let has_type_params = !ad.type_params.is_empty();
         if has_type_params {
-            let bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
-            self.current_type_param_bounds
-                .push(TypeParamScope::new(bounds, HashMap::new()));
+            let bounds =
+                self.collect_type_param_bounds(Some(&ad.type_params), None, &mut Vec::new());
+            self.current_type_param_bounds.push(bounds);
         }
         let mut hole_vars = Vec::new();
         let mut fields: HashMap<String, Ty> = HashMap::new();
@@ -768,16 +753,9 @@ impl Checker {
         );
         self.commit_reresolved_type_def(td.name.name.as_str(), type_def);
 
-        if let Some(ref wire) = td.wire {
-            let variant_order: Vec<String> = td
-                .body
-                .iter()
-                .filter_map(|i| match i {
-                    TypeBodyItem::Variant(v) => Some(v.name.to_string()),
-                    _ => None,
-                })
-                .collect();
-            self.register_wire_methods(td.name.name.as_str(), wire, &variant_order);
+        self.register_serial_layout(td);
+        if td.wire.is_some() {
+            self.register_wire_methods(td);
         }
     }
 
@@ -1057,8 +1035,11 @@ impl Checker {
         } else {
             self.declaration_parameter_heads(td.name.name.as_str())
         };
-        let type_param_bounds =
-            self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
+        let type_param_bounds = self.collect_type_param_bounds(
+            td.type_params.as_ref(),
+            td.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
 
         // Reject duplicate type parameter names — same check as `register_type_decl`.
         {
@@ -1118,7 +1099,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
@@ -1143,7 +1124,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     params: variant_tys,
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
@@ -1401,8 +1382,11 @@ impl Checker {
             }
         }
 
-        let type_param_bounds =
-            self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
+        let type_param_bounds = self.collect_type_param_bounds(
+            td.type_params.as_ref(),
+            td.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::param(*name))
@@ -1439,7 +1423,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
@@ -1466,7 +1450,7 @@ impl Checker {
                                 variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    type_param_bounds: type_param_bounds.clone(),
+                                    bounds: type_param_bounds.clone(),
                                     params: variant_tys,
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
@@ -1559,9 +1543,10 @@ impl Checker {
         self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
 
-        // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
+        self.register_serial_layout(td);
+        // A wire type registers its qualified alias and has its version constraints checked.
         if let Some(ref wire) = td.wire {
-            self.register_wire_methods(td.name.name.as_str(), wire, &variant_order);
+            self.register_wire_methods(td);
             self.validate_wire_version_constraints(td.name.name.as_str(), wire);
         }
     }
@@ -1593,8 +1578,11 @@ impl Checker {
         } else {
             self.declaration_parameter_heads(rd.name.name.as_str())
         };
-        let type_param_bounds =
-            self.collect_type_param_bounds(rd.type_params.as_ref(), rd.where_clause.as_ref());
+        let type_param_bounds = self.collect_type_param_bounds(
+            rd.type_params.as_ref(),
+            rd.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
 
         // Build the return type for constructors: `R` or `R<T1, T2, …>`
         let enum_return_args: Vec<Ty> = type_param_names
@@ -1639,7 +1627,7 @@ impl Checker {
                 // `.0`/`.1` access is not permitted on tuple records (A-D2).
                 let signature = FnSig {
                     type_params: type_param_names.clone(),
-                    type_param_bounds: type_param_bounds.clone(),
+                    bounds: type_param_bounds.clone(),
                     params: param_tys,
                     return_type: return_type.clone(),
                     ..FnSig::default()
@@ -1697,280 +1685,21 @@ impl Checker {
             ),
         );
 
+        self.register_record_serial_layout(
+            &declaration_name,
+            matches!(rd.kind, RecordKind::Tuple(_)),
+            &type_def,
+        );
         self.insert_type_def(&declaration_name, type_def);
         self.record_type_def_inference_holes(declaration_name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
     }
 
-    /// Register codec methods for a wire type.
-    ///
-    /// - Wire structs expose binary + JSON/YAML helpers.
-    /// - Wire enums expose JSON/YAML helpers.
-    pub(in crate::check) fn register_wire_methods(
-        &mut self,
-        type_name: &str,
-        wire: &WireMetadata,
-        variant_order: &[String],
-    ) {
-        // ONE canonical wire identity (A316). A module declaration's wire
-        // surface is keyed by `{module}.{Name}` — the identity every resolved
-        // receiver and the codegen wire-layout lookup carry; a root
-        // declaration's bare name IS its canonical identity. Surface
-        // spellings resolve TO this key at lookup time
-        // (`canonical_nominal_name`); no bare mirror entries exist, so two
-        // same-leaf wire types from different modules never collide on a
-        // shared last-write-wins key.
-        let canonical_identity = self.current_module_identity().map_or_else(
-            || type_name.to_string(),
-            |module| format!("{module}.{type_name}"),
-        );
-        let self_ty = self.named_ty_for_key(&canonical_identity, vec![]);
-        let bytes_ty = Ty::Bytes;
-
-        let Some((is_wire_struct, is_serial_wire_enum, layout_entry)) =
-            self.type_def_at(type_name).map(|type_def| {
-                let is_wire_struct = type_def.kind == TypeDefKind::Struct;
-                let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
-                    && type_def
-                        .variants
-                        .values()
-                        .all(|variant| matches!(variant, VariantDef::Unit));
-                let is_payload_wire_enum = type_def.kind == TypeDefKind::Enum
-                    && type_def
-                        .variants
-                        .values()
-                        .any(|variant| !matches!(variant, VariantDef::Unit));
-                let is_serial_wire_enum = is_unit_wire_enum || is_payload_wire_enum;
-                let layout_entry = Self::wire_layout_entry_from_metadata(
-                    type_def,
-                    wire,
-                    is_wire_struct,
-                    variant_order,
-                );
-                (is_wire_struct, is_serial_wire_enum, layout_entry)
-            })
-        else {
-            return;
-        };
-        self.validate_wire_text_names(type_name, &layout_entry);
-        // Track wire structs and wire enums so the method-dispatch arms can
-        // recognise the binary `encode`/`decode` codec calls (which lower to the
-        // `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*` thunks) without
-        // re-deriving wire-ness. Both ride the CBOR body codec: structs as a
-        // tag-keyed map, enums as the "map-of-one" shape.
-        if is_wire_struct {
-            self.wire_struct_types.insert(canonical_identity.clone());
-        }
-        if is_serial_wire_enum {
-            self.wire_enum_types.insert(canonical_identity.clone());
-        }
-        self.wire_layouts
-            .insert(canonical_identity.clone(), layout_entry);
-
-        // Wire structs and wire enums carry the same method surface: the binary
-        // CBOR codec (`encode`/`decode`) plus the text-format helpers. The body
-        // shapes differ at codegen (struct = tag-keyed map, enum =
-        // "map-of-one"), but the registered signatures are identical.
-        let instance_methods = if is_wire_struct || is_serial_wire_enum {
-            vec![
-                ("encode", vec![], bytes_ty.clone()),
-                ("to_json", vec![], Ty::String),
-                ("to_yaml", vec![], Ty::String),
-            ]
-        } else {
-            vec![]
-        };
-
-        // Instance methods land on the DECLARATION record (the bare
-        // `type_defs` entry this module's registration just wrote), then the
-        // canonical definition is refreshed from it — the
-        // `commit_reresolved_type_def` pattern. Pre-registration mints the
-        // qualified skeleton before this runs; the later canonical refresh is
-        // what carries the codec methods onto the durable definition.
-        if let Some(type_def) = self.type_def_at_mut(type_name) {
-            for (method_name, params, return_type) in &instance_methods {
-                type_def.methods.insert(
-                    (*method_name).to_string(),
-                    FnSig {
-                        params: params.clone(),
-                        return_type: return_type.clone(),
-                        ..FnSig::default()
-                    },
-                );
-            }
-        }
+    /// Register a `#[wire]` type's module-qualified alias.
+    pub(in crate::check) fn register_wire_methods(&mut self, td: &hew_parser::ast::TypeDecl) {
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
-            self.register_qualified_type_alias(&module_owner, type_name);
+            self.register_qualified_type_alias(&module_owner, td.name.name.as_str());
         }
-
-        // `decode` returns bare `Self` (binary CBOR is trap-on-failure); the
-        // text-format `from_json`/`from_yaml` parsers can fail on arbitrary
-        // user input (config files, HTTP bodies), so they return
-        // `Result<Self, string>` — the only honest shape for a fallible parse.
-        let from_result_ty = Ty::result(self_ty.clone(), Ty::String);
-        let static_methods = if is_wire_struct || is_serial_wire_enum {
-            vec![
-                ("decode", vec![bytes_ty], self_ty),
-                ("from_json", vec![Ty::String], from_result_ty.clone()),
-                ("from_yaml", vec![Ty::String], from_result_ty),
-            ]
-        } else {
-            vec![]
-        };
-
-        for (method_name, params, return_type) in static_methods {
-            // Static codec entry points register under the canonical identity
-            // ONLY. The call-site arm canonicalizes the receiver's surface
-            // spelling (`Env.from_json` inside the defining module, an
-            // importer's binding, an `as`-alias) to this key before lookup.
-            let sig = FnSig {
-                params,
-                return_type,
-                ..FnSig::default()
-            };
-            let key = format!("{canonical_identity}.{method_name}");
-            match self.lookup_declaration(&canonical_identity) {
-                Some(owner) => {
-                    let member = self
-                        .defs
-                        .mint_codec_member(owner, Symbol::intern(method_name));
-                    self.insert_fn_sig(&key, member, sig);
-                }
-                None => self.insert_fn_sig_at(&key, sig),
-            }
-        }
-    }
-
-    pub(super) fn wire_layout_entry_from_metadata(
-        type_def: &TypeDef,
-        wire: &WireMetadata,
-        is_wire_struct: bool,
-        variant_order: &[String],
-    ) -> WireLayoutEntry {
-        let fields = if is_wire_struct {
-            wire.field_meta
-                .iter()
-                .map(|field| WireFieldLayout {
-                    name: field.field_name.clone(),
-                    tag: field.field_number,
-                    json_name: field
-                        .json_name
-                        .clone()
-                        .unwrap_or_else(|| wire_name(&field.field_name, wire.json_case)),
-                    yaml_name: field
-                        .yaml_name
-                        .clone()
-                        .unwrap_or_else(|| wire_name(&field.field_name, wire.yaml_case)),
-                    presence: if field.is_optional {
-                        WireFieldPresence::Optional
-                    } else {
-                        WireFieldPresence::Required
-                    },
-                    repeated: field.is_repeated,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let variant_tags: HashMap<&str, u32> = wire
-            .field_meta
-            .iter()
-            .map(|field| (field.field_name.as_str(), field.field_number))
-            .collect();
-        let variant_names: Vec<String> = if variant_order.is_empty() {
-            let mut names: Vec<_> = type_def.variants.keys().cloned().collect();
-            names.sort();
-            names
-        } else {
-            variant_order
-                .iter()
-                .filter(|name| type_def.variants.contains_key(*name))
-                .cloned()
-                .collect()
-        };
-        let variants = if is_wire_struct {
-            Vec::new()
-        } else {
-            variant_names
-                .into_iter()
-                .enumerate()
-                .map(|(index, name)| {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "wire enum variant counts are bounded by source size"
-                    )]
-                    let default_tag = index as u32;
-                    let tag = variant_tags
-                        .get(name.as_str())
-                        .copied()
-                        .unwrap_or(default_tag);
-                    WireVariantLayout {
-                        json_name: wire_name(&name, wire.json_case),
-                        yaml_name: wire_name(&name, wire.yaml_case),
-                        name,
-                        tag,
-                    }
-                })
-                .collect()
-        };
-
-        WireLayoutEntry {
-            is_struct: is_wire_struct,
-            version: wire.version,
-            min_version: wire.min_version,
-            fields,
-            variants,
-        }
-    }
-
-    fn validate_wire_text_names(&mut self, type_name: &str, layout: &WireLayoutEntry) {
-        for (format, yaml) in [("JSON", false), ("YAML", true)] {
-            let mut names = HashSet::new();
-            if layout.is_struct {
-                for field in &layout.fields {
-                    let name = if yaml {
-                        &field.yaml_name
-                    } else {
-                        &field.json_name
-                    };
-                    if !names.insert(name.as_str()) {
-                        self.wire_text_name_collision(type_name, format, "field", name);
-                    }
-                }
-            } else {
-                for variant in &layout.variants {
-                    let name = if yaml {
-                        &variant.yaml_name
-                    } else {
-                        &variant.json_name
-                    };
-                    if !names.insert(name.as_str()) {
-                        self.wire_text_name_collision(type_name, format, "variant", name);
-                    }
-                }
-            }
-        }
-    }
-
-    fn wire_text_name_collision(
-        &mut self,
-        type_name: &str,
-        format: &str,
-        member: &str,
-        name: &str,
-    ) {
-        self.errors.push(TypeError {
-            severity: crate::error::Severity::Error,
-            kind: TypeErrorKind::InvalidOperation,
-            span: self.type_def_spans.get(type_name).cloned().unwrap_or(0..0),
-            message: format!(
-                "wire {format} {member} name `{name}` is ambiguous after naming metadata"
-            ),
-            notes: vec![],
-            suggestions: vec![],
-            source_module: self.current_module.clone(),
-        });
     }
 
     /// Validate version constraints on a wire type.
@@ -2070,35 +1799,18 @@ impl Checker {
     )]
     pub(in crate::check) fn register_machine_decl(&mut self, md: &MachineDecl, span: &Span) {
         // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
-        // MachineDecl.type_params is Vec<TypeParam> — we extract bare names
-        // here for the self-type and collect declared trait bounds into a
-        // side table consulted at use sites (struct-state brace init) and
-        // mirrored onto unit-state constructor FnSigs for the call path.
-        //
-        // Validate before collect_type_param_bounds erases positional type args.
-        self.validate_type_param_bound_shapes(
+        // The declared trait bounds live on the machine's `TypeDef`, consulted
+        // at use sites (struct-state brace init), and are mirrored onto
+        // unit-state constructor FnSigs for the call path.
+        let type_param_names = self.source_parameter_heads(&md.type_params, span);
+        // Inline `<T: Trait>` and `where T: Trait` bounds are one set: the
+        // bound is satisfied at the instantiation site iff the substituted
+        // type implements the trait, wherever it was written.
+        let type_param_bounds = self.collect_type_param_bounds(
             Some(&md.type_params),
             md.where_clause.as_ref(),
-            span,
+            &mut Vec::new(),
         );
-        let type_param_names = self.source_parameter_heads(&md.type_params, span);
-        // Collect inline `<T: Trait>` and `where T: Trait` bounds into a
-        // single side table keyed by machine name then param name. At
-        // the checker layer, a bound's source (inline vs where clause)
-        // does not affect the enforcement question — the bound is
-        // "satisfied at the instantiation site iff the substituted
-        // type implements the trait" regardless of where the bound
-        // was authored — so duplicates on the same (param, trait) pair
-        // dedupe. Source provenance is preserved at the parser layer
-        // (separate `type_params` / `where_clause` fields on
-        // `MachineDecl`) so future lowering layers that want to point
-        // diagnostics at the predicate's span can recover it.
-        let type_param_bounds =
-            self.collect_type_param_bounds(Some(&md.type_params), md.where_clause.as_ref());
-        if !type_param_bounds.is_empty() {
-            self.machine_type_param_bounds
-                .insert(md.name.to_string(), type_param_bounds.clone());
-        }
         // W3.039 Stage 2: register const-generic parameter declarations
         // into the side table so instantiation-site validation
         // (Stage 3 — gated on W3.033c) can recover arity, types, and
@@ -2181,7 +1893,7 @@ impl Checker {
                     crate::DeclarationKind::MachineState,
                     FnSig {
                         type_params: type_param_names.clone(),
-                        type_param_bounds: type_param_bounds.clone(),
+                        bounds: type_param_bounds.clone(),
                         return_type: machine_ty.clone(),
                         ..FnSig::default()
                     },

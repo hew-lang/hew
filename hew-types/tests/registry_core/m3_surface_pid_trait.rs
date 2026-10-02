@@ -15,13 +15,13 @@ type Local {
 
 trait UserPid {
     type Msg;
-    fn send(pid: Self, msg: Self.Msg) -> i32;
+    fn send(self, msg: Self.Msg) -> i32;
 }
 
 impl UserPid for Local {
     type Msg = Work;
-    fn send(pid: Local, msg: Work) -> i32 {
-        pid.id + msg.id
+    fn send(self, msg: Work) -> i32 {
+        self.id + msg.id
     }
 }
 
@@ -232,7 +232,7 @@ fn main() {
         output.errors.iter().any(|error| {
             error
                 .message
-                .contains("remote actor `Worker` cannot carry `fn(i64) -> i64`")
+                .contains("remote actor `Worker` (`fn(i64) -> i64`)")
         }),
         "RemotePid.ask must reject a reply without a wire schema: {:#?}",
         output.errors

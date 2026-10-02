@@ -12,8 +12,8 @@ type W {
 }
 
 impl Sub for W {
-    fn base(w: W) -> i64 {
-        w.id
+    fn base(self) -> i64 {
+        self.id
     }
 }
 

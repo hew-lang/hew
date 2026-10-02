@@ -50,7 +50,7 @@ pub fn generate(repo: &Path, out: &Path) -> String {
             }
         }
     }
-    let mut generated = String::from("// Generated from #[runtime] stdlib declarations.\nuse super::{RuntimeArgumentContract as A, RuntimeArgumentEffect as E, RuntimeValueKind as K, RuntimeResultEffect as R, RuntimeSemanticContract, RuntimeStaging, RuntimeCallAbiShape, RuntimePhysicalForm, RuntimeCReturn, IoHandleKind};\n");
+    let mut generated = String::from("// Generated from #[runtime] stdlib declarations.\nuse super::{RuntimeArgumentContract as A, RuntimeArgumentEffect as E, RuntimeValueKind as K, RuntimeResultEffect as R, RuntimeSemanticContract, RuntimeStaging, RuntimeCallAbiShape, RuntimePhysicalForm, RuntimeCReturn};\n");
     for (family, row) in &rows {
         writeln!(
             generated,
@@ -149,24 +149,14 @@ fn render_method(
     let data = take(&mut fields, "data");
     let close = take(&mut fields, "close");
     let receiver_kind = match take(&mut fields, "receiver") {
-        "connection" => "K::IoHandle(IoHandleKind::Connection)".to_string(),
         "opaque" => format!("K::NamedOpaque({:?})", format!("{module}.{receiver}")),
         other => panic!("unknown runtime receiver {other}"),
-    };
-    let result = match take(&mut fields, "result") {
-        "discard_status" => "DeclaredRuntimeResult::DiscardStatus".to_string(),
-        "status_result" => {
-            let error_type = take(&mut fields, "error_type");
-            let error_variant = take(&mut fields, "error_variant");
-            format!("DeclaredRuntimeResult::StatusResult {{ error_type: {error_type:?}, error_variant: {error_variant:?} }}")
-        }
-        other => panic!("unknown runtime result {other}"),
     };
     assert!(fields.is_empty(), "unknown runtime fields: {fields:?}");
     let consumes = method.consumes_self || method.params.first().is_some_and(|p| p.is_consume);
     let effect = if consumes { "Move" } else { "Borrow" };
     let declaration = format!("{module}.{receiver}::{}", method.name);
-    let row = format!("DeclaredRuntimeMethod {{ module: {module:?}, declaration: {declaration:?}, family: RuntimeCallFamily::{family}, data_handler: {data:?}, close_handler: {close:?}, consumes_receiver: {consumes}, result: {result}, row: RuntimeOpRow {{ symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[A {{ ty: {receiver_kind}, effect: E::{effect} }}, A {{ ty: K::ActorHandle, effect: E::Borrow }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}], result: R::BitCopy(K::I32), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::Storage }} }}");
+    let row = format!("DeclaredRuntimeMethod {{ module: {module:?}, declaration: {declaration:?}, family: RuntimeCallFamily::{family}, data_handler: {data:?}, close_handler: {close:?}, consumes_receiver: {consumes}, row: RuntimeOpRow {{ symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[A {{ ty: {receiver_kind}, effect: E::{effect} }}, A {{ ty: K::ActorHandle, effect: E::Borrow }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}], result: R::BitCopy(K::I32), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::Storage }} }}");
     let ownership_effect = if consumes { "consume" } else { "borrow" };
     let nominal = format!("{module}.{receiver}");
     let ownership = format!("[[ownership.contracts]]\nsymbol = {symbol:?}\nresult = \"none\"\nparams = [{ownership_effect:?}, \"borrow\", \"borrow\", \"borrow\"]\nresource-param-types = [{nominal:?}, \"\", \"\", \"\"]\nrelease-symbol = \"\"\ndischarge-depth = \"none\"\n\n");
@@ -197,7 +187,11 @@ fn scalar(ty: &TypeExpr) -> &'static str {
         "direct runtime scalar cannot have type arguments"
     );
     let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-    match name.as_str() {
+    scalar_named(&name)
+}
+
+fn scalar_named(name: &str) -> &'static str {
+    match name {
         "i64" => "I64",
         "u8" => "U8",
         "bytes" => "Bytes",
@@ -293,7 +287,11 @@ fn render_direct(
         .iter()
         .map(|p| {
             assert!(!p.is_consume, "direct scalar parameter cannot consume");
-            scalar(&p.ty.0)
+            if p.is_receiver {
+                scalar_named(receiver)
+            } else {
+                scalar(&p.ty.0)
+            }
         })
         .collect();
     let result = scalar(
@@ -311,9 +309,7 @@ fn render_direct(
         ("truth_bool", "Bool") => "TruthBool",
         _ => panic!("invalid direct runtime C return conversion"),
     };
-    let receiver_param = method.params.first().is_some_and(
-        |p| matches!(&p.ty.0, TypeExpr::Named {path, ..} if path.to_string() == receiver),
-    );
+    let receiver_param = method.params.first().is_some_and(|p| p.is_receiver);
     let logical_params = &params[usize::from(receiver_param)..];
     let signature_key = format!("{receiver}::{}", method.name);
     let logical = logical_params

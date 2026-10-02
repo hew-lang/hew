@@ -199,7 +199,7 @@ so the per-arm test can be written against a closed list.
 | `Named` with `#[resource]` marker; `Named{builtin}` with marker `Resource` and a `close_method()`: `Duplex`, `Sink`, `Stream`, `Sender`, `Receiver`, `HewDuplex`, `HewSendHalf`, `HewRecvHalf`, `SendHalf`, `RecvHalf`, `MonitorRef`, `CancellationToken` | `AffineResource` | `None` (`LambdaPid`: `Retain`, §5.4) | implicit destructor is the registered close/release symbol |
 | `Named{builtin: StreamPair}`, the regex `Pattern` handle | `AffineResource` | `None` | marker `None` in `builtin_type.rs`, but the std declarations carry `#[resource]` (`std/stream.hew:247-249` `#[resource] #[opaque] pub type StreamPair` with `close(consume self)` → `hew_stream_pair_free`; `std/text/regex/regex.hew:28-29`), which `lookup_type_marker_for_ty` already reads |
 | `Named{builtin: Generator \| Rc \| Weak}` | `AffineResource` | generators `None`; `Rc`/`Weak` `Retain` | |
-| `Named{builtin: LambdaPid}` | `AffineResource` | `Retain` (`hew_lambda_actor_clone` mints a new handle) | a send of a `LambdaPid` is `Transfer` only (rule 5, §11 row 5): `repros/ladder/lambda_send_twice.hew` → `use of moved value \`w\`` on the second send |
+| `Named{builtin: LambdaPid}` | `AffineResource` | `Retain` (`hew_lambda_actor_clone` mints a new handle) | a send of a `LambdaPid` is `Transfer` only (rule 5, §11 row 5): `tests/vertical-slice/reject/lambda_send_twice.hew` → `use of moved value \`w\`` on the second send |
 | `Function`, `TraitObject` (incl. `dyn Iterator`) | `PersistentShare` | `Retain` (`hew_arc_clone`) | §5.4: refcounted box, never forked; **design change** against `main` (§11 row 7). A bare named-fn value (`ResolvedRef::Item`, ids.rs:25) is a `{fn, env = null}` pair; `hew_arc_clone`/`hew_arc_drop` return/return-early on a null pointer (`arc.rs:157, 184`), so its `copy_value`/`destroy_value` are no-ops at run time and need no special case. A `dyn Trait` is flat: the concrete payload's class is known only at `CoerceToDynTrait`, never on the `TraitObject` type, so it is **not** joined into the class — see the §3 destroy-sinking restriction, which is `CowValue`-only for exactly this reason. Flatness is safe for the *class* and unsafe for the *send fact*, so the send fact is bought with a wall at the coercion: **[P1 decision] `CoerceToDynTrait` into a `dyn … + Send` requires the concrete to be `Send`**, `E_OWN_SEND_UNSUPPORTED` otherwise. Without it, `traits.rs:1072-1086` decides `Send` from the bound name alone (test `dyn_trait_plus_send_is_send`, traits.rs:1799-1825) while `coerce.rs:432-444` records a `DynCoercion` on object safety alone with no marker check (`grep -n 'MarkerTrait::Send\|implements_marker' hew-types/src/check/coerce.rs` is empty), so a `dyn Handler + Send` over a concrete holding an `Rc<T>` would be a `PersistentShare` with send fact true, get `Snapshot::Share` under rule 5, and let two actors race the non-atomic `hew_rc_*` count — the very argument §5.4 makes for closures and `LambdaPid`. The wall makes the type-level fact sound for every value of the type, because the coercion is the only producer of a `dyn` value. §11 row 37 |
 | `Closure` | **`PersistentShare` joined with the aggregate rule over the capture classes** | `Retain` (`hew_arc_clone` on the env) | **decision**: the env is a record and its captures are its fields (§1.3.5: every env owns its captures), so a closure capturing a `#[resource] Conn` or an `Rc<T>` is `AffineResource`, not `PersistentShare`. Consequences that a flat row got wrong: rule 5 gives it `Transfer` only, so a `move \|\| { conn.close() }` closure cannot be `Share`d into a second actor and raced (the same argument that rejected `Share` of a `LambdaPid`); §3 never sinks its release, so an `Rc` capture's `Weak.upgrade()` still flips at scope exit; a `Linear` capture is refused at the capture site regardless (§1.3.5). `clone` stays `Retain` in every case — retaining the env duplicates the handle, not the capture, exactly as `Rc<T>` does. A closure with a `BorrowMut` capture has send fact **false** (§1.3.5, rule 6c). §11 row 33 |
 | `Named` with `#[linear]` marker, `Task(_)` | `Linear` | `None` | no implicit destructor; must be consumed (6d, with the `Task` cancel-edge exemption of §2.1). Only a **bound** task handle (`fork t = f()`) is a SIR value; an unbound spawn produces no value (§1.5) |
@@ -388,7 +388,7 @@ comment records why (`builtin_type.rs:314-320`, "`hew_lambda_actor_clone`
 allocates a distinct owning wrapper precisely because a plain address copy is
 unsafe; two owners of one wrapper release it twice (observed: SIGSEGV)"), it has
 a release symbol (`hew_lambda_actor_release`, §5.2 item 6), and `main` consumes
-the binding on a send (`repros/ladder/lambda_send_twice.hew` → `use of moved
+the binding on a send (`tests/vertical-slice/reject/lambda_send_twice.hew` → `use of moved
 value \`w\``). Ownership kinds are this document's domain, so the narrow reading
 is the one in force; the plan row's wording is the defect to fix there.
 
@@ -517,7 +517,7 @@ today the closure `Send`
 rule is mode-agnostic (`traits.rs:1039-1043` "all captured types are
 Send") and the only guard is `NonSyncMutCaptureCrossesSuspend`
 (expressions.rs:7615-7620, a suspend inside the body); `main` still fails
-closed on the sharing shape, but in MIR (`repros/ladder/closure_mut_share.hew` →
+closed on the sharing shape, but in MIR (`tests/vertical-slice/reject/closure_mut_share.hew` →
 `E_MIR … CannotMaterializeClosureCapture`). The checker rule lands at P1 with
 the class table; the fixture moves to `reject` with `E_OWN_SEND_UNSUPPORTED`.
 `NonSyncMutCaptureCrossesSuspend` stays as the one suspend-crossing rule.
@@ -1011,9 +1011,9 @@ three walls of `docs/v05/ownership.md`. Probes (binary `hew
 | `fork t = work(s); println(s)`; `c.close(); c.fd`; `h.take(c); c.fd` on `#[resource]`; `r.go(w); r.go(w)` on a `LambdaPid`; `println(v.len())` after `actor move \|x\| { v.len() }` | checker `use of moved value` (`UseAfterMove`) | checker (`hew-types/src/check/expressions.rs:1238`, `methods.rs:7879/10455`, `tests/handles.rs:117-127`; `repros/ladder/{lambda_send_twice,cap_move}.hew`) |
 | `clone b` on `bytes` | checker `no method clone on bytes` | checker |
 | `worker.take(rc)` with `rc: Rc<i64>`; non-Send capture into a lambda actor | checker `not Send` (`expressions.rs:1435, 2650`) | checker |
-| `actor \|x\| { f() }` with `f` a `BorrowMut`-capturing closure | `E_MIR … CannotMaterializeClosureCapture` | MIR (`repros/ladder/closure_mut_share.hew`) |
+| `actor \|x\| { f() }` with `f` a `BorrowMut`-capturing closure | `E_MIR … CannotMaterializeClosureCapture` | MIR (`tests/vertical-slice/reject/closure_mut_share.hew`) |
 | `conn.bump()` with `bump(var self)` on a `#[resource]` state field | `E_MIR … var-self receiver binding has no MIR place` | MIR (`repros/ladder/state_resource_trait.hew`) |
-| `fn shutdown(c: Conn) { c.close(); }` (no `consume`) | accepted; the parameter's disposition is inferred CONSUME from the body | MIR `facts.rs:994-1075` (`repros/ladder/res_param_consume.hew` → `close 3`, `after`) |
+| `fn shutdown(c: Conn) { c.close(); }` (no `consume`) | accepted; the parameter's disposition is inferred CONSUME from the body | MIR `facts.rs:994-1075` (`tests/vertical-slice/reject/res_param_consume.hew` → `close 3`, `after`) |
 | `actor Holder { var tx: Tx = … }` with `#[linear] Tx` never consumed | accepted, exit 0 | none (`repros/ladder/linear_actor_field.hew`) |
 
 [P1 unless marked] The user-facing surface is stated as three families, all
@@ -1024,7 +1024,7 @@ owned by the checker first and re-proved by the SIR verifier:
 | COW value walls (ownership.md) | assign to a `let` (reassignment, `v.field =`, `v[i] =`, a `let` state field outside `init {}`) | 6a | `E_OWN_MUTATE_LET` |
 | | `clone` a type with `clone == None` (incl. a capture or generator snapshot of such a type) | 6b | `E_OWN_CLONE_UNSUPPORTED` |
 | | send / capture-into-spawn / `receive gen fn` yield of a type whose send fact is false (incl. a `BorrowMut`-capturing closure), **and a `CoerceToDynTrait` into a `dyn … + Send` whose concrete is not `Send`** (§1.1, §11 row 37) | 6c | `E_OWN_SEND_UNSUPPORTED` |
-| move-checker family (spec §3.7.8, §3.7.8.1 item 4, §3.7.8.2) | use of any `Owned` binding after its consuming use — an `AffineResource`/`Linear`/`PersistentShare` rebind (`let h = g`), a `consume` argument, `consume self`, `close`, a spawned-call argument, a `#[resource]`/`LambdaPid` send, a select `TaskAwait` arm, **or an explicit `move` of a `CowValue`** (`actor move \|x\| { v.len() }`, `repros/ladder/cap_move.hew`); a read of an `AffineResource` state field that may have been closed (§1.3.6) | 2, 4 | `E_OWN_USE_AFTER_CONSUME` |
+| move-checker family (spec §3.7.8, §3.7.8.1 item 4, §3.7.8.2) | use of any `Owned` binding after its consuming use — an `AffineResource`/`Linear`/`PersistentShare` rebind (`let h = g`), a `consume` argument, `consume self`, `close`, a spawned-call argument, a `#[resource]`/`LambdaPid` send, a select `TaskAwait` arm, **or an explicit `move` of a `CowValue`** (`actor move \|x\| { v.len() }`, `tests/vertical-slice/reject/cap_move.hew`); a read of an `AffineResource` state field that may have been closed (§1.3.6) | 2, 4 | `E_OWN_USE_AFTER_CONSUME` |
 | | a `Linear` value live at a normal exit, or at a cancel exit with no `defer` consumer (`Task<T>` exempt on cancel, §2.1 6d); a `Linear` value captured into a shared env (§1.3.5) | 6d | `E_OWN_MUST_CONSUME` |
 | | a consuming use (`Consume` slot, `close`, `consume self`) of a `Borrow` parameter — `fn shutdown(c: Conn) { c.close() }` without `consume` (§4.2; §11 row 19, tightening) | 3 | `E_OWN_CONSUME_BORROWED` |
 | | a `#[linear]` actor state field (§1.3.6; spec §3.7.8.4 Path 3) [P4] | declaration | `E_OWN_LINEAR_STATE_FIELD` |
@@ -1121,7 +1121,7 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
    - positive: `let v = Vec.new(); sink(consume v)` (nothing after)
    - negative (user, `E_OWN_USE_AFTER_CONSUME`): `let h = g; g.next()` with
      `g: Generator<i64, ()>` (`tests/core-acceptance/cases/generator-binding-use-after-move.hew`); `c.close();
-     println(f"{c.fd}")` (`repros/ladder/resource_early_close.hew`); `let w =
+     println(f"{c.fd}")` (`tests/vertical-slice/reject/resource_early_close.hew`); `let w =
      v; v.len()` with `v: Vec<Conn>` (`tests/core-acceptance/cases/resource-vector-binding-use-after-move.hew`).
    - negative (internal): `move %v` followed by `copy_value %v` where `%v`
      has no source binding (a lowering temp) → `E_SIR_ICE liveness`.
@@ -1137,7 +1137,7 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
    - positive: `let n = v.len(); v.push(n)` (borrow ends before the fork);
      `fn peek(c: Conn) -> i64 { c.fd }` (`repros/ladder/res_param_borrow.hew`)
    - negative (user): `fn shutdown(c: Conn) { c.close(); }` without
-     `consume` (`repros/ladder/res_param_consume.hew`, accepted today by body
+     `consume` (`tests/vertical-slice/reject/res_param_consume.hew`, accepted today by body
      inference)
    - negative (internal): `begin_borrow %v; call f(%b); move %v; end_borrow %b`
      → `E_SIR_ICE borrow-scope`.
@@ -1199,7 +1199,7 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
    | `CowValue` string / bytes | `Share` | `SnapshotRetain` |
    | `CowValue` collection, record, tuple, enum with heap | `DeepCopy` (§5.5; records via `hew_copy$T`) | `SnapshotMaterialize` |
    | `PersistentShare` with send fact true (a `dyn`/named fn, or a closure whose captures are all `Send`, none `BorrowMut` and none affine — an affine capture makes the closure `AffineResource` and puts it in the row below, §1.1, §1.3.5) | `Share` (`hew_arc_clone`) | `SnapshotRetain` |
-   | `AffineResource` / `Linear` with send fact true — `#[resource]` records, `Vec<Conn>`, and **`LambdaPid` although its `clone` is `Retain`** (a `Task` never reaches a send site — it is scope-local and consumed by `AwaitTask`; its `Send` marker, true iff `T: Send` (traits.rs:1090-1099), exists only so a fork body may cross its thread boundary) | `Transfer` only: the sender's binding is consumed (`move`), later use is `E_OWN_USE_AFTER_CONSUME` — main behaviour (`repros/ladder/resource_send2.hew`; `repros/ladder/lambda_send_twice.hew` → `use of moved value \`w\``), spec §3.7.8.1 item 4 (§11 row 5). **decision**: `Share` of a `LambdaPid` was considered and rejected — a second live handle would let two actors race the lambda's release (`hew_lambda_actor_release` joins the dispatch thread on the last handle, lambda_actor.rs:1461-1466), and `main` transfers today | `TransferLastUse` |
+   | `AffineResource` / `Linear` with send fact true — `#[resource]` records, `Vec<Conn>`, and **`LambdaPid` although its `clone` is `Retain`** (a `Task` never reaches a send site — it is scope-local and consumed by `AwaitTask`; its `Send` marker, true iff `T: Send` (traits.rs:1090-1099), exists only so a fork body may cross its thread boundary) | `Transfer` only: the sender's binding is consumed (`move`), later use is `E_OWN_USE_AFTER_CONSUME` — main behaviour (`tests/vertical-slice/reject/resource_send2.hew`; `tests/vertical-slice/reject/lambda_send_twice.hew` → `use of moved value \`w\``), spec §3.7.8.1 item 4 (§11 row 5). **decision**: `Share` of a `LambdaPid` was considered and rejected — a second live handle would let two actors race the lambda's release (`hew_lambda_actor_release` joins the dispatch thread on the last handle, lambda_actor.rs:1461-1466), and `main` transfers today | `TransferLastUse` |
    | any class with send fact false (`Rc`, `Weak`, `Pointer`, non-Send or `BorrowMut`-capturing closures, generators, duplex halves) | none — rule 6c | — |
 
    `Spawn { args }` (node.rs:1603) arguments are `Snapshot` operands like a
@@ -1229,7 +1229,7 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
      `std/text/template/template.hew:445/476`; spec §3.4.3 line 636, §3.4.6).
      positive: `var p = Point{..}; p.x = 1`; `let items: Vec<i64>` state
      field with `items.push(1)` in a handler; negative: `let p = Point{..};
-     p.x = 1` (`repros/ladder/let_field_mut.hew`), `let v = Vec.new(); v[0] = 5`
+     p.x = 1` (`tests/vertical-slice/reject/let_field_mut.hew`), `let v = Vec.new(); v[0] = 5`
      (`repros/ladder/let_index_assign.hew`), `items = Vec.new()` in a
      handler on a `let` field. A user method that mutates
      `self` is `VarSelfMethodCall` only through a `var` receiver
@@ -1267,7 +1267,7 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
      `worker.take(rc)` with `rc: Rc<i64>` (ownership.md: `Rc`/`Weak` are
      non-`Send`); `actor |x| { use(local_handle) }` with a non-Send capture;
      `actor |x| { f() }` with `f = || { n = n + 1 }`
-     (`repros/ladder/closure_mut_share.hew`).
+     (`tests/vertical-slice/reject/closure_mut_share.hew`).
    - 6d (`Linear`): `destroy_value` on a `Linear` value on a normal or
      cancel exit → `E_OWN_MUST_CONSUME` (spec §3.7.8.2 `MustConsumeAtScopeExit`;
      spec §3.7.8.4 Path 1). On an **unwind** exit the `destroy_value` of a
@@ -1444,7 +1444,7 @@ the symbol comes from `header.symbol` looked up by key.
   (`LifecycleRegistry ResourceRecordLifecycle.close_declaration`), whose
   receiver or first parameter consumes in either spelling — `fn close(self)`
   (spec §3.7.8.1) or `fn close(c: Conn)` (spec §3.7.8.5;
-  `repros/ladder/resource_early_close.hew` shows main already treats it as
+  `tests/vertical-slice/reject/resource_early_close.hew` shows main already treats it as
   consuming); the callable is a declared consuming method of a `#[linear]`
   type; or the slot is a synthesized producer's owned input (`ActorInit`
   parameters, the `TaskEntryAdapter`/`ForkEntryShim` env, §6.5). Every other
@@ -1471,7 +1471,7 @@ the symbol comes from `header.symbol` looked up by key.
   "monotone least-fixpoint: a pass only ever flips a BORROW param to
   CONSUME"; so `fn shutdown(c: Conn) { c.close(); }` compiles and
   `shutdown(conn)` consumes the caller's binding
-  (`repros/ladder/res_param_consume.hew` → `close 3`, `after`;
+  (`tests/vertical-slice/reject/res_param_consume.hew` → `close 3`, `after`;
   `res_param_consume_use.hew` → `E_MIR_CHECK … UseAfterConsume`), while `fn
   peek(c: Conn) -> i64 { c.fd }` is inferred borrow (`res_param_borrow.hew`
   → `3`, `3`, `close 3`). **[decision, P1]** the header is declaration-only:
@@ -2582,7 +2582,7 @@ mechanism and it is observable.
   `CannotMaterializeClosureCapture` has no mapping: `main` refuses **every**
   closure captured into a lambda actor ("only BitCopy scalars, `string`, actor
   pids, `LambdaPid`, and the weak self-handle have an ownership protocol across
-  the actor boundary", `repros/ladder/closure_mut_share.hew`), and this design
+  the actor boundary", `tests/vertical-slice/reject/closure_mut_share.hew`), and this design
   admits a `Send` closure as a `Share` (§11 row 7) while refusing only the
   `BorrowMut` shape (6c) — both are fixture moves, not a code mapping.
   A relaxation or tightening this design makes on purpose (§11 rows 3, 7, 9,
@@ -2748,9 +2748,9 @@ change no program.
 | 2 | Wall 6a is assignment to a `let` (reassignment or through a projection; a `let` state field outside `init {}`), not a mutating method call | ownership.md:186 "mutation of a `let` — you mutate a value bound with `let`" (as read to cover `v.push`) | spec §3.4.3 "It controls whether the _binding_ can be reassigned, not whether the underlying data is mutable" and line 636 (assignment to a `let` field is the rejected form); §3.4.6 `ref1.push(1)` under "What IS Allowed"; `repros/ladder/mutate_let.hew` prints `1`; `repros/ladder/let_state_push.hew` prints `1` | wording |
 | 3 | `let y = x` is `copy_value` for `CowValue`/`PersistentShare`, `move` for `AffineResource`/`Linear` — the class being the element-joined class, so `let w = v` with `v: Vec<Conn>` stays a move | spec §3.7.2 "`let owned = data; // move, not copy` / `data is no longer valid`" for a `Vec` | ownership.md value model (calls borrow, values are COW); `main` already copies strings (`repros/ladder/bind_copy.hew` lines 3-5 pass) and moves generators/resources and `Vec<Conn>` (`tests/core-acceptance/cases/resource-vector-binding-use-after-move.hew`) | relaxation for `Vec<CowValue>`/closure rebinds (reject → accept) |
 | 4 | Copy legality is `TypeFacts.clone`, not class; `Rc`/`Weak` clone; a collection's `clone` follows its element | old draft §5.4 "`Generator` … rejected (6b)" read as a class rule; old §1.1 `Vec` row "`CowValue` / `DeepCopy`" regardless of element | spec §3.7.5 "`.clone()` creates another strong owner"; `repros/ladder/rc_clone.hew` prints `2`; `repros/ladder/vec_resource_drop.hew`, `vec_rc_weak.hew` | wording |
-| 5 | An `AffineResource`/`Linear` value — a `#[resource]` record, `Vec<Conn>`, **and `LambdaPid` although it has a `Retain` clone path** — is sent by `Transfer`; the sender's binding is consumed; `Share` of a `LambdaPid` was rejected (§2.1 rule 5) | ownership.md:147 "Sending a **non-sendable** value — a resource-shaped type … is a fail-closed compile error" | spec §3.7.8.1 item 4 "Sends … consume the value"; `repros/ladder/resource_send.hew` prints `sent`, `got 1`, `close 1`; `resource_send2.hew` → `use of moved value`; `repros/ladder/lambda_send_twice.hew` → `use of moved value \`w\`` | wording (matches `main`) |
+| 5 | An `AffineResource`/`Linear` value — a `#[resource]` record, `Vec<Conn>`, **and `LambdaPid` although it has a `Retain` clone path** — is sent by `Transfer`; the sender's binding is consumed; `Share` of a `LambdaPid` was rejected (§2.1 rule 5) | ownership.md:147 "Sending a **non-sendable** value — a resource-shaped type … is a fail-closed compile error" | spec §3.7.8.1 item 4 "Sends … consume the value"; `repros/ladder/resource_send.hew` prints `sent`, `got 1`, `close 1`; `resource_send2.hew` → `use of moved value`; `tests/vertical-slice/reject/lambda_send_twice.hew` → `use of moved value \`w\`` | wording (matches `main`) |
 | 6 | Rule 6d exempts unwind edges | old draft §1.3 destroy row "(… unwind, cancel)" with 6d unconditional | spec §3.7.8.4 Path 4 "The move-checker does not require `#[linear]` consume on trap-only edges" | wording |
-| 7 | Closures and `dyn Trait` are refcounted shares (`hew_arc_*`); a closure with a `BorrowMut` capture is not `Send`, and one with an `AffineResource` capture is `Transfer` only (row 33) | `main`'s unique-owner `hew_dyn_box_alloc` boxes (model.rs:7668-7700), `let g = f` then `f(1)` → `E_MIR_CHECK`; `traits.rs:1039` mode-agnostic closure `Send` | §5.4 (atomic because `Send` closures cross threads); §1.3.5; `repros/ladder/closure_mut_share.hew` (main already refuses, in MIR) | relaxation (closure rebind and closure-into-lambda-actor/spawn capture of a `Send` closure, reject → accept) + runtime carrier change; the `BorrowMut` shape keeps its refusal, now 6c in the checker |
+| 7 | Closures and `dyn Trait` are refcounted shares (`hew_arc_*`); a closure with a `BorrowMut` capture is not `Send`, and one with an `AffineResource` capture is `Transfer` only (row 33) | `main`'s unique-owner `hew_dyn_box_alloc` boxes (model.rs:7668-7700), `let g = f` then `f(1)` → `E_MIR_CHECK`; `traits.rs:1039` mode-agnostic closure `Send` | §5.4 (atomic because `Send` closures cross threads); §1.3.5; `tests/vertical-slice/reject/closure_mut_share.hew` (main already refuses, in MIR) | relaxation (closure rebind and closure-into-lambda-actor/spawn capture of a `Send` closure, reject → accept) + runtime carrier change; the `BorrowMut` shape keeps its refusal, now 6c in the checker |
 | 8 | `defer` bodies run on the cancel edge | `main` (scope.rs emits defers on normal/return/break/continue only) | spec §4.5 line 3257 "All `defer` blocks … run during unwinding" | behaviour (P4 fix) |
 | 9 | `clone b` on `bytes` is legal | ownership.md:98 "a heap type whose runtime copy path genuinely isn't wired yet, e.g. `bytes`"; `repros/ladder/bytes_clone.hew` → `no method clone on bytes` | §5.4: `copy_value` on `bytes` is `hew_bytes_clone_ref` (`Retain`) [P1]; no `make_unique` symbol is involved | relaxation |
 | 10 | `is` is reference identity on heap handles | ownership.md:204 "There is no pointer-equality operator." | spec line 5095 "`is` = reference identity on heap handles"; `IdentityCompare` node.rs:1415, 2026 | wording (stale source doc) |
@@ -2762,7 +2762,7 @@ change no program.
 | 16 | `fork` is never emitted for a `string` and has no runtime realization for any current carrier (§4.3); `p.n = 1` on a record with a literal string field forks nothing | revision 3 §4.3/§5.4 "`hew_string_make_unique` [P1, exposes `cstring_ensure_unique`]", "record with heap fields: `Fork` per field" | cabi.rs:495-511 ("Unmanaged pointers must be filtered out by the caller"), string.rs:1264-1296 (`is_managed_cstring` guards); `std/string.hew` has no `var self` method | wording (a UB path removed before it existed) |
 | 17 | A `BorrowMut` capture is an env-owned copy written through `store.assign` on the env field; the outer `var` never observes the closure's writes; owned `BorrowMut` captures are legal | spec §3.4.5 read as "captured variables" being the outer bindings; `main`'s `BitCopy`-only write-back restriction (assign.rs:631-650) | assign.rs:631-640 ("the caller's original binding is independent"); `repros/ladder/borrowmut_capture.hew` prints `0`; §1.3.5 | wording for scalars (matches `main`); relaxation for owned captures (reject → accept) |
 | 18 | Every unwind edge carries `destroy_value`s (a trap closes resources and frees heap); traps do not leak | ownership.md:48-52 "Abort and trap paths may leak-at-abort, never double-free. A runtime trap abandons outstanding obligations rather than force-discharging them" | spec §3.7.8.1 / line 1790 "dispatches `close` on every scope-exit path including `Trap` and `Cancel`"; §1.3.3, §2.1 rule 1, §4.7 (every target runs the block) | wording (ownership.md loses) |
-| 19 | A by-value `#[resource]` parameter without `consume` is `Borrow`; consuming it in the body is `E_OWN_CONSUME_BORROWED` | `main`'s body-inferred disposition (facts.rs:994-1075 monotone fixpoint); node.rs:1237-1246 "inferred borrow/consume disposition" | §4.2 header derivation from declarations; spec §3.7.8.5 `consume` modifier (`std/fs.hew:536`); `repros/ladder/res_param_consume.hew` (accepted today → rejected with a fix-it) | tightening (accept → reject; std swept at P3) |
+| 19 | A by-value `#[resource]` parameter without `consume` is `Borrow`; consuming it in the body is `E_OWN_CONSUME_BORROWED` | `main`'s body-inferred disposition (facts.rs:994-1075 monotone fixpoint); node.rs:1237-1246 "inferred borrow/consume disposition" | §4.2 header derivation from declarations; spec §3.7.8.5 `consume` modifier (`std/fs.hew:536`); `tests/vertical-slice/reject/res_param_consume.hew` (accepted today → rejected with a fix-it) | tightening (accept → reject; std swept at P3) |
 | 20 | *(withdrawn)* — the row overrode a sentence of `hew-orchestration/plans/final-ladder-program.md`, which plan §5.1 does not let this table do. The taken-bit design it carried is §1.3.6 and §5.2 item 1; its user-visible half is folded into row 35. The number is kept so the citations in §1.6 and §7 do not shift | — | — | — |
 | 21 | A `#[linear]` actor state field is a compile error at actor declaration (`E_OWN_LINEAR_STATE_FIELD`) | `main` accepts and never consumes it (`repros/ladder/linear_actor_field.hew` prints `1`) | spec §3.7.8.4 Path 3 "A bare `#[linear]` field whose consume path can be bypassed by a supervised restart is a compile error at actor-declaration time"; `ResourceMarker` is single-valued so the dual-marker admission is empty | tightening (accept → reject) |
 | 22 | A select `TaskAwait` arm `Move`s the task handle; a later `await t` is `E_OWN_USE_AFTER_CONSUME` | `main`'s plain read of the task in the arm (task.rs:1694) | spec line 3548 (the arm is outside edition 2026's sealed select set); `AwaitTask`'s `Move`; `hew_task_take_result` single take | wording (no accept fixture exists; the arm is not in the edition) |

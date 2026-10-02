@@ -49,12 +49,12 @@ fn index_trait_user_impl_lowers_to_at_call() {
 impl Index for Grid {
     type Output = i32;
 
-    fn get(g: Grid, index: i32) -> Option<i32> {
-        .Some(g.bias + index)
+    fn get(self, index: i32) -> Option<i32> {
+        .Some(self.bias + index)
     }
 
-    fn at(g: Grid, index: i32) -> i32 {
-        g.bias + index
+    fn at(self, index: i32) -> i32 {
+        self.bias + index
     }
 }
 
@@ -122,7 +122,9 @@ fn dyn_index_selects_index_at_beside_another_at() {
             tail.kind
         );
     };
-    // `Index` publishes `get` then `at`; `Other.at` follows them.
+    // Bounds are ordered by trait identity, not spelling order: the root's
+    // `Other` precedes std `Index`, so `Other.at` takes the first slot and
+    // `Index` publishes `get` then `at` after it.
     assert_eq!(output.module.defs.path(*method), "std.builtins.Index::at");
-    assert_eq!(*slot, 4);
+    assert_eq!(*slot, 2);
 }

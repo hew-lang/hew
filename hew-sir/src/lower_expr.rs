@@ -133,10 +133,10 @@ impl Builder<'_, '_> {
                 None => Err("divergent recovery cannot produce a SIR value".into()),
             },
             HirExprKind::WireCodec {
-                direction,
+                codec,
                 operand,
                 value_ty,
-            } => self.lower_wire_codec(expr, *direction, operand, value_ty),
+            } => self.lower_wire_codec(expr, *codec, operand, value_ty),
             HirExprKind::RecordCloneCall { src, .. } => {
                 let mut loans = Vec::new();
                 let source = self.lower_borrowed_read(src, &mut loans)?;
@@ -168,18 +168,15 @@ impl Builder<'_, '_> {
             HirExprKind::CoerceToDynTrait {
                 value,
                 concrete_type,
-                vtable_entries,
-                ..
-            } => self.lower_dyn_make(expr, value, concrete_type, vtable_entries),
+            } => self.lower_dyn_make(expr, value, concrete_type),
             HirExprKind::CallDynMethod {
                 receiver,
                 target,
                 args,
                 evaluation_order,
-                signature,
                 ..
             } => self
-                .lower_dyn_call(expr, receiver, target, args, evaluation_order, signature)?
+                .lower_dyn_call(expr, receiver, target, args, evaluation_order)?
                 .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
@@ -191,9 +188,6 @@ impl Builder<'_, '_> {
             HirExprKind::MachineVariantCtor {
                 state_idx, payload, ..
             } => self.lower_variant_make(expr, *state_idx, payload.as_deref()),
-            HirExprKind::AwaitRestart { .. } => {
-                Err("`await_restart` was replaced by `restarted(role)`".into())
-            }
             HirExprKind::FieldAccess { object, field } => {
                 if let Some(slot) = self.service.module.supervisor_child_slots.get(&expr.site) {
                     return self.lower_supervisor_child(expr, object, slot);

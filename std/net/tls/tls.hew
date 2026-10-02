@@ -142,22 +142,22 @@ trait TlsStreamMethods {
 }
 
 impl TlsStreamMethods for TlsStream {
-    fn write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
+    fn write(self, data: bytes) -> Result<i64, net.NetError> {
         tls_write_result(unsafe {
-            hew_tls_write_result(stream, data)
+            hew_tls_write_result(self, data)
         })
     }
-    fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
+    fn read(self, size: i64) -> Result<bytes, net.NetError> {
         let checked = net.size_arg("tls.TlsStream.read", size)?;
         tls_read_result(unsafe {
-            hew_tls_read_result(stream, checked as i32) // INTERNAL-ABI: range-checked above
+            hew_tls_read_result(self, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
     /// Compiler-lowered active-mode attach.
     ///
     /// The runtime delivers owned messages using the selected actor handlers.
-    #[runtime(family = TlsAttachLocal, symbol = hew_tls_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_data, close = on_close, result = discard_status)]
-    fn attach(stream: TlsStream, handler: TlsHandler) {}
+    #[runtime(family = TlsAttachLocal, symbol = hew_tls_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_data, close = on_close)]
+    fn attach(self, handler: TlsHandler) {}
 }
 
 impl TlsStream {

@@ -29,12 +29,12 @@ impl Parcel {
 }
 
 trait Identified {
-    fn id(value: Self) -> i64;
+    fn id(self) -> i64;
 }
 
 impl Identified for Ticket {
-    fn id(value: Ticket) -> i64 {
-        value.id
+    fn id(self) -> i64 {
+        self.id
     }
 }
 
@@ -66,14 +66,8 @@ fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
     worker.run(audit).expect("run erased owners");
-    {
-        let __hew_migrated_actor_1380 = worker;
-        stop(__hew_migrated_actor_1380);
-        stopped(__hew_migrated_actor_1380);
-    };
-    {
-        let __hew_migrated_actor_1399 = audit;
-        stop(__hew_migrated_actor_1399);
-        stopped(__hew_migrated_actor_1399);
-    };
+    stop(worker);
+    stopped(worker);
+    stop(audit);
+    stopped(audit);
 }

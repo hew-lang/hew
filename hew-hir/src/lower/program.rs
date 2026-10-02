@@ -2224,6 +2224,7 @@ pub fn lower_program_with_mono_cap(
                         // fact, not `diagnostic_source_modules` absence.
                         provenance,
                         runtime_capability,
+                        offload: type_check_output.extern_contracts.is_offload(declaration),
                         span: func.span.clone(),
                     }));
                 }
@@ -2478,6 +2479,9 @@ pub fn lower_program_with_mono_cap(
                                     // pass emitted it.
                                     provenance,
                                     runtime_capability,
+                                    offload: type_check_output
+                                        .extern_contracts
+                                        .is_offload(declaration),
                                     span: func.span.clone(),
                                 }));
                             }
@@ -2739,6 +2743,7 @@ pub fn lower_program_with_mono_cap(
                                 function.name.name.as_str(),
                             ),
                             provenance,
+                            offload: false,
                             span: function.span.clone(),
                         }));
                     }
@@ -2895,6 +2900,7 @@ pub fn lower_program_with_mono_cap(
             return_ty,
             provenance,
             runtime_capability,
+            offload: false,
             span: hew_parser::ast::Span::default(),
         }));
     }
@@ -2975,6 +2981,7 @@ pub fn lower_program_with_mono_cap(
     closure_under_substitution(
         &ctx.defs,
         &items,
+        &type_check_output.structural_witnesses,
         &call_site_type_args,
         &mut monomorphisations,
         mono_cap,
@@ -3085,7 +3092,8 @@ pub fn lower_program_with_mono_cap(
         root_item_ids: ctx.root_item_ids,
         entry_exit_plan,
         test_entry_plans: type_check_output.test_entry_plans.clone(),
-        wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
+        trait_object_layouts: Arc::clone(&ctx.trait_object_layouts),
+        structural_witnesses: type_check_output.structural_witnesses.clone(),
         type_classes: ctx.type_classes,
         monomorphisations,
         call_site_type_args,

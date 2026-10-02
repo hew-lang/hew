@@ -104,19 +104,6 @@ pub type Ctx {
     llen: Vec<i64>;
 }
 
-// ── Internal helper: (rendered-text, next-position) pair ─────────────
-//
-// SHIM: Hew v0.5 does not support tuple return types or multi-field
-// composite Results. A named record is the idiomatic v0.5 substitute.
-// WHY: `consume_if_body` and `consume_range_body` must return both a
-//      rendered string and the byte offset past the consumed `{{end}}`.
-// WHEN: replace with `(string, i64)` tuple return once tuple returns land.
-// WHAT: the real shape is `Result<(string, i64), string>`.
-pub type RenderPair {
-    text: string;
-    next_pos: i64;
-}
-
 /// Opaque compiled template.
 pub type Template {
     src: string;
@@ -133,8 +120,8 @@ pub enum TemplateError {
 }
 
 impl Display for TemplateError {
-    fn fmt(e: TemplateError) -> string {
-        match e {
+    fn fmt(self) -> string {
+        match self {
             TemplateError.UnclosedDirective(message) => message,
             TemplateError.UnclosedBlock(message) => message,
             TemplateError.UnexpectedTag(message) => message,
@@ -148,7 +135,7 @@ impl Display for TemplateError {
 // ── Internal context helpers ──────────────────────────────────────────
 fn lookup_scalar(ctx: Ctx, key: string) -> string {
     let n = ctx.skeys.len();
-    for i in 0 .. n {
+    for i in 0..n {
         if ctx.skeys[i] == key {
             return ctx.svals[i];
         }
@@ -163,7 +150,7 @@ fn is_truthy(ctx: Ctx, key: string) -> bool {
 
 fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
-    for i in 0 .. n {
+    for i in 0..n {
         if ctx.lkeys[i] == key {
             return ctx.lstart[i];
         }
@@ -173,7 +160,7 @@ fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
 
 fn lookup_list_len(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
-    for i in 0 .. n {
+    for i in 0..n {
         if ctx.lkeys[i] == key {
             return ctx.llen[i];
         }
@@ -219,7 +206,7 @@ fn range_key(tag: string) -> string {
 // Scans forward from `start` to the matching `{{end}}`, respecting nesting
 // depth.  Splits at an optional `{{else}}`.  Returns (rendered branch, pos
 // right after `{{end}}`).
-fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: string, in_range: bool, cond: bool) -> Result<RenderPair, TemplateError> {
+fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: string, in_range: bool, cond: bool) -> Result<(string, i64), TemplateError> {
     var pos = start;
     var depth = 0;
     var true_end = -1; // byte offset of the end of the "true" branch (exclusive)
@@ -279,7 +266,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         let branch = tmpl.slice(start, true_end);
         let rendered = render_segment(branch, ctx, range_elem, in_range);
         match rendered {
-            .Ok(s) => .Ok(RenderPair { text: s, next_pos: end_pos }),
+            .Ok(s) => .Ok((s, end_pos)),
             .Err(e) => .Err(e),
         }
     } else {
@@ -292,11 +279,11 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             let branch = tmpl.slice(false_start, false_end);
             let rendered = render_segment(branch, ctx, range_elem, in_range);
             match rendered {
-                .Ok(s) => .Ok(RenderPair { text: s, next_pos: end_pos }),
+                .Ok(s) => .Ok((s, end_pos)),
                 .Err(e) => .Err(e),
             }
         } else {
-            .Ok(RenderPair { text: "", next_pos: end_pos })
+            .Ok(("", end_pos))
         }
     }
 }
@@ -305,7 +292,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
 //
 // Scans forward from `start` to the matching `{{end}}`.  Renders the body
 // once per item in the list bound to `key`, binding `{{.}}` each time.
-fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string) -> Result<RenderPair, TemplateError> {
+fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string) -> Result<(string, i64), TemplateError> {
     var pos = start;
     var depth = 0;
     var body_end = -1;
@@ -352,7 +339,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     let list_len = lookup_list_len(ctx, key);
     var out = "";
     if list_start >= 0 {
-        for i in 0 .. list_len {
+        for i in 0..list_len {
             let elem = ctx.litems[list_start + i];
             let rendered = render_segment(body, ctx, elem, true);
             match rendered {
@@ -365,7 +352,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             }
         }
     }
-    .Ok(RenderPair { text: out, next_pos: end_pos })
+    .Ok((out, end_pos))
 }
 
 // ── Core rendering pass ───────────────────────────────────────────────
@@ -407,9 +394,9 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             let cond = is_truthy(ctx, key);
             let r = consume_if_body(tmpl, pos, tlen, ctx, range_elem, in_range, cond);
             match r {
-                .Ok(pair) => {
-                    out = out + pair.text;
-                    pos = pair.next_pos;
+                .Ok((text, next_pos)) => {
+                    out = out + text;
+                    pos = next_pos;
                 }
                 .Err(e) => {
                     return .Err(e);
@@ -419,9 +406,9 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             let key = range_key(tag);
             let r = consume_range_body(tmpl, pos, tlen, ctx, key);
             match r {
-                .Ok(pair) => {
-                    out = out + pair.text;
-                    pos = pair.next_pos;
+                .Ok((text, next_pos)) => {
+                    out = out + text;
+                    pos = next_pos;
                 }
                 .Err(e) => {
                     return .Err(e);
@@ -635,7 +622,7 @@ impl Ctx {
         self.lkeys.push(key);
         self.lstart.push(start);
         self.llen.push(n);
-        for i in 0 .. n {
+        for i in 0..n {
             self.litems.push(items[i]);
         }
     }

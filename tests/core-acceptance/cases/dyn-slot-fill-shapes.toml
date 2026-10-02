@@ -1,0 +1,11 @@
+[[case]]
+id = "dyn-slot-fill-shapes"
+intent = "A nominal impl (over a same-named inherent method), an inherited default, a generic impl and a structural match fill a trait-object slot with the declaration a bounded generic call reaches."
+source = "cases/dyn-slot-fill-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+kind = "run"
+
+[case.expected]
+stdout = "trait\ntrait\nhi ann\nbox\nwidget 4\nwidget 5\nbw6\nbw7\n"
+exit = 0

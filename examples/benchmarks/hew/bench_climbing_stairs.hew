@@ -16,7 +16,7 @@ const ITERS: i64 = 5000000;
 fn main() {
     let n = 50;
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + climbing_stairs(n);
     }
     println("bench_climbing_stairs");

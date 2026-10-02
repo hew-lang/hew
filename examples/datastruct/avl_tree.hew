@@ -328,7 +328,7 @@ fn test_left_right() -> i64 {
 fn test_many_inserts() -> i64 {
     let NIL = 0 - 1;
     var vals: Vec<i64> = Vec.new();
-    for i in 1 .. 21 {
+    for i in 1..21 {
         vals.push(i);
     }
     let (nodes, root) = build_avl(vals, NIL);

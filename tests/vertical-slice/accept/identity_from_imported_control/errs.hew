@@ -1,0 +1,26 @@
+pub enum Low {
+    Broken(i64);
+}
+
+impl Display for Low {
+    fn fmt(self) -> string {
+        match self {
+            .Broken(code) => f"Broken {code}",
+        }
+    }
+}
+
+impl Error for Low {}
+
+impl From<i64> for Low {
+    fn from(value: i64) -> Low {
+        .Broken(value)
+    }
+}
+
+pub fn check(code: i64) -> i64 fails Low {
+    if code > 0 {
+        return error code;
+    }
+    code
+}

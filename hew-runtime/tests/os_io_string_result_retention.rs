@@ -6,8 +6,6 @@
 
 #[path = "../src/test_string.rs"]
 mod test_string;
-use std::io::Write as _;
-use std::process::{Command, Stdio};
 use test_string::ManagedString;
 
 use hew_cabi::string::{string_as_bytes, string_from_str, string_release, HewString};
@@ -15,7 +13,7 @@ use hew_runtime::env::{
     hew_args_get, hew_cwd, hew_env_get, hew_env_remove, hew_env_set, hew_home_dir, hew_hostname,
     hew_temp_dir,
 };
-use hew_runtime::file_io::{hew_file_read, hew_stdin_read_line};
+use hew_runtime::file_io::hew_file_read;
 use hew_runtime::path::{
     hew_glob, hew_glob_count, hew_glob_error, hew_glob_free, hew_glob_get, hew_glob_is_valid,
     hew_path_absolute,
@@ -23,12 +21,9 @@ use hew_runtime::path::{
 use hew_runtime::process::{
     hew_process_result_free, hew_process_result_stderr, hew_process_result_stdout, HewProcessResult,
 };
-use hew_runtime::stdio::{hew_io_read_all, hew_io_read_line};
 use hew_runtime::stream::{
     hew_file_read_stream_collect_string, hew_stream_collect_string, hew_stream_from_bytes,
 };
-
-const STDIN_CHILD: &str = "HEW_OS_IO_RETENTION_STDIN_CHILD";
 
 /// Check independent result ownership for one result producer whose source state remains live
 /// across calls.  `call` deliberately runs three times: freeing a returned
@@ -244,113 +239,4 @@ fn stream_collect_string_result_is_transferred() {
             hew_file_read_stream_collect_string(stream)
         }
     });
-}
-
-fn run_stdin_child(test_name: &str, input: &[u8]) {
-    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
-        .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
-        .env(STDIN_CHILD, "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn isolated stdin retention child");
-    child
-        .stdin
-        .as_mut()
-        .expect("child stdin")
-        .write_all(input)
-        .expect("write child stdin");
-    let output = child.wait_with_output().expect("wait for stdin child");
-    assert!(
-        output.status.success(),
-        "{test_name} child failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn io_read_line_result_is_transferred() {
-    if std::env::var_os(STDIN_CHILD).is_some() {
-        // Three equal, independently queued lines keep the stdin source alive
-        // for R3 while each `read_line` consumes exactly one record.
-        assert_managed_result_is_transferred("hew_io_read_line", || hew_io_read_line());
-    } else {
-        run_stdin_child("io_read_line_result_is_transferred", b"line\nline\nline\n");
-    }
-}
-
-#[test]
-fn stdin_read_line_preserves_embedded_nul_and_unicode() {
-    if std::env::var_os(STDIN_CHILD).is_some() {
-        let result = hew_stdin_read_line();
-        // SAFETY: the read transfers one managed owner, released below.
-        unsafe {
-            assert_eq!(string_as_bytes(result), "line\0é中🙂".as_bytes());
-            string_release(result);
-        }
-    } else {
-        run_stdin_child(
-            "stdin_read_line_preserves_embedded_nul_and_unicode",
-            "line\0é中🙂\n".as_bytes(),
-        );
-    }
-}
-
-unsafe fn read_all_from_replaced_stdin(input: &[u8]) -> *mut HewString {
-    let mut pipe_fds = [0; 2];
-    // SAFETY: `pipe_fds` has space for the read/write descriptors.
-    // SAFETY: `pipe_fds` has space for the read/write descriptors.
-    let pipe_status = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
-    assert_eq!(pipe_status, 0, "create stdin pipe");
-    let mut written = 0;
-    while written < input.len() {
-        // SAFETY: the remaining slice is valid to read and the descriptor is
-        // the pipe's writable end.
-        let count = unsafe {
-            libc::write(
-                pipe_fds[1],
-                input[written..].as_ptr().cast(),
-                input.len() - written,
-            )
-        };
-        assert!(count > 0, "write stdin fixture");
-        written += usize::try_from(count).expect("positive write count fits usize");
-    }
-    // SAFETY: close the writer so `read_to_string` observes EOF.
-    // SAFETY: the writable pipe descriptor is valid and owned by this helper.
-    let close_writer = unsafe { libc::close(pipe_fds[1]) };
-    assert_eq!(close_writer, 0, "close stdin pipe writer");
-    // SAFETY: duplicate and replace descriptor zero inside this isolated child.
-    let saved = unsafe { libc::dup(libc::STDIN_FILENO) };
-    assert!(saved >= 0, "save child stdin");
-    // SAFETY: both descriptors are live; dup2 atomically makes fd 0 refer to
-    // the test pipe in this isolated child process.
-    let replace_stdin = unsafe { libc::dup2(pipe_fds[0], libc::STDIN_FILENO) };
-    assert_eq!(replace_stdin, libc::STDIN_FILENO, "replace child stdin");
-    // SAFETY: fd zero now owns a duplicate of this pipe's read end.
-    let close_read = unsafe { libc::close(pipe_fds[0]) };
-    assert_eq!(close_read, 0, "close duplicate read descriptor");
-    let result = hew_io_read_all();
-    // SAFETY: restore the test runner's original descriptor before returning.
-    // SAFETY: `saved` is the valid descriptor duplicated before replacement.
-    let restore_stdin = unsafe { libc::dup2(saved, libc::STDIN_FILENO) };
-    assert_eq!(restore_stdin, libc::STDIN_FILENO, "restore child stdin");
-    // SAFETY: fd zero now owns the restored duplicate, so `saved` is surplus.
-    let close_saved = unsafe { libc::close(saved) };
-    assert_eq!(close_saved, 0, "close saved stdin");
-    result
-}
-
-#[test]
-fn io_read_all_result_is_transferred() {
-    if std::env::var_os(STDIN_CHILD).is_some() {
-        assert_managed_result_is_transferred("hew_io_read_all", || {
-            // SAFETY: this test-only helper restores stdin before returning.
-            unsafe { read_all_from_replaced_stdin(b"read-all retention witness") }
-        });
-    } else {
-        run_stdin_child("io_read_all_result_is_transferred", b"");
-    }
 }

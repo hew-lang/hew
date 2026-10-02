@@ -1306,7 +1306,7 @@ fn run_imports_std_io_and_round_trips_stdin_to_stdout() {
         "import std.io;\n\
          \n\
          fn main() {\n\
-         \x20   let line = io.read_line();\n\
+         \x20   let line = io.read_line().unwrap_or(\"\");\n\
          \x20   io.write(\"echo: \");\n\
          \x20   io.write(line);\n\
          \x20   io.write(\"\\n\");\n\
@@ -1461,7 +1461,7 @@ fn run_fstring_dispatches_user_defined_display() {
     let hew_src = dir.path().join("fstring_user_display.hew");
     std::fs::write(
         &hew_src,
-        "import std.io;\n\ntype Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(p: Point) -> string {\n        f\"Point({p.x})\"\n    }\n}\n\nfn main() {\n    let p = Point { x: 7 };\n    println(f\"got {p}\");\n}\n",
+        "import std.io;\n\ntype Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(self) -> string {\n        f\"Point({self.x})\"\n    }\n}\n\nfn main() {\n    let p = Point { x: 7 };\n    println(f\"got {p}\");\n}\n",
     )
     .unwrap();
 

@@ -1,4 +1,8 @@
-import std.encoding.wire;
+import std.encoding.cbor;
+
+import std.encoding.json;
+
+import std.encoding.yaml;
 
 #[wire]
 type Feature {
@@ -26,7 +30,7 @@ fn main() {
         names.insert("gamma-" + "owned");
         names.insert("alpha-" + "owned");
         let registry = Registry { features: features, labels: labels, names: names };
-        let binary_back = Registry.decode(registry.encode());
+        let binary_back = cbor.decode<Registry>(cbor.encode(registry)).expect("decode");
         if binary_back.features.len() != 2 {
             panic("binary features");
         }
@@ -36,8 +40,8 @@ fn main() {
         if binary_back.names.len() != 2 {
             panic("binary names");
         }
-        let json = registry.to_json();
-        match Registry.from_json(json) {
+        let json_text = json.encode(registry);
+        match json.decode<Registry>(json_text) {
             .Ok(json_back) => {
                 if json_back.features.len() != 2 {
                     panic("json features");
@@ -50,8 +54,8 @@ fn main() {
                 panic("json parse");
             }
         }
-        let yaml = registry.to_yaml();
-        match Registry.from_yaml(yaml) {
+        let yaml_text = yaml.encode(registry);
+        match yaml.decode<Registry>(yaml_text) {
             .Ok(yaml_back) => {
                 if yaml_back.labels.len() != 2 {
                     panic("yaml labels");
@@ -64,8 +68,8 @@ fn main() {
                 panic("yaml parse");
             }
         }
-        let bare_json = wire.to_json(registry.features);
-        match wire.from_json<HashMap<string, Feature>>(bare_json) {
+        let bare_json = json.encode(registry.features);
+        match json.decode<HashMap<string, Feature>>(bare_json) {
             .Ok(bare_back) => {
                 if bare_back.len() != 2 {
                     panic("bare map");

@@ -144,8 +144,8 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
 /// }
 /// ```
 impl Display for IoError {
-    fn fmt(e: IoError) -> string {
-        match e {
+    fn fmt(self) -> string {
+        match self {
             IoError.NotFound(code) => f"NotFound({code})",
             IoError.PermissionDenied(code) => f"PermissionDenied({code})",
             IoError.AlreadyExists(code) => f"AlreadyExists({code})",
@@ -156,8 +156,7 @@ impl Display for IoError {
     }
 }
 
-impl Error for IoError {
-}
+impl Error for IoError {}
 
 /// Construct an `IoError.TimedOut(0)` value without a platform-specific
 /// errno. Useful for in-process deadline expiry where there is no OS error
@@ -418,19 +417,33 @@ impl FileReadStream {
 }
 
 extern "C" {
+    #[offload]
     fn hew_file_read(path: string) -> string;
+    #[offload]
     fn hew_file_write(path: string, content: string) -> i32;
+    #[offload]
     fn hew_file_append(path: string, content: string) -> i32;
+    #[offload]
     fn hew_file_exists(path: string) -> bool;
+    #[offload]
     fn hew_file_delete(path: string) -> i32;
+    #[offload]
     fn hew_file_size(path: string) -> i64;
+    #[offload]
     fn hew_file_read_bytes(path: string) -> bytes;
+    #[offload]
     fn hew_file_write_bytes(path: string, data: bytes) -> i32;
+    #[offload]
     fn hew_fs_mkdir(path: string) -> i32;
+    #[offload]
     fn hew_fs_mkdir_all(path: string) -> i32;
+    #[offload]
     fn hew_fs_list_dir(path: string) -> Vec<string>;
+    #[offload]
     fn hew_fs_rename(from: string, to: string) -> i32;
+    #[offload]
     fn hew_fs_copy(from: string, to: string) -> i32;
+    #[offload]
     fn hew_fs_is_dir(path: string) -> bool;
     fn hew_file_read_stream_open(path: string) -> FileReadStream;
     fn hew_file_read_stream_is_valid(stream: FileReadStream) -> bool;

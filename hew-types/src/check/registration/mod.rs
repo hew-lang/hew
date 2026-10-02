@@ -183,37 +183,6 @@ impl StdlibBarePublication<'_> {
     }
 }
 
-/// A trait reference (`impl <Trait> for ...`) resolved to its OWNER-QUALIFIED
-/// identity, so trait conformance never keys off the bare `Trait::method` name
-/// (which is first-write-wins and polluted under same-name collisions). Produced
-/// by `resolve_trait_conformance_identity`.
-pub(in crate::check) struct ResolvedTraitIdentity {
-    /// The trait's defining module (`Some("srccollidea")` for an
-    /// aliased/imported-bare/single-owner-import trait), or `None` for a
-    /// local/root trait or a reference that did not resolve to a single owner.
-    owner: Option<String>,
-    /// The trait's source name (the name as declared in its defining module,
-    /// recovering through an alias: `import m::{ Trait as C }` resolves `C` to
-    /// source name `Trait`).
-    source_trait_name: String,
-    /// `true` when the reference binds to a LOCAL trait declaration, which
-    /// shadows any imported same-name trait. Callers source the required-method
-    /// set and signatures from the local `TraitInfo`, never the polluted bare
-    /// `fn_sigs` key.
-    is_local: bool,
-}
-
-/// The scope a trait name is resolved in. A primary trait / bound is spelled in
-/// the importing program (`Current`); a SUPERTRAIT edge is spelled inside the
-/// declaring module (`Declaring`) and must follow that module's import bindings
-/// (the re-export chain), never the importer's same-name trait. See
-/// `resolve_trait_ref`.
-#[derive(Clone, Copy)]
-pub(in crate::check) enum TraitRefScope<'a> {
-    Current,
-    Declaring { module: &'a str },
-}
-
 /// Import-free projection generated from the owning declarations in
 /// `std/builtins.hew` and `std/link_monitor.hew`.
 const MONITOR_REF_HEW: &str = include_str!(concat!(env!("OUT_DIR"), "/monitor_ref.hew"));
@@ -258,14 +227,18 @@ const FAILURE_HEW: &str = include_str!("../../../../std/failure.hew");
 ///   These are ordinary typed Hew declarations whose exact canonical source
 ///   identity selects a closed runtime operation; the raw status/out ABI is
 ///   not exposed to source programs.
-/// - `std.encoding.wire` — the generic codec facade. Every call carries a
-///   checker-recorded `GenericWireCodec` rewrite; the declarations have no
-///   body to fall back to.
+/// - `std.encoding.{cbor,json,yaml,toml,msgpack}` — each format's generic
+///   `encode`/`decode`. Every call carries a checker-recorded `Codec`
+///   rewrite; the declarations have no body to fall back to.
 const INTRINSIC_FLOOR_MODULES: &[&str] = &[
     "std.math",
     "std.mem",
     "std.encoding.utf8",
-    "std.encoding.wire",
+    "std.encoding.cbor",
+    "std.encoding.json",
+    "std.encoding.yaml",
+    "std.encoding.toml",
+    "std.encoding.msgpack",
     "std.stream",
 ];
 

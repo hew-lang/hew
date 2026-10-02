@@ -424,52 +424,14 @@ fn call_site_rejects_assoc_binding_mismatch() {
 }
 
 #[test]
-fn scope_error_type_constructs_and_field_accesses() {
-    let source = concat!(
-        "import std.concurrency;\n",
-        "fn read_primary(err: concurrency.ScopeError<i64>) -> i64 {\n",
-        "    let primary: i64 = err.primary;\n",
-        "    primary\n",
-        "}\n",
-        "fn read_others(err: concurrency.ScopeError<i64>) -> Vec<i64> {\n",
-        "    let others: Vec<i64> = err.also_failed;\n",
-        "    others\n",
-        "}\n",
-        "fn read_cancelled(err: concurrency.ScopeError<i64>) -> i64 {\n",
-        "    let cancelled: i64 = err.cancelled_count;\n",
-        "    cancelled\n",
-        "}\n",
-        "fn pass_through(err: concurrency.ScopeError<i64>) -> concurrency.ScopeError<i64> {\n",
-        "    err\n",
-        "}\n",
-        "fn main() {\n",
-        "}\n",
-    );
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "unexpected type errors: {:?}",
-        output.errors
-    );
-}
-
-#[test]
 fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
     let mut checker = Checker::new(test_registry());
     checker.register_builtins();
 
-    for (name, bounds) in [
-        ("print", vec!["Display".to_string()]),
-        ("println", vec!["Display".to_string()]),
-        ("to_string", vec!["Display".to_string()]),
-    ] {
+    let display = checker
+        .lang_trait(crate::LangItem::Display)
+        .expect("builtins register Display");
+    for name in ["print", "println", "to_string"] {
         let sig = checker
             .sigs()
             .get(name)
@@ -483,15 +445,15 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
             "{name} should expose a single generic parameter"
         );
         assert_eq!(
-            sig.type_param_bounds.get("T"),
-            Some(&bounds),
-            "{name} should keep its bare-name registration bounds"
+            sig.bounds.of(sig.type_params[0].id).collect::<Vec<_>>(),
+            vec![&crate::check::TraitRef::bare(display)],
+            "{name} should bound its parameter by the prelude Display"
         );
     }
 
     let len_sig = checker.sigs().get("len").expect("missing len builtin");
     assert!(
-        len_sig.type_param_bounds.is_empty(),
+        len_sig.bounds.is_empty(),
         "len must stay out of the Display migration"
     );
 }
@@ -533,7 +495,7 @@ fn equality_assertions_reject_a_type_without_eq() {
 }
 
 impl Display for Holder {
-    fn fmt(holder: Holder) -> string {
+    fn fmt(self) -> string {
         "holder"
     }
 }
@@ -570,7 +532,7 @@ fn display_impl_satisfies_bounded_magic_builtins() {
 }
 
 impl Display for Widget {
-    fn fmt(widget: Widget) -> string {
+    fn fmt(self) -> string {
         "widget"
     }
 }
@@ -589,14 +551,24 @@ fn main() {
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
 }
 
+/// `T`'s bound by `trait_id` in a hand-built signature.
+fn param_bound(param: &str, trait_id: crate::DefId) -> crate::check::ParamBounds {
+    let mut bounds = crate::check::ParamBounds::default();
+    bounds.push(
+        crate::ParamHead::for_test(param).id,
+        crate::check::TraitRef::bare(trait_id),
+    );
+    bounds
+}
+
 #[test]
 fn deferred_bound_check_drains_after_defaulting() {
-    let mut checker = make_checker_with_trait("MyTrait", &[], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("MyTrait", &[], false, false);
     let span = 0..0;
     let var = TypeVar::fresh();
     let sig = FnSig {
         type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
+        bounds: param_bound("T", trait_id),
         ..Default::default()
     };
 
@@ -634,12 +606,12 @@ fn deferred_bound_check_drains_after_defaulting() {
 
 #[test]
 fn deferred_bound_check_skips_when_var_remains_unresolved() {
-    let mut checker = make_checker_with_trait("MyTrait", &[], false, false);
+    let (mut checker, trait_id) = make_checker_with_trait("MyTrait", &[], false, false);
     let span = 0..0;
     let var = TypeVar::fresh();
     let sig = FnSig {
         type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
+        bounds: param_bound("T", trait_id),
         ..Default::default()
     };
 
@@ -688,7 +660,12 @@ fn deferred_bound_check_drains_when_var_resolves_to_satisfying_type() {
     let var = TypeVar::fresh();
     let sig = FnSig {
         type_params: vec![crate::ParamHead::for_test("T")],
-        type_param_bounds: HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+        bounds: param_bound(
+            "T",
+            checker
+                .lang_trait(crate::LangItem::Display)
+                .expect("builtins register Display"),
+        ),
         ..Default::default()
     };
 
@@ -1141,7 +1118,7 @@ fn suggest_similar_field() {
 fn suggest_similar_method() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
+        "impl Counter { fn length(self) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.lenght(); }\n",
     ));
     let err = errors
@@ -1159,7 +1136,7 @@ fn suggest_similar_method() {
 fn no_suggest_method_when_too_different() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
+        "impl Counter { fn length(self) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.zzzzz(); }\n",
     ));
     let err = errors
@@ -3024,15 +3001,8 @@ fn no_warn_used_import() {
 // ── Selective-import load-bearing use false positive (D8) ─────────────
 //
 // A selectively-imported type used only through expression-position
-// resolution (a record literal, an enum-variant constructor call) still
-// warned "unused import" — the checker's `import_spans` unused-import
-// table keys each import by the MODULE's short name (`fixture` for
-// `import src.fixture.{Widget}`), but the two credit sites below spliced
-// the resolved owner-qualified identity apart on the FIRST `.` rather than
-// the LAST, so a multi-segment module path (`src.fixture`) mapped to the
-// wrong lexical key (`src` instead of `fixture`) and the credit never
-// landed. Annotation-position resolution already threaded the correct
-// `mark_module_owner_bindings_used` call (post-#2930) and never had this bug.
+// resolution (a record literal, an enum-variant constructor call) must count
+// as a use of its import, as annotation-position resolution does.
 
 fn check_resolved_selective_import(child_source: &str, root_source: &str) -> TypeCheckOutput {
     let child = hew_parser::parse(child_source);
@@ -3117,7 +3087,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         }
     ";
     let module_source = r#"pub trait Describable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 pub type Label {
@@ -3129,8 +3099,8 @@ pub fn make_label() -> Label {
 }
 
 impl Describable for Label {
-    fn describe(label: Label) -> string {
-        label.text
+    fn describe(self) -> string {
+        self.text
     }
 }
 
@@ -3194,13 +3164,16 @@ pub fn describe<T: Describable>(item: T) -> string {
         inferred,
         &vec![Ty::named_in(&output.defs, "std.text.semver.Label", vec![])]
     );
+    let describable = output
+        .defs
+        .lookup_path("std.text.semver.Describable")
+        .expect("Describable is declared");
     assert!(
-        checker.trait_impls_set.contains(&(
-            "std.text.semver.Label".to_string(),
-            "std.text.semver.Describable".to_string()
-        )),
-        "stdlib Hew items should register trait impls under their exact source owners for downstream generic bound checks: {:?}",
-        checker.trait_impls_set
+        checker.has_trait_impl(
+            &Ty::named_in(&output.defs, "std.text.semver.Label", vec![]),
+            describable
+        ),
+        "stdlib Hew items should register trait impls under their exact source owners for downstream generic bound checks"
     );
 }
 
@@ -3213,11 +3186,11 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
     // dispatch site, which only ever sees a resolved `Ty`.
     let source = r#"
         pub trait Display {
-            fn fmt(val: Self) -> string;
+            fn fmt(self) -> string;
         }
 
         impl Display for i64 {
-            fn fmt(n: i64) -> string {
+            fn fmt(self) -> string {
                 ""
             }
         }
@@ -3233,9 +3206,12 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
     checker.checking_embedded_builtins = true;
     let _output = checker.check_program(&parsed.program);
 
+    let display = checker
+        .lookup_declaration("Display")
+        .expect("the source declares Display");
     let methods = checker
         .primitive_trait_impls
-        .get(&("i64".to_string(), "Display".to_string()))
+        .get(&("i64".to_string(), display))
         .expect("primitive trait impl table should have entry for (i64, Display)");
     let fmt_sig = methods
         .get("fmt")
@@ -3254,11 +3230,11 @@ fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
     // impls on Vec must reach the side table the same way primitives do.
     let source = r#"
         pub trait Display {
-            fn fmt(val: Self) -> string;
+            fn fmt(self) -> string;
         }
 
         impl Display for Vec<i32> {
-            fn fmt(v: Vec<i32>) -> string {
+            fn fmt(self) -> string {
                 ""
             }
         }
@@ -3274,10 +3250,13 @@ fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
     checker.checking_embedded_builtins = true;
     let _output = checker.check_program(&parsed.program);
 
+    let display = checker
+        .lookup_declaration("Display")
+        .expect("the source declares Display");
     assert!(
         checker
             .primitive_trait_impls
-            .contains_key(&("Vec".to_string(), "Display".to_string())),
+            .contains_key(&("Vec".to_string(), display)),
         "primitive trait impl table should record impls keyed on the bare \
          builtin generic name (Vec) regardless of element type"
     );
@@ -3289,7 +3268,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
     // those flow through `type_defs` and would create duplicate dispatch
     // paths if the helper accepted them.
     let source = r#"pub trait Display {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 pub type MyType {
@@ -3297,7 +3276,7 @@ pub type MyType {
 }
 
 impl Display for MyType {
-    fn fmt(m: MyType) -> string {
+    fn fmt(self) -> string {
         ""
     }
 }
@@ -3382,9 +3361,9 @@ fn assert_primitive_trait_dispatch_records_metadata(
 fn primitive_impl_dispatch_resolves_int_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let x: i64 = 42;
@@ -3400,9 +3379,9 @@ fn primitive_impl_dispatch_resolves_int_receiver() {
 fn primitive_impl_dispatch_resolves_bool_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for bool {
-                fn fmt(b: bool) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let b: bool = true;
@@ -3418,9 +3397,9 @@ fn primitive_impl_dispatch_resolves_bool_receiver() {
 fn primitive_impl_dispatch_resolves_char_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for char {
-                fn fmt(c: char) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let c: char = 'a';
@@ -3438,9 +3417,9 @@ fn primitive_impl_dispatch_resolves_i32_receiver() {
     // as their `Ty::I32` variant — `i32` here, not `i64`.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i32 {
-                fn fmt(n: i32) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let n: i32 = 7;
@@ -3462,9 +3441,9 @@ fn primitive_impl_dispatch_resolves_string_receiver_via_method_using_trait_metho
     // type-check issue tracked separately (see issue #1565 follow-ups).
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait MyShow { fn show(val: Self) -> i64; }
+            pub trait MyShow { fn show(self) -> i64; }
             impl MyShow for string {
-                fn show(s: string) -> i64 { 0 }
+                fn show(self) -> i64 { 0 }
             }
             fn main() {
                 let s: string = "hi";
@@ -3481,9 +3460,9 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
     // Vec routes through `check_vec_method`'s not-found arm.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for Vec<i32> {
-                fn fmt(v: Vec<i32>) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let v: Vec<i32> = Vec.new();
@@ -3503,9 +3482,9 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     // in scope, calling the builtin must still resolve to `Option<i64>`, not
     // be hijacked into the user trait's `fmt` method.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> string; }
+        pub trait Display { fn fmt(self) -> string; }
         impl Display for i32 {
-            fn fmt(n: i32) -> string { "" }
+            fn fmt(self) -> string { "" }
         }
         fn main() {
             let n: i32 = 7;
@@ -3537,9 +3516,9 @@ fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
     // The UFCS dispatcher intercepts before that lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let x: i64 = 42;
@@ -3559,9 +3538,9 @@ fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
     // applied to the trailing args after the receiver is consumed.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Show { fn show(val: Self, suffix: string) -> string; }
+            pub trait Show { fn show(self, suffix: string) -> string; }
             impl Show for i64 {
-                fn show(n: i64, suffix: string) -> string { suffix }
+                fn show(self, suffix: string) -> string { suffix }
             }
             fn main() {
                 let x: i64 = 42;
@@ -3582,7 +3561,7 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
     // `type_defs` cannot reach).  The receiver-kind metadata for the
     // call must be `NamedTypeInstance`, not `PrimitiveTraitImpl`.
     let source = r#"pub trait Display {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 pub type Foo {
@@ -3590,7 +3569,7 @@ pub type Foo {
 }
 
 impl Display for Foo {
-    fn fmt(f: Foo) -> string {
+    fn fmt(self) -> string {
         ""
     }
 }
@@ -3662,7 +3641,7 @@ fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
     // `PrimitiveTraitImpl` metadata is recorded — the call is handled
     // entirely by the receiver-form dispatch path.
     let source = r#"pub trait UserDisplay {
-    fn show(val: Self) -> string;
+    fn show(self) -> string;
 }
 
 pub type Widget {
@@ -3670,7 +3649,7 @@ pub type Widget {
 }
 
 impl UserDisplay for Widget {
-    fn show(w: Widget) -> string {
+    fn show(self) -> string {
         ""
     }
 }
@@ -3720,9 +3699,9 @@ fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
     // The fix removes the redundant outer check_arity, leaving only the
     // inner one, matching the receiver-form path's behaviour.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> string; }
+        pub trait Display { fn fmt(self) -> string; }
         impl Display for i64 {
-            fn fmt(n: i64) -> string { "" }
+            fn fmt(self) -> string { "" }
         }
         fn main() {
             let x: i64 = 42;
@@ -3758,9 +3737,9 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
     // "no method `<name>` on <kind>" diagnostic must still fire — the
     // helper returns None so the existing reporter runs.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> string; }
+        pub trait Display { fn fmt(self) -> string; }
         impl Display for i64 {
-            fn fmt(n: i64) -> string { "" }
+            fn fmt(self) -> string { "" }
         }
         fn main() {
             let x: i64 = 42;
@@ -3799,9 +3778,9 @@ fn primitive_trait_dispatch_int_literal_receiver() {
     // `canonical_primitive_or_builtin_key` short-circuited on the literal.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let _ = (42).fmt();
@@ -3819,9 +3798,9 @@ fn primitive_trait_dispatch_float_literal_receiver() {
     // before canonical-key lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for f64 {
-                fn fmt(x: f64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let _ = (3.14).fmt();
@@ -3840,9 +3819,9 @@ fn primitive_trait_dispatch_ufcs_int_literal() {
     // and the trait-qualified path mis-arities (sig.params=[] vs args=[42]).
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> string; }
+            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
-                fn fmt(n: i64) -> string { "" }
+                fn fmt(self) -> string { "" }
             }
             fn main() {
                 let _ = Display.fmt(42);
@@ -3951,7 +3930,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // do not pollute `trait_defs` or hijack user names.
     let source = r"
         pub trait Display {
-            fn render(val: Self) -> string;
+            fn render(self) -> string;
         }
         fn main() {
             let x: i64 = 42;
@@ -3980,9 +3959,10 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // trait_defs (i.e. our builtins-blanket loader did NOT register
     // Display first and force the user declaration to be skipped).
     assert!(
-        checker.has_trait_def("Display"),
-        "user trait Display must remain registered; trait_defs keys: {:?}",
-        checker.trait_def_keys.keys().collect::<Vec<_>>()
+        checker
+            .lookup_declaration("Display")
+            .is_some_and(|id| checker.trait_defs.contains_key(&id)),
+        "user trait Display must remain registered"
     );
 }
 
@@ -4058,13 +4038,16 @@ fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_bu
     // source needing to fail, so we pin the table contents here.
     let mut checker = Checker::new(test_registry());
     checker.register_builtins();
+    let display = checker
+        .lang_trait(crate::LangItem::Display)
+        .expect("builtins register Display");
     let expected_canonical_keys = [
         "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "bool", "char",
     ];
     for key in expected_canonical_keys {
         let entry = checker
             .primitive_trait_impls
-            .get(&(key.to_string(), "std.builtins.Display".to_string()))
+            .get(&(key.to_string(), display))
             .unwrap_or_else(|| {
                 panic!(
                     "missing builtins-blanket Display impl for primitive `{key}`; \

@@ -37,7 +37,7 @@ const MAX_PACKET_BYTES: i64 = 1048576;
 // ── Bytes helpers ─────────────────────────────────────────────────────────────
 fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
     var result = bytes.new();
-    for i in start .. end {
+    for i in start..end {
         result.push(data[i]);
     }
     result
@@ -114,7 +114,7 @@ fn read_varint_len(data: bytes, offset: i64) -> i64 {
 fn mqtt_str(s: string) -> bytes {
     let slen: i64 = s.len();
     var buf = u16_be(slen as i32);
-    for i in 0 .. slen {
+    for i in 0..slen {
         buf.push(s.char_at(i).unwrap_or('\0') as u8);
     }
     buf
@@ -537,7 +537,7 @@ actor Router {
     }
     receive fn claim_client_id(session_id: string, requested: string) -> bool {
         if requested != "" {
-            for i in 0 .. client_ids.len() {
+            for i in 0..client_ids.len() {
                 if client_ids[i] == requested && session_ids[i] != session_id {
                     println(f"[router] duplicate client_id={requested} rejected session={session_id}");
                     return false;
@@ -546,7 +546,7 @@ actor Router {
         }
         // Empty ClientIds are permitted for clean sessions in MQTT 3.1.1.
         // Their generated session IDs remain the routing authority.
-        for i in 0 .. client_ids.len() {
+        for i in 0..client_ids.len() {
             if session_ids[i] == session_id {
                 client_ids[i] = requested;
                 return true;
@@ -563,11 +563,11 @@ actor Router {
     }
     receive fn publish(topic: string, payload: bytes, qos: i32, packet_id: i32) {
         // Fan out to all matching subscribers via actor handles.
-        for i in 0 .. sub_topics.len() {
+        for i in 0..sub_topics.len() {
             if sub_topics[i] == topic {
                 let sub_session = sub_session_ids[i];
                 let sub_q = sub_qos[i];
-                for j in 0 .. session_ids.len() {
+                for j in 0..session_ids.len() {
                     if session_ids[j] == sub_session {
                         // Submit without waiting: the target may itself be
                         // inside `on_data`, waiting on this publish.
@@ -585,7 +585,7 @@ actor Router {
         var new_topics: Vec<string> = Vec.new();
         var new_sessions: Vec<string> = Vec.new();
         var new_qos: Vec<i32> = Vec.new();
-        for i in 0 .. sub_topics.len() {
+        for i in 0..sub_topics.len() {
             if sub_session_ids[i] == session_id {
                 if sub_topics[i] == topic {
                     continue;
@@ -608,7 +608,7 @@ actor Router {
         var new_sessions: Vec<string> = Vec.new();
         var new_client_ids: Vec<string> = Vec.new();
         var new_clients: Vec<ClientHandler> = Vec.new();
-        for i in 0 .. session_ids.len() {
+        for i in 0..session_ids.len() {
             if session_ids[i] != session_id {
                 new_sessions.push(session_ids[i]);
                 new_client_ids.push(client_ids[i]);
@@ -622,7 +622,7 @@ actor Router {
         var new_sub_topics: Vec<string> = Vec.new();
         var new_sub_sessions: Vec<string> = Vec.new();
         var new_sub_qos: Vec<i32> = Vec.new();
-        for j in 0 .. sub_session_ids.len() {
+        for j in 0..sub_session_ids.len() {
             if sub_session_ids[j] != session_id {
                 new_sub_topics.push(sub_topics[j]);
                 new_sub_sessions.push(sub_session_ids[j]);

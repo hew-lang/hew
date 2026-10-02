@@ -7,11 +7,11 @@
 // `TraitImplSignatureMismatch`. Guards the local declaring-trait fallback that
 // keys on the supertrait's source name, not the sub-trait written in the impl.
 trait Super {
-    fn base(val: Self) -> i64;
+    fn base(self) -> i64;
 }
 
 trait Sub: Super {
-    fn tag(val: Self) -> i64;
+    fn tag(self) -> i64;
 }
 
 type W {
@@ -19,12 +19,12 @@ type W {
 }
 
 impl Sub for W {
-    fn base(w: W) -> bool {
+    fn base(self) -> bool {
         true
     }
 
-    fn tag(w: W) -> i64 {
-        w.id
+    fn tag(self) -> i64 {
+        self.id
     }
 }
 

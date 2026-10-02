@@ -1,0 +1,26 @@
+// A value that is not data is refused where the encoder is called: a resource,
+// and a collection or tuple reaching one. Plain records, tuples and
+// collections of them are data.
+import std.encoding.json;
+
+type Plain {
+    a: i64;
+    b: string;
+}
+
+#[resource]
+type Handle {
+    fd: i64;
+}
+
+impl Handle {
+    fn close(consume self) {}
+}
+
+fn main() {
+    let plains: Vec<Plain> = [Plain { a: 1, b: "x" }];
+    println(json.encode(plains));
+    let handle = Handle { fd: 3 };
+    println(json.encode(handle));
+    println(json.encode((1, "a")));
+}

@@ -32,7 +32,7 @@ fn compare_suffixes(text: Vec<i64>, a: i64, b: i64) -> i64 {
 fn build_suffix_array(text: Vec<i64>) -> Vec<i64> {
     let n = text.len();
     var sa: Vec<i64> = Vec.new();
-    for i in 0 .. n {
+    for i in 0..n {
         sa.push(i);
     }
     // Insertion sort on suffix indices
@@ -172,7 +172,7 @@ fn main() {
     }
     // Test 3: All indices present (sum = 0+1+2+...+7 = 28)
     var sum = 0;
-    for j in 0 .. 8 {
+    for j in 0..8 {
         sum = sum + sa[j];
     }
     if sum == 28 {
@@ -248,7 +248,7 @@ fn main() {
     let lcp2 = build_lcp_array(text2, sa2);
     // Suffixes starting with [1,2,...] should have LCP >= 2
     var found_lcp2 = false;
-    for k in 1 .. lcp2.len() {
+    for k in 1..lcp2.len() {
         if lcp2[k] >= 2 {
             found_lcp2 = true;
         }

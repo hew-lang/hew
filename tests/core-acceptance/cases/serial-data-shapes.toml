@@ -1,0 +1,10 @@
+[[case]]
+id = "serial-data-shapes"
+intent = "Data shapes round-trip through JSON, YAML and CBOR with #[serial] keys, and decode errors name the failing path."
+source = "cases/serial-data-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "{\"serviceName\":\"api\",\"port\":8080,\"pair\":{\"left\":1,\"right\":-2},\"tree\":{\"label\":\"root\",\"children\":[{\"label\":\"a\",\"children\":[]}]},\"outcome\":{\"Err\":\"refused\"},\"origin\":[3,0.5,true],\"figures\":[{\"Circle\":1.5},{\"Rect\":{\"w\":2.0,\"h\":3.25}},{\"Line\":[0,9]},\"Empty\"],\"blob\":\"AP8=\",\"grade\":\"\u00e9\",\"timeout\":null,\"type\":\"svc\"}\ntrue\ntrue\na\nserviceName: api\nport: 8080\npair:\n  left: 1\n  right: -2\ntree:\n  label: root\n  children:\n  - label: a\n    children: []\noutcome:\n  Err: refused\norigin:\n- 3\n- 0.5\n- true\nfigures:\n- Circle: 1.5\n- Rect:\n    w: 2.0\n    h: 3.25\n- Line:\n  - 0\n  - 9\n- Empty\nblob: AP8=\ngrade: \u00e9\ntimeout: null\ntype: svc\ntrue\ntrue\nType: .serviceName: expected string, found integer\nMissing: .right\nUnknownVariant: [0]: no variant named Hexagon\n[4,-9]\ntrue\n[4,-9]\n"
+exit = 0

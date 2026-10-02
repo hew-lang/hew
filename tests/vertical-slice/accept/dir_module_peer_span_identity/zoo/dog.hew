@@ -9,7 +9,7 @@ pub fn make_dog(name: string) -> Dog {
 }
 
 impl Speaker for Dog {
-    fn speak(val: Dog) -> string {
-        f"{val.name} says woof"
+    fn speak(self) -> string {
+        f"{self.name} says woof"
     }
 }

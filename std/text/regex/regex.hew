@@ -114,39 +114,39 @@ trait PatternMethods {
 
 impl PatternMethods for Pattern {
     /// Test whether the pattern matches anywhere in the input string.
-    fn is_match(pat: Pattern, input: string) -> bool {
+    fn is_match(self, input: string) -> bool {
         unsafe {
-            hew_regex_is_match(pat.handle, input)
+            hew_regex_is_match(self.handle, input)
         }
     }
     /// Ergonomic alias for `is_match`.
-    fn matches(pat: Pattern, input: string) -> bool {
+    fn matches(self, input: string) -> bool {
         unsafe {
-            hew_regex_is_match(pat.handle, input)
+            hew_regex_is_match(self.handle, input)
         }
     }
     /// Find the first match of the pattern in the input string.
-    fn find(pat: Pattern, input: string) -> string {
+    fn find(self, input: string) -> string {
         unsafe {
-            hew_regex_find(pat.handle, input)
+            hew_regex_find(self.handle, input)
         }
     }
     /// Replace all occurrences of the pattern with the replacement string.
-    fn replace(pat: Pattern, input: string, replacement: string) -> string {
+    fn replace(self, input: string, replacement: string) -> string {
         unsafe {
-            hew_regex_replace(pat.handle, input, replacement)
+            hew_regex_replace(self.handle, input, replacement)
         }
     }
     /// Find all non-overlapping matches in the input string.
-    fn find_all(pat: Pattern, input: string) -> Vec<string> {
+    fn find_all(self, input: string) -> Vec<string> {
         unsafe {
-            hew_regex_find_all(pat.handle, input)
+            hew_regex_find_all(self.handle, input)
         }
     }
     /// Return the indexed capture from the first match.
-    fn capture(pat: Pattern, input: string, group: i64) -> Option<string> {
+    fn capture(self, input: string, group: i64) -> Option<string> {
         let values = unsafe {
-            hew_regex_capture_index_one(pat.handle, input, group)
+            hew_regex_capture_index_one(self.handle, input, group)
         };
         if values.len() == 0 {
             .None
@@ -155,9 +155,9 @@ impl PatternMethods for Pattern {
         }
     }
     /// Return the named capture from the first match.
-    fn capture_named(pat: Pattern, input: string, name: string) -> Option<string> {
+    fn capture_named(self, input: string, name: string) -> Option<string> {
         let values = unsafe {
-            hew_regex_capture_name_one(pat.handle, input, name)
+            hew_regex_capture_name_one(self.handle, input, name)
         };
         if values.len() == 0 {
             .None
@@ -166,29 +166,29 @@ impl PatternMethods for Pattern {
         }
     }
     /// Return first-match submatches as one flat row.
-    fn captures(pat: Pattern, input: string) -> CaptureMatches {
+    fn captures(self, input: string) -> CaptureMatches {
         let groups = unsafe {
-            hew_regex_captures_flat(pat.handle, input)
+            hew_regex_captures_flat(self.handle, input)
         };
         let group_count = unsafe {
-            hew_regex_capture_width(pat.handle)
+            hew_regex_capture_width(self.handle)
         };
         CaptureMatches { groups: groups, group_count: group_count }
     }
     /// Return all matches' submatches as row-major flat results.
-    fn find_all_submatch(pat: Pattern, input: string) -> CaptureMatches {
+    fn find_all_submatch(self, input: string) -> CaptureMatches {
         let groups = unsafe {
-            hew_regex_find_all_submatch_flat(pat.handle, input)
+            hew_regex_find_all_submatch_flat(self.handle, input)
         };
         let group_count = unsafe {
-            hew_regex_capture_width(pat.handle)
+            hew_regex_capture_width(self.handle)
         };
         CaptureMatches { groups: groups, group_count: group_count }
     }
     /// Clone the compiled pattern, producing an independent copy.
-    fn clone(pat: Pattern) -> Pattern {
+    fn clone(self) -> Pattern {
         unsafe {
-            Pattern { handle: hew_regex_clone(pat.handle) }
+            Pattern { handle: hew_regex_clone(self.handle) }
         }
     }
 }
@@ -222,34 +222,34 @@ trait CaptureMatchesMethods {
 
 impl CaptureMatchesMethods for CaptureMatches {
     /// Return the number of match rows.
-    fn len(rows: CaptureMatches) -> i64 {
-        if rows.group_count <= 0 {
+    fn len(self) -> i64 {
+        if self.group_count <= 0 {
             return 0;
         }
-        rows.groups.len() / rows.group_count
+        self.groups.len() / self.group_count
     }
     /// Return true when there are no match rows.
-    fn is_empty(rows: CaptureMatches) -> bool {
-        rows.len() == 0
+    fn is_empty(self) -> bool {
+        self.len() == 0
     }
     /// Return the number of groups in each row, including group 0.
-    fn width(rows: CaptureMatches) -> i64 {
-        rows.group_count
+    fn width(self) -> i64 {
+        self.group_count
     }
     /// Return a capture by match row and group index.
-    fn group(rows: CaptureMatches, match_index: i64, group_index: i64) -> Option<string> {
-        if match_index < 0 || group_index < 0 || group_index >= rows.group_count {
+    fn group(self, match_index: i64, group_index: i64) -> Option<string> {
+        if match_index < 0 || group_index < 0 || group_index >= self.group_count {
             return .None;
         }
-        let row_count = rows.len();
+        let row_count = self.len();
         if match_index >= row_count {
             return .None;
         }
-        .Some(rows.groups[match_index * rows.group_count + group_index])
+        .Some(self.groups[match_index * self.group_count + group_index])
     }
     /// Return group 0 for the requested match row.
-    fn whole(rows: CaptureMatches, match_index: i64) -> Option<string> {
-        rows.group(match_index, 0)
+    fn whole(self, match_index: i64) -> Option<string> {
+        self.group(match_index, 0)
     }
 }
 

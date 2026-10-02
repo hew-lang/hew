@@ -3,9 +3,7 @@
 //! SIR is the value-oriented SSA layer between resolved HIR and the existing
 //! ownership/layout MIR ladder. Semantic places carry ownership and lifetime
 //! contracts; SIR contains no machine allocation,
-//! ABI carrier, byte-offset, or LLVM operation.  The strict `--sir-lower` lane
-//! owns a conservative subset today; each supported family moves onto
-//! SIR -> MIR and deletes its established HIR -> MIR body lowering.
+//! ABI carrier, byte-offset, or LLVM operation.
 
 mod actor;
 mod analysis;
@@ -52,18 +50,18 @@ pub use lower::{
 pub use model::{
     runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,
     BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, DeferId,
-    DeferScopeId, Edge, EffectSet, FaultParkId, FunctionSourceOrigin, GenericTemplateId, OpId,
-    Operand, OperandSlot, Provenance, RuntimeVariantRole, RuntimeVariantShapeRefs, SemAbiParam,
-    SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind,
-    SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemStructuralRender, SemTerminator, SemTestEntry, SemVariant,
-    SemVariantArm, SemVariantField, SemVariantKind, SemVariantShape, SemVtable, SemVtableId,
-    SemVtableSlot, SirInstanceKey, StructuralType, SuccessorSlot, UseSite, ValueDef, ValueId,
-    VariantShapeId,
+    DeferScopeId, Edge, EffectSet, FaultParkId, FunctionSourceOrigin, GenericTemplateId, OffloadId,
+    OpId, Operand, OperandSlot, Provenance, RuntimeVariantRole, RuntimeVariantShapeRefs,
+    SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable,
+    SemCallableKind, SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule, SemOp,
+    SemOpKind, SemParamPassing, SemSignature, SemStructuralRender, SemTerminator, SemTestEntry,
+    SemVariant, SemVariantArm, SemVariantField, SemVariantKind, SemVariantShape, SemVtable,
+    SemVtableId, SemVtableSlot, SirInstanceKey, StructuralType, SuccessorSlot, UseSite, ValueDef,
+    ValueId, VariantShapeId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, transfer_module_dead_local_reads, CfgCanonicalizationReport,
-    DeadLocalTransferReport, SirOptimizationError,
+    DeadLocalTransferReport,
 };
 pub use ownership::{
     aggregate_field_recipes, aggregate_field_types, call_boundary_types_match,
@@ -88,4 +86,7 @@ pub use verify::{
 
 pub use hew_hir::HirSelectionOrder as TaskSelectionOrder;
 
-pub use wire::{SemWireField, SemWireKind, SemWirePlan, SemWireTextResult, SemWireVariant};
+pub use wire::{
+    SemWireDecodeResult, SemWireKind, SemWireMember, SemWirePayload, SemWirePlan, SemWirePlans,
+    SemWireTable,
+};

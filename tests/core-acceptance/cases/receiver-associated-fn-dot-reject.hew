@@ -1,0 +1,14 @@
+type Point {
+    x: i64;
+}
+
+impl Point {
+    fn same(p: Point, q: Point) -> bool {
+        p.x == q.x
+    }
+}
+
+fn main() {
+    let a = Point { x: 1 };
+    println(a.same(a));
+}

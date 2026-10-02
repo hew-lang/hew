@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 type Packet {
     label: string @1;
@@ -6,14 +8,14 @@ type Packet {
 
 fn mk(n: i64) -> bytes {
     let p = Packet { label: "payload-label-value", seq: n };
-    p.encode()
+    cbor.encode(p)
 }
 
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 50 {
-        let back = Packet.decode(mk(i));
+        let back = cbor.decode<Packet>(mk(i)).expect("decode");
         total = total + back.seq;
         i = i + 1;
     }

@@ -735,12 +735,6 @@ pub enum TypeErrorKind {
     BinaryOperandTypes,
     /// Range bounds have no common integer type.
     RangeBoundTypes,
-    /// A former actor lifecycle spelling was used; only migration mode may
-    /// inspect it as a warning and no executable operation is published.
-    ActorLifecycleRetired,
-    /// A lifecycle method on an actor handle was retired in favour of a free
-    /// function, unless an authored receive handler owns that method name.
-    ActorHandleMethodRetired,
     /// An actor attempted to wait for its own terminal release.
     ActorWaitsOnSelf,
     /// A selected test root cannot be invoked by the test dispatcher.
@@ -829,6 +823,13 @@ pub enum TypeErrorKind {
     /// A statement-position `Result` whose error is discarded implicitly.
     /// Deliberate discard is written as `let _ = ...`.
     ResultDropped,
+    /// A failure edge (`?` or `return error`) whose error type is neither the
+    /// function's error type, erasable into its `dyn` error type, nor covered
+    /// by a declared `impl From<E> for F`.
+    ErrorNoConversion,
+    /// An `impl From<S> for T` that the failure-edge rule cannot use: the
+    /// identity conversion, a `dyn` target, or a bare type-parameter source.
+    FromInvalid,
     /// A block-like form used as a statement that produces a value other than
     /// `()`. The statement ends at its `}` and the value would be dropped
     /// silently; parenthesize it to use the value, or discard it with
@@ -1525,8 +1526,6 @@ impl TypeErrorKind {
             Self::ClosureShapeMismatch => "E_CLOSURE_SHAPE_MISMATCH",
             Self::BinaryOperandTypes => "E_BINARY_OPERAND_TYPES",
             Self::RangeBoundTypes => "E_RANGE_BOUND_TYPES",
-            Self::ActorLifecycleRetired => "E_ACTOR_LIFECYCLE_RETIRED",
-            Self::ActorHandleMethodRetired => "E_ACTOR_HANDLE_METHOD_RETIRED",
             Self::ActorWaitsOnSelf => "E_ACTOR_WAITS_ON_SELF",
             Self::TestSignature => "E_TEST_SIGNATURE",
             Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",
@@ -1554,6 +1553,8 @@ impl TypeErrorKind {
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::ResultDropped => "E_RESULT_DROPPED",
+            Self::ErrorNoConversion => "E_ERROR_NO_CONVERSION",
+            Self::FromInvalid => "E_FROM_INVALID",
             Self::BlockStatementValue => "E_BLOCK_STATEMENT_VALUE",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",

@@ -77,43 +77,38 @@ impl Checker {
         ) {
             return Some(resolved);
         }
-        // Resolve the Display trait name through the lang-item registry.
-        // No `#[lang_item("display")]` in scope means the program defines no
-        // Display trait at all — in which case f-string interpolation can
-        // only accept the trivially-string / inference-pending cases handled
-        // above. Falling back to the literal name `"Display"` keeps
-        // pre-lang-item check-time tests (no stdlib loaded) working with the
-        // implicit naming convention.
-        let (_display_trait, display_trait_key) =
-            self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
-                || ("Display".to_string(), "Display".to_string()),
-                |binding| {
-                    (
-                        binding.trait_name.clone(),
-                        self.defs.path(binding.trait_id).to_string(),
-                    )
-                },
-            );
+        // Display is the prelude's lang-item trait. A program with no
+        // `#[lang_item("display")]` declaration has no Display at all, and
+        // f-string interpolation accepts only the cases handled above.
+        let display = self.lang_trait(crate::LangItem::Display)?;
         if let Some(canonical) = resolved.canonical_lowering_name() {
             if self
                 .primitive_trait_impls
-                .contains_key(&(canonical.to_string(), display_trait_key.clone()))
+                .contains_key(&(canonical.to_string(), display))
             {
                 return Some(resolved);
             }
         }
-        if let Ty::Named { head, args } = &resolved {
-            let name = head.registry_key();
-            if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
-                return Some(resolved);
-            }
-            // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
-            // carries no registered impl of its own, but the enclosing
-            // item's where-clause may declare a `Display` bound that
-            // satisfies the obligation abstractly. The concrete `Display`
-            // impl is selected per monomorphisation by HIR's static
-            // trait-dispatch lowering. Mirrors `type_satisfies_trait_bound`.
-            if args.is_empty() && self.type_param_carries_bound(name, &display_trait_key) {
+        // R6: a trait object is Display when Display is in its bounds'
+        // supertrait closure; HIR renders it through that layout slot.
+        if let Ty::TraitObject { traits } = &resolved {
+            let renders = traits.iter().any(|bound| {
+                bound
+                    .trait_id
+                    .is_some_and(|id| id == display || self.trait_extends(id, display))
+            });
+            return renders.then_some(resolved);
+        }
+        if self.type_implements_trait(&resolved, display) {
+            return Some(resolved);
+        }
+        // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
+        // carries no registered impl of its own, but the enclosing item's
+        // where-clause may declare a `Display` bound that satisfies the
+        // obligation abstractly. The concrete `Display` impl is selected per
+        // monomorphisation by HIR's static trait-dispatch lowering.
+        if let Some(param) = Self::bare_param(&resolved) {
+            if self.param_carries_trait(param.id, display) {
                 return Some(resolved);
             }
         }
@@ -391,7 +386,9 @@ else needs `impl Display for {rendered}`)"
             return false;
         }
         let candidates: Vec<String> = owners.iter().cloned().collect();
-        self.mark_ambiguous_import_owners_used(&candidates);
+        for candidate in &candidates {
+            self.note_path_use(candidate);
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousType,
             span,
@@ -667,8 +664,8 @@ else needs `impl Display for {rendered}`)"
                     TypeErrorKind::UndefinedVariable,
                     span,
                     "`self` is the actor's own handle and exists only inside an actor \
-                     body; elsewhere use a named receiver parameter: \
-                     `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                     body or a method that declares it; add a `self` receiver: \
+                     `fn method(self)`"
                         .to_string(),
                 );
             } else {
@@ -712,9 +709,11 @@ else needs `impl Display for {rendered}`)"
         bound: &crate::ty::TraitObjectBound,
         span: &Span,
     ) {
-        let trait_name = bound.trait_name.as_str();
-        let index_key = self.trait_ref_lookup_key(trait_name);
-        let Some(layout_slot) = self.dyn_layout_slot_of(traits, &index_key, "at", span) else {
+        let Some(trait_id) = bound.trait_id else {
+            return;
+        };
+        let trait_name = self.defs.path(trait_id).to_string();
+        let Some(layout_slot) = self.dyn_layout_slot_of(traits, trait_id, "at", span) else {
             return;
         };
         let slot = layout_slot.slot;
@@ -722,7 +721,7 @@ else needs `impl Display for {rendered}`)"
         // bound (the bound's assoc bindings carry e.g. `Output = T`).
         // W3.031 Stage 1.6: the typed `FnSig` is self-contained on
         // the call-site side table; no codegen-time re-derivation.
-        let Some(mut sig) = self.lookup_trait_method(&layout_slot.trait_key, "at") else {
+        let Some(mut sig) = self.lookup_trait_method(layout_slot.trait_id, "at") else {
             return;
         };
         self.apply_trait_object_bound_substitutions(&mut sig, bound);
@@ -735,17 +734,18 @@ else needs `impl Display for {rendered}`)"
             SpanKey::in_module(span, self.current_module_idx),
             crate::check::types::DynMethodCall {
                 target,
-                trait_name: trait_name.to_string(),
+                trait_name: bound.trait_name.clone(),
                 method_name: "at".to_string(),
                 slot,
                 signature: sig,
+                effect: self
+                    .dyn_slot_effect(traits, layout_slot.method)
+                    .expect("dyn_layout records the layout it returns"),
             },
         );
         self.record_method_call_receiver_kind(
             span,
-            crate::check::types::MethodCallReceiverKind::TraitObject {
-                trait_name: trait_name.to_string(),
-            },
+            crate::check::types::MethodCallReceiverKind::TraitObject { trait_name },
         );
     }
 
@@ -849,10 +849,6 @@ else needs `impl Display for {rendered}`)"
     /// — never falls through to the leaky "undefined variable" /
     /// "undefined type" surface.  Called only from the
     /// `check_field_access` pre-dispatch arm.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "qualified variant resolution handles each failure shape together"
-    )]
     pub(in crate::check) fn check_module_qualified_variant_ref(
         &mut self,
         module_short: &str,
@@ -877,11 +873,7 @@ else needs `impl Display for {rendered}`)"
             );
             return Ty::Error;
         }
-        self.used_modules.borrow_mut().insert(ImportKey::in_file(
-            self.current_module.clone(),
-            self.current_module_idx,
-            module_short.to_string(),
-        ));
+        self.note_import_use(module_short);
         let Some(td) = self.resolve_module_type(module_short, type_name) else {
             let similar = self
                 .module_type_exports_for_binding(module_short)

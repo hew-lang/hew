@@ -9,20 +9,24 @@ import tests.hew.imported_wire_support.env_a.{Env, label_a};
 
 import tests.hew.imported_wire_support.env_b.{Env as BEnv, label_b};
 
+import std.encoding.cbor;
+
+import std.encoding.json;
+
 #[test]
 fn same_leaf_wire_types_round_trip_independently() {
     let a = Env { name: "svc", port: 8080 };
     let b = BEnv { label: "edge", port: 9 };
-    assert(a.to_json() == "{\"name\":\"svc\",\"port\":8080}");
-    assert(b.to_json() == "{\"label\":\"edge\",\"port\":9}");
-    match Env.from_json(a.to_json()) {
+    assert(json.encode(a) == "{\"name\":\"svc\",\"port\":8080}");
+    assert(json.encode(b) == "{\"label\":\"edge\",\"port\":9}");
+    match json.decode<Env>(json.encode(a)) {
         .Ok(back) => {
             assert(back.name == "svc");
             assert(back.port == 8080);
         }
         .Err(msg) => panic(f"env_a from_json failed: {msg}"),
     }
-    match BEnv.from_json(b.to_json()) {
+    match json.decode<BEnv>(json.encode(b)) {
         .Ok(back) => {
             assert(back.label == "edge");
             assert(back.port == 9);
@@ -35,10 +39,10 @@ fn same_leaf_wire_types_round_trip_independently() {
 fn same_leaf_wire_types_binary_round_trip_independently() {
     let a = Env { name: "bin", port: 1 };
     let b = BEnv { label: "bin", port: 2 };
-    let a_back = Env.decode(a.encode());
+    let a_back = cbor.decode<Env>(cbor.encode(a)).expect("decode");
     assert(a_back.name == "bin");
     assert(a_back.port == 1);
-    let b_back = BEnv.decode(b.encode());
+    let b_back = cbor.decode<BEnv>(cbor.encode(b)).expect("decode");
     assert(b_back.label == "bin");
     assert(b_back.port == 2);
 }

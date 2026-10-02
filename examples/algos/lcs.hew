@@ -12,8 +12,8 @@ fn main() {
     for i in 0 .. rows * cols {
         dp.push(0);
     }
-    for i in 1 .. rows {
-        for j in 1 .. cols {
+    for i in 1..rows {
+        for j in 1..cols {
             let c1 = s1.char_at(i - 1);
             let c2 = s2.char_at(j - 1);
             if c1 == c2 {

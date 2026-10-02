@@ -63,24 +63,24 @@ trait RngMethods {
 }
 
 impl RngMethods for Rng {
-    fn next_u64(rng: Rng) -> u64 {
+    fn next_u64(self) -> u64 {
         unsafe {
-            hew_rng_next_u64(rng.state)
+            hew_rng_next_u64(self.state)
         }
     }
-    fn next_f64(rng: Rng) -> f64 {
+    fn next_f64(self) -> f64 {
         unsafe {
-            hew_rng_next_f64(rng.state)
+            hew_rng_next_f64(self.state)
         }
     }
-    fn range(rng: Rng, lo: i64, hi: i64) -> i64 {
+    fn range(self, lo: i64, hi: i64) -> i64 {
         unsafe {
-            hew_rng_range(rng.state, lo, hi)
+            hew_rng_range(self.state, lo, hi)
         }
     }
-    fn shuffle(rng: Rng, v: Vec<i64>) {
+    fn shuffle(self, v: Vec<i64>) {
         unsafe {
-            hew_rng_shuffle_i64(rng.state, v)
+            hew_rng_shuffle_i64(self.state, v)
         }
     }
 }
@@ -116,7 +116,7 @@ pub fn crypto_bytes(n: i64) -> bytes {
 pub fn crypto_u64() -> u64 {
     let b = crypto_bytes(8);
     var v: u64 = 0;
-    for i in 0 .. 8 {
+    for i in 0..8 {
         v = v | b[i] as u64 << i as u64 * 8;
     }
     v
@@ -191,7 +191,7 @@ pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 {
         panic("random.choices: only one sample is supported");
     }
     var previous = 0.0;
-    for i in 0 .. weights.len() {
+    for i in 0..weights.len() {
         let weight = weights[i];
         if weight <= previous || weight != weight {
             panic("random.choices: weights must be strictly increasing");

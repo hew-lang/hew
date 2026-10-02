@@ -62,6 +62,8 @@ pub struct ExternSignature {
     pub result: ResolvedTy,
     /// Runtime authority declared by the trusted source extern.
     pub runtime_capability: Option<hew_types::ExternRuntimeCapability>,
+    /// A call parks its task while the C function runs on the blocking pool.
+    pub offload: bool,
 }
 
 impl ExternSignature {
@@ -202,6 +204,7 @@ pub(crate) fn resource_release_from_hir(
                     consumes: function.param_consume.clone(),
                     result: function.return_ty.clone(),
                     runtime_capability: function.runtime_capability,
+                    offload: function.offload,
                 })
             })
         };

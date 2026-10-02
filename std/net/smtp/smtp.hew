@@ -46,9 +46,9 @@ trait ConnMethods {
 
 impl ConnMethods for Conn {
     /// Send a plain-text email.
-    fn send(conn: Conn, from: string, to: string, subject: string, body: string) -> Result<(), string> {
+    fn send(self, from: string, to: string, subject: string, body: string) -> Result<(), string> {
         let n: i32 = unsafe {
-            hew_smtp_send(conn, from, to, subject, body)
+            hew_smtp_send(self, from, to, subject, body)
         };
         if n < 0 {
             .Err(smtp_err("smtp send failed"))
@@ -57,9 +57,9 @@ impl ConnMethods for Conn {
         }
     }
     /// Send an HTML email.
-    fn send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> Result<(), string> {
+    fn send_html(self, from: string, to: string, subject: string, html: string) -> Result<(), string> {
         let n: i32 = unsafe {
-            hew_smtp_send_html(conn, from, to, subject, html)
+            hew_smtp_send_html(self, from, to, subject, html)
         };
         if n < 0 {
             .Err(smtp_err("smtp send_html failed"))

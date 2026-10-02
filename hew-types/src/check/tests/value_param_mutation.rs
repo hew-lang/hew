@@ -193,7 +193,7 @@ fn record_local_pid_field_projection_is_not_flagged() {
 #[test]
 fn record_sink_field_projection_is_not_flagged() {
     assert_check_clean(concat!(
-        "type Holder {\n    tx: stream.Sink<i64>;\n}\n",
+        "type Holder {\n    tx: Sink<i64>;\n}\n",
         "fn send(var holder: Holder) { let _ = holder.tx.send(7); }\n",
     ));
 }
@@ -201,7 +201,7 @@ fn record_sink_field_projection_is_not_flagged() {
 #[test]
 fn record_stream_field_projection_is_not_flagged() {
     assert_check_clean(concat!(
-        "type Holder {\n    rx: stream.Stream<i64>;\n}\n",
+        "type Holder {\n    rx: Stream<i64>;\n}\n",
         "fn poll(var holder: Holder) { let _ = holder.rx.try_recv(); }\n",
     ));
 }

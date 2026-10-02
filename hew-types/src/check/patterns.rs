@@ -223,8 +223,8 @@ impl Checker {
                 ),
             ]);
         }
-        let type_name = ty.type_name()?;
-        let td = self.lookup_type_def(type_name)?;
+        let td = self.ty_type_def(ty)?.clone();
+
         if td.variants.is_empty() {
             return None;
         }
@@ -369,11 +369,12 @@ impl Checker {
     /// scrutinee's own type). Resolution decides it, never casing (#2116).
     pub(super) fn names_struct_variant_of(&self, name: &str, ty: &Ty) -> bool {
         let resolved = self.normalize_for_use(ty);
-        let Some(type_name) = resolved.type_name() else {
+        let Ty::Named { .. } = resolved else {
             return false;
         };
         let short_name = name.rsplit("::").next().unwrap_or(name);
-        self.lookup_type_def(type_name)
+        self.ty_type_def(&resolved)
+            .cloned()
             .is_some_and(|td| matches!(td.variants.get(short_name), Some(VariantDef::Struct(_))))
     }
 
@@ -422,7 +423,7 @@ impl Checker {
             return;
         }
 
-        let Some(type_name) = resolved.type_name() else {
+        let Ty::Named { .. } = resolved else {
             return;
         };
         let one_segment_record =
@@ -435,7 +436,7 @@ impl Checker {
             self.invalid_pattern_plan_spans.insert(key);
             return;
         }
-        let Some(td) = self.lookup_type_def(type_name) else {
+        let Some(td) = self.ty_type_def(&resolved).cloned() else {
             return;
         };
         let type_args = if let Ty::Named { args, .. } = &resolved {
@@ -1217,7 +1218,7 @@ impl Checker {
                 // Bind field patterns to field types
                 let type_name_opt = ty.type_name();
                 if let Some(type_name) = type_name_opt {
-                    if let Some(td) = self.lookup_type_def(type_name) {
+                    if let Some(td) = self.ty_type_def(ty).cloned() {
                         // Strip enum prefix for qualified patterns (e.g. "Shape::Move" → "Move")
                         let short_name = name.rsplit("::").next().unwrap_or(name);
                         if let Some(VariantDef::Struct(variant_fields)) =
@@ -1344,7 +1345,7 @@ impl Checker {
                 }
                 let type_name_opt = ty.type_name();
                 if let Some(type_name) = type_name_opt {
-                    if let Some(td) = self.lookup_type_def(type_name) {
+                    if let Some(td) = self.ty_type_def(ty).cloned() {
                         let type_params = td.type_params.clone();
                         let type_args = if let Ty::Named { args, .. } = ty {
                             args.clone()
@@ -1913,7 +1914,7 @@ impl Checker {
                 let owner_matches = self.variant_surface_owner_matches(name, scrutinee_ty);
                 let (variant_match, field_tys, field_order) = if owner_matches {
                     if let Some(type_name) = type_name_opt {
-                        if let Some(td) = self.lookup_type_def(type_name) {
+                        if let Some(td) = self.ty_type_def(scrutinee_ty).cloned() {
                             if td.variants.contains_key(short_name) {
                                 // Enum struct-variant
                                 let vm = VariantMatch {
@@ -2721,7 +2722,7 @@ impl Checker {
         }
         // User enum
         if let Some(type_name) = scrutinee_ty.type_name() {
-            if let Some(td) = self.lookup_type_def(type_name) {
+            if let Some(td) = self.ty_type_def(scrutinee_ty).cloned() {
                 if td.variants.contains_key(short_name) {
                     return Some(VariantMatch {
                         type_name: type_name.to_string(),
@@ -2784,8 +2785,8 @@ impl Checker {
             };
         }
         let type_name_opt = enum_ty.type_name();
-        if let Some(type_name) = type_name_opt {
-            if let Some(td) = self.lookup_type_def(type_name) {
+        if type_name_opt.is_some() {
+            if let Some(td) = self.ty_type_def(enum_ty).cloned() {
                 // Substitute the scrutinee's concrete type args into tuple-variant
                 // payload types so generic enum tuple variants bind with the
                 // concrete type rather than the enum's free type parameters.

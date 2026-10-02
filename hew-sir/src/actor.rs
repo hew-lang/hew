@@ -88,8 +88,8 @@ pub struct SemActorHandler {
 /// Portable actor values selected by the checker and resolved to SIR shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemActorCodec {
-    pub params: Vec<std::sync::Arc<crate::SemWirePlan>>,
-    pub reply: Option<std::sync::Arc<crate::SemWirePlan>>,
+    pub params: Vec<std::sync::Arc<crate::SemWirePlans>>,
+    pub reply: Option<std::sync::Arc<crate::SemWirePlans>>,
 }
 
 impl SemActorHandler {
@@ -775,7 +775,6 @@ pub struct ActorCallProtocol {
     pub target: ResolvedTy,
     pub result: ResolvedTy,
     pub policy: hew_types::actor_delivery::SendPolicy,
-    pub deadline_ns: Option<i64>,
     pub sealed: bool,
 }
 
@@ -838,7 +837,7 @@ impl LocalObservationKind {
 pub enum RemoteObservationKind {
     /// `link_remote(pid, policy) -> Result<(), LinkError>`.
     Link,
-    /// `monitor(pid) -> Result<MonitorRef, MonitorError>`.
+    /// `monitor(pid) -> Result<MonitorRef, LinkError>`.
     Monitor,
 }
 
@@ -858,7 +857,7 @@ impl RemoteObservationKind {
                         }
                         Self::Monitor => {
                             ok.is_builtin(hew_types::BuiltinType::MonitorRef)
-                                && error.to_ty() == hew_types::Ty::monitor_error()
+                                && error.is_builtin(hew_types::BuiltinType::LinkError)
                         }
                     })
             }

@@ -482,95 +482,99 @@ pub enum AskError {
     HandlerTrapped = 22,
 }
 
-/// The only runtime-to-public translation for ask result tags.
+/// The public `ActorError` variant a runtime ask failure folds to.
 ///
-/// The runtime keeps [`AskError::None`] as its zero-valued success sentinel,
-/// while the public `ActorError` envelope contains errors only. Codegen crosses
-/// this ABI seam before materializing a public `Result`.
+/// Codegen and the sandbox select the variant's tag by this role from the std
+/// declaration, so reordering `ActorError` cannot change which variant a
+/// failure reports. `Rejected` and `Failed` carry payloads and are built at the
+/// call site, never from a runtime status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PublicAskResultTag {
-    Ok,
-    Err(i32),
+pub enum ActorErrorRole {
+    Trapped,
+    Dead,
+    TimedOut,
+    NodeNotRunning,
+    RoutingFailed,
+    EncodeFailed,
+    ConnectionDropped,
+    Partition,
 }
 
-/// Translate a runtime ask tag into the public `ActorError<E>` domain.
-///
-/// The public discriminants are `ActorError`'s declaration order in
-/// `std/builtins.hew`: `Rejected` 0, `Failed` 1, `Trapped` 2, `Dead` 3,
-/// `Timeout` 4, `NodeNotRunning` 5, `RoutingFailed` 6, `EncodeFailed` 7,
-/// `ConnectionDropped` 8, `Partition` 9. `Rejected` and `Failed` carry
-/// payloads and are built at the call site, never here.
-///
-/// The runtime's internal tags are finer-grained than the public envelope, so
-/// each folds to the public variant with the same consequence for the caller.
-/// Every fold that is not an exact rename lands on a non-retryable variant:
-/// only `Rejected`, which this function never produces, is safe to resubmit.
-///
-/// An unknown tag is returned unchanged as an error so callers must refuse it
-/// rather than defaulting it to a public error variant.
-///
-/// # Errors
-///
-/// Returns the unmapped runtime tag when it has no public `ActorError` mapping.
-pub fn translate_ask_error_tag_for_public_result(
-    runtime_tag: i32,
-) -> Result<PublicAskResultTag, i32> {
-    match runtime_tag {
-        tag if tag == AskError::None as i32 => Ok(PublicAskResultTag::Ok),
-        tag if tag == AskError::HandlerTrapped as i32 => Ok(PublicAskResultTag::Err(2)),
-        // The target is gone, or its fate is settled against ever running this
-        // request: the caller must not resubmit.
-        tag if tag == AskError::SendFailed as i32
-            || tag == AskError::ActorStopped as i32
-            || tag == AskError::MailboxFull as i32
-            || tag == AskError::OrphanedAsk as i32
-            || tag == AskError::StaleRef as i32
-            || tag == AskError::Cancelled as i32
-            || tag == AskError::MonitorLost as i32 =>
-        {
-            Ok(PublicAskResultTag::Err(3))
-        }
-        // A deadline elapsed, or the scheduler cannot advance this ask further.
-        tag if tag == AskError::Timeout as i32 || tag == AskError::NoRunnableWork as i32 => {
-            Ok(PublicAskResultTag::Err(4))
-        }
-        tag if tag == AskError::NodeNotRunning as i32 || tag == AskError::LocalShutdown as i32 => {
-            Ok(PublicAskResultTag::Err(5))
-        }
-        // The request could not be placed with the peer that owns the actor.
-        tag if tag == AskError::RoutingFailed as i32
-            || tag == AskError::PayloadSizeMismatch as i32
-            || tag == AskError::WorkerAtCapacity as i32
-            || tag == AskError::VersionMismatch as i32
-            || tag == AskError::Unauthorized as i32
-            || tag == AskError::Backpressure as i32 =>
-        {
-            Ok(PublicAskResultTag::Err(6))
-        }
-        // A payload could not be coded on either side of the wire.
-        tag if tag == AskError::EncodeFailed as i32 || tag == AskError::DecodeFailure as i32 => {
-            Ok(PublicAskResultTag::Err(7))
-        }
-        tag if tag == AskError::ConnectionDropped as i32 => Ok(PublicAskResultTag::Err(8)),
-        tag if tag == AskError::Partition as i32 => Ok(PublicAskResultTag::Err(9)),
-        tag => Err(tag),
+impl AskError {
+    /// Every runtime ask status, indexed by its discriminant.
+    pub const ALL: [Self; 23] = [
+        Self::None,
+        Self::NodeNotRunning,
+        Self::RoutingFailed,
+        Self::EncodeFailed,
+        Self::SendFailed,
+        Self::Timeout,
+        Self::ConnectionDropped,
+        Self::PayloadSizeMismatch,
+        Self::WorkerAtCapacity,
+        Self::ActorStopped,
+        Self::MailboxFull,
+        Self::OrphanedAsk,
+        Self::NoRunnableWork,
+        Self::DecodeFailure,
+        Self::Partition,
+        Self::StaleRef,
+        Self::Cancelled,
+        Self::LocalShutdown,
+        Self::VersionMismatch,
+        Self::Unauthorized,
+        Self::Backpressure,
+        Self::MonitorLost,
+        Self::HandlerTrapped,
+    ];
+
+    /// The public role this status reports; `None` is the success sentinel.
+    ///
+    /// The runtime's statuses are finer-grained than the public envelope, so
+    /// each folds to the variant with the same consequence for the caller.
+    /// Every fold that is not an exact rename lands on a non-retryable variant:
+    /// only `Rejected`, which no status produces, is safe to resubmit.
+    #[must_use]
+    pub const fn public_role(self) -> Option<ActorErrorRole> {
+        Some(match self {
+            Self::None => return None,
+            Self::HandlerTrapped => ActorErrorRole::Trapped,
+            // The target is gone, or its fate is settled against ever running
+            // this request: the caller must not resubmit.
+            Self::SendFailed
+            | Self::ActorStopped
+            | Self::MailboxFull
+            | Self::OrphanedAsk
+            | Self::StaleRef
+            | Self::Cancelled
+            | Self::MonitorLost => ActorErrorRole::Dead,
+            // A deadline elapsed, or the scheduler cannot advance this ask.
+            Self::Timeout | Self::NoRunnableWork => ActorErrorRole::TimedOut,
+            Self::NodeNotRunning | Self::LocalShutdown => ActorErrorRole::NodeNotRunning,
+            // The request could not be placed with the peer that owns the actor.
+            Self::RoutingFailed
+            | Self::PayloadSizeMismatch
+            | Self::WorkerAtCapacity
+            | Self::VersionMismatch
+            | Self::Unauthorized
+            | Self::Backpressure => ActorErrorRole::RoutingFailed,
+            // A payload could not be coded on either side of the wire.
+            Self::EncodeFailed | Self::DecodeFailure => ActorErrorRole::EncodeFailed,
+            Self::ConnectionDropped => ActorErrorRole::ConnectionDropped,
+            Self::Partition => ActorErrorRole::Partition,
+        })
     }
 }
 
-/// ABI marker for an internal success sentinel translated to public `Ok`.
-pub const HEW_ASK_RESULT_OK_TAG: i32 = -1;
+#[cfg(test)]
+mod ask_error_role_tests {
+    use super::AskError;
 
-/// Translate a runtime ask tag for public Result materialization.
-///
-/// Unknown tags abort rather than becoming an arbitrary public error. The
-/// checked Rust helper above exists for parity tests and internal callers that
-/// need to report the offending tag without crossing an aborting FFI boundary.
-#[no_mangle]
-pub extern "C" fn hew_ask_error_translate_for_public_result(runtime_tag: i32) -> i32 {
-    match translate_ask_error_tag_for_public_result(runtime_tag) {
-        Ok(PublicAskResultTag::Ok) => HEW_ASK_RESULT_OK_TAG,
-        Ok(PublicAskResultTag::Err(public_tag)) => public_tag,
-        Err(_) => std::process::abort(),
+    #[test]
+    fn every_status_is_listed_at_its_discriminant() {
+        for (index, status) in AskError::ALL.iter().enumerate() {
+            assert_eq!(*status as usize, index, "{status:?} is out of place");
+        }
     }
 }
 

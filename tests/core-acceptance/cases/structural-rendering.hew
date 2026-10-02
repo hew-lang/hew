@@ -13,7 +13,7 @@ type Nested {
 }
 
 impl Display for Override {
-    fn fmt(_value: Override) -> string {
+    fn fmt(self) -> string {
         "concrete-display"
     }
 }
@@ -21,7 +21,7 @@ impl Display for Override {
 type NamedMap = HashMap<string, i64>;
 
 impl Display for NamedMap {
-    fn fmt(_value: NamedMap) -> string {
+    fn fmt(self) -> string {
         "alias-display"
     }
 }

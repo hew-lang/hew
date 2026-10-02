@@ -45,42 +45,6 @@ pub(super) enum NominalOrigin<'a> {
 }
 
 impl Checker {
-    /// The owned spelling of a former flat machine event name, when an exact
-    /// machine declaration proves the replacement. An authored type or trait
-    /// with the flat name remains its own declaration.
-    pub(super) fn legacy_machine_event_replacement(&self, spelling: &str) -> Option<String> {
-        let (qualifier, flat) = spelling
-            .rsplit_once('.')
-            .map_or((None, spelling), |(owner, flat)| (Some(owner), flat));
-        let machine = flat.strip_suffix("Event").filter(|name| !name.is_empty())?;
-        if self.type_def_at(spelling).is_some() || self.defs.lookup_path(spelling).is_some() {
-            return None;
-        }
-        let canonical = if let Some(qualifier) = qualifier {
-            let owner = self.module_import_bindings.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                qualifier.to_string(),
-            ))?;
-            format!("{owner}.{machine}")
-        } else {
-            self.source_nominal_declaration(machine)?
-        };
-        let owner = self.defs.lookup_path(&canonical)?;
-        if self.defs.kind(owner) != crate::DeclarationKind::Machine {
-            return None;
-        }
-        self.defs.member_of_kind(
-            owner,
-            hew_parser::ast::sym::EVENT,
-            crate::DeclarationKind::MachineEventType,
-        )?;
-        Some(qualifier.map_or_else(
-            || format!("{machine}.Event"),
-            |qualifier| format!("{qualifier}.{machine}.Event"),
-        ))
-    }
-
     /// The canonical owner-qualified declaration a nominal SPELLING denotes in
     /// this context, or `None` when no authority proves one (the caller keeps
     /// the spelling as written and the downstream exact compare fails closed).
@@ -297,7 +261,7 @@ impl Checker {
         // A trait written in type position names the trait's declaration; a
         // handler-style trait becomes the actor handle it types.
         if let Some(id) = self
-            .lookup_declaration(&self.trait_ref_lookup_key(key))
+            .lookup_declaration(key)
             .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
         {
             return Ty::named_head(
@@ -345,9 +309,12 @@ impl Checker {
 
     /// The file the checker is currently reading, for the spelling boundary.
     pub(super) fn scope_site(&self) -> Option<super::scope::ScopeSite> {
+        let file = self.current_declaration_module()?;
+        let publish = !self.registering_embedded_source;
         Some(super::scope::ScopeSite {
-            file: self.current_declaration_module()?,
+            file,
             span_file: self.current_module_idx,
+            publish,
         })
     }
 
@@ -574,7 +541,11 @@ impl Checker {
             .and_then(|rewrite| match rewrite {
                 MethodCallRewrite::RewriteToFunction { target, .. }
                 | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
-                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+                | MethodCallRewrite::StaticTraitDispatch { target, .. }
+                | MethodCallRewrite::BinderStaticCall(super::types::BinderTraitCall {
+                    target,
+                    ..
+                }) => Some(target),
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key));
@@ -609,6 +580,400 @@ impl Checker {
         self.scopes.record_resolution(site, callee_span, resolution);
     }
 
+    /// The program's entry function: the `main` its root module declares.
+    pub(super) fn entry_function(&self) -> Option<crate::DefId> {
+        let root = self.defs.root_module()?;
+        match self
+            .scopes
+            .item(self.scopes.namespace_of(root), hew_parser::ast::sym::MAIN)?
+        {
+            super::scope::Binding::Fn(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The trait or predicate a written bound path names, resolved through
+    /// `Scope`.
+    pub(super) fn resolve_trait_path(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<crate::DefId> {
+        let site = self.scope_site()?;
+        match self.scopes.resolve(
+            &self.env,
+            site,
+            super::scope::Namespace::Type,
+            &path.segments,
+        ) {
+            Ok(super::scope::Resolution::Def(id))
+                if self.defs.kind(id) == crate::DeclarationKind::Trait =>
+            {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
+    /// The declaration impl registration minted for one impl method, by its
+    /// source occurrence.
+    pub(super) fn impl_method_declaration(
+        &self,
+        method: &hew_parser::ast::FnDecl,
+    ) -> Option<crate::DefId> {
+        self.defs
+            .declaration(crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                self.current_declaration_module(),
+                &method.fn_span,
+                self.current_item_ordinal,
+                crate::DeclarationKind::ImplMethod,
+                0,
+            ))
+    }
+
+    /// What a written type path names, resolved through `Scope`.
+    pub(super) fn resolve_type_path(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<super::scope::Resolution> {
+        let site = self.scope_site()?;
+        self.scopes
+            .resolve(
+                &self.env,
+                site,
+                super::scope::Namespace::Type,
+                &path.segments,
+            )
+            .ok()
+    }
+
+    /// The type a `Scope` resolution of a written type path denotes, or
+    /// `None` when the path names no type.
+    pub(super) fn named_ty_from_resolution(
+        &mut self,
+        resolution: Option<super::scope::Resolution>,
+        path: &hew_parser::ast::Path,
+        args: &[crate::Ty],
+        span: &hew_parser::ast::Span,
+    ) -> Option<crate::Ty> {
+        use super::scope::Resolution;
+        let head = match resolution? {
+            Resolution::Param(id) => {
+                crate::TypeHead::param(crate::ParamHead::new(id, path.segments.last()?.0.name))
+            }
+            Resolution::Builtin(builtin) => crate::TypeHead::Builtin(builtin),
+            Resolution::Nominal(id) => {
+                // A bare name reaches a declaration of its own module or one
+                // an import admitted; only a module-qualified path can name
+                // another module's private declaration.
+                if path.segments.len() > 1
+                    && !self.check_declaration_visible(id.declaration(), span)
+                {
+                    return Some(crate::Ty::Error);
+                }
+                if let Some(alias) = self.type_aliases.get(&id.declaration()) {
+                    if args.len() != alias.type_params.len() {
+                        let expected = alias.type_params.len();
+                        self.report_error(
+                            super::TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "type alias `{path}` expects {expected} type argument(s), found {}",
+                                args.len()
+                            ),
+                        );
+                        return Some(crate::Ty::Error);
+                    }
+                }
+                self.head_of_declaration(id)
+            }
+            // A trait written in type position names the trait's declaration.
+            Resolution::Def(id) if self.defs.kind(id) == crate::DeclarationKind::Trait => {
+                if path.segments.len() > 1 && !self.check_declaration_visible(id, span) {
+                    return Some(crate::Ty::Error);
+                }
+                crate::TypeHead::Nominal(crate::NominalHead::new(
+                    crate::NominalId::from_minted_declaration(id),
+                    self.defs.path(id),
+                ))
+            }
+            _ => return None,
+        };
+        Some(match head {
+            crate::TypeHead::Builtin(crate::BuiltinType::CancellationToken) if args.is_empty() => {
+                crate::Ty::CancellationToken
+            }
+            head => crate::Ty::named_head(head, args.to_vec()),
+        })
+    }
+
+    /// Whether the current file may name `declaration`; reports the first
+    /// refusal per declaration.
+    pub(super) fn check_declaration_visible(
+        &mut self,
+        declaration: crate::DefId,
+        span: &hew_parser::ast::Span,
+    ) -> bool {
+        use hew_parser::ast::Visibility;
+        let (Some(site), Some(owner)) = (self.scope_site(), self.defs.module(declaration)) else {
+            return true;
+        };
+        let owner = self.scopes.namespace_of(owner);
+        let here = self.scopes.namespace_of(site.file);
+        let visibility = self.defs.visibility(declaration);
+        let visible = match visibility {
+            Visibility::Pub => true,
+            Visibility::Private => owner == here,
+            Visibility::Package => owner == here || self.defs.same_package(owner, here),
+        };
+        if !visible && self.reported_type_visibility_violations.insert(declaration) {
+            let declaration_span = self.defs.site(declaration).map_or_else(
+                || span.clone(),
+                crate::def_table::DeclarationOccurrence::span,
+            );
+            self.errors.push(super::TypeError::visibility_violation(
+                visibility,
+                span.clone(),
+                self.defs.name(declaration).as_str(),
+                self.defs.module_path(owner),
+                self.current_module.as_deref().unwrap_or("(root)"),
+                declaration_span,
+                self.current_module.clone(),
+            ));
+        }
+        visible
+    }
+
+    /// Report a written type path `Scope` resolves to no type, and the
+    /// placeholder type the checker continues with.
+    pub(super) fn report_unresolved_named_type(
+        &mut self,
+        path: &hew_parser::ast::Path,
+        args: Vec<crate::Ty>,
+        span: &hew_parser::ast::Span,
+    ) -> crate::Ty {
+        let name = path.to_string();
+        if let Some(replacement) = self.retired_machine_event_path(path) {
+            let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+            if self
+                .reported_undefined_named_types
+                .insert((name.clone(), key))
+            {
+                self.report_error_with_suggestions(
+                    super::TypeErrorKind::UndefinedType,
+                    span,
+                    format!("machine event type `{name}` is now `{replacement}`"),
+                    vec![format!("replace `{name}` with `{replacement}`")],
+                );
+            }
+            return crate::Ty::Error;
+        }
+        let site = self.scope_site();
+        let head = path.segments.first().map(|(head, _)| head.name);
+        if let (Some(site), Some(head), 1) = (site, head, path.segments.len()) {
+            let candidates = self.scopes.ambiguous_import(site.file, head).to_vec();
+            if candidates.len() > 1 {
+                let mut owners: Vec<String> = candidates
+                    .iter()
+                    .filter_map(|binding| self.binding_path(*binding))
+                    .collect();
+                owners.sort();
+                self.report_error_with_suggestions(
+                    super::TypeErrorKind::AmbiguousType,
+                    span,
+                    format!(
+                        "ambiguous type `{name}`: published bare by {} imported modules",
+                        candidates.len()
+                    ),
+                    owners
+                        .iter()
+                        .map(|owner| format!("qualify the reference, e.g. `{owner}`"))
+                        .collect(),
+                );
+                return crate::Ty::Error;
+            }
+        }
+        // A catalog builtin answers to its qualified spelling with no import
+        // (`channel.Sender`, `stream.Sink`) when no declaration in scope
+        // claims the path.
+        if path.segments.len() > 1 {
+            if let Some(builtin) = crate::lookup_builtin_type(&name) {
+                return crate::Ty::named_head(crate::TypeHead::Builtin(builtin), args);
+            }
+        }
+        let unresolved = crate::Ty::Named {
+            head: crate::TypeHead::Unresolved(Symbol::intern(&name)),
+            args: args.clone(),
+        };
+        // TRANSITION(A1c4): WHY stdlib registration collects member
+        // signatures before importer scopes exist, a registry-loaded std
+        // module does not load its own imports, and `Self.X` projections are
+        // matched by spelling. WHEN registration resolves after every import
+        // is bound and projections resolve through `Scope`, these report like
+        // any other path. WHAT: one resolution pass over bound scopes.
+        let std_source = self
+            .current_module
+            .as_deref()
+            .is_some_and(|module| self.checking_canonical_stdlib_source(module));
+        let self_headed = head == Some(hew_parser::ast::sym::SELF_TYPE);
+        if self.in_stdlib_registration || std_source || self_headed {
+            return unresolved;
+        }
+        let exporters: Vec<String> = match (site, head) {
+            (Some(site), Some(head)) => self
+                .scopes
+                .modules_exporting(site.file, head)
+                .into_iter()
+                .map(|module| self.defs.module_path(module).to_string())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let leaf = path.segments.last().map(|(leaf, _)| leaf.name);
+        let lifecycle =
+            leaf.and_then(|leaf| crate::lookup_source_owned_lifecycle_type(leaf.as_str()));
+        let hinted = lifecycle.is_some() || (path.segments.len() == 1 && !exporters.is_empty());
+        // TRANSITION(A1c4): WHY registration resolves signatures before
+        // every import is bound. WHEN registration resolves in declaration
+        // order through `Scope`, every failure reports here and
+        // `TypeHead::Unresolved` goes. WHAT: one resolution pass after
+        // minting and import binding.
+        if !hinted && (!self.type_decls_registered || self.suppress_undefined_type_report) {
+            return unresolved;
+        }
+        let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+        if !self
+            .reported_undefined_named_types
+            .insert((name.clone(), key))
+        {
+            return crate::Ty::Error;
+        }
+        self.report_unknown_type(&name, span, lifecycle, path.segments.len() > 1, &exporters);
+        crate::Ty::Error
+    }
+
+    /// Report an unknown type, with the import that would bring it in scope
+    /// when one is known.
+    fn report_unknown_type(
+        &mut self,
+        name: &str,
+        span: &hew_parser::ast::Span,
+        lifecycle: Option<crate::BuiltinType>,
+        qualified: bool,
+        exporters: &[String],
+    ) {
+        if lifecycle.is_some() && qualified {
+            self.report_error_with_suggestions(
+                super::TypeErrorKind::UndefinedType,
+                span,
+                format!("unknown type `{name}`"),
+                vec![format!("import the owning module before using `{name}`")],
+            );
+            return;
+        }
+        if let Some(lifecycle) = lifecycle {
+            let module = if matches!(
+                lifecycle,
+                crate::BuiltinType::CrashNotification | crate::BuiltinType::CrashKind
+            ) {
+                "failure"
+            } else {
+                "link_monitor"
+            };
+            self.report_error_with_suggestions(
+                super::TypeErrorKind::UndefinedType,
+                span,
+                format!("unknown type `{name}`"),
+                vec![format!(
+                    "import the lifecycle type explicitly, e.g. `import std.{module}.{{ {name} }}`"
+                )],
+            );
+            return;
+        }
+        if exporters.is_empty() {
+            self.report_error(
+                super::TypeErrorKind::UndefinedType,
+                span,
+                format!("unknown type `{name}`"),
+            );
+            return;
+        }
+        let mut suggestions = Vec::new();
+        for owner in exporters {
+            suggestions.push(format!("qualify the reference, e.g. `{owner}.{name}`"));
+            suggestions.push(format!(
+                "or opt in to the bare name: `import {owner}.{{ {name} }}`"
+            ));
+        }
+        let detail = if exporters.len() == 1 {
+            format!("module `{}`", exporters[0])
+        } else {
+            format!("modules {}", exporters.join(", "))
+        };
+        self.report_error_with_suggestions(
+            super::TypeErrorKind::UndefinedType,
+            span,
+            format!(
+                "type `{name}` is not in scope; it is exported by {detail} \
+                 but a plain `import` does not publish it unqualified"
+            ),
+            suggestions,
+        );
+    }
+
+    /// The declaration path a binding names, for diagnostics.
+    pub(super) fn binding_path(&self, binding: super::scope::Binding) -> Option<String> {
+        use super::scope::Binding;
+        match binding {
+            Binding::Type(id) | Binding::Actor(id) => {
+                Some(self.defs.path(id.declaration()).to_string())
+            }
+            Binding::Trait(id) | Binding::Fn(id) | Binding::Const(id) | Binding::Predicate(id) => {
+                Some(self.defs.path(id).to_string())
+            }
+            Binding::Module(module) => Some(self.defs.module_path(module).to_string()),
+            Binding::Builtin(_) => None,
+        }
+    }
+
+    /// The `Machine.Event` spelling a retired flat `MachineEvent` type path
+    /// names, when the machine it stems from is in scope.
+    fn retired_machine_event_path(&mut self, path: &hew_parser::ast::Path) -> Option<String> {
+        let ((leaf, leaf_span), qualifier) = path.segments.split_last()?;
+        let machine = leaf
+            .name
+            .as_str()
+            .strip_suffix("Event")
+            .filter(|machine| !machine.is_empty())?;
+        let mut machine_path = qualifier.to_vec();
+        machine_path.push((hew_parser::ast::Ident::new(machine), leaf_span.clone()));
+        let site = self.scope_site()?;
+        let Ok(super::scope::Resolution::Nominal(owner)) = self.scopes.resolve(
+            &self.env,
+            site,
+            super::scope::Namespace::Type,
+            &machine_path,
+        ) else {
+            return None;
+        };
+        let owner = owner.declaration();
+        if self.defs.kind(owner) != crate::DeclarationKind::Machine {
+            return None;
+        }
+        self.defs.member_of_kind(
+            owner,
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        )?;
+        let qualifier = qualifier
+            .iter()
+            .map(|(segment, _)| segment.name.as_str())
+            .collect::<Vec<_>>();
+        Some(if qualifier.is_empty() {
+            format!("{machine}.Event")
+        } else {
+            format!("{}.{machine}.Event", qualifier.join("."))
+        })
+    }
+
     /// The head a written type path names, resolved through `Scope`.
     pub(super) fn resolve_type_path_head(
         &mut self,
@@ -621,16 +986,15 @@ impl Checker {
             super::scope::Namespace::Type,
             &path.segments,
         ) {
-            Ok(super::scope::Resolution::Nominal(id)) => {
-                Some(self.known_declaration(id).map_or_else(
-                    || {
-                        crate::TypeHead::Nominal(crate::NominalHead::new(
-                            id,
-                            self.defs.path(id.declaration()),
-                        ))
-                    },
-                    crate::KnownDecl::head,
-                ))
+            Ok(super::scope::Resolution::Nominal(id)) => Some(self.head_of_declaration(id)),
+            // A trait written in type position names the trait's declaration.
+            Ok(super::scope::Resolution::Def(id))
+                if self.defs.kind(id) == crate::DeclarationKind::Trait =>
+            {
+                Some(crate::TypeHead::Nominal(crate::NominalHead::new(
+                    crate::NominalId::from_minted_declaration(id),
+                    self.defs.path(id),
+                )))
             }
             Ok(super::scope::Resolution::Param(id)) => Some(crate::TypeHead::param(
                 crate::ParamHead::new(id, path.segments[0].0.name),

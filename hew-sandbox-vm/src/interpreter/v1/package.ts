@@ -78,7 +78,7 @@ export type RuntimeVariantRole =
   | "ActorErrorFailed"
   | "ActorErrorTrapped"
   | "ActorErrorDead"
-  | "ActorErrorTimeout"
+  | "ActorErrorTimedOut"
   | "ActorErrorNodeNotRunning"
   | "ActorErrorRoutingFailed"
   | "ActorErrorEncodeFailed"
@@ -86,7 +86,6 @@ export type RuntimeVariantRole =
   | "ActorErrorPartition"
   | "SendErrorFull"
   | "SendErrorClosed"
-  | "SendErrorNodeRoutingNotWired"
   | "SendErrorPartition"
   | "SendErrorStaleRef"
   | "SendErrorLocalShutdown"
@@ -96,7 +95,8 @@ export type RuntimeVariantRole =
   | "SendErrorBackpressure"
   | "SendErrorDead"
   | "DeliveryAccepted"
-  | "DeliveryDiscarded";
+  | "DeliveryDiscarded"
+  | "LinkErrorNoContext";
 
 export function runtimeTag(
   shape: VariantShape,
@@ -514,7 +514,6 @@ export interface ActorProtocol {
   actor: number;
   message: number;
   policy: "reject" | "wait" | "drop_newest" | "replace_latest";
-  deadline_ns: number | null;
   sealed: boolean;
 }
 

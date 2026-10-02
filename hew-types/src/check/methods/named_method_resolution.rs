@@ -62,7 +62,10 @@ impl Checker {
             method,
         )
         .or_else(|| {
-            let target = self.alias_target_for_instance(type_name, type_args)?;
+            let target = self
+                .type_aliases
+                .get(&self.lookup_declaration(type_name)?)?
+                .instantiate(type_args)?;
             crate::method_resolution::lookup_method_sig(
                 &self.defs,
                 &self.type_defs,
@@ -173,6 +176,26 @@ impl Checker {
             .iter()
             .map(|(declaring, _)| self.defs.display(*declaring))
             .collect();
+        if let [(first, _), rest @ ..] = traits {
+            if rest.iter().all(|(declaring, _)| declaring == first) {
+                let name = names[0];
+                self.report_error_with_suggestions(
+                    TypeErrorKind::AmbiguousTraitMethod,
+                    span,
+                    format!(
+                        "ambiguous method `{method}` on `{}`: it implements `{name}` more than \
+                         once, and a call by name cannot choose between the impls",
+                        receiver.user_facing(),
+                    ),
+                    vec![
+                        "give the impls distinct method names, or for `From` let `?` and \
+                          `return error` apply the impl for the error's own type"
+                            .to_string(),
+                    ],
+                );
+                return;
+            }
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousTraitMethod,
             span,
@@ -232,8 +255,11 @@ impl Checker {
                 None,
             ),
         };
+        if self.refuse_associated_dot_call(&sig, name, method, args, span) {
+            return Some(Ty::Error);
+        }
         let return_type = self
-            .apply_instantiated_call_signature(
+            .apply_instantiated_call_signature_with_assoc(
                 &sig,
                 None,
                 args,
@@ -316,10 +342,6 @@ impl Checker {
         let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
-        let name = head.registry_key();
-        let canonical_name = self
-            .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.to_string());
         let Some(dispatch_key) = self.named_source_method_dispatch_key(receiver_ty, method) else {
             return;
         };
@@ -327,7 +349,7 @@ impl Checker {
             return;
         };
         let consumes_receiver = sig.consumes_receiver
-            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_method_consumes_receiver(receiver_ty, method)
             || self.named_type_inherent_close_consumes_receiver(*head, method, sig);
         if consumes_receiver {
             self.method_call_consumes_receiver
@@ -360,12 +382,8 @@ impl Checker {
         let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
-        let name = head.registry_key();
-        let canonical_name = self
-            .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.to_string());
         let consumes_receiver = sig.consumes_receiver
-            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_method_consumes_receiver(receiver_ty, method)
             || self.named_type_inherent_close_consumes_receiver(*head, method, sig);
         if consumes_receiver {
             self.method_call_consumes_receiver
@@ -487,12 +505,14 @@ impl Checker {
                 // `methods` declared on the same actor (also keyed
                 // `{Actor}::{name}` in `fn_sigs`) stay on the regular
                 // method-call path.
-                let method_key = format!("{name}::{method_name}");
-                let is_actor_receive_dispatch = self
-                    .type_def_at(name)
+                let actor_handler = self
+                    .head_type_def(*head)
                     .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                    && self.actor_receive_methods.contains(&method_key);
-                if is_actor_receive_dispatch {
+                    .then(|| {
+                        self.actor_member(*head, method_name, crate::DeclarationKind::ActorReceive)
+                    })
+                    .flatten();
+                if let Some(handler) = actor_handler {
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::ActorInstance {
@@ -500,7 +520,7 @@ impl Checker {
                         },
                     );
                     self.enforce_actor_method_send_args(args);
-                    return self.record_actor_method_dispatch(span, method_key, ty.clone());
+                    return self.record_actor_method_dispatch(span, handler, ty.clone());
                 }
                 self.record_method_call_receiver_kind(
                     span,
@@ -702,8 +722,8 @@ impl Checker {
         else {
             return None;
         };
-        let name = head.registry_key();
-        let type_def = self.lookup_type_def(name)?;
+        let type_def = self.head_type_def(*head)?.clone();
+        let name = &type_def.name;
         let field_ty = type_def.fields.get(method_name)?;
         let field_ty =
             Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
@@ -862,76 +882,55 @@ impl Checker {
             return Ty::Error;
         };
 
-        match method {
-            "send" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "`send` on an actor handle expects one argument (the message), but {} were supplied",
-                            args.len()
-                        ),
-                    );
-                }
-                // Check the argument against M (the message type) when present so
-                // the caller still gets the most specific message-type diagnostic
-                // alongside any arity error.
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    let ty = self.check_against(expr, sp, &m_ty);
-                    // Enforce Send bound: the message crosses the actor boundary.
-                    let resolved = self.subst.resolve(&ty);
-                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
-                }
-                // Synthesize extra args for recovery diagnostics, but do not accept
-                // them: MIR only lowers the receiver plus the first message arg.
-                for arg in args.iter().skip(1) {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                // `.send(msg)` is the same completion call as `handle(msg)`,
-                // so it publishes the same dispatch and yields the same
-                // envelope rather than a second spelling with its own
-                // delivery and error type.
-                self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
+        if method != "send" {
+            // Synthesize args for error recovery.
+            for arg in args {
+                let (expr, sp) = arg.expr();
+                self.synthesize(expr, sp);
             }
-            "close" => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_migration_diagnostic(
-                    TypeErrorKind::ActorHandleMethodRetired,
-                    "E_ACTOR_HANDLE_METHOD_RETIRED: lambda actor `.close()` is retired".to_string(),
-                    "write `stop(handle); stopped(handle);`".to_string(),
-                    span,
-                );
-                if self.migration_mode {
-                    Ty::Unit
-                } else {
-                    Ty::Error
-                }
-            }
-            _ => {
-                // Synthesize args for error recovery.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
+            self.report_error(
+                TypeErrorKind::UndefinedMethod,
+                span,
+                format!(
+                    "no method `{method}` on `{}`; \
+                     a lambda actor is not a channel — supported methods: \
+                     send (the canonical call surface is `handle(msg)`)",
+                    receiver_ty.user_facing()
+                ),
+            );
+            return Ty::Error;
+        }
+        if args.len() != 1 {
+            self.report_error(
+                    TypeErrorKind::ArityMismatch,
                     span,
                     format!(
-                        "no method `{method}` on `{}`; \
-                         a lambda actor is not a channel — supported methods: \
-                         send / close (the canonical call surface is `handle(msg)`)",
-                        receiver_ty.user_facing()
+                        "`send` on an actor handle expects one argument (the message), but {} were supplied",
+                        args.len()
                     ),
                 );
-                Ty::Error
-            }
         }
+        // Check the argument against M (the message type) when present so
+        // the caller still gets the most specific message-type diagnostic
+        // alongside any arity error.
+        if let Some(arg) = args.first() {
+            let (expr, sp) = arg.expr();
+            let ty = self.check_against(expr, sp, &m_ty);
+            // Enforce Send bound: the message crosses the actor boundary.
+            let resolved = self.subst.resolve(&ty);
+            self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+        }
+        // Synthesize extra args for recovery diagnostics, but do not accept
+        // them: MIR only lowers the receiver plus the first message arg.
+        for arg in args.iter().skip(1) {
+            let (expr, sp) = arg.expr();
+            self.synthesize(expr, sp);
+        }
+        // `.send(msg)` is the same completion call as `handle(msg)`,
+        // so it publishes the same dispatch and yields the same
+        // envelope rather than a second spelling with its own
+        // delivery and error type.
+        self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
     }
 
     pub(super) fn ty_to_dispatch_pattern(&self, ty: &Ty) -> TyPattern {
@@ -966,33 +965,5 @@ impl Checker {
             }
             other => TyPattern::Primitive(other.user_facing().to_string()),
         }
-    }
-
-    pub(in crate::check) fn type_param_has_marker_bound(
-        &self,
-        param_name: &str,
-        marker: MarkerTrait,
-    ) -> bool {
-        let marker_name = marker.to_string();
-        for frame in self.current_type_param_bounds.iter().rev() {
-            if let Some(bounds) = frame.bounds.get(param_name) {
-                return bounds.iter().any(|bound| bound == &marker_name);
-            }
-        }
-        if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sig(fn_name) {
-                if sig
-                    .type_params
-                    .iter()
-                    .any(|param| param.spelling.as_str() == param_name)
-                {
-                    return sig
-                        .type_param_bounds
-                        .get(param_name)
-                        .is_some_and(|bounds| bounds.iter().any(|bound| bound == &marker_name));
-                }
-            }
-        }
-        false
     }
 }

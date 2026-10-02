@@ -272,7 +272,8 @@ pub(super) fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     checker.check_program(&program)
 }
 
-/// Build a minimal `Checker` with a trait registered in `trait_defs`.
+/// Build a minimal `Checker` with a trait registered in `trait_defs`, and the
+/// trait's declaration.
 ///
 /// The trait is method-only (no associated types, no generic methods) unless
 /// the caller opts in via the `with_assoc` / `with_generic_method` flags.
@@ -281,7 +282,7 @@ pub(super) fn make_checker_with_trait(
     method_names: &[&str],
     with_assoc: bool,
     with_generic_method: bool,
-) -> Checker {
+) -> (Checker, crate::DefId) {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     let mut items: Vec<hew_parser::ast::TraitItem> = method_names
@@ -298,6 +299,7 @@ pub(super) fn make_checker_with_trait(
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
+                suspends: false,
                 name: Ident::new(name),
                 type_params,
                 params: vec![Param {
@@ -315,6 +317,7 @@ pub(super) fn make_checker_with_trait(
                     ),
                     is_mutable: false,
                     is_consume: false,
+                    is_receiver: true,
                 }],
                 return_type: None,
                 where_clause: None,
@@ -346,8 +349,8 @@ pub(super) fn make_checker_with_trait(
     };
 
     let info = checker.trait_info_from_decl(&td, None, 0);
-    checker.test_trait_def(trait_name, info);
-    checker
+    let trait_id = checker.test_trait_def(trait_name, info);
+    (checker, trait_id)
 }
 
 pub(super) fn make_test_type_def(
@@ -359,7 +362,7 @@ pub(super) fn make_test_type_def(
         kind: TypeDefKind::Struct,
         name: name.to_string(),
         type_params,
-        bounds: HashMap::new(),
+        bounds: crate::check::ParamBounds::default(),
         fields: HashMap::new(),
         variants: HashMap::new(),
         methods,
@@ -478,8 +481,8 @@ fn user_impl_drop_rejected_fail_closed() {
 }
 
 impl Drop for Token {
-    fn drop(token: Token) {
-        println(token.id);
+    fn drop(self) {
+        println(self.id);
     }
 }
 
@@ -615,10 +618,10 @@ impl Checker {
     }
 
     /// File a hand-built trait under a fresh declaration row spelled `key`.
-    pub(super) fn test_trait_def(&mut self, key: &str, info: TraitInfo) {
+    pub(super) fn test_trait_def(&mut self, key: &str, info: TraitInfo) -> crate::DefId {
         let declaration = self.defs.mint_for_test(key);
-        self.trait_def_keys.insert(key.to_string(), declaration);
         self.trait_defs.insert(declaration, info);
+        declaration
     }
 
     /// The named type of a hand-registered declaration (see

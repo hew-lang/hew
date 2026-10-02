@@ -58,16 +58,6 @@ pub struct HewCancellationToken {
     /// Readiness subscribers; token state remains the cancellation authority.
     observers: Mutex<Vec<std::sync::Weak<crate::wake::OwnedWaker>>>,
     children_total: AtomicI32,
-    #[expect(
-        dead_code,
-        reason = "diagnostic counters are populated by later cancellation slices"
-    )]
-    children_terminal: AtomicI32,
-    #[expect(
-        dead_code,
-        reason = "diagnostic counters are populated by later cancellation slices"
-    )]
-    last_nonterminal_child: AtomicUsize,
 }
 
 // SAFETY: all mutable token state is atomic. The parent pointer is retained
@@ -170,8 +160,6 @@ pub unsafe extern "C" fn hew_cancel_token_new_child(
         parent,
         observers: Mutex::new(Vec::new()),
         children_total: AtomicI32::new(0),
-        children_terminal: AtomicI32::new(0),
-        last_nonterminal_child: AtomicUsize::new(0),
     });
     Box::into_raw(token)
 }

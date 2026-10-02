@@ -1,3 +1,5 @@
+import std.encoding.cbor;
+
 #[wire]
 type Inner {
     name: string @1;
@@ -5,8 +7,8 @@ type Inner {
 
 #[wire]
 enum Payload {
-    Empty;
-    Full(string, Vec<string>, Inner);
+    Empty @0;
+    Full(string, Vec<string>, Inner) @1;
 }
 
 fn main() -> i64 {
@@ -17,8 +19,8 @@ fn main() -> i64 {
         tags.push("alpha-element");
         tags.push("beta-element");
         let p = Payload.Full("payload-label-value", tags, Inner { name: "inner-owned-name" });
-        let raw = p.encode();
-        let back = Payload.decode(raw);
+        let raw = cbor.encode(p);
+        let back = cbor.decode<Payload>(raw).expect("decode");
         let n = match back {
             Payload.Empty => 0,
             Payload.Full(_, _, _) => 1,

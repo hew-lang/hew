@@ -1,0 +1,107 @@
+// A contextual variant takes its type from a typed sibling branch: the
+// typed branches of an if, if-let or match are joined first, whatever their
+// position, and the contextual ones are checked against that join.
+type Problem { code: i64; }
+
+fn first_none(c: bool, floor: Option<i64>) -> i64 {
+    let g = if c { .None } else { floor };
+    match g { .Some(v) => v, .None => -1 }
+}
+
+fn second_none(c: bool, floor: Option<i64>) -> i64 {
+    let g = if c { floor } else { .None };
+    match g { .Some(v) => v, .None => -1 }
+}
+
+fn chain(n: i64, floor: Option<i64>) -> i64 {
+    let g = if n == 0 { .None } else if n == 1 { .Some(10) } else { floor };
+    match g { .Some(v) => v, .None => -1 }
+}
+
+fn arms(r: Result<i64, Problem>) -> i64 {
+    let out = match r {
+        .Err(e) => { .Err(e.code) }
+        .Ok(v) if v > 100 => .Ok(100),
+        .Ok(v) => to_result(v),
+    };
+    match out { .Ok(v) => v, .Err(c) => c }
+}
+
+fn to_result(v: i64) -> Result<i64, i64> { .Ok(v * 2) }
+
+fn iflet(o: Option<string>) -> i64 {
+    let n = if let .Some(s) = o { .Some(s.len()) } else { lookup() };
+    match n { .Some(v) => v, .None => -1 }
+}
+
+fn lookup() -> Option<i64> { .Some(77) }
+
+fn closure_body(floor: Option<i64>) -> i64 {
+    let pick = |c: bool| if c { .None } else { floor };
+    let a = match pick(false) { .Some(v) => v, .None => -1 };
+    let b = match pick(true) { .Some(v) => v, .None => -1 };
+    a * 100 + b
+}
+
+fn wrap(s: string) -> Result<string, string> { .Ok(s + "!") }
+
+fn route(r: Result<string, string>, keep: string) -> Result<string, string> {
+    let out = match r {
+        .Err(e) => .Err(e + keep),
+        .Ok(s) => wrap(s),
+    };
+    out
+}
+
+fn pick(c: bool, a: string, b: Option<string>) -> Option<string> {
+    let g = if c { .Some(a) } else { b };
+    g
+}
+
+fn block_tails(c: bool, floor: Option<i64>) -> i64 {
+    let g = {
+        if c {
+            .None
+        } else {
+            floor
+        }
+    };
+    let h = {
+        if let .Some(v) = floor {
+            .Some(v + 1)
+        } else {
+            floor
+        }
+    };
+    let k = {
+        match floor {
+            .None => .Some(0),
+            .Some(v) => floor,
+        }
+    };
+    let gv = match g { .Some(v) => v, .None => -1 };
+    let hv = match h { .Some(v) => v, .None => -1 };
+    let kv = match k { .Some(v) => v, .None => -1 };
+    gv * 10000 + hv * 100 + kv
+}
+fn main() {
+    println(first_none(true, .Some(3)));
+    println(first_none(false, .Some(3)));
+    println(second_none(true, .Some(4)));
+    println(second_none(false, .Some(4)));
+    println(chain(0, .Some(5)));
+    println(chain(1, .Some(5)));
+    println(chain(2, .Some(5)));
+    println(arms(.Err(Problem { code: 9 })));
+    println(arms(.Ok(500)));
+    println(arms(.Ok(6)));
+    println(iflet(.Some("abc")));
+    println(iflet(.None));
+    println(closure_body(.Some(8)));
+    match route(.Err("bad"), "/k") { .Ok(v) => println(v), .Err(e) => println(e) }
+    match route(.Ok("good"), "/k") { .Ok(v) => println(v), .Err(e) => println(e) }
+    match pick(true, "left", .Some("right")) { .Some(v) => println(v), .None => println("none") }
+    match pick(false, "left", .None) { .Some(v) => println(v), .None => println("none") }
+    println(block_tails(true, .Some(3)));
+    println(block_tails(false, .None));
+}

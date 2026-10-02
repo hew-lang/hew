@@ -12,16 +12,16 @@ type DW {
 }
 
 impl Deep for DW {
-    fn base(w: DW) -> i64 {
-        w.id
+    fn base(self) -> i64 {
+        self.id
     }
 
-    fn mid(w: DW) -> bool {
+    fn mid(self) -> bool {
         true
     }
 
-    fn deep(w: DW) -> i64 {
-        w.id + 2
+    fn deep(self) -> i64 {
+        self.id + 2
     }
 }
 

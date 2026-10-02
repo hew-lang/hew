@@ -1,0 +1,13 @@
+[[case]]
+id = "let_field_mut"
+intent = "The fixture is refused, and the refusal names these diagnostics."
+source = "../vertical-slice/reject/let_field_mut.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 8
+column = 5
+message = "cannot assign to immutable variable `p`"

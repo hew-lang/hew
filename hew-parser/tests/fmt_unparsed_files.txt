@@ -6,7 +6,6 @@
 # on L1's ledger work); until then fmt_roundtrip_corpus.rs requires this list
 # to match exactly: remove a file when it starts to parse, and fix rather
 # than add a file that stops parsing.
-hew-lsp/tests/fixtures/v05_async_await.hew
 tests/core-acceptance/cases/machine-composite-depth-refused.hew
 tests/core-acceptance/cases/named-argument-after-positional-gap.hew
 tests/core-acceptance/cases/spread-parse-refusals.hew

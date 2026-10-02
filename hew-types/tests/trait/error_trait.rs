@@ -8,11 +8,7 @@
 //!   reported where the promise is made, in either declaration order.
 //! * A type that implements `Error` coerces to `dyn Error` at every error
 //!   position - `return error e`, `?` into a `fails dyn Error` caller and
-//!   `Err(e)` - while a type that does not stays a type mismatch.
-//!
-//! Native execution of a `dyn Error` value is a separate matter: SIR has no
-//! value contract for any trait object yet, so these programs check and then
-//! fail closed at semantic lowering.
+//!   `Err(e)`. The failure-edge refusals live in `try_conversion.rs`.
 
 use crate::common;
 
@@ -60,8 +56,8 @@ impl Error for ParseFailure {
 }
 
 impl Display for ParseFailure {
-    fn fmt(value: ParseFailure) -> string {
-        f"parse failed: {value.detail}"
+    fn fmt(self) -> string {
+        f"parse failed: {self.detail}"
     }
 }
 "#,
@@ -81,8 +77,8 @@ fn error_impl_coerces_to_dyn_error_at_every_error_position() {
 }
 
 impl Display for ParseFailure {
-    fn fmt(value: ParseFailure) -> string {
-        f"parse failed: {value.detail}"
+    fn fmt(self) -> string {
+        f"parse failed: {self.detail}"
     }
 }
 
@@ -112,30 +108,6 @@ fn wrapped(text: string) -> Result<i64, dyn Error> {
     assert!(
         output.errors.is_empty(),
         "expected a clean check, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn type_without_error_impl_does_not_coerce_to_dyn_error() {
-    let output = typecheck(
-        r#"type Bare {
-    detail: string;
-}
-
-fn parse() -> i64 fails dyn Error {
-    return error Bare { detail: "empty" };
-}
-"#,
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|err| matches!(err.kind, TypeErrorKind::Mismatch { .. })
-                && err.message.contains("dyn Error")
-                && err.message.contains("Bare")),
-        "expected a `dyn Error` mismatch on the un-erasable payload, got: {:#?}",
         output.errors
     );
 }
@@ -181,7 +153,7 @@ type Failure {
 }
 
 impl Display for Failure {
-    fn fmt(value: Failure) -> string {
+    fn fmt(self) -> string {
         "display"
     }
 }
@@ -215,8 +187,8 @@ fn main() -> Result<(), dyn (Pretty + Error)> {
             output.entry_exit_plan
         );
     };
-    // `Pretty.fmt` occupies slot 3; `Display.fmt`, reached through `Error`,
-    // is slot 4.
-    assert_eq!(*slot, 4);
+    // `Pretty.fmt` occupies slot 0; `Display.fmt`, reached through `Error`,
+    // is slot 1.
+    assert_eq!(*slot, 1);
     assert_eq!(output.defs.path(*method), "std.builtins.Display::fmt");
 }

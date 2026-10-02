@@ -151,11 +151,7 @@ impl Checker {
                     return None;
                 }
                 self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    module_short.to_string(),
-                ));
+                self.note_import_use(module_short.name.as_str());
                 let canonical = format!(
                     "{}.{}",
                     self.canonical_module_import_owner(module_short.name.as_str()),
@@ -196,11 +192,7 @@ impl Checker {
                     return None;
                 }
                 self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    module.to_string(),
-                ));
+                self.note_import_use(module.name.as_str());
                 Some(format!(
                     "{}.{}",
                     self.canonical_module_import_owner(module.name.as_str()),
@@ -411,17 +403,19 @@ impl Checker {
         }
     }
 
-    fn dispatch_static_type_member(
+    /// A static member the checker resolves by its function signature: a
+    /// builtin type's runtime method, or an undeclared member with a `fn`
+    /// signature.
+    fn dispatch_checker_static_member(
         &mut self,
         head: &ResolvedDottedTypeHead,
-        method: &str,
+        internal_member: &str,
         args: &[CallArg],
         expected: Option<&Ty>,
         span: &Span,
     ) -> Option<Ty> {
-        let internal_member = format!("{}::{method}", head.canonical_type);
         let is_vec_from = crate::has_builtin_associated_item_identity(
-            &internal_member,
+            internal_member,
             crate::BuiltinType::Vec,
             "from",
         );
@@ -432,9 +426,9 @@ impl Checker {
         let checker_member = ((head.builtin.is_some()
             || !self
                 .impl_method_declaration_ids
-                .contains_key(&internal_member))
-            && (self.has_fn_sig(&internal_member) || is_vec_from))
-            .then_some(internal_member.clone());
+                .contains_key(internal_member))
+            && (self.has_fn_sig(internal_member) || is_vec_from))
+            .then_some(internal_member.to_string());
         if let Some(checker_member) = checker_member {
             let function = (Expr::Ident(Ident::new(&checker_member)), head.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(result) = expected.and_then(|expected| {
@@ -453,7 +447,35 @@ impl Checker {
             self.promote_dotted_static_call_rewrite(span, &checker_member);
             return Some(result);
         }
+        None
+    }
 
+    fn dispatch_static_type_member(
+        &mut self,
+        head: &ResolvedDottedTypeHead,
+        method: &str,
+        args: &[CallArg],
+        expected: Option<&Ty>,
+        span: &Span,
+    ) -> Option<Ty> {
+        let internal_member = format!("{}::{method}", head.canonical_type);
+        if let Some(result) =
+            self.dispatch_checker_static_member(head, &internal_member, args, expected, span)
+        {
+            return Some(result);
+        }
+
+        let receiver = self.named_ty_for_key(&head.canonical_type, Vec::new());
+        if let crate::check::dispatch_table::MethodSelection::Ambiguous(traits) =
+            self.select_method(&receiver, method)
+        {
+            for arg in args {
+                let (expr, arg_span) = arg.expr();
+                self.synthesize(expr, arg_span);
+            }
+            self.report_ambiguous_method(&receiver, method, &traits, span);
+            return Some(Ty::Error);
+        }
         let type_def = self.type_def_at(&head.canonical_type).cloned()?;
         let raw_sig = type_def.methods.get(method).cloned()?;
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {
@@ -480,7 +502,7 @@ impl Checker {
         } else {
             (raw_sig, Vec::new())
         };
-        let applied = self.apply_instantiated_call_signature(
+        let applied = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             None,
             args,

@@ -1,0 +1,158 @@
+//! A supervised TCP acceptor with one actor per connection.
+//!
+//! `Acceptor` owns the listener inside a supervised role. Each admitted
+//! connection moves into its own `Session` actor, which echoes what its peer
+//! sends until the peer finishes, then stops itself; its state drop closes the
+//! connection. The acceptor keeps at most two sessions and closes the third
+//! connection as overload.
+//!
+//! Every wait here is a call that suspends only its own task: `accept` and
+//! `recv` park on the reactor and leave the scheduler worker free, so `Probe`
+//! still answers on one worker while every other task waits on the network.
+//!
+//! Stopping `Service` cancels the blocked fourth accept and closes the
+//! listener. The sessions here are not supervised children, so they keep
+//! serving until their peers finish.
+
+import std.net;
+
+import std.stream;
+
+actor Events {
+    let output: stream.Sink<string>;
+
+    receive fn mark(event: string) {
+        output.send(event).expect("event receiver remains live");
+    }
+}
+
+actor Session {
+    let conn: net.Connection;
+    let events: Events;
+
+    receive fn run() {
+        loop {
+            match conn.recv() {
+                .Some(data) => {
+                    if let .Err(_) = conn.send(data) {
+                        break;
+                    }
+                }
+                .None => {
+                    break;
+                }
+            }
+        }
+        events.mark("session finished").expect("record finish");
+        stop(self);
+    }
+}
+
+actor Acceptor {
+    let address: string;
+    let events: Events;
+
+    receive fn start() {
+        let listener = net.listen(address).expect("listen");
+        events.mark(f"port {listener.local_port()}").expect("record port");
+        for index in 1..4 {
+            let conn = listener.accept();
+            if index <= 2 {
+                let session = spawn Session(conn: conn, events: events);
+                // Submitting `run` starts the session's pump in its own actor
+                // without waiting for it, so this loop returns to `accept`.
+                mailbox(session, on_full: .Wait).run().expect("start session");
+                events.mark(f"session {index}").expect("record session");
+            } else {
+                conn.close();
+                events.mark(f"overload {index}").expect("record overload");
+            }
+        }
+        // Main waits for this event before probing the scheduler and stopping
+        // the supervisor, so this fourth accept is known to be waiting.
+        events.mark("accepting").expect("record waiting accept");
+        let unexpected = listener.accept();
+        unexpected.close();
+        panic("fourth connection unexpectedly arrived");
+    }
+}
+
+actor Probe {
+    receive fn ping() {
+        println("scheduler live");
+    }
+}
+
+supervisor Service(events: Events) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child acceptor: Acceptor(address: "127.0.0.1:0", events: events);
+}
+
+fn next(events: stream.Stream<string>) -> string {
+    match events.recv() {
+        .Some(actual) => actual,
+        .None => panic("event stream closed"),
+    }
+}
+
+fn expect(events: stream.Stream<string>, expected: string) {
+    assert(next(events) == expected);
+}
+
+fn expect_server_closed(consume conn: net.Connection) {
+    if let .Some(_) = conn.recv() {
+        panic("server sent unexpected data");
+    }
+    conn.close();
+}
+
+fn main() {
+    let (event_output, event_input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(8).expect("event pipe");
+    let events = spawn Events(output: event_output);
+    let service = spawn Service(events: events);
+    let probe = spawn Probe;
+    mailbox(service.acceptor, on_full: .Wait).start().expect("start acceptor");
+    let port_event = next(event_input);
+    let address = "127.0.0.1:" + port_event.slice(5, port_event.len());
+    let first = net.connect(address).expect("first client");
+    expect(event_input, "session 1");
+    let second = net.connect(address).expect("second client");
+    expect(event_input, "session 2");
+    let third = net.connect(address).expect("third client");
+    expect(event_input, "overload 3");
+    expect(event_input, "accepting");
+    expect_server_closed(third);
+    first.send("hello".to_bytes()).expect("send to first session");
+    match first.recv() {
+        .Some(reply) => assert(reply == "hello".to_bytes()),
+        .None => panic("first session closed early"),
+    }
+    println("session echoed");
+
+    // With one scheduler worker, this runs only because accept and both
+    // session reads park on the reactor.
+    probe.ping().expect("scheduler remains responsive");
+    stop(service);
+    stopped(service);
+    println("supervisor stopped");
+
+    // The sessions are not children of the service; they finish when their
+    // peers do.
+    second.send("still here".to_bytes()).expect("send to second session");
+    match second.recv() {
+        .Some(reply) => assert(reply == "still here".to_bytes()),
+        .None => panic("second session closed with its acceptor"),
+    }
+    println("sessions outlive the acceptor");
+    first.close();
+    second.close();
+    expect(event_input, "session finished");
+    expect(event_input, "session finished");
+    println("sessions finished");
+    event_input.close();
+    stop(events);
+    stopped(events);
+    stop(probe);
+    stopped(probe);
+}

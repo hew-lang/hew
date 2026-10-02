@@ -5,6 +5,8 @@ import { runBytecode } from "./index.js";
 interface CliArgs {
   bytecodePath: string;
   seed: number;
+  /// A file whose contents are the program's standard input.
+  stdinPath: string | undefined;
 }
 
 const DEFAULT_SEED = 42;
@@ -13,6 +15,7 @@ const DEFAULT_STEP_BUDGET = 1_000_000;
 function parseArgs(argv: string[]): CliArgs {
   let bytecodePath: string | undefined;
   let seed = DEFAULT_SEED;
+  let stdinPath: string | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -28,6 +31,14 @@ function parseArgs(argv: string[]): CliArgs {
       index += 1;
       continue;
     }
+    if (arg === "--stdin") {
+      stdinPath = argv[index + 1];
+      if (!stdinPath) {
+        throw new Error("--stdin requires a file path");
+      }
+      index += 1;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -38,25 +49,33 @@ function parseArgs(argv: string[]): CliArgs {
   }
 
   if (!bytecodePath) {
-    throw new Error("usage: parity-runner <bytecode.json> [--seed <integer>]");
+    throw new Error(
+      "usage: parity-runner <bytecode.json> [--seed <integer>] [--stdin <file>]",
+    );
   }
 
-  return { bytecodePath, seed };
+  return { bytecodePath, seed, stdinPath };
 }
 
 try {
   const args = parseArgs(process.argv.slice(2));
-  const bytecode = JSON.parse(fs.readFileSync(args.bytecodePath, "utf8")) as unknown;
+  const bytecode = JSON.parse(
+    fs.readFileSync(args.bytecodePath, "utf8"),
+  ) as unknown;
   const trace = runBytecode(bytecode, {
     replay: {
       seed: args.seed,
       step_budget: DEFAULT_STEP_BUDGET,
       virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 },
-      inputs: []
-    }
+      inputs:
+        args.stdinPath === undefined
+          ? []
+          : [{ kind: "stdin", data: fs.readFileSync(args.stdinPath, "utf8") }],
+    },
   });
 
   process.stdout.write(trace.final_state.stdout.join(""));
+  process.stderr.write(trace.final_state.stderr.join(""));
   process.exitCode = trace.final_state.exit_code ?? 1;
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

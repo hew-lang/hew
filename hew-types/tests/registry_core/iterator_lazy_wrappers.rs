@@ -62,7 +62,7 @@ const ITER_WRAPPER_SURFACE: &str = r#"pub type Map<I, A, B> {
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
-    fn next(it: Map<I, A, B>) -> Option<B> {
+    fn next(self) -> Option<B> {
         panic("Map.next deferred pending Q004");
         .None
     }
@@ -75,7 +75,7 @@ pub type Filter<I, A> {
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(it: Filter<I, A>) -> Option<A> {
+    fn next(self) -> Option<A> {
         panic("Filter.next deferred (by-move self cannot loop)");
         .None
     }
@@ -88,7 +88,7 @@ pub type Take<I> {
 
 impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(it: Take<I>) -> Option<A> {
+    fn next(self) -> Option<A> {
         panic("Take.next deferred (by-move self cannot persist remaining)");
         .None
     }
@@ -101,7 +101,7 @@ pub type Skip<I> {
 
 impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(it: Skip<I>) -> Option<A> {
+    fn next(self) -> Option<A> {
         panic("Skip.next deferred (by-move self cannot loop)");
         .None
     }
@@ -357,11 +357,11 @@ fn chained_adapters_typecheck() {
 
 impl Iterator for Counter {
     type Item = i64;
-    fn next(it: Counter) -> Option<i64> {
-        if it.n >= it.limit {
+    fn next(self) -> Option<i64> {
+        if self.n >= self.limit {
             .None
         } else {
-            .Some(it.n)
+            .Some(self.n)
         }
     }
 }
@@ -388,8 +388,8 @@ fn terminal_helpers_typecheck() {
 
 impl Iterator for Counter {
     type Item = i64;
-    fn next(it: Counter) -> Option<i64> {
-        .Some(it.n)
+    fn next(self) -> Option<i64> {
+        .Some(self.n)
     }
 }
 

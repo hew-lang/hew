@@ -526,15 +526,11 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             method_id,
             args,
             reply_ty,
-            deadline_ns,
             ..
         } => {
-            let deadline = deadline_ns
-                .map(|ns| format!(" | after {ns}ns"))
-                .unwrap_or_default();
             writeln!(
                 out,
-                "{pad}  actor-ask {method_id} -> {}{deadline}",
+                "{pad}  actor-ask {method_id} -> {}",
                 reply_ty.user_facing()
             )
             .expect("write to string");
@@ -742,41 +738,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 .expect("write to string");
             dump_expr(defs, out, operand, indent + 2);
         }
-        HirExprKind::AwaitRestart { child } => {
-            writeln!(out, "{pad}  await-restart").expect("write to string");
-            dump_expr(defs, out, child, indent + 2);
-        }
-        HirExprKind::ConnAwaitRead {
-            conn,
-            to_string,
-            deadline_ns,
-            ..
-        } => {
-            let deadline = deadline_ns
-                .map(|ns| format!(" | after {ns}ns"))
-                .unwrap_or_default();
-            writeln!(
-                out,
-                "{pad}  conn-await-read to_string={to_string}{deadline}"
-            )
-            .expect("write to string");
-            dump_expr(defs, out, conn, indent + 2);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            writeln!(out, "{pad}  listener-await-accept").expect("write to string");
-            dump_expr(defs, out, listener, indent + 2);
-        }
-        HirExprKind::StreamRecvAwait {
-            stream,
-            deadline_ns,
-            ..
-        } => {
-            let deadline = deadline_ns
-                .map(|ns| format!(" | after {ns}ns"))
-                .unwrap_or_default();
-            writeln!(out, "{pad}  stream-recv-await{deadline}").expect("write to string");
-            dump_expr(defs, out, stream, indent + 2);
-        }
         HirExprKind::Select(select) => {
             writeln!(out, "{pad}  select arms={}", select.arms.len()).expect("write to string");
             for arm in &select.arms {
@@ -909,18 +870,13 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
         }
         HirExprKind::CoerceToDynTrait {
             value,
-            trait_name,
             concrete_type,
-            method_table,
-            vtable_entries,
         } => {
             writeln!(
                 out,
-                "{pad}  coerce-to-dyn {} <- {} (slots={}, projected={})",
-                trait_name,
+                "{pad}  coerce-to-dyn {} <- {}",
+                expr.ty.user_facing(),
                 concrete_type.user_facing(),
-                method_table.len(),
-                vtable_entries.len()
             )
             .expect("write to string");
             dump_expr(defs, out, value, indent + 4);
@@ -967,7 +923,15 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 ret_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
+            match receiver {
+                crate::StaticTraitSelf::Receiver(receiver) => {
+                    dump_expr(defs, out, receiver, indent + 4);
+                }
+                crate::StaticTraitSelf::Type(self_ty) => {
+                    writeln!(out, "{pad}    self-type {}", self_ty.user_facing())
+                        .expect("write to string");
+                }
+            }
             for arg in args {
                 dump_expr(defs, out, arg, indent + 4);
             }
@@ -1047,11 +1011,11 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             dump_expr(defs, out, receiver, indent + 4);
         }
         HirExprKind::WireCodec {
-            direction,
+            codec,
             operand,
             value_ty,
         } => {
-            writeln!(out, "{pad}  wire-codec {direction:?} value_ty={value_ty:?}")
+            writeln!(out, "{pad}  wire-codec {codec:?} value_ty={value_ty:?}")
                 .expect("write to string");
             dump_expr(defs, out, operand, indent + 4);
         }

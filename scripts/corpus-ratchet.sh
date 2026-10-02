@@ -761,6 +761,10 @@ is_separately_gated_or_reject_fixture() {
         # their nominal types. The formatter fidelity gate owns these inputs.
         return 0
         ;;
+    hew-cli/tests/fixtures/main_entry_exit/non_error.hew)
+        # main_entry_exit.rs asserts the entry-bound diagnostic on this source.
+        return 0
+        ;;
     hew-sandbox-vm/fixtures/09-compile-type-error/main.hew | hew-sandbox-vm/fixtures/29-mixed-scalar-compare-rejected/main.hew)
         # The VM fixture manifest expects a compile error for each source.
         return 0

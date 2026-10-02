@@ -1,0 +1,38 @@
+// A bound with trait arguments is satisfied only by an impl at those
+// arguments: `Wrapped` converts from `Low`, `Narrow` only from `High`.
+type Low {
+    code: i64;
+}
+
+type High {
+    code: i64;
+}
+
+type Wrapped {
+    code: i64;
+}
+
+impl From<Low> for Wrapped {
+    fn from(value: Low) -> Wrapped {
+        Wrapped { code: value.code }
+    }
+}
+
+type Narrow {
+    code: i64;
+}
+
+impl From<High> for Narrow {
+    fn from(value: High) -> Narrow {
+        Narrow { code: value.code }
+    }
+}
+
+fn keep<F: From<Low>>(value: F) -> F {
+    value
+}
+
+fn main() {
+    println(keep(Wrapped { code: 4 }).code);
+    println(keep(Narrow { code: 5 }).code);
+}

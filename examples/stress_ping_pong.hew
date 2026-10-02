@@ -31,7 +31,7 @@ fn main() {
     let pinger = spawn Pinger(count: 0);
     let ponger = spawn Ponger(count: 0);
     // Rapid alternating message sends — simulates ping-pong
-    for i in 0 .. 1000 {
+    for i in 0..1000 {
         let ping_value: i64 = i;
         let pong_value: i64 = i;
         let _ = pinger.ping(ping_value);
@@ -41,7 +41,7 @@ fn main() {
     let _ = ponger.report();
     // Second burst: stress with higher volume
     println("--- Round 2: 5000 rounds ---");
-    for j in 0 .. 5000 {
+    for j in 0..5000 {
         let ping_value: i64 = j;
         let pong_value: i64 = j;
         let _ = pinger.ping(ping_value);

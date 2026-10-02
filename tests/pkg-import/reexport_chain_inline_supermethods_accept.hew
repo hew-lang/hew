@@ -10,20 +10,20 @@ type W {
 }
 
 impl Base for W {
-    fn base(w: W) -> i64 {
-        w.id
+    fn base(self) -> i64 {
+        self.id
     }
 }
 
 impl Mid for W {
-    fn mid(w: W) -> i64 {
-        w.id + 10
+    fn mid(self) -> i64 {
+        self.id + 10
     }
 }
 
 impl Top for W {
-    fn top(w: W) -> i64 {
-        w.id + 100
+    fn top(self) -> i64 {
+        self.id + 100
     }
 }
 

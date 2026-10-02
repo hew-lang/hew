@@ -3047,7 +3047,7 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
     let hew_src = dir.path().join("pair_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Pair<T> {\n    left: T;\n    right: T;\n}\n\nimpl<T> Iterator for Pair<T> where T: Display {\n    type Item = T;\n    fn next(var p: Pair<T>) -> Option<T> {\n        .Some(p.left)\n    }\n}\n\nfn main() {\n    var p = Pair { left: 77, right: 88 };\n    match p.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n}\n",
+        "pub type Pair<T> {\n    left: T;\n    right: T;\n}\n\nimpl<T> Iterator for Pair<T> where T: Display {\n    type Item = T;\n    fn next(var self) -> Option<T> {\n        .Some(self.left)\n    }\n}\n\nfn main() {\n    var p = Pair { left: 77, right: 88 };\n    match p.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3089,7 +3089,7 @@ fn var_self_concrete_receiver_trait_dispatch_option_abi_and_writeback() {
     let hew_src = dir.path().join("counter_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Counter<T> {\n    current: T;\n    step: T;\n}\n\nimpl<T> Iterator for Counter<T> where T: Display {\n    type Item = T;\n    fn next(var c: Counter<T>) -> Option<T> {\n        let out = c.current;\n        c.current = c.step;\n        .Some(out)\n    }\n}\n\nfn main() {\n    var c = Counter { current: 77, step: 88 };\n    match c.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n    match c.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n}\n",
+        "pub type Counter<T> {\n    current: T;\n    step: T;\n}\n\nimpl<T> Iterator for Counter<T> where T: Display {\n    type Item = T;\n    fn next(var self) -> Option<T> {\n        let out = self.current;\n        self.current = self.step;\n        .Some(out)\n    }\n}\n\nfn main() {\n    var c = Counter { current: 77, step: 88 };\n    match c.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n    match c.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3175,7 +3175,7 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
 
     let output = run_hew_source(
         "static_valued.hew",
-        "trait Valued {\n    fn value(val: Self) -> i64;\n}\n\ntype Token {\n    id: i64;\n}\n\nimpl Valued for Token {\n    fn value(t: Token) -> i64 {\n        t.id\n    }\n}\n\nfn show<T: Valued>(item: T) -> i64 {\n    item.value()\n}\n\nfn main() {\n    let t = Token { id: 42 };\n    println(f\"{show(t)}\");\n}\n",
+        "trait Valued {\n    fn value(self) -> i64;\n}\n\ntype Token {\n    id: i64;\n}\n\nimpl Valued for Token {\n    fn value(self) -> i64 {\n        self.id\n    }\n}\n\nfn show<T: Valued>(item: T) -> i64 {\n    item.value()\n}\n\nfn main() {\n    let t = Token { id: 42 };\n    println(f\"{show(t)}\");\n}\n",
     );
 
     assert!(
@@ -3252,15 +3252,14 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
     // so no "unused variable" noise should appear.
     let input = concat!(
         "import std.string;\n",
-        "import std.option;\n",
         "import std.iter;\n",
         "fn stdlib_demo() -> string {\n",
         "    let s = string.from_int(42);\n",
-        "    let opt = option.map_int(.Some(20), |v: i64| v + 22);\n",
+        "    let opt = Option.Some(20).map(|v: i64| v + 22);\n",
         "    let v: Vec<string> = [\"a\", \"bb\"];\n",
         "    let mapped = iter.map(v.into_iter(), |x: string| string.from_int(x.len()));\n",
         "    let lens: Vec<string> = iter.collect(mapped);\n",
-        "    f\"{s}:{option.unwrap_int(opt)}:{lens[0]},{lens[1]}\"\n",
+        "    f\"{s}:{opt.unwrap_or(0)}:{lens[0]},{lens[1]}\"\n",
         "}\n",
         "stdlib_demo()\n",
     );

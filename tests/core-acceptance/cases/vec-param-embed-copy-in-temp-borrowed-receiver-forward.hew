@@ -9,8 +9,8 @@ trait Render {
 }
 
 impl Render for Item {
-    fn render(item: Item) -> string {
-        let result = render_item(item);
+    fn render(self) -> string {
+        let result = render_item(self);
         result
     }
 }

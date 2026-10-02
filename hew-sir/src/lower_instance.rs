@@ -2,7 +2,7 @@
 
 use super::{
     callable_signature, callable_signature_with_substitution, declared_type_parameter,
-    dyn_boundary_passing, dyn_passing_admits, dyn_receiver_passing, function_source_origin,
+    dyn_boundary_passing, dyn_passing_admits, function_source_origin,
     is_supported_instance_type_arg, project_type_facts, require_aggregate_shape,
     require_signature_shapes, require_type_shapes, require_variant_shape, AggregateShapeRef,
     BTreeMap, BTreeSet, BodySource, Builder, BytesLiteralId, CallableId, CallableInstance,
@@ -34,6 +34,8 @@ impl<'a> InstanceService<'a> {
             closure_sources: Vec::new(),
             vtables: Vec::new(),
             vtables_by_erasure: HashMap::new(),
+            offloads: Vec::new(),
+            offloads_by_declaration: HashMap::new(),
             entry_adapters: HashMap::new(),
             test_entries: Vec::new(),
             used_templates: std::collections::HashSet::new(),
@@ -562,14 +564,35 @@ impl<'a> InstanceService<'a> {
 
     /// Intern the dispatch table for one `(dyn Trait, concrete type)` erasure.
     ///
-    /// Each slot resolves the checker's implementer declaration to a demanded
-    /// SIR callable, so no later stage joins a slot to a body by name. The
-    /// slot order is the checker's, past the runtime's three-word prefix.
+    /// The slots are the checker's layout of `layout_ty` (the erasure's type
+    /// as the checker named it); each is filled by the implementation a
+    /// static call of the slot's method on `concrete_ty` reaches, so a
+    /// nominal impl, a default method, a generic impl and a structural
+    /// witness fill a slot exactly as they serve a bounded generic call.
+    /// The module-local identity of one `#[offload]` extern declaration.
+    pub(super) fn request_offload(
+        &mut self,
+        signature: &crate::ExternSignature,
+    ) -> Result<crate::OffloadId, String> {
+        if let Some(id) = self.offloads_by_declaration.get(&signature.declaration) {
+            return Ok(*id);
+        }
+        let id = crate::OffloadId(
+            u32::try_from(self.offloads.len()).map_err(|_| "offload count exceeds u32")?,
+        );
+        self.offloads.push(signature.clone());
+        self.offloads_by_declaration
+            .insert(signature.declaration, id);
+        Ok(id)
+    }
+
     pub(super) fn request_vtable(
         &mut self,
+        layout_ty: &ResolvedTy,
         dyn_ty: &ResolvedTy,
         concrete_ty: &ResolvedTy,
-        entries: &[hew_types::DynVtableEntry],
+        site: hew_hir::SiteId,
+        substitution: &TypeSubstitution,
     ) -> Result<crate::SemVtableId, String> {
         crate::model::require_dyn_trait_ids(dyn_ty)?;
         let key = (dyn_ty.clone(), concrete_ty.clone());
@@ -578,40 +601,40 @@ impl<'a> InstanceService<'a> {
         }
         self.require_type_facts(dyn_ty)?;
         self.require_type_facts(concrete_ty)?;
-        let mut slots = Vec::with_capacity(entries.len());
-        for (index, entry) in entries.iter().enumerate() {
-            let slot = 3 + u32::try_from(index)
+        let layout = std::sync::Arc::clone(&self.module.trait_object_layouts);
+        let layout = layout.get(layout_ty).ok_or_else(|| {
+            format!(
+                "the checker published no layout for `{}`",
+                layout_ty.user_facing()
+            )
+        })?;
+        let mut slots = Vec::with_capacity(layout.slots.len());
+        for (index, layout_slot) in layout.slots.iter().enumerate() {
+            let slot = u32::try_from(index)
                 .map_err(|_| "trait-object method count exceeds u32".to_string())?;
-            let declaration = entry.impl_method.as_ref().ok_or_else(|| {
-                format!(
-                    "`{}` fills slot {slot} of `{}` with `{}`, which has no source declaration",
-                    concrete_ty.user_facing(),
-                    dyn_ty.user_facing(),
-                    entry.impl_fn_key
-                )
-            })?;
-            let callee = self.admit_monomorphic(*declaration).map_err(|reason| {
-                format!(
-                    "slot {slot} of `{}` names `{}`, which has no monomorphic SIR callable: {reason}",
-                    dyn_ty.user_facing(),
-                    self.module.defs.path(*declaration)
-                )
-            })?;
+            let target = self.resolve_static_trait_call(
+                layout_slot.declaring_trait,
+                layout_slot.method,
+                concrete_ty,
+                &[],
+                site,
+                substitution,
+            )?;
             // Erasure is what obliges the module to carry every slot body:
             // the dispatch edge cannot demand one, because it names an index
             // rather than a declaration.
-            self.request_body(callee);
-            let target = self
-                .callable(callee)
-                .cloned()
-                .ok_or_else(|| format!("SIR callable {callee:?} is absent from its table"))?;
+            let callee = target.id;
             let Some((receiver, arguments)) = target.signature.params.split_first() else {
                 return Err(format!(
                     "slot {slot} implementation `{}` takes no receiver",
                     target.symbol
                 ));
             };
-            let receiver_passing = dyn_receiver_passing(&entry.signature);
+            let receiver_passing = match layout_slot.receiver {
+                hew_types::DynReceiver::Borrow => SemParamPassing::Borrow,
+                hew_types::DynReceiver::BorrowMut => SemParamPassing::BorrowMut,
+                hew_types::DynReceiver::Consume => SemParamPassing::Consume,
+            };
             if receiver.ty != *concrete_ty
                 || !dyn_passing_admits(receiver_passing, receiver.passing)
             {
@@ -640,9 +663,7 @@ impl<'a> InstanceService<'a> {
             }
             slots.push(crate::SemVtableSlot {
                 slot,
-                trait_name: entry.trait_name.clone(),
-                method_name: entry.method_name.clone(),
-                method: entry.method,
+                method: layout_slot.method,
                 callee,
                 receiver: receiver_passing,
                 signature: SemSignature {
@@ -1136,7 +1157,7 @@ impl<'a> InstanceService<'a> {
     }
 
     /// Select the implementation a static trait call reaches, from the
-    /// receiver type this instance's substitution produced.
+    /// `Self` type and trait arguments this instance's substitution produced.
     ///
     /// The generic template could not name it: `it.next()` under
     /// `I: Iterator<Item = A>` has no implementation until `I` is bound. The
@@ -1147,30 +1168,32 @@ impl<'a> InstanceService<'a> {
         &mut self,
         declaring_trait: DefId,
         method: DefId,
-        receiver_ty: &ResolvedTy,
+        self_ty: &ResolvedTy,
+        trait_args: &[ResolvedTy],
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
     ) -> Result<SemCallable, String> {
-        let self_type = receiver_ty
+        let self_type = self_ty
             .impl_receiver_instance(&self.module.defs)
             .ok_or_else(|| {
                 format!(
-                    "static trait receiver `{}` cannot anchor an implementation",
-                    receiver_ty.user_facing()
+                    "static trait `Self` type `{}` cannot anchor an implementation",
+                    self_ty.user_facing()
                 )
             })?;
         let entry = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
             &self.table.trait_impls,
             &declaring_trait,
             &self_type,
+            trait_args,
             &method,
         )
         .cloned()
         .ok_or_else(|| {
             format!(
-                "no implementation of `{}` for `{}` provides `{}`",
+                "no single implementation of `{}` for `{}` provides `{}`",
                 self.module.defs.path(declaring_trait),
-                receiver_ty.user_facing(),
+                self_ty.user_facing(),
                 self.module.defs.path(method)
             )
         })?;
@@ -1196,13 +1219,14 @@ impl<'a> InstanceService<'a> {
         })
     }
 
-    /// Bind impl parameters from the concrete receiver and append the method
+    /// Bind impl parameters from the concrete `Self` and append the method
     /// parameters selected by the checker at this call site.
     ///
     /// `impl<A, B> Trait for Pair<B, A>` spells its self-type arguments in the
-    /// opposite order to its parameter list, so the receiver's arguments are
-    /// matched against the implementation's own receiver pattern rather than
-    /// handed to the instance positionally.
+    /// opposite order to its parameter list, so `Self`'s arguments are
+    /// matched against the impl's own target pattern rather than handed to
+    /// the instance positionally. The pattern is the impl's, not a receiver
+    /// parameter's, so associated functions (`make(n) -> Self`) bind too.
     pub(super) fn static_trait_instance_args(
         &self,
         entry: &hew_hir::dispatch::TraitImplMethodEntry,
@@ -1246,15 +1270,7 @@ impl<'a> InstanceService<'a> {
         if impl_param_count == 0 {
             return Ok(method_args.collect());
         }
-        let Some(ResolvedTy::Named {
-            args: pattern_args, ..
-        }) = function.params.first().map(|param| &param.ty)
-        else {
-            return Err(format!(
-                "generic implementation `{}` has no nominal receiver pattern",
-                self.module.defs.path(*method)
-            ));
-        };
+        let pattern_args = &entry.self_type_args;
         if pattern_args.len() != self_type.args.len() {
             return Err(format!(
                 "generic implementation `{}` declares {} receiver argument(s), the concrete receiver carries {}",
@@ -1665,7 +1681,8 @@ impl<'a> InstanceService<'a> {
             bytes_literals,
             regex_patterns,
             value_capabilities,
-            defs: std::sync::Arc::clone(&self.module.defs),
+            defs: std::sync::Arc::clone(&module.defs),
+            offloads: self.offloads,
         }
     }
 

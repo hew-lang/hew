@@ -1,0 +1,10 @@
+[[case]]
+id = "error-edge-literal-and-generic"
+intent = "A literal at `return error` is sized by the numeric error type, and `?` in a generic function applies `From` per instantiation."
+source = "cases/error-edge-literal-and-generic.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "i32 5\nu8 200\nrelay: Wrapped: Broken\nrelay ok 5\n"
+exit = 0

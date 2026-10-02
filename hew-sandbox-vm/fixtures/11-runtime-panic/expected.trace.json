@@ -8,6 +8,13 @@
       "type": "trace.started"
     },
     {
+      "phase": "run",
+      "seq": 1,
+      "span": null,
+      "text": "hew: failure: UserPanic (212): sandbox panic\n",
+      "type": "io.stderr"
+    },
+    {
       "failure": {
         "hew_fault": {
           "code": 212,
@@ -19,14 +26,14 @@
         "trap_kind": "panic"
       },
       "phase": "run",
-      "seq": 1,
+      "seq": 2,
       "span": null,
       "type": "runtime.failure"
     },
     {
       "message": "panic",
       "phase": "run",
-      "seq": 2,
+      "seq": 3,
       "span": null,
       "type": "trace.ended"
     }
@@ -59,7 +66,9 @@
     ],
     "sandbox_rejections": [],
     "status": "panic",
-    "stderr": [],
+    "stderr": [
+      "hew: failure: UserPanic (212): sandbox panic\n"
+    ],
     "stdout": [],
     "step_count": 5,
     "virtual_clock": {

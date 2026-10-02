@@ -11,7 +11,7 @@ import hew.srccollidea.{Source as A};
 import hew.srccollideb;
 
 pub trait Source {
-    fn close(val: Self) -> i64;
+    fn close(self) -> i64;
 }
 
 type W {
@@ -19,8 +19,8 @@ type W {
 }
 
 impl Source for W {
-    fn close(w: W) -> i64 {
-        w.id
+    fn close(self) -> i64 {
+        self.id
     }
 }
 

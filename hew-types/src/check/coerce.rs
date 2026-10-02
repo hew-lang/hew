@@ -114,15 +114,16 @@ impl Checker {
 
     fn validate_dyn_assoc_binding_projections(
         &mut self,
-        trait_name: &str,
+        trait_id: crate::DefId,
         bound: &crate::ty::TraitObjectBound,
         concrete_type: &Ty,
         span: &Span,
     ) -> bool {
+        let trait_name = bound.trait_name.as_str();
         for (assoc_name, binding_ty) in &bound.assoc_bindings {
             let projected = self.project_assoc_types(&Ty::AssocType {
                 base: Box::new(concrete_type.clone()),
-                trait_name: trait_name.to_string().into_boxed_str(),
+                trait_name: self.defs.path(trait_id).into(),
                 assoc_name: assoc_name.clone().into_boxed_str(),
             });
             if matches!(projected, Ty::AssocType { .. }) {
@@ -169,6 +170,22 @@ impl Checker {
         span: &Span,
     ) -> bool {
         for method in &trait_info.methods {
+            if !method.params.first().is_some_and(|param| param.is_receiver) {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::TraitNotObjectSafe {
+                        trait_name: trait_name.to_string(),
+                        method_name: method.name.to_string(),
+                        reason: "associated function",
+                    },
+                    span,
+                    format!(
+                        "trait `{trait_name}` is not object-safe: `{}` has no `self` receiver",
+                        method.name
+                    ),
+                    vec!["add a `self` receiver".to_string()],
+                );
+                return false;
+            }
             if method.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
                 self.report_error(
                     TypeErrorKind::TraitNotObjectSafe {
@@ -210,7 +227,7 @@ impl Checker {
     /// Does the concrete actor type `actor_name` satisfy the handler trait
     /// `trait_name` by virtue of its `receive fn`s?
     ///
-    /// Active-mode handler traits (`ConnectionHandler`, `WebSocketHandler`)
+    /// Active-mode handler traits (`TlsHandler`, `WebSocketHandler`)
     /// are satisfied *structurally by an actor's receive functions*, not by an
     /// explicit `impl Trait for Actor` block: the actor declares
     /// `receive fn on_data(bytes)` / `receive fn on_close()` and the runtime
@@ -230,9 +247,9 @@ impl Checker {
     pub(super) fn actor_satisfies_handler_trait(
         &mut self,
         actor_name: &str,
-        trait_name: &str,
+        trait_id: crate::DefId,
     ) -> bool {
-        let Some(trait_info) = self.trait_def_at(trait_name).cloned() else {
+        let Some(trait_info) = self.trait_info(trait_id).cloned() else {
             return false;
         };
         // A trait with no methods is never "satisfied" implicitly (mirrors the
@@ -251,7 +268,7 @@ impl Checker {
             else {
                 return false;
             };
-            let Some(trait_sig) = self.lookup_trait_method(trait_name, method.name.name.as_str())
+            let Some(trait_sig) = self.lookup_trait_method(trait_id, method.name.name.as_str())
             else {
                 return false;
             };
@@ -271,7 +288,7 @@ impl Checker {
 
     /// Is `trait_name` an active-mode *handler* trait — one whose methods take
     /// no `self` receiver and are therefore satisfied structurally by an actor's
-    /// `receive fn`s (e.g. `ConnectionHandler`, `WebSocketHandler`), rather than
+    /// `receive fn`s (e.g. `TlsHandler`, `WebSocketHandler`), rather than
     /// by a vtable-dispatched `impl`?
     ///
     /// The parser names every receiver parameter `self` (and types it `Self`),
@@ -285,8 +302,8 @@ impl Checker {
     /// `Handler`'s coercion honest: for a handler trait, only the structural receive-fn
     /// satisfaction is lowerable, so an explicit `impl` must not admit the
     /// coercion.
-    pub(super) fn trait_is_handler_style(&self, trait_name: &str) -> bool {
-        let Some(trait_info) = self.trait_def_at(trait_name) else {
+    pub(super) fn trait_is_handler_style(&self, trait_id: crate::DefId) -> bool {
+        let Some(trait_info) = self.trait_info(trait_id) else {
             return false;
         };
         if trait_info.methods.is_empty() {
@@ -468,7 +485,7 @@ impl Checker {
             //
             // The active-mode `conn.attach(this)` surface needs a concrete
             // actor handle (`EchoConn`) to satisfy an extern that takes the
-            // handler-trait handle (`ConnectionHandler`). An actor handle is an
+            // handler-trait handle (`TlsHandler`). An actor handle is an
             // opaque actor-ref pointer (`*mut HewActor`); its nominal
             // identity is purely a compile-time tag used for
             // `.send`/`.ask` message typing and (for handler traits) for
@@ -495,7 +512,10 @@ impl Checker {
                     },
                 ) = (expected_inner, actual_inner)
                 {
-                    let trait_name = trait_head.registry_key();
+                    let trait_id = trait_head
+                        .nominal()
+                        .map(crate::NominalId::declaration)
+                        .filter(|id| self.trait_info(*id).is_some());
                     let concrete_name = concrete_head.registry_key();
                     // Only a true trait-implementation narrowing is admitted.
                     // Identical inner names would have unified above; reaching
@@ -509,19 +529,19 @@ impl Checker {
                     //    `actor_satisfies_handler_trait`. `attach` codegen
                     //    synthesises the `on_data`/`on_close` `msg_id`s from the
                     //    actor's receive-fn protocol descriptor; an explicit
-                    //    `impl ConnectionHandler for X {}` with no matching
+                    //    `impl TlsHandler for X {}` with no matching
                     //    `receive fn`s carries nothing codegen can lower, so
                     //    gating on `type_implements_trait` would admit a
                     //    coercion that later fails closed with a late
                     //    `E_CODEGEN`. Reject it here with an honest type error.
                     //  - Ordinary (receiver-method) trait: an explicit or
                     //    structural impl is the satisfaction authority.
-                    if trait_name != concrete_name && self.has_trait_def(trait_name) {
-                        let satisfied = if self.trait_is_handler_style(trait_name) {
-                            self.actor_satisfies_handler_trait(concrete_name, trait_name)
+                    if let Some(trait_id) = trait_id {
+                        let satisfied = if self.trait_is_handler_style(trait_id) {
+                            self.actor_satisfies_handler_trait(concrete_name, trait_id)
                         } else {
-                            self.type_implements_trait_for_ty(actual_inner, trait_name)
-                                || self.actor_satisfies_handler_trait(concrete_name, trait_name)
+                            self.type_implements_trait(actual_inner, trait_id)
+                                || self.actor_satisfies_handler_trait(concrete_name, trait_id)
                         };
                         if satisfied {
                             return;
@@ -593,12 +613,11 @@ impl Checker {
         concrete_type: &Ty,
         span: &Span,
     ) -> Option<bool> {
-        let trait_name = bound.trait_name.as_str();
-        let trait_lookup_key = self.dyn_bound_trait_key(bound);
         // Resolve the trait declaration; an unregistered trait can never be
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
-        let trait_info = self.trait_def_at(&trait_lookup_key).cloned()?;
+        let trait_id = bound.trait_id?;
+        let trait_info = self.trait_info(trait_id).cloned()?;
         if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
             return None;
         }
@@ -610,17 +629,18 @@ impl Checker {
         // Every trait whose methods reach the vtable must be object safe,
         // including the supertraits whose slots this bound publishes.
         let layout = self.dyn_layout(std::slice::from_ref(bound), span)?;
-        let declaring_keys: Vec<String> = {
+        let declaring: Vec<crate::DefId> = {
             let mut seen = std::collections::HashSet::new();
-            std::iter::once(trait_lookup_key.clone())
-                .chain(layout.into_iter().map(|slot| slot.trait_key))
-                .filter(|key| seen.insert(key.clone()))
+            std::iter::once(trait_id)
+                .chain(layout.into_iter().map(|slot| slot.trait_id))
+                .filter(|id| seen.insert(*id))
                 .collect()
         };
-        for key in declaring_keys {
-            let Some(info) = self.trait_def_at(&key).cloned() else {
+        for declaring_id in declaring {
+            let Some(info) = self.trait_info(declaring_id).cloned() else {
                 continue;
             };
+            let key = self.defs.path(declaring_id).to_string();
             if !self.validate_dyn_object_safety(&key, &info, span) {
                 return None;
             }
@@ -629,19 +649,16 @@ impl Checker {
         // Prefer the nominal impl registries; fall back to the structural
         // match path so a bare `impl T { fn ... }` that structurally
         // satisfies a trait also fills the table.
-        let nominal_impl = self.type_implements_trait_for_ty(concrete_type, &trait_lookup_key)
+        let nominal_impl = self.type_implements_trait(concrete_type, trait_id)
             || self
                 .primitive_trait_impls
-                .contains_key(&(concrete_type_name.to_string(), trait_lookup_key.clone()))
-            || self
-                .primitive_trait_impls
-                .contains_key(&(concrete_type_name.to_string(), trait_name.to_string()));
-        let structural_ok = !nominal_impl
-            && self.type_structurally_satisfies(concrete_type_name, &trait_lookup_key);
+                .contains_key(&(concrete_type_name.to_string(), trait_id));
+        let structural_ok =
+            !nominal_impl && self.type_structurally_satisfies(concrete_type, trait_id);
         if !nominal_impl && !structural_ok {
             return None;
         }
-        if !self.validate_dyn_assoc_binding_projections(trait_name, bound, concrete_type, span) {
+        if !self.validate_dyn_assoc_binding_projections(trait_id, bound, concrete_type, span) {
             return None;
         }
         Some(structural_ok)
@@ -665,116 +682,261 @@ impl Checker {
         concrete_type: &Ty,
         span: &Span,
     ) -> bool {
-        // How the concrete type satisfies each bound. Bail (false) if any
-        // bound is unsatisfied or not object-safe.
+        let Some(coercion) = self.build_dyn_trait_coercion(traits, type_name, concrete_type, span)
+        else {
+            return false;
+        };
+        self.dyn_trait_coercions
+            .insert(SpanKey::in_module(span, self.current_module_idx), coercion);
+        true
+    }
+
+    /// Build the [`DynCoercion`] erasing `concrete_type` into `dyn traits`, or
+    /// `None` when a bound is unsatisfied or not object-safe.
+    fn build_dyn_trait_coercion(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        type_name: &str,
+        concrete_type: &Ty,
+        span: &Span,
+    ) -> Option<DynCoercion> {
+        // How the concrete type satisfies each bound. Bail if any bound is
+        // unsatisfied or not object-safe.
         let mut structural_by_bound = Vec::with_capacity(traits.len());
         for bound in traits {
-            let Some(structural) =
-                self.validate_dyn_trait_bound(bound, type_name, concrete_type, span)
-            else {
-                return false;
-            };
+            let structural =
+                self.validate_dyn_trait_bound(bound, type_name, concrete_type, span)?;
             structural_by_bound.push(structural);
         }
 
-        // Composite trait_name: `A` for single-bound, `A+B` for multi-bound.
-        let composite_trait_name = traits
-            .iter()
-            .map(|bound| bound.trait_name.as_str())
-            .collect::<Vec<_>>()
-            .join("+");
-
-        let canonical_type_name = match concrete_type {
-            Ty::Named {
-                head:
-                    crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_),
-                ..
-            } => self
-                .flat_file_import_type_owner(type_name)
-                .or_else(|| self.canonical_nominal_name(type_name))
-                .unwrap_or_else(|| type_name.to_string()),
-            Ty::Named {
-                head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
-                ..
-            } => type_name.to_string(),
-            _ => self
-                .canonical_nominal_name(type_name)
-                .unwrap_or_else(|| type_name.to_string()),
-        };
-        // The table follows the whole trait object's layout, the numbering
-        // every dispatch site reads its slot from.
-        let multi = traits.len() > 1;
-        let assoc_bindings = canonical_dyn_assoc_bindings(traits);
-        let mut method_table: Vec<(String, String)> = Vec::new();
-        let mut vtable_entries: Vec<DynVtableEntry> = Vec::new();
-        let Some(layout) = self.dyn_layout(traits, span) else {
-            return false;
-        };
-        for slot in layout {
-            let bound = &traits[slot.bound];
-            let impl_fn_key = format!("{canonical_type_name}::{}", slot.method_name);
-            let Some(mut signature) = self.lookup_trait_method(&slot.trait_key, &slot.method_name)
-            else {
-                // JUSTIFIED: the layout is built from `trait_defs`, so a
-                // method it names is resolvable. Fabricating an empty
-                // signature would poison the vtable.
-                unreachable!(
-                    "trait method `{}.{}` is listed in trait_defs but is not resolvable",
-                    slot.trait_key, slot.method_name
-                );
-            };
-            self.apply_trait_object_bound_substitutions(&mut signature, bound);
-            // The admission path names the filler: a nominal `impl Trait for T`
-            // publishes its method under the trait impl registry, a structural
-            // match is the inherent method a direct `T.method(…)` call targets.
-            // Whichever admitted the bound owns the slot's declaration identity.
+        // The fillers feed the slot-effect obligations; lowering reaches the
+        // same declarations through the layout and the impl index.
+        let mut fillers = Vec::new();
+        for slot in self.dyn_layout(traits, span)? {
             let impl_method = if structural_by_bound[slot.bound] {
                 self.inherent_impl_method_declaration(concrete_type, &slot.method_name)
             } else {
-                self.trait_impl_method_declaration(
-                    concrete_type,
-                    &slot.trait_key,
-                    &slot.method_name,
-                )
+                self.trait_impl_method_declaration(concrete_type, slot.trait_id, &slot.method_name)
             };
-            let qualified = if multi {
-                format!("{}::{}", slot.trait_spelling, slot.method_name)
-            } else {
-                slot.method_name.clone()
-            };
-            method_table.push((qualified, impl_fn_key.clone()));
-            vtable_entries.push(DynVtableEntry {
-                trait_name: slot.trait_spelling,
-                method_name: slot.method_name,
-                method: slot.method,
-                impl_fn_key,
-                impl_method,
-                signature,
-            });
+            fillers.extend(impl_method.map(|impl_method| (slot.method, impl_method)));
         }
-        let vtable_key = DynVtableKey {
-            trait_name: composite_trait_name.clone(),
-            trait_ids: traits.iter().map(|bound| bound.trait_id).collect(),
+        self.record_dyn_slot_obligations(traits, &fillers, span);
+        let target = self.dyn_coercion_target(traits, span)?;
+        Some(DynCoercion {
+            target,
             concrete_type: concrete_type.clone(),
-            assoc_bindings: assoc_bindings.clone(),
-        };
-
-        self.dyn_trait_coercions.insert(
-            SpanKey::in_module(span, self.current_module_idx),
-            DynCoercion {
-                trait_name: composite_trait_name,
-                trait_bounds: traits.to_vec(),
-                concrete_type: concrete_type.clone(),
-                vtable_key,
-                assoc_bindings,
-                vtable_entries,
-                method_table,
-            },
-        );
-        true
+        })
     }
+}
+
+/// The two places an error leaves a function (D547).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FailureEdge {
+    /// A postfix `?` on a `Result`.
+    Try,
+    /// `return error e`.
+    ReturnError,
+}
+
+impl FailureEdge {
+    fn spelling(self) -> &'static str {
+        match self {
+            Self::Try => "`?`",
+            Self::ReturnError => "`return error`",
+        }
+    }
+}
+
+impl Checker {
+    /// Publish `impl From<Source> for receiver` when `owner` is the prelude
+    /// `From` trait. Registration may visit one impl through several routes;
+    /// the method identity keeps a single row.
+    pub(super) fn record_from_impl(
+        &mut self,
+        owner: super::dispatch_table::MethodOwner,
+        bound: &TraitBound,
+        receiver: &Ty,
+        params: &[crate::ParamHead],
+        method: crate::DefId,
+    ) {
+        let from_trait = self
+            .lang_items
+            .get(crate::LangItem::From.key())
+            .map(|binding| binding.trait_id);
+        if from_trait.is_none()
+            || Some(owner) != from_trait.map(super::dispatch_table::MethodOwner::Trait)
+        {
+            return;
+        }
+        let [source] = bound.type_args.as_deref().unwrap_or_default() else {
+            return;
+        };
+        if self.from_impls.iter().any(|row| row.method == method) {
+            return;
+        }
+        let source = self.resolve_type_expr(source);
+        self.from_impls.push(FromImpl {
+            target: receiver.clone(),
+            source,
+            params: params.to_vec(),
+            method,
+        });
+    }
+
+    /// The declared `impl From<source> for target`, if any. A generic impl
+    /// (`impl<E> From<Wrap<E>> for F`) matches with its parameters opened to
+    /// fresh variables. Coherence admits at most one impl per pair, so the
+    /// first match is the only one.
+    ///
+    /// Returns the impl method and the impl's type arguments at this edge.
+    fn declared_from_impl(&mut self, target: &Ty, source: &Ty) -> Option<(crate::DefId, Vec<Ty>)> {
+        let rows = self.from_impls.clone();
+        rows.into_iter().find_map(|row| {
+            let opened = std::cell::RefCell::new(HashMap::new());
+            let row_target = open_type_params(&row.target, &opened);
+            let row_source = open_type_params(&row.source, &opened);
+            let snapshot = self.subst.snapshot();
+            let matched = self.try_unify_with_owner_identity(&row_target, target)
+                && self.try_unify_with_owner_identity(&row_source, source);
+            let opened = opened.into_inner();
+            let type_args = row
+                .params
+                .iter()
+                .map(|param| {
+                    opened
+                        .get(param)
+                        .map_or_else(|| Ty::param(*param), |ty| self.subst.resolve(ty))
+                })
+                .collect();
+            self.subst.restore(snapshot);
+            matched.then_some((row.method, type_args))
+        })
+    }
+
+    /// Choose how `source` crosses a failure edge into the enclosing error
+    /// type `target` and record the choice at `span`. The first rule that
+    /// holds wins: the same type, erasure into a trait object, or a declared
+    /// `From`. Returns `false` after reporting `E_ERROR_NO_CONVERSION`.
+    pub(super) fn select_error_conversion(
+        &mut self,
+        edge: FailureEdge,
+        source: &Ty,
+        target: &Ty,
+        span: &Span,
+    ) -> bool {
+        let source = self.subst.resolve(source);
+        let target = self.subst.resolve(target);
+        if matches!(source, Ty::Error) || matches!(target, Ty::Error) {
+            return true;
+        }
+        let snapshot = self.subst.snapshot();
+        let conversion = if self.try_unify_with_owner_identity(&target, &source) {
+            Some(ErrorConversion::Same)
+        } else {
+            self.subst.restore(snapshot);
+            if let Ty::TraitObject { traits } = &target {
+                let concrete = source.materialize_literal_defaults();
+                concrete_type_name_for_dyn(&concrete)
+                    .and_then(|name| self.build_dyn_trait_coercion(traits, &name, &concrete, span))
+                    .map(|coercion| ErrorConversion::Erase(Box::new(coercion)))
+            } else {
+                self.declared_from_impl(&target, &source)
+                    .map(|(method, type_args)| {
+                        // The edge calls the impl method; a generic impl's
+                        // arguments are this call's type arguments.
+                        self.record_concrete_call_type_args(span, &type_args);
+                        ErrorConversion::From { method }
+                    })
+            }
+        };
+        // A binder bounded `F: From<E>` converts through the bound; each
+        // instantiation of `F` supplies the impl.
+        let conversion = conversion.or_else(|| {
+            Self::bare_param(&target)
+                .and_then(|param| self.binder_from_conversion(param, &source))
+                .map(ErrorConversion::Binder)
+        });
+        if let Some(conversion) = conversion {
+            self.error_conversions.insert(
+                SpanKey::in_module(span, self.current_module_idx),
+                conversion,
+            );
+            return true;
+        }
+        self.report_error_no_conversion(edge, &source, &target, span);
+        false
+    }
+
+    fn report_error_no_conversion(
+        &mut self,
+        edge: FailureEdge,
+        source: &Ty,
+        target: &Ty,
+        span: &Span,
+    ) {
+        let edge_name = edge.spelling();
+        let source_name = source.user_facing().to_string();
+        let target_name = target.user_facing().to_string();
+        let code = TypeErrorKind::ErrorNoConversion.as_kind_str();
+        let (message, suggestions) = if matches!(target, Ty::TraitObject { .. }) {
+            (
+                format!("{code}: {edge_name} cannot erase `{source_name}` into `{target_name}`"),
+                vec![format!(
+                    "implement `Display` and `Error` for `{source_name}` so it can be erased"
+                )],
+            )
+        } else {
+            let convert_here = match edge {
+                FailureEdge::Try => {
+                    format!("or convert here: `.map_err(|e| <a {target_name}>)?`")
+                }
+                FailureEdge::ReturnError => {
+                    format!(
+                        "or convert here: `return error <a {target_name} built from the value>`"
+                    )
+                }
+            };
+            (
+                format!("{code}: {edge_name} cannot convert `{source_name}` into `{target_name}`"),
+                vec![
+                    format!(
+                        "declare the conversion: `impl From<{source_name}> for {target_name} \
+                         {{ fn from(value: {source_name}) -> {target_name} {{ ... }} }}`"
+                    ),
+                    convert_here,
+                    "or compose errors: declare the function `fails dyn Error`".to_string(),
+                ],
+            )
+        };
+        self.report_error_with_suggestions(
+            TypeErrorKind::ErrorNoConversion,
+            span,
+            message,
+            suggestions,
+        );
+    }
+}
+
+/// `ty` with each generic binder replaced by one fresh variable, shared
+/// through `opened` so a binder that appears twice stays one variable.
+pub(super) fn open_type_params(
+    ty: &Ty,
+    opened: &std::cell::RefCell<HashMap<crate::ParamHead, Ty>>,
+) -> Ty {
+    if let Ty::Named {
+        head: crate::TypeHead::Param(parameter),
+        args,
+    } = ty
+    {
+        if args.is_empty() {
+            return opened
+                .borrow_mut()
+                .entry(*parameter)
+                .or_insert_with(|| Ty::Var(TypeVar::fresh()))
+                .clone();
+        }
+    }
+    ty.map_children_pub(&|child| open_type_params(child, opened))
 }
 
 /// Map a resolved concrete `Ty` to the type-name string used by the impl
@@ -794,28 +956,6 @@ fn concrete_type_name_for_dyn(ty: &Ty) -> Option<String> {
         return Some(name.to_string());
     }
     None
-}
-
-fn canonical_dyn_assoc_bindings(traits: &[crate::ty::TraitObjectBound]) -> Vec<DynAssocBinding> {
-    let mut bindings: Vec<DynAssocBinding> = traits
-        .iter()
-        .flat_map(|bound| {
-            bound
-                .assoc_bindings
-                .iter()
-                .map(|(assoc_name, ty)| DynAssocBinding {
-                    trait_name: bound.trait_name.clone(),
-                    assoc_name: assoc_name.clone(),
-                    ty: ty.clone(),
-                })
-        })
-        .collect();
-    bindings.sort_by(|a, b| {
-        a.trait_name
-            .cmp(&b.trait_name)
-            .then_with(|| a.assoc_name.cmp(&b.assoc_name))
-    });
-    bindings
 }
 
 /// Conservative AST predicate: does this type expression mention `Self`

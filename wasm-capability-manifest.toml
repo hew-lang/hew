@@ -513,12 +513,7 @@ deterministic_functions = [
   "std.net.dns.resolve_timed",
   "std.net.dns.lookup_host_timed",
 ]
-deterministic_endpoints = [
-  "hew_dns_resolve",
-  "hew_dns_lookup_host",
-  "hew_dns_resolve_timed",
-  "hew_dns_lookup_host_timed",
-]
+deterministic_endpoints = ["hew_dns_resolve", "hew_dns_lookup_host"]
 enum_variant = "Dns"
 label = "std.net.dns resolver operations"
 prose_label = "`std.net.dns.resolve`, `dns.lookup_host`"
@@ -587,7 +582,7 @@ deterministic_functions = [
   "std.io.read_all",
   "std.io.scanner.from_stdin",
 ]
-deterministic_endpoints = ["hew_io_read_line", "hew_io_read_all"]
+deterministic_endpoints = ["hew_stdin_read_line"]
 
 [[feature]]
 id = "crypto-random"

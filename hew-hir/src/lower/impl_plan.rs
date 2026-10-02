@@ -1,7 +1,6 @@
 //! Impl-body symbol planning and builtin impl-program injection.
 
 use super::*;
-use hew_parser::ast::Ident;
 
 /// Identify declarations whose old receiver-and-method linker spelling is
 /// shared by another authored or materialised implementation body. This is a
@@ -320,12 +319,7 @@ pub(super) fn plan_impl_block_symbols(
             method.name.name.as_str(),
         );
         if ctx.impl_method_symbol_collisions.contains(&declaration) {
-            ctx.register_impl_method_fn_entry_at(
-                &symbol_self_name,
-                method,
-                &impl_type_params,
-                &symbol,
-            );
+            ctx.register_impl_method_fn_entry_at(method, &impl_type_params, &symbol);
         }
         planned.push((declaration, symbol));
     }
@@ -407,12 +401,7 @@ pub(super) fn materialized_default_body_plan(
         if ctx.impl_method_symbol_collisions.contains(&declaration) {
             let method = trait_method_to_fn_decl(&default_method.method);
             let impl_parameters = impl_type_parameters(ctx, impl_decl);
-            ctx.register_impl_method_fn_entry_at(
-                symbol_self_name,
-                &method,
-                &impl_parameters,
-                &symbol,
-            );
+            ctx.register_impl_method_fn_entry_at(&method, &impl_parameters, &symbol);
         }
         out.push((declaration, symbol));
     }
@@ -732,34 +721,14 @@ pub(super) fn check_builtin_callable_impl_program(
     program: &Program,
     defs: &hew_types::DefTable,
 ) -> Result<TypeCheckOutput, Box<HirDiagnostic>> {
-    // The parsed embedded source uses private leaf spellings for its synthetic
-    // cursor declarations. Type-check a projection whose impl targets carry
-    // their exact compiler owner so declaration IDs and call facts cannot
-    // collide with root user nominals of the same leaf. The executable HIR is
-    // still lowered from the original source AST, preserving all source spans.
+    // Externs retain their canonical registration. The run's root is the
+    // `std.builtins` module of the compilation's table, so the source's bare
+    // spellings resolve through `Scope` to the declarations the compilation
+    // already minted.
     let mut checker_program = program.clone();
-    // Externs retain their canonical registration. Source declarations reuse
-    // their std.builtins identities while providing local field visibility.
     checker_program
         .items
         .retain(|(item, _)| !matches!(item, Item::ExternBlock(_)));
-    for (item, _) in &mut checker_program.items {
-        let Item::Impl(impl_decl) = item else {
-            continue;
-        };
-        canonicalize_injected_cursor_type_expr(&mut impl_decl.target_type.0);
-        for alias in &mut impl_decl.type_aliases {
-            canonicalize_injected_cursor_type_expr(&mut alias.ty.0);
-        }
-        for method in &mut impl_decl.methods {
-            for param in &mut method.params {
-                canonicalize_injected_cursor_type_expr(&mut param.ty.0);
-            }
-            if let Some(return_type) = &mut method.return_type {
-                canonicalize_injected_cursor_type_expr(&mut return_type.0);
-            }
-        }
-    }
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
     // The run mints into a fork of the compilation's table, so every id its
@@ -788,69 +757,4 @@ pub(super) fn check_builtin_callable_impl_program(
         0..0,
         format!("compiler-injected callable impls were not lowered: {reason}"),
     )))
-}
-
-pub(super) fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
-    match ty {
-        TypeExpr::QualifiedAssocPath(path) => {
-            canonicalize_injected_cursor_type_expr(&mut path.base.0);
-        }
-        TypeExpr::Named { path, type_args } => {
-            let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-            let canonical = injected_builtin_impl_symbol_owner(&name);
-            if canonical != name {
-                let span = path
-                    .segments
-                    .first()
-                    .map(|(_, span)| span.clone())
-                    .unwrap_or_default();
-                path.segments = canonical
-                    .split('.')
-                    .map(|segment| (Ident::new(segment), span.clone()))
-                    .collect();
-            }
-            if let Some(type_args) = type_args {
-                for arg in type_args {
-                    canonicalize_injected_cursor_type_expr(&mut arg.0);
-                }
-            }
-        }
-        TypeExpr::Result { ok, err }
-        | TypeExpr::Fallible {
-            success: ok,
-            error: err,
-        } => {
-            canonicalize_injected_cursor_type_expr(&mut ok.0);
-            canonicalize_injected_cursor_type_expr(&mut err.0);
-        }
-        TypeExpr::Option(inner)
-        | TypeExpr::Slice(inner)
-        | TypeExpr::Borrow(inner)
-        | TypeExpr::Pointer { pointee: inner, .. } => {
-            canonicalize_injected_cursor_type_expr(&mut inner.0);
-        }
-        TypeExpr::Tuple(elements) => {
-            for element in elements {
-                canonicalize_injected_cursor_type_expr(&mut element.0);
-            }
-        }
-        TypeExpr::Array { element, .. } => {
-            canonicalize_injected_cursor_type_expr(&mut element.0);
-        }
-        TypeExpr::Function {
-            params,
-            return_type,
-            ..
-        }
-        | TypeExpr::ActorFn {
-            params,
-            return_type,
-        } => {
-            for param in params {
-                canonicalize_injected_cursor_type_expr(&mut param.0);
-            }
-            canonicalize_injected_cursor_type_expr(&mut return_type.0);
-        }
-        TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
-    }
 }

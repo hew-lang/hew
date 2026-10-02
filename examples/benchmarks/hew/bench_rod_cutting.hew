@@ -25,11 +25,11 @@ const ITERS: i64 = 100000;
 fn main() {
     let n = 50;
     var prices: Vec<i64> = Vec.new();
-    for k in 0 .. n {
+    for k in 0..n {
         prices.push(k % 10 + 1 + k / 5);
     }
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + rod_cutting(prices, n);
     }
     println("bench_rod_cutting");

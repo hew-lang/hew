@@ -1,4 +1,4 @@
-use super::branch_join::BranchArmExit;
+use super::branch_join::{BranchArmExit, BranchBody};
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -111,7 +111,9 @@ impl Checker {
             || matches!(resolved_expected, Ty::TraitObject { .. })
             || matches!(
                 &resolved_expected,
-                Ty::Named { head, .. } if self.type_aliases.contains_key(head.registry_key())
+                Ty::Named { head, .. } if head.nominal().is_some_and(|id| {
+                    self.type_aliases.contains_key(&id.declaration())
+                })
             )
         {
             return resolved_expected;
@@ -269,10 +271,12 @@ impl Checker {
 
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
         let resolved = self.subst.resolve(iter_ty);
+        let iterator = self.lang_trait(crate::LangItem::Iterator)?;
         if let Ty::TraitObject { traits } = &resolved {
             for bound in traits {
-                if bound.trait_name != "Iterator"
-                    && !self.trait_extends(&bound.trait_name, "Iterator")
+                if !bound
+                    .trait_id
+                    .is_some_and(|id| id == iterator || self.trait_extends(id, iterator))
                 {
                     continue;
                 }
@@ -291,22 +295,25 @@ impl Checker {
             }
         }
 
-        if self.type_satisfies_trait_bound(&resolved, "IntoIterator") {
+        if let Some(into_iterator) = self
+            .lang_trait(crate::LangItem::IntoIterator)
+            .filter(|into_iterator| self.type_satisfies_trait(&resolved, *into_iterator))
+        {
             let item_projection = Ty::AssocType {
                 base: Box::new(resolved),
-                trait_name: "IntoIterator".into(),
+                trait_name: self.defs.path(into_iterator).into(),
                 assoc_name: "Item".into(),
             };
             return Some(self.project_assoc_types(&item_projection));
         }
 
-        if !self.type_satisfies_trait_bound(&resolved, "Iterator") {
+        if !self.type_satisfies_trait(&resolved, iterator) {
             return None;
         }
 
         let item_projection = Ty::AssocType {
             base: Box::new(resolved),
-            trait_name: "Iterator".into(),
+            trait_name: self.defs.path(iterator).into(),
             assoc_name: "Item".into(),
         };
         Some(self.project_assoc_types(&item_projection))
@@ -428,7 +435,7 @@ impl Checker {
         iterable.start..iterable.start
     }
 
-    fn stream_source_actor_method_name(&mut self, iterable: &Expr) -> Option<String> {
+    fn stream_source_actor_handler(&mut self, iterable: &Expr) -> Option<crate::DefId> {
         let Expr::MethodCall {
             receiver, method, ..
         } = iterable
@@ -446,12 +453,9 @@ impl Checker {
         let Ty::Named { head, .. } = actor_ty else {
             return None;
         };
-        let name = head.registry_key();
-        let actor_name = self
-            .type_def_at(name)
-            .filter(|def| def.kind == TypeDefKind::Actor)
-            .map_or_else(|| name.to_string(), |def| def.name.clone());
-        Some(format!("{actor_name}::{}", method.0))
+        let method = method.0.name.as_str();
+        self.actor_member(head, method, crate::DeclarationKind::ActorReceive)
+            .or_else(|| self.actor_member(head, method, crate::DeclarationKind::ActorMethod))
     }
 
     /// Determine the type of the last statement in a block (the statement that
@@ -774,32 +778,35 @@ impl Checker {
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
                 let entry = self.env.ownership_snapshot();
-                let then_ty = self.check_block(then_block, expected);
-                let then_exit = BranchArmExit {
-                    ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join(&then_ty),
-                };
                 // An `else if` link is itself a two-way branch, so recursing
                 // gives the chain its join for free: each link restores to its
                 // own entry, which is this arm's restored state.
-                if let Some(eb) = else_block {
-                    if let Some(ref if_stmt) = eb.if_stmt {
-                        self.env.restore_ownership(&entry);
-                        let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1, expected);
-                        let else_skips = Self::arm_skips_join(&else_ty);
-                        self.join_two_way(&entry, then_exit, else_skips);
-                        self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
-                    } else if let Some(block) = &eb.block {
-                        self.env.restore_ownership(&entry);
-                        let else_ty = self.check_block(block, expected);
-                        let else_skips = Self::arm_skips_join(&else_ty);
-                        self.join_two_way(&entry, then_exit, else_skips);
-                        self.unify_branches(&then_ty, &else_ty, span)
-                    } else {
-                        self.join_fall_through(&entry, then_exit);
-                        Ty::Unit
-                    }
+                let (else_body, join_span) = match else_block {
+                    Some(hew_parser::ast::ElseBlock {
+                        if_stmt: Some(if_stmt),
+                        ..
+                    }) => (Some(BranchBody::Stmt(if_stmt)), &if_stmt.1),
+                    Some(hew_parser::ast::ElseBlock {
+                        block: Some(block), ..
+                    }) => (Some(BranchBody::Block(block)), span),
+                    _ => (None, span),
+                };
+                if let Some(else_body) = else_body {
+                    let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                        &entry,
+                        BranchBody::Block(then_block),
+                        false,
+                        else_body,
+                        expected,
+                    );
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+                    self.unify_branches(&then_ty, &else_ty, join_span)
                 } else {
+                    let then_ty = self.check_block(then_block, expected);
+                    let then_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join(&then_ty),
+                    };
                     self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
@@ -811,24 +818,23 @@ impl Checker {
             } => {
                 let entry = self.env.ownership_snapshot();
                 self.check_condition(conditions);
-                let then_ty = self.check_block(body, expected);
-                let then_exit = BranchArmExit {
-                    ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join(&then_ty),
-                };
-                self.env.pop_scope();
                 if let Some(else_expr) = else_body {
-                    self.env.restore_ownership(&entry);
-                    let else_ty = match expected {
-                        Some(expected) => {
-                            self.check_expr_with_expected(&else_expr.0, &else_expr.1, expected)
-                        }
-                        None => self.synthesize(&else_expr.0, &else_expr.1),
-                    };
-                    let else_skips = Self::arm_skips_join(&else_ty);
-                    self.join_two_way(&entry, then_exit, else_skips);
+                    let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                        &entry,
+                        BranchBody::Block(body),
+                        true,
+                        BranchBody::Expr(else_expr),
+                        expected,
+                    );
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    let then_ty = self.check_block(body, expected);
+                    let then_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join(&then_ty),
+                    };
+                    self.env.pop_scope();
                     self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
@@ -1242,8 +1248,8 @@ impl Checker {
                         } if one_path.segments.len() == 1 => {
                             let type_name = resolved_val_ty.type_name();
                             match type_name {
-                                Some(tn) => {
-                                    let td = self.lookup_type_def(tn);
+                                Some(_) => {
+                                    let td = self.ty_type_def(&resolved_val_ty).cloned();
                                     match td {
                                         Some(td)
                                             if matches!(
@@ -1950,12 +1956,11 @@ impl Checker {
                                 "`for` over a stream requires a resolved element type".to_string(),
                             );
                             Ty::Error
-                        } else if let Some(method_name) =
-                            self.stream_source_actor_method_name(&iterable.0)
+                        } else if let Some(handler) = self.stream_source_actor_handler(&iterable.0)
                         {
                             // SAFETY: args is non-empty (checked above)
                             let inner = inner_opt.unwrap();
-                            if self.receive_generator_methods.contains(&method_name) {
+                            if self.receive_generator_methods.contains(&handler) {
                                 let resolved_inner = self.subst.resolve(&inner);
                                 if resolved_inner.has_inference_var() {
                                     self.report_error(
@@ -1973,7 +1978,8 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     &iterable.1,
                                     format!(
-                                        "`for` over actor method `{method_name}` requires a `receive gen fn`"
+                                        "`for` over actor method `{}` requires a `receive gen fn`",
+                                        self.defs.path(handler)
                                     ),
                                 );
                                 Ty::Error

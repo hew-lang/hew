@@ -1,13 +1,12 @@
-# Legacy syntax migration corpus
+# Syntax migration corpus
 
-This corpus proves the migrator's representative rewrite boundaries.
+This corpus proves the migrator's representative rewrite boundaries. Every
+rewrite is syntactic; nothing is type-checked during migration.
 
-- `accept/typed_variants.input` covers checker-selected contextual variants in
-  expected-type expression and pattern sites.
 - `accept/lexical_forms.input` covers legacy paths and selected imports.
 - `accept/turbofish_forms.input` covers each supported legacy turbofish shape.
-- `reject/unresolvable.hew` remains an unresolved call so migration must
-  report the file and leave it unchanged.
+- `reject/removed_glob.hew` has a removed glob import, which has no current
+  spelling, so migration must report the file and leave it unchanged.
 
 Each `.expected` file is the exact formatted result after migration.
 

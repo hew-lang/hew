@@ -4,8 +4,8 @@ type Point {
 }
 
 impl Display for Point {
-    fn fmt(p: Point) -> string {
-        "Point(" + to_string(p.x) + ", " + p.label + ")"
+    fn fmt(self) -> string {
+        "Point(" + to_string(self.x) + ", " + self.label + ")"
     }
 }
 

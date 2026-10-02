@@ -188,12 +188,12 @@ fn fmt_if_let_or_pattern_roundtrip() {
 #[test]
 fn fmt_for_loop() {
     let src = r"fn main() {
-    for i in 0 .. 10 {
+    for i in 0..10 {
         println(i);
     }
 }";
     let out = roundtrip(src);
-    assert!(out.contains("for i in 0 .. 10 {"), "output: {out}");
+    assert!(out.contains("for i in 0..10 {"), "output: {out}");
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn fmt_labeled_while_roundtrip() {
 #[test]
 fn fmt_labeled_for_roundtrip() {
     exact_roundtrip(
-        "fn main() {\n    @rows: for i in 0 .. n {\n        for j in 0 .. m {\n            if cond {\n                break @rows;\n            }\n        }\n    }\n}\n",
+        "fn main() {\n    @rows: for i in 0..n {\n        for j in 0..m {\n            if cond {\n                break @rows;\n            }\n        }\n    }\n}\n",
     );
 }
 
@@ -496,15 +496,15 @@ impl Counter {
         Counter(value: 0)
     }
 
-    fn get(c: Counter) -> i32 {
-        c.value
+    fn get(self) -> i32 {
+        self.value
     }
 }
 ";
     let out = roundtrip(src);
     assert!(out.contains("impl Counter {"), "output: {out}");
     assert!(out.contains("fn new() -> Counter"), "output: {out}");
-    assert!(out.contains("fn get(c: Counter) -> i32"), "output: {out}");
+    assert!(out.contains("fn get(self) -> i32"), "output: {out}");
 }
 
 #[test]
@@ -514,8 +514,8 @@ fn fmt_trait_impl() {
 }
 
 impl Display for MyType {
-    fn to_string(t: MyType) -> String {
-        f"{t.val}"
+    fn to_string(self) -> String {
+        f"{self.val}"
     }
 }
 "#;
@@ -530,8 +530,8 @@ fn fmt_generic_impl() {
 }
 
 impl<T> Wrapper<T> {
-    fn unwrap(w: Wrapper<T>) -> T {
-        w.inner
+    fn unwrap(self) -> T {
+        self.inner
     }
 }
 ";
@@ -1042,15 +1042,26 @@ fn fmt_index_expr() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_range_expression() {
-    let src = "fn main() { for i in 0 .. 10 { println(i); } }";
+fn fmt_range_atoms_print_tight() {
+    let src = "fn main() { for i in 0 .. n { f(i); } for j in a.b ..= c.len() { f(j); } }";
     let out = roundtrip(src);
-    assert!(out.contains("0 .. 10"), "output: {out}");
+    assert!(out.contains("0..n"), "output: {out}");
+    assert!(out.contains("a.b..=c.len()"), "output: {out}");
+}
+
+#[test]
+fn fmt_range_compound_operands_print_spaced() {
+    let src = "fn main() { for i in n-1..m { f(i); } for j in 0..=(a + b) { f(j); } let s = v[a..b + 1]; let t = v[a .. b]; }";
+    let out = roundtrip(src);
+    assert!(out.contains("n - 1 .. m"), "output: {out}");
+    assert!(out.contains("0 ..= (a + b)"), "output: {out}");
+    assert!(out.contains("v[a .. b + 1]"), "output: {out}");
+    assert!(out.contains("v[a..b]"), "output: {out}");
 }
 
 #[test]
 fn fmt_inclusive_range_roundtrip() {
-    exact_roundtrip("fn main() {\n    for i in 0 ..= 9 {\n        println(i);\n    }\n}\n");
+    exact_roundtrip("fn main() {\n    for i in 0..=9 {\n        println(i);\n    }\n}\n");
 }
 
 // -----------------------------------------------------------------------
@@ -1099,15 +1110,6 @@ fn main() {
 #[test]
 fn fmt_restarted_call_roundtrips() {
     exact_roundtrip("fn main() {\n    restarted(sup.worker);\n}\n");
-}
-
-#[test]
-fn await_restart_is_a_targeted_migration_error() {
-    let parsed = parse("fn main() { let w = await_restart sup.worker; }");
-    assert!(parsed.errors.iter().any(|error| {
-        error.kind == hew_parser::ParseDiagnosticKind::AwaitRestartRetired
-            && error.message.contains("E_AWAIT_RESTART_RETIRED")
-    }));
 }
 
 // -----------------------------------------------------------------------
@@ -1282,7 +1284,7 @@ fn internal() -> i32 {
 
 #[test]
 fn fmt_pub_method_in_impl_body() {
-    let src = "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    pub fn make(v: int) -> Foo {\n        Foo { x: v }\n    }\n\n    fn private_helper(f: Foo) -> int {\n        f.x\n    }\n}\n";
+    let src = "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    pub fn make(v: int) -> Foo {\n        Foo { x: v }\n    }\n\n    fn private_helper(self) -> int {\n        self.x\n    }\n}\n";
     let out = roundtrip(src);
     assert!(out.contains("pub fn make"), "output: {out}");
     assert!(out.contains("fn private_helper"), "output: {out}");
@@ -1497,7 +1499,7 @@ impl Point {
 
 fn main() {
     var p = Point.origin();
-    for i in 0 .. MAX {
+    for i in 0..MAX {
         println(i);
     }
 }
@@ -1717,7 +1719,7 @@ fn bar() {
 #[test]
 fn fmt_generator_function() {
     exact_roundtrip(
-        "gen fn counting(n: i32) -> i32 {\n    for i in 0 .. n {\n        yield i;\n    }\n}\n",
+        "gen fn counting(n: i32) -> i32 {\n    for i in 0..n {\n        yield i;\n    }\n}\n",
     );
 }
 
@@ -1862,20 +1864,20 @@ fn fmt_trait_object_type_args_and_assoc_bindings_roundtrip() {
 
 #[test]
 fn fmt_trait_associated_type_roundtrip() {
-    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self.Item;\n}\n");
+    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(self) -> Self.Item;\n}\n");
 }
 
 #[test]
 fn fmt_trait_associated_type_bound_default_and_interleaved_fns_roundtrip() {
     exact_roundtrip(
-        "trait AssocForms {\n    type Plain;\n\n    fn make(c: Self) -> Self.Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(c: Self) -> Self.Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
+        "trait AssocForms {\n    type Plain;\n\n    fn make(self) -> Self.Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(self) -> Self.Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
     );
 }
 
 #[test]
 fn fmt_impl_associated_type_binding_roundtrip() {
     exact_roundtrip(
-        "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(c: Vec<i32>) -> i32 {\n        c[0]\n    }\n}\n",
+        "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(self) -> i32 {\n        self[0]\n    }\n}\n",
     );
 }
 
@@ -1884,7 +1886,7 @@ fn fmt_impl_members_keep_source_order() {
     // An associated type written after a method stays after it: the formatter
     // reprints members in the order the source declares them.
     exact_roundtrip(
-        "impl Container for Widget {\n    fn get(c: Widget) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
+        "impl Container for Widget {\n    fn get(self) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
     );
 }
 
@@ -1914,14 +1916,16 @@ fn fmt_wire_attr_enum_roundtrip() {
     // enums; verify the formatter round-trips unit, tuple, and struct
     // variant payloads while preserving the `#[wire]` attribute.
     exact_roundtrip(
-        "#[wire]\nenum Command {\n    Start;\n    Push(i64);\n    Move { x: i32; y: i32; }\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Push(i64) @1;\n    Move { x: i32; y: i32; } @2;\n}\n",
     );
 }
 
 #[test]
 fn fmt_wire_attr_enum_with_version_roundtrip() {
     // `#[wire(version = N, min_version = M)]` on an enum.
-    exact_roundtrip("#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1;\n    V2;\n}\n");
+    exact_roundtrip(
+        "#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1 @0;\n    V2 @1;\n}\n",
+    );
 }
 
 #[test]

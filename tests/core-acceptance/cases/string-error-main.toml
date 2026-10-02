@@ -1,0 +1,11 @@
+[[case]]
+id = "string-error-main"
+intent = "`string` implements `Error`: text is erased into `dyn Error` at `return error`, and a `fails string` entry prints it as written."
+source = "cases/string-error-main.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "refused: port 70000 is out of range\nport 8080\n"
+stderr = "error: shutting down\n"
+exit = 1

@@ -140,6 +140,9 @@ impl DocumentSet {
     }
 
     fn get(&self, path: &Path) -> Option<&str> {
+        if self.sources.is_empty() {
+            return None;
+        }
         if let Some(source) = self.sources.get(path) {
             return Some(source);
         }
@@ -223,11 +226,16 @@ impl SessionTarget {
     }
 }
 
-/// The fixed compiler check set. Hosts cannot select a narrower subset.
+/// What a session runs after the SIR is lowered and verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CheckSet {
+    /// Verify, then run the SIR optimization passes and verify their result:
+    /// the SIR a build, run or `--explain-cow` report consumes.
     #[default]
     Build,
+    /// Verify the lowered SIR only. Nothing in a diagnostics-only check reads
+    /// the optimized form.
+    Check,
 }
 
 /// Policy used when exposing diagnostics produced by a compilation session.
@@ -446,14 +454,17 @@ impl Session {
         }
         compiled_roots.sort_unstable();
         compiled_roots.dedup();
-        let sir_error = |error| match error {
-            hew_sir::SirOptimizationError::InvalidInput(diagnostics)
-            | hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
-                SessionError::Semantic(diagnostics)
+        if self.checks == CheckSet::Build {
+            hew_sir::canonicalize_module_constant_cfg(&mut sir.module)
+                .map_err(SessionError::Semantic)?;
+            hew_sir::transfer_module_dead_local_reads(&mut sir.module);
+            // The passes rewrite in place without verifying; this is the one
+            // verification of their result.
+            let diagnostics = hew_sir::verify_module(&sir.module);
+            if !diagnostics.is_empty() {
+                return Err(SessionError::Semantic(diagnostics));
             }
-        };
-        hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(sir_error)?;
-        hew_sir::transfer_module_dead_local_reads(&mut sir.module).map_err(sir_error)?;
+        }
         Ok(SessionOutput {
             sir,
             compiled_roots,
@@ -1339,77 +1350,6 @@ fn load_project_context(
     })
 }
 
-/// Return the same-name entry file when `input` is a directory-module peer
-/// whose impl names a trait declared by that entry. Checking the peer directly
-/// must retain the lexical trait namespace that materializes default methods,
-/// without assembling unrelated peers into every standalone file check.
-fn directory_module_entry_for_peer(
-    program: &Program,
-    input: &Path,
-    documents: &DocumentSet,
-    mode: FrontendParseMode,
-) -> Option<String> {
-    let input_name = input.file_name()?.to_str()?;
-    let parent = input.parent()?;
-    let module_name = parent.file_name()?.to_str()?;
-    let entry_name = format!("{module_name}.hew");
-    let entry_path = parent.join(&entry_name);
-    if input_name == entry_name || !entry_path.is_file() {
-        return None;
-    }
-    let local_traits = program
-        .items
-        .iter()
-        .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.name.as_str()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    let entry_source = read_source(documents, &entry_path).ok()?;
-    let entry_parse = parse_for_frontend(&entry_source, mode);
-    if entry_parse
-        .errors
-        .iter()
-        .any(|error| error.severity == hew_parser::Severity::Error)
-    {
-        return None;
-    }
-    let entry_traits = entry_parse
-        .program
-        .items
-        .iter()
-        .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.name.as_str()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    let needs_entry_trait = program.items.iter().any(|(item, _)| {
-        let Item::Impl(decl) = item else {
-            return false;
-        };
-        decl.trait_bound.as_ref().is_some_and(|bound| {
-            entry_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
-                && !local_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
-        })
-    });
-    if !needs_entry_trait {
-        return None;
-    }
-    Some(entry_name)
-}
-
-fn import_directory_module_entry_for_peer(
-    program: &mut Program,
-    input: &Path,
-    documents: &DocumentSet,
-    mode: FrontendParseMode,
-) {
-    let Some(entry_name) = directory_module_entry_for_peer(program, input, documents, mode) else {
-        return;
-    };
-    program.items.insert(0, file_import(entry_name));
-}
-
 fn file_import(file_path: String) -> Spanned<Item> {
     (
         Item::Import(ImportDecl {
@@ -1453,36 +1393,11 @@ fn project_context_for_program(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FrontendParseMode {
-    Strict,
-    Migration,
-}
-
-fn parse_for_frontend(source: &str, mode: FrontendParseMode) -> hew_parser::ParseResult {
-    let mut result = hew_parser::parse(source);
-    if mode == FrontendParseMode::Migration {
-        for error in &mut result.errors {
-            if matches!(
-                error.kind,
-                hew_parser::ParseDiagnosticKind::LegacyPathSeparator
-                    | hew_parser::ParseDiagnosticKind::LegacyTurbofish
-                    | hew_parser::ParseDiagnosticKind::AwaitRestartRetired
-                    | hew_parser::ParseDiagnosticKind::SupervisorStopClauseRetired
-            ) {
-                error.severity = hew_parser::Severity::Warning;
-            }
-        }
-    }
-    result
-}
-
 fn parse_source_with_diagnostics(
     source: &str,
     input: &str,
-    mode: FrontendParseMode,
 ) -> Result<(Program, Vec<FrontendDiagnostic>), FrontendFailure> {
-    let result = parse_for_frontend(source, mode);
+    let result = hew_parser::parse(source);
     let diagnostics = result
         .errors
         .iter()
@@ -1506,8 +1421,7 @@ fn parse_source_with_diagnostics(
 /// Returns [`FrontendFailure`] when parsing reports any error-severity
 /// diagnostic for the supplied source.
 pub fn parse_source(source: &str, input: &str) -> Result<Program, FrontendFailure> {
-    parse_source_with_diagnostics(source, input, FrontendParseMode::Strict)
-        .map(|(program, _)| program)
+    parse_source_with_diagnostics(source, input).map(|(program, _)| program)
 }
 
 fn resolve_imports_internal(
@@ -1517,7 +1431,6 @@ fn resolve_imports_internal(
     project: &ProjectContext,
     options: &FrontendOptions,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<(), FrontendFailure> {
     if let Some(deps) = &project.manifest_deps {
         let errs = validate_imports_against_manifest(
@@ -1554,7 +1467,6 @@ fn resolve_imports_internal(
         program.module_doc.clone(),
         &mut import_ctx,
         diagnostics,
-        mode,
     )?;
     program.module_graph = Some(module_graph);
     Ok(())
@@ -1746,7 +1658,6 @@ fn typecheck_program_with_diagnostics(
     source: &str,
     input: &str,
     options: &FrontendOptions,
-    mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
     let search_paths = checker_search_paths(options);
@@ -1768,9 +1679,6 @@ fn typecheck_program_with_diagnostics(
     }
     if options.repl_fragment {
         checker.set_repl_fragment();
-    }
-    if mode == FrontendParseMode::Migration {
-        checker.set_migration_mode();
     }
     if !options.test_entry_selections.is_empty() {
         checker.set_test_entry_selections(options.test_entry_selections.clone());
@@ -1832,14 +1740,8 @@ pub fn typecheck_program(
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
     require_deterministic_typecheck(options)?;
-    let (result, mut diagnostics) = typecheck_program_with_diagnostics(
-        program,
-        source,
-        input,
-        options,
-        FrontendParseMode::Strict,
-        None,
-    );
+    let (result, mut diagnostics) =
+        typecheck_program_with_diagnostics(program, source, input, options, None);
     if type_check_failed(&result) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
     }
@@ -1895,19 +1797,12 @@ pub fn check_program(
         &project,
         options,
         &mut diagnostics,
-        FrontendParseMode::Strict,
     ) {
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    let (tcr, type_diagnostics) = typecheck_program_with_diagnostics(
-        &program,
-        source,
-        source_label,
-        options,
-        FrontendParseMode::Strict,
-        None,
-    );
+    let (tcr, type_diagnostics) =
+        typecheck_program_with_diagnostics(&program, source, source_label, options, None);
     diagnostics.extend(type_diagnostics);
     if type_check_failed(&tcr) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
@@ -2036,6 +1931,135 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     }
 
     hew_parser::module::ModulePath::new(segments)
+}
+
+/// The entry file of the directory module (spec 3.5.1) that `path` belongs
+/// to, when `path` is that module's entry or one of its peers.
+///
+/// A peer shares one namespace with its entry and siblings, and an entry is
+/// incomplete without its peers, so neither is a program of its own. Checking
+/// or migrating such a file checks the whole module as an importer sees it.
+/// Test files (`*_test.hew`) are never peers; see [`test_companion`]. A
+/// shipped std source already has its module identity from the std root, so
+/// it checks through that identity instead.
+#[must_use]
+pub fn directory_module_entry(path: &Path) -> Option<PathBuf> {
+    let path = path.canonicalize().ok()?;
+    if path.extension()? != "hew"
+        || is_hew_test_file(&path)
+        || hew_types::module_registry::canonical_stdlib_module_for_source(&path).is_some()
+    {
+        return None;
+    }
+    directory_module_entry_in(path.parent()?)
+}
+
+/// The production source a test file (`*_test.hew`) is compiled with.
+///
+/// A test file inside a directory module tests that whole module, so its
+/// companion is the module's entry, which assembles every peer. Elsewhere it is
+/// the same-stem file beside it (`math_test.hew` tests `math.hew`).
+#[must_use]
+pub fn test_companion(test_file: &Path) -> Option<PathBuf> {
+    let test_file = test_file.canonicalize().ok()?;
+    if !is_hew_test_file(&test_file) {
+        return None;
+    }
+    let dir = test_file.parent()?;
+    directory_module_entry_in(dir).or_else(|| {
+        let stem = test_file.file_stem()?.to_str()?.strip_suffix("_test")?;
+        dir.join(stem)
+            .with_extension("hew")
+            .canonicalize()
+            .ok()
+            .filter(|path| path.is_file())
+    })
+}
+
+/// The canonical entry file `dir/<dir>.hew` of the directory module `dir`,
+/// when it exists.
+fn directory_module_entry_in(dir: &Path) -> Option<PathBuf> {
+    let entry = dir.join(dir.file_name()?).with_extension("hew");
+    entry.canonicalize().ok().filter(|path| path.is_file())
+}
+
+/// How a requested file becomes the root of a frontend run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootSelection {
+    /// A directory-module entry or peer is checked as its whole module.
+    Module,
+    /// The file is the program root as written. A build keeps it: its root
+    /// is where `main` and the compiled entry points are selected.
+    AsWritten,
+}
+
+/// The label of the root that checks a directory module through an import.
+/// It names no source, so it can never be the module's entry or a peer.
+const DIRECTORY_MODULE_ROOT_LABEL: &str = "(directory module)";
+
+/// Check the directory module whose entry is `entry` from a root that holds
+/// nothing but a file import of that entry.
+///
+/// The import resolver assembles the entry and every peer into one module and
+/// attributes each item to its own file, so diagnostics, deep checks and
+/// migration facts are the ones any importer of the module gets. The root is
+/// anchored in the module's directory, so project discovery and relative
+/// imports behave as they do for the requested file. Root-only lints (unused
+/// private items) do not run on an imported module.
+fn run_directory_module_frontend(
+    entry: &Path,
+    input: &str,
+    source_override: Option<&str>,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
+    let label = entry
+        .with_file_name(DIRECTORY_MODULE_ROOT_LABEL)
+        .display()
+        .to_string();
+    let empty = hew_parser::parse("");
+    let mut state = DocumentFrontendState {
+        source: String::new(),
+        program: empty.program,
+        parse_result: None,
+        diagnostics: Vec::new(),
+        typecheck_result: None,
+        stopped: None,
+    };
+    // The requested document keeps its own text and parse for the host; an
+    // open buffer stands in for its file while the module is assembled.
+    let mut options = options.clone();
+    let source = match source_override {
+        Some(source) => {
+            options.documents.insert(input, source);
+            source.to_string()
+        }
+        None => match read_source(&options.documents, Path::new(input)) {
+            Ok(source) => source,
+            Err(error) => {
+                return state.stop(FrontendFailure::message_only(format!(
+                    "Error: cannot read {input}: {error}"
+                )))
+            }
+        },
+    };
+    state.parse_result = Some(hew_parser::parse(&source));
+    state.source = source;
+    let options = &options;
+    let project = match load_project_context(&label, Some(options), Some("")) {
+        Ok(project) => project,
+        Err(failure) => return state.stop(failure),
+    };
+    let Some(entry_name) = entry.file_name().and_then(|name| name.to_str()) else {
+        return state.stop(FrontendFailure::message_only(format!(
+            "Error: directory module entry {} has no file name",
+            entry.display()
+        )));
+    };
+    state
+        .program
+        .items
+        .push(file_import(entry_name.to_string()));
+    run_frontend_after_parse(state, &project, &label, options, None)
 }
 
 /// Resolve a module import of a directory peer through that directory's
@@ -2267,7 +2291,6 @@ fn build_module_graph_with_diagnostics(
     module_doc: Option<String>,
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     use hew_parser::module::{Module, ModuleGraph};
 
@@ -2276,8 +2299,7 @@ fn build_module_graph_with_diagnostics(
     let source_dir = input_canonical.parent().unwrap_or(Path::new("."));
 
     ctx.in_progress_imports.insert(input_canonical.clone());
-    let resolve_result =
-        resolve_file_imports_internal(&input_canonical, items, ctx, diagnostics, mode);
+    let resolve_result = resolve_file_imports_internal(&input_canonical, items, ctx, diagnostics);
     ctx.in_progress_imports.remove(&input_canonical);
     resolve_result?;
 
@@ -2593,14 +2615,7 @@ pub fn build_module_graph(
     ctx: &mut ImportResolutionContext<'_>,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     let mut diagnostics = Vec::new();
-    build_module_graph_with_diagnostics(
-        source_file,
-        items,
-        module_doc,
-        ctx,
-        &mut diagnostics,
-        FrontendParseMode::Strict,
-    )
+    build_module_graph_with_diagnostics(source_file, items, module_doc, ctx, &mut diagnostics)
 }
 
 fn flatten_file_import_items(program: &mut Program) {
@@ -2612,21 +2627,17 @@ fn flatten_file_import_items(program: &mut Program) {
 }
 
 /// The graph node already assembled from `source`, if the walk reached that
-/// file under an earlier spelling. Paths are compared canonically because the
-/// two spellings arrive through different candidate roots.
+/// file under an earlier spelling. The two spellings arrive through different
+/// candidate roots, but import resolution records every resolved source path
+/// canonically, so the paths compare directly.
 fn graph_module_for_source(
     graph: &hew_parser::module::ModuleGraph,
     source: &Path,
 ) -> Option<hew_parser::module::ModulePath> {
-    let key = std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
     graph
         .modules
         .iter()
-        .find(|(_, module)| {
-            module.source_paths.first().is_some_and(|existing| {
-                std::fs::canonicalize(existing).unwrap_or_else(|_| existing.clone()) == key
-            })
-        })
+        .find(|(_, module)| module.source_paths.first().map(PathBuf::as_path) == Some(source))
         .map(|(module_id, _)| module_id.clone())
 }
 
@@ -2745,7 +2756,6 @@ fn resolve_file_imports_internal(
     items: &mut [Spanned<Item>],
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<(), FrontendFailure> {
     let source_dir = source_file
         .parent()
@@ -3116,7 +3126,7 @@ fn resolve_file_imports_internal(
         };
 
         let Some(resolved_import) =
-            resolve_completed_import_internal(&canonical, ctx, &items[*idx].0, diagnostics, mode)?
+            resolve_completed_import_internal(&canonical, ctx, &items[*idx].0, diagnostics)?
         else {
             continue;
         };
@@ -3138,7 +3148,6 @@ fn resolve_completed_import_internal(
     ctx: &mut ImportResolutionContext<'_>,
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<Option<ResolvedImport>, FrontendFailure> {
     if let Some(cached) = ctx.resolved_imports.get(canonical) {
         return Ok(Some(cached.clone()));
@@ -3148,7 +3157,7 @@ fn resolve_completed_import_internal(
     }
 
     ctx.in_progress_imports.insert(canonical.to_path_buf());
-    let resolved = build_resolved_import_internal(canonical, ctx, import_item, diagnostics, mode);
+    let resolved = build_resolved_import_internal(canonical, ctx, import_item, diagnostics);
     ctx.in_progress_imports.remove(canonical);
 
     match resolved {
@@ -3166,7 +3175,6 @@ fn build_resolved_import_internal(
     ctx: &mut ImportResolutionContext<'_>,
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<ResolvedImport, FrontendFailure> {
     let module_dir = canonical.parent();
     let is_directory_module = module_dir.is_some_and(|dir| {
@@ -3194,19 +3202,14 @@ fn build_resolved_import_internal(
         Vec::new()
     };
 
-    let mut import_items = parse_and_resolve_file_internal(canonical, ctx, diagnostics, mode)?;
+    let mut import_items = parse_and_resolve_file_internal(canonical, ctx, diagnostics)?;
     let mut import_item_source_paths = vec![canonical.to_path_buf(); import_items.len()];
     let mut source_paths = vec![canonical.to_path_buf()];
 
     for peer in &peer_files {
         let peer_canonical = peer.canonicalize().unwrap_or_else(|_| peer.clone());
-        let Some(peer_resolved) = resolve_completed_import_internal(
-            &peer_canonical,
-            ctx,
-            import_item,
-            diagnostics,
-            mode,
-        )?
+        let Some(peer_resolved) =
+            resolve_completed_import_internal(&peer_canonical, ctx, import_item, diagnostics)?
         else {
             continue;
         };
@@ -3249,7 +3252,6 @@ fn parse_and_resolve_file_internal(
     canonical: &Path,
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
-    mode: FrontendParseMode,
 ) -> Result<Vec<Spanned<Item>>, FrontendFailure> {
     let source = read_source(ctx.documents, canonical).map_err(|e| {
         FrontendFailure::message_only(format!(
@@ -3258,7 +3260,7 @@ fn parse_and_resolve_file_internal(
         ))
     })?;
 
-    let result = parse_for_frontend(&source, mode);
+    let result = hew_parser::parse(&source);
     let display_path = canonical.display().to_string();
     let parse_diagnostics = result
         .errors
@@ -3280,7 +3282,7 @@ fn parse_and_resolve_file_internal(
 
     diagnostics.extend(parse_diagnostics);
     let mut import_items = result.program.items;
-    resolve_file_imports_internal(canonical, &mut import_items, ctx, diagnostics, mode)?;
+    resolve_file_imports_internal(canonical, &mut import_items, ctx, diagnostics)?;
     Ok(import_items)
 }
 
@@ -3377,26 +3379,7 @@ pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict).into_result()
-}
-
-/// Run the shared file frontend for the checker-backed syntax migrator.
-///
-/// This is the only frontend entry point that recovers removed path separators
-/// and Rust-style turbofish long enough to resolve migration edits. Ordinary
-/// [`run_file_frontend_to_typecheck`], [`check_file`], and compile paths remain
-/// strict. Removed glob imports and every other parse error remain fatal here.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when project loading, non-migratable parsing,
-/// import resolution, or type-checking fails.
-pub fn run_file_frontend_to_typecheck_for_migration(
-    input: &str,
-    options: &FrontendOptions,
-) -> Result<FileFrontendState, FrontendFailure> {
-    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Migration)
-        .into_result()
+    run_document_frontend_from(input, None, options, RootSelection::AsWritten).into_result()
 }
 
 /// What the shared frontend produced for one document.
@@ -3459,7 +3442,7 @@ impl DocumentFrontendState {
 /// so an open buffer checks against its saved siblings.
 #[must_use]
 pub fn run_document_frontend(input: &str, options: &FrontendOptions) -> DocumentFrontendState {
-    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict)
+    run_document_frontend_from(input, None, options, RootSelection::Module)
 }
 
 /// [`run_document_frontend`] for a buffer with no file behind it.
@@ -3471,31 +3454,24 @@ pub fn run_source_frontend(
     label: &str,
     options: &FrontendOptions,
 ) -> DocumentFrontendState {
-    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Strict)
+    run_document_frontend_from(label, Some(source), options, RootSelection::Module)
 }
 
-/// Run migration parsing and import resolution against an in-memory source.
-/// The returned state retains its module graph even when old spelling causes
-/// a later type error, so the migrator can prove an edit from declarations.
-#[must_use]
-pub fn run_source_frontend_for_migration(
-    source: &str,
-    label: &str,
-    options: &FrontendOptions,
-) -> DocumentFrontendState {
-    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Migration)
-}
-
-fn run_document_frontend_with_mode(
+fn run_document_frontend_from(
     input: &str,
     source_override: Option<&str>,
     options: &FrontendOptions,
-    mode: FrontendParseMode,
+    roots: RootSelection,
 ) -> DocumentFrontendState {
+    if roots == RootSelection::Module {
+        if let Some(entry) = directory_module_entry(Path::new(input)) {
+            return run_directory_module_frontend(&entry, input, source_override, options);
+        }
+    }
     let project = match load_project_context(input, Some(options), source_override) {
         Ok(project) => project,
         Err(failure) => {
-            let empty = parse_for_frontend("", mode);
+            let empty = hew_parser::parse("");
             return DocumentFrontendState {
                 source: String::new(),
                 program: empty.program.clone(),
@@ -3508,7 +3484,7 @@ fn run_document_frontend_with_mode(
         }
     };
 
-    let parse_result = parse_for_frontend(&project.source, mode);
+    let parse_result = hew_parser::parse(&project.source);
     let diagnostics = parse_result
         .errors
         .iter()
@@ -3531,26 +3507,18 @@ fn run_document_frontend_with_mode(
         return state.stop(FrontendFailure::message_only("parsing failed"));
     }
 
-    import_directory_module_entry_for_peer(
-        &mut state.program,
-        Path::new(input),
-        &options.documents,
-        mode,
-    );
-    let entry_selection = (mode == FrontendParseMode::Strict)
-        .then_some(options.entry_selection)
-        .flatten();
-    let companion = (mode == FrontendParseMode::Strict)
-        .then_some(options.companion.as_deref())
-        .flatten();
+    let entry_selection = options.entry_selection;
+    let companion = options.companion.as_deref();
     if let Some(companion) = companion {
+        // First, as an import written at the top of the file: the test file's
+        // own declarations (a trait impl) resolve against it.
         state
             .program
             .items
-            .push(file_import(companion.display().to_string()));
+            .insert(0, file_import(companion.display().to_string()));
     }
 
-    run_frontend_after_parse(state, &project, input, options, mode, entry_selection)
+    run_frontend_after_parse(state, &project, input, options, entry_selection)
 }
 
 /// The frontend stages every host shares once a program exists: import
@@ -3560,7 +3528,6 @@ fn run_frontend_after_parse(
     project: &ProjectContext,
     input: &str,
     options: &FrontendOptions,
-    mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> DocumentFrontendState {
     if let Err(failure) = require_deterministic_typecheck(options) {
@@ -3573,7 +3540,6 @@ fn run_frontend_after_parse(
         project,
         options,
         &mut state.diagnostics,
-        mode,
     ) {
         return state.stop(failure);
     }
@@ -3583,7 +3549,6 @@ fn run_frontend_after_parse(
         &project.source,
         input,
         options,
-        mode,
         entry_selection,
     );
     state.diagnostics.extend(type_diagnostics);
@@ -3688,17 +3653,13 @@ pub fn run_program_frontend(
         typecheck_result: None,
         stopped: None,
     };
-    run_frontend_after_parse(
-        state,
-        &project,
-        source_label,
-        options,
-        FrontendParseMode::Strict,
-        None,
-    )
+    run_frontend_after_parse(state, &project, source_label, options, None)
 }
 
 /// Parse, resolve imports, and type-check a Hew source file.
+///
+/// A directory-module entry or peer checks its whole module (see
+/// [`directory_module_entry`]).
 ///
 /// # Errors
 ///
@@ -3720,7 +3681,8 @@ pub fn check_file_with_state(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<(CheckOutput, FileFrontendState), FrontendFailure> {
-    let state = run_file_frontend_to_typecheck(input, options)?;
+    let state =
+        run_document_frontend_from(input, None, options, RootSelection::Module).into_result()?;
     let diagnostics = fail_on_warning_diagnostics(state.diagnostics.clone(), options)?;
     let stack_hints = state
         .typecheck_result
@@ -3931,11 +3893,11 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 mod tests {
     use super::{
         build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
-        display_path, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
-        load_package_name, parse_source, retain_user_facing_diagnostics, run_document_frontend,
-        run_file_frontend_to_typecheck, run_file_frontend_to_typecheck_for_migration,
-        run_source_frontend, DiagnosticPolicy, DocumentSet, FrontendDiagnostic,
-        FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
+        directory_module_entry, display_path, hir_diagnostics_to_frontend, load_dependencies,
+        load_lockfile, load_package_name, parse_source, retain_user_facing_diagnostics,
+        run_document_frontend, run_file_frontend_to_typecheck, run_source_frontend, test_companion,
+        DiagnosticPolicy, DocumentSet, FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions,
+        ImportResolutionContext, Session, SessionTarget,
     };
     use hew_parser::ast::Item;
     use std::collections::{HashMap, HashSet};
@@ -4140,10 +4102,11 @@ mod tests {
             &FrontendOptions {
                 project_dir: Some(dir.path().to_path_buf()),
                 entry_selection: Some(selection),
+                companion: test_companion(Path::new(&input)),
                 ..FrontendOptions::default()
             },
         )
-        .expect("selected occurrence must survive implicit entry import");
+        .expect("selected occurrence must survive the module companion import");
 
         let tco = state.typecheck_result.tco.expect("typecheck output");
         assert_eq!(
@@ -4195,7 +4158,7 @@ mod tests {
         assert_eq!(output.test_entry_plans.len(), 1);
         assert_eq!(
             output.defs.path(output.test_entry_plans[0].entry),
-            "std.concurrency.lifecycle_i64_happy_path_state_names"
+            "std.concurrency.lifecycle.lifecycle_i64_happy_path_state_names"
         );
         assert!(output.entry_exit_plan.is_none());
         Session::new(SessionTarget::native(), DiagnosticPolicy::default())
@@ -4507,6 +4470,96 @@ mod tests {
             "a directly checked peer must share its directory module entry: {:#?}",
             result.err()
         );
+    }
+
+    /// A package with a `forge` directory module whose entry uses a peer's
+    /// function and whose peer uses the entry's types, plus a package-local
+    /// `util` module the peer imports.
+    fn forge_package(peer_extra: &str) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().expect("create package fixture");
+        fs::write(
+            dir.path().join("hew.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+        )
+        .expect("write manifest");
+        let src = dir.path().join("src");
+        let forge = src.join("forge");
+        fs::create_dir_all(&forge).expect("create module directory");
+        write_source(
+            &src,
+            "util.hew",
+            "pub fn twice(x: i64) -> i64 {\n    x * 2\n}\n",
+        );
+        let entry = write_source(
+            &forge,
+            "forge.hew",
+            "pub type ForgeConfig {\n    timeout: i64;\n}\n\npub fn describe(config: ForgeConfig) -> string {\n    ado_name(config)\n}\n",
+        );
+        let peer = write_source(
+            &forge,
+            "ado.hew",
+            &format!(
+                "import app.util;\n\npub fn ado_name(config: ForgeConfig) -> string {{\n    f\"ado:{{util.twice(config.timeout)}}\"\n}}\n{peer_extra}"
+            ),
+        );
+        write_source(&forge, "ado_test.hew", "not a peer, never parsed(\n");
+        (dir, entry, peer)
+    }
+
+    #[test]
+    fn directory_module_entry_selects_entries_and_peers_only() {
+        let (dir, entry, peer) = forge_package("");
+        let canonical_entry = Path::new(&entry).canonicalize().expect("entry exists");
+        assert_eq!(
+            directory_module_entry(Path::new(&entry)),
+            Some(canonical_entry.clone())
+        );
+        assert_eq!(
+            directory_module_entry(Path::new(&peer)),
+            Some(canonical_entry)
+        );
+        let forge = dir.path().join("src").join("forge");
+        assert_eq!(directory_module_entry(&forge.join("ado_test.hew")), None);
+        assert_eq!(
+            directory_module_entry(&dir.path().join("src").join("util.hew")),
+            None
+        );
+    }
+
+    #[test]
+    fn checking_a_directory_module_file_checks_the_whole_module() {
+        let (_dir, entry, peer) = forge_package("");
+        for input in [&entry, &peer] {
+            let result = check_file(input, &FrontendOptions::default());
+            assert!(
+                result.is_ok(),
+                "{input} must check with its entry, peers and package imports: {:#?}",
+                result.err().map(|failure| failure.diagnostics)
+            );
+        }
+    }
+
+    #[test]
+    fn checking_a_directory_module_entry_reports_errors_in_its_peers() {
+        let (_dir, entry, peer) = forge_package("\nfn broken() -> i64 {\n    \"no\"\n}\n");
+        for input in [&entry, &peer] {
+            let failure = check_file(input, &FrontendOptions::default())
+                .expect_err("the peer's type error must fail the module check");
+            let mismatches = failure
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error)
+                        if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. }))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(mismatches.len(), 1, "{:#?}", failure.diagnostics);
+            let file = mismatches[0].filename.as_deref().expect("routed to a file");
+            assert!(
+                Path::new(file).ends_with("forge/ado.hew"),
+                "the error belongs to the peer, not {file}"
+            );
+        }
     }
 
     #[test]
@@ -4846,51 +4899,6 @@ mod tests {
             "one C symbol declared by two peers is a redeclaration: {:#?}",
             result.err()
         );
-    }
-
-    #[test]
-    fn migration_frontend_does_not_relax_the_ordinary_frontend() {
-        let dir = tempfile::tempdir().expect("create migration frontend fixture");
-        let legacy = write_source(
-            dir.path(),
-            "legacy.hew",
-            "fn main() { let values: Vec<i64> = Vec::new(); println(values.len()); }\n",
-        );
-        let options = FrontendOptions {
-            project_dir: Some(dir.path().to_path_buf()),
-            ..FrontendOptions::default()
-        };
-
-        let strict = run_file_frontend_to_typecheck(&legacy, &options);
-        assert!(
-            strict.is_err(),
-            "ordinary frontend must reject legacy paths"
-        );
-
-        let migration = run_file_frontend_to_typecheck_for_migration(&legacy, &options)
-            .expect("migration frontend should recover a mechanically rewritable path");
-        assert!(migration.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            FrontendDiagnosticKind::Parse(ref error)
-                if matches!(error.kind, hew_parser::ParseDiagnosticKind::LegacyPathSeparator)
-                    && error.severity == hew_parser::Severity::Warning
-        )));
-
-        let removed_glob = write_source(
-            dir.path(),
-            "removed_glob.hew",
-            "import std::*;\nfn main() {}\n",
-        );
-        let Err(failure) = run_file_frontend_to_typecheck_for_migration(&removed_glob, &options)
-        else {
-            panic!("migration frontend must not admit removed glob imports");
-        };
-        assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            FrontendDiagnosticKind::Parse(ref error)
-                if matches!(error.kind, hew_parser::ParseDiagnosticKind::ImportGlobRemoved)
-                    && error.severity == hew_parser::Severity::Error
-        )));
     }
 
     #[test]
@@ -5656,10 +5664,10 @@ fn main() {
     #[test]
     fn flat_imported_specialisation_does_not_claim_the_generic_dispatch_key() {
         const GENERIC_IMPL: &str = "impl<T> Render for Box<T> {\n    \
-             pub fn render(value: Box<T>) -> string { \"generic\" }\n}\n";
+             pub fn render(self) -> string { \"generic\" }\n}\n";
         const SPECIALISED_IMPL: &str = "impl Render for Box<i64> {\n    \
-             pub fn render(value: Box<i64>) -> string { \"specialised\" }\n}\n";
-        const DECLARATIONS: &str = "pub trait Render {\n    fn render(value: Self) -> string;\n}\n\npub type Box<T> {\n    value: T;\n}\n";
+             pub fn render(self) -> string { \"specialised\" }\n}\n";
+        const DECLARATIONS: &str = "pub trait Render {\n    fn render(self) -> string;\n}\n\npub type Box<T> {\n    value: T;\n}\n";
 
         let mut mismatches: Vec<String> = Vec::new();
         for (order, first, second) in [
@@ -6171,8 +6179,8 @@ fn main() {
         assert_eq!(
             super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle)
                 .map(|module| module.dotted()),
-            Some("std.concurrency".to_string()),
-            "a direct check of a canonical directory-module peer must retain std.concurrency identity"
+            Some("std.concurrency.lifecycle".to_string()),
+            "a direct check of a shipped nested std module must retain its identity"
         );
         fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
         let user_lifecycle = write_source(
@@ -6182,7 +6190,7 @@ fn main() {
         );
         assert!(
             super::canonical_direct_stdlib_module_for_source(Path::new(&user_lifecycle)).is_none(),
-            "a same-named user directory peer must not acquire std.concurrency provenance"
+            "a same-named user file must not acquire std.concurrency.lifecycle provenance"
         );
         let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
         assert!(
@@ -7573,31 +7581,6 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn std_concurrency_peer_bodies_accept_dotted_import_spelling() {
-        let dir = tempfile::tempdir().expect("create temp project");
-        let import = "import std.concurrency.{ScopeError};";
-        let source = format!(
-            "{import}\n\
-                 \n\
-                 fn main() {{\n\
-                     let error: ScopeError<i64> = ScopeError {{\n\
-                         primary: 1,\n\
-                         also_failed: [],\n\
-                         cancelled_count: 0,\n\
-                     }};\n\
-                     let _ = error;\n\
-                 }}\n"
-        );
-        let input = write_source(dir.path(), "dotted.hew", &source);
-        let result = check_file(&input, &FrontendOptions::default());
-        assert!(
-            result.is_ok(),
-            "{import} must check the assembled std.concurrency peer bodies: {:#?}",
-            result.err()
-        );
-    }
-
-    #[test]
     fn imported_machine_step_signature_keeps_its_event_declaration() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let source = root.join("tests/core-acceptance/cases/machine-import-values.hew");
@@ -7635,95 +7618,6 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             event_owners.len(),
             2,
             "the two Gate declarations keep separate events"
-        );
-    }
-
-    #[test]
-    fn bundled_type_decls_preserve_qualified_declaration_identity() {
-        fn lower_to_hir(input: &str) -> hew_hir::HirModule {
-            let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())
-                .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
-            let typecheck = state
-                .typecheck_result
-                .tco
-                .as_ref()
-                .expect("fixture must typecheck");
-            let lowered = hew_hir::lower_program(
-                &state.program,
-                typecheck,
-                &hew_hir::ResolutionCtx,
-                hew_hir::TargetArch::host(),
-            );
-            assert!(
-                lowered.diagnostics.is_empty(),
-                "HIR must retain every bundled declaration: {:#?}",
-                lowered.diagnostics
-            );
-            lowered.module
-        }
-
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-compile lives below repository root");
-        let direct = repo_root.join("std/concurrency/concurrency.hew");
-        let direct = lower_to_hir(direct.to_str().expect("std path is UTF-8"));
-
-        let dir = tempfile::tempdir().expect("create temp project");
-        let imported_input = write_source(
-            dir.path(),
-            "main.hew",
-            "import std.concurrency.{ScopeError};\n\
-             fn main() {\n\
-                 let error: ScopeError<i64> = ScopeError {\n\
-                     primary: 1, also_failed: [], cancelled_count: 0\n\
-                 };\n\
-                 let _ = error;\n\
-             }\n",
-        );
-        let imported = lower_to_hir(&imported_input);
-
-        for (pipeline, owner) in [
-            (&direct, Some("std.concurrency")),
-            (&imported, Some("std.concurrency")),
-        ] {
-            let leaf = "ScopeError";
-            let expected =
-                owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
-            assert!(
-                pipeline
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&pipeline.defs) == expected)),
-                "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
-                pipeline.items
-            );
-        }
-
-        // A user package can legally use the same leaf name, but its source
-        // identity must never acquire the bundled layout.
-        write_source(dir.path(), "spoofed.hew", "pub type ScopeError {}\n");
-        let foreign_input = write_source(
-            dir.path(),
-            "foreign_main.hew",
-            "import spoofed.{ScopeError};\n\
-             fn main() { let _ = ScopeError {}; }\n",
-        );
-        let foreign = lower_to_hir(&foreign_input);
-        assert!(
-            foreign
-                .items
-                .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&foreign.defs) == "spoofed.ScopeError")),
-            "foreign declaration must retain its own owner: {:#?}",
-            foreign.items
-        );
-        assert!(
-            !foreign
-                .items
-                .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&foreign.defs) == "std.concurrency.ScopeError")),
-            "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
-            foreign.items
         );
     }
 

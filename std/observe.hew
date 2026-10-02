@@ -36,8 +36,8 @@ pub enum ObserveError {
 }
 
 impl Display for ObserveError {
-    fn fmt(error: ObserveError) -> string {
-        match error {
+    fn fmt(self) -> string {
+        match self {
             ObserveError.ActorTurn => "observe.barrier cannot wait from an actor turn",
             ObserveError.TimedOut => "observe.barrier timed out",
         }

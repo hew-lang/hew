@@ -1,0 +1,89 @@
+// Owned payloads cross binder-bound static calls: `F.from(e)` and `?` under
+// `F: From<E>` consume a heap-carrying error, and `T.make(n)` returns a
+// value that owns a vector.
+type IoError {
+    path: string;
+}
+
+type ParseError {
+    line: string;
+}
+
+type AppError {
+    detail: string;
+}
+
+impl From<IoError> for AppError {
+    fn from(value: IoError) -> AppError {
+        AppError { detail: "io: " + value.path }
+    }
+}
+
+impl From<ParseError> for AppError {
+    fn from(value: ParseError) -> AppError {
+        AppError { detail: "parse: " + value.line }
+    }
+}
+
+trait Make {
+    fn make(n: i64) -> Self;
+    fn size(self) -> i64;
+}
+
+type Bag<T> {
+    label: string;
+    items: Vec<string>;
+    marker: Vec<T>;
+}
+
+impl<T> Make for Bag<T> {
+    fn make(n: i64) -> Bag<T> {
+        var items: Vec<string> = Vec.new();
+        for i in 0..n {
+            items.push(f"item-{i}");
+        }
+        Bag { label: "bag", items: items, marker: Vec.new() }
+    }
+    fn size(self) -> i64 {
+        self.items.len()
+    }
+}
+
+fn read(path: string) -> Result<string, IoError> {
+    if path.is_empty() { .Err(IoError { path: "<empty>" }) } else { .Ok(path + "!") }
+}
+
+fn parse(text: string) -> Result<i64, ParseError> {
+    if text.len() > 4 { .Err(ParseError { line: text }) } else { .Ok(text.len()) }
+}
+
+fn load<F: From<IoError> + From<ParseError>>(path: string) -> Result<i64, F> {
+    let text = read(path)?;
+    let n = parse(text)?;
+    .Ok(n)
+}
+
+fn lift<F: From<IoError>>(error: IoError) -> F {
+    F.from(error)
+}
+
+fn build<T: Make>(n: i64) -> T {
+    T.make(n)
+}
+
+fn show(result: Result<i64, AppError>) {
+    match result {
+        .Ok(n) => println(n),
+        .Err(error) => println(error.detail),
+    }
+}
+
+fn main() {
+    show(load(""));
+    show(load("abc"));
+    show(load("abcdef"));
+    let lifted: AppError = lift(IoError { path: "/tmp/x" });
+    println(lifted.detail);
+    let bag: Bag<string> = build(3);
+    println(bag.size());
+}

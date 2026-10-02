@@ -230,26 +230,4 @@ mod tests {
             Some("caller error")
         );
     }
-
-    #[test]
-    fn connect_without_runtime_returns_the_transport_error() {
-        let _lock = crate::scheduler::SchedTestLock::acquire();
-        assert!(crate::runtime::rt_default().is_none());
-        for timed in [false, true] {
-            let host = if timed { "127.0.0.1" } else { "127.0.0.1:1" };
-            // SAFETY: managed_call keeps each address or host owner live.
-            let result = managed_call(host, |host| unsafe {
-                if timed {
-                    hew_checked_tcp_connect_timeout(host, 1, 100)
-                } else {
-                    hew_checked_tcp_connect(host)
-                }
-            });
-            assert_eq!(result, -1);
-            assert_eq!(hew_cabi::sink::take_last_errno(), 22);
-            assert!(hew_cabi::sink::take_last_error()
-                .unwrap()
-                .contains("no runtime"));
-        }
-    }
 }

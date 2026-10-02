@@ -387,6 +387,13 @@ pub struct TypeEnv {
     next_binding_id: u32,
 }
 
+/// A lexical scope lifted off the stack while a sibling branch is checked.
+#[derive(Debug)]
+pub struct SuspendedScope {
+    bindings: HashMap<Ident, Binding>,
+    defers: Vec<Spanned<Expr>>,
+}
+
 impl TypeEnv {
     /// Create a new empty environment with one scope.
     #[must_use]
@@ -424,6 +431,28 @@ impl TypeEnv {
         self.deferred_scopes
             .pop()
             .expect("cannot pop empty defer-scope stack");
+    }
+
+    /// Lift the innermost scope off the stack, bindings and defers intact,
+    /// so a sibling branch can be checked first; [`Self::resume_scope`] puts
+    /// it back with the same binding identities.
+    ///
+    /// # Panics
+    /// Panics if there are no scopes to suspend.
+    pub fn suspend_scope(&mut self) -> SuspendedScope {
+        SuspendedScope {
+            bindings: self.scopes.pop().expect("cannot suspend empty scope stack"),
+            defers: self
+                .deferred_scopes
+                .pop()
+                .expect("cannot suspend empty defer-scope stack"),
+        }
+    }
+
+    /// Re-enter a scope lifted by [`Self::suspend_scope`].
+    pub fn resume_scope(&mut self, scope: SuspendedScope) {
+        self.scopes.push(scope.bindings);
+        self.deferred_scopes.push(scope.defers);
     }
 
     /// Register a deferred body in the current lexical scope.

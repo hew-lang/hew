@@ -5,7 +5,7 @@
 // ABI the concrete path already backs), then dispatches `.show()` statically.
 
 trait Show {
-    fn show(val: Self) -> string;
+    fn show(self) -> string;
 }
 
 type Color {
@@ -15,7 +15,7 @@ type Color {
 }
 
 impl Show for Color {
-    fn show(c: Color) -> string {
+    fn show(self) -> string {
         "Color"
     }
 }

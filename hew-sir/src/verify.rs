@@ -257,6 +257,7 @@ pub(crate) struct CallableContext<'a> {
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
     vtables: &'a [crate::SemVtable],
+    offloads: &'a [crate::ExternSignature],
 }
 
 /// Index an already-verified module's callable table.
@@ -272,6 +273,7 @@ pub(crate) fn callable_context<'a>(
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
     vtables: &'a [crate::SemVtable],
+    offloads: &'a [crate::ExternSignature],
 ) -> CallableContext<'a> {
     CallableContext {
         defs,
@@ -279,6 +281,7 @@ pub(crate) fn callable_context<'a>(
         actors,
         supervisors,
         vtables,
+        offloads,
         by_id: callables
             .iter()
             .map(|callable| (callable.id, callable))
@@ -540,18 +543,20 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                     module.defs.path(slot.method)
                 ));
             }
-            let expected_slot = 3 + u32::try_from(position).expect("SIR vtable slot exceeds u32");
+            let expected_slot = u32::try_from(position).expect("SIR vtable slot exceeds u32");
             if slot.slot != expected_slot {
                 refuse(format!(
                     "slot {} for `{}` is out of emitted order; expected {expected_slot}",
-                    slot.slot, slot.method_name
+                    slot.slot,
+                    module.defs.path(slot.method)
                 ));
                 continue;
             }
             let Some(callee) = module.callable(slot.callee) else {
                 refuse(format!(
                     "slot {} for `{}` names no callable",
-                    slot.slot, slot.method_name
+                    slot.slot,
+                    module.defs.path(slot.method)
                 ));
                 continue;
             };
@@ -866,11 +871,8 @@ fn verify_required_value_capabilities(
                 );
             }
         }
-        if let SemTerminator::WireCodec {
-            direction, plan, ..
-        } = &block.terminator
-        {
-            if !direction.is_serialize() {
+        if let SemTerminator::WireCodec { codec, plan, .. } = &block.terminator {
+            if !codec.is_serialize() {
                 plan.visit_decode_capabilities(&mut |ty, capability| {
                     required.push((ty.clone(), capability));
                 });
@@ -2044,6 +2046,7 @@ fn verify_callable_table<'a>(
         actors: &module.actors,
         supervisors: &module.supervisors,
         vtables: &module.vtables,
+        offloads: &module.offloads,
     }
 }
 
@@ -5368,9 +5371,9 @@ fn verify_terminator_shape(
         ),
         SemTerminator::WireCodec {
             id,
-            direction,
+            codec,
             plan,
-            text_result,
+            decode_result,
             args,
             result,
             normal,
@@ -5379,36 +5382,25 @@ fn verify_terminator_shape(
             if let Err(reason) = plan.verify(variants.aggregate_shapes, variants.shapes) {
                 invalid_operation(function, *id, reason, diagnostics);
             }
-            let input_ty = if direction.is_serialize() {
-                plan.ty.clone()
-            } else if direction.is_text() {
-                ResolvedTy::String
+            let input_ty = if codec.is_serialize() {
+                plan.root.clone()
             } else {
-                ResolvedTy::Bytes
+                codec.document_ty()
             };
             let valid_input = matches!(args.as_slice(), [arg] if arg.decision == crate::BoundaryDecision::Borrow && types.get(&arg.operand.value) == Some(&input_ty));
             let valid_result = match result {
                 crate::CallResult::Value(value) => {
-                    let ty_matches = match direction {
-                        hew_types::WireCodecDirection::Encode => value.ty == ResolvedTy::Bytes,
-                        hew_types::WireCodecDirection::Decode => value.ty == plan.ty,
-                        hew_types::WireCodecDirection::ToJson
-                        | hew_types::WireCodecDirection::ToYaml => value.ty == ResolvedTy::String,
-                        hew_types::WireCodecDirection::FromJson
-                        | hew_types::WireCodecDirection::FromYaml => {
-                            matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
-                        }
+                    let ty_matches = if codec.is_serialize() {
+                        value.ty == codec.document_ty()
+                    } else {
+                        matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.first() == Some(&plan.root))
                     };
                     ty_matches && normal.args.iter().any(|arg| arg.value == value.id)
                 }
                 _ => false,
             };
-            let text_decode = matches!(
-                direction,
-                hew_types::WireCodecDirection::FromJson | hew_types::WireCodecDirection::FromYaml
-            );
-            let text_cases_valid = match (text_result, result) {
-                (Some(cases), crate::CallResult::Value(value)) if text_decode => variants
+            let text_cases_valid = match (decode_result, result) {
+                (Some(cases), crate::CallResult::Value(value)) if !codec.is_serialize() => variants
                     .shapes
                     .get(cases.shape.0 as usize)
                     .is_some_and(|shape| {
@@ -5416,20 +5408,18 @@ fn verify_terminator_shape(
                             && cases.ok != cases.error
                             && shape.variants.len() == 2
                             && shape.variants.get(cases.ok as usize).is_some_and(|case| {
-                                case.name == "Ok"
-                                    && case.fields.len() == 1
-                                    && case.fields[0].ty == plan.ty
+                                case.fields.len() == 1 && case.fields[0].ty == plan.root
                             })
                             && shape
                                 .variants
                                 .get(cases.error as usize)
                                 .is_some_and(|case| {
-                                    case.name == "Err"
-                                        && case.fields.len() == 1
-                                        && case.fields[0].ty == ResolvedTy::String
+                                    case.fields.len() == 1
+                                        && case.fields[0].ty == cases.error_ty
+                                        && plan.plans.contains_key(&cases.error_ty)
                                 })
                     }),
-                (None, _) => !text_decode,
+                (None, _) => codec.is_serialize(),
                 _ => false,
             };
             if !valid_input
@@ -5596,6 +5586,37 @@ fn verify_terminator_shape(
                             if argument_types.is_some_and(|arguments| operation.contract().matches_signature(variants.defs, &arguments, &value.ty))
                                 && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                 }
+                // The job owns every input: a copy for a plain value, a moved
+                // owner otherwise. The result is the declared extern result.
+                crate::SuspendKind::Offload { function } => callable_context
+                    .and_then(|context| context.offloads.get(usize::try_from(function.0).ok()?))
+                    .is_some_and(|signature| {
+                        let owns = |ty: &ResolvedTy| OwnKind::of_ty(ty, variants.facts);
+                        resumes.len() == 1
+                            && inputs.len() == signature.params.len()
+                            && inputs
+                                .iter()
+                                .zip(&signature.params)
+                                .all(|(input, parameter)| {
+                                    types.get(&input.operand.value) == Some(parameter)
+                                        && match owns(parameter) {
+                                            Ok(OwnKind::Owned) => {
+                                                input.decision == crate::BoundaryDecision::Move
+                                            }
+                                            Ok(OwnKind::None) => {
+                                                input.decision == crate::BoundaryDecision::Copy
+                                            }
+                                            _ => false,
+                                        }
+                                })
+                            && match result {
+                                crate::CallResult::Unit => signature.result == ResolvedTy::Unit,
+                                crate::CallResult::Value(value) => {
+                                    value.ty == signature.result && owns(&value.ty) == Ok(value.own)
+                                }
+                                crate::CallResult::Never => false,
+                            }
+                    }),
                 crate::SuspendKind::Sleep => {
                     resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)
@@ -6197,7 +6218,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &hew_types::DefTable::fixture(),
             &function,
@@ -6219,7 +6240,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &hew_types::DefTable::fixture(),
             &function,
@@ -6240,7 +6261,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics = verify_function_with_context(

@@ -1,0 +1,20 @@
+[[case]]
+id = "closure_mut_share"
+intent = "The fixture is refused, and the refusal names these diagnostics."
+source = "../vertical-slice/reject/closure_mut_share.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 4
+column = 9
+message = "capture `n` is an immutable snapshot; add `capture(var n)` before the"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "UnusedMut"
+line = 2
+column = 5
+message = "variable `n` is declared mutable but never reassigned"

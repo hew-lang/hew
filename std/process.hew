@@ -90,15 +90,15 @@ trait ChildMethods {
 
 impl ChildMethods for Child {
     /// Block until the child process exits and return its exit code.
-    fn wait(child: Child) -> i64 {
+    fn wait(self) -> i64 {
         unsafe {
-            hew_process_wait(child.handle) as i64
+            hew_process_wait(self.handle) as i64
         }
     }
     /// Terminate the child process.
-    fn kill(child: Child) -> i64 {
+    fn kill(self) -> i64 {
         unsafe {
-            hew_process_kill(child.handle) as i64
+            hew_process_kill(self.handle) as i64
         }
     }
 }
@@ -117,8 +117,8 @@ impl Child {
 }
 
 impl Display for ProcessError {
-    fn fmt(err: ProcessError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             ProcessError.InvalidArguments(message) => message,
             ProcessError.LaunchFailed(message) => message,
         }
@@ -155,7 +155,7 @@ fn legacy_packed_args_note() -> string {
 fn split_legacy_packed_args(args: string) -> Vec<string> {
     let raw_parts = string.split(args, " ");
     var filtered: Vec<string> = Vec.new();
-    for i in 0 .. raw_parts.len() {
+    for i in 0..raw_parts.len() {
         let part = raw_parts[i];
         if part != "" {
             filtered.push(part);

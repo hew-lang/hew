@@ -1,6 +1,6 @@
 [[case]]
 id = "wire-member-not-serializable"
-intent = "A #[wire] declaration whose member is a plain type, a tuple or the declaration itself is refused at that member, so its per-type codec methods never reach lowering; a well-formed #[wire] type beside them is accepted."
+intent = "A #[wire] declaration whose member is a resource or a nested Option is refused at that member, while plain records, tuples and recursion are data and accepted."
 source = "cases/wire-member-not-serializable.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,20 +9,13 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
-line = 9
+line = 17
 column = 8
-message = "field `p` of `#[wire]` type `HasPlain` has type `Plain`"
+message = "E_NOT_SERIALIZABLE: field `h` of `#[wire]` type `HasHandle` reaches `Handle`, a resource, linear or opaque type"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
-line = 14
+line = 22
 column = 8
-message = "field `t` of `#[wire]` type `HasTuple` has type `(i64, i64)`"
-
-[[case.expected.diagnostics]]
-severity = "error"
-code = "BoundsNotSatisfied"
-line = 20
-column = 11
-message = "field `kids` of `#[wire]` type `Tree` has type `Vec<Tree>`"
+message = "E_NOT_SERIALIZABLE: field `n` of `#[wire]` type `HasNested` reaches `Option<Option<i64>>`, a nested `Option`, which null cannot represent"

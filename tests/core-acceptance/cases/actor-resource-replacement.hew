@@ -24,10 +24,7 @@ fn main() {
     let keeper = spawn Keeper(buffer: Buffer { id: 1, label: "owned".to_upper() });
     println(keeper.replace(2).expect("first replacement"));
     println(keeper.replace(3).expect("second replacement"));
-    {
-        let __hew_migrated_actor_592 = keeper;
-        stop(__hew_migrated_actor_592);
-        stopped(__hew_migrated_actor_592);
-    };
+    stop(keeper);
+    stopped(keeper);
     println("finished");
 }

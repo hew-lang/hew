@@ -114,8 +114,7 @@ pub enum SirLoweringStatus {
 /// Which bodies a lowering run demands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SirLoweringDemand {
-    /// Demand-driven from the module's resolved entry callable: the strict
-    /// `--sir-lower` compile route. A declaration the entry never reaches is
+    /// Demand-driven from the module's resolved entry callable. A declaration the entry never reaches is
     /// reported [`SirLoweringStatus::NotReached`] and is never admitted a
     /// header, so it costs the module no signature, shape or type-fact row.
     ///
@@ -366,7 +365,7 @@ struct CallableTable<'a> {
     /// `CallTarget::StaticTraitMethod` because no concrete implementation
     /// exists at the template; this stage substitutes the receiver type, so
     /// this is where the implementation is selected.
-    trait_impls: HashMap<hew_hir::dispatch::TraitImplKey, hew_hir::dispatch::TraitImplMethodEntry>,
+    trait_impls: hew_hir::dispatch::TraitImplIndex,
     /// Why a declaration was refused a SIR callable header, keyed by the
     /// declaration a call would name.
     ///
@@ -496,7 +495,10 @@ impl<'a> CallableTable<'a> {
             admissible_order,
             templates,
             functions_by_item,
-            trait_impls: hew_hir::dispatch::build_trait_impl_method_index(&module.items),
+            trait_impls: hew_hir::dispatch::build_trait_impl_method_index(
+                &module.items,
+                &module.structural_witnesses,
+            ),
             ineligible,
         }
     }
@@ -552,6 +554,8 @@ struct InstanceService<'a> {
     /// Dispatch tables demanded by the erasure sites this module lowered.
     vtables: Vec<crate::SemVtable>,
     vtables_by_erasure: HashMap<(ResolvedTy, ResolvedTy), crate::SemVtableId>,
+    offloads: Vec<crate::ExternSignature>,
+    offloads_by_declaration: HashMap<hew_types::DefId, crate::OffloadId>,
     entry_adapters: HashMap<CallableId, EntryAdapter>,
     test_entries: Vec<crate::SemTestEntry>,
     /// Only template headers that back a requested concrete SIR instance are
@@ -573,7 +577,7 @@ struct InstanceService<'a> {
     variant_shapes_by_type: HashMap<ResolvedTy, VariantShapeId>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
-    wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlan>>,
+    wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlans>>,
     value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
     structural_display: BTreeMap<crate::StructuralType, crate::SemStructuralRender>,
@@ -1006,7 +1010,6 @@ pub(crate) fn runtime_variant_tags(
         TypeHead::Builtin(BuiltinType::SendError) => &[
             (Role::SendErrorFull, "Full"),
             (Role::SendErrorClosed, "Closed"),
-            (Role::SendErrorNodeRoutingNotWired, "NodeRoutingNotWired"),
             (Role::SendErrorPartition, "Partition"),
             (Role::SendErrorStaleRef, "StaleRef"),
             (Role::SendErrorLocalShutdown, "LocalShutdown"),
@@ -1021,13 +1024,14 @@ pub(crate) fn runtime_variant_tags(
             (Role::ActorErrorFailed, "Failed"),
             (Role::ActorErrorTrapped, "Trapped"),
             (Role::ActorErrorDead, "Dead"),
-            (Role::ActorErrorTimeout, "Timeout"),
+            (Role::ActorErrorTimedOut, "TimedOut"),
             (Role::ActorErrorNodeNotRunning, "NodeNotRunning"),
             (Role::ActorErrorRoutingFailed, "RoutingFailed"),
             (Role::ActorErrorEncodeFailed, "EncodeFailed"),
             (Role::ActorErrorConnectionDropped, "ConnectionDropped"),
             (Role::ActorErrorPartition, "Partition"),
         ],
+        TypeHead::Builtin(BuiltinType::LinkError) => &[(Role::LinkErrorNoContext, "NoContext")],
         head if *head == KnownDecl::Delivery.head() => &[
             (Role::DeliveryAccepted, "Accepted"),
             (Role::DeliveryDiscarded, "Discarded"),
@@ -1431,18 +1435,6 @@ fn dyn_boundary_passing(own: OwnKind) -> SemParamPassing {
         SemParamPassing::Borrow
     } else {
         SemParamPassing::ReadOnly
-    }
-}
-
-/// How the erased receiver crosses the boundary, from the trait's own
-/// declaration rather than any one implementer's value class.
-fn dyn_receiver_passing(signature: &hew_types::FnSig) -> SemParamPassing {
-    if signature.consumes_receiver {
-        SemParamPassing::Consume
-    } else if signature.requires_mutable_receiver {
-        SemParamPassing::BorrowMut
-    } else {
-        SemParamPassing::Borrow
     }
 }
 

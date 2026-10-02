@@ -4,8 +4,9 @@ import type { Pipes } from "./pipes.js";
 /// This table is the runtime-family admission authority: a package may name a
 /// runtime family or an extern symbol exactly when there is a shim here for it.
 /// A family or symbol with no entry is rejected at load, so there is no second
-/// reject list to keep in step with this one. `FileRead` and the `NativeIo`
-/// suspend kind are refused by their absence.
+/// reject list to keep in step with this one. `FileRead` is refused by its
+/// absence, and a `NativeIo` suspension by an operation missing from
+/// [`SUPPORTED_NATIVE_IO`].
 
 import { UNIT, cloneValue, renderStdout, type VmValue } from "../values.js";
 import { Mt19937, seededMt } from "./mt19937.js";
@@ -37,8 +38,8 @@ export interface ShimHost {
   releaseValue?(value: VmValue): void;
   /// Write to the program's standard output.
   writeStdout(text: string): void;
-  /// The next line of replay stdin, and the replay record for it.
-  readLine(): string;
+  /// Write to the program's standard error.
+  writeStderr(text: string): void;
   /// The program's own generator. `hew_random_seed` replaces it, and it is
   /// separate from the scheduler's chaos stream.
   prng: Mt19937;
@@ -143,8 +144,8 @@ export function resolveExternShim(symbol: string): RuntimeShim | undefined {
   return EXTERN_SHIMS[symbol];
 }
 
-/// The suspend kinds a sequential package may carry. `NativeIo` is absent, so
-/// a package that suspends on native I/O is refused at load.
+/// The suspend kinds a sequential package may carry. `NativeIo` is admitted
+/// per operation through [`SUPPORTED_NATIVE_IO`] instead.
 export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "GeneratorNext",
   "Yield",
@@ -155,6 +156,12 @@ export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "Select",
   "StreamSend",
   "StreamNext",
+]);
+
+/// The `NativeIo` operations the VM serves. A standard input line comes from
+/// the replay stdin; every file and socket operation stays native.
+export const SUPPORTED_NATIVE_IO: ReadonlySet<string> = new Set([
+  "StdinReadLine",
 ]);
 
 // ── families ────────────────────────────────────────────────────────────────
@@ -176,6 +183,10 @@ function printShim(detail: unknown): RuntimeShim | undefined {
 }
 
 const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+  StderrWrite: (host, args) => {
+    host.writeStderr(text(args, 0));
+    return UNIT;
+  },
   StringToBytes: (_host, args) => ({
     kind: "vector",
     elementType: "u8",
@@ -230,6 +241,49 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   F64ToString: (_host, args) => str(renderStdout(arg(args, 0))),
   CharToString: (_host, args) => str(renderStdout(arg(args, 0))),
   BytesDecodeUtf8: (_host, args) => str(decodeUtf8(arg(args, 0))),
+  // TextDecoder replaces each maximal invalid subsequence with U+FFFD, as
+  // native lossy decoding does.
+  BytesDecodeUtf8Lossy: (_host, args) => str(decodeUtf8(arg(args, 0))),
+  BytesIsEmpty: (_host, args) => bool(vec(args, 0).items.length === 0),
+  BytesLen: (_host, args) => int(BigInt(vec(args, 0).items.length)),
+  BytesGet: (host, args, shape) => {
+    if (!shape) {
+      throw new TypeError(
+        "BytesGet names no result shape to build its Option against",
+      );
+    }
+    const items = vec(args, 0).items;
+    const at = index(args, 1);
+    return at >= 0 && at < items.length
+      ? host.enumValue(shape, "OptionSome", [cloneValue(items[at]!)])
+      : host.enumValue(shape, "OptionNone", []);
+  },
+  // The receiver arrives by `move` and leaves in the result: alone for an
+  // append, paired with the removed byte for a pop.
+  BytesAppend: (_host, args) => {
+    const target = vec(args, 0);
+    target.items.push(...vec(args, 1).items.map(cloneValue));
+    return target;
+  },
+  BytesPop: (host, args, shape) => {
+    if (!shape) {
+      throw new TypeError(
+        "BytesPop names no result shape to build its Option against",
+      );
+    }
+    const target = vec(args, 0);
+    const last = target.items.pop();
+    return {
+      kind: "record",
+      typeId: "",
+      fields: [
+        target,
+        last === undefined
+          ? host.enumValue(shape, "OptionNone", [])
+          : host.enumValue(shape, "OptionSome", [last]),
+      ],
+    };
+  },
 };
 
 const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
@@ -469,7 +523,6 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
       items: capture === undefined ? [] : [str(capture)],
     };
   },
-  hew_io_read_line: (host) => str(host.readLine()),
   hew_random_seed: (host, args) => {
     host.prng = seededMt(integer(args, 0));
     return UNIT;

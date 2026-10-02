@@ -6,7 +6,7 @@
     clippy::wildcard_imports,
     reason = "chunk files share the parent module's import header"
 )]
-use super::super::branch_join::BranchArmExit;
+use super::super::branch_join::{BranchArmExit, BranchBody};
 use super::super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
 use super::super::types::GenericLambdaSig;
 #[allow(
@@ -32,7 +32,6 @@ impl Checker {
                 Expr::ReturnError(_)
                     | Expr::PostfixTry(_)
                     | Expr::Await(_)
-                    | Expr::AwaitRestart(_)
                     | Expr::Yield(_)
                     | Expr::ScopeDeadline { .. }
                     | Expr::ForkChild { .. }
@@ -77,11 +76,7 @@ impl Checker {
                 // The implicit `use std::text::regex` injected by the CLI is the
                 // provider of this type; mark it as used so the unused-import
                 // check doesn't fire a false-positive warning.
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    "regex",
-                ));
+                self.note_import_use("regex");
                 // Validate the pattern using the same regex engine the runtime
                 // uses. An invalid pattern is a compile-time hard error.
                 if let Err(err) = regex::Regex::new(pattern) {
@@ -287,22 +282,24 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
-                let entry = self.env.ownership_snapshot();
-                let then_ty = self.synthesize(&then_block.0, &then_block.1);
-                let then_exit = BranchArmExit {
-                    ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join(&then_ty),
-                };
                 if let Some(eb) = else_block {
-                    self.env.restore_ownership(&entry);
-                    let else_ty = self.synthesize(&eb.0, &eb.1);
-                    let else_exit = BranchArmExit {
-                        ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join(&else_ty),
-                    };
+                    let entry = self.env.ownership_snapshot();
+                    let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                        &entry,
+                        BranchBody::Expr(then_block),
+                        false,
+                        BranchBody::Expr(eb),
+                        None,
+                    );
                     self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    let entry = self.env.ownership_snapshot();
+                    let then_ty = self.synthesize(&then_block.0, &then_block.1);
+                    let then_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join(&then_ty),
+                    };
                     // No `else`: the implicit fall-through arm runs with the
                     // state the condition left behind and never consumes.
                     self.join_fall_through(&entry, then_exit);
@@ -441,68 +438,6 @@ impl Checker {
                 }
             }
 
-            // AwaitRestart: `await_restart <supervised-child>` — suspend until the
-            // named slot is Live again, then resume with the same stable
-            // `ChildRef<ChildType>`. The operand names one slot: a static child
-            // accessor (recorded in `supervisor_child_slots`, kind `Static`) or
-            // one pool member (`sup.pool[i]`, recorded in `pool_accessor_sites`
-            // as `Index`). A whole pool names many slots and has no single
-            // restart signal, so it is refused. The result type is the same
-            // `ChildRef<ChildType>` — by construction the slot is Live after a
-            // completed restart; a permanently-Dead child fails closed at
-            // runtime (resumes immediately) rather than hanging, so the bare
-            // form never yields an `Option`.
-            Expr::AwaitRestart(inner) => {
-                // Synthesize the operand first; this records the supervisor child
-                // slot and pool accessor side-table entries keyed by the inner
-                // expression's span.
-                let inner_ty = self.synthesize(&inner.0, &inner.1);
-                let inner_key = SpanKey::in_module(&inner.1, self.current_module_idx);
-                let member = matches!(
-                    self.pool_accessor_sites
-                        .get(&inner_key)
-                        .map(|accessor| accessor.kind),
-                    Some(crate::check::types::PoolAccessorKind::Index)
-                );
-                if member {
-                    // One pool member's own slot: the same `ChildRef<ChildType>`
-                    // the indexed accessor produced.
-                    inner_ty
-                } else {
-                    match self.supervisor_child_slots.get(&inner_key).cloned() {
-                        Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
-                            // Stable role handle: same `ChildRef<ChildType>` the
-                            // accessor produced. Carry the discriminator forward — the
-                            // side-table entry already keys MIR lowering on this span.
-                            inner_ty
-                        }
-                        Some(_pool_slot) => {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                "`await_restart` waits on one supervised slot; a pool \
-                                 names many, so wait on a member with \
-                                 `await_restart sup.pool[i]`"
-                                    .to_string(),
-                            );
-                            Ty::Error
-                        }
-                        None => {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                "`await_restart` expects a supervised-child accessor \
-                                 (`await_restart sup.child` or `await_restart \
-                                 sup.pool[i]`); its operand is not a supervisor \
-                                 child slot"
-                                    .to_string(),
-                            );
-                            Ty::Error
-                        }
-                    }
-                }
-            }
-
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
@@ -534,9 +469,11 @@ impl Checker {
                         || (r.as_result().is_some() && ty.as_result().is_some())
                         || matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { head, .. }
-                                if head.builtin().is_none()
-                                    && self.type_def_at(head.registry_key()).is_none()
-                                    && !self.type_aliases.contains_key(head.registry_key()))
+                        if head.builtin().is_none()
+                            && self.head_type_def(*head).is_none()
+                            && !head.nominal().is_some_and(|id| {
+                                self.type_aliases.contains_key(&id.declaration())
+                            }))
                     {
                         None
                     } else {
@@ -564,22 +501,13 @@ impl Checker {
                             let resolved_ret = self.subst.resolve(ret);
                             if let Some((_, ret_err)) = resolved_ret.as_result() {
                                 let ret_err = ret_err.clone();
-                                let err_ty = self.subst.resolve(&err_ty);
-                                if !matches!(ret_err, Ty::Error) && !matches!(err_ty, Ty::Error) {
-                                    let snapshot = self.subst.snapshot();
-                                    if !self.try_unify_with_owner_identity(&ret_err, &err_ty) {
-                                        self.subst.restore(snapshot);
-                                        self.report_error(
-                                            TypeErrorKind::InvalidOperation,
-                                            span,
-                                            format!(
-                                                "`?` error type mismatch: expected `{}`, found `{}`",
-                                                ret_err.user_facing(),
-                                                err_ty.user_facing()
-                                            ),
-                                        );
-                                        return Ty::Error;
-                                    }
+                                if !self.select_error_conversion(
+                                    crate::check::coerce::FailureEdge::Try,
+                                    &err_ty,
+                                    &ret_err,
+                                    span,
+                                ) {
+                                    return Ty::Error;
                                 }
                             }
                         }
@@ -628,7 +556,47 @@ impl Checker {
                         .map(|(_, error)| error.clone())
                 });
                 if let Some(error) = error.filter(|_| self.current_fails) {
-                    self.check_against(&value.0, &value.1, &error);
+                    // A leading-dot variant names a member of the function's
+                    // own error type; everything else crosses the edge by the
+                    // failure-edge rule.
+                    let names_own_variant = match &value.0 {
+                        Expr::ContextVariant(_) => true,
+                        Expr::Call { function, .. } => {
+                            matches!(function.0, Expr::ContextVariant(_))
+                        }
+                        _ => false,
+                    };
+                    if names_own_variant {
+                        self.check_against(&value.0, &value.1, &error);
+                        self.error_conversions.insert(
+                            SpanKey::in_module(span, self.current_module_idx),
+                            super::ErrorConversion::Same,
+                        );
+                    } else {
+                        let value_ty = self.synthesize(&value.0, &value.1);
+                        let unsized_literal = matches!(
+                            self.subst.resolve(&value_ty),
+                            Ty::IntLiteral | Ty::FloatLiteral
+                        );
+                        if unsized_literal && self.subst.resolve(&error).is_numeric() {
+                            // A literal into a numeric error type is the same
+                            // type at the error's width, as under any
+                            // annotation; an all-literal expression has no
+                            // effects to repeat.
+                            self.check_against(&value.0, &value.1, &error);
+                            self.error_conversions.insert(
+                                SpanKey::in_module(span, self.current_module_idx),
+                                super::ErrorConversion::Same,
+                            );
+                        } else {
+                            self.select_error_conversion(
+                                crate::check::coerce::FailureEdge::ReturnError,
+                                &value_ty,
+                                &error,
+                                span,
+                            );
+                        }
+                    }
                     self.result_return_coercions.insert(
                         SpanKey::in_module(span, self.current_module_idx),
                         super::ResultReturnKind::Error,
@@ -1108,22 +1076,23 @@ impl Checker {
     ) -> Ty {
         let entry = self.env.ownership_snapshot();
         self.check_condition(conditions);
-        let then_ty = self.check_block(body, None);
-        let then_exit = BranchArmExit {
-            ownership: self.env.ownership_snapshot(),
-            diverges: Self::arm_skips_join(&then_ty),
-        };
-        self.env.pop_scope();
         if let Some(else_expr) = else_body {
-            self.env.restore_ownership(&entry);
-            let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
-            let else_exit = BranchArmExit {
-                ownership: self.env.ownership_snapshot(),
-                diverges: Self::arm_skips_join(&else_ty),
-            };
+            let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                &entry,
+                BranchBody::Block(body),
+                true,
+                BranchBody::Expr(else_expr),
+                None,
+            );
             self.join_branch_ownership(&entry, &[then_exit, else_exit]);
             self.unify_branches(&then_ty, &else_ty, span)
         } else {
+            let then_ty = self.check_block(body, None);
+            let then_exit = BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: Self::arm_skips_join(&then_ty),
+            };
+            self.env.pop_scope();
             self.join_fall_through(&entry, then_exit);
             Ty::Unit
         }
@@ -1378,7 +1347,7 @@ impl Checker {
             {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
                 if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
-                    self.mark_module_owner_bindings_used(source_owner);
+                    self.note_path_use(source_owner);
                 }
             }
             self.record_call_edge(&fn_sig_key);
@@ -1426,17 +1395,11 @@ impl Checker {
                 format!("module `{surface_name}` cannot be used as a value"),
             );
             Ty::Error
-        } else if let Some(replacement) = self.legacy_machine_event_replacement(surface_name) {
-            self.report_error_with_suggestions(
-                TypeErrorKind::UndefinedVariable,
-                span,
-                format!("machine event type `{surface_name}` is now `{replacement}`"),
-                vec![format!("replace `{surface_name}` with `{replacement}`")],
-            );
-            Ty::Error
         } else if self.type_def_at(surface_name).is_some()
             || self.known_types.contains(surface_name)
-            || self.type_aliases.contains_key(surface_name)
+            || self
+                .lookup_declaration(surface_name)
+                .is_some_and(|declaration| self.type_aliases.contains_key(&declaration))
             || crate::lookup_builtin_type(surface_name).is_some()
             || crate::ty::is_reserved_type_name(surface_name)
         {
@@ -1475,52 +1438,18 @@ impl Checker {
             return Ty::Error;
         }
 
-        let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-        let mut candidates = Vec::new();
-        if self.has_trait_def(&trait_name) {
-            candidates.push(trait_name.clone());
-        } else if !trait_name.contains('.') && !trait_name.contains("::") {
-            if let Some(owners) = self.published_bare_trait_owners.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                trait_name.clone(),
-            )) {
-                candidates.extend(
-                    owners
-                        .iter()
-                        .filter(|owner| self.has_trait_def(owner))
-                        .cloned(),
-                );
-            }
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-
-        if candidates.len() > 1 {
-            self.report_error_with_suggestions(
-                TypeErrorKind::AssocItemAmbiguous,
-                span,
-                format!(
-                    "associated item `{member}` is ambiguous because trait `{trait_name}` has multiple imported owners"
-                ),
-                candidates
-                    .iter()
-                    .map(|candidate| format!("qualify the trait as `{candidate}`"))
-                    .collect(),
-            );
+        let Some(trait_id) = self.resolve_qualified_trait(&path.trait_path, *member, span) else {
             return Ty::Error;
-        }
-        let Some(trait_key) = candidates.first() else {
+        };
+        let trait_key = self.defs.path(trait_id).to_string();
+        let Some(info) = self.trait_info(trait_id).cloned() else {
             self.report_error(
                 TypeErrorKind::PathMemberNotFound,
                 span,
-                format!("cannot resolve trait `{trait_name}` for associated item `{member}`"),
+                format!("trait `{trait_key}` has no associated item `{member}`"),
             );
             return Ty::Error;
         };
-        let info = self
-            .trait_def_at(trait_key)
-            .unwrap_or_else(|| panic!("trait `{trait_key}` is registered"));
         if info
             .associated_types
             .iter()
@@ -1815,7 +1744,10 @@ impl Checker {
             }
             Ty::Named { head, args } => {
                 let name = head.registry_key();
-                if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
+                if let Some(index_trait) = self
+                    .lang_trait(crate::LangItem::Index)
+                    .filter(|index_trait| self.type_satisfies_trait(&resolved_obj, *index_trait))
+                {
                     let expected_key = self
                         .lookup_named_method_sig(name, args, "at")
                         .and_then(|sig| sig.params.first().cloned())
@@ -1823,7 +1755,7 @@ impl Checker {
                     self.check_against(&index.0, &index.1, &expected_key);
                     let output = self.project_assoc_types(&Ty::AssocType {
                         base: Box::new(resolved_obj.clone()),
-                        trait_name: "Index".into(),
+                        trait_name: self.defs.path(index_trait).into(),
                         assoc_name: "Output".into(),
                     });
                     if matches!(output, Ty::AssocType { .. }) {

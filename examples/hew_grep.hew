@@ -64,7 +64,7 @@ fn main() -> i32 {
         .None => return 1,
     };
     var total_matches = 0;
-    for fi in 2 .. argc {
+    for fi in 2..argc {
         let filename = match arguments.get(fi) {
             .Some(value) => value,
             .None => {

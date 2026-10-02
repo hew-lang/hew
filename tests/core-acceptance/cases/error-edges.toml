@@ -1,0 +1,10 @@
+[[case]]
+id = "error-edges"
+intent = "`?` and `return error` keep the same error, apply each declared `From` and erase into `dyn Error` at both edges; the caller's match reaches the right arm and a `handle` drops the error it recovers from."
+source = "../../examples/sandbox-graduation/error_edges.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n"
+exit = 0

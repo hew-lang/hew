@@ -233,45 +233,6 @@ pub unsafe extern "C" fn hew_file_size(path: *const HewString) -> i64 {
     }
 }
 
-/// Read one line from stdin and return an owned managed UTF-8
-/// string with the trailing newline stripped.
-///
-/// Returns null on an empty line, EOF, or error. The last error distinguishes
-/// failure; this legacy entry point does not distinguish an empty line from EOF.
-///
-/// # Safety
-///
-/// No preconditions.
-///
-/// # Ownership
-///
-/// The caller owns the returned pointer and must free it with `hew_string_drop`.
-#[no_mangle]
-pub extern "C" fn hew_stdin_read_line() -> *mut HewString {
-    let mut buf = String::new();
-    match std::io::stdin().read_line(&mut buf) {
-        Ok(0) => {
-            clear_file_io_error();
-            std::ptr::null_mut()
-        }
-        Err(e) => {
-            set_file_io_error("hew_stdin_read_line", &e);
-            std::ptr::null_mut()
-        }
-        Ok(_) => {
-            // Trim the trailing newline, if present.
-            if buf.ends_with('\n') {
-                buf.pop();
-                if buf.ends_with('\r') {
-                    buf.pop();
-                }
-            }
-            clear_file_io_error();
-            string_from_str(&buf)
-        }
-    }
-}
-
 /// Read the raw bytes of a file and return them as a `BytesTriple` value.
 ///
 /// Returns an empty triple (`ptr=null, offset=0, len=0`) on error; the caller

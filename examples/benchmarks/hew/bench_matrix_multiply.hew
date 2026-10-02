@@ -1,13 +1,13 @@
 fn matrix_multiply(a: Vec<i64>, b: Vec<i64>, n: i64) -> i64 {
     var c: Vec<i64> = Vec.new();
     let total = n * n;
-    for idx in 0 .. total {
+    for idx in 0..total {
         c.push(0);
     }
-    for i in 0 .. n {
-        for j in 0 .. n {
+    for i in 0..n {
+        for j in 0..n {
             var sum = 0;
-            for k in 0 .. n {
+            for k in 0..n {
                 sum = sum + a[i * n + k] * b[k * n + j];
             }
             c.set(i * n + j, sum);
@@ -23,12 +23,12 @@ fn main() {
     let total = n * n;
     var a: Vec<i64> = Vec.new();
     var b: Vec<i64> = Vec.new();
-    for k in 0 .. total {
+    for k in 0..total {
         a.push(k % 7 + 1);
         b.push(k % 5 + 1);
     }
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + matrix_multiply(a, b, n);
     }
     println("bench_matrix_multiply");

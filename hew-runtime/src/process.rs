@@ -317,6 +317,8 @@ pub unsafe extern "C" fn hew_process_spawn(cmd: *const HewString) -> *mut HewPro
     let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_spawn") }) else {
         return std::ptr::null_mut();
     };
+    // The child inherits stdout and stderr: queued output goes first.
+    crate::output::flush();
     match shell_command(&cmd_str).spawn() {
         Ok(child) => {
             crate::hew_clear_error();
@@ -376,6 +378,8 @@ pub unsafe extern "C" fn hew_process_spawn_argv(
 
     let mut command = Command::new(&cmd_str);
     command.args(owned_args);
+    // The child inherits stdout and stderr: queued output goes first.
+    crate::output::flush();
     match command.spawn() {
         Ok(child) => {
             crate::hew_clear_error();

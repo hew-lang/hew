@@ -1,13 +1,13 @@
 //! Call, dyn-dispatch and runtime-operation lowering.
 
 use super::{
-    collection_type_arguments, dyn_boundary_passing, dyn_receiver_passing, evaluation_sequence,
-    is_initial_value_type, lower_initial_value_transfer, positional_call_target,
-    require_initial_scalar_read, require_type_facts, BindingTarget, BlockArg, Builder, CallResult,
-    CallTarget, CallUnwind, Edge, FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand,
-    OwnKind, OwnedBindingUse, PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef,
-    ResolvedTy, SemAbiParam, SemCallableKind, SemOp, SemOpKind, SemParamPassing, SemSignature,
-    SemTerminator, TypeInstanceKey, ValueDef, ValueId, WritableRoot,
+    collection_type_arguments, dyn_boundary_passing, evaluation_sequence, is_initial_value_type,
+    lower_initial_value_transfer, positional_call_target, require_initial_scalar_read,
+    require_type_facts, BindingTarget, BlockArg, Builder, CallResult, CallTarget, CallUnwind, Edge,
+    FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand, OwnKind, OwnedBindingUse,
+    PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef, ResolvedTy, SemAbiParam,
+    SemCallableKind, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
+    TypeInstanceKey, ValueDef, ValueId, WritableRoot,
 };
 
 impl Builder<'_, '_> {
@@ -654,13 +654,16 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         value: &HirExpr,
         concrete_type: &ResolvedTy,
-        entries: &[hew_types::DynVtableEntry],
     ) -> Result<ValueId, String> {
         let dyn_ty = self.ty(&expr.ty);
         let concrete_ty = self.ty(concrete_type);
-        let vtable = self
-            .service
-            .request_vtable(&dyn_ty, &concrete_ty, entries)?;
+        let vtable = self.service.request_vtable(
+            &expr.ty,
+            &dyn_ty,
+            &concrete_ty,
+            expr.site,
+            &self.substitution,
+        )?;
         if self.ty(&value.ty) != concrete_ty {
             return Err(format!(
                 "erasure input `{}` differs from the checker's concrete type `{}`",
@@ -722,7 +725,6 @@ impl Builder<'_, '_> {
         target: &hew_types::CallTarget,
         args: &[HirExpr],
         evaluation_order: &[usize],
-        signature: &hew_types::FnSig,
     ) -> Result<Option<ValueId>, String> {
         let hew_types::CallTarget::DynamicVtable { method, slot, .. } = target else {
             return Err("dynamic dispatch carries no checker vtable target".to_string());
@@ -732,10 +734,24 @@ impl Builder<'_, '_> {
         let mut loans = Vec::new();
         let return_ty = self.ty(&expr.ty);
         let dispatch = self.dyn_dispatch_signature(args, &return_ty)?;
-        let decision = match dyn_receiver_passing(signature) {
-            SemParamPassing::Consume => crate::BoundaryDecision::Move,
-            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
-            SemParamPassing::Borrow | SemParamPassing::ReadOnly => crate::BoundaryDecision::Borrow,
+        // The slot's receiver mode is the trait declaration's, published in
+        // the layout the erasure filled; no implementer's value class enters.
+        let layout_slot = self
+            .service
+            .module
+            .trait_object_layouts
+            .get(&receiver.ty)
+            .and_then(|layout| layout.slots.get(*slot as usize))
+            .ok_or_else(|| {
+                format!(
+                    "the checker published no slot {slot} for `{}`",
+                    receiver.ty.user_facing()
+                )
+            })?;
+        let decision = match layout_slot.receiver {
+            hew_types::DynReceiver::Consume => crate::BoundaryDecision::Move,
+            hew_types::DynReceiver::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            hew_types::DynReceiver::Borrow => crate::BoundaryDecision::Borrow,
         };
         let value = if decision == crate::BoundaryDecision::Move {
             self.lower_consuming_value(receiver)?
@@ -955,6 +971,7 @@ impl Builder<'_, '_> {
     ) -> Result<Option<ValueId>, String> {
         let HirExprKind::CallTraitMethodStatic {
             receiver,
+            trait_args,
             target,
             args,
             evaluation_order,
@@ -970,19 +987,21 @@ impl Builder<'_, '_> {
         else {
             return Err("static trait call requires a checker-selected trait method".to_string());
         };
-        let receiver_ty = self.ty(&receiver.ty);
+        let self_ty = self.ty(receiver.self_ty());
+        let trait_args: Vec<ResolvedTy> = trait_args.iter().map(|arg| self.ty(arg)).collect();
         let callee = self.service.resolve_static_trait_call(
             *declaring_trait,
             *method,
-            &receiver_ty,
+            &self_ty,
+            &trait_args,
             expr.site,
             &self.substitution,
         )?;
         let signature = callee.signature.clone();
         let result_ty = self.ty(&expr.ty);
-        let arguments: Vec<HirExpr> = std::iter::once((**receiver).clone())
-            .chain(args.iter().cloned())
-            .collect();
+        let leading = receiver.receiver().cloned();
+        let receiver_offset = usize::from(leading.is_some());
+        let arguments: Vec<HirExpr> = leading.into_iter().chain(args.iter().cloned()).collect();
         if arguments.len() != signature.params.len() || result_ty != signature.return_ty {
             return Err(format!(
                 "static trait call to `{}` differs from its semantic signature: {} arguments, expected {}; result {result_ty:?}, expected {:?}",
@@ -995,8 +1014,8 @@ impl Builder<'_, '_> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
-        let evaluation_order = if evaluation_order.is_empty() {
-            Vec::new()
+        let evaluation_order = if evaluation_order.is_empty() || receiver_offset == 0 {
+            evaluation_order.clone()
         } else {
             std::iter::once(0)
                 .chain(evaluation_order.iter().map(|index| index + 1))
@@ -2276,6 +2295,7 @@ impl Builder<'_, '_> {
                         consumes: function.param_consume.clone(),
                         result: function.return_ty.clone(),
                         runtime_capability: function.runtime_capability,
+                        offload: function.offload,
                     }
                 })
             })
@@ -2403,6 +2423,10 @@ impl Builder<'_, '_> {
             && OwnKind::of_ty(&signature.result, self.service.checked_facts.rows())?
                 == OwnKind::Owned;
         Self::verify_extern_declaration_ownership(&signature, &obligations, result_owned)?;
+        if signature.offload {
+            let order = evaluation_sequence(evaluation_order, args.len());
+            return self.lower_offload_call(signature, args, &order, value_required);
+        }
         let read_only = decisions
             .iter()
             .all(|decision| *decision != crate::BoundaryDecision::Move);
@@ -2512,5 +2536,144 @@ impl Builder<'_, '_> {
             ));
         }
         Ok(continuation)
+    }
+
+    /// An `#[offload]` extern call parks its task while the pool runs it.
+    ///
+    /// The job owns an independent copy of every argument, because a
+    /// cancelled caller resumes at once and releases its own values while the
+    /// C function may still be running. Inputs are therefore moved into the
+    /// suspension, never borrowed, and the call has no loans to drain.
+    fn lower_offload_call(
+        &mut self,
+        signature: crate::ExternSignature,
+        args: &[HirExpr],
+        order: &[usize],
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let function = self.service.request_offload(&signature)?;
+        let before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
+        let inputs = self.lower_offload_inputs(&signature, args, order)?;
+        let live = self.owned_live.clone();
+        let (result, normal, continuation) = if signature.result == ResolvedTy::Unit {
+            (
+                CallResult::Unit,
+                Edge {
+                    target: self.new_block(Vec::new()),
+                    args: Vec::new(),
+                },
+                None,
+            )
+        } else {
+            let own = OwnKind::of_ty(&signature.result, self.service.checked_facts.rows())?;
+            let raw = self.fresh_value();
+            let continuation = self.fresh_value();
+            let normal = self.new_block(vec![BlockArg {
+                value: continuation,
+                ty: signature.result.clone(),
+                own,
+            }]);
+            (
+                CallResult::Value(ValueDef {
+                    id: raw,
+                    ty: signature.result.clone(),
+                    own,
+                }),
+                Edge {
+                    target: normal,
+                    args: vec![Operand { value: raw }],
+                },
+                Some((continuation, own)),
+            )
+        };
+        let cancel = self.new_block(Vec::new());
+        let unwind = self.new_block(Vec::new());
+        let normal_target = normal.target;
+        self.set_terminator(SemTerminator::Suspend {
+            kind: crate::SuspendKind::Offload { function },
+            inputs,
+            result,
+            resumes: vec![normal],
+            cancel: Edge {
+                target: cancel,
+                args: Vec::new(),
+            },
+            unwind: Edge {
+                target: unwind,
+                args: Vec::new(),
+            },
+        })?;
+        for cleanup in [cancel, unwind] {
+            self.current = cleanup;
+            self.owned_live = live.clone();
+            self.finish_fault_exit()?;
+        }
+        self.current = normal_target;
+        self.owned_live = live;
+        let temporaries = self
+            .owned_live
+            .keys()
+            .filter(|value| !before.contains(value))
+            .copied()
+            .collect::<Vec<_>>();
+        for temporary in temporaries.into_iter().rev() {
+            self.emit_destroy(temporary)?;
+        }
+        match continuation {
+            Some((value, own)) => {
+                if own == OwnKind::Owned {
+                    self.owned_live.insert(value, signature.result);
+                }
+                Ok(Some(value))
+            }
+            None if value_required => Err(format!(
+                "unit-valued extern `{}` cannot produce an SSA value",
+                signature.symbol
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Each input becomes an independent owner moved into the job (or a copy
+    /// of a plain value); the caller keeps its own binding.
+    fn lower_offload_inputs(
+        &mut self,
+        signature: &crate::ExternSignature,
+        args: &[HirExpr],
+        order: &[usize],
+    ) -> Result<Vec<crate::BoundaryOperand>, String> {
+        let mut placed: Vec<Option<crate::BoundaryOperand>> = args.iter().map(|_| None).collect();
+        for &index in order {
+            let argument = &args[index];
+            let own = OwnKind::of_ty(&signature.params[index], self.service.checked_facts.rows())?;
+            let (value, decision) = if own == OwnKind::Owned {
+                (
+                    self.lower_adopted_copy(argument)?,
+                    crate::BoundaryDecision::Move,
+                )
+            } else {
+                (
+                    lower_initial_value_transfer(
+                        self,
+                        argument,
+                        "offloaded call argument",
+                        OwnedBindingUse::Copy,
+                    )?,
+                    crate::BoundaryDecision::Copy,
+                )
+            };
+            placed[index] = Some(crate::BoundaryOperand {
+                operand: Operand { value },
+                decision,
+            });
+        }
+        let inputs: Vec<_> = placed.into_iter().flatten().collect();
+        // Moved inputs belong to the job from submission on.
+        for input in &inputs {
+            if input.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&input.operand.value);
+            }
+        }
+        Ok(inputs)
     }
 }

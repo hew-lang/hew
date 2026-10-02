@@ -26,6 +26,35 @@ use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 impl Checker {
+    /// A dot call reaches only a method declared with a `self` receiver. An
+    /// associated function is refused here and called through its type.
+    pub(super) fn refuse_associated_dot_call(
+        &mut self,
+        sig: &FnSig,
+        owner: &str,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> bool {
+        if !sig.associated {
+            return false;
+        }
+        for arg in args {
+            let (expr, arg_span) = arg.expr();
+            self.synthesize(expr, arg_span);
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            format!(
+                "`{method}` is an associated function of `{owner}`, not a method; \
+                 call it as `{owner}.{method}(..)`"
+            ),
+            vec!["add a `self` receiver".to_string()],
+        );
+        true
+    }
+
     /// Mutable methods write back to the receiver's place. Record projections
     /// share their root's mutability, just as they do for field assignment.
     pub(super) fn check_mutable_method_receiver(
@@ -174,7 +203,7 @@ impl Checker {
                 span,
             },
         )?;
-        self.mark_resolved_nominal_owner_used(&head.canonical_type);
+        self.note_path_use(&head.canonical_type);
 
         Some(result)
     }
@@ -190,6 +219,9 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if let Some(param) = self.binder_call_head(receiver) {
+            return self.check_binder_associated_call(param, method, args, span);
+        }
         let dotted_type_head = self.resolve_dotted_type_head(receiver, method);
         if let Some(head) = dotted_type_head.as_ref() {
             if let Some(result) = self.dispatch_dotted_type_member(
@@ -201,7 +233,7 @@ impl Checker {
                     span,
                 },
             ) {
-                self.mark_resolved_nominal_owner_used(&head.canonical_type);
+                self.note_path_use(&head.canonical_type);
                 return result;
             }
             let source_member = format!("{}.{method}", head.canonical_type);
@@ -262,11 +294,7 @@ impl Checker {
                     },
                 );
                 if self.module_binding_in_current_file(name.name.as_str()) {
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        name.to_string(),
-                    ));
+                    self.note_import_use(name.name.as_str());
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
                 // method contains "::" → treat as a qualified variant constructor rather than a
@@ -401,10 +429,8 @@ impl Checker {
                         method,
                         span,
                     );
-                    let assoc_bindings = sig.type_param_assoc_bindings.clone();
                     let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
-                        &assoc_bindings,
                         None,
                         args,
                         span,
@@ -443,7 +469,7 @@ impl Checker {
                 return Ty::Error;
             }
 
-            // Static method calls on type names: e.g. Point.from_json(json)
+            // Static method calls on type names: e.g. Point.new(1, 2)
             // Look up "TypeName.method" in fn_sigs (registered by wire types
             // etc.). The surface spelling resolves to its canonical
             // declaration identity first (A316): the wire codec surface
@@ -481,47 +507,6 @@ impl Checker {
                         },
                     );
                     self.record_direct_call_target(span, target);
-                }
-                // Wire codec static deserialize methods on a `#[wire]` struct or
-                // enum. `decode` is the binary CBOR path
-                // (`Type.decode(bytes) -> Type`); `from_json`/`from_yaml` are the
-                // text path (`Type.from_json(string) -> Result<Type, string>`),
-                // lowered through the CBOR↔text bridge. Each lives in `fn_sigs`
-                // under the dotted `Type.<method>` key but records no rewrite
-                // here without this arm, so the call would lower to
-                // `MethodCallNoRewrite`. Record a dedicated codec rewrite so
-                // HIR/codegen drive the matching thunk with the correct ABI.
-                if self.wire_struct_types.contains(&canonical_static_owner)
-                    || self.wire_enum_types.contains(&canonical_static_owner)
-                {
-                    let text_dir = match method {
-                        "decode" => Some(WireCodecDirection::Decode),
-                        "from_json" => Some(WireCodecDirection::FromJson),
-                        "from_yaml" => Some(WireCodecDirection::FromYaml),
-                        _ => None,
-                    };
-                    if let Some(direction) = text_dir {
-                        // The codec `value_ty` is the produced wire type. For
-                        // `decode` the registered return type IS that type; for
-                        // `from_json`/`from_yaml` it is `Result<Self, string>`, so
-                        // peel the `Ok` payload to recover the wire type codegen
-                        // keys the thunk by.
-                        let resolved_ret = self.subst.resolve(&sig.return_type);
-                        let value_source = if direction == WireCodecDirection::Decode {
-                            resolved_ret.clone()
-                        } else {
-                            result_ok_payload(&resolved_ret).unwrap_or_else(|| resolved_ret.clone())
-                        };
-                        if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
-                            self.record_method_call_rewrite(
-                                span,
-                                MethodCallRewrite::WireCodec {
-                                    direction,
-                                    value_ty,
-                                },
-                            );
-                        }
-                    }
                 }
                 return sig.return_type;
             }
@@ -578,7 +563,7 @@ impl Checker {
             )
             .is_none() =>
             {
-                self.alias_target_for_instance(head.registry_key(), type_args)
+                self.alias_target_for_instance(*head, type_args)
                     .unwrap_or(resolved)
             }
             _ => resolved,
@@ -627,9 +612,12 @@ impl Checker {
         }
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
-        if let Ty::Named { head, .. } = &resolved {
-            let name = head.registry_key();
-            self.warn_if_blocking_handle_method(name, method, span);
+        if let Some(receiver) = match &resolved {
+            Ty::Named { head, .. } => head.nominal(),
+            _ => None,
+        } {
+            let name = self.defs.path(receiver.declaration()).to_string();
+            self.warn_if_blocking_handle_method(&name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
         // value enums. Collection clones keep their existing runtime rewrites,
@@ -1314,23 +1302,9 @@ impl Checker {
                 };
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
-                let has_user_send_handler = if method == "send" {
-                    resolved.as_local_actor_ref().and_then(|inner| {
-                        if let Ty::Named { head, .. } = inner { let name = head.registry_key();
-                            Some(name.to_string())
-                        } else {
-                            None
-                        }
-                    }).is_some_and(|actor_name| {
-                        self.actor_receive_methods.contains(&format!("{actor_name}::send"))
-                            || matches!(
-                                self.resolve_bare_actor_identity(&actor_name),
-                                BareActorResolution::Resolved(ref id) if self.actor_receive_methods.contains(&format!("{id}::send"))
-                            )
-                    })
-                } else {
-                    false
-                };
+                let has_user_send_handler = method == "send"
+                    && matches!(resolved.as_local_actor_ref(), Some(Ty::Named { head, .. })
+                        if self.actor_member(*head, method, crate::DeclarationKind::ActorReceive).is_some());
                 // A concrete actor-handle `.send(msg)` call with no user
                 // `receive fn send` handler has no lowerable local-
                 // mailbox delivery path (#2367). Declaring `impl
@@ -1385,7 +1359,7 @@ impl Checker {
                             receiver_args,
                             method,
                         ) {
-                            let applied_sig = self.apply_instantiated_call_signature(
+                            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                                 &sig,
                                 None,
                                 args,
@@ -1416,31 +1390,15 @@ impl Checker {
                     args: actor_type_args,
                 } = inner
                 {
-                    let actor_name = head.registry_key();
-                    // An annotation-derived `Account` actor-handle type carries
-                    // the actor's bare name directly; resolve it to the
-                    // registered actor identity (current module's actor, root actor, or a
-                    // unique module export) before keying `fn_sigs`. Spawn-
-                    // derived handles already carry the dotted identity.
-                    let actor_identity = if self.has_fn_sig(&format!("{actor_name}::{method}")) {
-                        actor_name.to_string()
-                    } else if let BareActorResolution::Resolved(identity) =
-                        self.resolve_bare_actor_identity(actor_name)
-                    {
-                        identity
-                    } else {
-                        actor_name.to_string()
-                    };
-                    let method_key = format!("{actor_identity}::{method}");
-                    // A plain (non-receive) `fn` on the actor lands in `fn_sigs` under the
-                    // same `{identity}::{method}` key as a `receive fn` handler (see
-                    // `register_actor_base`), but only `register_receive_fn` adds to
-                    // `actor_receive_methods`. A key present in the former but absent from
-                    // the latter names an internal method with no mailbox-handler shape —
-                    // MIR has no `ActorHandlerLayout` row for it (#2366). Reject here,
-                    // fail-closed, instead of deferring to a MIR NotYetImplemented.
-                    if self.has_fn_sig(&method_key)
-                        && !self.actor_receive_methods.contains(&method_key)
+                    let handler =
+                        self.actor_member(*head, method, crate::DeclarationKind::ActorReceive);
+                    // A private actor `fn` has no mailbox-handler shape; MIR has
+                    // no `ActorHandlerLayout` row for it (#2366). Refuse it here,
+                    // fail-closed.
+                    if handler.is_none()
+                        && self
+                            .actor_member(*head, method, crate::DeclarationKind::ActorMethod)
+                            .is_some()
                     {
                         for arg in args {
                             let (expr, sp) = arg.expr();
@@ -1456,70 +1414,65 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    if let Some(sig) =
-                        self.lookup_named_method_sig(&actor_identity, actor_type_args, method)
-                    {
-                        // Route through the one application authority rather
-                        // than checking args against `sig.params` directly: a
-                        // generic `receive fn keep<T>(..)` needs its type
-                        // parameters freshened and inferred from the arguments,
-                        // and its instantiation recorded so structural-equality
-                        // obligations raised in the handler body are discharged.
-                        // The hand-rolled loop that used to live here skipped
-                        // both, so a generic handler reported `expected T` at
-                        // every call site.
-                        let applied_sig = self.apply_instantiated_call_signature(
-                            &sig,
-                            None,
-                            args,
-                            span,
-                            SignatureArgApplication::FunctionLike {
-                                param_names: &sig.param_names,
-                                arity_context: format!("method `{method}`"),
-                            },
-                            true,
-                            Some(GenericCallee::Method {
-                                type_name: &actor_identity,
-                                method,
-                                owner_type_args: actor_type_args,
-                            }),
-                        );
-                        // Every argument crosses the mailbox boundary. This is
-                        // the funnel-compatible pairing (it reads the per-arg
-                        // types the application just published) used by the bare
-                        // actor-instance dispatch arm.
-                        self.enforce_actor_method_send_args(args);
-                        self.record_method_call_receiver_kind(
-                            span,
-                            MethodCallReceiverKind::ActorInstance {
-                                actor_name: actor_identity.clone(),
-                            },
-                        );
-                        let call_ty = self.record_actor_method_dispatch(
-                            span,
-                            method_key,
-                            applied_sig.return_type.clone(),
-                        );
-                        return call_ty;
+                    // TRANSITION(A1c3): WHY the shared method resolution still
+                    // reads signatures by the actor's rendered key. WHEN it reads
+                    // the handler's declaration, this render goes. WHAT:
+                    // `lookup_named_method_sig` by declaration.
+                    let actor_identity = head
+                        .nominal()
+                        .map(|actor| self.defs.path(actor.declaration()).to_string());
+                    if let (Some(handler), Some(actor_identity)) = (handler, actor_identity) {
+                        if let Some(sig) =
+                            self.lookup_named_method_sig(&actor_identity, actor_type_args, method)
+                        {
+                            // Route through the one application authority rather
+                            // than checking args against `sig.params` directly: a
+                            // generic `receive fn keep<T>(..)` needs its type
+                            // parameters freshened and inferred from the arguments,
+                            // and its instantiation recorded so structural-equality
+                            // obligations raised in the handler body are discharged.
+                            // The hand-rolled loop that used to live here skipped
+                            // both, so a generic handler reported `expected T` at
+                            // every call site.
+                            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
+                                &sig,
+                                None,
+                                args,
+                                span,
+                                SignatureArgApplication::FunctionLike {
+                                    param_names: &sig.param_names,
+                                    arity_context: format!("method `{method}`"),
+                                },
+                                true,
+                                Some(GenericCallee::Method {
+                                    type_name: &actor_identity,
+                                    method,
+                                    owner_type_args: actor_type_args,
+                                }),
+                            );
+                            // Every argument crosses the mailbox boundary. This is
+                            // the funnel-compatible pairing (it reads the per-arg
+                            // types the application just published) used by the bare
+                            // actor-instance dispatch arm.
+                            self.enforce_actor_method_send_args(args);
+                            self.record_method_call_receiver_kind(
+                                span,
+                                MethodCallReceiverKind::ActorInstance {
+                                    actor_name: actor_identity.clone(),
+                                },
+                            );
+                            let call_ty = self.record_actor_method_dispatch(
+                                span,
+                                handler,
+                                applied_sig.return_type.clone(),
+                            );
+                            return call_ty;
+                        }
                     }
                 }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
-                }
-                if method == "stop" && resolved.as_actor_handle().is_some() {
-                    self.report_migration_diagnostic(
-                        TypeErrorKind::ActorHandleMethodRetired,
-                        "E_ACTOR_HANDLE_METHOD_RETIRED: actor `.stop()` is retired".to_string(),
-                        "write `stop(actor)`; a receive handler named `stop` remains callable"
-                            .to_string(),
-                        span,
-                    );
-                    return if self.migration_mode {
-                        Ty::Unit
-                    } else {
-                        Ty::Error
-                    };
                 }
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedMethod,
@@ -1544,7 +1497,7 @@ impl Checker {
                         receiver_args,
                         method,
                     ) {
-                        let applied_sig = self.apply_instantiated_call_signature(
+                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                             &sig,
                             None,
                             args,
@@ -1903,6 +1856,9 @@ impl Checker {
                     _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
                 };
                 if let Some(sig) = sig {
+                    if self.refuse_associated_dot_call(&sig, name, method, args, span) {
+                        return Ty::Error;
+                    }
                     if sig.requires_mutable_receiver {
                         self.check_mutable_method_receiver(
                             receiver,
@@ -1910,13 +1866,14 @@ impl Checker {
                             span,
                         );
                     }
-                    let is_actor_receive_dispatch = self
-                        .type_def_at(name)
+                    let actor_handler = self
+                        .head_type_def(*head)
                         .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                        && self
-                            .actor_receive_methods
-                            .contains(&format!("{name}::{method}"));
-                    let applied_sig = self.apply_instantiated_call_signature(
+                        .then(|| {
+                            self.actor_member(*head, method, crate::DeclarationKind::ActorReceive)
+                        })
+                        .flatten();
+                    let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
                         None,
                         args,
@@ -1948,7 +1905,7 @@ impl Checker {
                     // `methods {}` declared on the same actor (also keyed
                     // `{Actor}::{method}` in `fn_sigs`) are NOT in
                     // `actor_receive_methods`, so they stay on the direct path.
-                    if is_actor_receive_dispatch {
+                    if let Some(handler) = actor_handler {
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::ActorInstance {
@@ -1959,14 +1916,13 @@ impl Checker {
                         // per-arg alias-vs-copy decision so the fail-closed
                         // codegen consumer does not have to guess.
                         self.enforce_actor_method_send_args(args);
-                        let method_key = format!("{name}::{method}");
                         // Record the dispatch discriminator (Fire vs Ask). This
                         // also marks the span as already-rewritten below, so the
                         // synchronous `RewriteToFunction` path is skipped and the
                         // call lowers to `ActorSend` / `ActorAsk` in HIR.
                         let call_ty = self.record_actor_method_dispatch(
                             span,
-                            method_key,
+                            handler,
                             applied_sig.return_type.clone(),
                         );
                         return call_ty;
@@ -2083,7 +2039,7 @@ impl Checker {
                     //      `build(consume self)`, a `#[linear]` type's consuming
                     //      method). The resolved sig carries the consume fact.
                     let consumes_receiver = sig.consumes_receiver
-                        || self.named_type_method_consumes_receiver(name, method)
+                        || self.named_type_method_consumes_receiver(&resolved, method)
                         || self.named_type_inherent_close_consumes_receiver(
                             resolved.head().expect("named receiver has a head"),
                             method,
@@ -2200,60 +2156,7 @@ impl Checker {
                         // Never retry through either the type or method leaf.
                         let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
-                        // Wire codec instance serialize methods on a `#[wire]`
-                        // struct or enum. `encode` is the binary CBOR path
-                        // (`value.encode() -> bytes`); `to_json`/`to_yaml` are the
-                        // text path (`value.to_json() -> string`), lowered through
-                        // the CBOR↔text bridge. The instance method is registered
-                        // in `type_def.methods` (not `fn_sigs`), so it never
-                        // matches the `fn_sigs` branch below and would otherwise
-                        // fall through to `MethodCallNoRewrite`. Record a dedicated
-                        // codec rewrite so HIR/codegen drive the matching thunk
-                        // with the correct ABI.
-                        let wire_serialize_dir =
-                            if self.wire_struct_types.contains(&canonical_receiver_name)
-                                || self.wire_enum_types.contains(&canonical_receiver_name)
-                            {
-                                match method {
-                                    "encode" => Some(WireCodecDirection::Encode),
-                                    "to_json" => Some(WireCodecDirection::ToJson),
-                                    "to_yaml" => Some(WireCodecDirection::ToYaml),
-                                    _ => None,
-                                }
-                            } else {
-                                None
-                            };
-                        if let Some(direction) = wire_serialize_dir {
-                            // `value_ty` is the receiver wire type (the value being
-                            // serialized) regardless of the textual return type,
-                            // so codegen keys the thunk by the same type the binary
-                            // path uses. Carry the CANONICAL nominal: the wire
-                            // layout table is keyed by the declaration identity
-                            // only, and codegen's tag probe falls back to
-                            // positional keys on a miss — a bare spelling here
-                            // would silently change the encoded schema.
-                            let mut value_source = self.subst.resolve(&resolved);
-                            if let Ty::Named { head, .. } = &mut value_source {
-                                if head.registry_key() != canonical_receiver_name {
-                                    if let Some(canonical) = self
-                                        .named_ty_for_key(&canonical_receiver_name, Vec::new())
-                                        .head()
-                                    {
-                                        *head = canonical;
-                                    }
-                                }
-                            }
-                            if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
-                                self.record_method_call_rewrite(
-                                    span,
-                                    MethodCallRewrite::WireCodec {
-                                        direction,
-                                        value_ty,
-                                    },
-                                );
-                            }
-                        } else if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next"
-                        {
+                        if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next" {
                             if let Some(elem_ty) = type_args.first() {
                                 if !self.record_vec_iter_element_mode(elem_ty, span) {
                                     return Ty::Error;
@@ -2383,12 +2286,8 @@ impl Checker {
                     Ty::Named {
                         head: crate::TypeHead::Param(parameter),
                         ..
-                    } => self
-                        .checking_declaration
-                        .and_then(|declaration| self.fn_sigs.get(&declaration))
-                        .filter(|sig| sig.type_params.contains(parameter))
-                        .and_then(|sig| sig.type_param_bounds.get(parameter.spelling.as_str()))
-                        .cloned(),
+                    } => Some(self.active_bounds_of(parameter.id))
+                        .filter(|bounds| !bounds.is_empty()),
                     _ => None,
                 };
                 if let (
@@ -2405,43 +2304,44 @@ impl Checker {
                     // supertrait-redeclaration case (plan §4 V14) where a bound
                     // `T: B` with `trait B: A` and both A and B declaring the same
                     // method reaches two distinct declaring traits.
-                    let mut hits: Vec<(String, String, FnSig)> = Vec::new();
-                    for bound_trait in &bounds {
-                        // Keep the source spelling for diagnostics, but resolve
-                        // the dispatch lookup through the declaration owner.
-                        // An imported alias such as `AlphaRender` is not a
-                        // declaration identity and must never reach HIR as one.
-                        let bound_trait_key = self.trait_ref_lookup_key(bound_trait);
+                    let mut hits: Vec<(crate::DefId, FnSig)> = Vec::new();
+                    for bound in &bounds {
                         let declaring =
-                            self.collect_all_declaring_traits_for_method(&bound_trait_key, method);
+                            self.collect_all_declaring_traits_for_method(bound.trait_id, method);
                         for declaring_trait in declaring {
                             // Resolve the sig from the declaring trait directly.
                             if let Some((_, sig)) =
-                                self.lookup_trait_method_with_origin(&declaring_trait, method)
+                                self.lookup_trait_method_with_origin(declaring_trait, method)
                             {
-                                hits.push((bound_trait.clone(), declaring_trait, sig));
+                                hits.push((declaring_trait, sig));
                             }
                         }
                     }
                     // Deduplicate by declaring_trait — same origin via multiple bounds is NOT ambiguous.
-                    hits.sort_by(|a, b| a.1.cmp(&b.1));
-                    hits.dedup_by_key(|h| h.1.clone());
+                    hits.sort_by_key(|hit| hit.0);
+                    hits.dedup_by_key(|hit| hit.0);
 
                     if hits.len() == 1 {
-                        let (bound_trait, declaring_trait, mut trait_sig) =
-                            hits.into_iter().next().unwrap();
+                        let (declaring_id, mut trait_sig) = hits.into_iter().next().unwrap();
+                        let declaring_trait = self.defs.path(declaring_id).to_string();
                         // Replace `Self` references with the type parameter type.
                         let self_ty = resolved.clone();
-                        let self_parameter = crate::ParamHead::receiver(
-                            self.lookup_declaration(&declaring_trait)
-                                .expect("resolved declaring trait owns Self"),
-                        );
+                        let self_parameter = crate::ParamHead::receiver(declaring_id);
                         for param_ty in &mut trait_sig.params {
                             *param_ty = param_ty.substitute_type_param(self_parameter, &self_ty);
                         }
                         trait_sig.return_type = trait_sig
                             .return_type
                             .substitute_type_param(self_parameter, &self_ty);
+                        if self.refuse_associated_dot_call(
+                            &trait_sig,
+                            &declaring_trait,
+                            method,
+                            args,
+                            span,
+                        ) {
+                            return Ty::Error;
+                        }
                         if trait_sig.requires_mutable_receiver {
                             self.check_mutable_method_receiver(
                                 receiver,
@@ -2449,7 +2349,7 @@ impl Checker {
                                 span,
                             );
                         }
-                        let applied_sig = self.apply_instantiated_call_signature(
+                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                             &trait_sig,
                             None,
                             args,
@@ -2496,8 +2396,7 @@ impl Checker {
                         }
                         // Record the StaticTraitDispatch rewrite for HIR consumption.
                         let target = self
-                            .trait_method_call_target_ids(&declaring_trait, method)
-                            .or_else(|| self.trait_method_call_target_ids(&bound_trait, method))
+                            .trait_method_ids_of(declaring_id, method)
                             .map_or_else(
                                 || CallTarget::Unsupported {
                                     reason: format!(
@@ -2526,8 +2425,9 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
-                        let declaring_traits: Vec<&str> =
-                            hits.iter().map(|h| h.1.as_str()).collect();
+                        let mut declaring_traits: Vec<&str> =
+                            hits.iter().map(|hit| self.defs.path(hit.0)).collect();
+                        declaring_traits.sort_unstable();
                         self.report_error(
                             TypeErrorKind::AmbiguousTraitMethod,
                             span,
@@ -2745,21 +2645,22 @@ impl Checker {
                 }
                 if let Some(layout_slot) = matching.pop() {
                     let bound = &traits[layout_slot.bound];
-                    let Some(mut sig) = self.lookup_trait_method(&layout_slot.trait_key, method)
+                    let Some(mut sig) = self.lookup_trait_method(layout_slot.trait_id, method)
                     else {
                         // JUSTIFIED: the layout lists only methods registered
                         // in `trait_defs`, which always resolve.
                         unreachable!(
                             "trait method `{}.{method}` is in a dyn layout but is not resolvable",
-                            layout_slot.trait_key
+                            layout_slot.trait_spelling
                         );
                     };
-                    let pid_send_dispatch =
-                        layout_slot.trait_key == "std.builtins.Pid" && method == "send";
+                    let pid_send_dispatch = self.defs.path(layout_slot.trait_id)
+                        == "std.builtins.Pid"
+                        && method == "send";
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::TraitObject {
-                            trait_name: bound.trait_name.clone(),
+                            trait_name: self.defs.path(layout_slot.trait_id).to_string(),
                         },
                     );
                     // Apply trait-type-param and associated-type substitution
@@ -2786,6 +2687,9 @@ impl Checker {
                             method_name: method.to_string(),
                             slot: layout_slot.slot,
                             signature: sig.clone(),
+                            effect: self
+                                .dyn_slot_effect(traits, layout_slot.method)
+                                .expect("dyn_layout records the layout it returns"),
                         },
                     );
                     if sig.consumes_receiver {
@@ -2794,7 +2698,7 @@ impl Checker {
                         let resolved_ty = self.subst.resolve(&receiver_ty);
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
                     }
-                    let applied_sig = self.apply_instantiated_call_signature(
+                    let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
                         None,
                         args,
@@ -2994,5 +2898,282 @@ impl Checker {
             }
         }
         self.errors.push(error);
+    }
+}
+
+/// An associated function a binder's bounds reach: its declaring trait, its
+/// signature and the bounds of that trait that reach it.
+type BinderMethod = (crate::DefId, FnSig, Vec<TraitRef>);
+
+impl Checker {
+    /// The generic binder a call head names: `T` in `T.make(n)` when `T` is
+    /// no value in scope.
+    pub(in crate::check) fn binder_call_head(
+        &mut self,
+        receiver: &Spanned<Expr>,
+    ) -> Option<crate::ParamHead> {
+        let Expr::Ident(name) = &receiver.0 else {
+            return None;
+        };
+        if self.env.lookup_ref(*name).is_some() {
+            return None;
+        }
+        let path = hew_parser::ast::Path::single(*name, receiver.1.clone());
+        match self.resolve_type_path(&path)? {
+            super::scope::Resolution::Param(id) => Some(crate::ParamHead::new(id, name.name)),
+            _ => None,
+        }
+    }
+
+    /// The associated function `method` a bound on `param` declares, with
+    /// the bounds that reach it, or the refusal to report. One trait bound
+    /// at several arguments (`F: From<Low> + From<Io>`) yields every such
+    /// bound; the call's arguments choose between them.
+    fn binder_trait_method(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+    ) -> Result<BinderMethod, Box<(TypeErrorKind, String)>> {
+        let mut hits: Vec<BinderMethod> = Vec::new();
+        for bound in self.active_bounds_of(param.id) {
+            for declaring in self.collect_all_declaring_traits_for_method(bound.trait_id, method) {
+                if let Some((_, _, bounds)) =
+                    hits.iter_mut().find(|(known, _, _)| *known == declaring)
+                {
+                    // Only the declaring trait's own bounds carry arguments
+                    // its signature uses.
+                    if declaring == bound.trait_id && bounds[0].trait_id == declaring {
+                        bounds.push(bound.clone());
+                    }
+                    continue;
+                }
+                if let Some((_, sig)) = self.lookup_trait_method_with_origin(declaring, method) {
+                    hits.push((declaring, sig, vec![bound.clone()]));
+                }
+            }
+        }
+        if hits.len() > 1 {
+            let mut declaring: Vec<&str> = hits
+                .iter()
+                .map(|(id, _, _)| self.defs.display(*id))
+                .collect();
+            declaring.sort_unstable();
+            return Err(Box::new((
+                TypeErrorKind::AmbiguousTraitMethod,
+                format!(
+                    "ambiguous associated function `{method}` on `{}`: declared by multiple \
+                     traits ({}); qualify the call to disambiguate",
+                    param.spelling,
+                    declaring.join(", ")
+                ),
+            )));
+        }
+        let Some((declaring, sig, bounds)) = hits.pop() else {
+            return Err(Box::new((
+                TypeErrorKind::UndefinedMethod,
+                format!(
+                    "no associated function `{method}` in the bounds of type parameter `{}`",
+                    param.spelling
+                ),
+            )));
+        };
+        if !sig.associated {
+            return Err(Box::new((
+                TypeErrorKind::UndefinedMethod,
+                format!(
+                    "`{}.{method}` takes a receiver; call it on a value of type `{}`",
+                    self.defs.display(declaring),
+                    param.spelling
+                ),
+            )));
+        }
+        Ok((declaring, sig, bounds))
+    }
+
+    /// Check `T.method(args)` where `T` is a generic binder: the method is
+    /// an associated function a bound on `T` declares, called with `T` as
+    /// `Self`. The selection is published as a `BinderStaticCall` rewrite.
+    pub(in crate::check) fn check_binder_associated_call(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let (declaring, mut sig, bounds) = match self.binder_trait_method(param, method) {
+            Ok(selected) => selected,
+            Err(refusal) => {
+                let (kind, message) = *refusal;
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_error(kind, span, message);
+                return Ty::Error;
+            }
+        };
+        // `Self` is the binder; a bound's own arguments fill its trait's
+        // parameters (`from(value: Source)` under `F: From<Low>`). Under
+        // several bounds of the trait, the parameters are holes the
+        // arguments fill, and the filled holes choose the bound.
+        let mut substitution: HashMap<crate::ParamHead, Ty> =
+            HashMap::from([(crate::ParamHead::receiver(declaring), Ty::param(param))]);
+        let trait_params = if declaring == bounds[0].trait_id {
+            self.trait_info(declaring)
+                .map(|info| info.type_params.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let holes: Vec<Ty> = match bounds.as_slice() {
+            [bound] => bound.args.clone(),
+            _ => trait_params
+                .iter()
+                .map(|_| Ty::Var(crate::ty::TypeVar::fresh()))
+                .collect(),
+        };
+        substitution.extend(trait_params.iter().copied().zip(holes.iter().cloned()));
+        sig.params = sig
+            .params
+            .iter()
+            .map(|ty| ty.substitute_type_params_parallel(&substitution))
+            .collect();
+        sig.return_type = sig
+            .return_type
+            .substitute_type_params_parallel(&substitution);
+        let callee = self.defs.path(declaring).to_string();
+        let applied = self.apply_instantiated_call_signature_with_assoc(
+            &sig,
+            None,
+            args,
+            span,
+            super::calls::SignatureArgApplication::FunctionLike {
+                param_names: &sig.param_names,
+                arity_context: format!("associated function `{method}`"),
+            },
+            true,
+            Some(super::types::GenericCallee::Method {
+                type_name: &callee,
+                method,
+                owner_type_args: &[],
+            }),
+        );
+        // Application freshens the signature's open variables; link the
+        // holes to their applied copies, which the arguments have filled.
+        if bounds.len() > 1 {
+            for (declared, applied) in sig.params.iter().zip(&applied.params) {
+                self.try_unify_with_owner_identity(declared, applied);
+            }
+        }
+        let trait_args = if trait_params.is_empty() {
+            Vec::new()
+        } else if bounds.len() == 1 {
+            holes
+        } else if let Some(args) = self.select_binder_bound(param, method, &holes, &bounds, span) {
+            args
+        } else {
+            return Ty::Error;
+        };
+        let target = self.trait_method_ids_of(declaring, method).map_or_else(
+            || CallTarget::Unsupported {
+                reason: format!("trait method `{callee}.{method}` has no declaration identity"),
+            },
+            |(declaring_trait, method)| CallTarget::static_trait(declaring_trait, method),
+        );
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::BinderStaticCall(BinderTraitCall {
+                target,
+                self_param: param,
+                trait_args,
+            }),
+        );
+        self.project_assoc_types(&applied.return_type)
+    }
+
+    /// The one bound whose arguments agree with the holes a call filled,
+    /// committed into the substitution. When none or several agree, the
+    /// call is reported ambiguous unless an argument already failed.
+    fn select_binder_bound(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+        holes: &[Ty],
+        bounds: &[TraitRef],
+        span: &Span,
+    ) -> Option<Vec<Ty>> {
+        let chosen = self.agreeing_binder_bound(holes, bounds);
+        if chosen.is_some()
+            || holes
+                .iter()
+                .any(|hole| self.subst.resolve(hole).contains_error())
+        {
+            return chosen;
+        }
+        let mut shown: Vec<String> = bounds
+            .iter()
+            .map(|bound| format!("`{}`", self.trait_ref_display(bound)))
+            .collect();
+        shown.sort_unstable();
+        self.report_error(
+            TypeErrorKind::AmbiguousTraitMethod,
+            span,
+            format!(
+                "ambiguous associated function `{method}` on `{}`: the arguments do not \
+                 choose one of its bounds {}",
+                param.spelling,
+                shown.join(", ")
+            ),
+        );
+        None
+    }
+
+    fn agreeing_binder_bound(&mut self, holes: &[Ty], bounds: &[TraitRef]) -> Option<Vec<Ty>> {
+        let mut agreeing = bounds.iter().filter(|bound| {
+            let snapshot = self.subst.snapshot();
+            let agree = bound
+                .args
+                .iter()
+                .zip(holes)
+                .all(|(arg, hole)| self.try_unify_with_owner_identity(arg, hole));
+            self.subst.restore(snapshot);
+            agree
+        });
+        let chosen = agreeing.next()?.clone();
+        if agreeing.next().is_some() {
+            return None;
+        }
+        for (arg, hole) in chosen.args.iter().zip(holes) {
+            self.try_unify_with_owner_identity(arg, hole);
+        }
+        Some(chosen.args)
+    }
+
+    /// The `From` conversion a bound on the binder `target` provides from
+    /// `source` at a failure edge (`F: From<E>`), as the static call the edge
+    /// makes.
+    pub(in crate::check) fn binder_from_conversion(
+        &mut self,
+        target: crate::ParamHead,
+        source: &Ty,
+    ) -> Option<BinderTraitCall> {
+        let from = self.lang_trait(crate::LangItem::From)?;
+        let wanted = TraitRef {
+            trait_id: from,
+            args: vec![source.clone()],
+            assoc: Vec::new(),
+        };
+        if !self.param_carries_bound(target.id, &wanted) {
+            return None;
+        }
+        let method = self
+            .lang_items
+            .get(crate::LangItem::FromFrom.key())
+            .and_then(|binding| binding.method_id)?;
+        Some(BinderTraitCall {
+            target: CallTarget::static_trait(from, method),
+            self_param: target,
+            trait_args: vec![source.clone()],
+        })
     }
 }

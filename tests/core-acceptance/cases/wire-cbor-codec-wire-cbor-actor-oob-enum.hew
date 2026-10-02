@@ -1,23 +1,27 @@
+import std.encoding.cbor;
+
 #[wire]
 enum Wide {
-    A;
-    B(i64);
-    C(string);
+    A @0;
+    B(i64) @1;
+    C(string) @2;
 }
 
 #[wire]
 enum Narrow {
-    A;
-    B(i64);
+    A @0;
+    B(i64) @1;
 }
 
 actor Decoder {
     let seq: i64;
     receive fn decode_it(raw: bytes) -> i64 {
-        let back = Narrow.decode(raw);
-        match back {
-            Narrow.A => 0,
-            Narrow.B(n) => n,
+        match cbor.decode<Narrow>(raw) {
+            .Ok(back) => match back {
+                Narrow.A => 0,
+                Narrow.B(n) => n,
+            }
+            .Err(_) => 1,
         }
     }
 }
@@ -27,7 +31,7 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 50 {
         let w = Wide.C("oob-enum-owned-payload-string");
-        let raw = w.encode();
+        let raw = cbor.encode(w);
         let a = spawn Decoder(seq: i);
         let r = a.decode_it(raw);
         match r {

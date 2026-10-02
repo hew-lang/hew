@@ -645,7 +645,11 @@ impl Checker {
     }
 
     pub(in crate::check) fn reject_owned_handle_field_accessors(&mut self, fd: &FnDecl) {
-        let Some(type_name) = self.current_self_binding_ty.as_ref().and_then(Ty::head) else {
+        let Some(type_name) = self
+            .current_self_type
+            .as_ref()
+            .and_then(|(_, self_ty)| self_ty.head())
+        else {
             return;
         };
         if !self.struct_is_handle_bearing(type_name) {
@@ -654,7 +658,7 @@ impl Checker {
         let Some(receiver_name) = fd
             .params
             .first()
-            .filter(|param| self.is_receiver_param(param))
+            .filter(|param| param.is_receiver)
             .map(|param| param.name)
         else {
             return;
@@ -1000,7 +1004,6 @@ impl Checker {
             | Expr::PostfixTry(_)
             | Expr::Range { .. }
             | Expr::Await(_)
-            | Expr::AwaitRestart(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)

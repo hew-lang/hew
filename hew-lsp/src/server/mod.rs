@@ -1986,7 +1986,7 @@ impl Worker {
         let doc = make_typed_doc(source);
         let uri = make_test_uri("/identity-trait-bound.hew");
         let call = source.find("item.describe()").unwrap() + "item.".len();
-        let declared = source.find("fn describe(value").unwrap() + "fn ".len();
+        let declared = source.find("fn describe(self) -> string;").unwrap() + "fn ".len();
         let location =
             super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
                 .expect("bounded call should resolve to its trait method");
@@ -6812,10 +6812,9 @@ fn label(colour: Colour) -> string {
     //  Fixture                            | Class                          | Notes / blocking lane
     //  ─────────────────────────────────────────────────────────────────────────────────────────────
     //  v05_associated_type_projection     | accepted                       | trait + assoc type + impl; LSP test passes
-    //  v05_async_await                    | known-rejected                 | `async fn` / `await` are not valid Hew syntax; parser rejects them; permanently out of v0.5 scope (see ignored test below)
     //  v05_attributes                     | accepted                       | actor attributes (#[max_heap]); LSP test passes
     //  v05_closures                       | accepted                       | closure syntax |x| { … }; LSP test passes
-    //  v05_cross_module_machine_defs      | accepted                       | machine defs module; used as dep in cross-module native test
+    //  machines/toggle (cross-module defs) | accepted                      | machine defs module at its import path; used as dep in cross-module native test
     //  v05_cross_module_machine_main      | cross-module-single-source-limited | single-source WASM API cannot resolve cross-file imports; native test uses multi-doc workspace
     //  v05_display_fstring                | accepted                       | Display impl + f-string formatting; LSP test passes
     //  v05_extern_unsafe                  | accepted                       | `extern "C"` block; LSP + resolver tests pass
@@ -6849,7 +6848,6 @@ fn label(colour: Colour) -> string {
     //  ──────────────────────────────────────────────────────────────────────────────────────────────
     //  v05_record_tuple_literal_lsp_coverage   | remain-ignored  | Compiler-substrate dependency W3.006; do not unignore until W3.006 tuple substrate lands.
     //  v05_spawn_lambda_actor_lsp_coverage     | re-enabled (passing) | `actor |…| { }` is the landed syntax; the prior fixture used `spawn |…|` which was wrong. Test is now #[test] at mod.rs:7146 and passes.
-    //  v05_async_await_lsp_coverage            | become-fail-closed-diagnostic | `async fn`/`await` permanently not in Hew syntax; test should assert parse-error diagnostics rather than remaining an indefinitely-ignored smoke check.  See v05_async_await_is_rejected_with_parse_errors below.
     //
     // ─── ResolvedTy::user_facing() verification ──────────────────────────
     //
@@ -6861,14 +6859,12 @@ fn label(colour: Colour) -> string {
     //
     // ─── Fixture count notes ─────────────────────────────────────────────
     //
-    //  Total v05_*.hew fixtures: 31
+    //  Total v05 fixtures: 30
     //    accepted:                          28 (all have passing native LSP tests;
     //                                          v05_spawn_lambda_actor re-enabled)
     //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
-    //    known-rejected:                     1 (v05_async_await)
     //    pending-upstream-substrate:         1 (v05_record_tuple_literal)
-    //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
-    //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==8 in v05_wasm_coverage.rs.
+    //  WASM fixture table covers 29 (all except v05_cross_module_machine_main, tested separately).
 
     fn v05_fixture_path(name: &str) -> String {
         format!("file:///v05/{name}.hew")
@@ -7584,7 +7580,7 @@ fn label(colour: Colour) -> string {
     #[test]
     fn v05_cross_module_machine_ctor_lsp_coverage() {
         let main_source = include_str!("../../tests/fixtures/v05_cross_module_machine_main.hew");
-        let defs_source = include_str!("../../tests/fixtures/v05_cross_module_machine_defs.hew");
+        let defs_source = include_str!("../../tests/fixtures/machines/toggle.hew");
         let main_uri = make_test_uri("/v05/cross_module/main.hew");
         let defs_uri = make_test_uri("/v05/cross_module/machines/toggle.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();
@@ -7800,21 +7796,6 @@ fn label(colour: Colour) -> string {
         );
     }
 
-    // W4.023 Stage 0: known-rejected — `async fn`/`await` are not valid Hew syntax.
-    // The parser permanently rejects these keywords; they are out of v0.5 scope.
-    // This fail-closed test asserts parser errors rather than leaving the test
-    // as an indefinitely-ignored smoke check.
-    #[test]
-    fn v05_async_await_is_rejected_with_parse_errors() {
-        let source = include_str!("../../tests/fixtures/v05_async_await.hew");
-        let parse_result = hew_parser::parse(source);
-        assert!(
-            !parse_result.errors.is_empty(),
-            "v05_async_await.hew must produce parse errors: \
-             `async fn` / `await` are not valid Hew syntax and the parser must reject them"
-        );
-    }
-
     #[test]
     fn v05_generators_lsp_coverage() {
         assert_v05_lsp_fixture(
@@ -7926,12 +7907,12 @@ fn label(colour: Colour) -> string {
         assert_v05_hover_contains("v05_display_fstring", source, offset, "x: i64");
     }
 
-    /// `label.text` field access inside the `Describable` impl body must
+    /// `self.text` field access inside the `Describable` impl body must
     /// surface `text: string` via the field-access hover path.
     #[test]
     fn v05_trait_bounds_impl_field_access_hover_pins_type() {
         let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
-        let offset = source.find("label.text").expect("label.text field access") + "label.".len();
+        let offset = source.find("self.text").expect("self.text field access") + "self.".len();
         assert_v05_hover_contains("v05_trait_bounds", source, offset, "text: string");
     }
 
@@ -8038,7 +8019,7 @@ fn label(colour: Colour) -> string {
     /// test only checks symbols that appear in `expected_symbols`; Stage 2 pins
     /// every event and state name.
     ///
-    /// Note: non-exhaustive event coverage is intentional in this fixture.
+    /// Note: the fixture is a valid program; the pins below check symbols only.
     #[test]
     fn v05_machine_methods_document_symbols_include_machine_and_all_events() {
         let source = include_str!("../../tests/fixtures/v05_machine_methods.hew");

@@ -9,7 +9,7 @@ pub fn make_cat(name: string) -> Cat {
 }
 
 impl Speaker for Cat {
-    fn speak(val: Cat) -> string {
-        f"{val.name} says meow"
+    fn speak(self) -> string {
+        f"{self.name} says meow"
     }
 }

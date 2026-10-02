@@ -77,8 +77,11 @@ fn dispatch_names_the_method_its_slot_publishes() {
         panic!("expected two slots: {:?}", table.slots);
     };
     assert_eq!(
-        (alpha.method_name.as_str(), beta.method_name.as_str()),
-        ("alpha", "beta")
+        (
+            module.defs.name(alpha.method).to_string(),
+            module.defs.name(beta.method).to_string()
+        ),
+        ("alpha".to_string(), "beta".to_string())
     );
     let (beta_slot, beta_method) = (beta.slot, beta.method);
     let calls = dyn_calls(&mut module);
@@ -106,7 +109,7 @@ fn dispatch_to_a_slot_holding_another_method_is_refused() {
         errors.iter().any(|error| matches!(
             &error.kind,
             SirDiagnosticKind::InvalidOperation { reason, .. }
-                if reason.contains("names slot 3, which `Both` fills with")
+                if reason.contains("names slot 0, which `Both` fills with")
         )),
         "{errors:?}"
     );

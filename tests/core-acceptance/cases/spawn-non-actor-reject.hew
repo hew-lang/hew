@@ -1,0 +1,7 @@
+type Rec {
+    n: i64;
+}
+
+fn main() {
+    let _a = spawn Rec();
+}

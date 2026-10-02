@@ -2598,61 +2598,98 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         &[BuiltinTy::Pointer, BuiltinTy::Pointer, BuiltinTy::U64],
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
-    ), // The generic `std.encoding.wire` facade. Each call lowers through its
-    // checker-recorded `GenericWireCodec` rewrite; these rows only register
-    // the bodyless declarations.
+    ),
+    // The format modules' `encode`/`decode`. Each call lowers through its
+    // checker-recorded `Codec` rewrite; these rows only register the bodyless
+    // declarations.
     direct(
-        "wire.encode",
+        "codec.cbor.encode",
         BuiltinClass::ClassB,
         &[BuiltinTy::Pointer],
         BuiltinTy::Bytes,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "wire.encode",
+            intrinsic: "codec.cbor.encode",
         },
     ),
     direct(
-        "wire.decode",
+        "codec.cbor.decode",
         BuiltinClass::ClassB,
         &[BuiltinTy::Bytes],
         BuiltinTy::Pointer,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "wire.decode",
+            intrinsic: "codec.cbor.decode",
         },
     ),
     direct(
-        "wire.to_json",
+        "codec.json.encode",
         BuiltinClass::ClassB,
         &[BuiltinTy::Pointer],
         BuiltinTy::String,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "wire.to_json",
+            intrinsic: "codec.json.encode",
         },
     ),
     direct(
-        "wire.from_json",
+        "codec.json.decode",
         BuiltinClass::ClassB,
         &[BuiltinTy::String],
         BuiltinTy::Pointer,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "wire.from_json",
+            intrinsic: "codec.json.decode",
         },
     ),
     direct(
-        "wire.to_yaml",
+        "codec.yaml.encode",
         BuiltinClass::ClassB,
         &[BuiltinTy::Pointer],
         BuiltinTy::String,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "wire.to_yaml",
+            intrinsic: "codec.yaml.encode",
         },
     ),
     direct(
-        "wire.from_yaml",
+        "codec.yaml.decode",
         BuiltinClass::ClassB,
         &[BuiltinTy::String],
         BuiltinTy::Pointer,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "wire.from_yaml",
+            intrinsic: "codec.yaml.decode",
+        },
+    ),
+    direct(
+        "codec.toml.encode",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::String,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "codec.toml.encode",
+        },
+    ),
+    direct(
+        "codec.toml.decode",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::String],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "codec.toml.decode",
+        },
+    ),
+    direct(
+        "codec.msgpack.encode",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::Bytes,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "codec.msgpack.encode",
+        },
+    ),
+    direct(
+        "codec.msgpack.decode",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Bytes],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "codec.msgpack.decode",
         },
     ),
 ];

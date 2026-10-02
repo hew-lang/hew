@@ -370,13 +370,13 @@ mod tests {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            error_conversions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
@@ -568,7 +568,7 @@ trait MatcherMethods {
 }
 
 impl MatcherMethods for Matcher {
-    fn captures(m: Matcher, input: string) -> Caps {
+    fn captures(self, input: string) -> Caps {
         Caps { count: 0 }
     }
 }
@@ -626,7 +626,7 @@ fn probe(mat: Matcher, s: string) {
                 kind: TypeDefKind::Struct,
                 name: "StreamModule".to_string(),
                 type_params: vec![],
-                bounds: HashMap::new(),
+                bounds: hew_types::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 field_order: vec![],
                 variants: HashMap::new(),
@@ -688,7 +688,7 @@ fn probe(mat: Matcher, s: string) {
                 kind: TypeDefKind::Struct,
                 name: "Widget".to_string(),
                 type_params: vec![],
-                bounds: HashMap::new(),
+                bounds: hew_types::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 field_order: vec![],
                 variants: HashMap::new(),

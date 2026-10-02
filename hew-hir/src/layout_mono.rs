@@ -4,7 +4,7 @@
 //! through a substituted generic-function body, this pass discovers concrete
 //! *record* and *enum* layout instantiations reachable the same way and
 //! registers them under the shared `origin$$arg1$arg2` mangling so MIR's
-//! existing per-mangled-name layout merge (`hew-mir/src/lower.rs:961`) and
+//! existing per-mangled-name layout merge and
 //! field-access / variant dispatch find them with no back-end change.
 //!
 //! ## The gap this closes
@@ -564,24 +564,19 @@ fn walk_expr(
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
         | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             walk_expr(receiver, subst, residual_domain, disc);
             for arg in args {
                 walk_expr(arg, subst, residual_domain, disc);
             }
         }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            walk_expr(conn, subst, residual_domain, disc);
+        HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+            for operand in receiver.receiver().into_iter().chain(args) {
+                walk_expr(operand, subst, residual_domain, disc);
+            }
         }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
+        HirExprKind::AwaitTask { operand: child, .. } => {
             walk_expr(child, subst, residual_domain, disc);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            walk_expr(listener, subst, residual_domain, disc);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            walk_expr(stream, subst, residual_domain, disc);
         }
         HirExprKind::RemoteActorAsk {
             receiver,

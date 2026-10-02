@@ -612,7 +612,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             kind: TypeDefKind::Struct,
             name: "Point".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("x".to_string(), Ty::I64), ("y".to_string(), Ty::I64)]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -628,7 +628,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             kind: TypeDefKind::Struct,
             name: "WithFloat".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("x".to_string(), Ty::F32)]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -644,7 +644,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             kind: TypeDefKind::Struct,
             name: "Handle".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -726,7 +726,7 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
                 crate::ParamHead::for_test("A"),
                 crate::ParamHead::for_test("B"),
             ],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([
                 ("a".to_string(), Ty::param(crate::ParamHead::for_test("A"))),
                 ("b".to_string(), Ty::param(crate::ParamHead::for_test("B"))),
@@ -1005,7 +1005,7 @@ fn record_type_def_with_field(name: &str, field_name: &str, field_ty: Ty) -> Typ
         kind: TypeDefKind::Record,
         name: name.to_string(),
         type_params: vec![],
-        bounds: HashMap::new(),
+        bounds: crate::check::ParamBounds::default(),
         fields: HashMap::from([(field_name.to_string(), field_ty)]),
         variants: HashMap::new(),
         methods: HashMap::new(),
@@ -1132,7 +1132,7 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
             kind: TypeDefKind::Enum,
             name: "Envelope".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             variants: HashMap::from([(
                 "Full".to_string(),
@@ -1192,7 +1192,7 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
             kind: TypeDefKind::Record,
             name: "HandleWrapper".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([
                 ("rc".to_string(), Ty::rc(resource.clone())),
                 ("weak".to_string(), Ty::weak(resource.clone())),
@@ -1231,7 +1231,7 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
             kind: TypeDefKind::Record,
             name: "PhantomKey".to_string(),
             type_params: vec![crate::ParamHead::for_test("T")],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("id".to_string(), Ty::I64)]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1312,7 +1312,7 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
             kind: TypeDefKind::Struct,
             name: "Handle".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1328,7 +1328,7 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
             kind: TypeDefKind::Record,
             name: "Box".to_string(),
             type_params: vec![crate::ParamHead::for_test("T")],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([(
                 "item".to_string(),
                 Ty::param(crate::ParamHead::for_test("T")),
@@ -1368,7 +1368,7 @@ fn generic_record_clone_unresolved_var_is_nyi() {
                 crate::ParamHead::for_test("A"),
                 crate::ParamHead::for_test("B"),
             ],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([
                 ("a".to_string(), Ty::param(crate::ParamHead::for_test("A"))),
                 ("b".to_string(), Ty::param(crate::ParamHead::for_test("B"))),
@@ -1879,7 +1879,7 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
             kind: TypeDefKind::Record,
             name: "Wrap".to_string(),
             type_params: vec![crate::ParamHead::for_test("T")],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([(
                 "next".to_string(),
                 Ty::named_for_test(
@@ -2024,7 +2024,7 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
             kind: TypeDefKind::Record,
             name: "Boxed".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("payload".to_string(), vec_i64.clone())]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -2040,7 +2040,7 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
             kind: TypeDefKind::Record,
             name: "Person".to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("name".to_string(), Ty::String)]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -2498,7 +2498,7 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     let output = check_source(
         r"
         trait Speaker {
-            fn speak(val: Self) -> i64;
+            fn speak(self) -> i64;
         }
 
         fn clone_vec(values: Vec<dyn Speaker>) {
@@ -2599,8 +2599,8 @@ type Cat {
 }
 
 impl Speaker for Cat {
-    fn say(c: Cat) -> string {
-        c.name
+    fn say(self) -> string {
+        self.name
     }
 }
 
@@ -2641,7 +2641,7 @@ fn actor_handle_dispatch_uses_builtin_discriminator() {
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     assert!(
         output.actor_method_dispatch.values().any(
-            |dispatch| matches!(dispatch, ActorMethodKind::Ask { method_id, .. } if method_id == "Worker::ping")
+            |dispatch| matches!(dispatch, ActorMethodKind::Ask { method, .. } if output.defs.path(*method) == "Worker::ping")
         ),
         "Worker actor dispatch must be recorded by typed builtin discriminator: {:?}",
         output.actor_method_dispatch

@@ -19,7 +19,6 @@ pub enum TcpOp {
     ConnectionClose,
     ReadTimeout,
     WriteTimeout,
-    Detach,
     BroadcastExcept,
 }
 
@@ -35,7 +34,6 @@ impl TcpOp {
             Self::ConnectionClose => "hew_tcp_close",
             Self::ReadTimeout => "hew_tcp_set_read_timeout",
             Self::WriteTimeout => "hew_tcp_set_write_timeout",
-            Self::Detach => "hew_tcp_detach",
             Self::BroadcastExcept => "hew_tcp_broadcast_except",
         }
     }
@@ -53,7 +51,7 @@ impl TcpOp {
     #[must_use]
     pub const fn contract(self) -> RuntimeSemanticContract {
         use RuntimeArgumentEffect::{Borrow, Move};
-        use RuntimeResultEffect::{BitCopy, FreshOwned, Unit};
+        use RuntimeResultEffect::{BitCopy, FreshOwned};
         use RuntimeValueKind::{Bool, Bytes, IoHandle, String, I32};
         const ADDRESS: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: String,
@@ -102,7 +100,6 @@ impl TcpOp {
             Self::ReadTimeout | Self::WriteTimeout => {
                 runtime_semantic_contract(&[CONNECTION, INTEGER], BitCopy(I32), &[])
             }
-            Self::Detach => runtime_semantic_contract(&[CONNECTION], Unit, &[]),
         }
     }
 }

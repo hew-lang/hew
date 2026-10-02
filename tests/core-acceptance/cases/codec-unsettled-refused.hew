@@ -1,0 +1,15 @@
+// A decode must know its value type, and an encoder has no body to use as a
+// function value; both are refused at check time.
+import std.encoding.json;
+
+import std.encoding.wire;
+
+fn main() {
+    let parsed: Result<i64, wire.DecodeError> = json.decode("1");
+    match parsed {
+        .Ok(n) => println(n),
+        .Err(reason) => println(reason),
+    }
+    let _unknown = json.decode("[1]");
+    let _encode = json.encode;
+}

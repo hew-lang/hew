@@ -144,8 +144,12 @@ fn emit_text(level: i32, text: &str) {
     // Decode the wire representation into human-readable form: `msg key=val …`
     // where values with spaces are shown decoded (without surrounding quotes).
     let display = decode_text_line(text);
-    eprintln!(
-        "{dim}{hours:02}:{minutes:02}:{seconds:02}.{millis:03}{reset} {colour_code}{level_str}{reset} {display}"
+    crate::output::write(
+        crate::output::Stream::Err,
+        format!(
+            "{dim}{hours:02}:{minutes:02}:{seconds:02}.{millis:03}{reset} {colour_code}{level_str}{reset} {display}\n"
+        )
+        .as_bytes(),
     );
 }
 
@@ -265,9 +269,13 @@ fn emit_json(level: i32, text: &str) {
     // Named args are appended as " key=value" by the codegen.
     let (msg, fields) = split_msg_fields(text);
 
-    eprintln!(
-        "{{\"ts\":{secs}.{millis:03},\"level\":\"{level_str}\",\"msg\":\"{msg_escaped}\"{fields}}}",
-        msg_escaped = json_escape(msg),
+    crate::output::write(
+        crate::output::Stream::Err,
+        format!(
+            "{{\"ts\":{secs}.{millis:03},\"level\":\"{level_str}\",\"msg\":\"{msg_escaped}\"{fields}}}\n",
+            msg_escaped = json_escape(msg),
+        )
+        .as_bytes(),
     );
 }
 
@@ -529,7 +537,7 @@ fn json_escape(s: &str) -> String {
 pub unsafe extern "C" fn hew_stderr_write(s: *const c_char) {
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     if let Some(msg) = unsafe { cstr_to_str(s) } {
-        eprint!("{msg}");
+        crate::output::write(crate::output::Stream::Err, msg.as_bytes());
     }
 }
 

@@ -12,8 +12,8 @@ enum VaultError {
 }
 
 impl Display for VaultError {
-    fn fmt(problem: VaultError) -> string {
-        match problem {
+    fn fmt(self) -> string {
+        match self {
             VaultError.Overdrawn(short) => f"short by {short}",
             VaultError.Closed => "the vault is closed",
         }
@@ -28,7 +28,7 @@ actor Ledger {
         println("open");
     }
 
-    receive fn withdraw(amount: i64) -> () fails string {
+    receive fn withdraw(amount: i64) fails string {
         if amount > balance {
             return error f"cannot withdraw {amount} from {balance}";
         }
@@ -48,7 +48,7 @@ actor Vault {
         println("vault");
     }
 
-    receive fn take(amount: i64) -> () fails VaultError {
+    receive fn take(amount: i64) fails VaultError {
         if amount > balance {
             return error VaultError.Overdrawn(amount - balance);
         }

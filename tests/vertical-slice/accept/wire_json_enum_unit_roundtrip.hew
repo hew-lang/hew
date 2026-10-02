@@ -1,20 +1,22 @@
 // Validation: a unit-variant `#[wire]` enum serializes to a bare JSON string
 // naming the variant, and `from_json` parses that string back to the variant.
 // The recovered variant selects the exit code (42 for `Pending`).
+import std.encoding.json;
+
 #[wire]
 enum Status {
-    Active;
-    Inactive;
-    Pending;
+    Active @0;
+    Inactive @1;
+    Pending @2;
 }
 
 fn main() -> i64 {
     let s = Status.Pending;
-    let j = s.to_json();
+    let j = json.encode(s);
     if j != "\"Pending\"" {
         return 1;
     }
-    match Status.from_json(j) {
+    match json.decode<Status>(j) {
         .Ok(back) => match back {
             Status.Active => 2,
             Status.Inactive => 3,

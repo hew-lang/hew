@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "70\n80\ncannot halve zero\nnoted\nthe handler returned its declared error\nclosed\n"
+stdout = "70\n80\ncannot halve zero\nnoted\nFailed: a note cannot be negative\nclosed\n"
 exit = 0

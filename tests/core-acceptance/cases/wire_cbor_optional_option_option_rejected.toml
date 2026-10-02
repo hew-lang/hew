@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
-line = 6
+line = 8
 column = 12
-message = "E_WIRE_MEMBER_NOT_SERIALIZABLE: field `value` of `#[wire]` type `NestedOptional` has type `Option<Option<i64>>`"
+message = "E_NOT_SERIALIZABLE: field `value` of `#[wire]` type `NestedOptional` reaches `Option<Option<i64>>`, a nested `Option`, which null cannot represent"

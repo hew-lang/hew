@@ -56,21 +56,13 @@ impl Checker {
         }
     }
 
-    /// The codec direction of a `std.encoding.wire` facade declaration,
-    /// selected by its intrinsic key.
-    pub(in crate::check) fn wire_codec_intrinsic(
-        &self,
-        signature_key: &str,
-    ) -> Option<WireCodecDirection> {
-        Some(match self.intrinsic_key_for_signature(signature_key)? {
-            "wire.encode" => WireCodecDirection::Encode,
-            "wire.decode" => WireCodecDirection::Decode,
-            "wire.to_json" => WireCodecDirection::ToJson,
-            "wire.from_json" => WireCodecDirection::FromJson,
-            "wire.to_yaml" => WireCodecDirection::ToYaml,
-            "wire.from_yaml" => WireCodecDirection::FromYaml,
-            _ => return None,
-        })
+    /// The codec operation of a format module's `encode`/`decode`
+    /// declaration, selected by its intrinsic.
+    pub(in crate::check) fn codec_intrinsic(&self, signature_key: &str) -> Option<Codec> {
+        crate::stdlib_authority::Intrinsic::from_key(
+            self.intrinsic_key_for_signature(signature_key)?,
+        )?
+        .codec()
     }
 
     pub(in crate::check) fn record_generic_wire_codec_rewrite(
@@ -80,13 +72,11 @@ impl Checker {
         return_type: &Ty,
         span: &Span,
     ) -> bool {
-        let Some(direction) = self.wire_codec_intrinsic(signature_key) else {
+        let Some(codec) = self.codec_intrinsic(signature_key) else {
             return false;
         };
-        let value_source = if direction.is_serialize() {
+        let value_source = if codec.is_serialize() {
             params.first().cloned()
-        } else if direction == WireCodecDirection::Decode {
-            Some(return_type.clone())
         } else {
             result_ok_payload(return_type)
         };
@@ -94,24 +84,78 @@ impl Checker {
             return true;
         };
         match ResolvedTy::from_ty(&value_source) {
-            Ok(value_ty) => self.record_method_call_rewrite(
-                span,
-                MethodCallRewrite::GenericWireCodec {
-                    direction,
-                    value_ty,
-                },
-            ),
-            // `wire.to_json([1, 2, 3])`: the element type settles only when
+            Ok(value_ty) => self.record_codec_rewrite(span, codec, value_ty),
+            // `json.encode([1, 2, 3])`: the element type settles only when
             // literal defaulting runs, after the body is checked.
             Err(_) => self.deferred_wire_codecs.push(DeferredWireCodec {
                 key: SpanKey::in_module(span, self.current_module_idx),
                 span: span.clone(),
                 source_module: self.current_module.clone(),
-                direction,
+                codec,
                 value_ty: value_source,
             }),
         }
         true
+    }
+
+    /// Record a settled codec call, or refuse a value its format cannot
+    /// represent.
+    fn record_codec_rewrite(&mut self, span: &Span, codec: Codec, value_ty: ResolvedTy) {
+        if codec.format == CodecFormat::Toml {
+            if let Some(reason) = self.toml_unrepresentable(&value_ty) {
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    span,
+                    format!(
+                        "E_FORMAT_CANNOT_REPRESENT: TOML cannot represent `{}`: {reason}",
+                        value_ty.user_facing()
+                    ),
+                );
+                return;
+            }
+        }
+        self.method_call_rewrites.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            MethodCallRewrite::Codec { codec, value_ty },
+        );
+    }
+
+    /// Why TOML cannot carry `ty`: a document is a table, so the root must be
+    /// a named record or a string-keyed map, and TOML has no null, so a
+    /// `#[wire]` record cannot hold a required `Option` field.
+    fn toml_unrepresentable(&self, ty: &ResolvedTy) -> Option<String> {
+        let ResolvedTy::Named { head, .. } = ty else {
+            return Some("a TOML document is a table".to_string());
+        };
+        if ty.is_builtin(BuiltinType::HashMap) {
+            return None;
+        }
+        let def = self.type_def_view().of(*head)?;
+        let layout = ty
+            .nominal_instance(&self.defs)
+            .and_then(|instance| self.serial_layouts.get(&instance.nominal));
+        if def.kind != TypeDefKind::Struct || layout.is_none_or(|layout| layout.positional) {
+            return Some("a TOML document is a table".to_string());
+        }
+        let layout = layout?;
+        if !layout.tagged {
+            return None;
+        }
+        def.field_order
+            .iter()
+            .zip(&layout.members)
+            .find(|(name, member)| {
+                def.fields
+                    .get(*name)
+                    .is_some_and(|ty| ty.as_option().is_some())
+                    && member.flags & hew_codec::Member::OMIT_NULL == 0
+            })
+            .map(|(name, _)| {
+                format!(
+                    "field `{name}` is a required `Option` and TOML has no null; mark it \
+                     `optional`"
+                )
+            })
     }
 
     /// Record each deferred facade call now that its value type has settled.
@@ -124,13 +168,12 @@ impl Checker {
                 .resolve(&entry.value_ty)
                 .materialize_literal_defaults();
             if let Ok(value_ty) = ResolvedTy::from_ty(&value_ty) {
-                self.method_call_rewrites.insert(
-                    entry.key,
-                    MethodCallRewrite::GenericWireCodec {
-                        direction: entry.direction,
-                        value_ty,
-                    },
-                );
+                let saved_idx =
+                    std::mem::replace(&mut self.current_module_idx, entry.key.module_idx);
+                let saved = std::mem::replace(&mut self.current_module, entry.source_module);
+                self.record_codec_rewrite(&entry.span, entry.codec, value_ty);
+                self.current_module = saved;
+                self.current_module_idx = saved_idx;
                 continue;
             }
             // An errored operand already carries its own diagnostic.
@@ -141,40 +184,38 @@ impl Checker {
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::InferenceFailed,
                 span: entry.span,
-                message: "cannot infer the value type of this wire codec call".to_string(),
+                message: "E_TYPE_ANNOTATION_NEEDED: cannot infer the value type of this codec call"
+                    .to_string(),
                 notes: vec![],
                 suggestions: vec![
-                    "name the type, for example `wire.from_json<Config>(text)`".to_string()
+                    "name the type, for example `json.decode<Config>(text)`".to_string()
                 ],
                 source_module: entry.source_module,
             });
         }
     }
 
-    pub(super) fn report_nonserializable_remote_actor_msg(&mut self, ty: &Ty, span: &Span) {
-        self.report_error(
-            TypeErrorKind::BoundsNotSatisfied,
-            span,
-            format!(
-                "remote actor message type `{}` must implement Serializable before it can \
-                 cross a RemotePid boundary; only scalars, collections of serializable \
-                 values and `#[wire]` types have a wire encoding",
-                ty.user_facing()
-            ),
-        );
-    }
-
+    /// A remote message must be data whose records and enums are `#[wire]`,
+    /// the same rule `RemotePid` sends check (D524).
     pub(super) fn enforce_remote_actor_msg_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
             return true;
         }
-        if self.satisfies_serializable(&resolved) {
-            true
-        } else {
-            self.report_nonserializable_remote_actor_msg(&resolved, span);
-            false
-        }
+        let resolved = self.normalize_for_use(&resolved.materialize_literal_defaults());
+        let Ok(concrete) = ResolvedTy::from_ty(&resolved) else {
+            return true;
+        };
+        let Some(error) = self.remote_payload_error(&concrete) else {
+            return true;
+        };
+        let owner = format!("remote actor message `{}`", resolved.user_facing());
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            Self::not_data_message(&owner, &error),
+        );
+        false
     }
 
     /// Enforce the A640 remote serializability floor after method signature

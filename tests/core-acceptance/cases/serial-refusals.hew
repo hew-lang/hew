@@ -1,0 +1,32 @@
+// A key collision after the case is applied, a skipped non-Option field, a
+// resource field and a nested Option are refused at check time.
+import std.encoding.json;
+
+#[resource]
+type Handle {
+    fd: i64;
+}
+
+type Holder {
+    handle: Handle;
+}
+
+type Twice {
+    value: Option<Option<i64>>;
+}
+
+#[serial(case = "camelCase")]
+type Clash {
+    foo_bar: i64;
+    fooBar: i64;
+}
+
+type Skipped {
+    #[serial(skip)]
+    count: i64;
+}
+
+fn main() {
+    let _ = json.encode(Holder { handle: Handle { fd: 1 } });
+    let _ = json.encode(Twice { value: .None });
+}

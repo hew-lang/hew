@@ -619,7 +619,7 @@ fn rejected_completion_requests_keep_owned_payloads_for_retry_and_redirection() 
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/actor-policy-reject.hew"
     ));
-    assert_eq!(stdout(&trace), "submitted: accepted\nrejected: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n");
+    assert_eq!(stdout(&trace), "submitted: accepted\nrejected: Full: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n");
 }
 
 #[test]
@@ -1070,12 +1070,12 @@ impl Ticket {
 }
 
 trait Identified {
-    fn id(value: Self) -> i64;
+    fn id(self) -> i64;
 }
 
 impl Identified for Ticket {
-    fn id(value: Ticket) -> i64 {
-        value.id
+    fn id(self) -> i64 {
+        self.id
     }
 }
 

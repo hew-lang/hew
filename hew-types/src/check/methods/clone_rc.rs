@@ -128,13 +128,13 @@ impl Checker {
             // carries a `Clone` bound in scope (`fn f<T: Clone>(x: T)`), admit
             // the clone and defer the concrete copy path to monomorphization
             // (`AbstractParamClone`). This is the abstract-`T: Clone` spine
-            // (mirrors `type_param_has_marker_bound` as used by abstract-key
-            // HashMap dispatch). Without the bound, fall through to `NotARecord`
-            // → `UndefinedMethod` (fail closed — `admit-only-what-you-lower`).
-            if self.is_type_param_in_scope(name)
-                && self.type_param_has_marker_bound(name, MarkerTrait::Clone)
-            {
-                return RecordCloneAdmissibility::AbstractParamClone;
+            // (as abstract-key HashMap dispatch uses it). Without the bound,
+            // fall through to `NotARecord` → `UndefinedMethod` (fail closed —
+            // `admit-only-what-you-lower`).
+            if let crate::TypeHead::Param(param) = head {
+                if self.param_carries_marker(param.id, MarkerTrait::Clone) {
+                    return RecordCloneAdmissibility::AbstractParamClone;
+                }
             }
             return RecordCloneAdmissibility::NotARecord;
         };
@@ -673,22 +673,8 @@ impl Checker {
     /// does not satisfy `T: Clone`, which is what keeps affine resources
     /// non-clonable through a generic seam.
     pub(in crate::check) fn type_param_template_clone_capability(&self, ty: &Ty) -> Option<bool> {
-        let Ty::Named {
-            head:
-                head @ (crate::TypeHead::Nominal(_)
-                | crate::TypeHead::Param(_)
-                | crate::TypeHead::Unresolved(_)),
-            args,
-            ..
-        } = ty
-        else {
-            return None;
-        };
-        let name = head.registry_key();
-        if !args.is_empty() || !self.is_type_param_in_scope(name) {
-            return None;
-        }
-        Some(self.type_param_has_marker_bound(name, MarkerTrait::Clone))
+        let param = Self::bare_param(ty)?;
+        Some(self.param_carries_marker(param.id, MarkerTrait::Clone))
     }
 
     pub(in crate::check) fn check_rc_method(

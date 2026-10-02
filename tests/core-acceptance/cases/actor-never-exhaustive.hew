@@ -26,7 +26,7 @@ fn main() {
             ActorError.Rejected(_) => println("rejected"),
             ActorError.Trapped => println("trapped"),
             ActorError.Dead => println("dead"),
-            ActorError.Timeout => println("timeout"),
+            ActorError.TimedOut => println("timeout"),
             ActorError.NodeNotRunning => println("node not running"),
             ActorError.RoutingFailed => println("routing failed"),
             ActorError.EncodeFailed => println("encode failed"),
@@ -41,7 +41,7 @@ fn main() {
             ActorError.Failed(reason) => println(reason),
             ActorError.Trapped => println("trapped"),
             ActorError.Dead => println("dead"),
-            ActorError.Timeout => println("timeout"),
+            ActorError.TimedOut => println("timeout"),
             ActorError.NodeNotRunning => println("node not running"),
             ActorError.RoutingFailed => println("routing failed"),
             ActorError.EncodeFailed => println("encode failed"),
@@ -49,10 +49,7 @@ fn main() {
             ActorError.Partition => println("partition"),
         }
     }
-    {
-        let __hew_migrated_actor_1974 = counter;
-        stop(__hew_migrated_actor_1974);
-        stopped(__hew_migrated_actor_1974);
-    };
+    stop(counter);
+    stopped(counter);
     println("closed");
 }

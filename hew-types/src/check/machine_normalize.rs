@@ -556,6 +556,7 @@ impl Builder {
         report.type_params.clone_from(&params);
         report.where_clause.clone_from(&machine.where_clause);
         let report_start = self.next_span;
+        self.refresh_generics(report.type_params.as_mut(), report.where_clause.as_mut());
         self.refresh_type_decl(&mut report)?;
         let report_span = report_start..self.next_span;
         let impl_start = self.next_span;
@@ -566,6 +567,10 @@ impl Builder {
         implementation
             .where_clause
             .clone_from(&machine.where_clause);
+        self.refresh_generics(
+            implementation.type_params.as_mut(),
+            implementation.where_clause.as_mut(),
+        );
         self.refresh_type(&mut implementation.target_type);
         let step = &mut implementation.methods[0];
         step.origin = DeclarationOrigin::MachineStep;
@@ -614,6 +619,7 @@ impl Builder {
             // its field annotations retain that lexical binder scope too.
             if index != 0 {
                 if let Item::TypeDecl(decl) = item {
+                    self.refresh_generics(decl.type_params.as_mut(), decl.where_clause.as_mut());
                     self.refresh_type_decl(decl)?;
                 }
             }
@@ -645,6 +651,7 @@ impl Builder {
                 .map(|(name, fields)| {
                     TypeBodyItem::Variant(VariantDecl {
                         name: *name,
+                        tag: None,
                         doc_comment: None,
                         span: self.span(),
                         kind: if fields.is_empty() {
@@ -659,6 +666,7 @@ impl Builder {
             wire: None,
             is_indirect: false,
             resource_marker: ResourceMarker::None,
+            serial_case: None,
             is_opaque: false,
             consuming_methods: Vec::new(),
             lang_item: None,
@@ -942,6 +950,39 @@ impl Builder {
         }
         if let Some(ty) = &mut function.return_type {
             self.refresh_type(ty);
+        }
+    }
+
+    /// Give a copy of the machine's generic parameters and where clause
+    /// fresh spans inside the generated declaration, so their bounds name the
+    /// declaration's own binders rather than the machine's.
+    fn refresh_generics(
+        &mut self,
+        type_params: Option<&mut Vec<hew_parser::ast::TypeParam>>,
+        where_clause: Option<&mut hew_parser::ast::WhereClause>,
+    ) {
+        let bounds = type_params
+            .into_iter()
+            .flatten()
+            .flat_map(|param| param.bounds.iter_mut());
+        let mut predicates = where_clause
+            .into_iter()
+            .flat_map(|clause| clause.predicates.iter_mut());
+        let mut written: Vec<&mut hew_parser::ast::TraitBound> = bounds.collect();
+        for predicate in &mut predicates {
+            self.refresh_type(&mut predicate.ty);
+            written.extend(predicate.bounds.iter_mut());
+        }
+        for bound in written {
+            for (_, span) in &mut bound.path.segments {
+                *span = self.span();
+            }
+            for arg in bound.type_args.iter_mut().flatten() {
+                self.refresh_type(arg);
+            }
+            for binding in &mut bound.assoc_type_bindings {
+                self.refresh_type(&mut binding.ty);
+            }
         }
     }
 

@@ -1,13 +1,21 @@
 //! Owned native I/O operations for suspendable Hew code.
 //!
-//! Producers own their inputs and one `Arc` until they finish. A coroutine owns
-//! the returned reference and takes a result only on its resume edge. No worker
-//! retains a pointer into the coroutine frame. Completion and cancellation use
-//! one locked state transition; a losing producer drops its result normally.
-//! Wakers are retained heap targets and run only after the state lock is released.
+//! On wasm32 only standard input is compiled: WASI runs one thread, so its
+//! read completes at submission and the entries below see a finished
+//! operation. Files, sockets and deadlines need the reactor and stay native.
+//!
+//! A coroutine owns the returned reference and takes a result only on its
+//! resume edge. Pool producers own their inputs and one `Arc` until they
+//! finish. A readiness operation runs its syscall on the owning task's worker:
+//! it tries at submission, and after the reactor reports readiness it tries
+//! again from `hew_async_io_status`. Completion and cancellation use one locked
+//! state transition; a losing producer drops its result normally. Wakers are
+//! retained heap targets and run only after the state lock is released.
 
 use std::io;
 use std::ptr;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use hew_cabi::string::{string_from_str, HewString};
@@ -16,15 +24,28 @@ use crate::bytes::BytesTriple;
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
 
+#[cfg(not(target_arch = "wasm32"))]
 mod connect;
-mod connect_deadline;
+#[cfg(not(target_arch = "wasm32"))]
+mod deadline;
+#[cfg(not(target_arch = "wasm32"))]
 mod file;
+#[cfg(not(target_arch = "wasm32"))]
 mod net;
+mod offload;
+mod stdin;
+#[cfg(not(target_arch = "wasm32"))]
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
-pub use file::{hew_async_file_read, hew_async_file_write, hew_async_file_write_string};
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use file::{start_sink_write, start_stream_read};
+#[cfg(not(target_arch = "wasm32"))]
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use net::{start_tcp_readable, start_tcp_stream_write};
+pub use offload::hew_async_offload;
+#[cfg(windows)]
+pub(crate) use stdin::ensure_reader as ensure_stdin_reader;
+pub use stdin::hew_async_stdin_read_line;
 
 #[cfg(test)]
 mod tests;
@@ -61,6 +82,7 @@ impl IoFailure {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn invalid(message: &str) -> Self {
         Self {
             kind: crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
@@ -72,8 +94,10 @@ impl IoFailure {
 
 /// An accepted socket remains owned by its operation until a successful take.
 /// Cancellation after readiness and completion after cancellation both drop it.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct AcceptedConnection(pub(crate) i32);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for AcceptedConnection {
     fn drop(&mut self) {
         if self.0 >= 0 {
@@ -82,15 +106,22 @@ impl Drop for AcceptedConnection {
     }
 }
 
+// wasm32 produces only `StdinLine`; the other values come from native
+// producers, and the shared take entries still name them.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) enum IoValue {
     Bytes(Vec<u8>),
     StreamItem(Option<Vec<u8>>),
     Count(i64),
+    #[cfg(not(target_arch = "wasm32"))]
     Connection(AcceptedConnection),
+    StdinLine(stdin::Line),
+    /// An `#[offload]` call's environment holding its result.
+    Offload(offload::OffloadEnv),
 }
 
 enum State {
-    Pending(Option<OwnedWaker>),
+    Pending(Option<Arc<OwnedWaker>>),
     Ready(Result<IoValue, IoFailure>),
     Cancelled,
     Taken,
@@ -111,9 +142,15 @@ impl State {
 /// Opaque resource held across a suspended I/O call.
 pub struct HewAsyncIo {
     state: Mutex<State>,
-    reactor: bool,
+    /// The socket, action and readiness flag of a readiness operation.
+    #[cfg(not(target_arch = "wasm32"))]
+    net: Option<net::NetOp>,
     cleanup: Mutex<Cleanup>,
-    connect_deadline: Mutex<Option<connect_deadline::ConnectDeadline>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    deadline: Mutex<Option<deadline::Deadline>>,
+    /// The running pool job producing the result, told when its caller gives up.
+    #[cfg(not(target_arch = "wasm32"))]
+    detach: Mutex<Option<crate::blocking_pool::Detach>>,
 }
 
 #[derive(Default)]
@@ -124,8 +161,10 @@ struct Cleanup {
 
 /// A producer lease covers queued work and every in-flight readiness snapshot.
 /// Its last release proves no producer can still touch borrowed resources.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct IoProducer(Arc<HewAsyncIo>);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl IoProducer {
     pub(crate) fn new(operation: Arc<HewAsyncIo>) -> Self {
         operation.cleanup.lock_or_recover().producers += 1;
@@ -133,12 +172,14 @@ impl IoProducer {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Clone for IoProducer {
     fn clone(&self) -> Self {
         Self::new(Arc::clone(&self.0))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::ops::Deref for IoProducer {
     type Target = HewAsyncIo;
 
@@ -147,6 +188,7 @@ impl std::ops::Deref for IoProducer {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for IoProducer {
     fn drop(&mut self) {
         let waker = {
@@ -175,22 +217,100 @@ impl std::fmt::Debug for HewAsyncIo {
 impl HewAsyncIo {
     /// # Safety
     /// A non-null descriptor obeys the shared `HewWaker` lifetime contract.
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe fn new(waker: *const HewWaker) -> Arc<Self> {
         // SAFETY: the caller lends the descriptor through construction.
-        unsafe { Self::with_source(waker, false) }
+        unsafe { Self::with_net(waker, None) }
     }
 
-    unsafe fn with_source(waker: *const HewWaker, reactor: bool) -> Arc<Self> {
+    /// # Safety
+    /// A non-null descriptor obeys the shared `HewWaker` lifetime contract.
+    #[cfg(target_arch = "wasm32")]
+    unsafe fn new(waker: *const HewWaker) -> Arc<Self> {
         // SAFETY: the caller lends a live descriptor for this call, or null.
-        let owned = unsafe { waker.as_ref().map(|waker| OwnedWaker::retain(waker)) };
+        let owned = unsafe {
+            waker
+                .as_ref()
+                .map(|waker| Arc::new(OwnedWaker::retain(waker)))
+        };
         Arc::new(Self {
             state: Mutex::new(State::Pending(owned)),
-            reactor,
             cleanup: Mutex::new(Cleanup::default()),
-            connect_deadline: Mutex::new(None),
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn with_net(waker: *const HewWaker, net: Option<net::NetOp>) -> Arc<Self> {
+        // SAFETY: the caller lends a live descriptor for this call, or null.
+        let owned = unsafe {
+            waker
+                .as_ref()
+                .map(|waker| Arc::new(OwnedWaker::retain(waker)))
+        };
+        Arc::new(Self {
+            state: Mutex::new(State::Pending(owned)),
+            net,
+            cleanup: Mutex::new(Cleanup::default()),
+            deadline: Mutex::new(None),
+            detach: Mutex::new(None),
+        })
+    }
+
+    /// Record the reactor's readiness report and wake the owning task, whose
+    /// next status poll performs the syscall. Runs on the reactor thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn signal_ready(&self) {
+        let Some(net) = &self.net else {
+            return;
+        };
+        net.ready.store(true, Ordering::SeqCst);
+        let waker = match &*self.state.lock_or_recover() {
+            State::Pending(waker) => waker.clone(),
+            _ => None,
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// Run the pending syscall on this worker if readiness was reported.
+    ///
+    /// # Safety
+    /// `operation` is a live creator-owned reference.
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn advance_if_ready(operation: *const Self) {
+        // SAFETY: the caller lends a live reference.
+        let this = unsafe { &*operation };
+        let Some(net) = &this.net else {
+            return;
+        };
+        if net.ready.swap(false, Ordering::SeqCst) && this.is_pending() {
+            // SAFETY: the creator reference keeps the allocation live; this
+            // adds the reference the slot may retain as its waiter.
+            let operation = unsafe {
+                Arc::increment_strong_count(operation);
+                Arc::from_raw(operation)
+            };
+            net::advance(&operation);
+        }
+    }
+
+    /// Register the pool job now producing this result, so a caller that
+    /// gives up releases the job's thread from the pool's cap. Runs on the
+    /// job's thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn produced_by(&self, detach: crate::blocking_pool::Detach) {
+        let state = self.state.lock_or_recover();
+        if matches!(*state, State::Pending(_)) {
+            // Cancellation changes the state under this lock, then takes this.
+            *self.detach.lock_or_recover() = Some(detach);
+        } else {
+            drop(state);
+            detach.detach();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_pending(&self) -> bool {
         matches!(*self.state.lock_or_recover(), State::Pending(_))
     }
@@ -217,9 +337,16 @@ impl HewAsyncIo {
             };
             waker
         };
-        self.clear_connect_deadline();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.clear_deadline();
         if let Some(waker) = waker {
             waker.wake();
+        }
+        // Withdraw after the wake, so shutdown's idle probe never sees neither
+        // a waiter nor a runnable task.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(net) = &self.net {
+            net.slot.forget(self);
         }
     }
 
@@ -227,6 +354,7 @@ impl HewAsyncIo {
         self.cancel_with_notification(false)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel_and_wake(&self) -> bool {
         self.cancel_with_notification(true)
     }
@@ -243,9 +371,17 @@ impl HewAsyncIo {
                 (false, None)
             }
         };
-        self.clear_connect_deadline();
-        if self.reactor {
-            crate::reactor::reactor_detach_async_io(self);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.clear_deadline();
+            if let Some(net) = &self.net {
+                net.slot.forget(self);
+            }
+            if won {
+                if let Some(detach) = self.detach.lock_or_recover().take() {
+                    detach.detach();
+                }
+            }
         }
         // Releasing a readiness target can call user-supplied runtime callbacks.
         // Never run those callbacks while holding the operation state lock.
@@ -278,10 +414,15 @@ impl HewAsyncIo {
 /// `operation` must be null or a live creator-owned operation reference.
 #[no_mangle]
 pub unsafe extern "C" fn hew_async_io_status(operation: *const HewAsyncIo) -> i32 {
-    // SAFETY: validity is the caller's contract; null is a defined error.
-    unsafe { operation.as_ref() }.map_or(AsyncIoStatus::Error as i32, |operation| {
-        operation.state.lock_or_recover().status() as i32
-    })
+    if operation.is_null() {
+        return AsyncIoStatus::Error as i32;
+    }
+    // SAFETY: validity is the caller's contract.
+    unsafe {
+        #[cfg(not(target_arch = "wasm32"))]
+        HewAsyncIo::advance_if_ready(operation);
+        (*operation).state.lock_or_recover().status() as i32
+    }
 }
 
 /// Observe producer quiescence, optionally registering a retained cleanup wake.
@@ -371,19 +512,25 @@ pub unsafe extern "C" fn hew_async_io_take_bytes(
         return AsyncIoStatus::Error as i32;
     }
     let mut state = operation.state.lock_or_recover();
-    let State::Ready(Ok(IoValue::Bytes(bytes))) = &*state else {
-        return if state.status() == AsyncIoStatus::Success {
-            AsyncIoStatus::Error as i32
-        } else {
-            state.status() as i32
-        };
+    let bytes = match &*state {
+        State::Ready(Ok(IoValue::Bytes(bytes))) => bytes.as_slice(),
+        State::Ready(Ok(IoValue::StdinLine(line))) => line.bytes(),
+        _ => {
+            return if state.status() == AsyncIoStatus::Success {
+                AsyncIoStatus::Error as i32
+            } else {
+                state.status() as i32
+            };
+        }
     };
     let Ok(len) = u32::try_from(bytes.len()) else {
         return AsyncIoStatus::Error as i32;
     };
-    // SAFETY: bytes owns len readable bytes; out is aligned writable storage.
-    // The managed allocation belongs to the resume edge only after this write.
+    // SAFETY: the region is live under the state lock; the carrier copies it.
     unsafe { out.write(crate::bytes::hew_bytes_from_static(bytes.as_ptr(), len)) };
+    if let State::Ready(Ok(IoValue::StdinLine(line))) = &mut *state {
+        line.consume();
+    }
     *state = State::Taken;
     AsyncIoStatus::Success as i32
 }
@@ -393,11 +540,15 @@ pub unsafe extern "C" fn hew_async_io_take_bytes(
 ///
 /// # Safety
 /// `operation` is the live result of a stream-read submission.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Option<Vec<u8>>) {
-    // SAFETY: the caller lends a live operation reference.
-    let Some(operation) = (unsafe { operation.as_ref() }) else {
+    if operation.is_null() {
         return (3, None);
-    };
+    }
+    // SAFETY: the caller lends a live operation reference.
+    unsafe { HewAsyncIo::advance_if_ready(operation) };
+    // SAFETY: as above.
+    let operation = unsafe { &*operation };
     let mut state = operation.state.lock_or_recover();
     if matches!(*state, State::Pending(_)) {
         return (0, None);
@@ -420,6 +571,7 @@ pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Opt
 ///
 /// # Safety
 /// `operation` is null or a live operation reference.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn failure_message(operation: *const HewAsyncIo) -> Option<String> {
     // SAFETY: the caller lends a live operation reference, or null.
     let operation = unsafe { operation.as_ref() }?;
@@ -465,6 +617,7 @@ pub unsafe extern "C" fn hew_async_io_take_count(
 /// # Safety
 /// `operation` is live; `out` is null or aligned writable i64 storage. A
 /// successful caller must eventually close the returned transport handle.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_async_io_take_handle(
     operation: *const HewAsyncIo,
@@ -492,6 +645,44 @@ pub unsafe extern "C" fn hew_async_io_take_handle(
     AsyncIoStatus::Success as i32
 }
 
+/// Move an `#[offload]` call's result into `out` and release its arguments.
+/// The output is untouched unless this returns `AsyncIoStatus::Success`.
+///
+/// # Safety
+/// `operation` is live and came from `hew_async_offload`; `out` is writable for
+/// `size` bytes, and `offset`/`size` locate the result in its environment.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_io_take_offload(
+    operation: *const HewAsyncIo,
+    out: *mut u8,
+    offset: usize,
+    size: usize,
+) -> i32 {
+    // SAFETY: the caller provides a live operation, or null.
+    let Some(operation) = (unsafe { operation.as_ref() }) else {
+        return AsyncIoStatus::Error as i32;
+    };
+    let taken = {
+        let mut state = operation.state.lock_or_recover();
+        if !matches!(&*state, State::Ready(Ok(IoValue::Offload(_)))) {
+            return if state.status() == AsyncIoStatus::Success {
+                AsyncIoStatus::Error as i32
+            } else {
+                state.status() as i32
+            };
+        }
+        std::mem::replace(&mut *state, State::Taken)
+    };
+    let State::Ready(Ok(IoValue::Offload(mut env))) = taken else {
+        unreachable!("offload result was checked under the state lock")
+    };
+    // SAFETY: forwarded from this function's contract.
+    unsafe { env.take_result(out, offset, size) };
+    // Releasing the arguments runs generated destructors: outside the lock.
+    drop(env);
+    AsyncIoStatus::Success as i32
+}
+
 /// Restore ordinary I/O error metadata on the resumed execution thread.
 /// Success clears stale errors; pending/cancelled operations leave the channel
 /// unchanged. Call immediately before continuing the existing source wrapper,
@@ -512,6 +703,7 @@ pub unsafe extern "C" fn hew_async_io_restore_error(operation: *const HewAsyncIo
             error.errno,
             error.kind,
         ),
+        State::Ready(Ok(IoValue::Offload(env))) => env.error.restore(),
         State::Ready(Ok(_)) | State::Taken => {
             let _ = crate::stream_error::take_last_error();
         }

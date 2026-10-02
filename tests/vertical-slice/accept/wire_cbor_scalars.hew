@@ -1,6 +1,8 @@
 // Validation: the non-integer scalar shapes round-trip through the CBOR body
 // codec — f32, f64, bool, char, a non-empty string, and an empty string (the
 // empty-string boundary). A mismatch returns the field's 1-based index.
+import std.encoding.cbor;
+
 #[wire]
 type Scalars {
     a: f32 @1;
@@ -13,7 +15,7 @@ type Scalars {
 
 fn main() -> i64 {
     let v = Scalars { a: 1.5, b: 2.25, c: true, d: 'Z', e: "hello", f: "" };
-    let back = Scalars.decode(v.encode());
+    let back = cbor.decode<Scalars>(cbor.encode(v)).expect("decode");
     if back.a != 1.5 {
         return 1;
     }

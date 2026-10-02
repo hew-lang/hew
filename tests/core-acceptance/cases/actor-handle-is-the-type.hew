@@ -70,14 +70,8 @@ fn main() {
         }
         .Err(_) => panic("who failed"),
     }
-    {
-        let __hew_migrated_actor_2231 = orders;
-        stop(__hew_migrated_actor_2231);
-        stopped(__hew_migrated_actor_2231);
-    };
-    {
-        let __hew_migrated_actor_2250 = auditor;
-        stop(__hew_migrated_actor_2250);
-        stopped(__hew_migrated_actor_2250);
-    };
+    stop(orders);
+    stopped(orders);
+    stop(auditor);
+    stopped(auditor);
 }

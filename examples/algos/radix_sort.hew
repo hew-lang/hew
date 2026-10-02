@@ -17,14 +17,14 @@ fn radix_sort(var v: Vec<i64>) -> Vec<i64> {
         var exp = 1;
         while max_val / exp > 0 {
             var output: Vec<i64> = Vec.new();
-            for i in 0 .. n {
+            for i in 0..n {
                 output.push(0);
             }
             var count: Vec<i64> = Vec.new();
-            for i in 0 .. 10 {
+            for i in 0..10 {
                 count.push(0);
             }
-            for i in 0 .. n {
+            for i in 0..n {
                 let digit = v[i] / exp % 10;
                 count.set(digit, count[digit] + 1);
             }
@@ -47,7 +47,7 @@ fn radix_sort(var v: Vec<i64>) -> Vec<i64> {
                     i = i - 1;
                 }
             }
-            for i in 0 .. n {
+            for i in 0..n {
                 v.set(i, output[i]);
             }
             exp = exp * 10;

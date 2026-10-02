@@ -10,7 +10,7 @@ fn rb_create(capacity: i64) -> Vec<i64> {
     v.push(0); // index 1: head (read pos)
     v.push(0); // index 2: tail (write pos)
     v.push(0); // index 3: count
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(0); // data starts at index 4
     }
     v

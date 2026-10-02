@@ -41,7 +41,7 @@ fn fallible_returns_use_one_result_representation_with_exact_payloads() {
             1,
             ResolvedTy::String,
         ),
-        ("fn f() -> () fails string { return; }", 0, ResolvedTy::Unit),
+        ("fn f() fails string { return; }", 0, ResolvedTy::Unit),
     ] {
         let lowered = lower(source);
         let function = function(&lowered, "f");
@@ -75,7 +75,7 @@ fn fallible_returns_use_one_result_representation_with_exact_payloads() {
 fn fallible_tails_wrap_success_including_result_valued_success() {
     for source in [
         "fn f() -> i64 fails string { 7 }",
-        "fn f() -> () fails string {}",
+        "fn f() fails string {}",
         "fn f(value: Result<i64, string>) -> Result<i64, string> fails bool { value }",
     ] {
         let lowered = lower(source);

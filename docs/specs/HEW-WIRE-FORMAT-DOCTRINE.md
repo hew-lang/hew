@@ -77,12 +77,12 @@ The body shapes (the `wire-body` rule and its parts):
   but tolerates an absent known key only when checked field metadata marks it
   `optional`. Required fields use the failing selector.
 - A **`#[wire]` enum** encodes as either a **bare unsigned tag `N`** (a unit
-  variant) or a **single-entry map `{ N => [field0, field1, …] }`** (a
-  payload variant, the "map-of-one"). The variant tag is the declaration
-  ordinal (the `#[wire]` enum surface tags variants positionally). The
-  runtime reader `hew_cbor_de_enum_begin` accepts exactly these two shapes
-  and fails closed on a negative tag, a multi-entry map, or a single value
-  that is not an array.
+  variant) or a **single-entry map from `N` to its payload** (the
+  "map-of-one"): the value itself for one positional field, an array for
+  several, a map keyed by text key for named fields. Every variant declares
+  its stable tag (`Joined(string) @1;`). The reader accepts exactly these
+  shapes and fails closed on an unknown tag, a multi-entry map, or a payload
+  of the wrong shape.
 - The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
   (CBOR text), `bytes` (CBOR byte string), `Option<T>` (`null` for `None`,
   the inner encoding for `Some`), `Vec<T>` (a CBOR array), `HashMap<K, V>`
@@ -217,18 +217,21 @@ module under `std.encoding.*`. Hew does **not** expose the runtime
 CBOR envelope to user code as a general-purpose serialisation surface.
 That envelope is an internal trust boundary, not a user API.
 
-The opaque `Value` contract shared by the structural encoders is
-described in [`std/encoding/wire/README.md`](../../std/encoding/wire/README.md)
-and was settled by issue #1247.
+Every format module offers `encode(value)` and `decode<T>(document)` over
+any data type. A failed decode returns `wire.DecodeError`, which names the
+path of the value that did not fit. The shared error and the `#[wire]`
+tagged-schema layer are described in
+[`std/encoding/wire/README.md`](../../std/encoding/wire/README.md).
 
 ### Module inventory and honest status
 
 | Module | Status | What's there today |
 | --- | --- | --- |
-| `std.encoding.json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
+| `std.encoding.cbor` | **Real.** `encode` / `decode<T>` of any data value; `#[wire]` types encode by `@N` tag. | `std/encoding/cbor/`. |
+| `std.encoding.json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser, the opaque `Value` surface and `encode` / `decode<T>`. |
 | `std.encoding.yaml` | **Real.** Full parser/serialiser. | `std/encoding/yaml/` (~2.4k LOC). |
 | `std.encoding.toml` | **Real.** Parser/generator + datetime variant. | `std/encoding/toml/` (~1.2k LOC). |
-| `std.encoding.msgpack` | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface. | `std/encoding/msgpack/` (~1k LOC). |
+| `std.encoding.msgpack` | **Real.** `encode` / `decode<T>` of any data value, plus `from_json` / `to_json` bridging JSON text. | `std/encoding/msgpack/`. |
 | `std.encoding.protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler. | `std/encoding/protobuf/` (~1.5k LOC). |
 | `std.encoding.xml` | **Real, scoped.** Parse/serialise. | `std/encoding/xml/` (~850 LOC). |
 | `std.encoding.csv` | **Real, scoped.** | `std/encoding/csv/`. |
@@ -236,7 +239,7 @@ and was settled by issue #1247.
 | `std.encoding.base64` | **Real.** | `std/encoding/base64/`. |
 | `std.encoding.hex` | **Real.** | `std/encoding/hex/`. |
 | `std.encoding.compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
-| `std.encoding.wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
+| `std.encoding.wire` | **Substrate.** Holds the shared `DecodeError` and the `#[wire]` tagged-schema layer. The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.
@@ -253,13 +256,15 @@ Each module's README states its own scope. The doctrine here is about
 - **Talking to a non-Hew consumer that wants to read your message
   types:** see §3 — this is consumer-interop, deferred.
 
-### Anti-pattern: do not use `std.encoding.wire` directly
+### Anti-pattern: do not look for codecs in `std.encoding.wire`
 
 `std.encoding.wire` held low-level HBF byte-layout helpers
-(`encode_header` and friends) that reflected the pre-v0.5 format.
-Those helpers were deleted when the CBOR-native wire format replaced HBF (see §5 S1). The module now holds
-only the opaque `Value` contract. User or stdlib code that needs wire
-bytes must use the format-specific module (`json`, `msgpack`, etc.).
+(`encode_header` and friends) that reflected the pre-v0.5 format, and
+later a generic `wire.to_json` / `wire.encode` facade. Both are gone: the
+format modules encode and decode, and `wire` holds the shared `DecodeError`
+and the tagged-schema layer. Code that needs wire bytes or text calls
+`encode` / `decode<T>` on the format-specific module (`json`, `cbor`,
+`msgpack`, etc.).
 
 ---
 

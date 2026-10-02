@@ -1,0 +1,13 @@
+[[case]]
+id = "wire_cbor_narrow_int_over_range_is_err"
+intent = "The decode returns an Err naming the failure; the fixture prints it and exits 42."
+source = "../vertical-slice/accept/wire_cbor_narrow_int_over_range_is_err.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Range: .v: 300 does not fit i8\n"
+exit = 42

@@ -145,11 +145,11 @@ fn main() {
     total = total + 1;
     var in2: Vec<i64> = Vec.new();
     var out2: Vec<i64> = Vec.new();
-    for i in 0 .. 50 {
+    for i in 0..50 {
         in2 = tsq_enqueue(in2, i);
     }
     var r7 = 1;
-    for i in 0 .. 50 {
+    for i in 0..50 {
         let (next_in, next_out, val) = tsq_dequeue(in2, out2);
         in2 = next_in;
         out2 = next_out;

@@ -142,7 +142,6 @@ stable = [
   "hew_actor_await",
   "hew_actor_await_all",
   "hew_actor_cancel_periodic",
-  "hew_actor_close",
   "hew_actor_current_id",
   "hew_actor_demonitor",
   "hew_actor_exit_unhandled",
@@ -209,7 +208,6 @@ stable = [
   "hew_array_clone",
   "hew_array_free",
   "hew_array_free_walk",
-  "hew_ask_error_translate_for_public_result",
   "hew_assert",
   "hew_blocking_pool_new",
   "hew_blocking_pool_stop",
@@ -352,14 +350,6 @@ stable = [
   "hew_hostname",
   "hew_i64_to_string",
   "hew_int_to_string",
-  "hew_io_poller_new",
-  "hew_io_poller_poll",
-  "hew_io_poller_poll_ready",
-  "hew_io_poller_register",
-  "hew_io_poller_stop",
-  "hew_io_poller_unregister",
-  "hew_io_read_all",
-  "hew_io_read_line",
   "hew_io_write",
   "hew_io_write_err",
   "hew_iter_free",
@@ -475,10 +465,6 @@ stable = [
   "hew_pool_select",
   "hew_pool_size",
   "hew_print_value",
-  "hew_println_bool",
-  "hew_println_f64",
-  "hew_println_int",
-  "hew_println_str",
   "hew_process_drop",
   "hew_process_free",
   "hew_process_is_valid",
@@ -559,7 +545,6 @@ stable = [
   "hew_sleep_ns",
   "hew_sleep_until_ns",
   "hew_stderr_write",
-  "hew_stdin_read_line",
   "hew_stream_await_next",
   "hew_stream_detach_await",
   "hew_stream_channel",
@@ -676,7 +661,6 @@ stable = [
   "hew_tcp_connect",
   "hew_tcp_connect_timed",
   "hew_tcp_connect_timeout",
-  "hew_tcp_detach",
   "hew_tcp_listen",
   "hew_tcp_listener_close",
   "hew_tcp_listener_local_port",
@@ -900,9 +884,7 @@ stable-stdlib = [
   "hew_deflate_compress_hew",
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
-  "hew_dns_lookup_host_timed",
   "hew_dns_resolve",
-  "hew_dns_resolve_timed",
   "hew_ed25519_generate_pkcs8_hew",
   "hew_ed25519_public_key_from_pkcs8_hew",
   "hew_ed25519_sign_hew",
@@ -994,9 +976,6 @@ stable-stdlib = [
   "hew_jwt_validate",
   "hew_markdown_to_html",
   "hew_markdown_to_html_safe",
-  "hew_msgpack_encode_bytes_hew",
-  "hew_msgpack_encode_int_hew",
-  "hew_msgpack_encode_string_hew",
   "hew_msgpack_from_json_hew",
   "hew_msgpack_last_error",
   "hew_msgpack_to_json_hew",
@@ -1202,11 +1181,52 @@ stable-stdlib = [
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 non-declarable = [
   # Verified native compiler/runtime protocol entry points.
-  "hew_cbor_de_bytes_hew",
-  "hew_cbor_de_string_hew",
-  "hew_cbor_ser_string_hew",
-  "hew_wire_decode_begin",
-  "hew_wire_encode_finish",
+  "hew_de_new_raw",
+  "hew_de_unit",
+  "hew_ser_finish_raw",
+  "hew_de_bool",
+  "hew_de_bytes",
+  "hew_de_char",
+  "hew_de_duplicate",
+  "hew_de_error_reader",
+  "hew_de_f64",
+  "hew_de_failed",
+  "hew_de_free",
+  "hew_de_int",
+  "hew_de_is_null",
+  "hew_de_map_begin",
+  "hew_de_map_next",
+  "hew_de_new",
+  "hew_de_record_begin",
+  "hew_de_record_next",
+  "hew_de_seq_begin",
+  "hew_de_seq_next",
+  "hew_de_set_begin",
+  "hew_de_str",
+  "hew_de_tuple_begin",
+  "hew_de_variant",
+  "hew_de_variant_end",
+  "hew_ser_bool",
+  "hew_ser_bytes",
+  "hew_ser_char",
+  "hew_ser_f64",
+  "hew_ser_field",
+  "hew_ser_finish_bytes",
+  "hew_ser_finish_string",
+  "hew_ser_i64",
+  "hew_ser_map_begin",
+  "hew_ser_map_end",
+  "hew_ser_new",
+  "hew_ser_null",
+  "hew_ser_record_begin",
+  "hew_ser_record_end",
+  "hew_ser_seq_begin",
+  "hew_ser_seq_end",
+  "hew_ser_set_begin",
+  "hew_ser_str",
+  "hew_ser_u64",
+  "hew_ser_variant",
+  "hew_ser_variant_end",
   "hew_actor_ask_submit_native",
   "hew_actor_ask_wait_free",
   "hew_actor_ask_wait_new",
@@ -1246,9 +1266,6 @@ non-declarable = [
   "hew_actor_wait_new",
   "hew_actor_wait_poll",
   "hew_actor_wait_take_fault",
-  "hew_async_file_read",
-  "hew_async_file_write",
-  "hew_async_file_write_string",
   "hew_async_io_cancel",
   "hew_async_io_cleanup_status",
   "hew_async_io_free",
@@ -1257,6 +1274,9 @@ non-declarable = [
   "hew_async_io_take_bytes",
   "hew_async_io_take_count",
   "hew_async_io_take_handle",
+  "hew_async_io_take_offload",
+  "hew_async_offload",
+  "hew_async_stdin_read_line",
   "hew_async_tcp_accept",
   "hew_async_tcp_connect",
   "hew_async_tcp_connect_timeout",
@@ -1421,51 +1441,6 @@ non-declarable = [
   "hew_callable_clone",
   "hew_callable_drop",
   "hew_callable_env_alloc",
-  "hew_cbor_de_array_next",
-  "hew_cbor_de_bool",
-  "hew_cbor_de_bytes",
-  "hew_cbor_de_char",
-  "hew_cbor_de_enter_array",
-  "hew_cbor_de_enter_map",
-  "hew_cbor_de_enter_map_iter",
-  "hew_cbor_de_enum_begin",
-  "hew_cbor_de_enum_end",
-  "hew_cbor_de_exit_array",
-  "hew_cbor_de_exit_map",
-  "hew_cbor_de_exit_map_iter",
-  "hew_cbor_de_f64",
-  "hew_cbor_de_fail",
-  "hew_cbor_de_failed",
-  "hew_cbor_de_free",
-  "hew_cbor_de_i64",
-  "hew_cbor_de_int_checked",
-  "hew_cbor_de_is_null",
-  "hew_cbor_de_map_next",
-  "hew_cbor_de_map_value",
-  "hew_cbor_de_new",
-  "hew_cbor_de_select_key",
-  "hew_cbor_de_select_optional_key",
-  "hew_cbor_de_skip",
-  "hew_cbor_de_string",
-  "hew_cbor_de_u64",
-  "hew_cbor_ser_abort",
-  "hew_cbor_ser_begin_array",
-  "hew_cbor_ser_begin_key",
-  "hew_cbor_ser_begin_map",
-  "hew_cbor_ser_begin_set",
-  "hew_cbor_ser_bool",
-  "hew_cbor_ser_bytes",
-  "hew_cbor_ser_end_array",
-  "hew_cbor_ser_end_map",
-  "hew_cbor_ser_f64",
-  "hew_cbor_ser_finish",
-  "hew_cbor_ser_i64",
-  "hew_cbor_ser_key_u64",
-  "hew_cbor_ser_new",
-  "hew_cbor_ser_null",
-  "hew_cbor_ser_string",
-  "hew_cbor_ser_u64",
-  "hew_conn_await_read",
   "hew_cont_crash_cleanup_arm",
   "hew_cont_crash_cleanup_deactivate",
   "hew_cont_crash_cleanup_retire",
@@ -1502,7 +1477,6 @@ non-declarable = [
   "hew_glob_get",
   "hew_glob_is_valid",
   "hew_global_timer_wheel",
-  "hew_listener_await_accept",
   "hew_location_display",
   "hew_location_format",
   "hew_location_incarnation",
@@ -1537,7 +1511,6 @@ non-declarable = [
   "hew_read_slot_set_await_cancel",
   "hew_read_slot_status",
   "hew_read_slot_take",
-  "hew_read_slot_take_handle",
   "hew_realloc",
   "hew_require_execution_context",
   "hew_reply_channel_await_status",
@@ -1587,9 +1560,6 @@ non-declarable = [
   "hew_supervisor_start",
   "hew_task_scope_set_current",
   "hew_test_selected",
-  "hew_wasm_register_actor_meta",
-  "hew_wire_cbor_to_text",
-  "hew_wire_text_to_cbor",
   "hew_xnode_register_codec",
   "hew_xnode_register_reply_codec",
 
@@ -1678,6 +1648,10 @@ non-declarable = [
   # the rejoin fixture to assert a buried node stays DEAD under stale gossip. Not
   # user-callable; not JIT-reachable.
   "hew_dist_member_state",
+  # Test-introspection probe: returns the port the installed node's TCP listener
+  # is bound to, -1 with no node or listener. Lets the two-process fixture bind
+  # port 0 and publish the port it got. Not user-callable; not JIT-reachable.
+  "hew_dist_bound_port",
   # Test-introspection probe: returns 1 if a node id is in the quarantine set, 0
   # if not, -1 with no node installed. The resurrection-guard teeth for the rejoin
   # fixture. Not user-callable; not JIT-reachable.
@@ -2792,61 +2766,6 @@ params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# Collection CBOR framing mutates a caller-owned serializer/reader in place.
-# Every handle remains with its caller, all return values are scalars, and no
-# operation creates, retains, or consumes an allocation across this ABI edge.
-[[ownership.contracts]]
-symbol = "hew_cbor_de_enter_map_iter"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_de_exit_map_iter"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_de_map_next"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_de_map_value"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-runtime/src/cbor_serial.rs: the optional selector mutates the borrowed
-# reader cursor and inspects a scalar key; it neither transfers the reader nor
-# creates, retains, or consumes an allocation across the ABI boundary.
-[[ownership.contracts]]
-symbol = "hew_cbor_de_select_optional_key"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_ser_begin_key"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cbor_ser_begin_set"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
 # hew-runtime/src/vec.rs:2320-2341 allocates a plain generic vector.
 [[ownership.contracts]]
 symbol = "hew_vec_new_generic"
@@ -3101,25 +3020,8 @@ params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# stdio — hew-runtime/src/stdio.rs. read_line/read_all return str_to_malloc
-# strings; write/write_err read their C-string operand only. The isolated-stdin
-# R1/R2/R3 witnesses live in hew-runtime/tests/os_io_string_result_retention.rs.
-[[ownership.contracts]]
-symbol = "hew_io_read_all"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_io_read_line"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
+# stdio — hew-runtime/src/stdio.rs. write/write_err read their C-string operand
+# only. Standard input is the waiting hew_async_stdin_read_line operation.
 [[ownership.contracts]]
 symbol = "hew_io_write"
 result = "none"
@@ -4289,14 +4191,6 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
-symbol = "hew_tcp_detach"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.net.Connection"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
 symbol = "hew_tcp_connect"
 result = "fresh"
 params = ["borrow"]
@@ -4463,24 +4357,9 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_dns_lookup_host_timed"
-result = "fresh"
-params = ["borrow", "borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
 symbol = "hew_dns_resolve"
 result = "fresh"
 params = ["borrow"]
-release-symbol = "hew_vec_free"
-discharge-depth = "deep"
-
-[[ownership.contracts]]
-symbol = "hew_dns_resolve_timed"
-result = "fresh"
-params = ["borrow", "borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "deep"
 
@@ -4588,32 +4467,8 @@ release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# msgpack — hew-std/src/msgpack.rs. Encoders borrow their scalar/string/bytes
-# input and return fresh bytes; to_json returns a fresh string.
-[[ownership.contracts]]
-symbol = "hew_msgpack_encode_bytes_hew"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_bytes_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_msgpack_encode_int_hew"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_bytes_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_msgpack_encode_string_hew"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_bytes_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
+# msgpack — hew-std/src/msgpack.rs. from_json returns fresh bytes; to_json returns a fresh
+# string.
 [[ownership.contracts]]
 symbol = "hew_msgpack_from_json_hew"
 result = "fresh"
@@ -7060,16 +6915,6 @@ discharge-depth = "none"
 symbol = "hew_actor_await_send_by_id"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow", "retain", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-runtime/src/internal/types.rs: translates a scalar runtime ask-error tag
-# into the scalar public Result tag domain. Neither argument nor result owns a
-# resource, and codegen is the only caller of this ABI boundary.
-[[ownership.contracts]]
-symbol = "hew_ask_error_translate_for_public_result"
-result = "none"
-params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

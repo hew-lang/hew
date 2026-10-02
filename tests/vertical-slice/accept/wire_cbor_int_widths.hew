@@ -1,6 +1,8 @@
 // Validation: every integer width round-trips through the CBOR body codec.
 // Each width carries its true type extreme. A mismatch returns the field's
 // 1-based index so a regression points at the exact width.
+import std.encoding.cbor;
+
 #[wire]
 type Ints {
     a: i8 @1;
@@ -15,7 +17,7 @@ type Ints {
 
 fn main() -> i64 {
     let v = Ints { a: -128, b: -32768, c: -2147483648, d: -9223372036854775808, e: 255, f: 65535, g: 4294967295, h: 18446744073709551615 };
-    let back = Ints.decode(v.encode());
+    let back = cbor.decode<Ints>(cbor.encode(v)).expect("decode");
     if back.a != -128 {
         return 1;
     }

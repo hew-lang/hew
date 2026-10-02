@@ -12,7 +12,7 @@ impl Checker {
     /// fix-it names: the contextual `.Variant` where an expected type selects
     /// the enum, the owner-qualified `Type.Variant` where it does not.
     pub(super) fn report_bare_variant_expr(&mut self, name: &str, replacement: &str, span: &Span) {
-        self.report_migration_diagnostic(
+        self.report_replaced_spelling(
             TypeErrorKind::BareVariantExpr,
             format!(
                 "E_BARE_VARIANT_EXPR: bare variant `{name}` is not an expression; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
@@ -28,7 +28,7 @@ impl Checker {
     /// always available and is the only fix-it offered. A hard error from
     /// v0.6.0, on the same footing as the expression form.
     pub(super) fn report_bare_variant_pattern(&mut self, name: &str, span: &Span) {
-        self.report_migration_diagnostic(
+        self.report_replaced_spelling(
             TypeErrorKind::BareVariantPattern,
             format!(
                 "E_BARE_VARIANT_PATTERN: bare variant pattern `{name}` is not a pattern; use `.{name}` when the scrutinee type selects the enum, or qualify the variant with its type"
@@ -38,37 +38,23 @@ impl Checker {
         );
     }
 
-    /// One severity rule for mechanically migratable source spellings.
-    ///
-    /// The syntax migrator can only rewrite a source the checker resolved, so
-    /// migration mode reports at
-    /// warning severity — the one entry point allowed to see a legacy source
-    /// through. `hew fmt --migrate` reads these warnings to place its edits.
-    pub(super) fn report_migration_diagnostic(
+    /// Report a spelling the language replaced, naming the replacement.
+    fn report_replaced_spelling(
         &mut self,
         kind: TypeErrorKind,
         message: String,
         suggestion: String,
         span: &Span,
     ) {
-        let diagnostic = TypeError {
-            severity: if self.migration_mode {
-                crate::error::Severity::Warning
-            } else {
-                crate::error::Severity::Error
-            },
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
             kind,
             span: span.clone(),
             message,
             notes: Vec::new(),
             suggestions: vec![suggestion],
             source_module: self.current_module.clone(),
-        };
-        if self.migration_mode {
-            self.warnings.push(diagnostic);
-        } else {
-            self.errors.push(diagnostic);
-        }
+        });
     }
 
     /// Reject a `gen fn` return-type annotation that spells the generator
@@ -677,12 +663,9 @@ impl Checker {
     fn is_uninhabited(&self, ty: &Ty) -> bool {
         match self.subst.resolve(ty) {
             Ty::Never => true,
-            Ty::Named { head, .. } => {
-                self.lookup_type_def(head.registry_key())
-                    .is_some_and(|definition| {
-                        definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-                    })
-            }
+            Ty::Named { head, .. } => self.head_type_def(head).is_some_and(|definition| {
+                definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+            }),
             _ => false,
         }
     }

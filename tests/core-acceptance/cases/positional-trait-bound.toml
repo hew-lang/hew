@@ -1,0 +1,14 @@
+[[case]]
+id = "positional-trait-bound"
+intent = "A bound with trait arguments (`F: From<Low>`) admits a type with an impl at those arguments and refuses one implementing the trait only at other arguments."
+source = "cases/positional-trait-bound.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 37
+column = 13
+message = "type `Narrow` does not implement trait `From<Low>` required by `F`"

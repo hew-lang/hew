@@ -1,0 +1,11 @@
+[[case]]
+id = "contextual-variant-sibling-join"
+intent = "A contextual variant in an if, else-if chain, if-let, match arm or closure body takes its type from a typed sibling branch in either position, and owned payloads move through the reordered branches."
+source = "cases/contextual-variant-sibling-join.hew"
+suites = ["acceptance", "safety"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "-1\n3\n4\n-1\n-1\n10\n5\n9\n100\n12\n3\n77\n799\nbad/k\ngood!\nleft\nnone\n-9597\n-10100\n"
+exit = 0

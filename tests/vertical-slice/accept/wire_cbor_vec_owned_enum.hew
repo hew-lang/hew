@@ -4,10 +4,12 @@
 // `__hew_enum_{clone,drop}_inplace_<Payload>`, seeded via the owned descriptor,
 // so `hew_vec_free` releases each decoded variant's owned string. Exit 2 (the
 // count of `Full` payloads) proves the array round-trips with the right shape.
+import std.encoding.cbor;
+
 #[wire]
 enum Payload {
-    Empty;
-    Full(string);
+    Empty @0;
+    Full(string) @1;
 }
 
 #[wire]
@@ -22,7 +24,7 @@ fn main() -> i64 {
     xs.push(Payload.Empty);
     xs.push(Payload.Full("second-owned"));
     let b = Bag { items: xs, n: 3 };
-    let back = Bag.decode(b.encode());
+    let back = cbor.decode<Bag>(cbor.encode(b)).expect("decode");
     if back.items.len() != 3 {
         return 100;
     }

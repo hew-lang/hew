@@ -36,7 +36,7 @@ actor ChatRoom {
     receive fn unregister(name: string) {
         var new_handlers: Vec<ClientHandler> = Vec.new();
         var new_names: Vec<string> = Vec.new();
-        for i in 0 .. names.len() {
+        for i in 0..names.len() {
             if names[i] != name {
                 new_handlers.push(handlers[i]);
                 new_names.push(names[i]);
@@ -47,7 +47,7 @@ actor ChatRoom {
         println(f"{name} left the chat");
     }
     receive fn broadcast(sender_name: string, msg: string) {
-        for i in 0 .. names.len() {
+        for i in 0..names.len() {
             if names[i] != sender_name {
                 // Submit without waiting: the target is usually inside
                 // `on_data`, waiting on the broadcast it just triggered.

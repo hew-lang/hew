@@ -1,0 +1,11 @@
+[[case]]
+id = "fails-short-form"
+intent = "A function, trait method and `main` that only fail write `fails E` with no `->`, and propagate as the long form does."
+source = "cases/fails-short-form.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ran 1\n"
+stderr = "error: Bad: 2\n"
+exit = 1

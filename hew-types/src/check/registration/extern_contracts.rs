@@ -590,6 +590,16 @@ impl Checker {
             };
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.insert_fn_sig(&key, declaration, sig);
+            if f.is_offload() {
+                self.pending_offloads
+                    .push(crate::check::types::PendingOffload {
+                        declaration,
+                        span: f.span.clone(),
+                        source_module: self.current_module.clone(),
+                        variadic: f.is_variadic,
+                        consumes: consuming_params.iter().any(|consumes| *consumes),
+                    });
+            }
             if !self
                 .source_extern_declarations
                 .iter()
@@ -609,6 +619,143 @@ impl Checker {
             }
 
             self.record_root_value_binding(f.name.name.as_str());
+        }
+    }
+
+    /// Validate every `#[offload]` declaration and publish the valid ones.
+    ///
+    /// The pool job owns a copy of each argument and the result until it
+    /// finishes, because a cancelled caller resumes at once and releases its
+    /// own values. A value with a single owner, or an `#[opaque]` handle whose
+    /// lifetime a caller-side owner ends, cannot be copied into the job.
+    pub(in crate::check) fn validate_offload_declarations(&mut self) {
+        for pending in std::mem::take(&mut self.pending_offloads) {
+            let name = self.defs.path(pending.declaration).to_string();
+            let mut refusals = Vec::new();
+            if pending.variadic {
+                refusals.push("is variadic".to_string());
+            }
+            if pending.consumes {
+                refusals.push("has a `consume` parameter".to_string());
+            }
+            if let Some(signature) = self.fn_sigs.get(&pending.declaration) {
+                for (index, ty) in signature.params.iter().enumerate() {
+                    if let Some(reason) = self.offload_refusal(ty) {
+                        refusals.push(format!(
+                            "parameter {index} is `{}`, which {reason}",
+                            ty.user_facing()
+                        ));
+                    }
+                }
+                let result = &signature.return_type;
+                if *result != Ty::Unit {
+                    if let Some(reason) = self.offload_refusal(result) {
+                        refusals.push(format!(
+                            "returns `{}`, which {reason}",
+                            result.user_facing()
+                        ));
+                    }
+                }
+            }
+            if refusals.is_empty() {
+                self.extern_table.mark_offload(pending.declaration);
+                continue;
+            }
+            for refusal in refusals {
+                let mut error = TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    pending.span.clone(),
+                    format!("`#[offload]` extern fn `{name}` {refusal} [E_OFFLOAD_SIGNATURE]"),
+                );
+                error.notes.push((
+                    pending.span.clone(),
+                    "an offloaded call runs on the blocking pool with its own copy of every \
+                     argument; a cancelled caller resumes at once"
+                        .to_string(),
+                    pending.source_module.clone(),
+                ));
+                error.source_module.clone_from(&pending.source_module);
+                self.errors.push(error);
+            }
+        }
+    }
+
+    /// Why the pool job cannot own a value of `ty`, if it cannot.
+    fn offload_refusal(&self, ty: &Ty) -> Option<&'static str> {
+        match self.caller_owned_part(ty, &mut Vec::new()) {
+            Some(CallerOwned::Handle) => {
+                return Some(
+                    "is or holds an `#[opaque]` handle that its caller-side owner may release \
+                     while the job runs",
+                );
+            }
+            Some(CallerOwned::Pointer) => {
+                return Some(
+                    "is or holds a pointer into memory its caller-side owner may release while \
+                     the job runs",
+                );
+            }
+            None => {}
+        }
+        let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+            return Some("has no checked value class");
+        };
+        let declarations = self.class_declarations();
+        let context = crate::value_class::ClassContext::new(&declarations);
+        match crate::value_class::classify_ty(&resolved, &context) {
+            Ok((_, crate::type_facts::CloneKind::None)) => {
+                Some("has a single owner and cannot be copied into the job")
+            }
+            Ok(_) => None,
+            Err(_) => Some("has no checked value class"),
+        }
+    }
+
+    /// The memory a caller-side owner keeps inside a `ty` value: an
+    /// `#[opaque]` handle, a raw pointer or a view, at any depth of its
+    /// fields, payloads, elements and type arguments. A handle outranks a
+    /// pointer so the report does not depend on member order.
+    fn caller_owned_part(&self, ty: &Ty, seen: &mut Vec<crate::NominalId>) -> Option<CallerOwned> {
+        match ty {
+            Ty::Pointer { .. } | Ty::Borrow { .. } => Some(CallerOwned::Pointer),
+            Ty::Tuple(items) => items
+                .iter()
+                .filter_map(|item| self.caller_owned_part(item, seen))
+                .min(),
+            Ty::Array(item, _) | Ty::Slice(item) => self.caller_owned_part(item, seen),
+            Ty::Named { head, args } => {
+                let mut found = args
+                    .iter()
+                    .filter_map(|arg| self.caller_owned_part(arg, seen))
+                    .min();
+                if let crate::TypeHead::Nominal(nominal) = head {
+                    if self.opaque_type_ids.contains(&nominal.id) {
+                        return Some(CallerOwned::Handle);
+                    }
+                    if !seen.contains(&nominal.id) {
+                        seen.push(nominal.id);
+                        if let Some(def) = self.type_def_view().of_ty(ty) {
+                            let payloads =
+                                def.variants.values().flat_map(|variant| match variant {
+                                    VariantDef::Unit => Vec::new(),
+                                    VariantDef::Tuple(items) => items.iter().collect(),
+                                    VariantDef::Struct(fields) => {
+                                        fields.iter().map(|(_, ty)| ty).collect()
+                                    }
+                                });
+                            let members = def
+                                .fields
+                                .values()
+                                .chain(payloads)
+                                .filter_map(|member| self.caller_owned_part(member, seen))
+                                .min();
+                            found = found.into_iter().chain(members).min();
+                        }
+                    }
+                }
+                found
+            }
+            _ => None,
         }
     }
 
@@ -650,4 +797,12 @@ impl Checker {
             &self.defs,
         )
     }
+}
+
+/// Memory inside an offload argument or result that its caller-side owner
+/// keeps, in reporting precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CallerOwned {
+    Handle,
+    Pointer,
 }

@@ -79,11 +79,7 @@ impl Checker {
                     );
                 }
             } else {
-                self.current_type_param_bounds
-                    .push(super::types::TypeParamScope::new(
-                        check.type_param_bounds,
-                        HashMap::new(),
-                    ));
+                self.current_type_param_bounds.push(check.type_param_bounds);
                 self.validate_collection_key_capabilities(&key, "Map", &check.span);
                 self.current_type_param_bounds.pop();
             }
@@ -603,15 +599,15 @@ impl Checker {
             self.record_resolved_collection_call("Map", method, &receiver, span);
             return;
         }
-        let key_param_name = self
-            .hashmap_abstract_key_param_name(key_ty)
+        let key_param = self
+            .hashmap_abstract_key_param(key_ty)
             .expect("abstract HashMap key param was checked above");
 
         let key_pattern = self.ty_to_dispatch_pattern(key_ty);
         let registry = collection_dispatch_registry_impl();
         let resolved = resolve_method_call(&registry, "Map", method, &receiver, &|marker, ty| {
             if *ty == key_pattern {
-                return self.type_param_has_marker_bound(&key_param_name, marker);
+                return self.param_carries_marker(key_param.id, marker);
             }
             let ty = self.dispatch_pattern_to_ty(ty);
             self.registry.implements_marker(&ty, marker)
@@ -655,20 +651,12 @@ impl Checker {
         }
     }
 
-    pub(super) fn hashmap_abstract_key_param_name(&self, key_ty: &Ty) -> Option<String> {
-        match self.subst.resolve(key_ty).materialize_literal_defaults() {
-            Ty::Named {
-                head: crate::TypeHead::Param(param),
-                args,
-            } if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()) => {
-                Some(param.spelling.to_string())
-            }
-            _ => None,
-        }
+    pub(super) fn hashmap_abstract_key_param(&self, key_ty: &Ty) -> Option<crate::ParamHead> {
+        Self::bare_param(&self.subst.resolve(key_ty).materialize_literal_defaults())
     }
 
     pub(super) fn is_hashmap_abstract_key_param(&self, key_ty: &Ty) -> bool {
-        self.hashmap_abstract_key_param_name(key_ty).is_some()
+        self.hashmap_abstract_key_param(key_ty).is_some()
     }
 
     pub(in crate::check) fn record_resolved_hashset_call(
@@ -732,7 +720,7 @@ impl Checker {
             return;
         }
 
-        let is_abstract = self.vec_element_contains_abstract_type_param(&elem_ty);
+        let is_abstract = Self::vec_element_contains_abstract_type_param(&elem_ty);
         let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
         let profile = crate::vec_authority::VecElementProfile {
             abi: crate::vec_authority::classify_element(&elem_ty, self.type_def_view()),
@@ -831,21 +819,19 @@ impl Checker {
     /// (MIR `resolve_polymorphic_vec_element_symbol`), which classifies the
     /// substituted element and stays congruent with the constructor by
     /// construction (`dedup-semantic-boundary`).
-    pub(in crate::check) fn vec_element_contains_abstract_type_param(&self, elem_ty: &Ty) -> bool {
+    pub(in crate::check) fn vec_element_contains_abstract_type_param(elem_ty: &Ty) -> bool {
         match elem_ty {
             Ty::Named { head, args, .. } => {
-                let name = head.registry_key();
-                let builtin = head.builtin();
-                (builtin.is_none() && args.is_empty() && self.is_type_param_in_scope(name))
+                (matches!(head, crate::TypeHead::Param(_)) && args.is_empty())
                     || args
                         .iter()
-                        .any(|a| self.vec_element_contains_abstract_type_param(a))
+                        .any(Self::vec_element_contains_abstract_type_param)
             }
             Ty::Tuple(elems) => elems
                 .iter()
-                .any(|e| self.vec_element_contains_abstract_type_param(e)),
+                .any(Self::vec_element_contains_abstract_type_param),
             Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.vec_element_contains_abstract_type_param(inner)
+                Self::vec_element_contains_abstract_type_param(inner)
             }
             _ => false,
         }
@@ -1508,8 +1494,7 @@ impl Checker {
             // refused (canonicalised to one bare-named decl layout; no
             // per-instantiation witness exists).
             Ty::Named { head, args } if head.builtin().is_none() => {
-                let name = head.registry_key();
-                if let Some(type_def) = self.type_def_at(name) {
+                if let Some(type_def) = self.head_type_def(*head) {
                     if matches!(type_def.kind, TypeDefKind::Machine) {
                         // Generic instantiation: no per-instantiation layout.
                         if !args.is_empty() {
@@ -1639,7 +1624,7 @@ impl Checker {
                     // recurses once per name). It carries no bare container.
                     return false;
                 }
-                let result = self.type_def_at(name).is_some_and(|td| {
+                let result = self.head_type_def(*head).is_some_and(|td| {
                     td.fields
                         .values()
                         .any(|fty| self.queue_element_holds_collection(fty, roots, visiting))

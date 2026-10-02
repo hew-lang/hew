@@ -1816,11 +1816,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-codec"
+version = "0.6.0-rc5"
+dependencies = [
+ "base64 0.22.1",
+ "ciborium",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "toml",
+]
+
+[[package]]
 name = "hew-codegen-rs"
 version = "0.6.0-rc5"
 dependencies = [
  "cc",
  "hew-cabi",
+ "hew-codec",
  "hew-hir",
  "hew-mir",
  "hew-parser",
@@ -1969,6 +1983,7 @@ dependencies = [
  "flate2",
  "glob",
  "hew-cabi",
+ "hew-codec",
  "hew-runtime-testkit",
  "http-body-util",
  "hyper",
@@ -1983,7 +1998,6 @@ dependencies = [
  "rustls-webpki",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2 0.11.0",
  "snow",
  "socket2",
@@ -2008,6 +2022,7 @@ dependencies = [
 name = "hew-sir"
 version = "0.6.0-rc5"
 dependencies = [
+ "hew-codec",
  "hew-hir",
  "hew-parser",
  "hew-types",
@@ -2072,6 +2087,7 @@ version = "0.6.0-rc5"
 dependencies = [
  "heck",
  "hew-cabi",
+ "hew-codec",
  "hew-parser",
  "hew-runtime",
  "hew-types",

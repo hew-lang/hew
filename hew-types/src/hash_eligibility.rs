@@ -219,7 +219,7 @@ mod tests {
             kind: TypeDefKind::Record,
             name: name.to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: fields
                 .into_iter()
                 .map(|(n, t)| (n.to_string(), t))
@@ -238,7 +238,7 @@ mod tests {
             kind,
             name: name.to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(), // empty fields — the gap: without kind check this returns Eligible
             field_order: vec![],
             variants: HashMap::<String, VariantDef>::new(),

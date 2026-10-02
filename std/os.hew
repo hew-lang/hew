@@ -39,7 +39,7 @@ pub fn args() -> Vec<string> {
         hew_args_count() as i64
     };
     var values: Vec<string> = Vec.new();
-    for index in 0 .. count {
+    for index in 0..count {
         let value = unsafe {
             hew_args_get(index as i32)
         };
@@ -77,8 +77,8 @@ pub enum EnvError {
 }
 
 impl Display for EnvError {
-    fn fmt(err: EnvError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             EnvError.InvalidName(name) => f"invalid environment variable name: `{name}`",
         }
     }

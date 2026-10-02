@@ -11,7 +11,7 @@ type Color {
 }
 
 impl Display for Color {
-    fn fmt(c: Color) -> string {
+    fn fmt(self) -> string {
         "Color"
     }
 }

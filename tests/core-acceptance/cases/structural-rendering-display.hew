@@ -4,9 +4,9 @@ type Reading {
 }
 
 impl Display for Reading {
-    fn fmt(value: Reading) -> string {
+    fn fmt(self) -> string {
         sleep(1ms);
-        f"{value.station}={value.temperature}C"
+        f"{self.station}={self.temperature}C"
     }
 }
 
@@ -16,8 +16,8 @@ type Tagged<T> {
 }
 
 impl<T: Display> Display for Tagged<T> {
-    fn fmt(value: Tagged<T>) -> string {
-        f"{value.label}:{value.value}"
+    fn fmt(self) -> string {
+        f"{self.label}:{self.value}"
     }
 }
 

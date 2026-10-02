@@ -2,6 +2,8 @@
 // CBOR body codec under the null encoding — `Some(v)` is the bare value,
 // `None` is CBOR null. This fixture exercises `Some`; the recovered payload
 // (42) is the exit code, so a garbled round-trip changes it.
+import std.encoding.cbor;
+
 #[wire]
 type Holder {
     maybe: Option<i64> @1;
@@ -9,7 +11,7 @@ type Holder {
 
 fn main() -> i64 {
     let h = Holder { maybe: .Some(42) };
-    let back = Holder.decode(h.encode());
+    let back = cbor.decode<Holder>(cbor.encode(h)).expect("decode");
     match back.maybe {
         .Some(v) => v,
         .None => -1,

@@ -12,20 +12,20 @@ type DM {
 }
 
 impl Diamond for DM {
-    fn base(w: DM) -> bool {
+    fn base(self) -> bool {
         true
     }
 
-    fn left(w: DM) -> i64 {
-        w.id + 10
+    fn left(self) -> i64 {
+        self.id + 10
     }
 
-    fn right(w: DM) -> i64 {
-        w.id + 20
+    fn right(self) -> i64 {
+        self.id + 20
     }
 
-    fn diamond(w: DM) -> i64 {
-        w.id + 30
+    fn diamond(self) -> i64 {
+        self.id + 30
     }
 }
 

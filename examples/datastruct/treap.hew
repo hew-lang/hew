@@ -144,7 +144,7 @@ fn treap_insert(var nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) ->
 fn treap_insert_all(var nodes: Vec<i64>, root: i64, pairs: Vec<i64>, NIL: i64) -> (Vec<i64>, i64) {
     var curr_root = root;
     let count = pairs.len() / 2;
-    for i in 0 .. count {
+    for i in 0..count {
         let (grown, new_root) = treap_insert(nodes, curr_root, pairs[i * 2], pairs[i * 2 + 1], NIL);
         nodes = grown;
         curr_root = new_root;

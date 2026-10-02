@@ -33,11 +33,11 @@ const ITERS: i64 = 1000000;
 
 fn main() {
     var v: Vec<i64> = Vec.new();
-    for i in 0 .. 10000 {
+    for i in 0..10000 {
         v.push(i);
     }
     var sum = 0;
-    for iter in 0 .. ITERS {
+    for iter in 0..ITERS {
         sum = sum + ternary_search(v, 7777);
     }
     println(ITERS);

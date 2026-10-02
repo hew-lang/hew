@@ -35,11 +35,11 @@ impl Checker {
     pub(super) fn record_actor_method_dispatch(
         &mut self,
         span: &Span,
-        method_id: String,
+        method: crate::DefId,
         reply_ty: Ty,
     ) -> Ty {
         let resolved_reply = self.subst.resolve(&reply_ty);
-        let dispatch = if self.receive_generator_methods.contains(&method_id) {
+        let dispatch = if self.receive_generator_methods.contains(&method) {
             // `receive_generator_methods` is checker authority for gen-ness —
             // HIR/MIR consume this discriminator directly rather than
             // re-deriving stream-producer-ness from `is_generator` or from
@@ -51,15 +51,16 @@ impl Checker {
             let elem_ty = match reply_ty.as_stream() {
                 Some(elem) => elem.clone(),
                 None => unreachable!(
-                    "receive_generator_methods `{method_id}` recorded with a non-Stream \
-                     reply type `{reply_ty:?}` — registration.rs always wraps a generator \
-                     method's fn_sigs return_type in Ty::stream(..)"
+                    "generator handler `{}` recorded with a non-Stream reply type \
+                     `{reply_ty:?}` — registration always wraps a generator \
+                     method's return type in Ty::stream(..)",
+                    self.defs.path(method)
                 ),
             };
-            ActorMethodKind::StreamProducer(method_id, elem_ty)
+            ActorMethodKind::StreamProducer(method, elem_ty)
         } else if matches!(resolved_reply, Ty::Unit) {
             ActorMethodKind::Message {
-                method_id,
+                method,
                 policy: crate::actor_delivery::SendPolicy::Reject,
             }
         } else {
@@ -99,7 +100,7 @@ impl Checker {
                 );
             }
             ActorMethodKind::Ask {
-                method_id,
+                method,
                 reply_ty: reply_ty.clone(),
                 policy: crate::actor_delivery::SendPolicy::Wait,
             }
@@ -609,10 +610,8 @@ impl Checker {
         let sig = self.lookup_named_method_sig(receiver_type_name, type_args, method)?;
         sig.extern_symbol.as_ref()?;
         let method_key = format!("{receiver_type_name}::{method}");
-        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
-            &assoc_bindings,
             None,
             args,
             span,
@@ -746,8 +745,6 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> bool {
-        use crate::check::dispatch::ResolvedRuntimeResult;
-        use crate::runtime_call::DeclaredRuntimeResult;
         let canonical = self
             .canonical_nominal_name(receiver_name)
             .unwrap_or_else(|| receiver_name.to_string());
@@ -779,29 +776,10 @@ impl Checker {
                 contract.data_handler,
                 contract.close_handler,
             )?;
-            let result = match contract.result {
-                DeclaredRuntimeResult::DiscardStatus => ResolvedRuntimeResult::DiscardStatus,
-                DeclaredRuntimeResult::StatusResult {
-                    error_type,
-                    error_variant,
-                } => {
-                    let error_ty = self.named_ty_for_key(error_type, Vec::new());
-                    let error = self.resolve_variant_match(
-                        &format!("{error_type}::{error_variant}"), &error_ty,
-                    ).ok_or_else(|| format!("runtime error variant `{error_type}::{error_variant}` is not declared"))?;
-                    if !self.lookup_type_def(&error.type_name).is_some_and(|ty| {
-                        matches!(ty.variants.get(&error.variant_name), Some(VariantDef::Unit))
-                    }) {
-                        return Err("runtime status error must be a unit enum variant".to_string());
-                    }
-                    ResolvedRuntimeResult::StatusResult { error }
-                }
-            };
             Ok::<_, String>(CallTarget::DeclaredRuntime {
                 declaration,
                 family: contract.family,
                 actor_endpoints: Some(endpoints),
-                result,
             })
         })();
         let target = match selected {

@@ -428,6 +428,13 @@ pub(super) fn target_for_inventory(module: &SemModule) -> PhysicalTarget {
     target
 }
 
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under the repository root")
+        .to_path_buf()
+}
+
 fn lower_source(source: &str) -> SemModule {
     let parsed = hew_parser::parse(source);
     assert!(
@@ -435,7 +442,7 @@ fn lower_source(source: &str) -> SemModule {
         "parse errors: {:#?}",
         parsed.errors
     );
-    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root()]));
     let facts = checker.check_program(&parsed.program);
     assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
     let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
@@ -630,6 +637,7 @@ fn module_with_return() -> SemModule {
         },
     );
     SemModule {
+        offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
@@ -817,7 +825,9 @@ fn module_with_checked_add() -> SemModule {
 #[test]
 fn wire_schema_cannot_read_another_physical_field() {
     let semantic = lower_source(
-        r#"#[wire]
+        r#"import std.encoding.cbor;
+
+#[wire]
 type WireRecordProbe {
     label: string @7;
     code: u8 @2;
@@ -825,9 +835,8 @@ type WireRecordProbe {
 
 fn main() {
     let message = WireRecordProbe { label: "owned", code: 7 };
-    let encoded = message.encode();
-    let decoded = WireRecordProbe.decode(encoded);
-    println(decoded.label);
+    let encoded = cbor.encode(message);
+    println(encoded.len());
 }
 "#,
     );
@@ -841,11 +850,13 @@ fn main() {
         .flat_map(|function| &mut function.blocks)
     {
         if let PhysicalTerminator::WireCodec { plan, .. } = &mut block.terminator {
-            let plan = std::sync::Arc::make_mut(plan);
-            let SemWireKind::Record { fields, .. } = &mut plan.kind else {
+            let plans = std::sync::Arc::make_mut(plan);
+            let root = plans.root.clone();
+            let record = plans.plans.get_mut(&root).expect("root plan");
+            let SemWireKind::Record { fields, .. } = &mut record.kind else {
                 panic!("record codec");
             };
-            fields[0].index = 0;
+            fields.swap(0, 1);
             changed = true;
             break;
         }
@@ -854,7 +865,7 @@ fn main() {
     assert!(verify_physical_module(&physical)
         .unwrap_err()
         .message
-        .contains("wire schema selects a different physical value shape"));
+        .contains("codec plan selects a different physical value shape"));
 }
 
 #[test]
@@ -2214,6 +2225,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         ],
     };
     let physical = PhysicalModule {
+        offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         debug: PhysicalDebug::default(),
         regex_patterns: Vec::new(),

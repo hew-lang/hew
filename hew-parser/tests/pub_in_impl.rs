@@ -13,8 +13,8 @@ impl Foo {
         Foo { x: v }
     }
 
-    fn private_helper(f: Foo) -> int {
-        f.x
+    fn private_helper(self) -> int {
+        self.x
     }
 }
 ";
@@ -62,8 +62,8 @@ impl<T> Wrapper<T> {
         Wrapper { value: v }
     }
 
-    fn unwrap(w: Wrapper<T>) -> T {
-        w.value
+    fn unwrap(self) -> T {
+        self.value
     }
 }
 ";

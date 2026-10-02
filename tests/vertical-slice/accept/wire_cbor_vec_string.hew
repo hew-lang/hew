@@ -2,6 +2,8 @@
 // a CBOR array of text strings. The decode path builds a string-kind vec so the
 // element strings are owned and freed on drop. A mismatch returns a distinct
 // code; full success returns 42.
+import std.encoding.cbor;
+
 #[wire]
 type Names {
     items: Vec<string> @1;
@@ -12,7 +14,7 @@ fn main() -> i64 {
     xs.push("Hello");
     xs.push("World");
     let h = Names { items: xs };
-    let back = Names.decode(h.encode());
+    let back = cbor.decode<Names>(cbor.encode(h)).expect("decode");
     if back.items.len() != 2 {
         return 1;
     }

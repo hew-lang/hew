@@ -717,6 +717,32 @@ for user-declared enums and for the prelude variants `Some`, `None`, `Ok`,
 and `Err` — there is no prelude exception, because a prelude exception is a
 second rule to teach where one does the work.
 
+At a join — the branches of `if`/`else`, `if let`/`else` and the arms of
+`match` — a branch whose value is `.Variant` with no expected type from the
+surrounding context takes the type its typed sibling branches join to,
+whichever position those siblings take:
+
+```hew
+type Problem { code: i64; }
+
+fn validate(v: i64) -> Result<i64, i64> {
+    .Ok(v)
+}
+
+fn join(fresh: bool, cached: Option<i64>, parsed: Result<i64, Problem>) {
+    let low = if fresh { .None } else { cached };
+    let out = match parsed {
+        .Err(e) => .Err(e.code),
+        .Ok(v) => validate(v),
+    };
+    println(low ?? 0);
+    println(out handle problem { problem });
+}
+```
+
+A join whose every branch is contextual, or whose only typed siblings
+diverge, has no type to give and the variant is `E_CONTEXT_VARIANT_NO_TYPE`.
+
 The bare spelling — a variant name with neither the leading dot nor a type
 qualifier — is **not** part of edition 2026:
 
@@ -729,8 +755,6 @@ qualifier — is **not** part of edition 2026:
 
 Both diagnostics carry a machine-applicable fix-it that replaces `X` with
 `.X` where the context selects the enum, and with `Type.X` where it does not.
-`hew fmt --migrate` applies those fix-its across a source tree, so a pre-2026
-program is rewritten rather than hand-edited.
 
 State names inside a `machine` declaration are not variants at the surface,
 and this rule does not reach them (§3.11.3). Outside the machine that declares
@@ -1637,13 +1661,13 @@ impl Formattable for Point {
 no references in its surface syntax (§3.4.1) — and there is no implicit receiver
 anywhere else in the language.
 
-The **named-first-parameter** receiver form is not part of the language. A
-method whose first parameter is spelled with a name and the target type
-(`fn fmt(p: Point)`, `fn push(v: Vec<T>, value: T)`, the trait declaration
-`fn fmt(val: Self)`) is rejected, with a fix-it that rewrites the parameter to
-`self` — or to `var self` when the body assigns through it. This applies in
-`impl` blocks and in trait declarations alike, including for the builtin
-collection methods.
+Only the `self` token declares a receiver. A function in an `impl` block or a
+trait whose first parameter is written with a name, even when typed as the
+target (`fn same(p: Point, q: Point)`, the trait declaration
+`fn zero(value: Self)`), is an **associated function**: it is called through
+its type (`Point.same(a, b)`), and a dot call on a value never reaches it
+(`a.same(b)` is rejected with the hint "add a `self` receiver"). A trait that
+declares an associated function is not object-safe.
 
 **Calling methods:**
 
@@ -3021,6 +3045,39 @@ Hew function (D450). Forwarding a value reached through one of the current
 function's own borrowed parameters into an `extern` call that consumes it is
 the same `E_OWN_CONSUME_BORROWED` diagnosis, fixed the same way.
 
+**Blocking calls (`#[offload]`).** A C function that can block in the
+operating system, with no readiness to wait on, is declared `#[offload]`. A
+call still reads as an ordinary call; it parks the calling task while the
+function runs on the runtime's blocking pool, so the worker keeps running other
+tasks and actors (§4.7).
+
+```hew,ignore
+extern "C" {
+    #[offload]
+    fn sqlite_exec_text(path: string, sql: string) -> string;
+}
+
+fn report(path: string) -> string {
+    scope within 2s {
+        unsafe { sqlite_exec_text(path, "select count(*) from orders") }
+    } handle failure {
+        "timed out"
+    }
+}
+```
+
+The pool job owns a copy of every argument and its result until it finishes.
+Cancelling the caller, for example by a `scope within` deadline, resumes it at
+once; the call already running in C finishes on the pool, and its result is
+released there. Cancellation abandons the result, not the effect. Because the
+job must own its inputs, every parameter and the result must be a value the
+compiler can copy into the job: scalars, `string`, `bytes`, and collections and
+records of those. `consume` parameters, variadic functions, single-owner
+types, and `#[opaque]` handles and raw pointers, including those held inside a
+record, enum, tuple or collection, are refused with `E_OFFLOAD_SIGNATURE`. The runtime's
+I/O error slot set by the function travels back to the caller with the result;
+other thread-local state of the C library does not.
+
 #### 3.9.2 C-Compatible Struct Layout
 
 > **Not yet implemented.** `#[repr(C)]` is not recognised. Annotating a type
@@ -3408,7 +3465,7 @@ Signatures the rules fix:
 | `observe.barrier()` | `-> Result<(), ObserveError>` |
 | `http.Server.accept()` | `-> Result<Request, NetError>` |
 | `Request.respond*(…)` | `-> Result<(), NetError>` |
-| `wire.from_json(text)` | `-> Result<T, wire.DecodeError>` |
+| `json.decode<T>(text)` | `-> Result<T, wire.DecodeError>` |
 
 **No error is reported by a side channel.** A module does not expose a
 `*_message(e) -> string` function beside its error type — `Display` is the one
@@ -4559,6 +4616,23 @@ A runtime may offload a blocking operation or park a continuation. This must
 preserve the source suspension and cleanup contracts. An execution substrate
 or readiness mechanism is not a separate public call spelling.
 
+Waiting never holds a scheduler thread. A call that waits on a socket, a timer
+or offloaded work suspends only its own task; the worker runs other tasks and
+actors meanwhile. Cancelling the waiting task abandons the result, not an
+effect the operating system has already begun.
+
+Operations with no portable readiness, such as file system calls, name
+resolution and blocking C libraries, are `#[offload]` extern functions
+(§3.9.1). Standard input, sockets and timers wait on readiness instead.
+
+Writes to standard output and standard error (`print`, `println`, `io.write`,
+`io.write_err`) never wait for the terminal or pipe. Each copies its bytes into
+one ordered queue shared by both streams and returns; the runtime writes the
+queue in program order, so output from one task, and output ordered by a
+message between tasks, appears in that order on either stream. A runtime fault
+report joins the same queue, and the queue is written out before the process
+exits or starts a child that inherits its output.
+
 ### 4.8 Interaction with Actor Messages
 
 An actor processes one receive handler at a time. Forked work cannot mutate
@@ -4855,8 +4929,7 @@ names it says the body yields handles. A generator yielding `i64` is declared
 
 There is no `async gen fn`. A plain `gen fn` body may suspend and is consumed
 by `for` wherever its producer lives, so the word marked nothing; `async` is
-not a keyword (§12) and `async gen fn` is `E_NO_ASYNC_GEN` (User) with a
-fix-it that deletes it. `gen.next()` and `for x in gen` are plain calls:
+not a keyword (§12) and `async gen fn` does not parse. `gen.next()` and `for x in gen` are plain calls:
 pulling from a generator you own is a call into your own frame, and it carries
 the generator's inferred suspension effect like any other call (§4.0). The
 pull that crosses an actor boundary is written the same way:
@@ -4949,7 +5022,8 @@ supervisor MyPool {
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
   - `stop: <duration>` (optional) — the graceful-stop deadline (default
-    `5s`). `stop: 0s` terminates immediately.
+    `5s`). `stop: 0s` terminates immediately. A child still running when the
+    deadline passes is terminated and its `#[on(stop)]` hook does not run.
   - `count: <N>` — pool arity. Required on a `pool` child, rejected on a
     `child` declaration; it has no default, because a pool with a guessed size
     is a guess about capacity.
@@ -5130,12 +5204,11 @@ The `panic()` builtin triggers the recoverable language-panic path for testing.
 
 `link(pid) -> Result<(), LinkError>` and
 `monitor(pid) -> Result<MonitorRef, LinkError>` subscribe the caller to another
-actor's exit. Both report failure in the type system, and both share one error
-type. `LinkError` has three inhabitants — `Dead`, `Partition`, and `NoContext`
-— and they cover local and remote pids alike: a cross-node link carries a
-`PartitionPolicy`, so the remote form needs the typed failure as much as the
-local one does. `monitor` on an already-dead pid is not a failure; it delivers
-`DOWN` at once, which leaves `NoContext` as its only `Err`.
+actor's exit, for local and remote pids alike. Both share one error type with
+one inhabitant, `NoContext`. A dead, retired or unreachable target is not a
+failure: `monitor` delivers its `DOWN` at once, and `link` delivers the
+target's exit at once (for a remote pid, its `PartitionPolicy` fires), exactly
+as if the target had exited or the route had dropped after the call.
 
 Both are actor-context operations, because only an actor can receive the `DOWN`
 record or the linked exit the call subscribes to. A `link` or `monitor` written
@@ -5146,11 +5219,6 @@ time deliberately — the execution context is dynamic (§4.2), and a static
 "actor-only function" marker would colour every function that might one day
 link. Neither form succeeds silently, which is the property that matters: a
 subscription with no reader is always reported.
-
-> **Implementation status.** Local pids follow this rule. `monitor` on a
-> `RemotePid` still returns `Result<MonitorRef, MonitorError>`, whose variants
-> the distributed runtime produces. The `Dead` arm is never produced until
-> dead-target resolution lands (§5.6). Tracked in hew-lang/hew#3255.
 
 ### 5.8 Process Exit Status (normative)
 
@@ -5555,9 +5623,9 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 ```hew
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 
 // Status.Pending   -> CBOR integer: 0
@@ -5662,8 +5730,7 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | Hew Type                               | JSON Representation                                         |
 | -------------------------------------- | ----------------------------------------------------------- |
 | `bool`                                 | JSON boolean                                                |
-| `u8`, `u16`, `u32`, `i8`, `i16`, `i32` | JSON number                                                 |
-| `u64`, `i64`                           | JSON string (to avoid precision loss)                       |
+| integers (`i8`..`i64`, `u8`..`u64`)    | JSON number; decode refuses a fraction or an out-of-range value |
 | `f32`, `f64`                           | JSON number (special: `"NaN"`, `"Infinity"`, `"-Infinity"`) |
 | `string`                               | JSON string                                                 |
 | `bytes`                                | JSON string (base64-encoded)                                |
@@ -5674,23 +5741,27 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | `optional Option<T>` `None`            | field omitted                                                |
 | any `Option<T>` `Some(v)`              | JSON value of `v`                                            |
 
+A JSON integer literal beyond 128 bits decodes as a float, so decoding it
+into an integer field reports a type error rather than a range error.
+
 ##### 7.3.2.2 Field Names
 
 JSON field names are determined by the following rules, in priority order:
 
-1. **Per-field override** — `json("name")` wire attribute sets the exact JSON key.
-2. **Type-level convention** — `#[json(convention)]` attribute on the `#[wire] type` declaration transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
+1. **Per-field override** — `#[serial(key = "name")]` on the field sets the exact text key.
+2. **Type-level convention** — `#[serial(case = "convention")]` on the type declaration transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
 3. **Default** — field name is used as-is (no transformation).
 
 Per-field override always wins over the type-level convention.
 
 ```hew
-#[json(camelCase)]
+#[serial(case = "camelCase")]
 #[wire]
 type User {
     user_name: string @1; // JSON: "userName"
     email_address: string @2; // JSON: "emailAddress"
-    internal_id: string @3 json("id"); // JSON: "id"  (override wins)
+    #[serial(key = "id")]
+    internal_id: string @3; // JSON: "id"  (override wins)
 }
 ```
 
@@ -5728,9 +5799,9 @@ Wire enums encode as the string name of the variant:
 ```hew
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending @0;
+    Active @1;
+    Completed @2;
 }
 ```
 
@@ -5750,15 +5821,15 @@ JSON decoders SHOULD ignore unknown fields (permissive parsing). This enables fo
 
 ##### 7.3.2.5 Enum Variant Names in JSON
 
-Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or another convention) to the `#[wire] enum` declaration to transform variant names consistently.
+Enum variant names are used as-is by default. Apply `#[serial(case = "camelCase")]` (or another convention) to the enum declaration to transform variant names consistently.
 
 ```hew
-#[json(camelCase)]
+#[serial(case = "camelCase")]
 #[wire]
 enum Status {
-    PendingReview;
-    ActiveNow;
-    Completed;
+    PendingReview @0;
+    ActiveNow @1;
+    Completed @2;
 }
 ```
 
@@ -5770,7 +5841,7 @@ enum Status {
 
 `std.encoding.yaml` is shipped for parsing, constructing, inspecting, and
 stringifying YAML values. Wire types can also serialize to and from YAML using
-the helper surface below.
+`yaml.encode` and `yaml.decode<T>` (the codec surface below).
 
 YAML follows the JSON mapping and the same required/optional presence table in
 §7.3.1.4. Missing required fields and null for bare required fields are errors;
@@ -5791,6 +5862,10 @@ Encoders select format based on context:
 Explicit format selection:
 
 ```hew
+import std.encoding.cbor;
+import std.encoding.json;
+import std.encoding.yaml;
+
 #[wire]
 type MyMessage {
     id: u64 @1;
@@ -5799,9 +5874,9 @@ type MyMessage {
 
 fn main() {
     let msg = MyMessage { id: 1, text: "hello" };
-    let binary = msg.encode(); // CBOR bytes
-    let json_str = msg.to_json(); // JSON string
-    let yaml_str = msg.to_yaml(); // YAML string
+    let binary = cbor.encode(msg); // CBOR bytes
+    let json_str = json.encode(msg); // JSON string
+    let yaml_str = yaml.encode(msg); // YAML string
     println(f"{binary.len()} {json_str} {yaml_str}");
 }
 ```
@@ -5809,6 +5884,10 @@ fn main() {
 Decoding:
 
 ```hew
+import std.encoding.cbor;
+import std.encoding.json;
+import std.encoding.yaml;
+
 #[wire]
 type MyMessage {
     id: u64 @1;
@@ -5817,26 +5896,28 @@ type MyMessage {
 
 fn main() {
     let msg = MyMessage { id: 1, text: "hello" };
-    let binary = msg.encode();
-    let json_str = msg.to_json();
-    let yaml_str = msg.to_yaml();
-    let msg1 = MyMessage.decode(binary);
-    let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
-    let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
-    println(f"{msg1.id} {msg2.expect("json").id} {msg3.expect("yaml").id}");
+    let msg1 = cbor.decode<MyMessage>(cbor.encode(msg)); // Result<MyMessage, wire.DecodeError>
+    let msg2 = json.decode<MyMessage>(json.encode(msg));
+    let msg3 = yaml.decode<MyMessage>(yaml.encode(msg));
+    println(f"{msg1.expect("cbor").id} {msg2.expect("json").id} {msg3.expect("yaml").id}");
 }
 ```
 
-Current shipped helper surface, as registered by the type checker:
+Codec surface:
 
-- `#[wire] type` instance methods: `encode() -> bytes`, `to_json() -> string`,
-  `to_yaml() -> string`
-- `#[wire] type` static methods: `MyMessage.decode(bytes) -> MyMessage`,
-  `MyMessage.from_json(string) -> Result<MyMessage, string>`,
-  `MyMessage.from_yaml(string) -> Result<MyMessage, string>`
-- unit-only `#[wire] enum` helpers are JSON/YAML-only:
-  `to_json()`, `to_yaml()`, `from_json(string) -> Result<Self, string>`,
-  `from_yaml(string) -> Result<Self, string>`
+- Each of `std.encoding.cbor`, `json`, `yaml`, `toml` and `msgpack` offers
+  `encode<T: Serializable>(value: T)` and
+  `decode<T: Serializable>(document) -> Result<T, wire.DecodeError>`. The
+  document is `string` for the text formats and `bytes` for `cbor` and
+  `msgpack`.
+- `T` must be named by the call or its context; an unsettled value type is
+  `E_TYPE_ANNOTATION_NEEDED`.
+- A `#[wire]` type has no codec methods of its own; `#[wire]` supplies the
+  `@N` schema every format module reads.
+- `wire.DecodeError` names the path of the value that failed. A malformed
+  document returns `Err`; it does not trap.
+- `toml.encode` and `toml.decode` refuse a non-record root and a `#[wire]`
+  record with a required `Option` field (`E_FORMAT_CANNOT_REPRESENT`).
 
 ---
 
@@ -6085,7 +6166,7 @@ added in later editions without growing the annotation vocabulary.
 | `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on cooperative actor termination or supervisor shutdown. |
 | `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before restart-policy handling.                            |
 
-`#[on(exit)]` and `#[on(down)]` are the two further accepted kinds; they
+`#[on(link)]` and `#[on(down)]` are the two further accepted kinds; they
 deliver link and monitor notifications and their payload types are not
 specified in this section.
 
@@ -6377,9 +6458,8 @@ against a surface that either shipped under another spelling or was refused:
 
 - `async` marked nothing. Functions are colourless — suspension is inferred
   from the body and written only on a callable type (§4.0), and `await`
-  joins a Task or vector of Tasks (§4.4). `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
-  deletes the word, and `async gen fn` is `E_NO_ASYNC_GEN` (User) with the
-  same fix-it (§4.12).
+  joins a Task or vector of Tasks (§4.4). Neither `async fn` nor
+  `async gen fn` parses (§4.12).
 - `try` and `catch` have no construct: fallible operations return `Result`
   and propagate with `?` (§2.2.1). `catch` never reached the parser at all.
 - `join` is retired. Waiting for every operand is batch `fork`
@@ -6837,7 +6917,7 @@ refuses the name it does not know rather than dropping it.
 | `#[linear]` | type declaration | Linear value: must be consumed by a `consume self` method before scope exit (§3.7.8). Not combinable with `#[resource]`. |
 | `#[opaque]` | type declaration | Opaque handle whose internal representation is not accessible (§3.10.7). |
 | `#[wire]`, `#[wire(...)]` | type declaration, enum, field | Wire contract and per-field tag/naming metadata (§7.1, §7.3). |
-| `#[json(...)]`, `#[yaml(...)]` | type declaration | Per-encoding field-naming case for a `#[wire]` type (§7.3.2, §7.3.2a). |
+| `#[serial(...)]` | type declaration, field | Text-key case (`case = ".."`) on a type; text key (`key = ".."`) or `skip` on a field (§7.3.2). On a `#[test]` fn, runs it alone. |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
 | `#[ignore]` | `#[test]` function | Discovered but not run; accepts an optional reason string. |
@@ -6849,6 +6929,7 @@ refuses the name it does not know rather than dropping it.
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
+| `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |
 | `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
 
 Testing attribute arguments are positional. `test`, `serial` and `real_time`

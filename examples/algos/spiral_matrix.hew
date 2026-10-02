@@ -3,7 +3,7 @@ fn main() {
     let n = 3;
     let total = n * n;
     var mat: Vec<i64> = Vec.new();
-    for i in 0 .. total {
+    for i in 0..total {
         mat.push(0);
     }
     var top = 0;
@@ -66,7 +66,7 @@ fn main() {
     expected.push(6);
     expected.push(5);
     var pass = true;
-    for i in 0 .. total {
+    for i in 0..total {
         if mat[i] != expected[i] {
             pass = false;
             println("FAIL at index:");

@@ -6,7 +6,7 @@
 // pool returns it and the caller reassigns; allocation also reports the index.
 fn new_trie_node(var nodes: Vec<i64>, NIL: i64) -> (Vec<i64>, i64) {
     let idx = nodes.len() / 11;
-    for i in 0 .. 10 {
+    for i in 0..10 {
         nodes.push(NIL);
     }
     nodes.push(0); // is_end = 0 (false)

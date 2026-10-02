@@ -1,5 +1,6 @@
 //! The receive member a `RemotePid` addresses and whether its payloads cross
-//! the wire. Only explicit `#[wire]` schemas are portable (D524).
+//! the wire. A remote payload is data whose every record and enum is
+//! `#[wire]` (D524).
 
 use super::Checker;
 use crate::actor_protocol::ActorProtocolDescriptor;
@@ -24,7 +25,7 @@ impl Checker {
                 .param_tys
                 .iter()
                 .chain((handler.return_ty != ResolvedTy::Unit).then_some(&handler.return_ty))
-                .all(|ty| self.is_serializable(ty));
+                .all(|ty| self.remote_payload_error(ty).is_none());
         }
         self.actor_protocol_descriptors = protocols;
     }
@@ -66,35 +67,29 @@ impl Checker {
         };
         let mut ok = true;
         for ty in std::iter::once(&msg).chain(ask.then_some(&reply)) {
-            if *ty == ResolvedTy::Unit || self.is_serializable(ty) {
+            if *ty == ResolvedTy::Unit {
                 continue;
             }
-            // A record or enum can declare its schema; any other value has
-            // no wire representation at all.
-            let declarable = matches!(ty, ResolvedTy::Named { head, .. }
-                if head.is_user() && self.type_def_at(head.registry_key()).is_some()
-                    && !self.actor_protocol_descriptors.contains_key(head.registry_key()));
-            let message = format!(
-                "remote actor `{canonical}` cannot carry `{}`: a value sent to a remote \
-                 actor needs an explicit wire schema",
+            let Some(error) = self.remote_payload_error(ty) else {
+                continue;
+            };
+            let owner = format!(
+                "a value sent to remote actor `{canonical}` (`{}`)",
                 ty.user_facing()
             );
-            if declarable {
+            let message = Self::not_data_message(&owner, &error);
+            if error.reason == crate::data_shape::NotDataReason::Untagged {
                 self.report_error_with_suggestions(
                     super::TypeErrorKind::BoundsNotSatisfied,
                     span,
                     message,
                     vec![format!(
-                        "declare `{}` with `#[wire]` and tag each field, e.g. `seq: i64 @1`",
-                        ty.user_facing()
+                        "declare `{}` with `#[wire]` and tag each member, e.g. `seq: i64 @1`",
+                        error.ty.user_facing()
                     )],
                 );
             } else {
-                self.report_error(
-                    super::TypeErrorKind::BoundsNotSatisfied,
-                    span,
-                    format!("{message}, and `{}` has none", ty.user_facing()),
-                );
+                self.report_error(super::TypeErrorKind::BoundsNotSatisfied, span, message);
             }
             ok = false;
         }

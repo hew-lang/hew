@@ -84,7 +84,8 @@ impl DiscoveredTestFile {
 #[must_use]
 pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
     let mut tests = Vec::new();
-    let companion = matched_production_peer(std::path::Path::new(file));
+    let companion = hew_compile::test_companion(std::path::Path::new(file))
+        .map(|companion| companion.display().to_string());
     for declaration in hew_analysis::test_discovery::discover_tests(program) {
         tests.push(TestCase {
             name: declaration.name,
@@ -112,15 +113,6 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
         });
     }
     tests
-}
-
-fn matched_production_peer(path: &std::path::Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?.strip_suffix("_test")?;
-    let peer = path.with_file_name(format!("{stem}.hew"));
-    peer.is_file()
-        .then_some(peer)
-        .and_then(|peer| peer.canonicalize().ok())
-        .map(|peer| peer.display().to_string())
 }
 
 /// Parse a source file and discover tests.

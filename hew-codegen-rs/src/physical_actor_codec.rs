@@ -189,7 +189,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         name: &str,
         handler: &SemActorHandler,
         payload: StructType<'ctx>,
-        plans: &[std::sync::Arc<hew_mir::physical::SemWirePlan>],
+        plans: &[std::sync::Arc<hew_mir::physical::SemWirePlans>],
         reply: bool,
         decode: bool,
     ) -> CodegenResult<FunctionValue<'ctx>> {
@@ -214,16 +214,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let input = function.get_nth_param(0).unwrap().into_pointer_value();
         let cursor = if decode {
             runtime(
-                "hew_cbor_de_new",
+                "hew_de_new_raw",
                 Some(ptr.into()),
-                &[input.into(), function.get_nth_param(1).unwrap()],
+                &[
+                    self.ctx.i32_type().const_zero().into(),
+                    input.into(),
+                    function.get_nth_param(1).unwrap(),
+                ],
             )?
             .unwrap()
             .into_pointer_value()
         } else {
-            runtime("hew_cbor_ser_new", Some(ptr.into()), &[])?
-                .unwrap()
-                .into_pointer_value()
+            runtime(
+                "hew_ser_new",
+                Some(ptr.into()),
+                &[self.ctx.i32_type().const_zero().into()],
+            )?
+            .unwrap()
+            .into_pointer_value()
         };
         let byte_size = if reply {
             self.module
@@ -271,15 +279,22 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             owners.push((slot, live, plan));
         }
         if !reply {
-            runtime(
-                if decode {
-                    "hew_cbor_de_enter_array"
-                } else {
-                    "hew_cbor_ser_begin_array"
-                },
-                None,
-                &[cursor.into()],
-            )?;
+            let arity = self.ctx.i32_type().const_int(plans.len() as u64, false);
+            if decode {
+                runtime("hew_de_tuple_begin", None, &[cursor.into(), arity.into()])?;
+            } else {
+                runtime(
+                    "hew_ser_seq_begin",
+                    None,
+                    &[
+                        cursor.into(),
+                        self.ctx
+                            .i64_type()
+                            .const_int(plans.len() as u64, false)
+                            .into(),
+                    ],
+                )?;
+            }
         }
         for (slot, live, plan) in &owners {
             let callback = wire::emit_callback(
@@ -287,6 +302,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 self.ctx,
                 &self.llvm,
                 plan,
+                &plan.root,
                 &self.module.actor_recipes,
                 &self.value_callbacks,
                 decode,
@@ -299,7 +315,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
                 if !reply {
                     let available = runtime(
-                        "hew_cbor_de_array_next",
+                        "hew_de_seq_next",
                         Some(self.ctx.i32_type().into()),
                         &[cursor.into()],
                     )?
@@ -355,7 +371,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         if decode {
             if !reply {
                 let extra = runtime(
-                    "hew_cbor_de_array_next",
+                    "hew_de_seq_next",
                     Some(self.ctx.i32_type().into()),
                     &[cursor.into()],
                 )?
@@ -374,10 +390,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .build_conditional_branch(ok, exact, rollback)
                     .llvm_ctx("reject extra request fields")?;
                 builder.position_at_end(exact);
-                runtime("hew_cbor_de_exit_array", None, &[cursor.into()])?;
             }
             let status = runtime(
-                "hew_cbor_de_failed",
+                "hew_de_failed",
                 Some(self.ctx.i32_type().into()),
                 &[cursor.into()],
             )?
@@ -407,16 +422,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     size_ty.const_int(byte_size, false),
                 )
                 .llvm_ctx("publish decoded payload size")?;
-            runtime("hew_cbor_de_free", None, &[cursor.into()])?;
+            runtime("hew_de_free", None, &[cursor.into()])?;
             builder
                 .build_return(Some(&output))
                 .llvm_ctx("return decoded actor payload")?;
         } else {
             if !reply {
-                runtime("hew_cbor_ser_end_array", None, &[cursor.into()])?;
+                runtime("hew_ser_seq_end", None, &[cursor.into()])?;
             }
             let bytes = runtime(
-                "hew_cbor_ser_finish",
+                "hew_ser_finish_raw",
                 Some(ptr.into()),
                 &[cursor.into(), function.get_nth_param(1).unwrap()],
             )?
@@ -436,7 +451,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 fault_sink: None,
             };
             for (slot, live, plan) in owners.iter().rev() {
-                if let Some(action) = self.module.actor_recipes[&plan.ty].destroy {
+                if let Some(action) = self.module.actor_recipes[&plan.root].destroy {
                     let release = self.ctx.append_basic_block(function, "decode.release");
                     let next = self.ctx.append_basic_block(function, "decode.released");
                     let initialized = builder
@@ -447,7 +462,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .build_conditional_branch(initialized, release, next)
                         .llvm_ctx("release initialized fields")?;
                     builder.position_at_end(release);
-                    let layout = self.module.target.layout(&plan.ty).ok_or_else(|| {
+                    let layout = self.module.target.layout(&plan.root).ok_or_else(|| {
                         CodegenError::FailClosed("decoded owner lacks layout".into())
                     })?;
                     let value = builder
@@ -465,7 +480,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("load decode fault")?;
             runtime("hew_fault_drop", None, &[failed])?;
             runtime("hew_actor_payload_free", None, &[output.into()])?;
-            runtime("hew_cbor_de_free", None, &[cursor.into()])?;
+            runtime("hew_de_free", None, &[cursor.into()])?;
             builder
                 .build_store(
                     function.get_nth_param(2).unwrap().into_pointer_value(),

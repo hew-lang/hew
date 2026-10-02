@@ -1,48 +1,18 @@
-//! Native callbacks realize a single semantic wire schema with physical value glue.
+//! Native codec walks: one encode and one decode callback per planned type,
+//! driving the format-neutral `hew_ser_*` / `hew_de_*` event ABI over static
+//! `hew_codec::Table` globals.
 
 use super::collection_callbacks::CollectionCallbacks;
 use super::*;
-use hew_mir::physical::{SemWireKind, SemWirePlan};
-use hew_types::{WireCodecDirection, WireFieldPresence, WireTextFormat};
+use hew_mir::physical::{SemWireKind, SemWirePayload, SemWirePlan, SemWirePlans, SemWireTable};
+use hew_types::Codec;
 
-fn wire_symbol(plan: &SemWirePlan, decode: bool) -> String {
+fn wire_symbol(ty: &ResolvedTy, decode: bool) -> String {
     format!(
         "__hew_wire_{}_{}",
         if decode { "decode" } else { "encode" },
-        hew_types::mangle_resolved_ty(&plan.ty)
+        hew_types::mangle_resolved_ty(ty)
     )
-}
-
-fn text_descriptor(plan: &SemWirePlan, yaml: bool) -> CodegenResult<serde_json::Value> {
-    use serde_json::json;
-    Ok(match &plan.kind {
-        SemWireKind::Scalar => json!({"k": match plan.ty {
-            ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 | ResolvedTy::I64 | ResolvedTy::Isize | ResolvedTy::Duration | ResolvedTy::Char => "i64",
-            ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 | ResolvedTy::U64 | ResolvedTy::Usize => "u64",
-            ResolvedTy::F32 | ResolvedTy::F64 => "f64", ResolvedTy::Bool => "bool",
-            ResolvedTy::String => "str", ResolvedTy::Bytes => "bytes",
-            _ => return Err(CodegenError::FailClosed("wire scalar has no text schema".into())),
-        }}),
-        SemWireKind::Vector(value) => json!({"k":"vec", "e":text_descriptor(value, yaml)?}),
-        SemWireKind::Set(value) => json!({"k":"set", "e":text_descriptor(value, yaml)?}),
-        SemWireKind::Option { value, .. } => json!({"k":"opt", "e":text_descriptor(value, yaml)?}),
-        SemWireKind::Map { key, value } => {
-            json!({"k":"map", "key":text_descriptor(key, yaml)?, "value":text_descriptor(value, yaml)?})
-        }
-        SemWireKind::Record { fields, .. } => {
-            json!({"k":"struct", "f": fields.iter().map(|field| Ok(json!({
-            "t":field.tag, "n":if yaml { &field.yaml_name } else { &field.json_name },
-            "p":if field.presence == WireFieldPresence::Required { "required" } else { "optional" },
-            "d":text_descriptor(&field.value, yaml)?,
-        }))).collect::<CodegenResult<Vec<_>>>()?})
-        }
-        SemWireKind::Enum { variants, .. } => {
-            json!({"k":"enum", "v": variants.iter().map(|variant| Ok(json!({
-            "t":variant.tag, "n":if yaml { &variant.yaml_name } else { &variant.json_name },
-            "p":variant.fields.iter().map(|field| text_descriptor(field, yaml)).collect::<CodegenResult<Vec<_>>>()?,
-        }))).collect::<CodegenResult<Vec<_>>>()?})
-        }
-    })
 }
 
 fn runtime<'ctx>(
@@ -68,7 +38,7 @@ fn runtime<'ctx>(
             &args,
             if result.is_some() { "wire.runtime" } else { "" },
         )
-        .llvm_ctx("call wire runtime")?;
+        .llvm_ctx("call codec runtime")?;
     Ok(call.try_as_basic_value().basic())
 }
 
@@ -79,56 +49,155 @@ fn runtime_value<'ctx>(
     args: &[BasicValueEnum<'ctx>],
 ) -> CodegenResult<BasicValueEnum<'ctx>> {
     runtime(values, name, Some(result), args)?
-        .ok_or_else(|| CodegenError::FailClosed("wire runtime returned no value".into()))
+        .ok_or_else(|| CodegenError::FailClosed("codec runtime returned no value".into()))
 }
 
-fn constant_text<'ctx>(
-    values: &ValueEmitter<'_, 'ctx>,
-    bytes: &[u8],
-    nul: bool,
+fn private_constant<'ctx>(
+    llvm: &Module<'ctx>,
+    name: &str,
+    value: BasicValueEnum<'ctx>,
 ) -> PointerValue<'ctx> {
-    let constant = values.ctx.const_string(bytes, nul);
-    let global = values
-        .llvm
-        .add_global(constant.get_type(), None, "wire.text");
+    let global = llvm.add_global(value.get_type(), None, name);
     global.set_linkage(Linkage::Private);
     global.set_constant(true);
-    global.set_initializer(&constant);
+    global.set_initializer(&value);
     global.as_pointer_value()
 }
 
-fn decode_is_resumable(
-    module: &PhysicalModule,
-    plan: &SemWirePlan,
-    recipes: &BTreeMap<ResolvedTy, PhysicalValueRecipe>,
-) -> bool {
-    let mut resumable = false;
-    plan.visit_decode_capabilities(&mut |ty, capability| {
-        resumable |= module.value_capabilities[&(ty.clone(), capability)].is_resumable;
-    });
-    plan.visit_types(&mut |ty| {
-        resumable |= recipes[ty]
-            .destroy
-            .is_some_and(|action| module.releases.suspends(action));
-    });
-    resumable
+/// The `hew_codec::Table` global for `table`, emitted once per symbol: a
+/// pointer and count of `Member { key_ptr, key_len, tag: u64, flags: u32 }`
+/// records and a one-byte tagged flag, with pointer-sized lengths.
+fn table_global<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    symbol: &str,
+    table: &SemWireTable,
+) -> PointerValue<'ctx> {
+    if let Some(global) = values.llvm.get_global(symbol) {
+        return global.as_pointer_value();
+    }
+    let ctx = values.ctx;
+    let target = TargetData::create(&values.module.target.data_layout);
+    let word = ctx.ptr_sized_int_type(&target, None);
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let member_ty = ctx.struct_type(
+        &[
+            pointer.into(),
+            word.into(),
+            ctx.i64_type().into(),
+            ctx.i32_type().into(),
+        ],
+        false,
+    );
+    let members = table
+        .members
+        .iter()
+        .enumerate()
+        .map(|(index, member)| {
+            let key = private_constant(
+                values.llvm,
+                &format!("{symbol}.key{index}"),
+                ctx.const_string(member.key.as_bytes(), false).into(),
+            );
+            member_ty.const_named_struct(&[
+                key.into(),
+                word.const_int(member.key.len() as u64, false).into(),
+                ctx.i64_type().const_int(member.tag, false).into(),
+                ctx.i32_type()
+                    .const_int(u64::from(member.flags), false)
+                    .into(),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let members = private_constant(
+        values.llvm,
+        &format!("{symbol}.members"),
+        member_ty.const_array(&members).into(),
+    );
+    let table_ty = ctx.struct_type(&[pointer.into(), word.into(), ctx.i8_type().into()], false);
+    private_constant(
+        values.llvm,
+        symbol,
+        table_ty
+            .const_named_struct(&[
+                members.into(),
+                word.const_int(table.members.len() as u64, false).into(),
+                ctx.i8_type()
+                    .const_int(u64::from(table.tagged), false)
+                    .into(),
+            ])
+            .into(),
+    )
 }
 
+fn table_symbol(ty: &ResolvedTy, variant: Option<usize>) -> String {
+    let base = format!("__hew_wire_table_{}", hew_types::mangle_resolved_ty(ty));
+    variant.map_or(base.clone(), |index| format!("{base}_v{index}"))
+}
+
+/// Whether decoding `ty` can suspend: a key capability or a destructor of a
+/// type its walk reaches resumes. Decided per type so every plan set that
+/// reaches it agrees on its callback signature.
+fn decode_is_resumable(
+    module: &PhysicalModule,
+    plans: &SemWirePlans,
+    ty: &ResolvedTy,
+    recipes: &BTreeMap<ResolvedTy, PhysicalValueRecipe>,
+) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut work = vec![ty];
+    while let Some(ty) = work.pop() {
+        if !seen.insert(ty) {
+            continue;
+        }
+        let Some(plan) = plans.get(ty) else {
+            continue;
+        };
+        if recipes[ty]
+            .destroy
+            .is_some_and(|action| module.releases.suspends(action))
+        {
+            return true;
+        }
+        if let SemWireKind::Set(key) | SemWireKind::Map { key, .. } = &plan.kind {
+            if [
+                hew_types::ValueCapability::Hash,
+                hew_types::ValueCapability::Eq,
+            ]
+            .into_iter()
+            .any(|capability| module.value_capabilities[&(key.clone(), capability)].is_resumable)
+            {
+                return true;
+            }
+        }
+        work.extend(plan.children());
+    }
+    false
+}
+
+/// The encode or decode callback of `ty`, emitted once per type.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a callback needs its plan set, value recipes and selected key capabilities"
+)]
 pub(super) fn emit_callback<'ctx>(
     module: &PhysicalModule,
     ctx: &'ctx Context,
     llvm: &Module<'ctx>,
-    plan: &SemWirePlan,
+    plans: &SemWirePlans,
+    ty: &ResolvedTy,
     recipes: &BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     callbacks: &key::CallbackTable<'ctx>,
     decode: bool,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let name = wire_symbol(plan, decode);
+    let name = wire_symbol(ty, decode);
     if let Some(function) = llvm.get_function(&name) {
         return Ok(function);
     }
+    let plan = plans
+        .get(ty)
+        .ok_or_else(|| CodegenError::FailClosed("codec plan set lacks a reached type".into()))?;
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let resumable = decode && decode_is_resumable(module, plan, recipes);
+    let resumable = decode && decode_is_resumable(module, plans, ty, recipes);
     let signature = if resumable {
         pointer.fn_type(&[pointer.into(); 4], false)
     } else if decode {
@@ -143,7 +212,7 @@ pub(super) fn emit_callback<'ctx>(
     builder.position_at_end(entry);
     builder
         .build_unconditional_branch(body)
-        .llvm_ctx("enter wire callback")?;
+        .llvm_ctx("enter codec callback")?;
     builder.position_at_end(body);
     let frame = if resumable {
         Some(coro::begin(
@@ -158,7 +227,7 @@ pub(super) fn emit_callback<'ctx>(
     };
     let allocations = builder
         .get_insert_block()
-        .expect("wire callback body exists");
+        .expect("codec callback body exists");
     let values = ValueEmitter {
         module,
         ctx,
@@ -169,21 +238,21 @@ pub(super) fn emit_callback<'ctx>(
     };
     let cursor = function
         .get_nth_param(0)
-        .expect("wire callback cursor")
+        .expect("codec callback cursor")
         .into_pointer_value();
     let slot = function
         .get_nth_param(1)
-        .expect("wire callback value")
+        .expect("codec callback value")
         .into_pointer_value();
     if decode {
         let fault = function
             .get_nth_param(2)
-            .expect("wire callback fault output")
+            .expect("codec callback fault output")
             .into_pointer_value();
         let fail = ctx.append_basic_block(function, "rollback");
         let status = builder
             .build_alloca(ctx.i32_type(), "wire.status")
-            .llvm_ctx("allocate wire callback status")?;
+            .llvm_ctx("allocate codec callback status")?;
         builder
             .build_store(status, ctx.i32_type().const_zero())
             .llvm_ctx("initialize decode failure status")?;
@@ -193,6 +262,7 @@ pub(super) fn emit_callback<'ctx>(
         };
         let mut emitter = DecodeEmitter {
             values,
+            plans,
             recipes,
             callbacks,
             frame,
@@ -216,6 +286,7 @@ pub(super) fn emit_callback<'ctx>(
     } else {
         EncodeEmitter {
             values,
+            plans,
             recipes,
             callbacks,
             cursor,
@@ -223,13 +294,30 @@ pub(super) fn emit_callback<'ctx>(
         .encode(plan, slot)?;
         builder
             .build_return(None)
-            .llvm_ctx("finish wire encode callback")?;
+            .llvm_ctx("finish codec encode callback")?;
     }
     Ok(function)
 }
 
+fn is_signed(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::Isize
+            | ResolvedTy::Duration
+    )
+}
+
+fn index(value: usize) -> CodegenResult<u32> {
+    u32::try_from(value).map_err(|_| CodegenError::FailClosed("codec index exceeds u32".into()))
+}
+
 struct EncodeEmitter<'a, 'ctx> {
     values: ValueEmitter<'a, 'ctx>,
+    plans: &'a SemWirePlans,
     recipes: &'a BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     callbacks: &'a key::CallbackTable<'ctx>,
     cursor: PointerValue<'ctx>,
@@ -242,12 +330,28 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
             .collect::<Vec<_>>();
         runtime(&self.values, name, None, &args).map(|_| ())
     }
-    fn child(&self, plan: &SemWirePlan, slot: PointerValue<'ctx>) -> CodegenResult<()> {
+    fn len(&self, len: usize) -> BasicValueEnum<'ctx> {
+        self.values
+            .ctx
+            .i64_type()
+            .const_int(len as u64, false)
+            .into()
+    }
+    fn table(
+        &self,
+        ty: &ResolvedTy,
+        variant: Option<usize>,
+        table: &SemWireTable,
+    ) -> BasicValueEnum<'ctx> {
+        table_global(&self.values, &table_symbol(ty, variant), table).into()
+    }
+    fn child(&self, ty: &ResolvedTy, slot: PointerValue<'ctx>) -> CodegenResult<()> {
         let function = emit_callback(
             self.values.module,
             self.values.ctx,
             self.values.llvm,
-            plan,
+            self.plans,
+            ty,
             self.recipes,
             self.callbacks,
             false,
@@ -255,7 +359,7 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         self.values
             .builder
             .build_call(function, &[self.cursor.into(), slot.into()], "")
-            .llvm_ctx("encode checked wire child")?;
+            .llvm_ctx("encode planned child")?;
         Ok(())
     }
     fn load(
@@ -265,7 +369,7 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
         let layout =
             self.values.module.target.layout(ty).ok_or_else(|| {
-                CodegenError::FailClosed("wire type has no physical layout".into())
+                CodegenError::FailClosed("codec type has no physical layout".into())
             })?;
         self.values
             .builder
@@ -274,134 +378,167 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
                 slot,
                 "wire.value",
             )
-            .llvm_ctx("read borrowed wire value")
+            .llvm_ctx("read borrowed codec value")
     }
-    fn tag(
+    fn field(
         &self,
         slot: PointerValue<'ctx>,
         ty: &ResolvedTy,
-    ) -> CodegenResult<(IntValue<'ctx>, PointerValue<'ctx>)> {
-        let layout = self.values.variant_layout(ty)?;
-        let object = self.values.variant_object_ptr(slot, layout)?;
-        Ok((self.values.load_variant_tag(object, layout)?, object))
-    }
-    fn payload(
-        &self,
-        object: PointerValue<'ctx>,
-        ty: &ResolvedTy,
-        variant: u32,
         field: u32,
     ) -> CodegenResult<PointerValue<'ctx>> {
-        variant_field_pointer(&self.values, object, ty, variant, field)
+        let layout = self
+            .values
+            .module
+            .target
+            .layout(ty)
+            .ok_or_else(|| CodegenError::FailClosed("codec aggregate has no layout".into()))?;
+        self.values
+            .builder
+            .build_struct_gep(
+                llvm_type(self.values.ctx, &layout.repr)?.into_struct_type(),
+                slot,
+                field,
+                "wire.field",
+            )
+            .llvm_ctx("address codec aggregate field")
     }
+    fn sequence(&self, slots: &[(PointerValue<'ctx>, &ResolvedTy)]) -> CodegenResult<()> {
+        self.void("hew_ser_seq_begin", &[self.len(slots.len())])?;
+        for (slot, ty) in slots {
+            self.child(ty, *slot)?;
+        }
+        self.void("hew_ser_seq_end", &[])
+    }
+    fn record(
+        &self,
+        table: BasicValueEnum<'ctx>,
+        members: &SemWireTable,
+        slots: &[(PointerValue<'ctx>, &ResolvedTy)],
+    ) -> CodegenResult<()> {
+        self.void("hew_ser_record_begin", &[table])?;
+        for (position, ((slot, ty), member)) in slots.iter().zip(&members.members).enumerate() {
+            if member.flags & hew_codec::Member::SKIP != 0 {
+                continue;
+            }
+            self.void(
+                "hew_ser_field",
+                &[self
+                    .values
+                    .ctx
+                    .i32_type()
+                    .const_int(u64::from(index(position)?), false)
+                    .into()],
+            )?;
+            self.child(ty, *slot)?;
+        }
+        self.void("hew_ser_record_end", &[])
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match keeps every planned shape's encoding together"
+    )]
     fn encode(&self, plan: &SemWirePlan, slot: PointerValue<'ctx>) -> CodegenResult<()> {
         let ctx = self.values.ctx;
         let builder = self.values.builder;
         match &plan.kind {
             SemWireKind::Scalar => {
-                let value = self.load(slot, &plan.ty)?;
-                let (name, value) = match plan.ty {
-                    ResolvedTy::Bool => ("hew_cbor_ser_bool", value),
-                    ResolvedTy::String => ("hew_cbor_ser_string_hew", value),
-                    ResolvedTy::Bytes => {
-                        let triple = value.into_struct_value();
-                        let args = (0..3)
-                            .map(|index| {
-                                builder
-                                    .build_extract_value(triple, index, "wire.bytes.field")
-                                    .llvm_ctx("read byte carrier")
-                            })
-                            .collect::<CodegenResult<Vec<_>>>()?;
-                        return self.void("hew_cbor_ser_bytes", &args);
+                match &plan.ty {
+                    ResolvedTy::Bytes => return self.void("hew_ser_bytes", &[slot.into()]),
+                    ResolvedTy::String => {
+                        let value = self.load(slot, &plan.ty)?;
+                        return self.void("hew_ser_str", &[value]);
                     }
+                    _ => {}
+                }
+                let value = self.load(slot, &plan.ty)?;
+                let (name, value) = match &plan.ty {
+                    ResolvedTy::Bool => ("hew_ser_bool", value),
                     ResolvedTy::F32 => (
-                        "hew_cbor_ser_f64",
+                        "hew_ser_f64",
                         builder
                             .build_float_ext(value.into_float_value(), ctx.f64_type(), "wire.float")
-                            .llvm_ctx("widen wire float")?
+                            .llvm_ctx("widen codec float")?
                             .into(),
                     ),
-                    ResolvedTy::F64 => ("hew_cbor_ser_f64", value),
-                    _ => {
-                        let signed = matches!(
-                            plan.ty,
-                            ResolvedTy::I8
-                                | ResolvedTy::I16
-                                | ResolvedTy::I32
-                                | ResolvedTy::I64
-                                | ResolvedTy::Isize
-                                | ResolvedTy::Duration
-                        );
-                        let value = value.into_int_value();
+                    ResolvedTy::F64 => ("hew_ser_f64", value),
+                    ResolvedTy::Char => (
+                        "hew_ser_char",
+                        builder
+                            .build_int_cast(value.into_int_value(), ctx.i32_type(), "wire.char")
+                            .llvm_ctx("read codec char")?
+                            .into(),
+                    ),
+                    ty => {
+                        let signed = is_signed(ty);
                         let wide = builder
-                            .build_int_cast_sign_flag(value, ctx.i64_type(), signed, "wire.integer")
-                            .llvm_ctx("widen wire integer")?;
+                            .build_int_cast_sign_flag(
+                                value.into_int_value(),
+                                ctx.i64_type(),
+                                signed,
+                                "wire.integer",
+                            )
+                            .llvm_ctx("widen codec integer")?;
                         (
-                            if signed {
-                                "hew_cbor_ser_i64"
-                            } else {
-                                "hew_cbor_ser_u64"
-                            },
+                            if signed { "hew_ser_i64" } else { "hew_ser_u64" },
                             wide.into(),
                         )
                     }
                 };
                 self.void(name, &[value])
             }
-            SemWireKind::Record { fields, .. } => {
-                self.void("hew_cbor_ser_begin_map", &[])?;
+            SemWireKind::Unit => self.void("hew_ser_null", &[]),
+            SemWireKind::Tuple(elements) => {
+                let slots = elements
+                    .iter()
+                    .enumerate()
+                    .map(|(position, ty)| Ok((self.field(slot, &plan.ty, index(position)?)?, ty)))
+                    .collect::<CodegenResult<Vec<_>>>()?;
+                self.sequence(&slots)
+            }
+            SemWireKind::Array { element, len } => {
                 let layout =
                     self.values.module.target.layout(&plan.ty).ok_or_else(|| {
-                        CodegenError::FailClosed("wire record has no layout".into())
+                        CodegenError::FailClosed("codec array has no layout".into())
                     })?;
-                let ty = llvm_type(ctx, &layout.repr)?.into_struct_type();
-                for field in fields {
-                    let field_slot = builder
-                        .build_struct_gep(ty, slot, field.index, "wire.field")
-                        .llvm_ctx("address wire record field")?;
-                    let continuation = if field.presence == WireFieldPresence::Optional {
-                        let SemWireKind::Option { none, .. } = field.value.kind else {
-                            return Err(CodegenError::FailClosed(
-                                "optional wire key lacks Option value".into(),
-                            ));
-                        };
-                        let (tag, _) = self.tag(field_slot, &field.value.ty)?;
-                        let absent = builder
-                            .build_int_compare(
-                                IntPredicate::EQ,
-                                tag,
-                                tag.get_type().const_int(u64::from(none), false),
-                                "wire.absent",
-                            )
-                            .llvm_ctx("test optional key presence")?;
-                        let write = ctx.append_basic_block(self.values.value, "wire.key.present");
-                        let next = ctx.append_basic_block(self.values.value, "wire.key.next");
-                        builder
-                            .build_conditional_branch(absent, next, write)
-                            .llvm_ctx("omit absent optional key")?;
-                        builder.position_at_end(write);
-                        Some(next)
-                    } else {
-                        None
-                    };
-                    self.void(
-                        "hew_cbor_ser_key_u64",
-                        &[ctx.i64_type().const_int(u64::from(field.tag), false).into()],
-                    )?;
-                    self.child(&field.value, field_slot)?;
-                    if let Some(next) = continuation {
-                        builder
-                            .build_unconditional_branch(next)
-                            .llvm_ctx("finish optional key")?;
-                        builder.position_at_end(next);
+                let array_ty = llvm_type(ctx, &layout.repr)?;
+                self.void(
+                    "hew_ser_seq_begin",
+                    &[ctx.i64_type().const_int(*len, false).into()],
+                )?;
+                self.counted(*len, |position| {
+                    // SAFETY: the loop bound is the array's static length.
+                    let element_slot = unsafe {
+                        builder.build_in_bounds_gep(
+                            array_ty,
+                            slot,
+                            &[ctx.i64_type().const_zero(), position],
+                            "wire.element",
+                        )
                     }
+                    .llvm_ctx("address codec array element")?;
+                    self.child(element, element_slot)
+                })?;
+                self.void("hew_ser_seq_end", &[])
+            }
+            SemWireKind::Record { table, fields, .. } => {
+                let slots = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(position, ty)| Ok((self.field(slot, &plan.ty, index(position)?)?, ty)))
+                    .collect::<CodegenResult<Vec<_>>>()?;
+                match table {
+                    Some(members) => {
+                        self.record(self.table(&plan.ty, None, members), members, &slots)
+                    }
+                    None => self.sequence(&slots),
                 }
-                self.void("hew_cbor_ser_end_map", &[])
             }
             SemWireKind::Option {
                 none, some, value, ..
             } => {
-                let (tag, object) = self.tag(slot, &plan.ty)?;
+                let layout = self.values.variant_layout(&plan.ty)?;
+                let object = self.values.variant_object_ptr(slot, layout)?;
+                let tag = self.values.load_variant_tag(object, layout)?;
                 let empty = ctx.append_basic_block(self.values.value, "wire.none");
                 let present = ctx.append_basic_block(self.values.value, "wire.some");
                 let invalid = ctx.append_basic_block(self.values.value, "wire.invalid.option");
@@ -419,66 +556,79 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
                 builder.position_at_end(invalid);
                 self.values.emit_invalid_variant_tag()?;
                 builder.position_at_end(empty);
-                self.void("hew_cbor_ser_null", &[])?;
+                self.void("hew_ser_null", &[])?;
                 builder
                     .build_unconditional_branch(done)
                     .llvm_ctx("finish None encoding")?;
                 builder.position_at_end(present);
-                self.child(value, self.payload(object, &plan.ty, *some, 0)?)?;
+                self.child(
+                    value,
+                    variant_field_pointer(&self.values, object, &plan.ty, *some, 0)?,
+                )?;
                 builder
                     .build_unconditional_branch(done)
                     .llvm_ctx("finish Some encoding")?;
                 builder.position_at_end(done);
                 Ok(())
             }
-            SemWireKind::Enum { variants, .. } => {
-                let (tag, object) = self.tag(slot, &plan.ty)?;
+            SemWireKind::Enum {
+                table, variants, ..
+            } => {
+                let layout = self.values.variant_layout(&plan.ty)?;
+                let object = self.values.variant_object_ptr(slot, layout)?;
+                let tag = self.values.load_variant_tag(object, layout)?;
                 let invalid = ctx.append_basic_block(self.values.value, "wire.invalid.enum");
                 let done = ctx.append_basic_block(self.values.value, "wire.enum.done");
-                let cases = variants
-                    .iter()
-                    .map(|variant| {
-                        (
-                            tag.get_type().const_int(u64::from(variant.index), false),
+                let cases = (0..variants.len())
+                    .map(|position| {
+                        Ok((
+                            tag.get_type().const_int(u64::from(index(position)?), false),
                             ctx.append_basic_block(self.values.value, "wire.variant"),
-                        )
+                        ))
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<CodegenResult<Vec<_>>>()?;
                 builder
                     .build_switch(tag, invalid, &cases)
-                    .llvm_ctx("select wire enum variant")?;
+                    .llvm_ctx("select codec enum variant")?;
                 builder.position_at_end(invalid);
                 self.values.emit_invalid_variant_tag()?;
-                for (variant, (_, block)) in variants.iter().zip(cases) {
+                let enum_table = self.table(&plan.ty, None, table);
+                for (position, (payload, (_, block))) in variants.iter().zip(cases).enumerate() {
                     builder.position_at_end(block);
-                    let wire_tag = ctx
-                        .i64_type()
-                        .const_int(u64::from(variant.tag), false)
-                        .into();
-                    if variant.fields.is_empty() {
-                        self.void("hew_cbor_ser_u64", &[wire_tag])?;
-                    } else {
-                        self.void("hew_cbor_ser_begin_map", &[])?;
-                        self.void("hew_cbor_ser_key_u64", &[wire_tag])?;
-                        self.void("hew_cbor_ser_begin_array", &[])?;
-                        for (index, field) in variant.fields.iter().enumerate() {
-                            self.child(
-                                field,
-                                self.payload(
+                    let variant = index(position)?;
+                    self.void(
+                        "hew_ser_variant",
+                        &[
+                            enum_table,
+                            ctx.i32_type().const_int(u64::from(variant), false).into(),
+                        ],
+                    )?;
+                    let slots = payload
+                        .types()
+                        .iter()
+                        .enumerate()
+                        .map(|(field, ty)| {
+                            Ok((
+                                variant_field_pointer(
+                                    &self.values,
                                     object,
                                     &plan.ty,
-                                    variant.index,
-                                    u32::try_from(index).map_err(|_| {
-                                        CodegenError::FailClosed(
-                                            "wire payload index exceeds u32".into(),
-                                        )
-                                    })?,
+                                    variant,
+                                    index(field)?,
                                 )?,
-                            )?;
+                                ty,
+                            ))
+                        })
+                        .collect::<CodegenResult<Vec<_>>>()?;
+                    match payload {
+                        SemWirePayload::Unit => {}
+                        SemWirePayload::Single(ty) => self.child(ty, slots[0].0)?,
+                        SemWirePayload::Tuple(_) => self.sequence(&slots)?,
+                        SemWirePayload::Record { table, .. } => {
+                            self.record(self.table(&plan.ty, Some(position), table), table, &slots)?
                         }
-                        self.void("hew_cbor_ser_end_array", &[])?;
-                        self.void("hew_cbor_ser_end_map", &[])?;
                     }
+                    self.void("hew_ser_variant_end", &[])?;
                     builder
                         .build_unconditional_branch(done)
                         .llvm_ctx("finish enum encoding")?;
@@ -491,14 +641,25 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
             SemWireKind::Map { key, value } => self.associative(plan, key, Some(value), slot),
         }
     }
+    /// Run `body` for each position below `len`.
+    fn counted(
+        &self,
+        len: u64,
+        body: impl Fn(IntValue<'ctx>) -> CodegenResult<()>,
+    ) -> CodegenResult<()> {
+        counted_loop(
+            &self.values,
+            self.values.ctx.i64_type().const_int(len, false),
+            body,
+        )
+    }
     fn vector(
         &self,
         plan: &SemWirePlan,
-        element: &SemWirePlan,
+        element: &ResolvedTy,
         slot: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let ctx = self.values.ctx;
-        let builder = self.values.builder;
         let vector = self.load(slot, &plan.ty)?;
         let len = runtime_value(
             &self.values,
@@ -507,60 +668,24 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
             &[vector],
         )?
         .into_int_value();
-        let index = self
-            .values
-            .entry_scratch(ctx.i64_type().into(), "wire.index")?;
-        builder
-            .build_store(index, ctx.i64_type().const_zero())
-            .llvm_ctx("initialize wire index")?;
-        self.void("hew_cbor_ser_begin_array", &[])?;
-        let header = ctx.append_basic_block(self.values.value, "wire.vector.next");
-        let body = ctx.append_basic_block(self.values.value, "wire.vector.element");
-        let done = ctx.append_basic_block(self.values.value, "wire.vector.done");
-        builder
-            .build_unconditional_branch(header)
-            .llvm_ctx("enter vector encode loop")?;
-        builder.position_at_end(header);
-        let current = builder
-            .build_load(ctx.i64_type(), index, "wire.index")
-            .llvm_ctx("read vector index")?
-            .into_int_value();
-        let present = builder
-            .build_int_compare(IntPredicate::ULT, current, len, "wire.vector.present")
-            .llvm_ctx("check vector encode bound")?;
-        builder
-            .build_conditional_branch(present, body, done)
-            .llvm_ctx("iterate vector encoding")?;
-        builder.position_at_end(body);
-        let ptr = runtime_value(
-            &self.values,
-            "hew_vec_get_owned",
-            ctx.ptr_type(AddressSpace::default()).into(),
-            &[vector, current.into()],
-        )?
-        .into_pointer_value();
-        self.child(element, ptr)?;
-        let next = builder
-            .build_int_add(
-                current,
-                ctx.i64_type().const_int(1, false),
-                "wire.index.next",
-            )
-            .llvm_ctx("advance wire vector index")?;
-        builder
-            .build_store(index, next)
-            .llvm_ctx("store wire vector index")?;
-        builder
-            .build_unconditional_branch(header)
-            .llvm_ctx("continue vector encoding")?;
-        builder.position_at_end(done);
-        self.void("hew_cbor_ser_end_array", &[])
+        self.void("hew_ser_seq_begin", &[len.into()])?;
+        counted_loop(&self.values, len, |position| {
+            let ptr = runtime_value(
+                &self.values,
+                "hew_vec_get_owned",
+                ctx.ptr_type(AddressSpace::default()).into(),
+                &[vector, position.into()],
+            )?
+            .into_pointer_value();
+            self.child(element, ptr)
+        })?;
+        self.void("hew_ser_seq_end", &[])
     }
     fn associative(
         &self,
         plan: &SemWirePlan,
-        key: &SemWirePlan,
-        value: Option<&SemWirePlan>,
+        key: &ResolvedTy,
+        value: Option<&ResolvedTy>,
         slot: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let ctx = self.values.ctx;
@@ -579,20 +704,24 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         let value_out = self
             .values
             .entry_scratch(pointer.into(), "wire.value.ptr")?;
-        self.void(
-            if map {
-                "hew_cbor_ser_begin_map"
-            } else {
-                "hew_cbor_ser_begin_set"
-            },
-            &[],
-        )?;
+        if map {
+            let string_keys = u64::from(*key == ResolvedTy::String);
+            self.void(
+                "hew_ser_map_begin",
+                &[
+                    self.len(0),
+                    ctx.i8_type().const_int(string_keys, false).into(),
+                ],
+            )?;
+        } else {
+            self.void("hew_ser_set_begin", &[self.len(0)])?;
+        }
         let header = ctx.append_basic_block(self.values.value, "wire.collection.next");
         let body = ctx.append_basic_block(self.values.value, "wire.collection.element");
         let done = ctx.append_basic_block(self.values.value, "wire.collection.done");
         builder
             .build_unconditional_branch(header)
-            .llvm_ctx("enter wire collection loop")?;
+            .llvm_ctx("enter codec collection loop")?;
         builder.position_at_end(header);
         let mut args = vec![cursor, key_out.into()];
         if map {
@@ -607,20 +736,17 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         .into_int_value();
         builder
             .build_conditional_branch(present, body, done)
-            .llvm_ctx("advance wire collection cursor")?;
+            .llvm_ctx("advance codec collection cursor")?;
         builder.position_at_end(body);
-        if map {
-            self.void("hew_cbor_ser_begin_key", &[])?;
-        }
         let key_slot = builder
             .build_load(pointer, key_out, "wire.key")
-            .llvm_ctx("read borrowed wire key")?
+            .llvm_ctx("read borrowed codec key")?
             .into_pointer_value();
         self.child(key, key_slot)?;
         if let Some(value) = value {
             let value_slot = builder
                 .build_load(pointer, value_out, "wire.value")
-                .llvm_ctx("read borrowed wire map value")?
+                .llvm_ctx("read borrowed codec map value")?
                 .into_pointer_value();
             self.child(value, value_slot)?;
         }
@@ -636,13 +762,61 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         )?;
         self.void(
             if map {
-                "hew_cbor_ser_end_map"
+                "hew_ser_map_end"
             } else {
-                "hew_cbor_ser_end_array"
+                "hew_ser_seq_end"
             },
             &[],
         )
     }
+}
+
+/// Emit `for position in 0..len { body(position) }`.
+fn counted_loop<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    len: IntValue<'ctx>,
+    body: impl Fn(IntValue<'ctx>) -> CodegenResult<()>,
+) -> CodegenResult<()> {
+    let ctx = values.ctx;
+    let builder = values.builder;
+    let counter = values.entry_scratch(ctx.i64_type().into(), "wire.index")?;
+    builder
+        .build_store(counter, ctx.i64_type().const_zero())
+        .llvm_ctx("initialize codec index")?;
+    let header = ctx.append_basic_block(values.value, "wire.loop.next");
+    let inner = ctx.append_basic_block(values.value, "wire.loop.body");
+    let done = ctx.append_basic_block(values.value, "wire.loop.done");
+    builder
+        .build_unconditional_branch(header)
+        .llvm_ctx("enter codec loop")?;
+    builder.position_at_end(header);
+    let position = builder
+        .build_load(ctx.i64_type(), counter, "wire.index")
+        .llvm_ctx("read codec index")?
+        .into_int_value();
+    let more = builder
+        .build_int_compare(IntPredicate::ULT, position, len, "wire.more")
+        .llvm_ctx("check codec loop bound")?;
+    builder
+        .build_conditional_branch(more, inner, done)
+        .llvm_ctx("iterate codec loop")?;
+    builder.position_at_end(inner);
+    body(position)?;
+    let next = builder
+        .build_int_add(
+            position,
+            ctx.i64_type().const_int(1, false),
+            "wire.index.next",
+        )
+        .llvm_ctx("advance codec index")?;
+    builder
+        .build_store(counter, next)
+        .llvm_ctx("store codec index")?;
+    builder
+        .build_unconditional_branch(header)
+        .llvm_ctx("continue codec loop")?;
+    builder.position_at_end(done);
+    Ok(())
 }
 
 fn variant_field_pointer<'ctx>(
@@ -657,7 +831,7 @@ fn variant_field_pointer<'ctx>(
     let layout = layout
         .variants
         .get(variant as usize)
-        .ok_or_else(|| CodegenError::FailClosed("wire variant has no physical payload".into()))?;
+        .ok_or_else(|| CodegenError::FailClosed("codec variant has no physical payload".into()))?;
     values
         .builder
         .build_struct_gep(
@@ -666,7 +840,7 @@ fn variant_field_pointer<'ctx>(
             field,
             "wire.payload.field",
         )
-        .llvm_ctx("address checked wire payload field")
+        .llvm_ctx("address checked codec payload field")
 }
 
 #[derive(Clone, Copy)]
@@ -683,6 +857,7 @@ struct DecodeOwner<'ctx> {
 
 struct DecodeEmitter<'a, 'ctx> {
     values: ValueEmitter<'a, 'ctx>,
+    plans: &'a SemWirePlans,
     recipes: &'a BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     callbacks: &'a key::CallbackTable<'ctx>,
     frame: Option<coro::Frame<'ctx>>,
@@ -704,7 +879,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         }
         builder
             .build_alloca(ty, name)
-            .llvm_ctx("allocate reusable wire callback scratch")
+            .llvm_ctx("allocate reusable codec callback scratch")
     }
     fn finish(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         if let Some(frame) = &self.frame {
@@ -720,25 +895,25 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             self.values
                 .builder
                 .build_call(finish, &[frame.state.into(), status.into()], "")
-                .llvm_ctx("publish wire decode outcome")?;
+                .llvm_ctx("publish codec decode outcome")?;
             self.values
                 .builder
                 .build_unconditional_branch(frame.finish)
-                .llvm_ctx("finish wire decoder frame")?;
+                .llvm_ctx("finish codec decoder frame")?;
         } else {
             self.values
                 .builder
                 .build_return(Some(&status))
-                .llvm_ctx("return wire decode status")?;
+                .llvm_ctx("return codec decode status")?;
         }
         Ok(())
     }
     fn temporary(&mut self, ty: &ResolvedTy) -> CodegenResult<DecodeTemporary<'ctx>> {
         let recipe = self.recipes.get(ty).ok_or_else(|| {
-            CodegenError::FailClosed("wire decode lacks exact value recipe".into())
+            CodegenError::FailClosed("codec decode lacks exact value recipe".into())
         })?;
         let layout = self.values.module.target.layout(ty).ok_or_else(|| {
-            CodegenError::FailClosed("wire decode lacks physical type layout".into())
+            CodegenError::FailClosed("codec decode lacks physical type layout".into())
         })?;
         let slot = self.scratch(llvm_type(self.values.ctx, &layout.repr)?, "wire.temporary")?;
         let owner = if recipe.destroy.is_some() {
@@ -753,7 +928,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             }
             builder
                 .build_store(initialized, self.values.ctx.bool_type().const_zero())
-                .llvm_ctx("initialize wire cleanup obligation")?;
+                .llvm_ctx("initialize codec cleanup obligation")?;
             let owner = self.owners.len();
             self.owners.push(DecodeOwner {
                 slot,
@@ -777,7 +952,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                         .bool_type()
                         .const_int(u64::from(initialized), false),
                 )
-                .llvm_ctx("transfer wire cleanup obligation")?;
+                .llvm_ctx("transfer codec cleanup obligation")?;
         }
         Ok(())
     }
@@ -791,14 +966,14 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         self.values
             .builder
             .build_store(owner.initialized, self.values.ctx.bool_type().const_zero())
-            .llvm_ctx("consume wire cleanup owner")?;
+            .llvm_ctx("consume codec cleanup owner")?;
         let layout = self
             .values
             .module
             .target
             .layout(&owner.recipe.ty)
             .ok_or_else(|| {
-                CodegenError::FailClosed("wire cleanup has no physical layout".into())
+                CodegenError::FailClosed("codec cleanup has no physical layout".into())
             })?;
         let action = owner
             .recipe
@@ -815,7 +990,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 owner.slot,
                 "wire.partial.owner",
             )
-            .llvm_ctx("read initialized wire owner")?;
+            .llvm_ctx("read initialized codec owner")?;
         self.values.destroy_loaded_value(value, layout, action)
     }
     fn rollback(&self) -> CodegenResult<()> {
@@ -833,18 +1008,18 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 .values
                 .builder
                 .build_load(self.values.ctx.bool_type(), owner.initialized, "wire.live")
-                .llvm_ctx("test partial wire owner")?
+                .llvm_ctx("test partial codec owner")?
                 .into_int_value();
             self.values
                 .builder
                 .build_conditional_branch(initialized, release, next)
-                .llvm_ctx("release only initialized wire fields")?;
+                .llvm_ctx("release only initialized codec fields")?;
             self.values.builder.position_at_end(release);
             self.destroy(owner)?;
             self.values
                 .builder
                 .build_unconditional_branch(next)
-                .llvm_ctx("continue wire rollback")?;
+                .llvm_ctx("continue codec rollback")?;
             self.values.builder.position_at_end(next);
         }
         let status = self
@@ -855,7 +1030,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 self.status,
                 "wire.failure.status",
             )
-            .llvm_ctx("read wire failure status")?;
+            .llvm_ctx("read codec failure status")?;
         self.finish(status.into_int_value())
     }
     fn load(
@@ -868,7 +1043,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .module
             .target
             .layout(ty)
-            .ok_or_else(|| CodegenError::FailClosed("wire value has no layout".into()))?;
+            .ok_or_else(|| CodegenError::FailClosed("codec value has no layout".into()))?;
         self.values
             .builder
             .build_load(
@@ -876,7 +1051,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 slot,
                 "wire.decoded",
             )
-            .llvm_ctx("read complete wire value")
+            .llvm_ctx("read complete codec value")
     }
     fn void(&self, name: &str, args: &[BasicValueEnum<'ctx>]) -> CodegenResult<()> {
         let args = std::iter::once(self.cursor.into())
@@ -895,6 +1070,17 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .collect::<Vec<_>>();
         runtime_value(&self.values, name, ty, &args)
     }
+    fn i32(&self, value: u64) -> BasicValueEnum<'ctx> {
+        self.values.ctx.i32_type().const_int(value, false).into()
+    }
+    fn table(
+        &self,
+        ty: &ResolvedTy,
+        variant: Option<usize>,
+        table: &SemWireTable,
+    ) -> BasicValueEnum<'ctx> {
+        table_global(&self.values, &table_symbol(ty, variant), table).into()
+    }
     fn check_status(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         let success = self
             .values
@@ -903,7 +1089,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         self.values
             .builder
             .build_store(self.status, status)
-            .llvm_ctx("retain wire failure status")?;
+            .llvm_ctx("retain codec failure status")?;
         let failed = self
             .values
             .builder
@@ -913,17 +1099,17 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 status.get_type().const_zero(),
                 "wire.failed",
             )
-            .llvm_ctx("test wire callback status")?;
+            .llvm_ctx("test codec callback status")?;
         self.values
             .builder
             .build_conditional_branch(failed, self.fail, success)
-            .llvm_ctx("reject incomplete wire value")?;
+            .llvm_ctx("reject incomplete codec value")?;
         self.values.builder.position_at_end(success);
         Ok(())
     }
     fn check_cursor(&self) -> CodegenResult<()> {
         let status = self
-            .read("hew_cbor_de_failed", self.values.ctx.i32_type().into(), &[])?
+            .read("hew_de_failed", self.values.ctx.i32_type().into(), &[])?
             .into_int_value();
         self.check_status(status)
     }
@@ -931,36 +1117,33 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         self.values
             .builder
             .build_store(self.status, self.values.ctx.i32_type().const_int(1, false))
-            .llvm_ctx("record malformed wire value")?;
+            .llvm_ctx("record malformed codec value")?;
         self.values
             .builder
             .build_unconditional_branch(self.fail)
-            .llvm_ctx("reject malformed wire value")?;
+            .llvm_ctx("reject malformed codec value")?;
         Ok(())
     }
-    fn child_into(
-        &self,
-        plan: &SemWirePlan,
-        temporary: DecodeTemporary<'ctx>,
-    ) -> CodegenResult<()> {
+    fn child_into(&self, ty: &ResolvedTy, temporary: DecodeTemporary<'ctx>) -> CodegenResult<()> {
         let function = emit_callback(
             self.values.module,
             self.values.ctx,
             self.values.llvm,
-            plan,
+            self.plans,
+            ty,
             self.recipes,
             self.callbacks,
             true,
         )?;
         let arguments = [self.cursor.into(), temporary.slot.into(), self.fault.into()];
-        let status = if decode_is_resumable(self.values.module, plan, self.recipes) {
+        let status = if decode_is_resumable(self.values.module, self.plans, ty, self.recipes) {
             suspend::invoke_child(
                 self.values.ctx,
                 self.values.llvm,
                 self.values.builder,
                 self.values.value,
                 self.frame.as_ref().ok_or_else(|| {
-                    CodegenError::FailClosed("suspending wire child lacks a caller frame".into())
+                    CodegenError::FailClosed("suspending codec child lacks a caller frame".into())
                 })?,
                 function,
                 &arguments,
@@ -969,25 +1152,25 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             self.values
                 .builder
                 .build_call(function, &arguments, "wire.child.status")
-                .llvm_ctx("decode exact wire child")?
+                .llvm_ctx("decode exact codec child")?
                 .try_as_basic_value()
                 .basic()
-                .ok_or_else(|| CodegenError::FailClosed("wire decoder returned no status".into()))?
+                .ok_or_else(|| CodegenError::FailClosed("codec decoder returned no status".into()))?
                 .into_int_value()
         };
         self.check_status(status)?;
         self.mark(temporary, true)
     }
-    fn child(&mut self, plan: &SemWirePlan) -> CodegenResult<DecodeTemporary<'ctx>> {
-        let temporary = self.temporary(&plan.ty)?;
-        self.child_into(plan, temporary)?;
+    fn child(&mut self, ty: &ResolvedTy) -> CodegenResult<DecodeTemporary<'ctx>> {
+        let temporary = self.temporary(ty)?;
+        self.child_into(ty, temporary)?;
         Ok(temporary)
     }
     fn variant(
         &self,
         plan: &SemWirePlan,
         variant: u32,
-        fields: &[(DecodeTemporary<'ctx>, &SemWirePlan)],
+        fields: &[(DecodeTemporary<'ctx>, &ResolvedTy)],
         output: DecodeTemporary<'ctx>,
     ) -> CodegenResult<()> {
         let glue = self
@@ -997,11 +1180,11 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .iter()
             .find(|glue| glue.ty == plan.ty)
             .ok_or_else(|| {
-                CodegenError::FailClosed("wire variant has no exact physical glue".into())
+                CodegenError::FailClosed("codec variant has no exact physical glue".into())
             })?;
         let values = fields
             .iter()
-            .map(|(value, plan)| self.load(value.slot, &plan.ty))
+            .map(|(value, ty)| self.load(value.slot, ty))
             .collect::<CodegenResult<Vec<_>>>()?;
         self.values
             .write_variant_value(output.slot, variant, &values, glue.id)?;
@@ -1011,6 +1194,79 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         }
         Ok(())
     }
+    /// Decode a sequence of exactly these types, each into a temporary.
+    fn sequence<'t>(
+        &mut self,
+        types: &'t [ResolvedTy],
+    ) -> CodegenResult<Vec<(DecodeTemporary<'ctx>, &'t ResolvedTy)>> {
+        self.void("hew_de_tuple_begin", &[self.i32(types.len() as u64)])?;
+        let mut decoded = Vec::with_capacity(types.len());
+        for ty in types {
+            self.read("hew_de_seq_next", self.values.ctx.i32_type().into(), &[])?;
+            decoded.push((self.child(ty)?, ty));
+        }
+        self.read("hew_de_seq_next", self.values.ctx.i32_type().into(), &[])?;
+        self.check_cursor()?;
+        Ok(decoded)
+    }
+    /// Decode a record's members, which the source hands out in table order.
+    fn record<'t>(
+        &mut self,
+        table: BasicValueEnum<'ctx>,
+        types: &'t [ResolvedTy],
+    ) -> CodegenResult<Vec<(DecodeTemporary<'ctx>, &'t ResolvedTy)>> {
+        self.void("hew_de_record_begin", &[table])?;
+        let mut decoded = Vec::with_capacity(types.len());
+        for ty in types {
+            self.read("hew_de_record_next", self.values.ctx.i32_type().into(), &[])?;
+            self.check_cursor()?;
+            decoded.push((self.child(ty)?, ty));
+        }
+        self.read("hew_de_record_next", self.values.ctx.i32_type().into(), &[])?;
+        self.check_cursor()?;
+        Ok(decoded)
+    }
+    fn aggregate(
+        &self,
+        plan: &SemWirePlan,
+        decoded: Vec<(DecodeTemporary<'ctx>, &ResolvedTy)>,
+        output: DecodeTemporary<'ctx>,
+    ) -> CodegenResult<()> {
+        let ctx = self.values.ctx;
+        let builder = self.values.builder;
+        let layout = self
+            .values
+            .module
+            .target
+            .layout(&plan.ty)
+            .ok_or_else(|| CodegenError::FailClosed("codec aggregate has no layout".into()))?;
+        let mut record = llvm_type(ctx, &layout.repr)?
+            .into_struct_type()
+            .const_zero();
+        for (position, (value, ty)) in decoded.iter().enumerate() {
+            record = builder
+                .build_insert_value(
+                    record,
+                    self.load(value.slot, ty)?,
+                    index(position)?,
+                    "wire.record.field",
+                )
+                .llvm_ctx("assemble complete codec aggregate")?
+                .into_struct_value();
+        }
+        builder
+            .build_store(output.slot, record)
+            .llvm_ctx("stage complete codec aggregate")?;
+        self.mark(output, true)?;
+        for (value, _) in decoded {
+            self.mark(value, false)?;
+        }
+        Ok(())
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match keeps every planned shape's decoding together"
+    )]
     fn decode(&mut self, plan: &SemWirePlan, output: DecodeTemporary<'ctx>) -> CodegenResult<()> {
         let ctx = self.values.ctx;
         let builder = self.values.builder;
@@ -1018,23 +1274,23 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             SemWireKind::Scalar => {
                 let layout =
                     self.values.module.target.layout(&plan.ty).ok_or_else(|| {
-                        CodegenError::FailClosed("wire scalar has no layout".into())
+                        CodegenError::FailClosed("codec scalar has no layout".into())
                     })?;
                 let ty = llvm_type(ctx, &layout.repr)?;
-                let value = match plan.ty {
-                    ResolvedTy::Bool => self.read("hew_cbor_de_bool", ctx.i8_type().into(), &[])?,
+                let value = match &plan.ty {
+                    ResolvedTy::Bool => self.read("hew_de_bool", ctx.i8_type().into(), &[])?,
                     ResolvedTy::String => self.read(
-                        "hew_cbor_de_string_hew",
+                        "hew_de_str",
                         ctx.ptr_type(AddressSpace::default()).into(),
                         &[],
                     )?,
                     ResolvedTy::Bytes => {
-                        self.void("hew_cbor_de_bytes_hew", &[output.slot.into()])?;
+                        self.void("hew_de_bytes", &[output.slot.into()])?;
                         return self.mark(output, true);
                     }
                     ResolvedTy::F32 | ResolvedTy::F64 => {
                         let value = self
-                            .read("hew_cbor_de_f64", ctx.f64_type().into(), &[])?
+                            .read("hew_de_f64", ctx.f64_type().into(), &[])?
                             .into_float_value();
                         if plan.ty == ResolvedTy::F32 {
                             builder
@@ -1045,30 +1301,18 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                             value.into()
                         }
                     }
-                    _ => {
-                        let value = if plan.ty == ResolvedTy::Char {
-                            self.read("hew_cbor_de_char", ctx.i64_type().into(), &[])?
+                    other => {
+                        let value = if *other == ResolvedTy::Char {
+                            self.read("hew_de_char", ctx.i32_type().into(), &[])?
                         } else {
-                            let signed = matches!(
-                                plan.ty,
-                                ResolvedTy::I8
-                                    | ResolvedTy::I16
-                                    | ResolvedTy::I32
-                                    | ResolvedTy::I64
-                                    | ResolvedTy::Isize
-                                    | ResolvedTy::Duration
-                            );
                             self.read(
-                                "hew_cbor_de_int_checked",
+                                "hew_de_int",
                                 ctx.i64_type().into(),
                                 &[
-                                    ctx.i32_type()
-                                        .const_int(
-                                            u64::from(ty.into_int_type().get_bit_width()),
-                                            false,
-                                        )
+                                    self.i32(u64::from(ty.into_int_type().get_bit_width())),
+                                    ctx.i8_type()
+                                        .const_int(u64::from(is_signed(other)), false)
                                         .into(),
-                                    ctx.i32_type().const_int(u64::from(signed), false).into(),
                                 ],
                             )?
                         };
@@ -1078,7 +1322,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                                 ty.into_int_type(),
                                 "wire.integer.narrow",
                             )
-                            .llvm_ctx("store range-checked wire integer")?
+                            .llvm_ctx("store range-checked codec integer")?
                             .into()
                     }
                 };
@@ -1087,55 +1331,62 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                     .llvm_ctx("stage decoded scalar")?;
                 self.mark(output, true)
             }
-            SemWireKind::Record { fields, .. } => {
-                self.void("hew_cbor_de_enter_map", &[])?;
-                self.check_cursor()?;
-                let mut decoded = Vec::with_capacity(fields.len());
-                for field in fields {
-                    self.void(
-                        if field.presence == WireFieldPresence::Optional {
-                            "hew_cbor_de_select_optional_key"
-                        } else {
-                            "hew_cbor_de_select_key"
-                        },
-                        &[ctx.i64_type().const_int(u64::from(field.tag), false).into()],
-                    )?;
-                    decoded.push((field, self.child(&field.value)?));
-                }
-                self.void("hew_cbor_de_exit_map", &[])?;
-                self.check_cursor()?;
+            SemWireKind::Unit => {
+                self.void("hew_de_unit", &[])?;
+                self.mark(output, true)
+            }
+            SemWireKind::Tuple(elements) => {
+                let decoded = self.sequence(elements)?;
+                self.aggregate(plan, decoded, output)
+            }
+            SemWireKind::Array { element, len } => {
+                let elements = vec![
+                    element.clone();
+                    usize::try_from(*len).map_err(|_| {
+                        CodegenError::FailClosed("codec array length exceeds usize".into())
+                    })?
+                ];
+                let decoded = self.sequence(&elements)?;
                 let layout =
                     self.values.module.target.layout(&plan.ty).ok_or_else(|| {
-                        CodegenError::FailClosed("wire record has no layout".into())
+                        CodegenError::FailClosed("codec array has no layout".into())
                     })?;
-                let mut record = llvm_type(ctx, &layout.repr)?
-                    .into_struct_type()
-                    .const_zero();
-                for (field, value) in &decoded {
-                    record = builder
+                let mut array = llvm_type(ctx, &layout.repr)?.into_array_type().const_zero();
+                for (position, (value, ty)) in decoded.iter().enumerate() {
+                    array = builder
                         .build_insert_value(
-                            record,
-                            self.load(value.slot, &field.value.ty)?,
-                            field.index,
-                            "wire.record.field",
+                            array,
+                            self.load(value.slot, ty)?,
+                            index(position)?,
+                            "wire.array.element",
                         )
-                        .llvm_ctx("assemble complete wire record")?
-                        .into_struct_value();
+                        .llvm_ctx("assemble complete codec array")?
+                        .into_array_value();
                 }
                 builder
-                    .build_store(output.slot, record)
-                    .llvm_ctx("stage complete wire record")?;
+                    .build_store(output.slot, array)
+                    .llvm_ctx("stage complete codec array")?;
                 self.mark(output, true)?;
-                for (_, field) in decoded {
-                    self.mark(field, false)?;
+                for (value, _) in decoded {
+                    self.mark(value, false)?;
                 }
                 Ok(())
+            }
+            SemWireKind::Record { table, fields, .. } => {
+                let decoded = match table {
+                    Some(members) => {
+                        let table = self.table(&plan.ty, None, members);
+                        self.record(table, fields)?
+                    }
+                    None => self.sequence(fields)?,
+                };
+                self.aggregate(plan, decoded, output)
             }
             SemWireKind::Option {
                 none, some, value, ..
             } => {
                 let null = self
-                    .read("hew_cbor_de_is_null", ctx.i32_type().into(), &[])?
+                    .read("hew_de_is_null", ctx.i32_type().into(), &[])?
                     .into_int_value();
                 let absent = builder
                     .build_int_compare(
@@ -1144,7 +1395,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                         ctx.i32_type().const_zero(),
                         "wire.null",
                     )
-                    .llvm_ctx("test wire Option null")?;
+                    .llvm_ctx("test codec Option null")?;
                 let empty = ctx.append_basic_block(self.values.value, "wire.none");
                 let present = ctx.append_basic_block(self.values.value, "wire.some");
                 let done = ctx.append_basic_block(self.values.value, "wire.option.done");
@@ -1152,7 +1403,6 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                     .build_conditional_branch(absent, empty, present)
                     .llvm_ctx("decode Option presence")?;
                 builder.position_at_end(empty);
-                self.void("hew_cbor_de_skip", &[])?;
                 self.variant(plan, *none, &[], output)?;
                 builder
                     .build_unconditional_branch(done)
@@ -1166,40 +1416,46 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 builder.position_at_end(done);
                 Ok(())
             }
-            SemWireKind::Enum { variants, .. } => {
-                let tag = self
-                    .read("hew_cbor_de_enum_begin", ctx.i64_type().into(), &[])?
+            SemWireKind::Enum {
+                table, variants, ..
+            } => {
+                let enum_table = self.table(&plan.ty, None, table);
+                let selected = self
+                    .read("hew_de_variant", ctx.i32_type().into(), &[enum_table])?
                     .into_int_value();
                 self.check_cursor()?;
-                let invalid = ctx.append_basic_block(self.values.value, "wire.unknown.tag");
+                let invalid = ctx.append_basic_block(self.values.value, "wire.unknown.variant");
                 let done = ctx.append_basic_block(self.values.value, "wire.enum.done");
-                let cases = variants
-                    .iter()
-                    .map(|variant| {
-                        (
-                            ctx.i64_type().const_int(u64::from(variant.tag), false),
+                let cases = (0..variants.len())
+                    .map(|position| {
+                        Ok((
+                            ctx.i32_type().const_int(u64::from(index(position)?), false),
                             ctx.append_basic_block(self.values.value, "wire.variant"),
-                        )
+                        ))
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<CodegenResult<Vec<_>>>()?;
                 builder
-                    .build_switch(tag, invalid, &cases)
-                    .llvm_ctx("select checked wire tag")?;
+                    .build_switch(selected, invalid, &cases)
+                    .llvm_ctx("select decoded codec variant")?;
                 builder.position_at_end(invalid);
                 self.fail_now()?;
-                for (variant, (_, block)) in variants.iter().zip(cases) {
+                for (position, (payload, (_, block))) in variants.iter().zip(cases).enumerate() {
                     builder.position_at_end(block);
-                    let mut fields = Vec::with_capacity(variant.fields.len());
-                    for field in &variant.fields {
-                        self.read("hew_cbor_de_array_next", ctx.i32_type().into(), &[])?;
-                        fields.push((self.child(field)?, field.as_ref()));
-                    }
-                    self.void("hew_cbor_de_enum_end", &[])?;
+                    let fields = match payload {
+                        SemWirePayload::Unit => Vec::new(),
+                        SemWirePayload::Single(ty) => vec![(self.child(ty)?, ty)],
+                        SemWirePayload::Tuple(types) => self.sequence(types)?,
+                        SemWirePayload::Record { table, fields } => {
+                            let table = self.table(&plan.ty, Some(position), table);
+                            self.record(table, fields)?
+                        }
+                    };
+                    self.void("hew_de_variant_end", &[])?;
                     self.check_cursor()?;
-                    self.variant(plan, variant.index, &fields, output)?;
+                    self.variant(plan, index(position)?, &fields, output)?;
                     builder
                         .build_unconditional_branch(done)
-                        .llvm_ctx("finish wire variant decode")?;
+                        .llvm_ctx("finish codec variant decode")?;
                 }
                 builder.position_at_end(done);
                 Ok(())
@@ -1215,7 +1471,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .get_global(name)
             .map(|global| global.as_pointer_value())
             .ok_or_else(|| {
-                CodegenError::FailClosed(format!("wire collection descriptor `{name}` is absent"))
+                CodegenError::FailClosed(format!("codec collection descriptor `{name}` is absent"))
             })
     }
     fn probe_insert(
@@ -1265,14 +1521,38 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .llvm_ctx("check decoded key uniqueness")?;
         Ok((
             unique,
-            cursor.expect("wire insertion detaches displaced owners"),
+            cursor.expect("codec insertion detaches displaced owners"),
         ))
     }
+    /// A key the collection already holds by its own `Eq` is a duplicate.
+    fn refuse_duplicate(&self, unique: IntValue<'ctx>) -> CodegenResult<()> {
+        let accepted = self
+            .values
+            .ctx
+            .append_basic_block(self.values.value, "wire.key.accepted");
+        let duplicate = self
+            .values
+            .ctx
+            .append_basic_block(self.values.value, "wire.key.duplicate");
+        self.values
+            .builder
+            .build_conditional_branch(unique, accepted, duplicate)
+            .llvm_ctx("reject repeated semantic key")?;
+        self.values.builder.position_at_end(duplicate);
+        self.void("hew_de_duplicate", &[])?;
+        self.fail_now()?;
+        self.values.builder.position_at_end(accepted);
+        Ok(())
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "building, filling and closing one decoded collection share its cleanup state"
+    )]
     fn collection(
         &mut self,
         plan: &SemWirePlan,
-        key: &SemWirePlan,
-        value: Option<&SemWirePlan>,
+        key: &ResolvedTy,
+        value: Option<&ResolvedTy>,
         output: DecodeTemporary<'ctx>,
     ) -> CodegenResult<()> {
         let ctx = self.values.ctx;
@@ -1288,7 +1568,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 .iter()
                 .find(|glue| glue.ty == plan.ty)
                 .ok_or_else(|| {
-                    CodegenError::FailClosed("wire vector has no physical glue".into())
+                    CodegenError::FailClosed("codec vector has no physical glue".into())
                 })?;
             runtime_value(
                 &self.values,
@@ -1303,7 +1583,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 .map_glue
                 .iter()
                 .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(|| CodegenError::FailClosed("wire map has no physical glue".into()))?;
+                .ok_or_else(|| CodegenError::FailClosed("codec map has no physical glue".into()))?;
             runtime_value(
                 &self.values,
                 "hew_hashmap_new_with_layout",
@@ -1321,7 +1601,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 .set_glue
                 .iter()
                 .find(|glue| glue.ty == plan.ty)
-                .ok_or_else(|| CodegenError::FailClosed("wire set has no physical glue".into()))?;
+                .ok_or_else(|| CodegenError::FailClosed("codec set has no physical glue".into()))?;
             runtime_value(
                 &self.values,
                 "hew_hashset_new_with_layout",
@@ -1333,17 +1613,20 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .build_store(output.slot, collection)
             .llvm_ctx("stage owned decoded collection")?;
         self.mark(output, true)?;
-        self.void(
-            if map {
-                "hew_cbor_de_enter_map_iter"
-            } else {
-                "hew_cbor_de_enter_array"
-            },
-            &[],
-        )?;
+        if map {
+            let string_keys = u64::from(*key == ResolvedTy::String);
+            self.void(
+                "hew_de_map_begin",
+                &[ctx.i8_type().const_int(string_keys, false).into()],
+            )?;
+        } else if vector {
+            self.void("hew_de_seq_begin", &[])?;
+        } else {
+            self.void("hew_de_set_begin", &[])?;
+        }
         self.check_cursor()?;
-        let key_slot = self.temporary(&key.ty)?;
-        let value_slot = value.map(|plan| self.temporary(&plan.ty)).transpose()?;
+        let key_slot = self.temporary(key)?;
+        let value_slot = value.map(|ty| self.temporary(ty)).transpose()?;
         let header = ctx.append_basic_block(self.values.value, "wire.collection.next");
         let body = ctx.append_basic_block(self.values.value, "wire.collection.element");
         let done = ctx.append_basic_block(self.values.value, "wire.collection.done");
@@ -1354,9 +1637,9 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         let next = self
             .read(
                 if map {
-                    "hew_cbor_de_map_next"
+                    "hew_de_map_next"
                 } else {
-                    "hew_cbor_de_array_next"
+                    "hew_de_seq_next"
                 },
                 ctx.i32_type().into(),
                 &[],
@@ -1376,10 +1659,9 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         builder.position_at_end(body);
         self.child_into(key, key_slot)?;
         if let (Some(value), Some(value_slot)) = (value, value_slot) {
-            self.void("hew_cbor_de_map_value", &[])?;
             self.child_into(value, value_slot)?;
             let (unique, cursor) =
-                self.probe_insert(&key.ty, collection, key_slot.slot, Some(value_slot.slot))?;
+                self.probe_insert(key, collection, key_slot.slot, Some(value_slot.slot))?;
             self.mark(value_slot, false)?;
             self.release(key_slot)?;
             release::drain(&self.values, self.frame.as_ref(), cursor)?;
@@ -1388,14 +1670,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 .llvm_ctx("read decoded owner cleanup status")?
                 .into_int_value();
             self.check_status(status)?;
-            let accepted = ctx.append_basic_block(self.values.value, "wire.key.accepted");
-            let duplicate = ctx.append_basic_block(self.values.value, "wire.key.duplicate");
-            builder
-                .build_conditional_branch(unique, accepted, duplicate)
-                .llvm_ctx("reject repeated semantic map key")?;
-            builder.position_at_end(duplicate);
-            self.fail_now()?;
-            builder.position_at_end(accepted);
+            self.refuse_duplicate(unique)?;
         } else if vector {
             runtime(
                 &self.values,
@@ -1405,7 +1680,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             )?;
             self.mark(key_slot, false)?;
         } else {
-            let (unique, cursor) = self.probe_insert(&key.ty, collection, key_slot.slot, None)?;
+            let (unique, cursor) = self.probe_insert(key, collection, key_slot.slot, None)?;
             self.release(key_slot)?;
             release::drain(&self.values, self.frame.as_ref(), cursor)?;
             let status = builder
@@ -1413,41 +1688,31 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 .llvm_ctx("read decoded owner cleanup status")?
                 .into_int_value();
             self.check_status(status)?;
-            let accepted = ctx.append_basic_block(self.values.value, "wire.element.accepted");
-            let duplicate = ctx.append_basic_block(self.values.value, "wire.element.duplicate");
-            builder
-                .build_conditional_branch(unique, accepted, duplicate)
-                .llvm_ctx("reject duplicate set element")?;
-            builder.position_at_end(duplicate);
-            self.fail_now()?;
-            builder.position_at_end(accepted);
+            self.refuse_duplicate(unique)?;
         }
         builder
             .build_unconditional_branch(header)
             .llvm_ctx("continue decoded collection")?;
         builder.position_at_end(done);
-        self.void(
-            if map {
-                "hew_cbor_de_exit_map_iter"
-            } else {
-                "hew_cbor_de_exit_array"
-            },
-            &[],
-        )
+        self.check_cursor()
     }
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
     #[expect(
         clippy::too_many_arguments,
-        reason = "the wire terminator supplies its schema, ownership recipes and exact result/fault edges"
+        reason = "the codec terminator supplies its plans, ownership recipes and exact result/fault edges"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one entry keeps the encode result and every decode failure edge together"
     )]
     pub(super) fn emit_wire_codec(
         &self,
-        direction: WireCodecDirection,
-        plan: &SemWirePlan,
+        codec: Codec,
+        plans: &SemWirePlans,
         recipes: &BTreeMap<ResolvedTy, PhysicalValueRecipe>,
-        text_result: Option<hew_mir::physical::PhysicalWireTextResult>,
+        decode_result: Option<&hew_mir::physical::PhysicalWireDecodeResult>,
         input: ArgumentTransfer,
         result: StorageId,
         normal: &PhysicalEdge,
@@ -1455,7 +1720,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> CodegenResult<()> {
         let ArgumentTransfer::Borrow(input) = input else {
             return Err(CodegenError::FailClosed(
-                "wire input must remain borrowed".into(),
+                "codec input must remain borrowed".into(),
             ));
         };
         let values = self.value_emitter();
@@ -1464,230 +1729,167 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.module,
             self.ctx,
             self.llvm,
-            plan,
+            plans,
+            &plans.root,
             recipes,
             self.value_callbacks,
-            !direction.is_serialize(),
+            !codec.is_serialize(),
         )?;
-        let schema = text_descriptor(plan, direction.text_format() == Some(WireTextFormat::Yaml))?
-            .to_string();
-        let descriptor = constant_text(&values, schema.as_bytes(), true);
-        let format = match direction.text_format() {
-            None => -1_i32,
-            Some(WireTextFormat::Json) => 0,
-            Some(WireTextFormat::Yaml) => 1,
-        };
-        let format = self.ctx.i32_type().const_int(format as u64, true).into();
-        let error_out = values.entry_scratch(pointer.into(), "wire.error")?;
-        self.builder
-            .build_store(error_out, pointer.const_null())
-            .llvm_ctx("initialize wire error owner")?;
-        let success = self.ctx.append_basic_block(self.value, "wire.success");
-        let rejected = self.ctx.append_basic_block(self.value, "wire.rejected");
-        let decoded = if direction.is_serialize() {
-            let writer = runtime_value(&values, "hew_cbor_ser_new", pointer.into(), &[])?;
+        let format = self
+            .ctx
+            .i32_type()
+            .const_int(codec.format.code(), false)
+            .into();
+        if codec.is_serialize() {
+            let sink = runtime_value(&values, "hew_ser_new", pointer.into(), &[format])?;
             self.builder
                 .build_call(
                     callback,
-                    &[writer.into(), self.slots[input.0 as usize].into()],
+                    &[sink.into(), self.slots[input.0 as usize].into()],
                     "",
                 )
-                .llvm_ctx("encode borrowed wire value")?;
-            let status = runtime_value(
-                &values,
-                "hew_wire_encode_finish",
-                self.ctx.i32_type().into(),
-                &[
-                    writer,
-                    format,
-                    descriptor.into(),
-                    self.slots[result.0 as usize].into(),
-                    error_out.into(),
-                ],
-            )?
-            .into_int_value();
-            let complete = self
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_zero(),
-                    "wire.encoded",
-                )
-                .llvm_ctx("test wire encoding result")?;
-            self.builder
-                .build_conditional_branch(complete, success, rejected)
-                .llvm_ctx("publish successful wire encoding")?;
-            None
-        } else {
-            let reader_out = values.entry_scratch(pointer.into(), "wire.reader")?;
-            let fault_out = values.entry_scratch(pointer.into(), "wire.callback.fault")?;
-            self.builder
-                .build_store(fault_out, pointer.const_null())
-                .llvm_ctx("initialize wire callback fault owner")?;
-            let layout = self.module.target.layout(&plan.ty).ok_or_else(|| {
-                CodegenError::FailClosed("wire decode output lacks layout".into())
-            })?;
-            let decoded =
-                values.entry_scratch(llvm_type(self.ctx, &layout.repr)?, "wire.decoded.value")?;
-            let prepared = runtime_value(
-                &values,
-                "hew_wire_decode_begin",
-                self.ctx.i32_type().into(),
-                &[
-                    self.slots[input.0 as usize].into(),
-                    format,
-                    descriptor.into(),
-                    reader_out.into(),
-                    error_out.into(),
-                ],
-            )?
-            .into_int_value();
-            let ready = self.ctx.append_basic_block(self.value, "wire.decode.ready");
-            let complete = self
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    prepared,
-                    self.ctx.i32_type().const_zero(),
-                    "wire.prepared",
-                )
-                .llvm_ctx("check wire decode input")?;
-            self.builder
-                .build_conditional_branch(complete, ready, rejected)
-                .llvm_ctx("enter prepared wire reader")?;
-            self.builder.position_at_end(ready);
-            let reader = self
-                .builder
-                .build_load(pointer, reader_out, "wire.reader")
-                .llvm_ctx("load owned wire reader")?;
-            let arguments = [reader.into(), decoded.into(), fault_out.into()];
-            let status = if decode_is_resumable(self.module, plan, recipes) {
-                suspend::invoke_child(
-                    self.ctx,
-                    self.llvm,
-                    &self.builder,
-                    self.value,
-                    self.frame.as_ref().ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "suspending wire decode lacks a caller frame".into(),
-                        )
-                    })?,
-                    callback,
-                    &arguments,
-                )?
-            } else {
-                self.runtime_call_value(callback, &arguments, "wire.decode.status")?
-                    .into_int_value()
-            };
-            runtime(&values, "hew_cbor_de_free", None, &[reader])?;
-            let failed = self
-                .ctx
-                .append_basic_block(self.value, "wire.decode.failed");
-            let complete = self
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_zero(),
-                    "wire.decoded",
-                )
-                .llvm_ctx("test complete wire decode")?;
-            self.builder
-                .build_conditional_branch(complete, success, failed)
-                .llvm_ctx("publish complete decoded value")?;
-            self.builder.position_at_end(failed);
-            let fault = self
-                .builder
-                .build_load(pointer, fault_out, "wire.callback.fault")
-                .llvm_ctx("read collection callback fault")?;
-            let fault_present = self
-                .builder
-                .build_is_not_null(fault.into_pointer_value(), "wire.callback.failed")
-                .llvm_ctx("distinguish callback failure from malformed input")?;
-            let propagate = self
-                .ctx
-                .append_basic_block(self.value, "wire.callback.propagate");
-            let malformed = self.ctx.append_basic_block(self.value, "wire.malformed");
-            self.builder
-                .build_conditional_branch(fault_present, propagate, malformed)
-                .llvm_ctx("preserve wire collection fault identity")?;
-            self.builder.position_at_end(propagate);
-            self.store_active_fault_value(fault, status)?;
-            self.emit_edge(unwind)?;
-            self.builder.position_at_end(malformed);
-            let message = b"wire body does not match the expected value type";
-            let data = constant_text(&values, message, false);
-            runtime(
-                &values,
-                "hew_string_literal_new",
-                None,
-                &[
-                    data.into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(message.len() as u64, false)
-                        .into(),
-                    error_out.into(),
-                ],
-            )?;
-            self.builder
-                .build_unconditional_branch(rejected)
-                .llvm_ctx("return malformed wire error")?;
-            Some((decoded, llvm_type(self.ctx, &layout.repr)?))
-        };
-        self.builder.position_at_end(rejected);
-        let error = self
-            .builder
-            .build_load(pointer, error_out, "wire.error.message")
-            .llvm_ctx("take wire error string")?;
-        if let Some(cases) = text_result {
-            self.write_variant_value(
-                self.slots[result.0 as usize],
-                cases.error,
-                &[error],
-                cases.glue,
-            )?;
-            self.emit_result_edge(Some(result), normal)?;
-        } else {
-            let (fault, code) = if direction == WireCodecDirection::Decode {
-                let code = hew_runtime::internal::types::HEW_TRAP_WIRE_DECODE_FAILED;
-                let constructor = external_fault_new(self.ctx, self.llvm)?;
-                (
-                    self.runtime_call_value(
-                        constructor,
-                        &[self.ctx.i32_type().const_int(code as u64, true).into()],
-                        "wire.decode.fault",
-                    )?,
-                    code,
-                )
-            } else {
-                (
-                    runtime_value(&values, "hew_fault_new_panic", pointer.into(), &[error])?,
-                    HEW_TRAP_USER_PANIC,
-                )
-            };
-            runtime(&values, "hew_string_drop", None, &[error])?;
-            self.store_active_fault(fault, code)?;
-            self.emit_edge(unwind)?;
-        }
-        self.builder.position_at_end(success);
-        if let Some((decoded, ty)) = decoded {
-            let value = self
-                .builder
-                .build_load(ty, decoded, "wire.complete.value")
-                .llvm_ctx("take decoded value owner")?;
-            if let Some(cases) = text_result {
-                self.write_variant_value(
-                    self.slots[result.0 as usize],
-                    cases.ok,
-                    &[value],
-                    cases.glue,
+                .llvm_ctx("encode borrowed codec value")?;
+            if !codec.format.is_text() {
+                runtime(
+                    &values,
+                    "hew_ser_finish_bytes",
+                    None,
+                    &[sink, self.slots[result.0 as usize].into()],
                 )?;
             } else {
-                self.store(result, value)?;
+                let text =
+                    runtime_value(&values, "hew_ser_finish_string", pointer.into(), &[sink])?;
+                self.store(result, text)?;
             }
+            return self.emit_result_edge(Some(result), normal);
         }
+        let layout =
+            self.module.target.layout(&plans.root).ok_or_else(|| {
+                CodegenError::FailClosed("codec decode output lacks layout".into())
+            })?;
+        let decoded =
+            values.entry_scratch(llvm_type(self.ctx, &layout.repr)?, "wire.decoded.value")?;
+        let fault_out = values.entry_scratch(pointer.into(), "wire.callback.fault")?;
+        self.builder
+            .build_store(fault_out, pointer.const_null())
+            .llvm_ctx("initialize codec callback fault owner")?;
+        let reader = runtime_value(
+            &values,
+            "hew_de_new",
+            pointer.into(),
+            &[format, self.slots[input.0 as usize].into()],
+        )?;
+        let arguments = [reader.into(), decoded.into(), fault_out.into()];
+        let status = if decode_is_resumable(self.module, plans, &plans.root, recipes) {
+            suspend::invoke_child(
+                self.ctx,
+                self.llvm,
+                &self.builder,
+                self.value,
+                self.frame.as_ref().ok_or_else(|| {
+                    CodegenError::FailClosed("suspending codec decode lacks a caller frame".into())
+                })?,
+                callback,
+                &arguments,
+            )?
+        } else {
+            self.runtime_call_value(callback, &arguments, "wire.decode.status")?
+                .into_int_value()
+        };
+        let success = self.ctx.append_basic_block(self.value, "wire.success");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "wire.decode.failed");
+        let complete = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "wire.decoded",
+            )
+            .llvm_ctx("test complete codec decode")?;
+        self.builder
+            .build_conditional_branch(complete, success, failed)
+            .llvm_ctx("publish complete decoded value")?;
+        self.builder.position_at_end(failed);
+        let fault = self
+            .builder
+            .build_load(pointer, fault_out, "wire.callback.fault")
+            .llvm_ctx("read collection callback fault")?;
+        let fault_present = self
+            .builder
+            .build_is_not_null(fault.into_pointer_value(), "wire.callback.failed")
+            .llvm_ctx("distinguish callback failure from malformed input")?;
+        let propagate = self
+            .ctx
+            .append_basic_block(self.value, "wire.callback.propagate");
+        let malformed = self.ctx.append_basic_block(self.value, "wire.malformed");
+        self.builder
+            .build_conditional_branch(fault_present, propagate, malformed)
+            .llvm_ctx("preserve codec collection fault identity")?;
+        self.builder.position_at_end(propagate);
+        runtime(&values, "hew_de_free", None, &[reader])?;
+        self.store_active_fault_value(fault, status)?;
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(malformed);
+        let cases = decode_result.ok_or_else(|| {
+            CodegenError::FailClosed("codec decode lacks its Result cases".into())
+        })?;
+        // The reader's error replays as a `wire.DecodeError` value, decoded
+        // through that type's own plan into the `Err` case.
+        let error_reader =
+            runtime_value(&values, "hew_de_error_reader", pointer.into(), &[reader])?;
+        runtime(&values, "hew_de_free", None, &[reader])?;
+        let error_callback = emit_callback(
+            self.module,
+            self.ctx,
+            self.llvm,
+            plans,
+            &cases.error_ty,
+            recipes,
+            self.value_callbacks,
+            true,
+        )?;
+        let error_layout =
+            self.module.target.layout(&cases.error_ty).ok_or_else(|| {
+                CodegenError::FailClosed("codec decode error lacks layout".into())
+            })?;
+        let error_ty = llvm_type(self.ctx, &error_layout.repr)?;
+        let error_slot = values.entry_scratch(error_ty, "wire.decode.error")?;
+        self.runtime_call_value(
+            error_callback,
+            &[error_reader.into(), error_slot.into(), fault_out.into()],
+            "wire.decode.error.status",
+        )?;
+        runtime(&values, "hew_de_free", None, &[error_reader])?;
+        let error = self
+            .builder
+            .build_load(error_ty, error_slot, "wire.decode.error.value")
+            .llvm_ctx("take decoded error owner")?;
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            cases.error,
+            &[error],
+            cases.glue,
+        )?;
+        self.emit_result_edge(Some(result), normal)?;
+        self.builder.position_at_end(success);
+        runtime(&values, "hew_de_free", None, &[reader])?;
+        let value = self
+            .builder
+            .build_load(
+                llvm_type(self.ctx, &layout.repr)?,
+                decoded,
+                "wire.complete.value",
+            )
+            .llvm_ctx("take decoded value owner")?;
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            cases.ok,
+            &[value],
+            cases.glue,
+        )?;
         self.emit_result_edge(Some(result), normal)
     }
 }

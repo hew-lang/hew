@@ -250,9 +250,9 @@ fn run_two_process_ask_dead_client_helper() {
          target's reason rather than DecodeFailure"
     );
     assert_eq!(
-        crate::internal::types::hew_ask_error_translate_for_public_result(status),
-        3,
-        "a dead remote actor must surface the same public ActorError.Dead ordinal (3) \
+        AskError::ALL[usize::try_from(status).expect("ask status")].public_role(),
+        Some(crate::internal::types::ActorErrorRole::Dead),
+        "a dead remote actor must surface the same public ActorError.Dead role \
          the local ask route reports (D526)"
     );
 

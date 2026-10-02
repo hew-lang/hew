@@ -758,7 +758,6 @@ impl NodeVisitor for EffectVisitor<'_> {
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Await(_)
-            | Expr::AwaitRestart(_)
             | Expr::GenBlock { .. }
             | Expr::Lambda { .. }
             | Expr::MachineEmit { .. } => self.refuse(

@@ -7,9 +7,9 @@ use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::RcIntrinsicOp;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
-    Ty, TyPattern, VariantMatch, WireLayoutTable,
+    Ty, TyPattern, VariantMatch,
 };
-use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
+use hew_types::{TryConversionKind, VecElementToken};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
@@ -46,8 +46,13 @@ pub struct HirModule {
     /// Checker-selected test entries in dispatcher ordinal order. Each entry
     /// retains its own typed process-exit action.
     pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
-    /// Checker-authored wire layout metadata keyed by canonical type name.
-    pub wire_layouts: Arc<WireLayoutTable>,
+    /// The checker's layout of every trait object the program names, keyed
+    /// by its canonical type: the one slot list dispatch and tables read.
+    pub trait_object_layouts:
+        Arc<std::collections::BTreeMap<ResolvedTy, hew_types::TraitObjectLayout>>,
+    /// The checker's structural trait satisfactions; the impl index files
+    /// each where no nominal impl provides the method.
+    pub structural_witnesses: Vec<hew_types::StructuralWitness>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.
@@ -333,6 +338,9 @@ pub struct HirExternFn {
     pub provenance: ExternProvenance,
     /// Typed runtime authority declared on this stdlib extern, if any.
     pub runtime_capability: Option<hew_types::ExternRuntimeCapability>,
+    /// The checker validated `#[offload]` on this declaration: a call parks
+    /// its task while the C function runs on the blocking pool.
+    pub offload: bool,
     pub span: Span,
 }
 
@@ -355,13 +363,16 @@ pub struct HirImplBlock {
     /// Outer type parameters on the impl, e.g. `["T"]` for
     /// `impl<T> Iterator for VecIter<T>`.
     pub type_params: Vec<hew_types::ParamHead>,
-    /// Concrete self-type arguments for a concrete specialised impl, e.g.
-    /// `[ResolvedTy::I64]` for `impl Describe for Wrapper<i64>`. Always empty
-    /// when `type_params` is non-empty (generic impl) or when the target type
-    /// carries no type arguments. Used to distinguish two concrete impls for
-    /// the same base nominal (`Wrapper<i64>` vs `Wrapper<string>`) so the
-    /// dispatch index key and method symbol are distinct per instantiation.
-    pub self_type_concrete_args: Vec<ResolvedTy>,
+    /// The impl target's type arguments as written: `[T]` for
+    /// `impl<T> Iterator for VecIter<T>`, `[ResolvedTy::I64]` for the concrete
+    /// specialisation `impl Describe for Wrapper<i64>`. A concrete
+    /// specialisation keys the dispatch index and method symbol on them, so
+    /// `Wrapper<i64>` and `Wrapper<string>` stay distinct; a generic impl
+    /// binds its parameters by matching them against the concrete `Self`.
+    pub self_type_args: Vec<ResolvedTy>,
+    /// The implemented trait's arguments as written (`Low` in
+    /// `impl From<Low> for Wrapped`), possibly naming `type_params`.
+    pub trait_args: Vec<ResolvedTy>,
     /// Associated-type bindings declared on the impl
     /// (e.g. `type Item = T;` → `("Item", ResolvedTy::TypeParam("T"))`).
     pub type_aliases: Vec<(String, ResolvedTy)>,
@@ -1156,6 +1167,41 @@ pub enum HirStmtKind {
     },
 }
 
+/// What is `Self` at a [`HirExprKind::CallTraitMethodStatic`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum StaticTraitSelf {
+    /// `item.show()`: the receiver value, passed first; its type is `Self`.
+    Receiver(Box<HirExpr>),
+    /// `T.make(n)`, or the `F.from(e)` a failure edge makes: no receiver;
+    /// this type is `Self`.
+    Type(ResolvedTy),
+}
+
+impl StaticTraitSelf {
+    #[must_use]
+    pub fn receiver(&self) -> Option<&HirExpr> {
+        match self {
+            Self::Receiver(receiver) => Some(receiver),
+            Self::Type(_) => None,
+        }
+    }
+
+    pub fn receiver_mut(&mut self) -> Option<&mut HirExpr> {
+        match self {
+            Self::Receiver(receiver) => Some(receiver),
+            Self::Type(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn self_ty(&self) -> &ResolvedTy {
+        match self {
+            Self::Receiver(receiver) => &receiver.ty,
+            Self::Type(ty) => ty,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirExpr {
     pub node: HirNodeId,
@@ -1347,13 +1393,6 @@ pub enum HirExprKind {
         /// is full: `Wait` for a bare handle, whatever the `policy(..)` view
         /// carries when the call goes through one.
         policy: hew_types::actor_delivery::SendPolicy,
-        /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
-        /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the
-        /// deadline elapses before the reply, the in-flight ask is cancelled and the
-        /// `Result<R, ActorError>` resolves to `Err(ActorError.Timeout)`. `None` is a
-        /// plain ask. Only literal `Duration` deadlines are carried (codegen-locals
-        /// side-table); non-literal durations fail closed at CHECK time.
-        deadline_ns: Option<i64>,
     },
     /// `receive gen fn` dispatch, selected from the checker's
     /// `actor_method_dispatch` side table (`ActorMethodKind::StreamProducer`).
@@ -1467,69 +1506,6 @@ pub enum HirExprKind {
         operand: Box<HirExpr>,
         /// The `T` from `Task<T>`.
         output_ty: ResolvedTy,
-    },
-    /// `await_restart <supervised-child>` — suspend the current actor until the
-    /// named static supervised child's slot is Live again (it restarted), then
-    /// resume with the same stable `ChildRef<ChildType>`. The inner
-    /// `child` expression is the supervised-child accessor (a `FieldAccess`
-    /// whose `SiteId` keys `HirModule.supervisor_child_slots` with the
-    /// `(supervisor, slot)` discriminator). MIR lowers this to
-    /// `SuspendKind::RestartWait`, parking on the supervisor restart observer;
-    /// a permanently-Dead child fails closed (resumes immediately) rather than
-    /// hanging. The supervisor analogue of `AwaitTask`.
-    AwaitRestart {
-        /// The lowered supervised-child accessor. Its `site` carries the
-        /// `(supervisor, slot)` discriminator via `supervisor_child_slots`.
-        child: Box<HirExpr>,
-    },
-    /// `await conn.read()` / `await conn.read_string()` — a non-blocking
-    /// suspending socket read (NEW-1). Produced by HIR lowering when an `await`
-    /// wraps a `net.Connection::read`/`read_string` method call. A suspendable
-    /// caller (actor handler / closure / task entry) lowers this to
-    /// `Terminator::SuspendingRead` (suspend, free the worker, resume with the
-    /// bytes); a `Default` caller keeps the blocking `hew_tcp_read` call.
-    ///
-    /// `read_string` is `await conn.read()` + `hew_bytes_to_string`, so the HIR
-    /// node carries only the bytes read; the string conversion wraps it. A raw
-    /// `read()` may carry a literal deadline and then resolves to
-    /// `Result<bytes, NetError>` with MIR/codegen binding `Err(TimedOut)` if the
-    /// timer wins.
-    ConnAwaitRead {
-        /// The connection receiver expression (`conn`).
-        conn: Box<HirExpr>,
-        /// `true` when the source was `read_string()` (the bytes are converted
-        /// to a string after the suspending read); `false` for raw `read()`.
-        to_string: bool,
-        /// NEW-6c `await conn.read() | after d` deadline, in nanoseconds. `None`
-        /// preserves the plain-read bytes result and unconditional read-slot wake.
-        deadline_ns: Option<i64>,
-    },
-    /// `await listener.accept()` — a non-blocking suspending listener accept
-    /// (NEW-2). Produced by HIR lowering when an `await` wraps a
-    /// `net.Listener::accept` method call. A suspendable caller (actor handler /
-    /// closure / task entry) lowers this to `Terminator::SuspendingAccept`
-    /// (suspend, free the worker, resume with the accepted `Connection`); a
-    /// `Default` caller keeps the blocking `hew_tcp_accept` call. The
-    /// listener-readiness sibling of [`HirExprKind::ConnAwaitRead`].
-    ListenerAwaitAccept {
-        /// The listener receiver expression (`listener`).
-        listener: Box<HirExpr>,
-        /// NEW-6d `await ln.accept() | after d` deadline, in nanoseconds. `None`
-        /// preserves the plain-accept `Connection` result and unconditional read-slot
-        /// wake. `Some(ns)` produces `Result<Connection, NetError>` with
-        /// `NetError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
-        deadline_ns: Option<i64>,
-    },
-    /// `await stream.recv() | after d` — a suspending stream recv with a
-    /// deadline (NEW-6b).  Produced by [`super::lower::lower_await_deadline`]
-    /// when the inner expression is a `Stream<T>::recv()` call.
-    ///
-    /// `HirExpr::ty` is `Result<Option<T>, TimeoutError>`.
-    StreamRecvAwait {
-        /// The stream handle expression.
-        stream: Box<HirExpr>,
-        /// Deadline in nanoseconds.
-        deadline_ns: Option<i64>,
     },
     /// Sealed `select{}` expression.
     ///
@@ -1683,23 +1659,14 @@ pub enum HirExprKind {
         left: Box<HirExpr>,
         right: Box<HirExpr>,
     },
-    /// Wrap a concrete value in a `dyn Trait` fat pointer. Emitted at
-    /// every accepted `T → dyn Trait` coercion site (the checker's
-    /// `TypeCheckOutput::dyn_trait_coercions` side table). SIR lowers
-    /// 1:1 to `SemOpKind::DynMake` against the dispatch table it interns
-    /// from `vtable_entries`.
-    ///
-    /// The carried `method_table` mirrors `DynCoercion::method_table` and
-    /// remains diagnostic payload; `vtable_entries` is the authority.
-    /// `concrete_type` is the resolved `Self` type at the coercion site
-    /// (after `materialize_literal_defaults`), which doubles as the
-    /// `(Trait, ImplType)` dedup key for the vtable static.
+    /// Wrap a concrete value in a `dyn Trait` fat pointer at an accepted
+    /// `T → dyn Trait` coercion (`TypeCheckOutput::dyn_trait_coercions`).
+    /// The expression's type is the trait object; its layout names the slots
+    /// and SIR fills each with the implementation a static call of the slot's
+    /// method on `concrete_type` reaches.
     CoerceToDynTrait {
         value: Box<HirExpr>,
-        trait_name: String,
         concrete_type: ResolvedTy,
-        method_table: Vec<(String, String)>,
-        vtable_entries: Vec<hew_types::DynVtableEntry>,
     },
     /// Dispatch a method call through a `dyn Trait` fat pointer's
     /// vtable. Emitted in place of an `HirExprKind::Call` whenever
@@ -1747,14 +1714,20 @@ pub enum HirExprKind {
     /// enter the ordinary direct-call boundary. The impl is unknown until the
     /// receiver is substituted, so `ResolvedImplCall` cannot carry this call.
     CallTraitMethodStatic {
-        receiver: Box<HirExpr>,
+        /// The receiver value, or the type that is `Self` when the call has
+        /// none (`T.make(n)`).
+        receiver: StaticTraitSelf,
+        /// The declaring trait's arguments at the call (`Low` under
+        /// `F: From<Low>`), substituted with the enclosing instance; they
+        /// select among a type's impls of a generic trait.
+        trait_args: Vec<ResolvedTy>,
         /// Checker-selected static-trait method identity. The receiver
         /// substitution may choose an impl later, but no phase may recover the
         /// declaring method by leaf-name retry.
         target: hew_types::CallTarget,
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: hew_types::ParamHead,
-        /// Arguments in parameter order.
+        /// Arguments in parameter order, after the receiver when there is one.
         args: Vec<HirExpr>,
         /// The index into `args` of each argument in the order the source
         /// evaluates them; empty when that is parameter order.
@@ -1882,14 +1855,12 @@ pub enum HirExprKind {
     /// All directions borrow their operand. `value_ty` is the exact checked
     /// value encoded or decoded, including generic collection arguments.
     ///
-    /// SIR resolves a shared wire schema from the checker layout table. Native
-    /// callbacks use the physical value layouts and cleanup glue for both
-    /// directions; text formats transcode through the same CBOR representation.
-    /// Binary decode failure raises `WireDecodeFailed`. Text decode returns
-    /// `Result<value_ty, string>` for malformed input and propagates callback
-    /// faults through ordinary cleanup.
+    /// SIR resolves the serial plan from the checker layout table. An encode
+    /// produces the format's document. A decode produces
+    /// `Result<value_ty, wire.DecodeError>` for any malformed input and
+    /// propagates callback faults through ordinary cleanup.
     WireCodec {
-        direction: WireCodecDirection,
+        codec: hew_types::Codec,
         operand: Box<HirExpr>,
         value_ty: ResolvedTy,
     },

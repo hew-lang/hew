@@ -69,7 +69,9 @@ impl LowerCtx {
             fork_call_inputs: None,
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
+            error_conversions: tc_output.error_conversions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
+            trait_object_layouts: std::sync::Arc::new(tc_output.trait_object_layouts.clone()),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             type_facts: tc_output.type_facts.clone(),
@@ -99,9 +101,7 @@ impl LowerCtx {
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
             call_type_args: tc_output.call_type_args.clone(),
-            lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
-            assign_target_shapes: tc_output.assign_target_shapes.clone(),
             checked_indexed_place_operations: tc_output.indexed_place_operations.clone(),
             indexed_place_operations: HashMap::new(),
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
@@ -240,6 +240,10 @@ impl LowerCtx {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one swap per checker fact table; splitting it would scatter the save and restore pairs"
+    )]
     pub(super) fn with_typecheck_facts<T>(
         &mut self,
         tc_output: &TypeCheckOutput,
@@ -274,16 +278,38 @@ impl LowerCtx {
                 &mut self.try_width_cast_lowerings,
                 tc_output.try_width_cast_lowerings.clone(),
             ),
-            std::mem::take(&mut self.actor_method_dispatch),
-            std::mem::take(&mut self.actor_delivery_calls),
+            std::mem::replace(
+                &mut self.actor_method_dispatch,
+                tc_output.actor_method_dispatch.clone(),
+            ),
+            std::mem::replace(
+                &mut self.actor_delivery_calls,
+                tc_output.actor_delivery_calls.clone(),
+            ),
             std::mem::replace(
                 &mut self.actor_coalesce_keys,
                 tc_output.actor_coalesce_keys.clone(),
             ),
-            std::mem::take(&mut self.machine_method_dispatch),
-            std::mem::take(&mut self.method_call_receiver_kinds),
-            std::mem::take(&mut self.dyn_trait_coercions),
-            std::mem::take(&mut self.dyn_trait_method_calls),
+            std::mem::replace(
+                &mut self.machine_method_dispatch,
+                tc_output.machine_method_dispatch.clone(),
+            ),
+            std::mem::replace(
+                &mut self.method_call_receiver_kinds,
+                tc_output.method_call_receiver_kinds.clone(),
+            ),
+            std::mem::replace(
+                &mut self.dyn_trait_coercions,
+                tc_output.dyn_trait_coercions.clone(),
+            ),
+            std::mem::replace(
+                &mut self.dyn_trait_method_calls,
+                tc_output.dyn_trait_method_calls.clone(),
+            ),
+            std::mem::replace(
+                &mut self.error_conversions,
+                tc_output.error_conversions.clone(),
+            ),
             std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
             std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
             std::mem::replace(
@@ -332,6 +358,7 @@ impl LowerCtx {
             self.method_call_receiver_kinds,
             self.dyn_trait_coercions,
             self.dyn_trait_method_calls,
+            self.error_conversions,
             self.resolved_calls,
             self.expr_types,
             self.resolved_expr_types,

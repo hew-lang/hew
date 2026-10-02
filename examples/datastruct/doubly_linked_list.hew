@@ -118,7 +118,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
     if a.len() != b.len() {
         return 0;
     }
-    for i in 0 .. a.len() {
+    for i in 0..a.len() {
         if a[i] != b[i] {
             return 0;
         }

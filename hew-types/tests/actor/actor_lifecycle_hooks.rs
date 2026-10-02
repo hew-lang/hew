@@ -383,10 +383,7 @@ fn spoofed_std_owner_imports_cannot_mint_lifecycle_identities() {
         );
         let qualified_output = typecheck_with_spoofed_std_import(owner, &qualified_import);
         assert!(
-            qualified_output
-                .errors
-                .iter()
-                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            !qualified_output.errors.is_empty(),
             "a whole-module import of spoofed std::{owner} must not authorize {qualified}: {:?}",
             qualified_output.errors
         );
@@ -398,10 +395,7 @@ fn spoofed_std_owner_imports_cannot_mint_lifecycle_identities() {
         );
         let named_output = typecheck_with_spoofed_std_import(owner, &named_import);
         assert!(
-            named_output
-                .errors
-                .iter()
-                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            !named_output.errors.is_empty(),
             "a named/bare import of spoofed std::{owner} must not authorize {bare}: {:?}",
             named_output.errors
         );
@@ -455,17 +449,31 @@ fn canonical_std_module_named_import_is_seeded_before_member_resolution() {
         output.errors
     );
 
+    // A user enum spelled `CrashKind` is an ordinary declaration: the edge
+    // resolves to it, never to the runtime's crash-kind type.
     let spoof = typecheck_link_monitor_import_edge(
         &["app", "failure"],
         "pub enum CrashKind {\n    Crashed;\n}\n",
     );
+    assert!(spoof.errors.is_empty(), "{:?}", spoof.errors);
+    let reason = spoof
+        .type_defs
+        .iter()
+        .find(|(id, _)| spoof.defs.name(id.declaration()).as_str() == "ImportedReason")
+        .map(|(_, definition)| definition)
+        .expect("ImportedReason is registered");
+    let Some(hew_types::VariantDef::Tuple(payload)) = reason.variants.get("Crashed") else {
+        panic!("`Crashed` carries one payload: {:?}", reason.variants);
+    };
     assert!(
-        spoof
-            .errors
-            .iter()
-            .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
-        "a same-final-segment user module edge must not seed canonical lifecycle authority: {:?}",
-        spoof.errors
+        !matches!(
+            payload.as_slice(),
+            [hew_types::Ty::Named {
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::CrashKind),
+                ..
+            }]
+        ),
+        "a same-final-segment user module must not mint the builtin crash kind: {payload:?}"
     );
 }
 

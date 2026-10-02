@@ -4,24 +4,20 @@ use super::*;
 
 impl LowerCtx {
     /// Consume the checked source contract and concrete callback identities.
-    /// The runtime status is adapted with ordinary value/branch constructs, so
-    /// SIR receives one raw invocation and owns the same cleanup paths as any
-    /// other call and Result construction.
+    /// The runtime status is discarded, so SIR receives one raw invocation and
+    /// owns the same cleanup paths as any other call.
     pub(super) fn lower_declared_runtime_invocation(
         &mut self,
         target: CallTarget,
         receiver: &Spanned<Expr>,
         args: &[hew_parser::ast::CallArg],
         consumes_receiver: bool,
-        result_ty: ResolvedTy,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        use hew_types::check::dispatch::ResolvedRuntimeResult;
-        let CallTarget::DeclaredRuntime { family, result, .. } = &target else {
+        let CallTarget::DeclaredRuntime { family, .. } = &target else {
             unreachable!("declared runtime invocation requires its checked target");
         };
         let family = *family;
-        let adaptation = result.clone();
         let receiver = self.lower_expr(
             receiver,
             if consumes_receiver {
@@ -59,27 +55,21 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        if adaptation == ResolvedRuntimeResult::DiscardStatus {
-            return (
-                HirExprKind::Block(HirBlock {
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: self.ids.scope(),
+                statements: vec![HirStmt {
                     node: self.ids.node(),
-                    scope: self.ids.scope(),
-                    statements: vec![HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(call),
-                        span: span.clone(),
-                    }],
-                    tail: None,
-                    ty: ResolvedTy::Unit,
+                    kind: HirStmtKind::Expr(call),
                     span: span.clone(),
-                }),
-                ResolvedTy::Unit,
-            );
-        }
-        let ResolvedRuntimeResult::StatusResult { error } = adaptation else {
-            unreachable!("status discard was handled above");
-        };
-        self.lower_runtime_status_result(call, &error, result_ty, span)
+                }],
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: span.clone(),
+            }),
+            ResolvedTy::Unit,
+        )
     }
 
     /// Fold a send status into `Result<(), SendError>`: `0` is `Ok(())`, the
@@ -248,91 +238,6 @@ impl LowerCtx {
                 ty: result_ty.clone(),
                 span: span.clone(),
             }),
-            result_ty,
-        )
-    }
-
-    /// Map the raw runtime status to the source-selected Result constructors.
-    pub(super) fn lower_runtime_status_result(
-        &mut self,
-        call: HirExpr,
-        error: &hew_types::VariantMatch,
-        result_ty: ResolvedTy,
-        span: &Span,
-    ) -> (HirExprKind, ResolvedTy) {
-        let error_ty = self.restore_type_declaration_facts(ResolvedTy::named_path(
-            &self.defs,
-            &error.type_name,
-            Vec::new(),
-        ));
-        let error_key = format!("{}::{}", error.type_name, error.variant_name);
-        // This is the ordinary checked VariantMatch identity. Project its
-        // exact constructor into the HIR layout registry, without resolving a
-        // source spelling or retrying a short variant name.
-        let constructors = self
-            .machine_ctor_registry
-            .get(&error_key)
-            .cloned()
-            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Ok", span))
-            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Err", span));
-        let Some((((error_name, error_index), (_, ok_index)), (_, err_index))) = constructors
-        else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: error_key,
-                    reason: "checked runtime result constructor has no HIR layout".to_string(),
-                },
-                span.clone(),
-                "runtime result constructor facts could not be lowered",
-            ));
-            return (
-                HirExprKind::Unsupported("invalid declared runtime result".to_string()),
-                result_ty,
-            );
-        };
-        let error = self.synthetic_variant_ctor(&error_name, error_index, None, error_ty, span);
-        let unit = self.make_expr(
-            HirExprKind::Literal(HirLiteral::Unit),
-            ResolvedTy::Unit,
-            IntentKind::Read,
-            span.clone(),
-        );
-        let success = self.synthetic_variant_ctor(
-            "Result",
-            ok_index,
-            Some(vec![("0".to_string(), unit)]),
-            result_ty.clone(),
-            span,
-        );
-        let refusal = self.synthetic_variant_ctor(
-            "Result",
-            err_index,
-            Some(vec![("0".to_string(), error)]),
-            result_ty.clone(),
-            span,
-        );
-        let zero = self.make_expr(
-            HirExprKind::Literal(HirLiteral::Integer(0)),
-            ResolvedTy::I32,
-            IntentKind::Read,
-            span.clone(),
-        );
-        let condition = self.make_expr(
-            HirExprKind::Binary {
-                op: hew_parser::ast::BinaryOp::Equal,
-                left: Box::new(call),
-                right: Box::new(zero),
-            },
-            ResolvedTy::Bool,
-            IntentKind::Read,
-            span.clone(),
-        );
-        (
-            HirExprKind::If {
-                condition: Box::new(condition),
-                then_expr: Box::new(success),
-                else_expr: Some(Box::new(refusal)),
-            },
             result_ty,
         )
     }

@@ -216,7 +216,7 @@ fn zero_field_extern_backed_record_is_bitcopy_handle_stand_in() {
             }
 
             #[extern_symbol(hew_test_handle_release)]
-            pub fn release(handle: Handle) -> i32 {
+            pub fn release(self) -> i32 {
                 0
             }
         }

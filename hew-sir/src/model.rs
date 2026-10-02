@@ -475,6 +475,10 @@ pub struct SemAggregateShape {
     pub fields: Vec<SemAggregateField>,
 }
 
+/// Module-local identity of one `#[offload]` extern a body calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OffloadId(pub u32);
+
 /// Module-local identity of one demanded `(dyn Trait, concrete type)` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemVtableId(pub u32);
@@ -498,15 +502,10 @@ pub(crate) fn require_dyn_trait_ids(dyn_ty: &ResolvedTy) -> Result<(), String> {
 
 /// One dispatchable slot of a demanded trait-object table.
 ///
-/// `slot` is the checker's index (`3 + position` in the trait object's
-/// layout, past the runtime's `drop_in_place`/`size_of`/`align_of` prefix).
-/// SIR never recomputes it.
+/// `slot` is the checker's 0-based layout index; SIR never recomputes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemVtableSlot {
     pub slot: u32,
-    /// The trait that declares the method, for diagnostics only.
-    pub trait_name: String,
-    pub method_name: String,
     /// The trait method declaration this slot dispatches.
     pub method: hew_types::DefId,
     /// The exact implementation this concrete type contributes.
@@ -528,7 +527,7 @@ pub struct SemVtable {
     pub id: SemVtableId,
     pub dyn_ty: ResolvedTy,
     pub concrete_ty: ResolvedTy,
-    /// Slots in emitted order; `slots[i].slot == 3 + i`.
+    /// Slots in layout order; `slots[i].slot == i`.
     pub slots: Vec<SemVtableSlot>,
 }
 
@@ -592,7 +591,7 @@ pub enum RuntimeVariantRole {
     ActorErrorFailed,
     ActorErrorTrapped,
     ActorErrorDead,
-    ActorErrorTimeout,
+    ActorErrorTimedOut,
     ActorErrorNodeNotRunning,
     ActorErrorRoutingFailed,
     ActorErrorEncodeFailed,
@@ -600,7 +599,6 @@ pub enum RuntimeVariantRole {
     ActorErrorPartition,
     SendErrorFull,
     SendErrorClosed,
-    SendErrorNodeRoutingNotWired,
     SendErrorPartition,
     SendErrorStaleRef,
     SendErrorLocalShutdown,
@@ -611,6 +609,7 @@ pub enum RuntimeVariantRole {
     SendErrorDead,
     DeliveryAccepted,
     DeliveryDiscarded,
+    LinkErrorNoContext,
 }
 
 impl SemVariantShape {
@@ -874,6 +873,8 @@ pub struct SemModule {
     /// The compilation's declaration table: every `DefId` in the module
     /// indexes it, and it renders declarations for diagnostics and symbols.
     pub defs: std::sync::Arc<hew_types::DefTable>,
+    /// `#[offload]` externs called by this module's bodies, by [`OffloadId`].
+    pub offloads: Vec<crate::ExternSignature>,
 }
 
 impl SemModule {
@@ -2033,9 +2034,9 @@ pub enum SemTerminator {
     /// owned result exists only on success; logical failure enters cleanup.
     WireCodec {
         id: OpId,
-        direction: hew_types::WireCodecDirection,
-        plan: std::sync::Arc<crate::SemWirePlan>,
-        text_result: Option<crate::SemWireTextResult>,
+        codec: hew_types::Codec,
+        plan: std::sync::Arc<crate::SemWirePlans>,
+        decode_result: Option<crate::SemWireDecodeResult>,
         args: Vec<BoundaryOperand>,
         result: CallResult,
         normal: Edge,

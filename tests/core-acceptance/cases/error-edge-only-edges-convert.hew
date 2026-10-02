@@ -1,0 +1,46 @@
+// Only `?` and `return error` convert: a constructed `.Err(..)` keeps its
+// exact type even when a `From` impl exists.
+enum Low {
+    Broken;
+}
+
+impl Display for Low {
+    fn fmt(self) -> string {
+        "Broken"
+    }
+}
+
+impl Error for Low {
+}
+
+enum High {
+    Wrapped(Low);
+}
+
+impl Display for High {
+    fn fmt(self) -> string {
+        match self {
+            .Wrapped(e) => f"Wrapped: {e}",
+        }
+    }
+}
+
+impl Error for High {
+}
+
+impl From<Low> for High {
+    fn from(value: Low) -> High {
+        .Wrapped(value)
+    }
+}
+
+fn constructed() -> Result<i64, High> {
+    .Err(Low.Broken)
+}
+
+fn main() {
+    match constructed() {
+        .Ok(n) => println(f"{n}"),
+        .Err(e) => println(f"{e}"),
+    }
+}

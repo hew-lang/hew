@@ -10,4 +10,4 @@ kind = "reject"
 code = "BoundsNotSatisfied"
 line = 17
 column = 5
-message = "remote actor `Worker` cannot carry `fn(i64) -> i64`: a value sent to a remote actor needs an explicit wire schema, and `fn(i64) -> i64` has none"
+message = "E_NOT_SERIALIZABLE: a value sent to remote actor `Worker` (`fn(i64) -> i64`) reaches `fn(i64) -> i64`, not data"

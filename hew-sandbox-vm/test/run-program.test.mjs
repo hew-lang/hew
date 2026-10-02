@@ -72,12 +72,12 @@ test("runProgram reads two stdin lines from the page input buffer byte-cleanly",
 import std.io;
 
 fn main() {
-    let first = io.read_line();
-    let second = io.read_line();
+    let first = io.read_line().unwrap_or("<none>");
+    let second = io.read_line().unwrap_or("<none>");
     println(f"{first}|{second}");
 }
 `,
-    "héw\nbytes\n"
+    "héw\r\nbytes\n"
   );
 
   assert.equal(result.stdout, "héw|bytes\n");
@@ -85,23 +85,48 @@ fn main() {
   assert.deepEqual(result.diagnostics, []);
 });
 
-test("runProgram hands a read_line loop successive stdin lines and then empty at end of input", () => {
+test("runProgram hands a read_line loop successive lines, an empty line, then None at end of input", () => {
   const result = runProgram(
     `
 import std.io;
 
 fn main() {
-    for i in 0..5 {
-        let line = io.read_line();
-        if line == "" { return; }
-        println(line);
+    for i in 0..6 {
+        match io.read_line() {
+            .Some(line) => println(f"[{line}]"),
+            .None => {
+                println("end");
+                return;
+            }
+        }
     }
 }
 `,
-    "one\ntwo\r\nthree\n"
+    "one\n\ntwo\r\nthree"
   );
 
-  assert.equal(result.stdout, "one\ntwo\nthree\n");
+  assert.equal(result.stdout, "[one]\n[]\n[two]\n[three]\nend\n");
+  assert.equal(result.exit_code, 0);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test("runProgram read_all keeps line endings and the unterminated tail after a read_line", () => {
+  const result = runProgram(
+    `
+import std.io;
+
+fn main() {
+    let first = io.read_line().unwrap_or("<none>");
+    let rest = io.read_all();
+    println(f"{first}|[{rest}]");
+    let after = io.read_line().unwrap_or("<none>");
+    println(after);
+}
+`,
+    "a\r\n\nb\r\nc"
+  );
+
+  assert.equal(result.stdout, "a|[\nb\r\nc]\n<none>\n");
   assert.equal(result.exit_code, 0);
   assert.deepEqual(result.diagnostics, []);
 });
@@ -112,8 +137,8 @@ test("runProgram records each consumed stdin line as a replay.input event withou
 import std.io;
 
 fn main() {
-    let a = io.read_line();
-    let b = io.read_line();
+    let a = io.read_line().unwrap_or("<none>");
+    let b = io.read_line().unwrap_or("<none>");
     println(a);
     println(b);
 }
@@ -122,10 +147,16 @@ fn main() {
   );
   const bytecode = typeof compiled === "string" ? JSON.parse(compiled).bytecode : compiled.bytecode;
   const trace = runBytecode(bytecode, { replay: { inputs: [{ kind: "stdin", data: "x\ny\n" }] } });
-  assert.deepEqual(trace.replay.inputs, [{ kind: "stdin", data: "x\ny\n" }]);
+  // A read suspends, so the scheduler records its steps alongside; stdin is
+  // persisted once, as given, and each read records the line it consumed.
+  const stdin = (input) => input.kind === "stdin";
+  assert.deepEqual(trace.replay.inputs.filter(stdin), [{ kind: "stdin", data: "x\ny\n" }]);
   assert.deepEqual(
-    trace.events.filter((event) => event.type === "replay.input").map((event) => event.replay_input),
-    [{ kind: "stdin", data: "x" }, { kind: "stdin", data: "y" }]
+    trace.events
+      .filter((event) => event.type === "replay.input")
+      .map((event) => event.replay_input)
+      .filter(stdin),
+    [{ kind: "stdin", data: "x\n" }, { kind: "stdin", data: "y\n" }]
   );
   assert.deepEqual(trace.final_state.stdout, ["x\n", "y\n"]);
 });

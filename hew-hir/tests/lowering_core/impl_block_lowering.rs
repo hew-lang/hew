@@ -67,7 +67,7 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
 impl<T> Iterator for VecIter<T> {
     type Item = T;
 
-    fn next(it: VecIter<T>) -> Option<T> {
+    fn next(self) -> Option<T> {
         .None
     }
 }
@@ -145,8 +145,8 @@ fn inherent_impl_on_user_nominal_lowers_methods() {
 }
 
 impl Counter {
-    fn get(c: Counter) -> i64 {
-        c.n
+    fn get(self) -> i64 {
+        self.n
     }
 }
 ",
@@ -197,8 +197,8 @@ fn index_impl_still_lowers_unchanged() {
 impl Index for Grid {
     type Output = i32;
 
-    fn at(g: Grid, key: i32) -> i32 {
-        g.bias + key
+    fn at(self, key: i32) -> i32 {
+        self.bias + key
     }
 }
 ",
@@ -222,7 +222,7 @@ fn impl_block_with_single_bound_where_clause_lowers() {
     // methods through the regular flatten-to-`HirItem::Function` path.
     let output = lower(
         r"pub trait Eq {
-    fn eq(a: Self, b: Self) -> bool;
+    fn eq(self, b: Self) -> bool;
 }
 
 pub type Wrap<T> {
@@ -230,8 +230,8 @@ pub type Wrap<T> {
 }
 
 impl<T> Wrap<T> where T: Eq {
-    fn first(w: Wrap<T>) -> Wrap<T> {
-        w
+    fn first(self) -> Wrap<T> {
+        self
     }
 }
 ",
@@ -270,11 +270,11 @@ fn impl_block_with_multi_bound_where_clause_lowers() {
     // the impl's method as a top-level `HirItem::Function`.
     let output = lower(
         r"pub trait Eq {
-    fn eq(a: Self, b: Self) -> bool;
+    fn eq(self, b: Self) -> bool;
 }
 
 pub trait Ord {
-    fn cmp(a: Self, b: Self) -> i64;
+    fn cmp(self, b: Self) -> i64;
 }
 
 pub type Wrap<T> {
@@ -282,8 +282,8 @@ pub type Wrap<T> {
 }
 
 impl<T> Wrap<T> where T: Eq + Ord {
-    fn first(w: Wrap<T>) -> Wrap<T> {
-        w
+    fn first(self) -> Wrap<T> {
+        self
     }
 }
 ",
@@ -321,7 +321,7 @@ fn impl_block_with_where_clause_on_non_type_param_emits_fail_closed_shape_diagno
     // admits predicates on the impl's own type parameters.
     let output = lower(
         r"pub trait Eq {
-    fn eq(a: Self, b: Self) -> bool;
+    fn eq(self, b: Self) -> bool;
 }
 
 pub type Wrap<T> {
@@ -329,8 +329,8 @@ pub type Wrap<T> {
 }
 
 impl<T> Wrap<T> where Wrap<T>: Eq {
-    fn first(w: Wrap<T>) -> Wrap<T> {
-        w
+    fn first(self) -> Wrap<T> {
+        self
     }
 }
 ",
@@ -365,11 +365,11 @@ fn impl_block_blanket_impl_emits_fail_closed_shape_diagnostic() {
     let output = lower(
         r"
         pub trait Eq {
-            fn eq(a: Self, b: Self) -> bool;
+            fn eq(self, b: Self) -> bool;
         }
 
         impl<T> Eq for T {
-            fn eq(a: T, b: T) -> bool {
+            fn eq(self, b: T) -> bool {
                 true
             }
         }
@@ -445,7 +445,7 @@ fn impl_block_inherent_on_builtin_nominal_emits_fail_closed_shape_diagnostic() {
     let output = lower(
         r"
         impl<T> Vec<T> {
-            fn user_method(v: Vec<T>) -> i32 {
+            fn user_method(self) -> i32 {
                 0
             }
         }
@@ -482,11 +482,11 @@ fn declarative_ffi_inherent_impl_on_builtin_nominal_is_skipped_without_diagnosti
         r#"
         impl<T> Option<T> {
             #[extern_symbol(hew_test_option_is_some)]
-            fn is_some(opt: Option<T>) -> bool {
+            fn is_some(self) -> bool {
                 panic("declarative FFI body reached without rewrite")
             }
             #[extern_symbol("hew_test_option_unwrap_{T}")]
-            fn unwrap(opt: Option<T>) -> T {
+            fn unwrap(self) -> T {
                 panic("declarative FFI body reached without rewrite")
             }
         }
@@ -528,10 +528,10 @@ fn mixed_ffi_and_real_body_inherent_impl_on_builtin_nominal_stays_fail_closed() 
         r#"
         impl<T> Option<T> {
             #[extern_symbol(hew_test_option_is_some)]
-            fn is_some(opt: Option<T>) -> bool {
+            fn is_some(self) -> bool {
                 panic("declarative FFI body reached without rewrite")
             }
-            fn user_method(opt: Option<T>) -> i32 {
+            fn user_method(self) -> i32 {
                 0
             }
         }

@@ -48,7 +48,7 @@ fn make_test_array() -> Vec<i64> {
 const ITERS: i64 = 100000;
 
 fn main() {
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         let v = make_test_array();
         let _ = quick_sort(v);
     }

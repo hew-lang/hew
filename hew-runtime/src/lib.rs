@@ -35,10 +35,6 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
-// live on not(wasm32) — hew_wasm_register_actor_meta stub; dead here; caller lib.rs:84
-#[cfg(not(target_arch = "wasm32"))]
-use std::ffi::c_void;
-use std::io::Write;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -154,22 +150,6 @@ mod arena_instance_id_tests {
     }
 }
 
-/// Native no-op for the target-neutral actor metadata registration call.
-///
-/// The v0.5 LLVM emitter builds one textual module before object emission, so
-/// actor spawn IR can contain the WASM host metadata registration call even
-/// when the same module is compiled to a native object. Native hosts do not
-/// query WASM actor metadata; they only need this symbol to link cleanly.
-/// NATIVE-TODO(#1259): replace this stub with real native metadata
-/// registration when native metadata consumers exist.
-///
-/// # Safety
-///
-/// The pointer is intentionally ignored on native targets.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_wasm_register_actor_meta(_meta: *const c_void) {}
-
 /// Terminate the current process with a Hew integer exit code.
 ///
 /// The requested code is not the final one: every termination path routes
@@ -205,14 +185,7 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
     };
     let code = crate::exit_status::to_process_exit_byte(i64::from(code));
 
-    if let Err(error) = std::io::stdout().flush() {
-        eprintln!("hew_exit: failed to flush stdout before exit: {error}");
-        std::process::abort();
-    }
-    if let Err(error) = std::io::stderr().flush() {
-        eprintln!("hew_exit: failed to flush stderr before exit: {error}");
-        std::process::abort();
-    }
+    crate::output::flush();
 
     crate::test_report::finish(code);
     terminate(code);
@@ -288,18 +261,8 @@ pub mod envelope;
 /// survive a process hop without shipping in-memory heap pointers.
 pub mod xnode_serial;
 
-/// CBOR wire-body codec: the runtime primitives the compiler's
-/// `__hew_cbor_*` thunks drive to turn a `#[wire]` value into CBOR bytes and back.
-/// Reuses the envelope's `ciborium` dependency; the bytes ride the envelope's
-/// CBOR `bstr` payload slot unchanged.
-pub mod cbor_serial;
-
-pub mod wire_native;
-/// Text wire-body codec: the CBOR↔JSON/YAML bridge the compiler's
-/// `__hew_wire_to_json_*` / `__hew_wire_from_json_*` (and yaml) thunks drive.
-/// Reuses the binary CBOR walk above and transcodes its value tree to/from text
-/// via a per-type tag↔name descriptor — no parallel per-format struct/enum walk.
-pub mod wire_text;
+/// The serialization event ABI over `hew-codec` that compiled walks call.
+pub mod codec;
 
 /// Test-only RAII guard that serializes runtime-touching tests AND installs a
 /// default `RuntimeInner` so the de-globalized authority resolvers
@@ -603,6 +566,7 @@ pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;
 pub mod mem;
+pub(crate) mod output;
 pub mod print;
 pub mod random;
 pub mod rc;
@@ -710,7 +674,8 @@ pub(crate) mod resume;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Owned I/O operations behind waiting calls. wasm32 compiles only standard
+/// input; the module documents the split.
 pub mod async_io;
 pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]
@@ -775,13 +740,11 @@ pub mod pid;
 pub mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process;
-/// Active-mode network I/O reactor ("I/O completion as a mailbox message").
-/// Native (non-WASM) on all targets: epoll on Linux, kqueue on macOS/FreeBSD,
-/// and an IOCP/AFD_POLL readiness backend on Windows
-/// ([`crate::io_time::HewIoPoller`]). The shared engine is platform-independent
-/// Rust over the poller's `c_int` token; only the per-platform readiness source
-/// differs. WASM fails closed via the type checker's
-/// `WasmUnsupportedFeature::TcpNetworking` gate (the reactor is not compiled).
+/// The I/O reactor: readiness for waiting operations and the timer wheel's
+/// clock. Native (non-WASM) on all targets: epoll on Linux, kqueue on
+/// macOS/FreeBSD and IOCP with `AFD_POLL` on Windows. WASM fails closed via the
+/// type checker's `WasmUnsupportedFeature::TcpNetworking` gate (the reactor is
+/// not compiled).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reactor;
 pub mod registry;

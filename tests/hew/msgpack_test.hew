@@ -23,16 +23,16 @@ fn test_from_json_to_json_round_trip_int_field() {
     }
 }
 
-// ── encode_int / encode_string ────────────────────────────────────────
+// ── encode of an integer and a string ────────────────────────────────────────
 #[test]
 fn test_encode_int_produces_nonempty_bytes() {
-    let encoded = msgpack.encode_int(7).expect("encode_int succeeds");
+    let encoded = msgpack.encode(7);
     assert(encoded.len() > 0);
 }
 
 #[test]
 fn test_encode_string_produces_nonempty_bytes() {
-    let encoded = msgpack.encode_string("hello").expect("encode_string succeeds");
+    let encoded = msgpack.encode("hello");
     assert(encoded.len() > 0);
 }
 
@@ -194,25 +194,25 @@ fn test_unicode_string_field_round_trip() {
     }
 }
 
-// ── encode_int boundary cases ─────────────────────────────────────────
+// ── integer encode boundary cases ─────────────────────────────────────────
 #[test]
 fn test_encode_int_zero_produces_nonempty_bytes() {
     // msgpack positive fixint for 0 is the single byte 0x00.
-    let encoded = msgpack.encode_int(0).expect("encode_int succeeds");
+    let encoded = msgpack.encode(0);
     assert(encoded.len() > 0);
 }
 
 #[test]
 fn test_encode_int_negative_one_produces_nonempty_bytes() {
     // msgpack negative fixint for -1 is the single byte 0xff.
-    let encoded = msgpack.encode_int(-1).expect("encode_int succeeds");
+    let encoded = msgpack.encode(-1);
     assert(encoded.len() > 0);
 }
 
 #[test]
 fn test_encode_int_127_produces_nonempty_bytes() {
     // 127 is the maximum positive fixint (single byte 0x7f).
-    let encoded = msgpack.encode_int(127).expect("encode_int succeeds");
+    let encoded = msgpack.encode(127);
     assert(encoded.len() > 0);
 }
 
@@ -231,12 +231,12 @@ fn test_encode_int_zero_round_trip() {
     }
 }
 
-// ── encode_string boundary ────────────────────────────────────────────
+// ── string encode boundary ────────────────────────────────────────────
 #[test]
 fn test_encode_string_empty_produces_nonempty_bytes() {
-    // msgpack empty-string marker is the single byte 0xa0, so encode_string("")
+    // msgpack empty-string marker is the single byte 0xa0, so encode("")
     // must produce at least 1 byte.
-    let encoded = msgpack.encode_string("").expect("encode_string succeeds");
+    let encoded = msgpack.encode("");
     assert(encoded.len() > 0);
 }
 
@@ -247,7 +247,7 @@ fn test_encode_bytes_frames_a_bin_not_an_array_of_integers() {
     data.push(1);
     data.push(2);
     data.push(3);
-    let encoded = msgpack.encode_bytes(data).expect("encode_bytes succeeds");
+    let encoded = msgpack.encode(data);
     assert(encoded.len() == 5);
     assert(encoded[0] == 196); // 0xc4 bin8
     assert(encoded[1] == 3);
@@ -262,7 +262,7 @@ fn test_encode_bytes_frames_bin16_past_the_bin8_boundary() {
     for _ in 0 .. 256 {
         data.push(127);
     }
-    let encoded = msgpack.encode_bytes(data).expect("encode_bytes succeeds");
+    let encoded = msgpack.encode(data);
     assert(encoded.len() == 259);
     assert(encoded[0] == 197); // 0xc5 bin16
     assert(encoded[1] == 1);
@@ -271,14 +271,10 @@ fn test_encode_bytes_frames_bin16_past_the_bin8_boundary() {
 
 #[test]
 fn test_try_encode_bytes_of_an_empty_value_is_an_empty_bin_not_a_failure() {
-    match msgpack.encode_bytes(bytes []) {
-        .Ok(encoded) => {
-            assert(encoded.len() == 2);
-            assert(encoded[0] == 196); // 0xc4 bin8
-            assert(encoded[1] == 0);
-        }
-        .Err(reason) => panic(f"an empty bytes value must encode: {reason}"),
-    }
+    let encoded = msgpack.encode(bytes []);
+    assert(encoded.len() == 2);
+    assert(encoded[0] == 196); // 0xc4 bin8
+    assert(encoded[1] == 0);
 }
 
 #[test]
@@ -287,10 +283,8 @@ fn test_codec_failure_does_not_leak_into_the_next_call() {
         .Ok(_) => panic("expected invalid JSON to fail"),
         .Err(_) => {}
     }
-    match msgpack.encode_int(7) {
-        .Ok(encoded) => assert(encoded.len() > 0),
-        .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
-    }
+    let encoded = msgpack.encode(7);
+    assert(encoded.len() > 0);
 }
 
 #[test]

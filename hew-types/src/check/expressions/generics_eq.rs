@@ -212,13 +212,16 @@ impl Checker {
         ) {
             return;
         }
-        let Some(param_name) = self.same_current_type_param_name(left_resolved, right_resolved)
-        else {
+        let Some(param) = Self::same_type_param(left_resolved, right_resolved) else {
             return;
         };
-        if self.type_param_carries_bound(&param_name, "PartialOrd") {
+        if self.param_carries_trait(
+            param.id,
+            crate::DefTable::predicate(crate::Predicate::PartialOrd),
+        ) {
             return;
         }
+        let param_name = param.spelling;
         let span = Span {
             start: left_span.start,
             end: right_span.end,
@@ -230,70 +233,10 @@ impl Checker {
         );
     }
 
-    pub(super) fn same_current_type_param_name(&self, left: &Ty, right: &Ty) -> Option<String> {
-        let left_name = self.current_type_param_name(left)?;
-        let right_name = self.current_type_param_name(right)?;
-        (left_name == right_name).then_some(left_name)
-    }
-
-    pub(super) fn current_type_param_name(&self, ty: &Ty) -> Option<String> {
-        let Ty::Named {
-            head:
-                head @ (crate::TypeHead::Nominal(_)
-                | crate::TypeHead::Param(_)
-                | crate::TypeHead::Unresolved(_)),
-            args,
-            ..
-        } = ty
-        else {
-            return None;
-        };
-        let name = head.registry_key();
-        if !args.is_empty() {
-            return None;
-        }
-        if self
-            .current_type_param_bounds
-            .iter()
-            .rev()
-            .any(|frame| frame.bounds.contains_key(name))
-        {
-            return Some(name.to_string());
-        }
-        let fn_name = self.current_function.as_ref()?;
-        self.fn_sig(fn_name).and_then(|sig| {
-            sig.type_params
-                .iter()
-                .any(|param_name| param_name.spelling.as_str() == name)
-                .then(|| name.to_string())
-        })
-    }
-
-    /// Capture the active declaration bounds for deferred capability checks.
-    pub(in crate::check) fn current_type_param_bounds_map(&self) -> HashMap<String, Vec<String>> {
-        let mut bounds: HashMap<String, Vec<String>> = HashMap::new();
-        for frame in &self.current_type_param_bounds {
-            for (name, param_bounds) in &frame.bounds {
-                bounds
-                    .entry(name.clone())
-                    .or_insert_with(|| param_bounds.clone());
-            }
-        }
-        if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sig(fn_name) {
-                for param_name in &sig.type_params {
-                    bounds
-                        .entry(param_name.spelling.to_string())
-                        .or_insert_with(|| {
-                            sig.type_param_bounds
-                                .get(param_name.spelling.as_str())
-                                .cloned()
-                                .unwrap_or_default()
-                        });
-                }
-            }
-        }
-        bounds
+    pub(super) fn same_type_param(left: &Ty, right: &Ty) -> Option<crate::ParamHead> {
+        let left = Self::bare_param(left)?;
+        let right = Self::bare_param(right)?;
+        (left == right).then_some(left)
     }
 
     /// Equality uses the selected Eq authority after declarations and inference
@@ -367,15 +310,12 @@ impl Checker {
                     head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
                     ..
                 } => true,
-                Ty::Named { head, .. } => {
-                    self.type_def_at(head.registry_key())
-                        .is_some_and(|definition| {
-                            matches!(
-                                definition.kind,
-                                TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
-                            )
-                        })
-                }
+                Ty::Named { head, .. } => self.head_type_def(*head).is_some_and(|definition| {
+                    matches!(
+                        definition.kind,
+                        TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                    )
+                }),
                 _ => false,
             };
             aggregate.then(|| ty.user_facing().to_string())

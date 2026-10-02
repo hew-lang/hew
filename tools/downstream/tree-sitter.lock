@@ -1,4 +1,4 @@
-commit = "70c51161a8e25487069b1cbeeb7b411130be8af4"
+commit = "e3bcc4e927b17ef2691b8c8e6c2d8cec4c74a226"
 repository = "https://github.com/hew-lang/tree-sitter-hew"
-archive_sha256 = "ed7b3dc117440b798cb389a5a83174d62a09195cf79408c20a25ca36401b5204"
-npm = "1.0.2"
+archive_sha256 = "ee2c3cb5fdb56b070611c99e42df4b79f4317bfe59cdca7bfb3292baf4cb4108"
+npm = "1.1.0"

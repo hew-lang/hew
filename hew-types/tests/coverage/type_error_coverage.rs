@@ -402,7 +402,7 @@ fn test_lambda_arity_mismatch() {
 /// Receiver detection must compare generic arguments, not just the type name.
 /// `impl Box<i64>` should reject `b: Box<string>` as a receiver parameter.
 #[test]
-fn test_receiver_param_rejects_mismatched_generics() {
+fn test_named_first_param_is_an_associated_function() {
     let output = typecheck(
         r"type Box<T> {
     value: T;
@@ -420,11 +420,20 @@ fn main() {
 }
 ",
     );
+    // Only the `self` token declares a receiver: `bad` is an associated
+    // function, so the dot call is refused with the receiver hint.
     assert!(
-        !output.errors.is_empty(),
-        "Expected a type error when receiver generic arguments don't match the impl target, \
-         but type-checking succeeded. `Box<string>` should not be treated as a receiver \
-         for `impl Box<i64>`."
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedMethod
+                && error.message.contains("`bad` is an associated function")
+                && error
+                    .suggestions
+                    .iter()
+                    .any(|s| s == "add a `self` receiver")),
+        "expected the associated-function refusal, got: {:?}",
+        output.errors
     );
 }
 
@@ -438,9 +447,9 @@ fn test_non_receiver_param_same_type_not_flagged() {
 }
 
 impl Box {
-    fn combine(b: Box, var other: Box) -> i64 {
+    fn combine(self, var other: Box) -> i64 {
         other.value = other.value + 1;
-        b.value + other.value
+        self.value + other.value
     }
 }
 

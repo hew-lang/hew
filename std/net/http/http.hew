@@ -61,15 +61,15 @@ trait ServerMethods {
 
 impl ServerMethods for Server {
     /// Accept the next incoming HTTP request.
-    fn accept(srv: Server) -> Request {
+    fn accept(self) -> Request {
         unsafe {
-            hew_http_server_recv(srv)
+            hew_http_server_recv(self)
         }
     }
     /// Set the per-request body read deadline in milliseconds.
-    fn set_request_timeout_ms(srv: Server, timeout_ms: i64) -> i64 {
+    fn set_request_timeout_ms(self, timeout_ms: i64) -> i64 {
         unsafe {
-            hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64) as i64
+            hew_http_server_set_request_timeout_ms(self, timeout_ms as i64) as i64
         } // INTERNAL-ABI: C ABI timeout is i64
     }
 }
@@ -176,40 +176,40 @@ trait RequestMethods {
 
 impl RequestMethods for Request {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
-    fn method(req: Request) -> string {
+    fn method(self) -> string {
         unsafe {
-            hew_http_request_method(req)
+            hew_http_request_method(self)
         }
     }
     /// Return the request path (e.g. `"/api/users"`).
-    fn path(req: Request) -> string {
+    fn path(self) -> string {
         unsafe {
-            hew_http_request_path(req)
+            hew_http_request_path(self)
         }
     }
     /// Return the value of the named header, or an empty string.
-    fn header(req: Request, name: string) -> string {
+    fn header(self, name: string) -> string {
         unsafe {
-            hew_http_request_header(req, name)
+            hew_http_request_header(self, name)
         }
     }
     /// Return all request headers as a list of `(name, value)` pairs.
-    fn headers(req: Request) -> Vec<(string, string)> {
+    fn headers(self) -> Vec<(string, string)> {
         unsafe {
-            hew_http_request_headers(req)
+            hew_http_request_headers(self)
         }
     }
     /// Return the request body decoded according to `encoding`.
-    fn body(req: Request, encoding: string) -> string {
+    fn body(self, encoding: string) -> string {
         unsafe {
-            hew_http_request_body_string(req, encoding)
+            hew_http_request_body_string(self, encoding)
         }
     }
     /// Send a full HTTP response with status, content-type, and body.
-    fn respond(req: Request, status: i64, content_type: string, body: string) -> Result<(), net.NetError> {
+    fn respond(self, status: i64, content_type: string, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
             (unsafe {
-                hew_http_respond_bridge(req, status as i32, content_type, body)
+                hew_http_respond_bridge(self, status as i32, content_type, body)
             }) as i64
         } else {
             -1
@@ -221,10 +221,10 @@ impl RequestMethods for Request {
         } // HTTP has no OS errno channel
     }
     /// Send a plain-text HTTP response.
-    fn respond_text(req: Request, status: i64, body: string) -> Result<(), net.NetError> {
+    fn respond_text(self, status: i64, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
             (unsafe {
-                hew_http_respond_text(req, status as i32, body)
+                hew_http_respond_text(self, status as i32, body)
             }) as i64
         } else {
             -1
@@ -236,10 +236,10 @@ impl RequestMethods for Request {
         } // HTTP has no OS errno channel
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(req: Request, status: i64, json: string) -> Result<(), net.NetError> {
+    fn respond_json(self, status: i64, json: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
             (unsafe {
-                hew_http_respond_json(req, status as i32, json)
+                hew_http_respond_json(self, status as i32, json)
             }) as i64
         } else {
             -1
@@ -251,13 +251,13 @@ impl RequestMethods for Request {
         } // HTTP has no OS errno channel
     }
     /// Begin a streaming response.
-    fn respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, net.NetError> {
+    fn respond_stream(self, status: i64, content_type: string) -> Result<Sink<string>, net.NetError> {
         if valid_response_status(status) {
             let sink = unsafe {
-                hew_http_respond_stream(req, status as i32, content_type)
+                hew_http_respond_stream(self, status as i32, content_type)
             };
             // HTTP has no errno channel; the runtime sets a message via set_last_error
-            // on the two failure paths (null req, already-responded).  The errno side-
+            // on the two failure paths (null self, already-responded).  The errno side-
             // channel is always 0 here, so Other(0) is the correct classification.
             if unsafe {
                 hew_sink_is_valid(sink)

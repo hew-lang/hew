@@ -24,9 +24,6 @@ actor Pool {
 fn main() {
     let pool = spawn Pool;
     let _ = pool.ping();
-    {
-        let __hew_migrated_actor_667 = pool;
-        stop(__hew_migrated_actor_667);
-        stopped(__hew_migrated_actor_667);
-    };
+    stop(pool);
+    stopped(pool);
 }

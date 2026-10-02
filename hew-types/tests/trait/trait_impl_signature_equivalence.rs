@@ -52,8 +52,8 @@ pub type Counter {{
 
 impl Iterator for Counter {{
     type Item = i64;
-    fn next(it: Counter) -> Option<i64> {{
-        if it.n >= it.limit {{ .None }} else {{ .Some(it.n) }}
+    fn next(self) -> Option<i64> {{
+        if self.n >= self.limit {{ .None }} else {{ .Some(self.n) }}
     }}
 }}
 "
@@ -79,8 +79,8 @@ pub type Counter {
 
 impl Source for Counter {
     type Item = i64;
-    fn item(counter: Counter) -> i64 {
-        counter.n
+    fn item(self) -> i64 {
+        self.n
     }
 }
 ";
@@ -102,17 +102,17 @@ pub trait Container {
 
 impl Container for i64 {
     type Item = i64;
-    fn item(value: i64) -> i64 { value }
+    fn item(self) -> i64 { self }
 }
 
 impl Container for bool {
     type Item = bool;
-    fn item(value: bool) -> bool { value }
+    fn item(self) -> bool { self }
 }
 
 impl Container for string {
     type Item = string;
-    fn item(value: string) -> string { value }
+    fn item(self) -> string { self }
 }
 ";
     let output = typecheck_isolated(src);
@@ -136,8 +136,8 @@ pub type Counter {
 
 impl Pairing for Counter {
     type Item = i64;
-    fn pair(counter: Counter) -> (i64, bool) {
-        (counter.n, true)
+    fn pair(self) -> (i64, bool) {
+        (self.n, true)
     }
 }
 ";
@@ -162,8 +162,8 @@ pub type Boxed<T> {
 
 impl<T> Container for Boxed<T> {
     type Item = T;
-    fn items(value: Boxed<T>) -> Vec<Option<T>> {
-        [.Some(value.value)]
+    fn items(self) -> Vec<Option<T>> {
+        [.Some(self.value)]
     }
 }
 ";
@@ -188,7 +188,7 @@ pub type Counter {
 
 impl Container for Counter {
     type Item = i64;
-    fn item(counter: Counter) -> Option<string> {
+    fn item(self) -> Option<string> {
         .None
     }
 }
@@ -217,7 +217,7 @@ pub type LocalSender<T> {}
 
 impl<T: Message> Sender for LocalSender<T> {
     type Body = T.Body;
-    fn send(sender: LocalSender<T>, body: Self.Body) {}
+    fn send(self, body: Self.Body) {}
 }
 ";
     let output = typecheck_isolated(src);
@@ -240,8 +240,8 @@ pub type Counter {{
 
 impl Iterator for Counter {{
     type Item = i64;
-    fn next(it: Counter) -> i64 {{
-        it.n
+    fn next(self) -> i64 {{
+        self.n
     }}
 }}
 "
@@ -268,7 +268,7 @@ impl Iterator for Counter {{
 #[test]
 fn impl_with_wrong_receiver_rejected_at_impl_site() {
     // Receiver type is wrong — `(it: i64)` instead of an impl-target-shaped
-    // receiver. The first param fails `is_receiver_param` so the impl post-skip
+    // receiver. The first param is not a receiver (`Param::is_receiver`) so the impl post-skip
     // arity is 1, vs trait post-skip arity 0, surfacing as an arity mismatch.
     let src = format!(
         "{ITER_TRAIT_PRELUDE}
@@ -307,7 +307,7 @@ pub type Counter {{
 
 impl Iterator for Counter {{
     type Item = i64;
-    fn next(it: Counter, extra: i64) -> Option<i64> {{
+    fn next(self, extra: i64) -> Option<i64> {{
         .None
     }}
 }}
@@ -338,7 +338,7 @@ pub type Bag {
 
 impl Lookup for Bag {
     type Output = i64;
-    fn at(self_bag: Bag, key: string) -> i64 {
+    fn at(self, key: string) -> i64 {
         0
     }
 }
@@ -372,7 +372,7 @@ pub type Box {
 }
 
 impl Lift for Box {
-    fn lift<U>(b: Box, x: U) -> U {
+    fn lift<U>(self, x: U) -> U {
         x
     }
 }

@@ -1591,6 +1591,36 @@ fn selected_test() {
     }
 
     #[test]
+    fn directory_module_test_file_tests_the_whole_module() {
+        if !require_codegen() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("create module fixture directory");
+        let module = dir.path().join("greeting");
+        std::fs::create_dir(&module).expect("create module directory");
+        std::fs::write(
+            module.join("greeting.hew"),
+            "pub trait Greeter {\n    fn name(self) -> string;\n}\n\npub fn shout(g: Dog) -> string {\n    g.name() + \"!\"\n}\n",
+        )
+        .expect("write module entry");
+        std::fs::write(
+            module.join("dog.hew"),
+            "pub type Dog {\n    label: string;\n}\n\nimpl Greeter for Dog {\n    fn name(self) -> string {\n        self.label\n    }\n}\n",
+        )
+        .expect("write module peer");
+        let test_path = module.join("dog_test.hew");
+        std::fs::write(
+            &test_path,
+            "#[test]\nfn shouts_the_label() {\n    assert(shout(Dog { label: \"rex\" }) == \"rex!\");\n}\n",
+        )
+        .expect("write module test");
+
+        let summary = run_discovered_file(&test_path);
+
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
+    }
+
+    #[test]
     fn unrelated_sibling_is_not_loaded() {
         if !require_codegen() {
             return;
@@ -1921,12 +1951,12 @@ fn test_timeout() {
     }
 }
 
-fn read_then_write(account: Account, amount: i64) -> () fails ActorError {
+fn read_then_write(account: Account, amount: i64) fails ActorError {
     let current = account.balance()?;
     account.set(current + amount)?;
 }
 
-fn one_turn(account: Account, amount: i64) -> () fails ActorError {
+fn one_turn(account: Account, amount: i64) fails ActorError {
     account.deposit(amount)?;
 }
 

@@ -217,7 +217,7 @@ fn test_sorted_insert() -> i64 {
     let NIL = 0 - 1;
     // Insert in sorted order (worst case for BST)
     var nodes: Vec<i64> = Vec.new();
-    for i in 1 .. 11 {
+    for i in 1..11 {
         nodes = bst_insert(nodes, i, NIL);
     }
     let result = inorder(nodes, NIL);
@@ -225,7 +225,7 @@ fn test_sorted_insert() -> i64 {
     if result.len() != 10 {
         ok = false;
     } else {
-        for j in 0 .. 10 {
+        for j in 0..10 {
             if result[j] != j + 1 {
                 ok = false;
             }

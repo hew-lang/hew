@@ -57,7 +57,7 @@ fn string_satisfies_ord_bound() {
 #[test]
 fn trait_bound_violation_reports_error() {
     let source = r"trait Describable {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 type Dog {
@@ -65,8 +65,8 @@ type Dog {
 }
 
 impl Describable for Dog {
-    fn describe(d: Dog) -> string {
-        d.name
+    fn describe(self) -> string {
+        self.name
     }
 }
 
@@ -104,7 +104,7 @@ fn main() {
 #[test]
 fn impl_of_subtrait_requires_its_supertrait_impl() {
     let source = r"trait Base {
-    fn base(value: Self) -> i64;
+    fn base(self) -> i64;
 }
 
 trait Derived: Base {
@@ -135,7 +135,7 @@ impl Derived for Widget {
 #[test]
 fn impl_of_subtrait_with_supertrait_impl_is_accepted() {
     let source = r"trait Base {
-    fn base(value: Self) -> i64;
+    fn base(self) -> i64;
 }
 
 trait Derived: Base {
@@ -146,8 +146,8 @@ type Widget {
 }
 
 impl Base for Widget {
-    fn base(value: Widget) -> i64 {
-        value.size
+    fn base(self) -> i64 {
+        self.size
     }
 }
 

@@ -498,8 +498,8 @@ fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
 }
 
 impl Widget {
-    fn value_plus_one(w: Widget) -> i64 {
-        w.value + 1
+    fn value_plus_one(self) -> i64 {
+        self.value + 1
     }
 }
 
@@ -531,7 +531,7 @@ fn use_widget(w: Widget) -> i64 {
 fn method_call_receiver_kinds_record_trait_object_dispatch() {
     let output = typecheck_inline(
         r"trait Greeter {
-    fn greet(g: Self) -> string;
+    fn greet(self) -> string;
 }
 
 type Bot {
@@ -539,8 +539,8 @@ type Bot {
 }
 
 impl Greeter for Bot {
-    fn greet(bot: Bot) -> string {
-        bot.name
+    fn greet(self) -> string {
+        self.name
     }
 }
 
@@ -2197,8 +2197,8 @@ fn rc_user_drop_payload_rejected() {
 }
 
 impl Drop for Token {
-    fn drop(token: Token) {
-        print(token.id);
+    fn drop(self) {
+        print(self.id);
     }
 }
 
@@ -5254,12 +5254,12 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
 }
 
 impl Widget {
-    fn good(w: Widget) -> i64 {
-        w.value
+    fn good(self) -> i64 {
+        self.value
     }
 
-    fn broken(w: Widget, bad: Task<i64>) -> i64 {
-        w.value
+    fn broken(self, bad: Task<i64>) -> i64 {
+        self.value
     }
 }
 ",
@@ -5299,12 +5299,12 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
 }
 
 impl Widget {
-    fn good(w: Widget) -> i64 {
-        w.value
+    fn good(self) -> i64 {
+        self.value
     }
 
-    fn broken(w: Widget) -> Task<i64> {
-        w.value
+    fn broken(self) -> Task<i64> {
+        self.value
     }
 }
 ",
@@ -5891,8 +5891,8 @@ fn remote_ask_requires_explicit_wire_schema() {
         .errors
         .iter()
         .find(|e| {
-            e.message
-                .contains("remote actor `Echo` cannot carry `Ping`")
+            e.message.contains("remote actor `Echo` (`Ping`)")
+                && e.message.contains("without `#[wire]` tags")
         })
         .unwrap_or_else(|| panic!("plain record must be refused; got: {:#?}", plain.errors));
     assert!(
@@ -5910,6 +5910,19 @@ fn remote_ask_requires_explicit_wire_schema() {
         wire.errors.is_empty(),
         "a tagged #[wire] message crosses the node: {:#?}",
         wire.errors
+    );
+
+    // Every record a remote payload reaches is tagged; the refusal names the field.
+    let nested = typecheck_inline(&remote_ask_source(
+        "type Inner {\n    v: i64;\n}\n#[wire]\ntype Ping {\n    seq: i64 @1;\n    inner: Inner @2;\n}\n",
+    ));
+    assert!(
+        nested
+            .errors
+            .iter()
+            .any(|e| e.message.contains("reaches `Inner` at `.inner`")),
+        "a #[wire] message reaching a plain record must be refused at the field: {:#?}",
+        nested.errors
     );
 }
 

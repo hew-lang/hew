@@ -81,13 +81,15 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         // `FreeFn` like `#[test]` and `#[export]`; the co-occurrence half of
         // their `#[test]`-only rule is enforced by
         // `Parser::validate_attributes_for`, not by this table.
-        "test" | "export" | "ignore" | "should_panic" | "serial" | "real_time" | "timeout" => {
-            &[FreeFn]
-        }
+        "test" | "export" | "ignore" | "should_panic" | "real_time" | "timeout" => &[FreeFn],
+        // On a test fn `#[serial]` runs it alone; on a type or field it sets
+        // text keys (`case`, `key`, `skip`).
+        "serial" => &[FreeFn, TypeDecl, Field],
         "on" => &[ActorMemberFn],
         "every" => &[ActorReceiveFn],
         "max_heap" => &[ActorDecl],
         "extern_symbol" => &[ImplMethod, ExternFn],
+        "offload" => &[ExternFn],
         "runtime" => &[ImplMethod],
         // Not gated to `std/` by `RESERVED_SUBSTRATE_ATTRIBUTES` today (it is
         // used by non-stdlib code, e.g.
@@ -110,7 +112,7 @@ impl Parser<'_> {
         quoted_arguments: bool,
     ) {
         let (valid, hint) = match attr.name.as_str() {
-            "test" | "serial" | "real_time" => (argument_count == 0, "remove the arguments"),
+            "test" | "real_time" | "offload" => (argument_count == 0, "remove the arguments"),
             "ignore" | "should_panic" => (
                 argument_count <= 1 && quoted_arguments,
                 "use no argument or one quoted string, such as (\"reason\")",
@@ -150,9 +152,23 @@ impl Parser<'_> {
             // `#[test]` must not leave them silently accepted either.
             let requires_test = matches!(
                 attr.name.as_str(),
-                "ignore" | "should_panic" | "serial" | "real_time" | "timeout"
-            );
+                "ignore" | "should_panic" | "real_time" | "timeout"
+            ) || (attr.name == "serial" && position == AttrPosition::FreeFn);
             let legal = in_table && (!requires_test || has_test);
+            if legal && attr.name == "serial" {
+                match position {
+                    AttrPosition::FreeFn if !attr.args.is_empty() => {
+                        self.error_at_with_kind_and_hint(
+                            "invalid arguments for `#[serial]` [E_ATTRIBUTE_ARGUMENT]".to_string(),
+                            attr.span.clone(),
+                            "remove the arguments",
+                            ParseDiagnosticKind::AttributeArgument,
+                        );
+                    }
+                    AttrPosition::Field => self.validate_serial_field(attr),
+                    _ => {}
+                }
+            }
             if !legal {
                 self.error_at(
                     format!(

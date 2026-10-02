@@ -479,6 +479,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
                 match &block.terminator {
                     PhysicalTerminator::NativeIo { .. }
+                    | PhysicalTerminator::Offload { .. }
                     // Content-backed stream operations offload producer work
                     // through the installed runtime's blocking pool.
                     | PhysicalTerminator::StreamNext { park: true, .. }
@@ -1545,7 +1546,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     protocol.actor,
                     protocol.message,
                     protocol.policy,
-                    protocol.deadline_ns,
                     protocol.sealed,
                     transfers,
                 )?;
@@ -1910,8 +1910,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )
     }
 
-    /// Status `0` is `Ok`, carrying the registration id a monitor wrote; a
-    /// positive status is one plus the error's declaration index.
+    /// Status `0` is `Ok`, carrying the registration id a monitor wrote; the
+    /// one positive status is `NoContext`, chosen by its runtime role.
     pub(super) fn emit_observation_result(
         &self,
         result: Option<StorageId>,
@@ -1975,14 +1975,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(complete)
             .llvm_ctx("complete successful observation")?;
         self.builder.position_at_end(failure);
-        let tag = self
-            .builder
-            .build_int_sub(
-                status,
-                self.ctx.i32_type().const_int(1, false),
-                "observation.error.tag",
-            )
-            .llvm_ctx("decode LinkError status")?;
+        let no_context = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *error_ty)
+            .and_then(|glue| glue.runtime_tag(hew_mir::RuntimeVariantRole::LinkErrorNoContext))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("LinkError lacks its NoContext runtime role".into())
+            })?;
+        let tag = self.ctx.i32_type().const_int(u64::from(no_context), false);
         let error = self.actor_unit_variant(error_ty, tag)?;
         self.write_variant_value(self.slots[result.0 as usize], 1, &[error], glue.id)?;
         self.builder
@@ -2896,6 +2898,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("rejected message has no record recipe".into())
             })?;
         let error_ty = &failure.fields[0].ty;
+        let reason_glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *error_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("send refusal reason has no variant recipe".into())
+            })?;
+        let reason_tag = |role| {
+            reason_glue
+                .runtime_tag(role)
+                .map(|tag| self.ctx.i8_type().const_int(u64::from(tag), false))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("send refusal reason lacks a runtime role".into())
+                })
+        };
+        let dead_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorDead)?;
+        let backpressure_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorBackpressure)?;
+        let full_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorFull)?;
         let accepted = self
             .builder
             .build_int_compare(
@@ -2973,18 +2994,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("classify a spent supervised role")?;
         let reason = self
             .builder
-            .build_select(
-                closed,
-                self.ctx.i8_type().const_int(10, false),
-                self.ctx.i8_type().const_int(9, false),
-                "submission.reason",
-            )
+            .build_select(closed, dead_tag, backpressure_tag, "submission.reason")
             .llvm_ctx("classify admission failure")?;
         let reason = self
             .builder
             .build_select(
                 spent,
-                self.ctx.i8_type().const_int(10, false),
+                dead_tag,
                 reason.into_int_value(),
                 "submission.reason.role",
             )
@@ -2993,7 +3009,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_select(
                 full,
-                self.ctx.i8_type().const_zero(),
+                full_tag,
                 reason.into_int_value(),
                 "submission.full_reason",
             )

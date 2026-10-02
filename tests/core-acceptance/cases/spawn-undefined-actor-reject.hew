@@ -1,0 +1,7 @@
+actor Counter {
+    var n: i64 = 0;
+}
+
+fn main() {
+    let _a = spawn Countr();
+}

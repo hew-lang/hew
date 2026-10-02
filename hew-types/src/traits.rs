@@ -75,6 +75,53 @@ impl std::fmt::Display for MarkerTrait {
 }
 
 impl MarkerTrait {
+    /// The compiler predicate this marker is, when a bound can name it.
+    #[must_use]
+    pub fn predicate(self) -> Option<crate::Predicate> {
+        use crate::Predicate as P;
+        Some(match self {
+            Self::Send => P::Send,
+            Self::Sync => P::Sync,
+            Self::Frozen => P::Frozen,
+            Self::Copy => P::Copy,
+            Self::Clone => P::Clone,
+            Self::Eq => P::Eq,
+            Self::PartialOrd => P::PartialOrd,
+            Self::Ord => P::Ord,
+            Self::Num => P::Num,
+            Self::Hash => P::Hash,
+            Self::Debug => P::Debug,
+            Self::Decode => P::Decode,
+            Self::Encode => P::Encode,
+            Self::Serializable => P::Serializable,
+            Self::Resource => P::Resource,
+            Self::Display | Self::Drop => return None,
+        })
+    }
+
+    /// The marker a compiler predicate decides.
+    #[must_use]
+    pub fn of_predicate(predicate: crate::Predicate) -> Self {
+        use crate::Predicate as P;
+        match predicate {
+            P::Send => Self::Send,
+            P::Sync => Self::Sync,
+            P::Frozen => Self::Frozen,
+            P::Copy => Self::Copy,
+            P::Clone => Self::Clone,
+            P::Eq => Self::Eq,
+            P::PartialOrd => Self::PartialOrd,
+            P::Ord => Self::Ord,
+            P::Num => Self::Num,
+            P::Hash => Self::Hash,
+            P::Debug => Self::Debug,
+            P::Decode => Self::Decode,
+            P::Encode => Self::Encode,
+            P::Serializable => Self::Serializable,
+            P::Resource => Self::Resource,
+        }
+    }
+
     /// Parse a trait name string into the corresponding `MarkerTrait`, if it is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
@@ -150,7 +197,7 @@ pub struct TraitRegistry {
 
 struct MarkerDerivation<'a> {
     visiting: HashSet<crate::TypeHead>,
-    type_param_bound: &'a dyn Fn(&str, MarkerTrait) -> bool,
+    type_param_bound: &'a dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
 }
 
 impl TraitRegistry {
@@ -297,7 +344,7 @@ impl TraitRegistry {
         &self,
         ty: &Ty,
         marker: MarkerTrait,
-        type_param_bound: &dyn Fn(&str, MarkerTrait) -> bool,
+        type_param_bound: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> bool {
         let mut visiting = MarkerDerivation {
             visiting: HashSet::new(),
@@ -329,7 +376,7 @@ impl TraitRegistry {
         marker: MarkerTrait,
         visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
-        if matches!(ty, Ty::Named { head: crate::TypeHead::Param(param), args } if args.is_empty() && (visiting.type_param_bound)(param.spelling.as_str(), marker))
+        if matches!(ty, Ty::Named { head: crate::TypeHead::Param(param), args } if args.is_empty() && (visiting.type_param_bound)(*param, marker))
         {
             return true;
         }
@@ -704,11 +751,13 @@ impl TraitRegistry {
             // first.
             Ty::Var(_) | Ty::AssocType { .. } => false,
 
-            // Checker-expanded object bounds carry marker obligations directly.
-            // A declared trait with the same display spelling is not a marker.
-            Ty::TraitObject { traits } => traits
-                .iter()
-                .any(|bound| bound.trait_id.is_none() && bound.trait_name == marker.to_string()),
+            // Checker-expanded object bounds carry marker obligations directly,
+            // by predicate identity; a declared trait spelled `Send` is not one.
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                marker.predicate().is_some_and(|predicate| {
+                    bound.trait_id.and_then(crate::DefTable::as_predicate) == Some(predicate)
+                })
+            }),
 
             // Task<T> is a compiler-internal consume-once handle. It is NOT
             // Copy, Clone, Frozen, or Eq. It IS Send iff T is Send (the task
@@ -1287,7 +1336,7 @@ mod tests {
                 },
                 TraitObjectBound {
                     trait_name: "Send".to_string(),
-                    trait_id: None,
+                    trait_id: Some(crate::DefTable::predicate(crate::Predicate::Send)),
                     args: vec![],
                     assoc_bindings: vec![],
                 },

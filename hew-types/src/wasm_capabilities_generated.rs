@@ -393,8 +393,6 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
     DeterministicOperation { identity: "hew_quic_stream_recv_timeout_hew", capability: WasmCapabilityId("quic") },
     DeterministicOperation { identity: "hew_dns_resolve", capability: WasmCapabilityId("dns") },
     DeterministicOperation { identity: "hew_dns_lookup_host", capability: WasmCapabilityId("dns") },
-    DeterministicOperation { identity: "hew_dns_resolve_timed", capability: WasmCapabilityId("dns") },
-    DeterministicOperation { identity: "hew_dns_lookup_host_timed", capability: WasmCapabilityId("dns") },
     DeterministicOperation { identity: "hew_node_api_start_config", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_node_api_connect", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_node_api_connect_string", capability: WasmCapabilityId("distributed") },
@@ -408,8 +406,7 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
     DeterministicOperation { identity: "hew_remote_call_new", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_remote_call_poll", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_remote_call_take", capability: WasmCapabilityId("distributed") },
-    DeterministicOperation { identity: "hew_io_read_line", capability: WasmCapabilityId("stdin-input") },
-    DeterministicOperation { identity: "hew_io_read_all", capability: WasmCapabilityId("stdin-input") },
+    DeterministicOperation { identity: "hew_stdin_read_line", capability: WasmCapabilityId("stdin-input") },
 ];
 
 }

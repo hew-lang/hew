@@ -173,7 +173,6 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Handle { .. } => {}
         Expr::Range { .. } => {}
         Expr::Await(_) => {}
-        Expr::AwaitRestart(_) => {}
         Expr::RegexLiteral(_) => {}
         Expr::ByteStringLiteral(_) => {}
         Expr::ByteArrayLiteral(_) => {}
@@ -306,7 +305,7 @@ fn fmt_totality_item_trait() {
 #[test]
 fn fmt_totality_item_impl() {
     assert_roundtrip(
-        "type Counter {\n    val: i64;\n}\n\nimpl Counter {\n    fn get(c: Counter) -> i64 {\n        c.val\n    }\n}\n",
+        "type Counter {\n    val: i64;\n}\n\nimpl Counter {\n    fn get(self) -> i64 {\n        self.val\n    }\n}\n",
     );
 }
 

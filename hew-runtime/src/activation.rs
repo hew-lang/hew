@@ -265,7 +265,14 @@ pub(crate) unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut 
     // (5) FG3: drain a wake that fired in the park window. If present, the
     // wake's own `Suspended → Runnable` CAS lost the race (we had not yet
     // published Suspended), so we re-enqueue ourselves to deliver it once.
-    if crate::coro_exec::take_pending_wake(a)
+    // A stop latched in the same window is the stopper's half of a
+    // latch-then-recheck: it read `Running` and woke nobody, so this side
+    // rechecks the latch after publishing `Suspended`. The resume path then
+    // observes the latch and cancels the park.
+    std::sync::atomic::fence(Ordering::SeqCst);
+    if (crate::coro_exec::take_pending_wake(a)
+        // SAFETY: the parking activation owns the actor and its turn.
+        || unsafe { unobserved_stop(a) })
         && a.actor_state
             .compare_exchange(
                 HewActorState::Suspended as i32,
@@ -284,6 +291,23 @@ pub(crate) unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut 
     );
     true
 }
+/// Whether a stop is latched that the parking turn has not yet observed. A
+/// checked turn already cancelled by the latch parks only on its own cleanup,
+/// which its completions wake.
+///
+/// # Safety
+/// The caller owns the actor's activation, which keeps its mailbox and checked
+/// invocation live.
+unsafe fn unobserved_stop(a: &HewActor) -> bool {
+    // SAFETY: the activation keeps the mailbox live.
+    if !unsafe { mailbox::mailbox_stop_requested(a.mailbox.cast::<HewMailbox>()) } {
+        return false;
+    }
+    let turn = a.checked_invocation.load(Ordering::Acquire);
+    // SAFETY: the activation keeps the borrowed invocation state live.
+    turn.is_null() || unsafe { crate::coro_state::hew_coro_state_is_cancelled(turn.cast()) } == 0
+}
+
 /// Cancel a parked continuation because an out-of-band stop was latched, and
 /// finalize the activation through the ordinary `Stopping → Stopped` settle.
 ///

@@ -41,11 +41,15 @@ pub(crate) fn instantiate_named_method_sig(
     let substituted_params: HashSet<_> = subst_map.keys().copied().collect();
     sig.type_params
         .retain(|type_param| !substituted_params.contains(type_param));
-    sig.type_param_bounds.retain(|name, _| {
-        sig.type_params
-            .iter()
-            .any(|parameter| parameter.spelling.as_str() == name)
-    });
+    let remaining: HashSet<crate::TypeParamId> = sig
+        .type_params
+        .iter()
+        .map(|parameter| parameter.id)
+        .collect();
+    sig.bounds = sig
+        .bounds
+        .map_types(|ty| ty.substitute_type_params_parallel(&subst_map));
+    sig.bounds.retain(|param, _| remaining.contains(&param));
     sig
 }
 
@@ -459,7 +463,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Stream".to_string(),
                 type_params: vec![],
-                bounds: HashMap::new(),
+                bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -502,7 +506,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
                 type_params: vec![crate::ParamHead::for_test("T")],
-                bounds: HashMap::new(),
+                bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -547,7 +551,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Sink".to_string(),
                 type_params: vec![],
-                bounds: HashMap::new(),
+                bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: {
@@ -600,7 +604,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Stream".to_string(),
                 type_params: vec![],
-                bounds: HashMap::new(),
+                bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: {

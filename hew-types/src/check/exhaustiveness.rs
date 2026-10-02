@@ -282,7 +282,7 @@ impl Checker {
                     .collect(),
             );
         }
-        let td = self.lookup_type_def(ty.type_name()?)?;
+        let td = self.ty_type_def(&ty)?.clone();
         match td.kind {
             // An enum with no variants is uninhabited.
             TypeDefKind::Enum => Some(Vec::new()),

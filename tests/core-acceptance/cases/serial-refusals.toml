@@ -1,0 +1,35 @@
+[[case]]
+id = "serial-refusals"
+intent = "Serialization refuses a key collision, a skipped non-Option field and values that are not data, naming why."
+source = "cases/serial-refusals.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 18
+column = 1
+message = "E_SERIAL_KEY_COLLISION: two fields of `Clash` share the text key `fooBar`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 26
+column = 12
+message = "E_SERIAL_SKIP: `#[serial(skip)]` field `count` must be an `Option`: a skipped field decodes as `None`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 30
+column = 13
+message = "type `Holder` does not implement trait `Serializable` required by `T`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 31
+column = 13
+message = "type `Twice` does not implement trait `Serializable` required by `T`"

@@ -1,0 +1,13 @@
+[[case]]
+id = "dyn-slot-suspends-import-reject"
+intent = "A suspending impl from an imported user module cannot fill a plain dyn slot."
+source = "cases/dyn-slot-suspends-import-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 6
+column = 25
+message = "E_DYN_SLOT_SUSPENDS: function `dyn_slot_import.clocks.Slow::<impl dyn_slot_import.clocks.Ticker for dyn_slot_import.clocks.Slow>::tick` suspends via `sleep(...)`, so it cannot fill `Ticker::tick` in `dyn Ticker`; that trait method never suspends unless it is declared `fn[suspends]`"

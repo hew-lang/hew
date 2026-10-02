@@ -80,7 +80,7 @@ actor RefillTimer {
     let interval: duration;
     let cycles: i64;
     receive fn start() {
-        for i in 0 .. cycles {
+        for i in 0..cycles {
             sleep(interval);
             let _ = limiter.refill();
         }

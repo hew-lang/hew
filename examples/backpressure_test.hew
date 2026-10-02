@@ -20,7 +20,7 @@ fn main() {
     let worker = spawn SlowWorker(id: 1);
     // A full mailbox cooperatively suspends this sender; it does not park a
     // runtime worker thread.
-    for i in 0 .. 8 {
+    for i in 0..8 {
         let _ = worker.process(i);
     }
     sleep(500ms);

@@ -1,0 +1,25 @@
+// Validation (FAIL CLOSED): Option's value shape does not make its map key
+// optional. A required Option<T> must reject an absent key even though a
+// present CBOR null is a valid None value.
+import std.encoding.cbor;
+
+#[wire]
+type OptionalSource {
+    value: Option<i64> @1 optional;
+}
+
+#[wire]
+type RequiredOption {
+    value: Option<i64> @1;
+}
+
+fn main() -> i64 {
+    let raw = cbor.encode(OptionalSource { value: .None });
+    match cbor.decode<RequiredOption>(raw) {
+        .Ok(_) => 1,
+        .Err(e) => {
+            println(e);
+            42
+        }
+    }
+}

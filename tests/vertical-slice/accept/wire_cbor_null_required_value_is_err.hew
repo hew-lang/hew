@@ -1,0 +1,25 @@
+// Validation (FAIL CLOSED): a present null is valid for required Option<T>,
+// but not for required bare T. The required selector finds the key and the
+// scalar value decoder rejects its null value with a Type error.
+import std.encoding.cbor;
+
+#[wire]
+type RequiredOption {
+    value: Option<i64> @1;
+}
+
+#[wire]
+type RequiredValue {
+    value: i64 @1;
+}
+
+fn main() -> i64 {
+    let raw = cbor.encode(RequiredOption { value: .None });
+    match cbor.decode<RequiredValue>(raw) {
+        .Ok(_) => 1,
+        .Err(e) => {
+            println(e);
+            42
+        }
+    }
+}

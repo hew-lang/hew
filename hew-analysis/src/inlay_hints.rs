@@ -552,7 +552,6 @@ fn collect_inlay_hints_from_expr(
         Expr::Cast { expr: inner, .. }
         | Expr::PostfixTry(inner)
         | Expr::Await(inner)
-        | Expr::AwaitRestart(inner)
         | Expr::Yield(Some(inner))
         | Expr::Return(Some(inner)) => {
             collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
@@ -747,13 +746,13 @@ mod tests {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            error_conversions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
@@ -825,12 +824,12 @@ fn main() {
 }
 
 trait PointMethods {
-    fn shift(pt: Point, dx: i64, dy: i64) -> Point;
+    fn shift(self, dx: i64, dy: i64) -> Point;
 }
 
 impl PointMethods for Point {
-    fn shift(pt: Point, dx: i64, dy: i64) -> Point {
-        Point { x: pt.x + dx, y: pt.y + dy }
+    fn shift(self, dx: i64, dy: i64) -> Point {
+        Point { x: self.x + dx, y: self.y + dy }
     }
 }
 
@@ -1144,7 +1143,7 @@ fn main() -> i64 {
 
     #[test]
     fn same_named_impl_methods_keep_their_own_return_hints() {
-        let source = "type A {\n    value: i64;\n}\n\nimpl A {\n    fn get(a: A) {\n        a.value\n    }\n}\n\ntype B {\n    flag: bool;\n}\n\nimpl B {\n    fn get(b: B) {\n        b.flag\n    }\n}\n";
+        let source = "type A {\n    value: i64;\n}\n\nimpl A {\n    fn get(self) {\n        self.value\n    }\n}\n\ntype B {\n    flag: bool;\n}\n\nimpl B {\n    fn get(self) {\n        self.flag\n    }\n}\n";
         let parsed = parse(source);
         let mut output = type_check(&parsed);
         let method = |index: usize| match &parsed.program.items[index].0 {

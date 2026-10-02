@@ -505,12 +505,6 @@ mod tests {
             ExternResultOwnership::Fresh,
             "a TCP spelling alone must not turn a disposer into a resource producer"
         );
-
-        assert_eq!(
-            extern_param_ownership("hew_tcp_attach_native", 0),
-            Some(ExternParamOwnership::Consume),
-            "active-mode attach transfers the connection's sole close authority to the reactor"
-        );
     }
 
     #[test]
@@ -588,9 +582,6 @@ mod tests {
             "hew_gzip_decompress_hew",
             "hew_zlib_compress_hew",
             "hew_zlib_decompress_hew",
-            "hew_msgpack_encode_bytes_hew",
-            "hew_msgpack_encode_int_hew",
-            "hew_msgpack_encode_string_hew",
             "hew_msgpack_from_json_hew",
             "hew_ed25519_generate_pkcs8_hew",
             "hew_ed25519_public_key_from_pkcs8_hew",

@@ -121,7 +121,7 @@ impl Checker {
                 field,
                 &DottedTypeMemberUse::Reference { span },
             ) {
-                self.mark_resolved_nominal_owner_used(&head.canonical_type);
+                self.note_path_use(&head.canonical_type);
                 return result;
             }
         }
@@ -145,16 +145,6 @@ impl Checker {
                 if self.module_binding_in_current_file(module_short.name.as_str())
                     && self.env.lookup_ref(module_short.name.as_str()).is_none()
                 {
-                    let old_head = format!("{module_short}.{}", type_name.0);
-                    if let Some(replacement) = self.legacy_machine_event_replacement(&old_head) {
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedType,
-                            &type_name.1,
-                            format!("machine event type `{old_head}` is now `{replacement}`"),
-                            vec![format!("replace `{old_head}` with `{replacement}`")],
-                        );
-                        return Ty::Error;
-                    }
                     let constructor = format!("{module_short}.{}::{}", type_name.0, field);
                     return self.synthesize_identifier(&constructor, span);
                 }
@@ -220,11 +210,7 @@ impl Checker {
                     if let Some(binding) = self.env.lookup_ref(&qualified_key) {
                         let ty = binding.ty.clone();
                         if self.module_binding_in_current_file(name.name.as_str()) {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                name.to_string(),
-                            ));
+                            self.note_import_use(name.name.as_str());
                         }
                         return ty;
                     }
@@ -233,11 +219,7 @@ impl Checker {
                     // falling through to the generic "undefined variable `module`" error.
                     if self.module_binding_in_current_file(name.name.as_str()) {
                         if self.has_fn_sig(&qualified_key) {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                name.to_string(),
-                            ));
+                            self.note_import_use(name.name.as_str());
                             self.reject_wasm_native_only_module_function(
                                 name.name.as_str(),
                                 field,
@@ -362,7 +344,7 @@ impl Checker {
                             .find(|(_, _, (name, _))| name == field);
                         if let Some((kind, index, (child_name, template))) = selected {
                             let parameters = self
-                                .type_def_at(sup_head.registry_key())
+                                .head_type_def(*sup_head)
                                 .map_or_else(Vec::new, |definition| definition.type_params.clone());
                             let substitution = parameters
                                 .into_iter()
@@ -502,12 +484,9 @@ impl Checker {
             let resolved = self.subst.resolve(scrutinee_ty);
             let uninhabited = match &resolved {
                 Ty::Never => true,
-                Ty::Named { head, .. } => {
-                    self.lookup_type_def(head.registry_key())
-                        .is_some_and(|definition| {
-                            definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-                        })
-                }
+                Ty::Named { head, .. } => self.head_type_def(*head).is_some_and(|definition| {
+                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                }),
                 _ => false,
             };
             if uninhabited {
@@ -558,9 +537,16 @@ impl Checker {
         // never ran at all — so a diverging guard contributes nothing to the
         // fall-through. Its own body is unreachable for the same reason, so the
         // body's exit must stay out of the join no matter what the body does.
+        //
+        // An arm whose value is a contextual variant (`.None`, `.Err(e)`) takes
+        // the match's type from the arms that have one (A448). Until a typed
+        // arm has been checked, such an arm's pattern and guard run in source
+        // order but its body waits, with its scope suspended, and is checked
+        // against the join of the typed arms after the loop.
         let ownership_entry = self.env.ownership_snapshot();
         let mut fall_through = ownership_entry.clone();
         let mut arm_exits = Vec::with_capacity(arms.len());
+        let mut waiting = Vec::new();
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
@@ -595,35 +581,34 @@ impl Checker {
                 }
             }
 
-            self.tail_ok_armed = tail_ok_armed;
-            let arm_ty = if let Some(expected) = &result_ty {
-                if expected.contains_callable() && resolved_expected.is_none() {
-                    self.synthesize(&arm.body.0, &arm.body.1)
-                } else {
-                    self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
-                }
-            } else {
-                self.synthesize(&arm.body.0, &arm.body.1)
-            };
-            self.record_value_transfer(&arm.body.0, &arm.body.1);
-            arm_exits.push(BranchArmExit {
-                ownership: self.env.ownership_snapshot(),
-                diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
-            });
-            // Skip Never/Error when setting the expected type — diverging arms
-            // (return, panic, break) shouldn't constrain the match result type.
-            if !matches!(arm_ty, Ty::Never | Ty::Error) {
-                result_ty = Some(if let Some(previous) = result_ty {
-                    if previous.contains_callable() || arm_ty.contains_callable() {
-                        self.unify_branches(&previous, &arm_ty, span)
-                    } else {
-                        previous
-                    }
-                } else {
-                    arm_ty
-                });
+            if result_ty.is_none() && super::super::branch_join::expr_needs_context(&arm.body.0) {
+                let start = self.env.ownership_snapshot();
+                waiting.push((arm, self.env.suspend_scope(), start, guard_diverges));
+                continue;
             }
-
+            self.tail_ok_armed = tail_ok_armed;
+            self.check_match_arm_body(
+                arm,
+                guard_diverges,
+                &mut result_ty,
+                resolved_expected.as_ref(),
+                &mut arm_exits,
+                span,
+            );
+            self.env.pop_scope();
+        }
+        for (arm, scope, start, guard_diverges) in waiting {
+            self.env.resume_scope(scope);
+            self.env.restore_ownership(&start);
+            self.tail_ok_armed = tail_ok_armed;
+            self.check_match_arm_body(
+                arm,
+                guard_diverges,
+                &mut result_ty,
+                resolved_expected.as_ref(),
+                &mut arm_exits,
+                span,
+            );
             self.env.pop_scope();
         }
         self.join_branch_ownership(&ownership_entry, &arm_exits);
@@ -636,6 +621,46 @@ impl Checker {
 
         // If all arms diverge (Never/Error), the match itself diverges
         result_ty.unwrap_or(Ty::Never)
+    }
+
+    /// Check one arm body against the match's type so far, record its exit and
+    /// fold its type into the join.
+    fn check_match_arm_body(
+        &mut self,
+        arm: &MatchArm,
+        guard_diverges: bool,
+        result_ty: &mut Option<Ty>,
+        resolved_expected: Option<&Ty>,
+        arm_exits: &mut Vec<BranchArmExit>,
+        span: &Span,
+    ) {
+        let arm_ty = if let Some(expected) = result_ty.as_ref() {
+            if expected.contains_callable() && resolved_expected.is_none() {
+                self.synthesize(&arm.body.0, &arm.body.1)
+            } else {
+                self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
+            }
+        } else {
+            self.synthesize(&arm.body.0, &arm.body.1)
+        };
+        self.record_value_transfer(&arm.body.0, &arm.body.1);
+        arm_exits.push(BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
+        });
+        // Skip Never/Error when setting the expected type — diverging arms
+        // (return, panic, break) shouldn't constrain the match result type.
+        if !matches!(arm_ty, Ty::Never | Ty::Error) {
+            *result_ty = Some(if let Some(previous) = result_ty.take() {
+                if previous.contains_callable() || arm_ty.contains_callable() {
+                    self.unify_branches(&previous, &arm_ty, span)
+                } else {
+                    previous
+                }
+            } else {
+                arm_ty
+            });
+        }
     }
 
     #[expect(
@@ -884,26 +909,12 @@ impl Checker {
 
         if let Some(tps) = type_params {
             if !tps.is_empty() {
-                let type_param_bounds = tps
-                    .iter()
-                    .filter_map(|tp| {
-                        if tp.bounds.is_empty() {
-                            None
-                        } else {
-                            Some((
-                                tp.name.to_string(),
-                                tp.bounds
-                                    .iter()
-                                    .map(|bound| bound.path.to_string())
-                                    .collect(), // TRANSITION(P1): deleted by A1 commit 2
-                            ))
-                        }
-                    })
-                    .collect();
+                let bounds =
+                    self.collect_type_param_bounds(Some(&tps.to_vec()), None, &mut Vec::new());
                 self.last_lambda_generic_sig = Some(GenericLambdaSig {
                     call_sig: FnSig {
                         type_params: generic_parameters.clone(),
-                        type_param_bounds,
+                        bounds,
                         param_names: params.iter().map(|param| param.name.to_string()).collect(),
                         params: param_tys
                             .iter()
@@ -1065,11 +1076,7 @@ impl Checker {
                                 .map(|_| format!("{path}::{variant}"))
                         })
                         .inspect(|_| {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                (*module_short).to_string(),
-                            ));
+                            self.note_import_use(module_short);
                         })
                 }
                 [surface_type, variant] if self.env.lookup_ref(surface_type).is_none() => self
@@ -1090,11 +1097,7 @@ impl Checker {
                     self.resolve_module_variant(module_short, surface_type, variant)
                         .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
                         .map(|_| {
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                (*module_short).to_string(),
-                            ));
+                            self.note_import_use(module_short);
                             format!(
                                 "{}.{surface_type}::{variant}",
                                 self.canonical_module_import_owner(module_short)
@@ -1118,11 +1121,7 @@ impl Checker {
                     if self.env.lookup_ref(module_short).is_none()
                         && self.module_binding_in_current_file(module_short) =>
                 {
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        (*module_short).to_string(),
-                    ));
+                    self.note_import_use(module_short);
                     let Some(_) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
                             .module_type_exports_for_binding(module_short)
@@ -1180,11 +1179,7 @@ impl Checker {
                 if let Some(colon) = after_dot.find("::") {
                     let type_name = &after_dot[..colon];
                     let variant_name = &after_dot[colon + 2..];
-                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        module_short.to_string(),
-                    ));
+                    self.note_import_use(module_short);
                     let Some(td) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
                             .module_type_exports_for_binding(module_short)
@@ -1264,18 +1259,10 @@ impl Checker {
 
         if let Some(qualified) = qualified_owned.as_deref() {
             // `qualified` is the full owner-qualified source identity
-            // (`owner.TypeName`), and `owner` itself may be a dotted module
-            // path (`src.plain`). Splitting on the FIRST dot mistook the
-            // owner's leading path segment for the lexical import binding —
-            // `import_spans` keys a selective import by the MODULE's short
-            // name (`plain`), not its first path segment (`src`), so that
-            // mis-derived key never matched and `Plain { … }` warned
-            // "unused import" even though it constructed the imported type.
-            // `mark_module_owner_bindings_used` resolves the owner back to
-            // the correct lexical binding via `module_import_bindings`,
-            // mirroring the working annotation-position credit above.
+            // (`owner.TypeName`); constructing it uses the current file's
+            // imports of `owner`.
             if let Some((owner, _)) = qualified.rsplit_once('.') {
-                self.mark_module_owner_bindings_used(owner);
+                self.note_path_use(owner);
             }
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
@@ -1597,7 +1584,7 @@ impl Checker {
                 self.type_defs
                     .keys()
                     .map(|id| self.defs.path(id.declaration()))
-                    .chain(self.type_aliases.keys().map(String::as_str))
+                    .chain(self.type_aliases.keys().map(|id| self.defs.path(*id)))
                     .chain(self.known_types.iter().map(String::as_str)),
             );
             self.report_error_with_suggestions(
@@ -1743,7 +1730,7 @@ impl Checker {
             let ty_raw = match declared {
                 Some(declared_ty) => {
                     let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
-                        self.type_def_at(head.registry_key())
+                        self.head_type_def(*head)
                             .is_some_and(|td| td.kind == TypeDefKind::Actor)
                     } else {
                         false
@@ -1789,9 +1776,36 @@ impl Checker {
                         );
                         return Err(());
                     }
-                    // Unknown actor: keep the bare name so the pre-existing
-                    // unknown-actor diagnostics downstream fire unchanged.
-                    super::types::BareActorResolution::Unknown => Some(name.to_string()),
+                    // A type that is not an actor or supervisor cannot be
+                    // spawned.
+                    super::types::BareActorResolution::Unknown
+                        if self.type_def_at(name.name.as_str()).is_some() =>
+                    {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &target.1,
+                            format!(
+                                "`{name}` is not an actor; `spawn` starts an actor or a supervisor"
+                            ),
+                        );
+                        return Err(());
+                    }
+                    // A name that resolves to nothing is unresolved (#3623).
+                    super::types::BareActorResolution::Unknown => {
+                        let similar = crate::error::find_similar(
+                            name.name.as_str(),
+                            self.type_defs
+                                .keys()
+                                .map(|id| self.defs.path(id.declaration())),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &target.1,
+                            format!("undefined actor `{name}`"),
+                            similar,
+                        );
+                        return Err(());
+                    }
                 }
             }
             // Handle module-qualified actor: spawn module.ActorName(args)
@@ -1847,11 +1861,7 @@ impl Checker {
                             // keeping a single clear diagnostic.
                             return Err(());
                         };
-                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                            self.current_module.clone(),
-                            self.current_module_idx,
-                            module.to_string(),
-                        ));
+                        self.note_import_use(module.name.as_str());
                         // Keep the exact source identity recovered through the
                         // lexical module binding. The surface spelling may be
                         // an alias or share its leaf with another module.
@@ -1968,7 +1978,9 @@ impl Checker {
             .iter()
             .map(|module| format!("{module}.{name}"))
             .collect();
-        self.mark_ambiguous_import_owners_used(&candidate_identities);
+        for candidate in &candidate_identities {
+            self.note_path_use(candidate);
+        }
         let candidates_list = candidate_modules
             .iter()
             .map(|m| format!("`{m}.{name}`"))

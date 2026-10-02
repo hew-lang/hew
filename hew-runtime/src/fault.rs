@@ -473,7 +473,8 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
         return 1;
     };
     // Unlike eprintln!, an output error must not panic across this C boundary.
-    i32::from(write_unreported(fault, &mut io::stderr().lock()).is_err())
+    let mut report = crate::output::Report::new(crate::output::Stream::Err);
+    i32::from(write_unreported(fault, &mut report).is_err())
 }
 
 /// Report the process entry's terminal fault, including its test record.
@@ -529,7 +530,10 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
     if crate::actor::hew_actor_self().is_null() {
         note_test_fault(&fault);
     }
-    let _ = write_report(&fault, &mut io::stderr().lock());
+    let _ = write_report(
+        &fault,
+        &mut crate::output::Report::new(crate::output::Stream::Err),
+    );
     drop(fault);
     // SAFETY: the bridge accepts any context; the typed line is already out.
     unsafe { crate::trap_code::fault_trap_bridge(code, true) };
@@ -544,7 +548,10 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 pub(crate) fn report_trap_code(code: i32) {
     let fault = HewFault::new(code, None);
     note_test_fault(&fault);
-    let _ = write_report(&fault, &mut io::stderr().lock());
+    let _ = write_report(
+        &fault,
+        &mut crate::output::Report::new(crate::output::Stream::Err),
+    );
 }
 
 fn fault_reason(code: i32) -> &'static str {

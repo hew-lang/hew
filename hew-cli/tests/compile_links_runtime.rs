@@ -154,7 +154,7 @@ fn compiled_binary_carries_the_host_executable_extension() {
     );
 }
 
-/// A wire-type `Type.decode(bytes)` on a valid encoding round-trips: the
+/// A `cbor.decode<Type>(bytes)` on a valid encoding round-trips: the
 /// fields reconstruct correctly and the program runs to a clean exit. Guards
 /// the non-null (success) arm of the decode call-site lowering against the
 /// null-branch fix regressing the happy path.
@@ -162,7 +162,7 @@ fn compiled_binary_carries_the_host_executable_extension() {
 fn wire_decode_valid_bytes_round_trips() {
     require_codegen();
     let (_emit_dir, binary_path) = compile_to_native(
-        "#[wire]\ntype Point {\n    x: i64 @1;\n    y: i64 @2;\n}\n\nfn main() -> i64 {\n    let p = Point { x: 7, y: 35 };\n    let b = p.encode();\n    let p2 = Point.decode(b);\n    return p2.x + p2.y;\n}\n",
+        "import std.encoding.cbor;\n\n#[wire]\ntype Point {\n    x: i64 @1;\n    y: i64 @2;\n}\n\nfn main() -> i64 {\n    let p = Point { x: 7, y: 35 };\n    match cbor.decode<Point>(cbor.encode(p)) {\n        .Ok(p2) => p2.x + p2.y,\n        .Err(_) => 1,\n    }\n}\n",
     );
     let run_output = Command::new(&binary_path)
         .output()
@@ -177,55 +177,28 @@ fn wire_decode_valid_bytes_round_trips() {
     );
 }
 
-/// A wire-type `Type.decode(bytes)` on MALFORMED bytes (an empty buffer that is
-/// not a valid encoding) must FAIL CLOSED through the structured fault reporter:
-/// an attributed `WireDecodeFailed (210)` line and exit 1 — never a SIGSEGV.
-/// The deserialize thunk frees its partial reconstruction and returns null;
-/// before the null-branch fix the call site loaded that null pointer and
-/// segfaulted (exit 139 / signal 11). The segfault negative is the point of
-/// this test, so it is asserted directly rather than inferred from the code.
-#[cfg(unix)]
+/// A `cbor.decode<Type>(bytes)` on MALFORMED bytes (an empty buffer that is
+/// not a valid encoding) returns `Err(wire.DecodeError)` the program can
+/// match on: no trap, no fault line, and never a SIGSEGV from reading a
+/// partial reconstruction.
 #[test]
-fn wire_decode_malformed_bytes_fails_closed_not_segfault() {
-    use std::os::unix::process::ExitStatusExt;
-
+fn wire_decode_malformed_bytes_is_a_recoverable_err() {
     require_codegen();
     let (_emit_dir, binary_path) = compile_to_native(
-        "#[wire]\ntype Point {\n    x: i64 @1;\n    y: i64 @2;\n}\n\nfn main() -> i64 {\n    let b: bytes = bytes.new();\n    let p = Point.decode(b);\n    return p.x + p.y;\n}\n",
+        "import std.encoding.cbor;\n\n#[wire]\ntype Point {\n    x: i64 @1;\n    y: i64 @2;\n}\n\nfn main() -> i64 {\n    let b: bytes = bytes.new();\n    match cbor.decode<Point>(b) {\n        .Ok(p) => p.x + p.y,\n        .Err(_) => 42,\n    }\n}\n",
     );
     let run_output = Command::new(&binary_path)
         .output()
         .unwrap_or_else(|e| panic!("failed to run {}: {e}", binary_path.display()));
-
-    // The program must not succeed on malformed input.
-    assert!(
-        !run_output.status.success(),
-        "decoding malformed bytes must not succeed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&run_output.stdout),
-        String::from_utf8_lossy(&run_output.stderr),
-    );
-    // The negative this test exists for: never the segfault the null-branch fix
-    // closed.
-    let signal = run_output.status.signal();
-    assert_ne!(
-        signal,
-        Some(libc::SIGSEGV),
-        "malformed wire decode segfaulted (SIGSEGV) instead of failing closed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&run_output.stdout),
-        String::from_utf8_lossy(&run_output.stderr),
-    );
-    // A reported fault exits 1 under the one-exit rule; dying on any signal
-    // would mean the reporter never ran.
     assert_eq!(
         run_output.status.code(),
-        Some(1),
-        "malformed wire decode must exit 1 through the fault reporter, got signal {signal:?}\nstdout: {}\nstderr: {}",
+        Some(42),
+        "malformed wire decode must surface as Err and take the recovery arm\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr),
     );
-    let stderr = String::from_utf8_lossy(&run_output.stderr);
     assert!(
-        stderr.contains("WireDecodeFailed (210)"),
-        "malformed wire decode must attribute the failure to WireDecodeFailed (210)\nstderr: {stderr}",
+        !String::from_utf8_lossy(&run_output.stderr).contains("WireDecodeFailed"),
+        "a recoverable decode failure must not raise a fault"
     );
 }

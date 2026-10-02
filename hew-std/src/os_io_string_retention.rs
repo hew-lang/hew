@@ -57,13 +57,12 @@ fn assert_result_is_transferred(symbol: &str, mut call: impl FnMut() -> *mut c_c
 }
 
 #[test]
-fn dns_lookup_host_and_forwarded_timed_result_are_transferred() {
-    use crate::dns::{hew_dns_lookup_host, hew_dns_lookup_host_timed};
+fn dns_lookup_host_result_is_transferred() {
+    use crate::dns::hew_dns_lookup_host;
     use crate::test_string::ManagedString;
     use hew_cabi::string::{string_as_str, string_release};
 
-    // Numeric loopback exercises the pool without an external DNS dependency.
-    let runtime = crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard::new();
+    // Numeric loopback needs no external DNS.
     let host = ManagedString::new("127.0.0.1");
     // SAFETY: host is borrowed by every call; all returned strings are independent owners.
     let results = unsafe {
@@ -73,18 +72,11 @@ fn dns_lookup_host_and_forwarded_timed_result_are_transferred() {
         assert_ne!(first, second);
         assert_eq!(string_as_str(first), "127.0.0.1");
         string_release(first);
-        let third = hew_dns_lookup_host(host.as_ptr());
-        let timed = hew_dns_lookup_host_timed(host.as_ptr(), 1_000);
-        let timed_later = hew_dns_lookup_host_timed(host.as_ptr(), 1_000);
-        assert!(!timed.is_null());
-        assert_ne!(timed, timed_later);
-        string_release(timed_later);
-        [second, third, timed]
+        [second, hew_dns_lookup_host(host.as_ptr())]
     };
     drop(host);
-    drop(runtime);
     for result in results {
-        // SAFETY: each result owns managed storage independently of the input/runtime.
+        // SAFETY: each result owns managed storage independently of the input.
         unsafe {
             assert_eq!(string_as_str(result), "127.0.0.1");
             string_release(result);

@@ -45,6 +45,8 @@ mod q004_self_item_projection;
 mod record_marker_derive;
 #[path = "registry_core/resource_close_consume.rs"]
 mod resource_close_consume;
+#[path = "registry_core/scope_resolution.rs"]
+mod scope_resolution;
 #[path = "registry_core/supervisor_check.rs"]
 mod supervisor_check;
 #[path = "registry_core/user_generic_type_decl_checker_test.rs"]

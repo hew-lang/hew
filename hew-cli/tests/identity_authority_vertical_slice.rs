@@ -337,3 +337,22 @@ fn identity_w4b_pattern_name_must_match_scrutinee_type() {
     assert!(ok, "Point {{ x, .. }} must match a Point");
     assert_eq!(stdout, "1\n");
 }
+
+/// An identity `From` impl in an imported module is refused like one at the
+/// root: the impl's methods are found by their declarations, never by the
+/// target type's spelling.
+#[test]
+fn identity_from_impl_in_imported_module_is_refused() {
+    let (ok, combined) = check_reject_fixture("identity_from_imported/main");
+    assert!(
+        !ok && combined.contains("E_FROM_INVALID"),
+        "target: refused E_FROM_INVALID in the imported module; got:\n{combined}"
+    );
+    // Negative control: a converting impl in the same position is accepted.
+    let (ok, stdout) = run_accept_fixture("identity_from_imported_control/main");
+    assert!(
+        ok,
+        "a converting `From` impl in an imported module must run"
+    );
+    assert_eq!(stdout, "Broken 7\n");
+}

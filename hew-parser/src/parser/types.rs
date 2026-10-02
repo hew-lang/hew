@@ -519,6 +519,7 @@ impl Parser<'_> {
         &mut self,
         context: TypeParseContext,
     ) -> Option<Option<Spanned<TypeExpr>>> {
+        let arrow_start = self.peek_span().start;
         if self.eat(&Token::Arrow) {
             let success = self.parse_type_with_context(context)?;
             if matches!(self.peek(), Some(Token::Identifier("fails"))) {
@@ -534,6 +535,14 @@ impl Parser<'_> {
                 self.advance();
                 let error = self.parse_type_with_context(context)?;
                 let end = error.1.end;
+                if matches!(&success.0, TypeExpr::Tuple(elems) if elems.is_empty()) {
+                    self.error_at_with_kind_and_hint(
+                        "E_FAILS_UNIT_ARROW: a function that only fails omits `-> ()`".to_string(),
+                        arrow_start..end,
+                        "write `fails E`; `hew fmt --migrate` rewrites it",
+                        ParseDiagnosticKind::UnitFailsArrow,
+                    );
+                }
                 Some(Some((
                     TypeExpr::Fallible {
                         success: Box::new(success),
@@ -544,6 +553,22 @@ impl Parser<'_> {
             } else {
                 Some(Some(success))
             }
+        } else if matches!(self.peek(), Some(Token::Identifier("fails")))
+            && !matches!(context, TypeParseContext::ExternSignature)
+        {
+            // `fn f() fails E` is `fn f() -> () fails E`: a function that
+            // only fails needs no success type.
+            let start = self.peek_span().start;
+            self.advance();
+            let error = self.parse_type_with_context(context)?;
+            let end = error.1.end;
+            Some(Some((
+                TypeExpr::Fallible {
+                    success: Box::new((TypeExpr::Tuple(Vec::new()), start..start)),
+                    error: Box::new(error),
+                },
+                start..end,
+            )))
         } else {
             Some(None)
         }
@@ -770,6 +795,7 @@ impl Parser<'_> {
                         ),
                         is_mutable,
                         is_consume: false,
+                        is_receiver: true,
                     });
                     if !self.eat(&Token::Comma) {
                         break;
@@ -778,9 +804,8 @@ impl Parser<'_> {
                 }
                 self.errors.push(ParseError {
                     message: "`self` is not a valid parameter name in Hew; \
-                              use bare `self` as the first parameter of a trait/impl method, \
-                              or use a named receiver with explicit type: \
-                              `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                              write bare `self`, `var self` or `consume self` as the \
+                              first parameter of a trait or impl method"
                         .to_string(),
                     span,
                     hint: None,
@@ -812,6 +837,7 @@ impl Parser<'_> {
                     ty,
                     is_mutable,
                     is_consume,
+                    is_receiver: false,
                 });
             }
 

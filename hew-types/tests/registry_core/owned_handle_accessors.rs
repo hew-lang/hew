@@ -6,7 +6,7 @@ use hew_types::error::TypeErrorKind;
 #[test]
 fn handle_wrapper_accessor_returning_raw_field_is_rejected() {
     let output = typecheck(
-        "import std.text.regex;\n\ntype PatternWrapper {\n    pattern: regex.Pattern;\n}\n\nimpl PatternWrapper {\n    fn pattern(wrapper: PatternWrapper) -> regex.Pattern {\n        wrapper.pattern\n    }\n}\n",
+        "import std.text.regex;\n\ntype PatternWrapper {\n    pattern: regex.Pattern;\n}\n\nimpl PatternWrapper {\n    fn pattern(self) -> regex.Pattern {\n        self.pattern\n    }\n}\n",
     );
 
     assert!(
@@ -39,8 +39,8 @@ type PatternWrapper {
 }
 
 impl PatternWrapper {
-    fn matches(wrapper: PatternWrapper, text: string) -> bool {
-        wrapper.pattern.is_match(text)
+    fn matches(self, text: string) -> bool {
+        self.pattern.is_match(text)
     }
 }
 

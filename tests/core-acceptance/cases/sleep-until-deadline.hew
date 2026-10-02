@@ -33,15 +33,9 @@ fn main() {
     let elapsed = start.elapsed().millis();
     println(elapsed >= 300);
     println(elapsed < 500);
-    {
-        let __hew_migrated_actor_1175 = a;
-        stop(__hew_migrated_actor_1175);
-        stopped(__hew_migrated_actor_1175);
-    };
-    {
-        let __hew_migrated_actor_1189 = b;
-        stop(__hew_migrated_actor_1189);
-        stopped(__hew_migrated_actor_1189);
-    };
+    stop(a);
+    stopped(a);
+    stop(b);
+    stopped(b);
     println("closed");
 }

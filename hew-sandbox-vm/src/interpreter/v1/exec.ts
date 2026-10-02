@@ -221,7 +221,9 @@ class Halt extends Error {
 }
 
 /// Page stdin travels as a replay input and is handed out one line per read at
-/// run time, so a loop sees successive lines.
+/// run time, so a loop sees successive lines. A line keeps its terminator and
+/// the unterminated tail is returned as it is, matching native
+/// `hew_stdin_read_line`; `null` is end of input.
 class StdinReader {
   private readonly bytes: Uint8Array;
   private offset = 0;
@@ -241,25 +243,14 @@ class StdinReader {
     );
   }
 
-  readLine(): string {
+  readLine(): Uint8Array | null {
     if (this.offset >= this.bytes.length) {
-      return "";
+      return null;
     }
     const start = this.offset;
-    while (
-      this.offset < this.bytes.length &&
-      this.bytes[this.offset] !== 0x0a
-    ) {
-      this.offset += 1;
-    }
-    let end = this.offset;
-    if (this.offset < this.bytes.length) {
-      this.offset += 1;
-    }
-    if (end > start && this.bytes[end - 1] === 0x0d) {
-      end -= 1;
-    }
-    return new TextDecoder().decode(this.bytes.slice(start, end));
+    const newline = this.bytes.indexOf(0x0a, start);
+    this.offset = newline < 0 ? this.bytes.length : newline + 1;
+    return this.bytes.slice(start, this.offset);
   }
 }
 
@@ -342,7 +333,7 @@ class ExecutorV1 {
   constructor(
     private readonly pkg: PackageV1,
     private readonly trace: TraceBuilder,
-    stdin: StdinReader,
+    private readonly stdin: StdinReader,
     policy: "round_robin" | "chaos",
   ) {
     this.scheduler = new FrameScheduler(trace, policy);
@@ -355,11 +346,7 @@ class ExecutorV1 {
       releaseValue: (value) =>
         this.closeValue(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
-      readLine: () => {
-        const line = stdin.readLine();
-        this.trace.recordReplayInput({ kind: "stdin", data: line }, false);
-        return line;
-      },
+      writeStderr: (text) => this.trace.writeStderr(text, null),
       prng: new Mt19937(),
       regexPatterns: pkg.regex_patterns,
       enumValue: (shape, role, payload) => ({
@@ -1452,10 +1439,15 @@ class ExecutorV1 {
     ) => VmValue,
   ): void {
     const args = term.args.map((operand) => this.boundary(act, operand));
+    // A call that hands back its updated receiver names its value's shape as
+    // the pair's second member.
+    const shapeId =
+      (term.op === "runtime.call" ? term.result_member_shapes?.[1] : null) ??
+      term.result_shape;
     const shape =
-      term.result_shape === null
+      shapeId === null || shapeId === undefined
         ? null
-        : (this.pkg.variants[term.result_shape] ?? null);
+        : (this.pkg.variants[shapeId] ?? null);
     let value: VmValue;
     try {
       value = shim(this.host, args, shape);
@@ -1968,6 +1960,17 @@ class ExecutorV1 {
         const cancel = act.context.cancel!;
         act.context.cancel = (fault) =>
           cancelRequest((closeFault) => cancel(closeFault ?? fault));
+        return;
+      }
+      case "NativeIo": {
+        // Admission passed only `StdinReadLine`. The record is the raw line,
+        // so the records concatenate to the stdin the program consumed.
+        const line = this.stdin.readLine() ?? new Uint8Array();
+        this.trace.recordReplayInput(
+          { kind: "stdin", data: new TextDecoder().decode(line) },
+          false,
+        );
+        this.park(act, term)(bytesValue([...line]));
         return;
       }
       case "Sleep": {
@@ -2894,11 +2897,9 @@ class ExecutorV1 {
     let closing = false;
     const owner = this.current.context.actor;
     let receiver: ActorInstance | null = null;
-    let cancelTimer = () => {};
     const finish: ActorMessage["complete"] = (value, error, drained) => {
       const alreadySettled = settled;
       settled = true;
-      cancelTimer();
       if (alreadySettled || complete(value, error) === false) {
         // The finishing receiver still owns a reply that its caller no
         // longer accepts. Its next turn must wait for this release.
@@ -2927,7 +2928,6 @@ class ExecutorV1 {
       closeWaiters.push(done);
       if (closing) return;
       closing = true;
-      cancelTimer();
       this.closeValueAsync(
         { kind: "record", typeId: "", fields: payload },
         null,
@@ -2947,11 +2947,6 @@ class ExecutorV1 {
         complete(null, reason, fault);
       });
     };
-    if (protocol.deadline_ns != null)
-      cancelTimer = this.scheduler.after(BigInt(protocol.deadline_ns), () => {
-        if (admitted) finish(null, "Timeout");
-        else reject("Timeout");
-      });
     const attempt = () => {
       if (settled || closing) return;
       const role = "id" in target ? this.roles.get(target.id) : undefined;
@@ -3024,7 +3019,6 @@ class ExecutorV1 {
     return (done) => {
       const wasSettled = settled;
       settled = true;
-      cancelTimer();
       if (admitted || (wasSettled && !closing)) done(null);
       else closeRequest(done);
     };
@@ -3589,6 +3583,8 @@ class ExecutorV1 {
       ? fault.message
       : (fault.message ?? trapMessage(fault.trap));
     const [code, kind] = faultInfo(fault);
+    // Native writes the failure line to stderr before it exits; so does this.
+    this.trace.writeStderr(faultReport(fault), null);
     // A failing run reports no exit code: native exits 1 for every fault and
     // names the kind in its message, so the kind is what travels, in
     // `runtime_failures`. The page turns it into an exit code of its own.
@@ -3733,8 +3729,8 @@ function actorErrorRole(reason: string): RuntimeVariantRole {
       return "ActorErrorTrapped";
     case "Dead":
       return "ActorErrorDead";
-    case "Timeout":
-      return "ActorErrorTimeout";
+    case "TimedOut":
+      return "ActorErrorTimedOut";
     case "NodeNotRunning":
       return "ActorErrorNodeNotRunning";
     case "RoutingFailed":
@@ -3756,8 +3752,6 @@ function sendErrorRole(reason: string): RuntimeVariantRole {
       return "SendErrorFull";
     case "Closed":
       return "SendErrorClosed";
-    case "NodeRoutingNotWired":
-      return "SendErrorNodeRoutingNotWired";
     case "Partition":
       return "SendErrorPartition";
     case "StaleRef":

@@ -22,6 +22,8 @@
 //! }
 //! ```
 
+import std.encoding.wire;
+
 /// Structured error type for TOML parsing failures.
 ///
 /// Use `Result<Value, ParseError>` with `parse` for structured error
@@ -34,8 +36,8 @@ pub enum ParseError {
 }
 
 impl Display for ParseError {
-    fn fmt(err: ParseError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             ParseError.Invalid(message) => message,
         }
     }
@@ -132,52 +134,52 @@ trait ValueMethods {
 }
 
 impl ValueMethods for Value {
-    fn type_of(val: Value) -> i32 { // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    fn type_of(self) -> i32 { // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
         unsafe {
-            hew_toml_type(val)
+            hew_toml_type(self)
         }
     }
-    fn get_string(val: Value) -> string {
+    fn get_string(self) -> string {
         unsafe {
-            hew_toml_get_string(val)
+            hew_toml_get_string(self)
         }
     }
-    fn get_int(val: Value) -> i64 {
+    fn get_int(self) -> i64 {
         unsafe {
-            hew_toml_get_int(val)
+            hew_toml_get_int(self)
         }
     }
-    fn get_float(val: Value) -> f64 {
+    fn get_float(self) -> f64 {
         unsafe {
-            hew_toml_get_float(val)
+            hew_toml_get_float(self)
         }
     }
-    fn get_bool(val: Value) -> i32 { // INTERNAL-ABI: C ABI returns bool as i32
+    fn get_bool(self) -> i32 { // INTERNAL-ABI: C ABI returns bool as i32
         unsafe {
-            hew_toml_get_bool(val)
+            hew_toml_get_bool(self)
         }
     }
-    fn get_field(val: Value, key: string) -> Value {
+    fn get_field(self, key: string) -> Value {
         unsafe {
-            hew_toml_get_field(val, key)
+            hew_toml_get_field(self, key)
         }
     }
-    fn array_len(val: Value) -> i64 {
+    fn array_len(self) -> i64 {
         unsafe {
-            hew_toml_array_len(val)
+            hew_toml_array_len(self)
         }
     }
-    fn array_get(val: Value, index: i64) -> Value {
+    fn array_get(self, index: i64) -> Value {
         if index < 0 || index > 2147483647 {
             panic(f"toml.Value.array_get: index {index} is outside the supported range");
         }
         unsafe {
-            hew_toml_array_get(val, index as i32)
+            hew_toml_array_get(self, index as i32)
         }
     } // INTERNAL-ABI: C ABI index is i32
-    fn stringify(val: Value) -> string {
+    fn stringify(self) -> string {
         let text = unsafe {
-            hew_toml_stringify(val)
+            hew_toml_stringify(self)
         };
         let reason = unsafe {
             hew_toml_last_serialize_error()
@@ -390,3 +392,13 @@ extern "C" {
     fn hew_toml_from_string(val: string) -> Value;
     fn hew_toml_from_bool(val: i32) -> Value;
 }
+
+/// Encode any data value as a TOML document. Records encode as objects keyed by
+/// field name in declaration order.
+#[intrinsic("codec.toml.encode")]
+pub fn encode<T: Serializable>(value: T) -> string {}
+
+/// Decode a TOML document as `T`. A failure names the path of the value that did
+/// not fit, for example `Type: .tags[1]: expected string, found integer`.
+#[intrinsic("codec.toml.decode")]
+pub fn decode<T: Serializable>(text: string) -> Result<T, wire.DecodeError> {}

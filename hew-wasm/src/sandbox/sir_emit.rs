@@ -108,7 +108,7 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::ActorErrorFailed => "ActorErrorFailed",
         Role::ActorErrorTrapped => "ActorErrorTrapped",
         Role::ActorErrorDead => "ActorErrorDead",
-        Role::ActorErrorTimeout => "ActorErrorTimeout",
+        Role::ActorErrorTimedOut => "ActorErrorTimedOut",
         Role::ActorErrorNodeNotRunning => "ActorErrorNodeNotRunning",
         Role::ActorErrorRoutingFailed => "ActorErrorRoutingFailed",
         Role::ActorErrorEncodeFailed => "ActorErrorEncodeFailed",
@@ -116,7 +116,6 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::ActorErrorPartition => "ActorErrorPartition",
         Role::SendErrorFull => "SendErrorFull",
         Role::SendErrorClosed => "SendErrorClosed",
-        Role::SendErrorNodeRoutingNotWired => "SendErrorNodeRoutingNotWired",
         Role::SendErrorPartition => "SendErrorPartition",
         Role::SendErrorStaleRef => "SendErrorStaleRef",
         Role::SendErrorLocalShutdown => "SendErrorLocalShutdown",
@@ -127,6 +126,7 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::SendErrorDead => "SendErrorDead",
         Role::DeliveryAccepted => "DeliveryAccepted",
         Role::DeliveryDiscarded => "DeliveryDiscarded",
+        Role::LinkErrorNoContext => "LinkErrorNoContext",
     }
 }
 
@@ -711,7 +711,7 @@ impl<'m> Walker<'m> {
                             .map(|slot| {
                                 Ok(VtableSlot {
                                     slot: slot.slot,
-                                    method: slot.method_name.clone(),
+                                    method: self.module.defs.name(slot.method).to_string(),
                                     callee: self.function_id(slot.callee)?,
                                     receiver: passing_name(slot.receiver).to_string(),
                                 })
@@ -1644,6 +1644,31 @@ impl<'m> Walker<'m> {
                 "normal": encode_edge(normal),
                 "unwind": encode_edge(unwind),
             }),
+            // The VM has no pool: an offloaded extern runs as the call it wraps.
+            SemTerminator::Suspend {
+                kind: SuspendKind::Offload { function },
+                inputs,
+                result,
+                resumes,
+                ..
+            } => {
+                let signature = usize::try_from(function.0)
+                    .ok()
+                    .and_then(|index| self.module.offloads.get(index))
+                    .ok_or_else(|| EmitError::new("offload names no published extern"))?;
+                let normal = resumes
+                    .first()
+                    .ok_or_else(|| EmitError::new("offload has no resume edge"))?;
+                serde_json::json!({
+                    "op": "extern.call",
+                    "extern": self.extern_id(&signature.symbol),
+                    "args": boundaries(inputs),
+                    "result": call_result(result),
+                    "result_shape": self.result_shape(result),
+                    "normal": encode_edge(normal),
+                    "unwind": serde_json::Value::Null,
+                })
+            }
             SemTerminator::Suspend {
                 kind,
                 inputs,
@@ -1873,7 +1898,6 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
             "actor": protocol.actor.0,
             "message": protocol.message,
             "policy": send_policy_name(protocol.policy),
-            "deadline_ns": protocol.deadline_ns,
             "sealed": protocol.sealed,
         })
     }
@@ -2056,11 +2080,14 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
             "NativeIo",
             serde_json::json!({ "operation": format!("{operation:?}") }),
         ),
+        // Emitted as its extern call; the shape only names the kind.
+        SuspendKind::Offload { function } => {
+            ("Offload", serde_json::json!({ "function": function.0 }))
+        }
         SuspendKind::Ask {
             actor,
             message,
             policy,
-            deadline_ns,
             sealed,
         } => (
             "Ask",
@@ -2068,7 +2095,6 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
                 "actor": actor.0,
                 "message": message,
                 "policy": send_policy_name(*policy),
-                "deadline_ns": deadline_ns,
                 "sealed": sealed,
             }),
         ),

@@ -28,11 +28,8 @@ fn main() -> i64 {
         .Ok(_v) => println("handler returned"),
         .Err(_e) => println("handler crashed"),
     }
-    {
-        let __hew_migrated_actor_818 = p;
-        stop(__hew_migrated_actor_818);
-        stopped(__hew_migrated_actor_818);
-    };
+    stop(p);
+    stopped(p);
     match data.recv() {
         .Some(v) => println(f"first={v}"),
         .None => println("clean-none-1"),

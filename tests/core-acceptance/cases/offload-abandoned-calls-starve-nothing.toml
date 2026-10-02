@@ -1,0 +1,10 @@
+[[case]]
+id = "offload-abandoned-calls-starve-nothing"
+intent = "Sixty-four #[offload] calls abandoned while blocked in the OS neither stall output and exit nor keep a later call from a pool thread."
+source = "cases/offload-abandoned-calls-starve-nothing.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "gave up 64\nslept 0\nfrom actor\nmain after actor\n"
+exit = 3

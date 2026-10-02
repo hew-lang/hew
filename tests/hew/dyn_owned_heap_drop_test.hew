@@ -35,15 +35,15 @@
 import std.string;
 
 trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 trait Counted {
-    fn size(val: Self) -> i64;
+    fn size(self) -> i64;
 }
 
 trait Describe {
-    fn describe(val: Self) -> string;
+    fn describe(self) -> string;
 }
 
 // Record with an owned-heap `string` field (D2 Mode A).
@@ -52,8 +52,8 @@ type Person {
 }
 
 impl Person {
-    fn name(val: Person) -> string {
-        val.tag
+    fn name(self) -> string {
+        self.tag
     }
 }
 
@@ -67,7 +67,7 @@ type Bag {
 }
 
 impl Bag {
-    fn size(val: Bag) -> i64 {
+    fn size(self) -> i64 {
         0
     }
 }
@@ -80,7 +80,7 @@ enum Status {
 }
 
 impl Status {
-    fn describe(val: Status) -> string {
+    fn describe(self) -> string {
         "status"
     }
 }

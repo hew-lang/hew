@@ -218,7 +218,10 @@ pub(crate) fn link_executable_with_hew_lib(
     // ── lld selection (host-driven) ────────────────────────────────────
     // Use lld when available — ~20x faster than GNU ld for large static libs.
     // Which lld variant exists depends on the host toolchain installation.
-    #[cfg(not(target_os = "windows"))]
+    // macOS links with Apple's system linker: Homebrew's ld64.lld cannot read
+    // the TAPI stubs in current Xcode SDKs (`unknown architecture arm64e.x1`),
+    // and end users have the Command Line Tools linker, not Homebrew lld.
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     if has_tool("ld.lld") {
         cmd.arg("-fuse-ld=lld");
     }

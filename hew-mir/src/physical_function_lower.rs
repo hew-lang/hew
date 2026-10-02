@@ -8,7 +8,7 @@ use super::{
     PhysicalCheckedFailure, PhysicalConst, PhysicalEdge, PhysicalError, PhysicalMapOp, PhysicalOp,
     PhysicalRuntimeAction, PhysicalRuntimeCarrier, PhysicalSelectSource, PhysicalSetOp,
     PhysicalStorage, PhysicalTerminator, PhysicalVariantArm, PhysicalVariantId, PhysicalVectorOp,
-    PhysicalVtableId, PhysicalWireTextResult, ResolvedTy, ReturnTransfer, RuntimeCallFamily,
+    PhysicalVtableId, PhysicalWireDecodeResult, ResolvedTy, ReturnTransfer, RuntimeCallFamily,
     RuntimePhysicalForm, SemOp, SemOpKind, SemTerminator, SetValueOp, SnapshotDecision, StorageId,
     StorageOrigin, TypeInstanceKey, UnaryOp, ValueId, VecValueOp,
 };
@@ -721,9 +721,9 @@ impl FunctionLowerer<'_> {
                 normal: self.lower_edge(normal)?,
             }),
             SemTerminator::WireCodec {
-                direction,
+                codec,
                 plan,
-                text_result,
+                decode_result,
                 args,
                 result,
                 normal,
@@ -751,19 +751,21 @@ impl FunctionLowerer<'_> {
                             .map(|recipe| (ty, recipe))
                     })
                     .collect::<Result<_, _>>()?;
-                let text_result = text_result
+                let decode_result = decode_result
+                    .as_ref()
                     .map(|cases| {
                         self.variant_id(&result.ty)
-                            .map(|glue| PhysicalWireTextResult {
+                            .map(|glue| PhysicalWireDecodeResult {
                                 glue,
                                 ok: cases.ok,
                                 error: cases.error,
+                                error_ty: cases.error_ty.clone(),
                             })
                     })
                     .transpose()?;
                 Ok(PhysicalTerminator::WireCodec {
-                    text_result,
-                    direction: *direction,
+                    decode_result,
+                    codec: *codec,
                     plan: std::sync::Arc::clone(plan),
                     recipes,
                     input: *input,
@@ -895,6 +897,24 @@ impl FunctionLowerer<'_> {
                 })
             }
             SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::Offload { function },
+                inputs,
+                result,
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::Offload {
+                function: *function,
+                args: self.argument_transfers(inputs)?,
+                result: match result {
+                    CallResult::Unit | CallResult::Never => None,
+                    CallResult::Value(value) => Some(self.value(value.id)?),
+                },
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::NativeIo { operation },
                 inputs,
                 result: CallResult::Value(result),
@@ -972,7 +992,6 @@ impl FunctionLowerer<'_> {
                         actor,
                         message,
                         policy,
-                        deadline_ns,
                         sealed,
                     },
                 inputs,
@@ -984,7 +1003,6 @@ impl FunctionLowerer<'_> {
                 actor: *actor,
                 message: *message,
                 policy: *policy,
-                deadline_ns: *deadline_ns,
                 sealed: *sealed,
                 args: self.argument_transfers(inputs)?,
                 result: self.value(result.id)?,

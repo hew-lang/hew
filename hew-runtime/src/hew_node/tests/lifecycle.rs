@@ -44,16 +44,6 @@ fn accept_thread_stop_reports_panic_and_consumes_handle() {
 }
 
 #[test]
-fn monitor_and_link_setup_statuses_match_hew_error_discriminants() {
-    assert_eq!(MONITOR_ERR_NODE_NOT_RUNNING, 1);
-    assert_eq!(MONITOR_ERR_LOCAL_SHUTDOWN, 6);
-    assert_eq!(MONITOR_ERR_RESOURCE_EXHAUSTED, 11);
-    assert_eq!(LINK_ERR_DEAD, 1);
-    assert_eq!(LINK_ERR_PARTITION, 2);
-    assert_eq!(LINK_ERR_NO_CURRENT_ACTOR, 3);
-}
-
-#[test]
 fn quarantine_insert_blocks_then_evict_clears() {
     let _guard = crate::runtime_test_guard();
     // Insert quarantines the peer at the dead incarnation; a same-or-lower
@@ -807,7 +797,6 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
             crate::lifetime::live_actors::get_actor_ptr_by_id((*actor).id),
             Some(actor)
         );
-        crate::actor::hew_actor_close(actor);
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(
             hew_node_send_location(node, &raw const target, test_dispatch(), 1, ptr::null(), 0,),

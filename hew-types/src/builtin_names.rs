@@ -289,14 +289,12 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
-            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue,
         )
@@ -464,7 +462,7 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
                         } else {
                             vec![type_parameter(info.kind)]
                         },
-                        bounds: HashMap::new(),
+                        bounds: crate::check::ParamBounds::default(),
                         fields: HashMap::new(),
                         variants: HashMap::new(),
                         methods: builtin_method_sigs(info.kind).clone(),

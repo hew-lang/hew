@@ -1,0 +1,11 @@
+[[case]]
+id = "binder-from-call"
+intent = "`F.from(e)` under `F: From<E>` selects the target's impl at `E` among its several `From` impls."
+source = "cases/binder-from-call.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "104\n904\n"
+exit = 0

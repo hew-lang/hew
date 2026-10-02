@@ -1,7 +1,7 @@
 fn caesar_checksum(s: string, lower: string, table: Vec<i64>) -> i64 {
     let n = s.len();
     var checksum = 0;
-    for i in 0 .. n {
+    for i in 0..n {
         var found = 0 - 1;
         var p = 0;
         while p < 26 {
@@ -26,12 +26,12 @@ fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
     let lower = "abcdefghijklmnopqrstuvwxyz";
     var table: Vec<i64> = Vec.new();
-    for k in 0 .. 26 {
+    for k in 0..26 {
         let shifted = (k + 13) % 26;
         table.push(shifted + 97);
     }
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + caesar_checksum(s, lower, table);
     }
     println("bench_caesar_cipher");

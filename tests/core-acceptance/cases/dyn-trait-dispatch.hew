@@ -1,5 +1,5 @@
 trait Named {
-    fn name(val: Self) -> string;
+    fn name(self) -> string;
 }
 
 type Person {
@@ -7,8 +7,8 @@ type Person {
 }
 
 impl Named for Person {
-    fn name(val: Person) -> string {
-        f"person {val.label}"
+    fn name(self) -> string {
+        f"person {self.label}"
     }
 }
 
@@ -17,8 +17,8 @@ type Machine {
 }
 
 impl Named for Machine {
-    fn name(val: Machine) -> string {
-        f"machine {val.id}"
+    fn name(self) -> string {
+        f"machine {self.id}"
     }
 }
 

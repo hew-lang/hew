@@ -103,21 +103,15 @@ fn main() {
         .Ok(value) => println(value == "RETRY\0ME"),
         .Err(_) => panic("retry failed after capacity became available"),
     }
-    {
-        let __hew_migrated_actor_4110 = gate;
-        stop(__hew_migrated_actor_4110);
-        stopped(__hew_migrated_actor_4110);
-    };
+    stop(gate);
+    stopped(gate);
     // The original destination is terminal. The detached request still owns
     // its payload, and redirection selects Spare.echo's own handler identity.
     match orphaned.to(spare) {
         .Ok(value) => println(value == "TERMINAL\0ORIGIN"),
         .Err(_) => panic("redirection after origin termination failed"),
     }
-    {
-        let __hew_migrated_actor_4453 = spare;
-        stop(__hew_migrated_actor_4453);
-        stopped(__hew_migrated_actor_4453);
-    };
+    stop(spare);
+    stopped(spare);
     println("closed");
 }

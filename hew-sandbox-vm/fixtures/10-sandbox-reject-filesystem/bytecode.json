@@ -17,7 +17,12 @@
     "exit": "unit",
     "function": 0
   },
-  "externs": [],
+  "externs": [
+    {
+      "id": 0,
+      "symbol": "hew_file_read_bytes"
+    }
+  ],
   "functions": [
     {
       "blocks": [
@@ -837,44 +842,45 @@
       "blocks": [
         {
           "id": 0,
-          "ops": [],
+          "ops": [
+            {
+              "dst": 1,
+              "op": "copy_value",
+              "own": "owned",
+              "source": 0,
+              "span": null
+            },
+            {
+              "dst": 2,
+              "op": "move",
+              "own": "owned",
+              "source": 1,
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
-            "cancel": {
-              "args": [],
-              "to": 2
-            },
-            "detail": {
-              "operation": "FileReadBytes"
-            },
-            "error_shape": null,
-            "inputs": [
+            "args": [
               {
-                "decision": "borrow",
-                "value": 0
+                "decision": "move",
+                "value": 2
               }
             ],
-            "kind": "NativeIo",
-            "op": "suspend",
-            "request_shapes": null,
+            "extern": 0,
+            "normal": {
+              "args": [
+                3
+              ],
+              "to": 1
+            },
+            "op": "extern.call",
             "result": {
               "own": "owned",
-              "value": 1
+              "value": 3
             },
             "result_shape": null,
-            "resumes": [
-              {
-                "args": [
-                  1
-                ],
-                "to": 1
-              }
-            ],
             "span": null,
-            "unwind": {
-              "args": [],
-              "to": 3
-            }
+            "unwind": null
           }
         },
         {
@@ -891,13 +897,13 @@
               "op": "store.init",
               "place": 0,
               "span": null,
-              "value": 2
+              "value": 4
             }
           ],
           "params": [
             {
               "own": "owned",
-              "value": 2
+              "value": 4
             }
           ],
           "term": {
@@ -906,7 +912,7 @@
             "family": 2,
             "normal": {
               "args": [
-                3
+                5
               ],
               "to": 6
             },
@@ -914,7 +920,7 @@
             "releases_contents": false,
             "result": {
               "own": "none",
-              "value": 3
+              "value": 5
             },
             "result_member_shapes": [],
             "result_shape": null,
@@ -971,19 +977,19 @@
           "id": 6,
           "ops": [
             {
-              "dst": 5,
+              "dst": 7,
               "from": "i32",
               "op": "cast",
               "own": "none",
               "span": null,
               "to": "i64",
-              "value": 4
+              "value": 6
             }
           ],
           "params": [
             {
               "own": "none",
-              "value": 4
+              "value": 6
             }
           ],
           "term": {
@@ -992,7 +998,7 @@
             "family": 3,
             "normal": {
               "args": [
-                6
+                8
               ],
               "to": 7
             },
@@ -1000,7 +1006,7 @@
             "releases_contents": false,
             "result": {
               "own": "none",
-              "value": 6
+              "value": 8
             },
             "result_member_shapes": [],
             "result_shape": null,
@@ -1013,7 +1019,7 @@
           "id": 7,
           "ops": [
             {
-              "dst": 8,
+              "dst": 10,
               "op": "const.int",
               "own": "none",
               "span": null,
@@ -1022,11 +1028,11 @@
             },
             {
               "binary_op": "NotEqual",
-              "dst": 9,
-              "lhs": 7,
+              "dst": 11,
+              "lhs": 9,
               "op": "binary",
               "own": "none",
-              "rhs": 8,
+              "rhs": 10,
               "span": null,
               "ty": "i32"
             }
@@ -1034,11 +1040,11 @@
           "params": [
             {
               "own": "none",
-              "value": 7
+              "value": 9
             }
           ],
           "term": {
-            "condition": 9,
+            "condition": 11,
             "else": {
               "args": [],
               "to": 9
@@ -1061,7 +1067,7 @@
             "family": 4,
             "normal": {
               "args": [
-                10
+                12
               ],
               "to": 10
             },
@@ -1069,7 +1075,7 @@
             "releases_contents": false,
             "result": {
               "own": "owned",
-              "value": 10
+              "value": 12
             },
             "result_member_shapes": [],
             "result_shape": null,
@@ -1082,16 +1088,16 @@
           "id": 9,
           "ops": [
             {
-              "dst": 16,
+              "dst": 18,
               "op": "load.copy",
               "own": "owned",
               "place": 0,
               "span": null
             },
             {
-              "dst": 17,
+              "dst": 19,
               "fields": [
-                16
+                18
               ],
               "op": "variant.make",
               "own": "owned",
@@ -1104,7 +1110,7 @@
           "term": {
             "edge": {
               "args": [
-                17
+                19
               ],
               "to": 14
             },
@@ -1119,46 +1125,46 @@
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 11
+              "value": 13
             },
             {
-              "dst": 12,
+              "dst": 14,
               "from": "i32",
               "op": "cast",
               "own": "none",
               "span": null,
               "to": "i64",
-              "value": 7
+              "value": 9
             }
           ],
           "params": [
             {
               "own": "owned",
-              "value": 11
+              "value": 13
             }
           ],
           "term": {
             "args": [
               {
                 "decision": "copy",
-                "value": 5
+                "value": 7
               },
               {
                 "decision": "copy",
-                "value": 12
+                "value": 14
               }
             ],
             "callee": 3,
             "normal": {
               "args": [
-                13
+                15
               ],
               "to": 11
             },
             "op": "call",
             "result": {
               "own": "none",
-              "value": 13
+              "value": 15
             },
             "span": null,
             "unwind": {
@@ -1171,9 +1177,9 @@
           "id": 11,
           "ops": [
             {
-              "dst": 15,
+              "dst": 17,
               "fields": [
-                14
+                16
               ],
               "op": "variant.make",
               "own": "owned",
@@ -1185,13 +1191,13 @@
           "params": [
             {
               "own": "none",
-              "value": 14
+              "value": 16
             }
           ],
           "term": {
             "edge": {
               "args": [
-                15
+                17
               ],
               "to": 14
             },
@@ -1241,7 +1247,7 @@
           "params": [
             {
               "own": "owned",
-              "value": 18
+              "value": 20
             }
           ],
           "term": {
@@ -1262,7 +1268,7 @@
             "span": null,
             "value": {
               "decision": "move",
-              "value": 18
+              "value": 20
             }
           }
         }
@@ -2473,9 +2479,7 @@
   ],
   "structural_render": [],
   "supervisors": [],
-  "suspend_kinds": [
-    "NativeIo"
-  ],
+  "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [
     {

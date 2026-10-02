@@ -161,6 +161,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         }
+        | PhysicalTerminator::Offload {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
         | PhysicalTerminator::Sleep {
             normal,
             cancel,
@@ -363,6 +369,7 @@ fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>)
             used.insert(*scrutinee);
         }
         PhysicalTerminator::NativeIo { args, .. }
+        | PhysicalTerminator::Offload { args, .. }
         | PhysicalTerminator::Call { args, .. }
         | PhysicalTerminator::RuntimeCall { args, .. }
         | PhysicalTerminator::ValueCall { args, .. } => used.extend(args.iter().map(source)),
@@ -394,25 +401,45 @@ pub(super) fn verify_calls(
     function: &PhysicalFunction,
     plan: &Plan,
 ) -> Result<(), PhysicalError> {
+    fn callee_body(
+        module: &PhysicalModule,
+        callee: CallableId,
+        seen: &mut BTreeSet<CallableId>,
+    ) -> Result<(), PhysicalError> {
+        if !seen.insert(callee) {
+            return Ok(());
+        }
+        let body = module
+            .functions
+            .iter()
+            .find(|f| f.callable == callee)
+            .ok_or_else(|| {
+                PhysicalError::new("physical defer call has no proven non-suspending body")
+            })?;
+        for block in &body.blocks {
+            inspect(module, &block.terminator, seen)?;
+        }
+        Ok(())
+    }
     fn inspect(
         module: &PhysicalModule,
         term: &PhysicalTerminator,
         seen: &mut BTreeSet<CallableId>,
     ) -> Result<(), PhysicalError> {
         match term {
-            PhysicalTerminator::Call { callee, .. } => {
-                if !seen.insert(*callee) {
-                    return Ok(());
-                }
-                let body = module
-                    .functions
+            PhysicalTerminator::Call { callee, .. } => callee_body(module, *callee, seen)?,
+            // The module's tables are the closed set of erasures, so a
+            // dispatch is proven by every body that fills its slot.
+            PhysicalTerminator::DynCall { method, .. } => {
+                let fillers: Vec<_> = module
+                    .vtables
                     .iter()
-                    .find(|f| f.callable == *callee)
-                    .ok_or_else(|| {
-                        PhysicalError::new("physical defer call has no proven non-suspending body")
-                    })?;
-                for block in &body.blocks {
-                    inspect(module, &block.terminator, seen)?;
+                    .flat_map(|table| &table.slots)
+                    .filter(|slot| slot.method == *method)
+                    .map(|slot| slot.callee)
+                    .collect();
+                for callee in fillers {
+                    callee_body(module, callee, seen)?;
                 }
             }
             PhysicalTerminator::Sleep { .. }
@@ -427,7 +454,6 @@ pub(super) fn verify_calls(
             | PhysicalTerminator::RemoteAsk { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }
             | PhysicalTerminator::IndirectCall { .. }
-            | PhysicalTerminator::DynCall { .. }
             | PhysicalTerminator::ValueCall { .. } => {
                 return Err(PhysicalError::new(
                     "physical defer call has unproven effects",
@@ -542,6 +568,7 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
                     region.values.insert(*result);
                 }
                 PhysicalTerminator::Call { result, .. }
+                | PhysicalTerminator::Offload { result, .. }
                 | PhysicalTerminator::IndirectCall { result, .. }
                 | PhysicalTerminator::DynCall { result, .. }
                 | PhysicalTerminator::RuntimeCall { result, .. } => {

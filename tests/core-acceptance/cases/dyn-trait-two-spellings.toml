@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-trait-two-spellings"
+intent = "A trait reached through a qualified path and a named import is one trait-object type; values of either spelling pass for the other."
+source = "cases/dyn-trait-two-spellings.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "13\n"
+exit = 0

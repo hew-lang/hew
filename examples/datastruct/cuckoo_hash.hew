@@ -27,7 +27,7 @@ fn hash2(key: i64, capacity: i64) -> i64 {
 fn make_table(capacity: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(EMPTY);
     }
     v
@@ -118,7 +118,7 @@ fn cuckoo_size(t1: Vec<i64>, t2: Vec<i64>) -> i64 {
     let capacity = t1.len();
     let EMPTY = 0 - 1;
     var count = 0;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         if t1[i] != EMPTY {
             count = count + 1;
         }
@@ -238,12 +238,12 @@ fn main() {
     }
     // Test 8: Multiple elements test
     var triples: Vec<i64> = Vec.new();
-    for i in 0 .. 20 {
+    for i in 0..20 {
         triples.push(i * 3);
     }
     let (t1c, t2c, insert_ok) = cuckoo_insert_all(make_table(32), make_table(32), triples);
     var lookup_ok = true;
-    for i in 0 .. 20 {
+    for i in 0..20 {
         if !cuckoo_lookup(t1c, t2c, i * 3) {
             lookup_ok = false;
         }

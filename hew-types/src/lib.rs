@@ -11,6 +11,7 @@ pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;
 pub mod cycle;
+pub mod data_shape;
 pub mod def_table;
 pub mod dump;
 pub mod env;
@@ -58,23 +59,23 @@ pub use builtin_type::{
 };
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,
-    AssignTargetKind, AssignTargetShape, Bound, CallAbiHint, CallTarget, CallableArgumentFlow,
-    CallableCandidate, CallableFieldFlow, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
-    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
-    DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
-    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodSignature, FnSig, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
-    IndirectCallCandidates, LintId, LintLevel, LintLevels, LintSources, LookupError,
-    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, MethodTarget,
-    MethodTargetFamily, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
-    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    AssignTargetKind, AssignTargetShape, BinderTraitCall, Bound, CallAbiHint, CallTarget,
+    CallableArgumentFlow, CallableCandidate, CallableFieldFlow, Checker, ChildKind, ChildSlot,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec,
+    CodecDirection, CodecFormat, DynCoercion, DynMethodCall, DynReceiver, DynSlot,
+    EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType,
+    ErrorConversion, ExecutionContextReader, ExternMethodSignature, FnSig, HashMapMethod,
+    HashSetMethod, ImplDef, ImplId, ImplRegistry, IndirectCallCandidates, LintId, LintLevel,
+    LintLevels, LintSources, LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, MethodTarget, MethodTargetFamily, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
+    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, ResolvedCall, ResolvedTraitDefault,
-    ResultReturnKind, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern,
-    TypeAliasDef, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch,
-    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
-    WireVariantLayout,
+    ResultReturnKind, RuntimeAbi, SlotEffect, SpanKey, StructuralWitness, TraitObjectLayout,
+    TryConversionKind, TryWidthCastLowering, TyPattern, TypeAliasDef, TypeCheckOutput,
+    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind,
+    WidthCastLowering,
 };
 pub use def_table::{
     DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, KnownDecl,

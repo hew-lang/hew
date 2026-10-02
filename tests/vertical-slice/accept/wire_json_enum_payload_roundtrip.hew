@@ -2,20 +2,22 @@
 // object `{"Variant": [field0, field1, ...]}` (the positional payload array
 // mirroring the CBOR map-of-one shape), and `from_json` parses it back. This
 // fixture constructs `Rect(40, 2)`; the recovered fields sum to 42.
+import std.encoding.json;
+
 #[wire]
 enum Shape {
-    Dot;
-    Circle(i64);
-    Rect(i64, i64);
+    Dot @0;
+    Circle(i64) @1;
+    Rect(i64, i64) @2;
 }
 
 fn main() -> i64 {
     let s = Shape.Rect(40, 2);
-    let j = s.to_json();
+    let j = json.encode(s);
     if j != "{\"Rect\":[40,2]}" {
         return 1;
     }
-    match Shape.from_json(j) {
+    match json.decode<Shape>(j) {
         .Ok(back) => match back {
             Shape.Dot => 2,
             Shape.Circle(r) => r,

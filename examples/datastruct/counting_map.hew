@@ -15,7 +15,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 fn make_keys(capacity: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(EMPTY);
     }
     v
@@ -23,7 +23,7 @@ fn make_keys(capacity: i64) -> Vec<i64> {
 
 fn make_vals(capacity: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(0);
     }
     v
@@ -91,7 +91,7 @@ fn cm_most_frequent(keys: Vec<i64>, vals: Vec<i64>) -> i64 {
     let EMPTY = 0 - 1;
     var best_key = 0;
     var best_count = 0;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         let k = keys[i];
         if k != EMPTY {
             let c = vals[i];

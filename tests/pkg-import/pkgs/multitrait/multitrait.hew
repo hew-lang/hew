@@ -19,6 +19,6 @@ pub type Tally {
 
 /// A two-method process trait: `tick` advances and `close` surfaces a Result.
 pub trait Proc {
-    fn tick(val: Self) -> i64;
-    fn close(val: Self) -> Result<Tally, ProcErr>;
+    fn tick(self) -> i64;
+    fn close(self) -> Result<Tally, ProcErr>;
 }

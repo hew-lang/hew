@@ -224,13 +224,13 @@ impl Checker {
             _ => ty,
         };
         let (target, payload, old_policy) = delivery::message_parts(message_ty)?;
-        if let Some((method_id, params, success, failure)) = delivery::request_parts(payload) {
+        if let Some((protocol, params, success, failure)) = delivery::request_parts(payload) {
             return Some(self.check_request_recovery(
                 receiver,
                 message_ty,
                 target,
                 old_policy,
-                method_id.spelling.as_str(),
+                protocol.id.declaration(),
                 params,
                 success,
                 failure,
@@ -298,18 +298,16 @@ impl Checker {
         // A lambda actor's dispatch is complete when it is recorded: it names
         // no `receive fn` this pass could resolve arguments against.
         if matches!(self.actor_method_dispatch.get(&key),
-            Some(ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. })
-                if method_id == crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+            Some(ActorMethodKind::Ask { method, .. } | ActorMethodKind::Message { method, .. })
+                if self.is_lambda_actor_method(*method))
         {
             return result;
         }
-        let (method_id, reply_ty) = match self.actor_method_dispatch.get(&key).cloned() {
-            Some(ActorMethodKind::Message { method_id, .. }) => (method_id, None),
+        let (method, reply_ty) = match self.actor_method_dispatch.get(&key).cloned() {
+            Some(ActorMethodKind::Message { method, .. }) => (method, None),
             Some(ActorMethodKind::Ask {
-                method_id,
-                reply_ty,
-                ..
-            }) => (method_id, Some(reply_ty)),
+                method, reply_ty, ..
+            }) => (method, Some(reply_ty)),
             _ => return result,
         };
         let Some(receiver_ty) = self
@@ -351,7 +349,7 @@ impl Checker {
         // not a closure's concrete environment or a literal's narrower type.
         let protocol_target =
             delivery::policy_view_parts(target).map_or(target, |(target, _)| target);
-        let Some((payload, _)) = self.request_signature(&method_id, protocol_target) else {
+        let Some((payload, _)) = self.request_signature(method, protocol_target) else {
             return Ty::Error;
         };
         // A `fails` handler whose success is unit owes the caller no value, so
@@ -360,31 +358,31 @@ impl Checker {
         // text comes from the error's rendering, so record the site for the
         // checker's later renderability proof.
         let fails_one_way = matches!(&reply_ty, Some(ty)
-            if self.receive_fails_methods.contains(&method_id)
+            if self.receive_fails_methods.contains(&method)
                 && matches!(ty.as_result(), Some((success, _)) if matches!(self.subst.resolve(success), Ty::Unit)));
         if through_view && fails_one_way {
             self.view_submitted_fails_methods
-                .insert(method_id.clone(), span.clone());
+                .insert(method, span.clone());
         }
         if let Some(reply_ty) = reply_ty {
             if through_view {
                 if !fails_one_way {
-                    self.reject_replying_handler_through_view(&method_id, span);
+                    self.reject_replying_handler_through_view(method, span);
                     return Ty::Error;
                 }
             } else {
                 let completion = self.completion_request_type(
-                    &method_id,
+                    method,
                     &reply_ty,
                     &receiver_ty,
                     completion_policy,
                     &payload,
                 );
-                self.record_completion_call_edge(&method_id, span);
+                self.record_completion_call_edge(method, span);
                 self.actor_method_dispatch.insert(
                     key,
                     ActorMethodKind::Ask {
-                        method_id,
+                        method,
                         reply_ty,
                         policy: completion_policy,
                     },
@@ -397,17 +395,17 @@ impl Checker {
             // the handler to finish and yields its unit reply, exactly as a
             // value-returning handler yields its own.
             let completion = self.completion_request_type(
-                &method_id,
+                method,
                 &Ty::Unit,
                 &receiver_ty,
                 completion_policy,
                 &payload,
             );
-            self.record_completion_call_edge(&method_id, span);
+            self.record_completion_call_edge(method, span);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
-                    method_id,
+                    method,
                     reply_ty: Ty::Unit,
                     policy: completion_policy,
                 },
@@ -416,7 +414,7 @@ impl Checker {
             return completion;
         }
         self.actor_method_dispatch
-            .insert(key, ActorMethodKind::Message { method_id, policy });
+            .insert(key, ActorMethodKind::Message { method, policy });
         // The call is the send: a `receive fn` without a reply submits at its
         // call site, under the policy its receiver view carries.
         self.record_submission_suspension(span, policy.may_suspend());
@@ -430,18 +428,32 @@ impl Checker {
     /// Record one handler-to-handler completion call. A completion call waits
     /// for the callee's handler to finish, so a cycle among these edges is a
     /// deadlock: every actor in the ring is blocked on the next.
-    fn record_completion_call_edge(&mut self, callee: &str, span: &Span) {
+    fn record_completion_call_edge(&mut self, callee: crate::DefId, span: &Span) {
         if !self.in_receive_fn {
             return;
         }
-        let Some(enclosing) = self.current_function.clone() else {
+        let Some(super::effects::EffectBody::Declaration(enclosing)) =
+            self.effect_graph.current_body
+        else {
             return;
         };
         if !self.actor_receive_methods.contains(&enclosing) {
             return;
         }
         self.completion_call_edges
-            .push((enclosing, callee.to_string(), span.clone()));
+            .push((enclosing, callee, span.clone()));
+    }
+
+    /// Whether a dispatched method is a lambda actor's `call` protocol rather
+    /// than a declared receive handler.
+    pub(super) fn is_lambda_actor_method(&self, method: crate::DefId) -> bool {
+        self.defs.kind(method) == crate::DeclarationKind::RequestProtocol
+    }
+
+    /// The protocol row every lambda actor's `call` is dispatched through.
+    pub(super) fn lambda_actor_method(&mut self) -> crate::DefId {
+        self.defs
+            .request_protocol(crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
     }
 
     /// Report every completion-call cycle a handle resolves statically. This
@@ -450,24 +462,21 @@ impl Checker {
     /// left to the runtime's own wait-cycle detection.
     pub(super) fn report_completion_call_cycles(&mut self) {
         use std::collections::{BTreeMap, BTreeSet};
-        let mut edges: BTreeMap<&str, Vec<(&str, &Span)>> = BTreeMap::new();
+        let mut edges: BTreeMap<crate::DefId, Vec<(crate::DefId, &Span)>> = BTreeMap::new();
         for (caller, callee, span) in &self.completion_call_edges {
-            edges
-                .entry(caller.as_str())
-                .or_default()
-                .push((callee.as_str(), span));
+            edges.entry(*caller).or_default().push((*callee, span));
         }
-        let mut reported: BTreeSet<Vec<String>> = BTreeSet::new();
+        let mut reported: BTreeSet<Vec<crate::DefId>> = BTreeSet::new();
         let mut findings = Vec::new();
         for start in edges.keys().copied() {
-            let mut path: Vec<(&str, &Span)> = vec![(start, edges[start][0].1)];
+            let mut path: Vec<(crate::DefId, &Span)> = vec![(start, edges[&start][0].1)];
             walk(start, &edges, &mut path, &mut findings, &mut reported);
             path.pop();
         }
         for (ring, span) in findings {
             let path = ring
                 .iter()
-                .map(|name| name.replace("::", "."))
+                .map(|handler| self.defs.path(*handler).replace("::", "."))
                 .collect::<Vec<_>>()
                 .join(" -> ");
             self.report_error(
@@ -484,10 +493,8 @@ impl Checker {
 
     /// A mailbox view submits and nothing more, so a handler that owes the
     /// caller a value cannot be called through one.
-    fn reject_replying_handler_through_view(&mut self, method_id: &str, span: &Span) {
-        let handler = method_id
-            .rsplit_once("::")
-            .map_or("this handler", |(_, name)| name);
+    fn reject_replying_handler_through_view(&mut self, method: crate::DefId, span: &Span) {
+        let handler = self.defs.name(method);
         self.report_error(
             TypeErrorKind::InvalidOperation,
             span,
@@ -503,9 +510,9 @@ impl Checker {
     /// `ActorError` carrying the handler's declared failure. A handler without
     /// a `fails` clause can never produce `Failed`, so its error parameter is
     /// the uninhabited `Never`.
-    fn completion_call_type(&mut self, method_id: &str, reply_ty: &Ty) -> Ty {
+    fn completion_call_type(&mut self, method: crate::DefId, reply_ty: &Ty) -> Ty {
         let (success, failure) = match reply_ty.as_result() {
-            Some((success, failure)) if self.receive_fails_methods.contains(method_id) => {
+            Some((success, failure)) if self.receive_fails_methods.contains(&method) => {
                 (success.clone(), failure.clone())
             }
             _ => (reply_ty.clone(), Ty::never_type()),
@@ -515,27 +522,27 @@ impl Checker {
 
     pub(super) fn completion_request_type(
         &mut self,
-        method_id: &str,
+        method: crate::DefId,
         reply: &Ty,
         receiver: &Ty,
         policy: SendPolicy,
         params: &[Ty],
     ) -> Ty {
-        let completion = self.completion_call_type(method_id, reply);
+        let completion = self.completion_call_type(method, reply);
         if policy != SendPolicy::Reject {
             return completion;
         }
-        let request_head = self.register_request_protocol(method_id);
+        let request_head = self.register_request_protocol(method);
         let (success, error) = completion.as_result().unwrap();
         let Ty::Named { args, .. } = error else {
             unreachable!()
         };
         let failure = args[0].clone();
         let target = delivery::policy_view_parts(receiver).map_or(receiver, |(target, _)| target);
-        let params = if method_id == crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
+        let params = if self.is_lambda_actor_method(method) {
             params.to_vec()
         } else {
-            let Some((params, _)) = self.request_signature(method_id, target) else {
+            let Some((params, _)) = self.request_signature(method, target) else {
                 return Ty::Error;
             };
             params
@@ -558,12 +565,12 @@ impl Checker {
 
     /// Specialize the declaration's protocol, never the argument expression's
     /// pre-coercion type, before sealing the runtime wrapper.
-    fn request_signature(&self, method: &str, target: &Ty) -> Option<(Vec<Ty>, Ty)> {
-        let signature = self.fn_sig(method)?;
+    fn request_signature(&self, method: crate::DefId, target: &Ty) -> Option<(Vec<Ty>, Ty)> {
+        let signature = self.fn_sigs.get(&method)?;
         let Ty::Named { head, args } = target.as_local_actor_ref()? else {
             return None;
         };
-        let declaration = self.type_def_at(head.registry_key())?;
+        let declaration = self.head_type_def(*head)?;
         let substitutions = declaration
             .type_params
             .iter()
@@ -584,13 +591,13 @@ impl Checker {
     /// receive declaration; its parameters preserve the concrete signature.
     /// Register it here so later specialization consumes checker facts even
     /// when the request has crossed a binding or generic function boundary.
-    fn register_request_protocol(&mut self, method_id: &str) -> crate::NominalHead {
-        let id = self.defs.request_protocol(method_id);
+    fn register_request_protocol(&mut self, id: crate::DefId) -> crate::NominalHead {
+        let name = self.defs.path(id).to_string();
         self.type_defs
             .entry(crate::NominalId::from_minted_declaration(id))
             .or_insert_with(|| super::TypeDef {
                 kind: super::TypeDefKind::Struct,
-                name: method_id.to_string(),
+                name: name.clone(),
                 type_params: ["Params", "Reply", "Failure"]
                     .iter()
                     .enumerate()
@@ -601,7 +608,7 @@ impl Checker {
                         )
                     })
                     .collect(),
-                bounds: std::collections::HashMap::new(),
+                bounds: super::ParamBounds::default(),
                 fields: std::collections::HashMap::new(),
                 field_order: Vec::new(),
                 variants: std::collections::HashMap::new(),
@@ -609,7 +616,7 @@ impl Checker {
                 doc_comment: None,
                 is_indirect: false,
             });
-        crate::NominalHead::new(crate::NominalId::from_minted_declaration(id), method_id)
+        crate::NominalHead::new(crate::NominalId::from_minted_declaration(id), &name)
     }
 
     #[allow(
@@ -622,7 +629,7 @@ impl Checker {
         message: &Ty,
         target: &Ty,
         policy: SendPolicy,
-        method_id: &str,
+        handler: crate::DefId,
         params: &Ty,
         success: &Ty,
         failure: &Ty,
@@ -643,12 +650,12 @@ impl Checker {
             }
         };
         let mut destination = target.clone();
-        let mut destination_method = method_id.to_string();
+        let mut destination_method = handler;
         if redirect {
             let argument = args[0].expr();
             let ty = self.synthesize(&argument.0, &argument.1);
             destination = self.subst.resolve(&ty);
-            if method_id == crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
+            if self.is_lambda_actor_method(handler) {
                 self.expect_type(target, &destination, &argument.1);
             } else {
                 let Some(Ty::Named { head, .. }) = destination.as_local_actor_ref() else {
@@ -659,29 +666,39 @@ impl Checker {
                     );
                     return Ty::Error;
                 };
-                let handler = method_id.rsplit("::").next().unwrap_or(method_id);
-                destination_method =
-                    crate::actor_protocol::qualified_handler_name(head.registry_key(), handler);
-                let signature = self.request_signature(&destination_method, &destination);
-                let compatible = signature.is_some_and(|(parameters, reply)| {
-                    Ty::Tuple(parameters) == *params
-                        && self.completion_call_type(&destination_method, &reply)
-                            == Ty::result(success.clone(), Ty::actor_error(failure.clone()))
-                });
-                if !compatible {
+                let handler_name = self.defs.name(handler);
+                let redirected = self.actor_member(
+                    *head,
+                    handler_name.as_str(),
+                    crate::DeclarationKind::ActorReceive,
+                );
+                let signature = redirected
+                    .and_then(|redirected| self.request_signature(redirected, &destination));
+                let compatible =
+                    redirected
+                        .zip(signature)
+                        .is_some_and(|(redirected, (parameters, reply))| {
+                            Ty::Tuple(parameters) == *params
+                                && self.completion_call_type(redirected, &reply)
+                                    == Ty::result(success.clone(), Ty::actor_error(failure.clone()))
+                        });
+                let Some(redirected) = redirected.filter(|_| compatible) else {
                     self.report_error(TypeErrorKind::InvalidOperation, &argument.1,
-                    format!("request for `{method_id}` cannot be redirected to `{destination_method}`: the handler name, parameters and reply must agree"));
+                    format!("request for `{}` cannot be redirected to `{}::{handler_name}`: the handler name, parameters and reply must agree",
+                        self.defs.path(handler),
+                        self.defs.path(head.nominal().map_or(handler, crate::NominalId::declaration))));
                     return Ty::Error;
-                }
+                };
+                destination_method = redirected;
             }
         }
         self.mark_expr_moved(&receiver.0, &receiver.1);
-        let destination_head = self.register_request_protocol(&destination_method);
+        let destination_head = self.register_request_protocol(destination_method);
         self.actor_delivery_calls.insert(
             SpanKey::in_module(span, self.current_module_idx),
             ActorDeliveryCall::Resume {
                 policy,
-                method_id: destination_method.clone(),
+                method: destination_method,
                 redirect,
             },
         );
@@ -727,19 +744,17 @@ impl Checker {
 /// Depth-first walk of the completion-call graph, reporting the first time it
 /// re-enters a handler already on the current path.
 fn walk<'a>(
-    node: &'a str,
-    edges: &std::collections::BTreeMap<&'a str, Vec<(&'a str, &'a Span)>>,
-    path: &mut Vec<(&'a str, &'a Span)>,
-    findings: &mut Vec<(Vec<String>, Span)>,
-    reported: &mut std::collections::BTreeSet<Vec<String>>,
+    node: crate::DefId,
+    edges: &std::collections::BTreeMap<crate::DefId, Vec<(crate::DefId, &'a Span)>>,
+    path: &mut Vec<(crate::DefId, &'a Span)>,
+    findings: &mut Vec<(Vec<crate::DefId>, Span)>,
+    reported: &mut std::collections::BTreeSet<Vec<crate::DefId>>,
 ) {
-    for (callee, span) in edges.get(node).into_iter().flatten() {
-        if let Some(entry) = path.iter().position(|(name, _)| name == callee) {
-            let mut ring: Vec<String> = path[entry..]
-                .iter()
-                .map(|(name, _)| (*name).to_string())
-                .collect();
-            ring.push((*callee).to_string());
+    for (callee, span) in edges.get(&node).into_iter().flatten() {
+        if let Some(entry) = path.iter().position(|(handler, _)| handler == callee) {
+            let mut ring: Vec<crate::DefId> =
+                path[entry..].iter().map(|(handler, _)| *handler).collect();
+            ring.push(*callee);
             let mut key = ring.clone();
             key.sort();
             key.dedup();
@@ -748,8 +763,8 @@ fn walk<'a>(
             }
             continue;
         }
-        path.push((callee, span));
-        walk(callee, edges, path, findings, reported);
+        path.push((*callee, span));
+        walk(*callee, edges, path, findings, reported);
         path.pop();
     }
 }

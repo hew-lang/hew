@@ -1241,6 +1241,7 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -1721,6 +1722,7 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2292,6 +2294,7 @@ fn user_module_registers_types() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2379,6 +2382,7 @@ fn user_module_fn_sig_has_correct_types() {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             },
             Param {
                 name: Ident::new("b"),
@@ -2395,6 +2399,7 @@ fn user_module_fn_sig_has_correct_types() {
                 ),
                 is_mutable: false,
                 is_consume: false,
+                is_receiver: false,
             },
         ],
         Some(TypeExpr::Named {
@@ -2871,6 +2876,7 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2931,6 +2937,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
             name: Ident::new("Has"),
+            tag: None,
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Tag"), 0..0),
@@ -2945,6 +2952,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -2992,6 +3000,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
             name: Ident::new("Message"),
+            tag: None,
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(
@@ -3009,6 +3018,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -3127,6 +3137,7 @@ fn import_selected_trait_from_module() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("display"),
             type_params: None,
             params: vec![],
@@ -3171,6 +3182,7 @@ fn import_private_trait_not_registered() {
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
+            suspends: false,
             name: Ident::new("internal_op"),
             type_params: None,
             params: vec![],
@@ -3515,6 +3527,7 @@ fn local_type_impl_no_orphan_warning() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -3670,6 +3683,7 @@ fn test_file_import_private_items_not_visible() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        serial_case: None,
         is_opaque: false,
         consuming_methods: Vec::new(),
         lang_item: None,
@@ -3815,7 +3829,7 @@ fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckO
 /// literal (`Light.On`, never `.step(...)` or a constructed payload), must
 /// credit the import binding exactly as the Call-path dispatch does — the
 /// Reference-path dispatch was the one caller of `dispatch_dotted_type_member`
-/// that never called `mark_resolved_nominal_owner_used` (#3175).
+/// that never counted the use (#3175).
 #[test]
 fn selective_import_used_only_as_bare_state_literal_is_not_unused() {
     let (_, output) = check_qualified_machine_state_root(

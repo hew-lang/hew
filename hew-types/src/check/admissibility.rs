@@ -660,7 +660,11 @@ impl Checker {
         let types = TypeDefView::new(&self.defs, type_defs);
         // Collect known trait names before the mutable borrow on
         // `method_call_receiver_kinds` to avoid a split-borrow conflict.
-        let known_trait_names: HashSet<String> = self.trait_def_keys.keys().cloned().collect();
+        let known_trait_names: HashSet<String> = self
+            .trait_defs
+            .keys()
+            .map(|id| self.defs.path(*id).to_string())
+            .collect();
 
         // Collect all type parameter names from the resolved function signatures
         // so we can retain `NamedTypeInstance` entries produced by trait-bounded
@@ -781,8 +785,8 @@ impl Checker {
             args,
         } = ty
         {
-            if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()) {
-                return self.type_param_has_marker_bound(param.spelling.as_str(), marker);
+            if args.is_empty() {
+                return self.param_carries_marker(param.id, marker);
             }
         }
         let ty = self.subst.resolve(ty).materialize_literal_defaults();
@@ -952,11 +956,13 @@ impl Checker {
                 class_description(class)
             ))),
             Ok(_) => None,
-            Err(ClassError::TypeParam { name }) => {
-                if self.type_param_has_marker_bound(&name, MarkerTrait::Clone) {
+            Err(ClassError::TypeParam { param }) => {
+                if self.param_carries_marker(param.id, MarkerTrait::Clone) {
                     None
                 } else {
-                    Some(ElementCopyBlocker::UnboundedParam(name))
+                    Some(ElementCopyBlocker::UnboundedParam(
+                        param.spelling.to_string(),
+                    ))
                 }
             }
             Err(error) => Some(ElementCopyBlocker::Concrete(error.to_string())),
@@ -1070,12 +1076,7 @@ impl Checker {
         match ty {
             Ty::Named { head, args } => {
                 if let crate::TypeHead::Param(param) = head {
-                    if self.is_type_param_in_scope(param.spelling.as_str())
-                        && !self.type_param_has_marker_bound(
-                            param.spelling.as_str(),
-                            MarkerTrait::Clone,
-                        )
-                    {
+                    if !self.param_carries_marker(param.id, MarkerTrait::Clone) {
                         return false;
                     }
                 }
@@ -1228,17 +1229,10 @@ impl Checker {
         // Registration sees legal forward references before their declarations
         // exist. Keep this obligation in the existing inference queue and check
         // it once the complete declaration graph and substitution are available.
-        let type_param_bounds = self.current_type_param_bounds_map();
+        let type_param_bounds = self.active_param_bounds();
         self.deferred_hashmap_admission
             .entry(SpanKey::in_module(span, self.current_module_idx))
-            .and_modify(|check| {
-                for (name, bounds) in &type_param_bounds {
-                    check
-                        .type_param_bounds
-                        .entry(name.clone())
-                        .or_insert_with(|| bounds.clone());
-                }
-            })
+            .and_modify(|check| check.type_param_bounds.extend(&type_param_bounds))
             .or_insert_with(|| DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: resolved_key.clone(),
@@ -1300,9 +1294,7 @@ impl Checker {
             return false;
         }
 
-        if matches!(&resolved, Ty::Named { head: crate::TypeHead::Param(param), args }
-            if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()))
-        {
+        if Self::bare_param(&resolved).is_some() {
             return self.validate_collection_key_capabilities(&resolved, "Set", span);
         }
 
@@ -1419,7 +1411,7 @@ impl Checker {
                 .iter()
                 .any(|arg| self.vec_element_contains_fn_value(arg, visiting)),
             Ty::Named { head, args } => {
-                let Some(type_def) = self.lookup_type_def(head.registry_key()) else {
+                let Some(type_def) = self.head_type_def(*head).cloned() else {
                     return false;
                 };
                 if visiting.contains(type_def.name.as_str()) {
@@ -1647,8 +1639,6 @@ impl Checker {
                     | crate::TypeHead::Unresolved(_)),
                 args,
             } => {
-                // TRANSITION(A1 commit 3): registry lookups by key.
-                let name = head.registry_key();
                 if self.registry.is_owned_handle(*head)
                     || self.is_user_opaque_type(*head)
                     || head.nominal().is_some_and(|id| self.registry.is_linear(id))
@@ -1666,7 +1656,7 @@ impl Checker {
                 {
                     return true;
                 }
-                let Some(type_def) = self.lookup_type_def(name) else {
+                let Some(type_def) = self.head_type_def(*head).cloned() else {
                     return self
                         .registry
                         .implements_marker(&resolved, MarkerTrait::Copy);
@@ -1717,14 +1707,8 @@ impl Checker {
 
     pub(super) fn validate_rc_payload_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
-        let unresolved_generic = matches!(&resolved, Ty::Var(_))
-            || matches!(
-                &resolved,
-                Ty::Named {
-                    head: crate::TypeHead::Param(param),
-                    args,
-                } if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str())
-            );
+        let unresolved_generic =
+            matches!(&resolved, Ty::Var(_)) || Self::bare_param(&resolved).is_some();
         if unresolved_generic {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -1964,7 +1948,7 @@ mod tests {
                     kind: TypeDefKind::Struct,
                     name: "Good".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::from([("value".to_string(), Ty::I32)]),
                     variants: HashMap::new(),
                     methods: HashMap::new(),
@@ -1979,7 +1963,7 @@ mod tests {
                     kind: TypeDefKind::Struct,
                     name: "NormalizedHandles".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::from([(
                         "tx".to_string(),
                         Ty::named_for_test("Sender", vec![Ty::Var(normalized_field_var)]),
@@ -2013,7 +1997,7 @@ mod tests {
                     kind: TypeDefKind::Struct,
                     name: "LeakedField".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::from([(
                         "value".to_string(),
                         Ty::Tuple(vec![Ty::Var(leaked_field_var)]),
@@ -2031,7 +2015,7 @@ mod tests {
                     kind: TypeDefKind::Enum,
                     name: "LeakedVariant".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::new(),
                     variants: HashMap::from([(
                         "Recv".to_string(),
@@ -2144,7 +2128,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Widget".to_string(),
                 type_params: vec![],
-                bounds: HashMap::new(),
+                bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -2321,14 +2305,14 @@ mod tests {
             FnSig {
                 impl_method: None,
                 type_params: vec![crate::ParamHead::for_test("T")],
-                type_param_bounds: HashMap::new(),
-                type_param_assoc_bindings: HashMap::new(),
+                bounds: crate::check::ParamBounds::default(),
                 param_names: vec!["item".to_string()],
                 params: vec![Ty::param(crate::ParamHead::for_test("T"))],
                 return_type: Ty::Unit,
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
+                associated: false,
                 receiver_update: crate::ReceiverUpdate::Replace,
                 param_ownership: vec![],
                 consumes_receiver: false,
@@ -2492,7 +2476,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "fake.Handle".to_string(),
                 type_params: vec![],
-                bounds: HashMap::new(),
+                bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::from([("fd".to_string(), Ty::I32)]),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -2548,7 +2532,7 @@ mod tests {
                     kind: TypeDefKind::Struct,
                     name: "TlsStream".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::from([("fd".to_string(), Ty::I32)]),
                     variants: HashMap::new(),
                     methods: HashMap::new(),
@@ -2564,7 +2548,7 @@ mod tests {
                     kind: TypeDefKind::Struct,
                     name: "tls.TlsStream".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::new(), // fieldless — not a conflict
                     variants: HashMap::new(),
                     methods: HashMap::new(),
@@ -2605,7 +2589,7 @@ mod tests {
                     kind: TypeDefKind::Struct,
                     name: "Handle".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::from([("fd".to_string(), Ty::I32)]),
                     variants: HashMap::new(),
                     methods: HashMap::new(),
@@ -2620,7 +2604,7 @@ mod tests {
                     kind: TypeDefKind::Struct,
                     name: "fake.Handle".to_string(),
                     type_params: vec![],
-                    bounds: HashMap::new(),
+                    bounds: crate::check::ParamBounds::default(),
                     fields: HashMap::from([("fd".to_string(), Ty::I32)]),
                     variants: HashMap::new(),
                     methods: HashMap::new(),
@@ -2769,7 +2753,7 @@ mod tests {
             kind: TypeDefKind::Record,
             name: name.to_string(),
             type_params: vec![],
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: fields
                 .into_iter()
                 .map(|(n, t)| (n.to_string(), t))
@@ -2955,7 +2939,7 @@ mod tests {
             kind: TypeDefKind::Record,
             name: "Pair".to_string(),
             type_params: Vec::new(),
-            bounds: HashMap::new(),
+            bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             field_order: Vec::new(),
             variants: HashMap::new(),

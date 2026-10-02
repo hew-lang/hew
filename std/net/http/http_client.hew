@@ -75,33 +75,33 @@ trait ResponseMethods {
 
 impl ResponseMethods for Response {
     /// Return the HTTP status code (e.g. 200, 404).
-    fn status(resp: Response) -> i64 {
+    fn status(self) -> i64 {
         unsafe {
-            hew_http_response_status(resp) as i64
+            hew_http_response_status(self) as i64
         }
     }
     /// Return a copy of the response body as a string.
-    fn body(resp: Response) -> string {
+    fn body(self) -> string {
         unsafe {
-            hew_http_response_body(resp)
+            hew_http_response_body(self)
         }
     }
     /// Look up a response header by name (case-insensitive).
-    fn header(resp: Response, name: string) -> string {
+    fn header(self, name: string) -> string {
         unsafe {
-            hew_http_response_header(resp, name)
+            hew_http_response_header(self, name)
         }
     }
     /// Return the `Content-Type` response header.
-    fn content_type(resp: Response) -> string {
+    fn content_type(self) -> string {
         unsafe {
-            hew_http_response_content_type(resp)
+            hew_http_response_content_type(self)
         }
     }
     /// Return all response headers as a list of `(name, value)` pairs.
-    fn headers(resp: Response) -> Vec<(string, string)> {
+    fn headers(self) -> Vec<(string, string)> {
         unsafe {
-            hew_http_response_headers(resp)
+            hew_http_response_headers(self)
         }
     }
 }

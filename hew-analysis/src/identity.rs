@@ -17,6 +17,36 @@ use crate::OffsetSpan;
 
 /// The checker resolution whose source segment contains `offset`.
 ///
+/// Re-key the checker facts so the open document's own file is index 0.
+///
+/// Every analysis query reads the open buffer at index 0. A document that is
+/// one file of a directory module is checked under its span index from
+/// `ModuleGraph::file_span_indices`, so its facts move to 0 here and whatever
+/// held 0 takes its index. Callers pass `file_span_indices().path_index(doc)`.
+pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
+    let swap = |key: &mut SpanKey| {
+        if key.module_idx == file {
+            key.module_idx = 0;
+        } else if key.module_idx == 0 {
+            key.module_idx = file;
+        }
+    };
+    output.expr_types = std::mem::take(&mut output.expr_types)
+        .into_iter()
+        .map(|(mut key, ty)| {
+            swap(&mut key);
+            (key, ty)
+        })
+        .collect();
+    output.resolutions = std::mem::take(&mut output.resolutions)
+        .into_iter()
+        .map(|(mut key, resolution)| {
+            swap(&mut key);
+            (key, resolution)
+        })
+        .collect();
+}
+
 /// An offset on a boundary belongs to the segment on its left, as it does in
 /// the parser's source spans. If malformed or synthesized spans overlap, the
 /// narrowest segment wins so an inner member is preferred over its container.

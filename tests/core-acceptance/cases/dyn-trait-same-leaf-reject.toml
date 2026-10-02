@@ -1,0 +1,13 @@
+[[case]]
+id = "dyn-trait-same-leaf-reject"
+intent = "Two traits sharing a leaf name in different modules are distinct trait-object types."
+source = "cases/dyn-trait-same-leaf-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 10
+column = 24
+message = "type mismatch: expected `dyn other.Shape`, found `dyn shapes.Shape`"

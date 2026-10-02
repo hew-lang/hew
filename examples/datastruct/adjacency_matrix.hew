@@ -28,7 +28,7 @@ fn has_edge(matrix: Vec<i64>, n: i64, u: i64, v: i64) -> bool {
 
 fn degree(matrix: Vec<i64>, n: i64, node: i64) -> i64 {
     var d = 0;
-    for j in 0 .. n {
+    for j in 0..n {
         if mat_get(matrix, n, node, j) == 1 {
             d = d + 1;
         }
@@ -37,8 +37,8 @@ fn degree(matrix: Vec<i64>, n: i64, node: i64) -> i64 {
 }
 
 fn is_symmetric(matrix: Vec<i64>, n: i64) -> bool {
-    for i in 0 .. n {
-        for j in 0 .. n {
+    for i in 0..n {
+        for j in 0..n {
             if mat_get(matrix, n, i, j) != mat_get(matrix, n, j, i) {
                 return false;
             }

@@ -7,7 +7,9 @@ use hew_runtime::actor::{
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::{hew_actor_link, hew_actor_unlink};
 use hew_runtime::mailbox_header::HewSysMsg;
-use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownMessage};
+use hew_runtime::monitor::{
+    hew_actor_demonitor, register_actor_monitor, HewDownMessage, HEW_OBSERVATION_NO_CONTEXT,
+};
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 use std::ffi::c_void;
 use std::ptr;
@@ -207,7 +209,7 @@ fn test_null_handling() {
         hew_actor_link(ptr::null_mut(), ptr::null_mut());
         hew_actor_unlink(ptr::null_mut(), ptr::null_mut());
         let result = register_actor_monitor(ptr::null_mut(), ptr::null_mut());
-        assert_eq!(result, Err(2));
+        assert_eq!(result, Err(HEW_OBSERVATION_NO_CONTEXT));
     }
     hew_actor_demonitor(0);
     hew_actor_demonitor(99999);

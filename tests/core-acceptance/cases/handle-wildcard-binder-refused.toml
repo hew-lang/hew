@@ -9,6 +9,6 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UndefinedVariable"
-line = 8
+line = 7
 column = 38
 message = "undefined variable `_`"

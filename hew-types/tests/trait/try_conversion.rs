@@ -402,20 +402,36 @@ fn main() -> Result<(), i64> {
 }
 
 #[test]
-fn explicit_from_call_with_two_impls_is_ambiguous() {
+fn explicit_from_call_selects_the_impl_for_its_argument_type() {
     let output = check(
         r"
-fn pick() -> Mid {
+fn from_number() -> Mid {
     Mid.from(3)
 }
+
+fn from_low(error: Low) -> Mid {
+    Mid.from(error)
+}
 ",
+    );
+    assert_clean(&output);
+}
+
+#[test]
+fn explicit_from_call_fitting_no_impl_is_ambiguous() {
+    let output = check(
+        r#"
+fn pick() -> Mid {
+    Mid.from("neither")
+}
+"#,
     );
     assert!(
         output
             .errors
             .iter()
             .any(|err| err.kind == TypeErrorKind::AmbiguousTraitMethod
-                && err.message.contains("more than once")),
+                && err.message.contains("do not choose one of its impls")),
         "{:#?}",
         output.errors
     );

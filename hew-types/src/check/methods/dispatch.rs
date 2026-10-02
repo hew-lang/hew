@@ -13,7 +13,7 @@
 use super::super::*;
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
-use crate::check::calls::SignatureArgApplication;
+use crate::check::calls::{AppliedCallSignature, SignatureArgApplication};
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::GenericCallee;
 use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission, DeferredWireCodec};
@@ -3000,7 +3000,7 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let (declaring, mut sig, bounds) = match self.binder_trait_method(param, method) {
+        let (declaring, sig, bounds) = match self.binder_trait_method(param, method) {
             Ok(selected) => selected,
             Err(refusal) => {
                 let (kind, message) = *refusal;
@@ -3012,67 +3012,24 @@ impl Checker {
                 return Ty::Error;
             }
         };
-        // `Self` is the binder; a bound's own arguments fill its trait's
-        // parameters (`from(value: Source)` under `F: From<Low>`). Under
-        // several bounds of the trait, the parameters are holes the
-        // arguments fill, and the filled holes choose the bound.
-        let mut substitution: HashMap<crate::ParamHead, Ty> =
-            HashMap::from([(crate::ParamHead::receiver(declaring), Ty::param(param))]);
-        let trait_params = if declaring == bounds[0].trait_id {
-            self.trait_info(declaring)
-                .map(|info| info.type_params.clone())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let holes: Vec<Ty> = match bounds.as_slice() {
-            [bound] => bound.args.clone(),
-            _ => trait_params
-                .iter()
-                .map(|_| Ty::Var(crate::ty::TypeVar::fresh()))
-                .collect(),
-        };
-        substitution.extend(trait_params.iter().copied().zip(holes.iter().cloned()));
-        sig.params = sig
-            .params
-            .iter()
-            .map(|ty| ty.substitute_type_params_parallel(&substitution))
-            .collect();
-        sig.return_type = sig
-            .return_type
-            .substitute_type_params_parallel(&substitution);
         let callee = self.defs.path(declaring).to_string();
-        let applied = self.apply_instantiated_call_signature_with_assoc(
-            &sig,
-            None,
+        let Some((applied, chosen)) = self.apply_call_over_bounds(
+            Ty::param(param),
+            (param.spelling.as_str(), "bounds"),
+            (declaring, sig, &bounds),
+            (method, &callee),
             args,
             span,
-            super::calls::SignatureArgApplication::FunctionLike {
-                param_names: &sig.param_names,
-                arity_context: format!("associated function `{method}`"),
-            },
-            true,
-            Some(super::types::GenericCallee::Method {
-                type_name: &callee,
-                method,
-                owner_type_args: &[],
-            }),
-        );
-        // Application freshens the signature's open variables; link the
-        // holes to their applied copies, which the arguments have filled.
-        if bounds.len() > 1 {
-            for (declared, applied) in sig.params.iter().zip(&applied.params) {
-                self.try_unify_with_owner_identity(declared, applied);
-            }
-        }
-        let trait_args = if trait_params.is_empty() {
-            Vec::new()
-        } else if bounds.len() == 1 {
-            holes
-        } else if let Some(args) = self.select_binder_bound(param, method, &holes, &bounds, span) {
-            args
-        } else {
+        ) else {
             return Ty::Error;
+        };
+        let trait_args = if self
+            .trait_info(declaring)
+            .is_some_and(|info| declaring == bounds[0].trait_id && !info.type_params.is_empty())
+        {
+            bounds[chosen].args.clone()
+        } else {
+            Vec::new()
         };
         let target = self.trait_method_ids_of(declaring, method).map_or_else(
             || CallTarget::Unsupported {
@@ -3091,18 +3048,175 @@ impl Checker {
         self.project_assoc_types(&applied.return_type)
     }
 
+    /// `Target.from(value)` where `Target` implements `From` at several
+    /// sources: the argument's type chooses the impl by the rule a binder
+    /// call under `F: From<A> + From<B>` uses. `candidates` are the
+    /// `(trait, method)` pairs the dispatch table found; `None` when they
+    /// are not all `From` impls the checker has published, which leaves the
+    /// call to the ordinary refusal.
+    pub(in crate::check) fn check_concrete_from_call(
+        &mut self,
+        receiver: &Ty,
+        canonical_receiver: &str,
+        method: &str,
+        candidates: &[(crate::DefId, crate::DefId)],
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let from = self.lang_trait(crate::LangItem::From)?;
+        let mut impls = Vec::new();
+        for &(declaring, declaration) in candidates {
+            if declaring != from {
+                return None;
+            }
+            let row = self
+                .from_impls
+                .iter()
+                .find(|row| row.method == declaration)?
+                .clone();
+            let opened = std::cell::RefCell::new(HashMap::new());
+            let row_target = crate::check::coerce::open_type_params(&row.target, &opened);
+            let row_source = crate::check::coerce::open_type_params(&row.source, &opened);
+            if !self.try_unify_with_owner_identity(&row_target, receiver) {
+                continue;
+            }
+            impls.push((row, opened.into_inner(), row_source));
+        }
+        if impls.is_empty() {
+            return None;
+        }
+        let bounds: Vec<TraitRef> = impls
+            .iter()
+            .map(|(_, _, source)| TraitRef {
+                trait_id: from,
+                args: vec![source.clone()],
+                assoc: Vec::new(),
+            })
+            .collect();
+        let (_, sig) = self.lookup_trait_method_with_origin(from, method)?;
+        let callee = self.defs.path(from).to_string();
+        let subject = receiver.user_facing().to_string();
+        let Some((applied, chosen)) = self.apply_call_over_bounds(
+            receiver.clone(),
+            (&subject, "impls"),
+            (from, sig, &bounds),
+            (method, &callee),
+            args,
+            span,
+        ) else {
+            return Some(Ty::Error);
+        };
+        let (row, opened, _) = &impls[chosen];
+        let type_args: Vec<Ty> = row
+            .params
+            .iter()
+            .map(|param| {
+                opened
+                    .get(param)
+                    .map_or_else(|| Ty::param(*param), |ty| self.subst.resolve(ty))
+            })
+            .collect();
+        self.record_concrete_call_type_args(span, &type_args);
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: CallTarget::impl_method(row.method),
+                c_symbol: self.defs.path(row.method).to_string(),
+            },
+        );
+        Some(self.qualify_method_return_to_receiver_owner(
+            canonical_receiver,
+            &self.subst.resolve(&applied.return_type),
+        ))
+    }
+
+    /// Apply the trait method `declaring.method` with `Self = self_ty` to a
+    /// call's arguments over `bounds`, the trait at each argument list the
+    /// receiver provides: `F: From<Low> + From<Io>` bounds, or the `From`
+    /// impls of a concrete target. One bound supplies its arguments; several
+    /// leave the trait's parameters as holes the call's arguments fill, and
+    /// the filled holes choose the bound. Returns the applied signature and
+    /// the index of the chosen bound, or `None` once the choice is reported.
+    fn apply_call_over_bounds(
+        &mut self,
+        self_ty: Ty,
+        (subject, noun): (&str, &str),
+        (declaring, mut sig, bounds): (crate::DefId, FnSig, &[TraitRef]),
+        (method, callee): (&str, &str),
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<(AppliedCallSignature, usize)> {
+        // `Self` is the receiver; a bound's own arguments fill its trait's
+        // parameters (`from(value: Source)` under `F: From<Low>`).
+        let mut substitution: HashMap<crate::ParamHead, Ty> =
+            HashMap::from([(crate::ParamHead::receiver(declaring), self_ty)]);
+        let trait_params = if declaring == bounds[0].trait_id {
+            self.trait_info(declaring)
+                .map(|info| info.type_params.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let holes: Vec<Ty> = match bounds {
+            [bound] => bound.args.clone(),
+            _ => trait_params
+                .iter()
+                .map(|_| Ty::Var(crate::ty::TypeVar::fresh()))
+                .collect(),
+        };
+        substitution.extend(trait_params.iter().copied().zip(holes.iter().cloned()));
+        sig.params = sig
+            .params
+            .iter()
+            .map(|ty| ty.substitute_type_params_parallel(&substitution))
+            .collect();
+        sig.return_type = sig
+            .return_type
+            .substitute_type_params_parallel(&substitution);
+        let applied = self.apply_instantiated_call_signature_with_assoc(
+            &sig,
+            None,
+            args,
+            span,
+            super::calls::SignatureArgApplication::FunctionLike {
+                param_names: &sig.param_names,
+                arity_context: format!("associated function `{method}`"),
+            },
+            true,
+            Some(super::types::GenericCallee::Method {
+                type_name: callee,
+                method,
+                owner_type_args: &[],
+            }),
+        );
+        if bounds.len() == 1 {
+            return Some((applied, 0));
+        }
+        // Application freshens the signature's open variables; link the
+        // holes to their applied copies, which the arguments have filled.
+        for (declared, applied) in sig.params.iter().zip(&applied.params) {
+            self.try_unify_with_owner_identity(declared, applied);
+        }
+        if trait_params.is_empty() {
+            return Some((applied, 0));
+        }
+        let chosen = self.select_bound(subject, noun, method, &holes, bounds, span)?;
+        Some((applied, chosen))
+    }
+
     /// The one bound whose arguments agree with the holes a call filled,
     /// committed into the substitution. When none or several agree, the
     /// call is reported ambiguous unless an argument already failed.
-    fn select_binder_bound(
+    fn select_bound(
         &mut self,
-        param: crate::ParamHead,
+        subject: &str,
+        noun: &str,
         method: &str,
         holes: &[Ty],
         bounds: &[TraitRef],
         span: &Span,
-    ) -> Option<Vec<Ty>> {
-        let chosen = self.agreeing_binder_bound(holes, bounds);
+    ) -> Option<usize> {
+        let chosen = self.agreeing_bound(holes, bounds);
         if chosen.is_some()
             || holes
                 .iter()
@@ -3119,19 +3233,18 @@ impl Checker {
             TypeErrorKind::AmbiguousTraitMethod,
             span,
             format!(
-                "ambiguous associated function `{method}` on `{}`: the arguments do not \
-                 choose one of its bounds {}",
-                param.spelling,
+                "ambiguous associated function `{method}` on `{subject}`: the arguments do not \
+                 choose one of its {noun} {}",
                 shown.join(", ")
             ),
         );
         None
     }
 
-    fn agreeing_binder_bound(&mut self, holes: &[Ty], bounds: &[TraitRef]) -> Option<Vec<Ty>> {
-        let mut agreeing = bounds.iter().filter(|bound| {
+    fn agreeing_bound(&mut self, holes: &[Ty], bounds: &[TraitRef]) -> Option<usize> {
+        let mut agreeing = (0..bounds.len()).filter(|&index| {
             let snapshot = self.subst.snapshot();
-            let agree = bound
+            let agree = bounds[index]
                 .args
                 .iter()
                 .zip(holes)
@@ -3139,14 +3252,14 @@ impl Checker {
             self.subst.restore(snapshot);
             agree
         });
-        let chosen = agreeing.next()?.clone();
+        let chosen = agreeing.next()?;
         if agreeing.next().is_some() {
             return None;
         }
-        for (arg, hole) in chosen.args.iter().zip(holes) {
+        for (arg, hole) in bounds[chosen].args.iter().zip(holes) {
             self.try_unify_with_owner_identity(arg, hole);
         }
-        Some(chosen.args)
+        Some(chosen)
     }
 
     /// The `From` conversion a bound on the binder `target` provides from

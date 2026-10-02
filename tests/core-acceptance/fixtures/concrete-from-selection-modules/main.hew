@@ -1,0 +1,26 @@
+//! `From` impls declared in another module: `Target.from(value)` chooses by
+//! the argument's type whether the target is spelled through the module or
+//! through a named import, and `?` converts through the same impls.
+
+import errs;
+import errs.{AppError, IoError};
+
+fn read(n: i64) -> Result<i64, IoError> {
+    if n > 0 { .Ok(n) } else { .Err(IoError { code: n }) }
+}
+
+fn checked(n: i64) -> Result<i64, AppError> {
+    let v = read(n)?;
+    .Ok(v)
+}
+
+fn main() {
+    let through_module = errs.AppError.from(errs.LowError { code: 1 });
+    let through_name = AppError.from(IoError { code: 2 });
+    println(through_module.code);
+    println(through_name.code);
+    match checked(-3) {
+        .Ok(v) => println(v),
+        .Err(e) => println(e.code),
+    }
+}

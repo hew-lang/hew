@@ -1,0 +1,11 @@
+[[case]]
+id = "concrete-from-selection-modules"
+intent = "With the `From` impls of one target declared in another module, `Target.from(value)` chooses by argument type through a module-qualified or imported spelling, and `?` converts through the same impls."
+source = "fixtures/concrete-from-selection-modules/main.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "101\n902\n897\n"
+exit = 0

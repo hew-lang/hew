@@ -1,0 +1,76 @@
+// `Target.from(value)` under several `From` impls on one target chooses the
+// impl by the argument's type, as `F.from(value)` does under several bounds,
+// and agrees with the impl `?` selects at a failure edge.
+type LowError {
+    code: i64;
+}
+
+type IoError {
+    code: i64;
+}
+
+type AppError {
+    code: i64;
+}
+
+impl From<LowError> for AppError {
+    fn from(value: LowError) -> AppError {
+        AppError { code: value.code + 100 }
+    }
+}
+
+impl From<IoError> for AppError {
+    fn from(value: IoError) -> AppError {
+        AppError { code: value.code + 900 }
+    }
+}
+
+type Wrapper<T> {
+    item: T;
+}
+
+type Boxed {
+    text: string;
+}
+
+impl<T> From<Wrapper<T>> for Boxed {
+    fn from(value: Wrapper<T>) -> Boxed {
+        Boxed { text: "wrapped" }
+    }
+}
+
+impl From<string> for Boxed {
+    fn from(value: string) -> Boxed {
+        Boxed { text: value }
+    }
+}
+
+fn read(n: i64) -> Result<i64, IoError> {
+    if n > 0 { .Ok(n) } else { .Err(IoError { code: n }) }
+}
+
+fn checked(n: i64) -> Result<i64, AppError> {
+    let v = read(n)?;
+    .Ok(v)
+}
+
+fn main() {
+    let io_error = IoError { code: 1 };
+    let from_io = AppError.from(io_error);
+    let from_low = AppError.from(LowError { code: 2 });
+    println(from_io.code);
+    println(from_low.code);
+    let low = LowError { code: 5 };
+    let nested = [AppError.from(low), AppError.from(IoError { code: 6 })];
+    for error in nested {
+        println(error.code);
+    }
+    println(Boxed.from("text").text);
+    println(Boxed.from(Wrapper { item: 3 }).text);
+    match checked(-3) {
+        .Ok(v) => println(v),
+        .Err(e) => println(e.code),
+    }
+    let direct = AppError.from(IoError { code: -3 });
+    println(direct.code);
+}

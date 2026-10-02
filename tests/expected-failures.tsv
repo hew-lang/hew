@@ -8,6 +8,9 @@
 # and a row whose expect kind no longer matches. A row whose test now
 # passes is reported for cleanup, never a blocking failure (D555
 # amendment) — delete the row by hand once it recovers.
+#
+# Policy (D574): no per-row issues. A row cites an issue only when it needs a
+# design decision or is a real defect; ledger-cleanup PRs carry `Fixes #N`.
 
 corpus	*	docs/repros/final-core/own-generic-identity-transfer.hew	compile	#3598	tracked corpus refusal; see linked issue
 corpus	*	hew-lsp/tests/fixtures/v05_index_trait.hew	compile	#3595	tracked corpus refusal; see linked issue

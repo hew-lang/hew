@@ -1026,8 +1026,9 @@ ratchet-accounting-nextest: ## Check: nextest expected-failure accounting
 
 # Informational: needs `gh` (authenticated) and network, so it runs in the
 # nightly ratchet-accounting workflow, not PR CI. Read-only — reports a row
-# whose issue does not resolve on GitHub, never edits a ledger.
-ledger-issues: ## Check: report expected-failure ledger rows with a bad issue
+# citing a closed issue and open `ratchet:` issues no row cites; never
+# fails and never edits a ledger.
+ledger-issues: ## Check: report closed and uncited ratchet issues
 	cargo xtask ratchet issues
 
 test-ratchet-accounting-runner: ## Test: accounting runner executes all families after failures

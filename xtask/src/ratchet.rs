@@ -9,8 +9,12 @@
 //! `expect` kind. A row whose test now passes is reported for ledger
 //! cleanup, never a blocking failure (D555 amendment): a lane that fixes a
 //! test deletes its row in the same change, but the ratchet itself never
-//! goes red over a recovery. `ratchet issues` checks every `#N` against
-//! GitHub.
+//! goes red over a recovery.
+//!
+//! Policy (D574): rows get no per-row issues. A row cites an issue only when
+//! it needs a design decision or is a real defect; ledger-cleanup PRs carry
+//! `Fixes #N`. `ratchet issues` reports, informationally, cited issues that
+//! are closed and open `ratchet:` issues no row cites.
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -217,7 +221,7 @@ fn usage() -> &'static str {
        nextest:            --junit <raw.xml> --runner-exit <code> \\\n\
                             [--full-inventory <f> --selected-inventory <f>]\n\
        hew-suite | corpus: --results <file>   (lines: id<TAB>outcome[<TAB>code])\n\
-     issues                verify every #N in the ledger resolves on GitHub\n\
+     issues                report closed cited issues and uncited open `ratchet:` issues\n\
      rows --suite <s> --platform <p>\n\
        print that suite's rows in the shape its shell/python driver already\n\
        parses: hew-suite prints '<id> <kind>', corpus prints '<path>[ <code>]'"
@@ -1144,54 +1148,87 @@ fn escape(value: &str) -> String {
 
 // ── issues ─────────────────────────────────────────────────────────────
 
-/// Verify every `#N` in the ledger resolves on GitHub. Nightly-only: if
-/// `gh` is not on PATH, this reports and passes rather than blocking a
-/// local run that has no token.
+#[derive(Deserialize)]
+struct GhIssue {
+    number: u64,
+    title: String,
+    state: String,
+}
+
+/// Informational ledger/issue report (D574): rows cite an issue only for a
+/// design decision or a real defect, so flag cited issues that are closed
+/// or missing, and open `ratchet:` issues no row cites. Never fails; a
+/// missing or unauthenticated `gh` skips the check with one line.
 fn run_issues(args: &[String]) -> Result<()> {
     if !args.is_empty() {
         return Err(format!("ratchet issues takes no options\n\n{}", usage()));
     }
     let root = crate::workspace_root()?;
     let rows = load_ledger(&root)?;
-    let mut numbers: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
-    for row in &rows {
+    let output = Command::new("gh")
+        .args([
+            "issue",
+            "list",
+            "-R",
+            "hew-lang/hew",
+            "--state",
+            "all",
+            "--limit",
+            "5000",
+            "--json",
+            "number,title,state",
+        ])
+        .output();
+    let json = match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        _ => {
+            println!("ratchet issues: gh is unavailable or unauthenticated, skipping");
+            return Ok(());
+        }
+    };
+    let issues: Vec<GhIssue> =
+        serde_json::from_str(&json).map_err(|err| format!("parse gh issue list: {err}"))?;
+    print!("{}", issue_report(&rows, &issues)?);
+    Ok(())
+}
+
+/// The report text for a ledger and the repository's issue list.
+fn issue_report(rows: &[Row], issues: &[GhIssue]) -> Result<String> {
+    let mut cited = std::collections::BTreeSet::new();
+    for row in rows {
         let number: u64 = row.issue[1..]
             .parse()
             .map_err(|_| format!("{LEDGER_PATH}: malformed issue {:?}", row.issue))?;
-        numbers.insert(number);
+        cited.insert(number);
     }
-    if numbers.is_empty() {
-        println!("ratchet issues: ledger is empty, nothing to check");
-        return Ok(());
-    }
-    if Command::new("gh").arg("--version").output().is_err() {
-        println!("ratchet issues: gh is not available, skipping (nightly-only check)");
-        return Ok(());
-    }
-    let mut missing = Vec::new();
-    for number in &numbers {
-        let status = Command::new("gh")
-            .args(["issue", "view", &number.to_string(), "-R", "hew-lang/hew"])
-            .output()
-            .map_err(|err| format!("run gh issue view {number}: {err}"))?;
-        if !status.status.success() {
-            missing.push(*number);
+    let mut report = String::new();
+    for number in &cited {
+        match issues.iter().find(|issue| issue.number == *number) {
+            Some(issue) if issue.state.eq_ignore_ascii_case("closed") => {
+                let _ = writeln!(report, "closed issue cited by a ratchet row: #{number}");
+            }
+            Some(_) => {}
+            None => {
+                let _ = writeln!(report, "issue cited by a ratchet row not found: #{number}");
+            }
         }
     }
-    if missing.is_empty() {
-        println!("ratchet issues: {} issue(s) resolved", numbers.len());
-        Ok(())
-    } else {
-        Err(format!(
-            "{} ledger issue(s) do not resolve on GitHub: {}",
-            missing.len(),
-            missing
-                .iter()
-                .map(|n| format!("#{n}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
+    for issue in issues {
+        if issue.state.eq_ignore_ascii_case("open")
+            && issue.title.starts_with("ratchet:")
+            && !cited.contains(&issue.number)
+        {
+            let _ = writeln!(
+                report,
+                "open ratchet issue cited by no row: #{} {}",
+                issue.number, issue.title
+            );
+        }
     }
+    if report.is_empty() {
+        report.push_str("ratchet issues: ledger and issues agree\n");
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -1240,6 +1277,35 @@ mod tests {
                      nextest\t*\ta\tfailure\t#2\ttwo\n";
         let error = parse_ledger(text).unwrap_err();
         assert!(error.contains("not sorted"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn issue_report_flags_closed_missing_and_uncited_ratchet_issues() {
+        let rows = parse_ledger(
+            "corpus\t*\ta.hew\tcompile\t#1\tone\n\
+             corpus\t*\tb.hew\tcompile\t#2\ttwo\n\
+             corpus\t*\tc.hew\tcompile\t#3\tthree\n\
+             corpus\t*\td.hew\tcompile\t#4\tfour\n",
+        )
+        .unwrap();
+        let issues: Vec<GhIssue> = serde_json::from_str(
+            r#"[{"number":1,"title":"ratchet: a","state":"CLOSED"},
+                {"number":2,"title":"ratchet: b","state":"OPEN"},
+                {"number":4,"title":"design question","state":"OPEN"},
+                {"number":9,"title":"ratchet: orphan","state":"OPEN"},
+                {"number":10,"title":"ratchet: done","state":"CLOSED"},
+                {"number":11,"title":"unrelated","state":"OPEN"}]"#,
+        )
+        .unwrap();
+        let report = issue_report(&rows, &issues).unwrap();
+        assert_eq!(
+            report,
+            "closed issue cited by a ratchet row: #1\n\
+             issue cited by a ratchet row not found: #3\n\
+             open ratchet issue cited by no row: #9 ratchet: orphan\n"
+        );
+        let agreeing = issue_report(&rows[1..2], &issues[1..2]).unwrap();
+        assert_eq!(agreeing, "ratchet issues: ledger and issues agree\n");
     }
 
     #[test]

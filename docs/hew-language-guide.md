@@ -5158,6 +5158,6 @@ The job gets its own copy of each argument, so a deadline or cancellation
 resumes the caller immediately while the C call finishes on the pool and its
 result is discarded there. Parameters and the result must be copyable values
 (scalars, `string`, `bytes`, collections and records of them); a `consume`
-parameter, a variadic function or an `#[opaque]` handle is
-`E_OFFLOAD_SIGNATURE`. The standard library's file system and DNS calls are
+parameter, a variadic function, or an `#[opaque]` handle or raw pointer,
+even one held inside a record or collection, is `E_OFFLOAD_SIGNATURE`. The standard library's file system and DNS calls are
 declared this way.

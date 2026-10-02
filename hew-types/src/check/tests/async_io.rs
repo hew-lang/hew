@@ -140,6 +140,86 @@ fn main() {}
 }
 
 #[test]
+fn offload_refuses_handles_and_pointers_inside_values() {
+    let output = check_source(
+        r#"
+#[opaque]
+type Db {}
+
+type Wrap {
+    db: Db;
+    n: i64;
+}
+
+type Outer {
+    inner: Wrap;
+}
+
+enum Slot {
+    Empty;
+    Held(Db);
+}
+
+type Labels {
+    name: string;
+    tags: Vec<string>;
+}
+
+type Report {
+    labels: Labels;
+    count: i64;
+}
+
+extern "C" {
+    #[offload]
+    fn q_wrap(w: Wrap) -> i32;
+    #[offload]
+    fn q_outer(o: Outer) -> i32;
+    #[offload]
+    fn q_slot(s: Slot) -> i32;
+    #[offload]
+    fn q_ret_wrap() -> Wrap;
+    #[offload]
+    fn q_ptr(p: *mut u8, n: i64) -> i64;
+    #[offload]
+    fn q_ret_ptr(n: i64) -> *const u8;
+    #[offload]
+    fn q_report(r: Report) -> Report;
+}
+fn main() {}
+"#,
+    );
+    let errors = offload_errors(&output);
+    let refused = |name: &str, part: &str, held: &str| {
+        errors
+            .iter()
+            .any(|error| error.contains(name) && error.contains(part) && error.contains(held))
+    };
+    assert!(
+        refused("q_wrap", "parameter 0", "`#[opaque]` handle"),
+        "{errors:#?}"
+    );
+    assert!(
+        refused("q_outer", "parameter 0", "`#[opaque]` handle"),
+        "{errors:#?}"
+    );
+    assert!(
+        refused("q_slot", "parameter 0", "`#[opaque]` handle"),
+        "{errors:#?}"
+    );
+    assert!(
+        refused("q_ret_wrap", "returns `Wrap`", "`#[opaque]` handle"),
+        "{errors:#?}"
+    );
+    assert!(refused("q_ptr", "parameter 0", "pointer"), "{errors:#?}");
+    assert!(refused("q_ret_ptr", "returns", "pointer"), "{errors:#?}");
+    assert!(
+        errors.iter().all(|error| !error.contains("q_report")),
+        "{errors:#?}"
+    );
+}
+
+#[test]
 fn the_same_symbol_without_offload_stays_a_direct_call() {
     let output = check_source(
         r#"

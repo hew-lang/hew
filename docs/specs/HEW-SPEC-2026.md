@@ -3062,8 +3062,9 @@ once; the call already running in C finishes on the pool, and its result is
 released there. Cancellation abandons the result, not the effect. Because the
 job must own its inputs, every parameter and the result must be a value the
 compiler can copy into the job: scalars, `string`, `bytes`, and collections and
-records of those. `consume` parameters, variadic functions, `#[opaque]` handles
-and single-owner types are refused with `E_OFFLOAD_SIGNATURE`. The runtime's
+records of those. `consume` parameters, variadic functions, single-owner
+types, and `#[opaque]` handles and raw pointers, including those held inside a
+record, enum, tuple or collection, are refused with `E_OFFLOAD_SIGNATURE`. The runtime's
 I/O error slot set by the function travels back to the caller with the result;
 other thread-local state of the C library does not.
 

@@ -75,24 +75,38 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_unconditional_branch(cancelled)
             .llvm_ctx("abandon destroyed completion")?;
+        // Every exit records its fault, then converges on one release: the
+        // wait edge and the call are freed once, and the exit code selects the
+        // MIR edge.
+        let mut join = self.exit_join("ask.release");
         self.builder.position_at_end(completed);
-        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
         self.emit_actor_call_take(operation, actor, message, policy, target, result)?;
-        self.emit_result_edge(Some(result), normal)?;
+        self.leave(&mut join, suspend::EXIT_NORMAL)?;
         self.builder.position_at_end(cancelled);
-        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
         self.initialize_cancellation_fault()?;
-        self.free_handle("hew_actor_call_free", operation)?;
-        self.emit_edge(cancel)?;
+        self.leave(&mut join, suspend::EXIT_CANCEL)?;
         self.builder.position_at_end(cycle);
         self.initialize_actor_cycle_fault(wait_edge)?;
-        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
-        self.free_handle("hew_actor_call_free", operation)?;
-        self.emit_edge(unwind)?;
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
         self.builder.position_at_end(failed);
-        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
-        self.free_handle("hew_actor_call_free", operation)?;
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        let selected = self.enter_join(&join)?;
+        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
+        self.release_handle(release::Handle::ActorCall, operation)?;
+        let ([normal_block, cancel_block], unwind_block) = self.dispatch_exits(
+            selected,
+            [
+                (suspend::EXIT_NORMAL, "ask.normal"),
+                (suspend::EXIT_CANCEL, "ask.cancel"),
+            ],
+            "ask.unwind",
+        )?;
+        self.builder.position_at_end(normal_block);
+        self.emit_result_edge(Some(result), normal)?;
+        self.builder.position_at_end(cancel_block);
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(unwind_block);
         self.emit_edge(unwind)
     }
 
@@ -294,7 +308,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     /// Materialize the selected value using the same reply and rejection recipes
-    /// as an ordinary call. The operation releases only what was not taken.
+    /// as an ordinary call. The operation releases only what was not taken; the
+    /// caller releases the drained handle.
     #[allow(
         clippy::too_many_arguments,
         reason = "exact selected completion protocol"
@@ -355,7 +370,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "ask.outcome",
         )?
         .into_int_value();
-        self.free_handle("hew_actor_call_free", operation)?;
         let done = self.ctx.append_basic_block(self.value, "ask.taken");
         if policy == hew_types::actor_delivery::SendPolicy::Reject {
             let rejected = self.ctx.append_basic_block(self.value, "ask.rejected");
@@ -526,6 +540,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(value.into())
     }
 
+    /// Store `status` and call the shared `__hew_ask_result_*` thunk, which
+    /// writes `Ok(reply)` or `Err(ActorError.<role>)` into the result slot.
     pub(super) fn emit_ask_result(
         &self,
         result: StorageId,
@@ -541,13 +557,99 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("ask result lacks its exact variant recipe".into())
             })?;
+        let thunk = ask_result_thunk(
+            self.ctx,
+            self.llvm,
+            self.module,
+            glue,
+            handler,
+            reply.is_some(),
+        )?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        self.builder
+            .build_call(
+                thunk,
+                &[
+                    self.slots[result.0 as usize].into(),
+                    status.into(),
+                    reply.unwrap_or_else(|| pointer.const_null()).into(),
+                ],
+                "",
+            )
+            .llvm_ctx("materialize the ask result")?;
+        Ok(())
+    }
+}
+
+/// The module-level function that writes one ask outcome: `Ok(reply)` for
+/// status zero, otherwise `Err(ActorError.<role>)` selected through a tag
+/// table indexed by the runtime status. One exists per result type and handler.
+fn ask_result_thunk<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    module: &PhysicalModule,
+    glue: &PhysicalVariantGlue,
+    handler: &SemActorHandler,
+    has_reply: bool,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let name = format!(
+        "__hew_ask_result_{}_{}_{}",
+        glue.id.0,
+        handler.callable.0,
+        u8::from(has_reply)
+    );
+    if let Some(function) = llvm.get_function(&name) {
+        return Ok(function);
+    }
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let function = llvm.add_function(
+        &name,
+        ctx.void_type().fn_type(
+            &[pointer.into(), ctx.i32_type().into(), pointer.into()],
+            false,
+        ),
+        Some(Linkage::Internal),
+    );
+    function.add_attribute(
+        inkwell::attributes::AttributeLoc::Function,
+        ctx.create_enum_attribute(
+            inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+            0,
+        ),
+    );
+    let builder = ctx.create_builder();
+    builder.position_at_end(ctx.append_basic_block(function, "entry"));
+    let values = ValueEmitter {
+        module,
+        ctx,
+        llvm,
+        builder: &builder,
+        value: function,
+        fault_sink: None,
+    };
+    let out = function.get_nth_param(0).unwrap().into_pointer_value();
+    let status = function.get_nth_param(1).unwrap().into_int_value();
+    let reply = has_reply.then(|| function.get_nth_param(2).unwrap().into_pointer_value());
+    values.write_ask_result(glue, handler, out, status, reply)?;
+    Ok(function)
+}
+
+impl<'ctx> ValueEmitter<'_, 'ctx> {
+    fn write_ask_result(
+        &self,
+        glue: &PhysicalVariantGlue,
+        handler: &SemActorHandler,
+        out: PointerValue<'ctx>,
+        status: IntValue<'ctx>,
+        reply: Option<PointerValue<'ctx>>,
+    ) -> CodegenResult<()> {
         let error_ty = &glue.variants[1].fields[0].ty;
         let error = self.ctx.append_basic_block(self.value, "ask.error");
         let done = self.ctx.append_basic_block(self.value, "ask.result");
         // A completion call on a void handler carries no reply payload: the
         // handler's return is the unit reply, so success writes `Ok(())`.
         let completion = reply.is_none() && handler.return_ty == ResolvedTy::Unit;
-        if let Some(reply) = reply {
+        if reply.is_some() || completion {
             let success = self.ctx.append_basic_block(self.value, "ask.success");
             let ok = self
                 .builder
@@ -557,11 +659,24 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.ctx.i32_type().const_zero(),
                     "ask.ok",
                 )
-                .llvm_ctx("classify typed reply")?;
+                .llvm_ctx("classify the ask outcome")?;
             self.builder
                 .build_conditional_branch(ok, success, error)
-                .llvm_ctx("materialize fallible reply")?;
+                .llvm_ctx("materialize the ask outcome")?;
             self.builder.position_at_end(success);
+        } else {
+            self.builder
+                .build_unconditional_branch(error)
+                .llvm_ctx("materialize admission error")?;
+            self.builder.position_at_end(error);
+            self.emit_ask_status_error(status, out, error_ty, glue.id, done)?;
+            self.builder.position_at_end(done);
+            self.builder
+                .build_return(None)
+                .llvm_ctx("finish the ask result")?;
+            return Ok(());
+        }
+        if let Some(reply) = reply {
             // A `fails` handler replies with its complete `Result<R, E>`: the
             // call's success arm is `R`, and the handler's own `Err(e)` becomes
             // `ActorError.Failed(e)` here, at the only site that owns both.
@@ -582,28 +697,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .builder
                     .build_load(llvm_type(self.ctx, &layout.repr)?, reply, "ask.reply.value")
                     .llvm_ctx("take typed reply")?;
-                self.write_variant_value(self.slots[result.0 as usize], 0, &[value], glue.id)?;
+                self.write_variant_value(out, 0, &[value], glue.id)?;
                 self.builder
                     .build_unconditional_branch(done)
                     .llvm_ctx("finish successful reply")?;
             } else {
-                self.emit_declared_failure_reply(result, reply, handler, error_ty, glue.id, done)?;
+                self.emit_declared_failure_reply(out, reply, handler, error_ty, glue.id, done)?;
             }
-        } else if completion {
-            let success = self.ctx.append_basic_block(self.value, "ask.success");
-            let ok = self
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_zero(),
-                    "ask.ok",
-                )
-                .llvm_ctx("classify completion")?;
-            self.builder
-                .build_conditional_branch(ok, success, error)
-                .llvm_ctx("materialize completion outcome")?;
-            self.builder.position_at_end(success);
+        } else {
             // `Ok(())` still carries the unit payload seat the recipe declares.
             let unit = glue
                 .variants
@@ -620,18 +721,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     Ok::<_, CodegenError>(llvm_type(self.ctx, &layout.repr)?.const_zero())
                 })
                 .transpose()?;
-            self.write_variant_value(self.slots[result.0 as usize], 0, unit.as_slice(), glue.id)?;
+            self.write_variant_value(out, 0, unit.as_slice(), glue.id)?;
             self.builder
                 .build_unconditional_branch(done)
                 .llvm_ctx("finish completed call")?;
-        } else {
-            self.builder
-                .build_unconditional_branch(error)
-                .llvm_ctx("materialize admission error")?;
         }
         self.builder.position_at_end(error);
-        self.emit_ask_status_error(status, result, error_ty, glue.id, done)?;
+        self.emit_ask_status_error(status, out, error_ty, glue.id, done)?;
         self.builder.position_at_end(done);
+        self.builder
+            .build_return(None)
+            .llvm_ctx("finish the ask result")?;
         Ok(())
     }
 
@@ -642,7 +742,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     fn emit_ask_status_error(
         &self,
         status: IntValue<'ctx>,
-        result: StorageId,
+        out: PointerValue<'ctx>,
         error_ty: &ResolvedTy,
         glue_id: hew_mir::physical::PhysicalVariantId,
         done: inkwell::basic_block::BasicBlock<'ctx>,
@@ -655,39 +755,62 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("ActorError lacks its variant recipe".into())
             })?;
-        let entry = self
-            .builder
-            .get_insert_block()
-            .ok_or_else(|| CodegenError::FailClosed("ask error lacks its block".into()))?;
+        let (table, len) = self.ask_error_tags(error_glue)?;
+        let i32_ty = self.ctx.i32_type();
+        let lookup = self.ctx.append_basic_block(self.value, "ask.error.lookup");
+        let known = self.ctx.append_basic_block(self.value, "ask.error.known");
         let unknown = self.ctx.append_basic_block(self.value, "ask.error.unknown");
-        let mut cases = Vec::new();
-        for status_case in hew_runtime::internal::types::AskError::ALL {
-            let Some(role) = status_case.public_role() else {
-                continue;
-            };
-            let tag = error_glue
-                .runtime_tag(actor_error_variant_role(role))
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!("ActorError lacks the {role:?} role"))
-                })?;
-            let block = self.ctx.append_basic_block(self.value, "ask.error.case");
-            self.builder.position_at_end(block);
-            let tag = self.ctx.i32_type().const_int(u64::from(tag), false);
-            let error_value = self.actor_unit_variant(error_ty, tag)?;
-            self.write_variant_value(self.slots[result.0 as usize], 1, &[error_value], glue_id)?;
-            self.builder
-                .build_unconditional_branch(done)
-                .llvm_ctx("finish ask error")?;
-            let code = self
-                .ctx
-                .i32_type()
-                .const_int(u64::from(status_case as u32), false);
-            cases.push((code, block));
-        }
-        self.builder.position_at_end(entry);
+        let in_range = self
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                status,
+                i32_ty.const_int(u64::from(len), false),
+                "ask.error.defined",
+            )
+            .llvm_ctx("bound the ask status")?;
         self.builder
-            .build_switch(status, unknown, &cases)
+            .build_conditional_branch(in_range, lookup, unknown)
+            .llvm_ctx("refuse an undefined ask status")?;
+        self.builder.position_at_end(lookup);
+        let i8_ty = self.ctx.i8_type();
+        let entry = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    i8_ty.array_type(len),
+                    table,
+                    &[i32_ty.const_zero(), status],
+                    "ask.error.entry",
+                )
+                .llvm_ctx("address the ActorError tag")?
+        };
+        let tag = self
+            .builder
+            .build_load(i8_ty, entry, "ask.error.role")
+            .llvm_ctx("read the ActorError tag")?
+            .into_int_value();
+        let assigned = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                tag,
+                i8_ty.const_int(ASK_TAG_NONE, false),
+                "ask.error.assigned",
+            )
+            .llvm_ctx("test the ActorError role")?;
+        self.builder
+            .build_conditional_branch(assigned, known, unknown)
             .llvm_ctx("select the ActorError role")?;
+        self.builder.position_at_end(known);
+        let tag = self
+            .builder
+            .build_int_z_extend(tag, i32_ty, "ask.error.tag")
+            .llvm_ctx("widen the ActorError tag")?;
+        let error_value = self.actor_unit_variant(error_ty, tag)?;
+        self.write_variant_value(out, 1, &[error_value], glue_id)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish ask error")?;
         self.builder.position_at_end(unknown);
         let abort = coro::external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
         self.builder
@@ -699,11 +822,54 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
+    /// The `ActorError` tag for each runtime ask status, indexed by status
+    /// code; statuses without a public role hold `ASK_TAG_NONE`. One constant
+    /// table per `ActorError` shape.
+    fn ask_error_tags(
+        &self,
+        error_glue: &PhysicalVariantGlue,
+    ) -> CodegenResult<(PointerValue<'ctx>, u32)> {
+        use hew_runtime::internal::types::AskError;
+        let len = AskError::ALL
+            .iter()
+            .map(|status| *status as u32)
+            .max()
+            .map_or(0, |max| max + 1);
+        let name = format!("__hew_ask_error_tags_{}", error_glue.id.0);
+        if let Some(table) = self.llvm.get_global(&name) {
+            return Ok((table.as_pointer_value(), len));
+        }
+        let i8_ty = self.ctx.i8_type();
+        let mut tags = vec![i8_ty.const_int(ASK_TAG_NONE, false); len as usize];
+        for status in AskError::ALL {
+            let Some(role) = status.public_role() else {
+                continue;
+            };
+            let tag = error_glue
+                .runtime_tag(actor_error_variant_role(role))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!("ActorError lacks the {role:?} role"))
+                })?;
+            if u64::from(tag) >= ASK_TAG_NONE {
+                return Err(CodegenError::FailClosed(
+                    "ActorError tag exceeds the ask tag table".into(),
+                ));
+            }
+            tags[status as usize] = i8_ty.const_int(u64::from(tag), false);
+        }
+        let table = self.llvm.add_global(i8_ty.array_type(len), None, &name);
+        table.set_initializer(&i8_ty.const_array(&tags));
+        table.set_constant(true);
+        table.set_linkage(Linkage::Private);
+        table.set_unnamed_addr(true);
+        Ok((table.as_pointer_value(), len))
+    }
+
     /// Unwrap a `fails` handler's `Result<R, E>` reply into the call envelope:
     /// `Ok(r)` is the call's own `Ok`, and `Err(e)` is `ActorError.Failed(e)`.
     fn emit_declared_failure_reply(
         &self,
-        result: StorageId,
+        out: PointerValue<'ctx>,
         reply: PointerValue<'ctx>,
         handler: &SemActorHandler,
         error_ty: &ResolvedTy,
@@ -718,11 +884,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("the call envelope lacks its variant recipe".into())
             })?;
-        let wire_layout = self.value_emitter().variant_layout(&handler.return_ty)?;
-        let object = self
-            .value_emitter()
-            .variant_object_ptr(reply, wire_layout)?;
-        let tag = self.value_emitter().load_variant_tag(object, wire_layout)?;
+        let wire_layout = self.variant_layout(&handler.return_ty)?;
+        let object = self.variant_object_ptr(reply, wire_layout)?;
+        let tag = self.load_variant_tag(object, wire_layout)?;
         let replied = self.ctx.append_basic_block(self.value, "ask.reply.ok");
         let failed = self.ctx.append_basic_block(self.value, "ask.reply.failed");
         let is_ok = self
@@ -737,18 +901,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_conditional_branch(is_ok, replied, failed)
             .llvm_ctx("select the declared reply arm")?;
-        let payload_ptr = |emitter: &Self| -> CodegenResult<PointerValue<'ctx>> {
-            emitter
-                .value_emitter()
-                .variant_payload_ptr(object, wire_layout)
-        };
         for (block, wire_variant, call_variant) in [(replied, 0_usize, 0_u32), (failed, 1, 1)] {
             self.builder.position_at_end(block);
             let payload_ty =
                 llvm_type(self.ctx, &wire_layout.variants[wire_variant].repr)?.into_struct_type();
             let payload = self
                 .builder
-                .build_load(payload_ty, payload_ptr(self)?, "ask.reply.payload")
+                .build_load(
+                    payload_ty,
+                    self.variant_payload_ptr(object, wire_layout)?,
+                    "ask.reply.payload",
+                )
                 .llvm_ctx("read the declared reply payload")?
                 .into_struct_value();
             let field = self
@@ -758,11 +921,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let value = if call_variant == 0 {
                 field
             } else {
-                let object_ty = llvm_type(
-                    self.ctx,
-                    &self.value_emitter().variant_layout(error_ty)?.object.repr,
-                )?
-                .into_struct_type();
+                let object_ty = llvm_type(self.ctx, &self.variant_layout(error_ty)?.object.repr)?
+                    .into_struct_type();
                 let scratch = self
                     .builder
                     .build_alloca(object_ty, "ask.failed")
@@ -772,12 +932,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .build_load(object_ty, scratch, "ask.failed.value")
                     .llvm_ctx("take the declared failure envelope")?
             };
-            self.write_variant_value(
-                self.slots[result.0 as usize],
-                call_variant,
-                &[value],
-                glue_id,
-            )?;
+            self.write_variant_value(out, call_variant, &[value], glue_id)?;
             self.builder
                 .build_unconditional_branch(done)
                 .llvm_ctx("finish the declared reply arm")?;
@@ -785,6 +940,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 }
+
+/// An `ActorError` tag table entry for a status that names no variant.
+const ASK_TAG_NONE: u64 = 0xFF;
 
 /// The SIR role naming the std `ActorError` variant a runtime role reports.
 pub(super) const fn actor_error_variant_role(

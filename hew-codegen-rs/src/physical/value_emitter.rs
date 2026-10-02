@@ -413,7 +413,80 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     /// and a `close` that fails on an otherwise-normal exit installs its own
     /// fault as the frame's. `hew_fault_combine` is the one rule for both, so
     /// only the status has to choose, and it chooses the primary's.
+    ///
+    /// The rule is emitted once as `__hew_record_release_fault`; each release
+    /// site calls it from its failure edge.
     pub(super) fn record_release_fault(
+        &self,
+        active_fault: PointerValue<'ctx>,
+        active_status: PointerValue<'ctx>,
+        raised: BasicValueEnum<'ctx>,
+        status: IntValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let name = "__hew_record_release_fault";
+        let thunk = if let Some(thunk) = self.llvm.get_function(name) {
+            thunk
+        } else {
+            let thunk = self.llvm.add_function(
+                name,
+                self.ctx.void_type().fn_type(
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                        self.ctx.i32_type().into(),
+                    ],
+                    false,
+                ),
+                Some(Linkage::Internal),
+            );
+            for attribute in ["noinline", "cold"] {
+                thunk.add_attribute(
+                    inkwell::attributes::AttributeLoc::Function,
+                    self.ctx.create_enum_attribute(
+                        inkwell::attributes::Attribute::get_named_enum_kind_id(attribute),
+                        0,
+                    ),
+                );
+            }
+            let builder = self.ctx.create_builder();
+            builder.position_at_end(self.ctx.append_basic_block(thunk, "entry"));
+            let values = ValueEmitter {
+                module: self.module,
+                ctx: self.ctx,
+                llvm: self.llvm,
+                builder: &builder,
+                value: thunk,
+                fault_sink: None,
+            };
+            values.fold_release_fault(
+                thunk.get_nth_param(0).unwrap().into_pointer_value(),
+                thunk.get_nth_param(1).unwrap().into_pointer_value(),
+                thunk.get_nth_param(2).unwrap(),
+                thunk.get_nth_param(3).unwrap().into_int_value(),
+            )?;
+            builder
+                .build_return(None)
+                .llvm_ctx("finish the release fault fold")?;
+            thunk
+        };
+        self.builder
+            .build_call(
+                thunk,
+                &[
+                    active_fault.into(),
+                    active_status.into(),
+                    raised.into(),
+                    status.into(),
+                ],
+                "",
+            )
+            .llvm_ctx("record the release fault")?;
+        Ok(())
+    }
+
+    pub(super) fn fold_release_fault(
         &self,
         active_fault: PointerValue<'ctx>,
         active_status: PointerValue<'ctx>,

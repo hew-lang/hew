@@ -217,15 +217,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "remote.outcome",
         )?
         .into_int_value();
-        self.free_handle("hew_remote_call_free", operation)?;
         self.emit_ask_result(result, status, reply, handler)?;
-        self.emit_result_edge(Some(result), normal)?;
-
+        // Both exits converge on one release of the call.
+        let mut join = self.exit_join("remote.release");
+        self.leave(&mut join, suspend::EXIT_NORMAL)?;
         self.builder.position_at_end(cancelled);
         self.initialize_cancellation_fault()?;
-        self.free_handle("hew_remote_call_free", operation)?;
+        self.leave(&mut join, suspend::EXIT_CANCEL)?;
+        let selected = self.enter_join(&join)?;
+        self.release_handle(release::Handle::RemoteCall, operation)?;
         // Every remote failure is a typed `Err`; no fault reaches `unwind`.
         let _ = unwind;
+        let ([normal_block], cancel_block) = self.dispatch_exits(
+            selected,
+            [(suspend::EXIT_NORMAL, "remote.normal")],
+            "remote.cancel",
+        )?;
+        self.builder.position_at_end(normal_block);
+        self.emit_result_edge(Some(result), normal)?;
+        self.builder.position_at_end(cancel_block);
         self.emit_edge(cancel)
     }
 

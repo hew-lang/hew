@@ -378,7 +378,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[request.into(), slot.into()],
             "stream.read.taken",
         )?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         let value = self
             .builder
             .build_load(element_ty, slot, "stream.element")
@@ -388,7 +388,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(normal)?;
         self.builder.position_at_end(none);
         self.finish_stream(request, waker, cancelled)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         self.write_variant_value(self.slots[result.0 as usize], 1, &[], option.id)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;
@@ -396,12 +396,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.free_handle("hew_stream_cancel_native", request)?;
         self.drain_stream(request, waker)?;
         self.initialize_cancellation_fault()?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
         self.initialize_stream_fault(request)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         self.emit_edge(unwind)
     }
 
@@ -600,11 +600,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(sent);
         self.finish_stream(request, waker, cancelled)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         self.emit_edge(normal)?;
         self.builder.position_at_end(peer_closed);
         self.finish_stream(request, waker, cancelled)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         let status = self
             .builder
             .build_load(
@@ -619,12 +619,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.free_handle("hew_stream_cancel_native", request)?;
         self.drain_stream(request, waker)?;
         self.initialize_cancellation_fault()?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
         self.initialize_stream_fault(request)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
+        self.release_handle(release::Handle::StreamOperation, request)?;
         self.emit_edge(unwind)
     }
 }

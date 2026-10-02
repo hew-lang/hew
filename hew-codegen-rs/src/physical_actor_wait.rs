@@ -353,6 +353,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
+        // The three failing exits record their fault and share one release.
+        let mut join = self.exit_join("actor.wait.release");
         self.builder.position_at_end(failed);
         let take_fault = coro::external(
             self.llvm,
@@ -366,25 +368,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "actor.close.fault",
         )?;
         let code = self.state_value("hew_fault_code", fault.into_pointer_value())?;
-        self.free_handle("hew_actor_wait_free", wait)?;
-        self.free_handle("hew_actor_wait_edge_free", edge)?;
         self.store_active_fault_value(fault, code)?;
-        if let Some(unwind) = unwind {
-            self.emit_edge(unwind)?;
-        } else {
-            self.emit_propagate_fault()?;
-        }
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
         self.builder.position_at_end(cancelled);
-        self.free_handle("hew_actor_wait_free", wait)?;
-        self.free_handle("hew_actor_wait_edge_free", edge)?;
         self.initialize_cancellation_fault()?;
-        if let Some(unwind) = unwind {
-            self.emit_edge(unwind)?;
-        } else {
-            self.emit_propagate_fault()?;
-        }
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
         self.builder.position_at_end(cycle);
         self.initialize_actor_cycle_fault(edge)?;
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        self.enter_join(&join)?;
         self.free_handle("hew_actor_wait_edge_free", edge)?;
         self.free_handle("hew_actor_wait_free", wait)?;
         if let Some(unwind) = unwind {

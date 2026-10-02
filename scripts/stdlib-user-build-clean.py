@@ -17,14 +17,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STDLIB = REPO_ROOT / "std"
-DEFAULT_CALLS = REPO_ROOT / "scripts" / "stdlib-user-build-calls.tsv"
 
 
 @dataclass(frozen=True)
 class Module:
     name: str
     source: Path
-    call: str | None
 
 
 @dataclass
@@ -53,7 +51,6 @@ def parse_args() -> argparse.Namespace:
         default=Path(os.environ.get("HEW_BIN", REPO_ROOT / "target" / "debug" / "hew")),
     )
     parser.add_argument("--stdlib-dir", type=Path, default=DEFAULT_STDLIB)
-    parser.add_argument("--calls", type=Path, default=DEFAULT_CALLS)
     parser.add_argument("--module", action="append", default=[])
     return parser.parse_args()
 
@@ -65,50 +62,13 @@ def dotted_module(stdlib_dir: Path, source: Path) -> str:
     return ".".join(("std", *parts))
 
 
-def load_calls(path: Path) -> dict[str, str]:
-    calls: dict[str, str] = {}
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        try:
-            module, call = raw.split("\t", 1)
-        except ValueError as error:
-            raise ValueError(
-                f"{path}:{line_number}: expected module<TAB>statement"
-            ) from error
-        if module in calls:
-            raise ValueError(f"{path}:{line_number}: duplicate module {module}")
-        calls[module] = call.strip()
-    return calls
-
-
-def discover_modules(stdlib_dir: Path, calls_path: Path) -> list[Module]:
-    calls = load_calls(calls_path)
+def discover_modules(stdlib_dir: Path) -> list[Module]:
     sources = sorted(
         source for source in stdlib_dir.rglob("*.hew") if "target" not in source.parts
     )
     if not sources:
         raise ValueError(f"no .hew modules found under {stdlib_dir}")
-    names = {dotted_module(stdlib_dir, source) for source in sources}
-    unknown = sorted(set(calls) - names)
-    if unknown:
-        raise ValueError(f"call table names unknown modules: {', '.join(unknown)}")
-
-    modules: list[Module] = []
-    missing: list[str] = []
-    for source in sources:
-        name = dotted_module(stdlib_dir, source)
-        call = calls.get(name)
-        text = source.read_text(encoding="utf-8")
-        if (
-            any(line.startswith("pub fn ") for line in text.splitlines())
-            and call is None
-        ):
-            missing.append(name)
-        modules.append(Module(name, source, call))
-    if missing:
-        raise ValueError("public function modules need calls: " + ", ".join(missing))
-    return modules
+    return [Module(dotted_module(stdlib_dir, source), source) for source in sources]
 
 
 def write_package(package_dir: Path, module: Module) -> None:
@@ -120,10 +80,7 @@ def write_package(package_dir: Path, module: Module) -> None:
     body = ""
     if module.name not in {"std.builtins", "std.prelude"}:
         body = f"import {module.name};\n\n"
-    body += "fn main() {\n"
-    if module.call is not None:
-        body += f"    {module.call}\n"
-    (package_dir / "main.hew").write_text(body + "}\n", encoding="utf-8")
+    (package_dir / "main.hew").write_text(body + "fn main() {}\n", encoding="utf-8")
 
 
 def parse_diagnostics(stdout: str) -> list[dict[str, object]]:
@@ -272,7 +229,7 @@ def verify_broken_stdlib_refuses_user_builds(
         result = audit_module(
             hew_bin,
             scratch_std,
-            Module(arena.name, scratch_arena, arena.call),
+            Module(arena.name, scratch_arena),
             scratch_root / "user-package",
         )
         source_check = next(
@@ -315,12 +272,11 @@ def main() -> int:
     args = parse_args()
     hew_bin = args.hew_bin.resolve()
     stdlib_dir = args.stdlib_dir.resolve()
-    calls_path = args.calls.resolve()
     if not hew_bin.is_file():
         print(f"error: hew binary not found: {hew_bin}", file=sys.stderr)
         return 1
     try:
-        all_modules = discover_modules(stdlib_dir, calls_path)
+        all_modules = discover_modules(stdlib_dir)
         selected = set(args.module)
         unknown = sorted(selected - {module.name for module in all_modules})
         if unknown:

@@ -9,7 +9,6 @@ behaviour must reject every row until a later measured slice changes it.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import re
 import subprocess
@@ -18,9 +17,24 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from runtime_classification import load_document  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "scripts" / "cabi-surface.json"
 HEADER = ROOT / "hew-cabi" / "include" / "hew_cabi_surface.h"
+RUNTIME_EXPORT_CLASSIFICATION = ROOT / "scripts" / "runtime-export-classification.toml"
+GENERATED_RUNTIME_DECLARATIONS = (
+    ROOT / "scripts" / "generated-runtime-declarations.toml"
+)
+CLASSIFICATION_TIERS = (
+    "stable",
+    "stable-stdlib",
+    "non-declarable",
+    "non-declarable-stdlib",
+    "public-host",
+    "public-host-stdlib",
+)
 TARGETS = ("native", "wasm32-wasip1")
 SOURCE_ENCODING = "utf-8"
 
@@ -40,17 +54,6 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
     parser.add_argument("--header", type=Path, default=HEADER)
     return parser.parse_args(argv)
-
-
-def load_ffi_verifier() -> Any:
-    path = ROOT / "scripts" / "verify-ffi-symbols.py"
-    spec = importlib.util.spec_from_file_location("hew_verify_ffi_symbols", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def line_at(text: str, offset: int) -> int:
@@ -333,11 +336,24 @@ def nul_and_extent(raw_signature: str) -> tuple[str, str]:
     return nul, extent
 
 
-def classification(verifier: Any) -> dict[str, str]:
-    classes = verifier.load_jit_symbol_classification()
+def classification() -> dict[str, str]:
+    document = load_document(
+        RUNTIME_EXPORT_CLASSIFICATION, GENERATED_RUNTIME_DECLARATIONS
+    )
     result: dict[str, str] = {}
-    for tier, symbols in classes.items():
+    for tier in CLASSIFICATION_TIERS:
+        symbols = document.get(tier, [])
+        if not isinstance(symbols, list) or any(
+            not isinstance(symbol, str) for symbol in symbols
+        ):
+            raise ValueError(
+                f"{RUNTIME_EXPORT_CLASSIFICATION}: {tier} must be a list of symbols"
+            )
         for symbol in symbols:
+            if symbol in result:
+                raise ValueError(
+                    f"{RUNTIME_EXPORT_CLASSIFICATION}: {symbol} is in both {result[symbol]} and {tier}"
+                )
             result[symbol] = tier
     return result
 
@@ -492,8 +508,7 @@ def static_source() -> dict[str, dict[str, dict[str, str]]]:
 
 
 def expected_manifest() -> dict[str, Any]:
-    verifier = load_ffi_verifier()
-    classes = classification(verifier)
+    classes = classification()
     functions = function_source()
     statics = static_source()
 

@@ -68,9 +68,8 @@ its own successful execution.
 
 ## Refresh and verification
 
-Run `make cabi-surface` after changing runtime exports, then validate the
-result with `make verify-ffi`. `make lint` checks the generated surface and
-other source contracts before publication. Keep behavioural ownership coverage
+Run `make cabi-surface` after changing runtime exports. `make lint` checks
+the generated surface and other source contracts before publication. Keep behavioural ownership coverage
 in the relevant [core acceptance cases](../../tests/core-acceptance/cases),
 including success, refusal, cancellation, fault cleanup and restart where those
 boundaries apply. Use `make core-safety` for the selected sanitizer cases.

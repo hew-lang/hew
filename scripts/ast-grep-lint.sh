@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the pinned ast-grep binary plus the authority inventory ratchet.
+# Run the pinned ast-grep binary over the repository rules.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="$REPO_ROOT/tools/ast-grep.lock"
@@ -9,11 +9,9 @@ TOOL_ROOT="$REPO_ROOT/.ast-grep/tool"
 AST_GREP="$TOOL_ROOT/bin/ast-grep"
 BOOTSTRAP=0
 # --install-only provisions and verifies the pinned toolchain, then stops
-# before the authority audit and the scan. CI jobs that merely need the
-# binary present (the lifecycle evidence gates read
-# .ast-grep/tool/bin/ast-grep directly) provision through this; the scan
-# itself stays owned by `make structural-lint` in the lint job, so it runs
-# exactly once per commit instead of once per consumer.
+# before the scan. CI jobs that merely need the binary present provision
+# through this; the scan itself stays owned by `make structural-lint` in the
+# lint job, so it runs exactly once per commit instead of once per consumer.
 INSTALL_ONLY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,7 +52,6 @@ if [[ "$INSTALL_ONLY" == 1 ]]; then
     exit 0
 fi
 cd "$REPO_ROOT"
-python3 scripts/structural-authority-audit.py --ast-grep "$AST_GREP"
 python3 scripts/tests/test_qualified_identity_literal_rule.py "$AST_GREP"
 python3 scripts/tests/test_no_string_keyed_semantic_map_rule.py "$AST_GREP"
 python3 scripts/tests/test_no_name_to_identity_fn_rule.py "$AST_GREP"

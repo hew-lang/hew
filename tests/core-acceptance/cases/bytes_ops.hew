@@ -19,7 +19,7 @@ fn main() -> i64 {
         return 1;
     };
     println(decoded_slice);
-    let popped: u8 = b.pop().unwrap_or(0);
+    let popped: u8 = b.pop() ?? 0;
     println(popped as i64);
     b.set(0, 65);
     if b.contains(65) {

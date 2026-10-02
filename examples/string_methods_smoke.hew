@@ -12,7 +12,7 @@ fn main() {
     let ls = "x\ny".lines();
     println(ls.len());
     println("ha".repeat(3));
-    let c = "abc".char_at(1).unwrap_or('?');
+    let c = "abc".char_at(1) ?? '?';
     println(to_string(c));
     let cs = "Hi".chars();
     println(cs.len());

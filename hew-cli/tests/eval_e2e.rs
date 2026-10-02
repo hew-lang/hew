@@ -266,7 +266,7 @@ fn eval_std_observe_reads_runtime_metric() {
     let path = dir.path().join("observe_eval.hew");
     std::fs::write(
         &path,
-        "import std.observe;\n\nobserve.read(\"heap.live_bytes\").unwrap_or(0) >= 0\n",
+        "import std.observe;\n\n(observe.read(\"heap.live_bytes\") ?? 0) >= 0\n",
     )
     .unwrap();
 
@@ -3259,7 +3259,7 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
         "    let v: Vec<string> = [\"a\", \"bb\"];\n",
         "    let mapped = iter.map(v.into_iter(), |x: string| string.from_int(x.len()));\n",
         "    let lens: Vec<string> = iter.collect(mapped);\n",
-        "    f\"{s}:{opt.unwrap_or(0)}:{lens[0]},{lens[1]}\"\n",
+        "    f\"{s}:{opt ?? 0}:{lens[0]},{lens[1]}\"\n",
         "}\n",
         "stdlib_demo()\n",
     );

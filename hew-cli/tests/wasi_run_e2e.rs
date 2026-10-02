@@ -1163,12 +1163,12 @@ fn stdin_lines_and_read_all_match_on_native_and_wasi() {
 fn main() {
     let first = io.read_line();
     let second = io.read_line();
-    println(f"first={first.unwrap_or("<none>")}");
-    println(f"second={second.unwrap_or("<none>")}");
+    println(f"first={first ?? "<none>"}");
+    println(f"second={second ?? "<none>"}");
     let rest = io.read_all();
     println(f"rest=[{rest}]");
     let after = io.read_line();
-    println(f"after={after.unwrap_or("<none>")}");
+    println(f"after={after ?? "<none>"}");
 }
 "#,
     )

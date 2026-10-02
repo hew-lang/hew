@@ -36,7 +36,7 @@ value as `Option<i64>`.
 ```hew
 import std.observe;
 
-println(observe.read("heap.live_bytes").unwrap_or(0));
+println(observe.read("heap.live_bytes") ?? 0);
 println(observe.read("actors.turns_total") ?? 0);
 match observe.read("does.not.exist") {
     .Some(value) => println(value),

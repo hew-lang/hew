@@ -22,5 +22,5 @@ fn main() {
         println(v);
     }
     println(items.len());
-    println(items.get(0).unwrap_or(-1));
+    println(items.get(0) ?? -1);
 }

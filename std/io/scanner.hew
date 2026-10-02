@@ -343,7 +343,7 @@ fn scan_line(sc: Scanner) -> Scanner {
         let line = sc.source.slice(pos, slen);
         Scanner { source: sc.source, pos: slen, current: line, valid: true, done: false, mode: sc.mode }
     } else {
-        let nl_pos = pos + found.unwrap_or(0);
+        let nl_pos = pos + (found ?? 0);
         // Strip \r before \n for \r\n line endings.
         let line_end = if nl_pos > pos && sc.source.slice(nl_pos - 1, nl_pos) == "\r" {
             nl_pos - 1

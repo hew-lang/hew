@@ -58,11 +58,11 @@ fn nested_return_no_sink() -> i64 {
 fn main() {
     let nested = nested_return_sink();
     println(nested.len());
-    println(nested.get(0).unwrap_or("missing"));
-    println(nested.get(1).unwrap_or("missing"));
+    println(nested.get(0) ?? "missing");
+    println(nested.get(1) ?? "missing");
     let broke = own_break_sink();
     println(broke.len());
-    println(broke.get(0).unwrap_or("missing"));
+    println(broke.get(0) ?? "missing");
     println(nested_return_no_sink());
     println("OK");
 }

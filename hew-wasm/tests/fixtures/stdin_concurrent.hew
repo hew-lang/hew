@@ -1,7 +1,7 @@
 import std.io;
 
 fn reader() -> string {
-    io.read_line().unwrap_or("<none>")
+    (io.read_line() ?? "<none>")
 }
 
 fn main() {

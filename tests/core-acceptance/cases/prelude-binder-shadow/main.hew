@@ -11,5 +11,5 @@ fn main() {
     let labels = [model.tag("x"), model.tag("y")];
     println(labels.into_iter().map(|item: model.B| item.label).collect()[1]);
     let outcome: Result<model.A, model.E> = .Err(model.fail("missing"));
-    println(outcome.map_err(|error: model.E| error.reason).err().unwrap_or("none"));
+    println(outcome.map_err(|error: model.E| error.reason).err() ?? "none");
 }

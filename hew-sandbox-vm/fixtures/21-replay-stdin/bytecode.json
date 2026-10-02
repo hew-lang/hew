@@ -23,7 +23,7 @@
           "params": [],
           "term": {
             "args": [],
-            "callee": 2,
+            "callee": 1,
             "normal": {
               "args": [
                 0
@@ -47,38 +47,7 @@
         },
         {
           "id": 1,
-          "ops": [
-            {
-              "dst": 2,
-              "op": "move",
-              "own": "owned",
-              "source": 1,
-              "span": {
-                "end": 43,
-                "start": 43
-              }
-            },
-            {
-              "dst": 3,
-              "op": "const.str",
-              "own": "owned",
-              "span": {
-                "end": 68,
-                "start": 68
-              },
-              "str": 0
-            },
-            {
-              "dst": 4,
-              "op": "move",
-              "own": "owned",
-              "source": 3,
-              "span": {
-                "end": 68,
-                "start": 68
-              }
-            }
-          ],
+          "ops": [],
           "params": [
             {
               "own": "owned",
@@ -86,35 +55,37 @@
             }
           ],
           "term": {
-            "args": [
+            "arms": [
               {
-                "decision": "move",
-                "value": 2
+                "edge": {
+                  "args": [
+                    2
+                  ],
+                  "to": 4
+                },
+                "fields": [
+                  {
+                    "own": "owned",
+                    "value": 2
+                  }
+                ],
+                "variant": 0
               },
               {
-                "decision": "move",
-                "value": 4
+                "edge": {
+                  "args": [],
+                  "to": 5
+                },
+                "fields": [],
+                "variant": 1
               }
             ],
-            "callee": 1,
-            "normal": {
-              "args": [
-                5
-              ],
-              "to": 4
-            },
-            "op": "call",
-            "result": {
-              "own": "owned",
-              "value": 5
-            },
+            "op": "switch.variant",
+            "scrutinee": 1,
+            "shape": 0,
             "span": {
-              "end": 68,
-              "start": 68
-            },
-            "unwind": {
-              "args": [],
-              "to": 5
+              "end": 43,
+              "start": 43
             }
           }
         },
@@ -160,6 +131,88 @@
               "op": "store.init",
               "place": 0,
               "span": null,
+              "value": 3
+            },
+            {
+              "dst": 4,
+              "op": "load.copy",
+              "own": "owned",
+              "place": 0,
+              "span": {
+                "end": 43,
+                "start": 43
+              }
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 3
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                4
+              ],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 61,
+              "start": 61
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [
+            {
+              "dst": 5,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 61,
+                "start": 61
+              },
+              "str": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                5
+              ],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 61,
+              "start": 61
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 1,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 1,
+              "span": null,
               "value": 6
             },
             {
@@ -167,8 +220,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 93,
-                "start": 93
+                "end": 85,
+                "start": 85
               },
               "str": 1
             },
@@ -176,10 +229,10 @@
               "dst": 8,
               "op": "load.borrow",
               "own": "guaranteed",
-              "place": 0,
+              "place": 1,
               "span": {
-                "end": 102,
-                "start": 102
+                "end": 94,
+                "start": 94
               }
             }
           ],
@@ -196,7 +249,7 @@
                 "value": 8
               }
             ],
-            "callee": 3,
+            "callee": 2,
             "normal": {
               "args": [
                 9
@@ -209,40 +262,12 @@
               "value": 9
             },
             "span": {
-              "end": 102,
-              "start": 102
+              "end": 94,
+              "start": 94
             },
             "unwind": {
               "args": [],
               "to": 8
-            }
-          }
-        },
-        {
-          "id": 5,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 6
-            },
-            "op": "goto",
-            "span": {
-              "end": 68,
-              "start": 68
-            }
-          }
-        },
-        {
-          "id": 6,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 68,
-              "start": 68
             }
           }
         },
@@ -290,8 +315,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 102,
-              "start": 102
+              "end": 94,
+              "start": 94
             },
             "structural": null,
             "unwind": null
@@ -315,8 +340,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 102,
-              "start": 102
+              "end": 94,
+              "start": 94
             }
           }
         },
@@ -332,7 +357,7 @@
             {
               "dst": null,
               "op": "end_lifetime",
-              "place": 0,
+              "place": 1,
               "span": null
             }
           ],
@@ -340,8 +365,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 102,
-              "start": 102
+              "end": 94,
+              "start": 94
             }
           }
         },
@@ -386,8 +411,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 102,
-              "start": 102
+              "end": 94,
+              "start": 94
             },
             "structural": null,
             "unwind": null
@@ -411,8 +436,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 102,
-              "start": 102
+              "end": 94,
+              "start": 94
             }
           }
         },
@@ -422,7 +447,7 @@
             {
               "dst": null,
               "op": "end_lifetime",
-              "place": 0,
+              "place": 1,
               "span": null
             }
           ],
@@ -430,8 +455,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 102,
-              "start": 102
+              "end": 94,
+              "start": 94
             },
             "value": null
           }
@@ -445,220 +470,9 @@
         {
           "id": 0,
           "origin": "local"
-        }
-      ]
-    },
-    {
-      "blocks": [
-        {
-          "id": 0,
-          "ops": [
-            {
-              "dst": null,
-              "op": "alloc_place",
-              "place": 0,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "store.init",
-              "place": 0,
-              "span": null,
-              "value": 0
-            },
-            {
-              "dst": null,
-              "op": "alloc_place",
-              "place": 1,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "store.init",
-              "place": 1,
-              "span": null,
-              "value": 1
-            },
-            {
-              "dst": 2,
-              "op": "load.take",
-              "own": "owned",
-              "place": 0,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "arms": [
-              {
-                "edge": {
-                  "args": [
-                    3
-                  ],
-                  "to": 1
-                },
-                "fields": [
-                  {
-                    "own": "owned",
-                    "value": 3
-                  }
-                ],
-                "variant": 0
-              },
-              {
-                "edge": {
-                  "args": [],
-                  "to": 2
-                },
-                "fields": [],
-                "variant": 1
-              }
-            ],
-            "op": "switch.variant",
-            "scrutinee": 2,
-            "shape": 0,
-            "span": null
-          }
         },
         {
           "id": 1,
-          "ops": [
-            {
-              "dst": null,
-              "op": "alloc_place",
-              "place": 2,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "store.init",
-              "place": 2,
-              "span": null,
-              "value": 4
-            },
-            {
-              "dst": 5,
-              "op": "load.copy",
-              "own": "owned",
-              "place": 2,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 2,
-              "span": null
-            }
-          ],
-          "params": [
-            {
-              "own": "owned",
-              "value": 4
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                5
-              ],
-              "to": 3
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 2,
-          "ops": [
-            {
-              "dst": 6,
-              "op": "load.copy",
-              "own": "owned",
-              "place": 1,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [
-                6
-              ],
-              "to": 3
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 3,
-          "ops": [],
-          "params": [
-            {
-              "own": "owned",
-              "value": 7
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 4
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 4,
-          "ops": [
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 1,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 0,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "op": "return",
-            "span": null,
-            "value": {
-              "decision": "move",
-              "value": 7
-            }
-          }
-        }
-      ],
-      "entry": 0,
-      "id": 1,
-      "name": "__hew_fn_std.option.Option::unwrap_or$$string",
-      "params": [
-        {
-          "own": "owned",
-          "value": 0
-        },
-        {
-          "own": "owned",
-          "value": 1
-        }
-      ],
-      "places": [
-        {
-          "id": 0,
-          "origin": "local"
-        },
-        {
-          "id": 1,
-          "origin": "local"
-        },
-        {
-          "id": 2,
           "origin": "local"
         }
       ]
@@ -671,7 +485,7 @@
           "params": [],
           "term": {
             "args": [],
-            "callee": 4,
+            "callee": 3,
             "normal": {
               "args": [
                 0
@@ -1724,7 +1538,7 @@
         }
       ],
       "entry": 0,
-      "id": 2,
+      "id": 1,
       "name": "__hew_fn_std$io$read_line",
       "params": [],
       "places": [
@@ -1772,7 +1586,7 @@
         }
       ],
       "entry": 0,
-      "id": 3,
+      "id": 2,
       "name": "__hew_fn_std.builtins.string::fmt",
       "params": [
         {
@@ -2129,7 +1943,7 @@
                 "value": 13
               }
             ],
-            "callee": 3,
+            "callee": 2,
             "normal": {
               "args": [
                 14
@@ -2384,7 +2198,7 @@
         }
       ],
       "entry": 0,
-      "id": 4,
+      "id": 3,
       "name": "__hew_fn_std$io$next_line",
       "params": [],
       "places": [

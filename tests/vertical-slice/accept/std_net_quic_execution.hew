@@ -9,7 +9,7 @@ fn main() {
     if address_parts.len() != 2 {
         panic("QUIC endpoint has a malformed local address");
     }
-    let assigned_port = string.to_int(address_parts[1]).unwrap_or(0);
+    let assigned_port = string.to_int(address_parts[1]) handle _e { 0 };
     if assigned_port <= 0 {
         panic("QUIC endpoint has no assigned port");
     }

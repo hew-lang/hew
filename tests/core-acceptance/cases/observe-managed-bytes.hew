@@ -11,7 +11,7 @@
 import std.observe;
 
 fn live_bytes() -> i64 {
-    return observe.read("heap.live_bytes").unwrap_or(0);
+    return observe.read("heap.live_bytes") ?? 0;
 }
 
 // The gauge is process-wide, so an unrelated allocation on another thread can

@@ -230,12 +230,17 @@ fn reader_loop() {
     }
 }
 
-/// Take a line or wait for input. The buffer lock is held from the attempt
-/// until the operation waits on the slot, so input that arrives in between
-/// finds the waiter.
+/// Take a line or wait for input. Concurrent reads take lines in the order
+/// they started: a read behind another waits for its turn without
+/// attempting. The buffer lock is held from the turn check until the
+/// operation waits on the slot, so input that arrives in between finds the
+/// waiter.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
     let mut buffer = STDIN.lock_or_recover();
+    if !slot.take_turn(operation) {
+        return;
+    }
     let result = match attempt(&mut buffer) {
         Some(result) => result,
         None => match slot.wait(Direction::Read, operation) {

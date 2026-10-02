@@ -77,6 +77,74 @@ fn main() {
 }
 "#;
 
+const QUEUED: &str = r#"
+import std.io;
+
+fn reader() -> string {
+    io.read_line().unwrap_or("eof")
+}
+
+fn main() {
+    var first = "";
+    var second = "";
+    scope {
+        let x = fork reader();
+        let y = fork reader();
+        first = await x;
+        second = await y;
+    };
+    // Which reader waits first is the scheduler's choice.
+    if second < first {
+        println(f"{second} {first}");
+    } else {
+        println(f"{first} {second}");
+    }
+    println(f"rest [{io.read_all()}]");
+}
+"#;
+
+const TURN: &str = r#"
+import std.io;
+
+fn impatient() -> string {
+    scope within 100ms {
+        io.read_line().unwrap_or("eof")
+    } handle failure {
+        "deadline"
+    }
+}
+
+fn patient() -> string {
+    sleep(20ms);
+    io.read_line().unwrap_or("eof")
+}
+
+fn main() {
+    var first = "";
+    var second = "";
+    scope {
+        let x = fork impatient();
+        let y = fork patient();
+        first = await x;
+        second = await y;
+    };
+    println(f"x {first}");
+    println(f"y {second}");
+    println(f"after {io.read_line().unwrap_or("eof")}");
+}
+"#;
+
+const FAILING: &str = r#"
+import std.io;
+
+fn main() {
+    match io.read_line() {
+        .Some(line) => println(f"line {line}"),
+        .None => println("end of input"),
+    }
+}
+"#;
+
 fn build(dir: &Path, name: &str, source: &str, opt: &str) -> PathBuf {
     let src = dir.join(format!("{name}.hew"));
     std::fs::write(&src, source).expect("write source");
@@ -203,5 +271,51 @@ fn partial_lines_join_and_end_of_input_reports_none() {
             stdout, "[abcdef]\n[]\n[crlf]\n[tail]\nend\neof again\n",
             "{opt}"
         );
+    }
+}
+
+#[test]
+fn concurrent_reads_each_take_one_line() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("tempdir");
+    for opt in ["O0", "O2"] {
+        let binary = build(dir.path(), "queued", QUEUED, opt);
+        for workers in [Some("1"), None] {
+            // Both readers wait before input arrives; one write holds both
+            // lines, so the second reader takes a buffered line.
+            let stdout = drive(spawn(&binary, workers, true), &[(400, b"one\ntwo\nrest\n")]);
+            assert_eq!(stdout, "one two\nrest [rest\n]\n", "{opt} {workers:?}");
+        }
+    }
+}
+
+#[test]
+fn a_cancelled_front_reader_passes_its_turn_to_the_next() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("tempdir");
+    for opt in ["O0", "O2"] {
+        let binary = build(dir.path(), "turn", TURN, opt);
+        let stdout = drive(spawn(&binary, None, true), &[(800, b"late\n")]);
+        assert_eq!(stdout, "x deadline\ny late\nafter eof\n", "{opt}");
+    }
+}
+
+/// A failed read is a fault, never end of input: reading a directory as
+/// standard input fails with `EISDIR`.
+#[cfg(unix)]
+#[test]
+fn a_read_error_traps_instead_of_ending_input() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("tempdir");
+    for opt in ["O0", "O2"] {
+        let binary = build(dir.path(), "failing", FAILING, opt);
+        let output = Command::new(&binary)
+            .stdin(std::fs::File::open(dir.path()).expect("open directory"))
+            .output()
+            .expect("run program");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{opt}: {stderr}");
+        assert!(output.stdout.is_empty(), "{opt}: {:?}", output.stdout);
+        assert!(stderr.contains("read standard input"), "{opt}: {stderr}");
     }
 }

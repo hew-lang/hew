@@ -22,7 +22,7 @@
 //! wheel's next deadline, and a timer inserted ahead of that deadline wakes the
 //! reactor through the poller's wake source.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 use std::io;
 use std::net::{TcpListener, TcpStream};
@@ -50,8 +50,9 @@ pub(crate) enum IoObject {
     Stdin,
 }
 
-/// Which waiter an operation occupies. A slot has at most one of each, so one
-/// task can read a connection while another writes it.
+/// Which waiter an operation occupies. A socket slot has at most one of each,
+/// so one task can read a connection while another writes it; standard input
+/// queues its readers instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Direction {
     Read,
@@ -62,6 +63,8 @@ pub(crate) enum Direction {
 struct SlotState {
     reader: Option<Arc<HewAsyncIo>>,
     writer: Option<Arc<HewAsyncIo>>,
+    /// Standard input's readers; socket slots use `reader`.
+    readers: Readers,
     /// The descriptor is in the epoll set (Linux); later arms modify it.
     #[cfg(unix)]
     added: bool,
@@ -72,10 +75,20 @@ struct SlotState {
     armed: c_int,
 }
 
+/// Standard input's line reads in arrival order. The front holds the turn to
+/// take input; the rest wait for it without attempting.
+#[derive(Default)]
+struct Readers {
+    queue: VecDeque<Arc<HewAsyncIo>>,
+    /// The front was woken and has not attempted since, so nothing arms
+    /// readiness until it does.
+    front_woken: bool,
+}
+
 impl SlotState {
     fn interest(&self) -> c_int {
         let mut interest = 0;
-        if self.reader.is_some() {
+        if self.reader.is_some() || (!self.readers.queue.is_empty() && !self.readers.front_woken) {
             interest |= HEW_IO_READ;
         }
         if self.writer.is_some() {
@@ -237,6 +250,18 @@ impl Slot {
         if state.closed {
             return Err(cancelled_failure("wait on closed TCP handle"));
         }
+        if self.is_stdin() {
+            // Only the turn holder waits here; it keeps its place at the front.
+            if state.readers.queue.is_empty() {
+                state.readers.queue.push_back(Arc::clone(operation));
+                waiter_added();
+            }
+            state.readers.front_woken = false;
+            // An arm failure completes the reader, and `forget` passes its turn.
+            return self
+                .arm(poller, &mut state)
+                .map_err(|error| IoFailure::from_io("arm standard input readiness", &error));
+        }
         match state.waiter(direction) {
             Some(current) if !Arc::ptr_eq(current, operation) => return Err(busy()),
             Some(_) => {}
@@ -305,12 +330,52 @@ impl Slot {
         }
     }
 
+    /// Whether a standard-input read may take input now: no reader is queued
+    /// or it holds the turn. Otherwise it joins the back of the queue.
+    pub(crate) fn take_turn(&self, operation: &Arc<HewAsyncIo>) -> bool {
+        let mut state = self.state.lock_or_recover();
+        match state.readers.queue.front() {
+            None => true,
+            Some(front) if Arc::ptr_eq(front, operation) => {
+                state.readers.front_woken = false;
+                true
+            }
+            Some(_) => {
+                if !state
+                    .readers
+                    .queue
+                    .iter()
+                    .any(|queued| Arc::ptr_eq(queued, operation))
+                {
+                    state.readers.queue.push_back(Arc::clone(operation));
+                    waiter_added();
+                }
+                false
+            }
+        }
+    }
+
     /// Withdraw `operation` if it is still a waiter. Completion, cancellation
-    /// and deadline expiry all end here; a later report finds no waiter.
+    /// and deadline expiry all end here; a later report finds no waiter. A
+    /// standard-input reader leaving the front passes the turn to the next,
+    /// which attempts at once: input it needs may already be buffered.
     pub(crate) fn forget(&self, operation: &HewAsyncIo) {
+        let mut next = None;
         let removed = {
             let mut state = self.state.lock_or_recover();
             let mut removed = Vec::new();
+            if let Some(index) = state
+                .readers
+                .queue
+                .iter()
+                .position(|queued| std::ptr::eq(Arc::as_ptr(queued), operation))
+            {
+                removed.push(state.readers.queue.remove(index));
+                if index == 0 {
+                    next = state.readers.queue.front().cloned();
+                    state.readers.front_woken = next.is_some();
+                }
+            }
             for direction in [Direction::Read, Direction::Write] {
                 let slot = state.waiter(direction);
                 if slot
@@ -324,20 +389,29 @@ impl Slot {
         };
         waiters_removed(removed.len());
         drop(removed);
+        if let Some(next) = next {
+            next.signal_ready();
+        }
     }
 
     /// Hand a readiness report to the waiters it can unblock and re-arm for
     /// any waiter it cannot. Runs on the reactor thread.
     fn fire(self: &Arc<Self>, events: c_int) {
-        let ready = {
+        let (ready, turn) = {
             let mut state = self.state.lock_or_recover();
             #[cfg(windows)]
             {
                 state.armed = 0;
             }
             let mut ready = Vec::with_capacity(2);
+            let mut turn = None;
             if events & (HEW_IO_READ | HEW_IO_HUP | HEW_IO_ERROR) != 0 {
                 ready.extend(state.reader.take());
+                // The front reader stays queued; it leaves when it completes.
+                if !state.readers.front_woken {
+                    turn = state.readers.queue.front().cloned();
+                    state.readers.front_woken = turn.is_some();
+                }
             }
             if events & (HEW_IO_WRITE | HEW_IO_HUP | HEW_IO_ERROR) != 0 {
                 ready.extend(state.writer.take());
@@ -353,9 +427,9 @@ impl Slot {
                     }
                 }
             }
-            ready
+            (ready, turn)
         };
-        for operation in &ready {
+        for operation in ready.iter().chain(&turn) {
             crate::observe::record_reactor_ready_event();
             operation.signal_ready();
         }
@@ -392,10 +466,11 @@ impl Slot {
 
     fn take_waiters(&self) -> Vec<Arc<HewAsyncIo>> {
         let mut state = self.state.lock_or_recover();
-        [state.reader.take(), state.writer.take()]
-            .into_iter()
-            .flatten()
-            .collect()
+        state.readers.front_woken = false;
+        let mut waiters: Vec<_> = state.readers.queue.drain(..).collect();
+        waiters.extend(state.reader.take());
+        waiters.extend(state.writer.take());
+        waiters
     }
 }
 

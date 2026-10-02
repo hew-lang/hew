@@ -571,6 +571,22 @@ fn stdin_reads_match_native() {
     assert_case(&case, "alpha\r\n\nbeta\r\ngamma");
 }
 
+/// Two tasks reading standard input at once each take one line, and a later
+/// read to the end takes the rest, in both engines.
+#[cfg(unix)]
+#[test]
+fn concurrent_stdin_reads_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+
+    let case = ParityCase {
+        test_name: "stdin_concurrent",
+        source_rel: "hew-wasm/tests/fixtures/stdin_concurrent.hew",
+    };
+    assert_case(&case, "one\ntwo\nthree\nfour");
+}
+
 #[cfg(unix)]
 #[test]
 fn identity_w7_record_resource_does_not_join_runtime_admission() {
@@ -657,6 +673,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
+        "stdin_concurrent" => Some("one line each\nrest=[three\nfour]\n"),
         "stdin_lines" => Some("first=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
         "error_edges" => Some(
             "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",

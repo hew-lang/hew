@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use hew_parser::ast::Item;
 use hew_types::ffi_contracts::extern_ownership_contract;
+use hew_types::runtime_call::AsyncIoOp;
 
 fn hew_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("read std directory") {
@@ -51,6 +52,9 @@ fn every_std_extern_has_an_ownership_row() {
     );
     let missing: Vec<String> = externs
         .iter()
+        // A native I/O operation takes its ownership from its operation
+        // contract; standard input has no synchronous export to row.
+        .filter(|(symbol, _)| AsyncIoOp::from_c_symbol(symbol).is_none())
         .filter(|(symbol, _)| !extern_ownership_contract(symbol).is_contract())
         .map(|(symbol, file)| format!("{symbol} ({})", file.display()))
         .collect();

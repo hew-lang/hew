@@ -479,6 +479,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
                 match &block.terminator {
                     PhysicalTerminator::NativeIo { .. }
+                    | PhysicalTerminator::Offload { .. }
                     // Content-backed stream operations offload producer work
                     // through the installed runtime's blocking pool.
                     | PhysicalTerminator::StreamNext { park: true, .. }

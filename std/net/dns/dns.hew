@@ -66,10 +66,9 @@ pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
 
 /// Resolve a hostname to all associated IP addresses with a deadline.
 ///
-/// `deadline_ms <= 0` disables the deadline. On deadline expiry returns an
-/// empty vector — the underlying `getaddrinfo` keeps running on the shared
-/// blocking pool (its result is discarded), so the calling scheduler thread
-/// returns within `deadline_ms` even if the resolver is stalled.
+/// `deadline_ms <= 0` disables the deadline. On deadline expiry or resolution
+/// failure returns an empty vector. The resolver keeps running after the
+/// deadline; its late answer is discarded.
 ///
 /// # Examples
 ///
@@ -84,9 +83,19 @@ pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
 /// }
 /// ```
 pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {
-    unsafe {
-        hew_dns_resolve_timed(hostname, deadline_ms as i64)
-    } // INTERNAL-ABI: C ABI takes i64 deadline
+    if deadline_ms <= 0 {
+        return unsafe {
+            hew_dns_resolve(hostname)
+        };
+    }
+    scope within duration.from_millis(deadline_ms) {
+        unsafe {
+            hew_dns_resolve(hostname)
+        }
+    } handle failure {
+        let none: Vec<string> = [];
+        none
+    }
 }
 
 /// Resolve a hostname to its first IP address with a deadline.
@@ -94,19 +103,24 @@ pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {
 /// `deadline_ms <= 0` disables the deadline. On deadline expiry or resolution
 /// failure returns an empty string.
 pub fn lookup_host_timed(hostname: string, deadline_ms: i64) -> string {
-    unsafe {
-        hew_dns_lookup_host_timed(hostname, deadline_ms as i64)
-    } // INTERNAL-ABI: C ABI takes i64 deadline
+    if deadline_ms <= 0 {
+        return unsafe {
+            hew_dns_lookup_host(hostname)
+        };
+    }
+    scope within duration.from_millis(deadline_ms) {
+        unsafe {
+            hew_dns_lookup_host(hostname)
+        }
+    } handle failure {
+        ""
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    #[runtime_capability(blocking_offload)]
+    #[offload]
     fn hew_dns_resolve(hostname: string) -> Vec<string>;
-    #[runtime_capability(blocking_offload)]
+    #[offload]
     fn hew_dns_lookup_host(hostname: string) -> string;
-    #[runtime_capability(blocking_offload)]
-    fn hew_dns_resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string>;
-    #[runtime_capability(blocking_offload)]
-    fn hew_dns_lookup_host_timed(hostname: string, deadline_ms: i64) -> string;
 }

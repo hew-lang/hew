@@ -215,7 +215,10 @@ fn emit_crash_diagnostic(actor_id: u64, code: i32, msg_type: i32, dispatch_ptr: 
         crate::internal::types::ExitReason::Signal(signal) => format!("Signal({signal})"),
         named => named.trap_kind_name().to_owned(),
     };
-    eprintln!("hew: actor crash in {context} (actor {actor_id}): {reason}");
+    crate::output::write(
+        crate::output::Stream::Err,
+        format!("hew: actor crash in {context} (actor {actor_id}): {reason}\n").as_bytes(),
+    );
 }
 
 /// Record a fault-injected crash in the global crash log.

@@ -1,0 +1,13 @@
+[[case]]
+id = "offload-user-extern-frees-the-worker"
+intent = "A user #[offload] extern blocked in the OS leaves the only worker free for the task that unblocks it."
+source = "cases/offload-user-extern-frees-the-worker.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "through the pipe\n"
+exit = 0

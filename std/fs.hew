@@ -417,19 +417,33 @@ impl FileReadStream {
 }
 
 extern "C" {
+    #[offload]
     fn hew_file_read(path: string) -> string;
+    #[offload]
     fn hew_file_write(path: string, content: string) -> i32;
+    #[offload]
     fn hew_file_append(path: string, content: string) -> i32;
+    #[offload]
     fn hew_file_exists(path: string) -> bool;
+    #[offload]
     fn hew_file_delete(path: string) -> i32;
+    #[offload]
     fn hew_file_size(path: string) -> i64;
+    #[offload]
     fn hew_file_read_bytes(path: string) -> bytes;
+    #[offload]
     fn hew_file_write_bytes(path: string, data: bytes) -> i32;
+    #[offload]
     fn hew_fs_mkdir(path: string) -> i32;
+    #[offload]
     fn hew_fs_mkdir_all(path: string) -> i32;
+    #[offload]
     fn hew_fs_list_dir(path: string) -> Vec<string>;
+    #[offload]
     fn hew_fs_rename(from: string, to: string) -> i32;
+    #[offload]
     fn hew_fs_copy(from: string, to: string) -> i32;
+    #[offload]
     fn hew_fs_is_dir(path: string) -> bool;
     fn hew_file_read_stream_open(path: string) -> FileReadStream;
     fn hew_file_read_stream_is_valid(stream: FileReadStream) -> bool;

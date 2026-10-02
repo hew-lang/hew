@@ -644,6 +644,7 @@ fn scalar_entry_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
@@ -841,6 +842,7 @@ fn bytes_copy_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),

@@ -2292,6 +2292,7 @@ impl Builder<'_, '_> {
                         consumes: function.param_consume.clone(),
                         result: function.return_ty.clone(),
                         runtime_capability: function.runtime_capability,
+                        offload: function.offload,
                     }
                 })
             })
@@ -2419,6 +2420,10 @@ impl Builder<'_, '_> {
             && OwnKind::of_ty(&signature.result, self.service.checked_facts.rows())?
                 == OwnKind::Owned;
         Self::verify_extern_declaration_ownership(&signature, &obligations, result_owned)?;
+        if signature.offload {
+            let order = evaluation_sequence(evaluation_order, args.len());
+            return self.lower_offload_call(signature, args, &order, value_required);
+        }
         let read_only = decisions
             .iter()
             .all(|decision| *decision != crate::BoundaryDecision::Move);
@@ -2528,5 +2533,144 @@ impl Builder<'_, '_> {
             ));
         }
         Ok(continuation)
+    }
+
+    /// An `#[offload]` extern call parks its task while the pool runs it.
+    ///
+    /// The job owns an independent copy of every argument, because a
+    /// cancelled caller resumes at once and releases its own values while the
+    /// C function may still be running. Inputs are therefore moved into the
+    /// suspension, never borrowed, and the call has no loans to drain.
+    fn lower_offload_call(
+        &mut self,
+        signature: crate::ExternSignature,
+        args: &[HirExpr],
+        order: &[usize],
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let function = self.service.request_offload(&signature)?;
+        let before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
+        let inputs = self.lower_offload_inputs(&signature, args, order)?;
+        let live = self.owned_live.clone();
+        let (result, normal, continuation) = if signature.result == ResolvedTy::Unit {
+            (
+                CallResult::Unit,
+                Edge {
+                    target: self.new_block(Vec::new()),
+                    args: Vec::new(),
+                },
+                None,
+            )
+        } else {
+            let own = OwnKind::of_ty(&signature.result, self.service.checked_facts.rows())?;
+            let raw = self.fresh_value();
+            let continuation = self.fresh_value();
+            let normal = self.new_block(vec![BlockArg {
+                value: continuation,
+                ty: signature.result.clone(),
+                own,
+            }]);
+            (
+                CallResult::Value(ValueDef {
+                    id: raw,
+                    ty: signature.result.clone(),
+                    own,
+                }),
+                Edge {
+                    target: normal,
+                    args: vec![Operand { value: raw }],
+                },
+                Some((continuation, own)),
+            )
+        };
+        let cancel = self.new_block(Vec::new());
+        let unwind = self.new_block(Vec::new());
+        let normal_target = normal.target;
+        self.set_terminator(SemTerminator::Suspend {
+            kind: crate::SuspendKind::Offload { function },
+            inputs,
+            result,
+            resumes: vec![normal],
+            cancel: Edge {
+                target: cancel,
+                args: Vec::new(),
+            },
+            unwind: Edge {
+                target: unwind,
+                args: Vec::new(),
+            },
+        })?;
+        for cleanup in [cancel, unwind] {
+            self.current = cleanup;
+            self.owned_live = live.clone();
+            self.finish_fault_exit()?;
+        }
+        self.current = normal_target;
+        self.owned_live = live;
+        let temporaries = self
+            .owned_live
+            .keys()
+            .filter(|value| !before.contains(value))
+            .copied()
+            .collect::<Vec<_>>();
+        for temporary in temporaries.into_iter().rev() {
+            self.emit_destroy(temporary)?;
+        }
+        match continuation {
+            Some((value, own)) => {
+                if own == OwnKind::Owned {
+                    self.owned_live.insert(value, signature.result);
+                }
+                Ok(Some(value))
+            }
+            None if value_required => Err(format!(
+                "unit-valued extern `{}` cannot produce an SSA value",
+                signature.symbol
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Each input becomes an independent owner moved into the job (or a copy
+    /// of a plain value); the caller keeps its own binding.
+    fn lower_offload_inputs(
+        &mut self,
+        signature: &crate::ExternSignature,
+        args: &[HirExpr],
+        order: &[usize],
+    ) -> Result<Vec<crate::BoundaryOperand>, String> {
+        let mut placed: Vec<Option<crate::BoundaryOperand>> = args.iter().map(|_| None).collect();
+        for &index in order {
+            let argument = &args[index];
+            let own = OwnKind::of_ty(&signature.params[index], self.service.checked_facts.rows())?;
+            let (value, decision) = if own == OwnKind::Owned {
+                (
+                    self.lower_adopted_copy(argument)?,
+                    crate::BoundaryDecision::Move,
+                )
+            } else {
+                (
+                    lower_initial_value_transfer(
+                        self,
+                        argument,
+                        "offloaded call argument",
+                        OwnedBindingUse::Copy,
+                    )?,
+                    crate::BoundaryDecision::Copy,
+                )
+            };
+            placed[index] = Some(crate::BoundaryOperand {
+                operand: Operand { value },
+                decision,
+            });
+        }
+        let inputs: Vec<_> = placed.into_iter().flatten().collect();
+        // Moved inputs belong to the job from submission on.
+        for input in &inputs {
+            if input.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&input.operand.value);
+            }
+        }
+        Ok(inputs)
     }
 }

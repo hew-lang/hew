@@ -37,6 +37,8 @@ mod debug;
 mod generators;
 #[path = "../physical_io.rs"]
 mod io;
+#[path = "../physical_offload.rs"]
+mod offload;
 #[path = "../physical_select.rs"]
 mod select;
 #[path = "../physical_stream.rs"]

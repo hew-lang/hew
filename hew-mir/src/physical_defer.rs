@@ -161,6 +161,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         }
+        | PhysicalTerminator::Offload {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
         | PhysicalTerminator::Sleep {
             normal,
             cancel,
@@ -363,6 +369,7 @@ fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>)
             used.insert(*scrutinee);
         }
         PhysicalTerminator::NativeIo { args, .. }
+        | PhysicalTerminator::Offload { args, .. }
         | PhysicalTerminator::Call { args, .. }
         | PhysicalTerminator::RuntimeCall { args, .. }
         | PhysicalTerminator::ValueCall { args, .. } => used.extend(args.iter().map(source)),
@@ -561,6 +568,7 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
                     region.values.insert(*result);
                 }
                 PhysicalTerminator::Call { result, .. }
+                | PhysicalTerminator::Offload { result, .. }
                 | PhysicalTerminator::IndirectCall { result, .. }
                 | PhysicalTerminator::DynCall { result, .. }
                 | PhysicalTerminator::RuntimeCall { result, .. } => {

@@ -9,14 +9,14 @@ use super::{
     PhysicalCallSignature, PhysicalCallable, PhysicalClosure, PhysicalDebug, PhysicalDebugFunction,
     PhysicalDebugLocal, PhysicalDebugVariant, PhysicalEnvironmentGlue, PhysicalError,
     PhysicalFunction, PhysicalLayout, PhysicalMapDescriptor, PhysicalMapGlue, PhysicalMapId,
-    PhysicalModule, PhysicalParam, PhysicalRepr, PhysicalResourceDescriptor, PhysicalResourceId,
-    PhysicalSetDescriptor, PhysicalSetGlue, PhysicalSetId, PhysicalSharedDescriptor,
-    PhysicalSharedGlue, PhysicalSharedId, PhysicalStorage, PhysicalTarget, PhysicalTerminator,
-    PhysicalTypeInventory, PhysicalVariantCase, PhysicalVariantDescriptor, PhysicalVariantGlue,
-    PhysicalVariantId, PhysicalVectorDescriptor, PhysicalVectorGlue, PhysicalVectorId,
-    PhysicalVtable, PhysicalVtableId, PhysicalVtableSlot, ReleaseEffects, ResolvedTy, SemFunction,
-    SemModule, SemTerminator, StorageId, StorageOrigin, TypeInstanceKey, ValueId,
-    VerifiedPhysicalModule,
+    PhysicalModule, PhysicalOffload, PhysicalOffloadSlot, PhysicalParam, PhysicalRepr,
+    PhysicalResourceDescriptor, PhysicalResourceId, PhysicalSetDescriptor, PhysicalSetGlue,
+    PhysicalSetId, PhysicalSharedDescriptor, PhysicalSharedGlue, PhysicalSharedId, PhysicalStorage,
+    PhysicalTarget, PhysicalTerminator, PhysicalTypeInventory, PhysicalVariantCase,
+    PhysicalVariantDescriptor, PhysicalVariantGlue, PhysicalVariantId, PhysicalVectorDescriptor,
+    PhysicalVectorGlue, PhysicalVectorId, PhysicalVtable, PhysicalVtableId, PhysicalVtableSlot,
+    ReleaseEffects, ResolvedTy, SemFunction, SemModule, SemTerminator, StorageId, StorageOrigin,
+    TypeInstanceKey, ValueId, VerifiedPhysicalModule,
 };
 
 /// Lower verified ownership SIR into the sole target-realized MIR.
@@ -206,6 +206,31 @@ pub fn lower_physical_module(
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
+    let offloads = module
+        .offloads
+        .iter()
+        .map(|signature| {
+            let slot = |ty: &ResolvedTy| -> Result<PhysicalOffloadSlot, PhysicalError> {
+                Ok(PhysicalOffloadSlot {
+                    layout: required_layout(&target, ty)?.clone(),
+                    recipe: physical_value_recipe(module, &ids, ty)?,
+                })
+            };
+            Ok(PhysicalOffload {
+                symbol: signature.symbol.clone(),
+                params: signature
+                    .params
+                    .iter()
+                    .map(slot)
+                    .collect::<Result<Vec<_>, PhysicalError>>()?,
+                result: (signature.result != ResolvedTy::Unit)
+                    .then(|| slot(&signature.result))
+                    .transpose()?,
+                result_abi: target.extern_result_abi(&signature.result)?,
+            })
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
+
     let mut physical = PhysicalModule {
         releases: ReleaseEffects::default(),
         actor_recipes: actor_value_recipes(module, &ids)?,
@@ -224,6 +249,7 @@ pub fn lower_physical_module(
             })
             .collect(),
         vtables,
+        offloads,
         environment_glue,
         target,
         aggregate_glue,

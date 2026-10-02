@@ -475,6 +475,10 @@ pub struct SemAggregateShape {
     pub fields: Vec<SemAggregateField>,
 }
 
+/// Module-local identity of one `#[offload]` extern a body calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OffloadId(pub u32);
+
 /// Module-local identity of one demanded `(dyn Trait, concrete type)` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemVtableId(pub u32);
@@ -869,6 +873,8 @@ pub struct SemModule {
     /// The compilation's declaration table: every `DefId` in the module
     /// indexes it, and it renders declarations for diagnostics and symbols.
     pub defs: std::sync::Arc<hew_types::DefTable>,
+    /// `#[offload]` externs called by this module's bodies, by [`OffloadId`].
+    pub offloads: Vec<crate::ExternSignature>,
 }
 
 impl SemModule {

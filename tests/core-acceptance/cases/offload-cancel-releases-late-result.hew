@@ -1,0 +1,33 @@
+// A deadline cancels an offloaded read that is still blocked in the OS. The
+// caller resumes at once and keeps its own path; the job owns a copy of the
+// path and, once a writer releases it, the late contents. The safety suite
+// proves the job releases both exactly once.
+import std.fs;
+
+import std.os;
+
+import std.path;
+
+import std.process;
+
+fn main() {
+    let fifo = path.combine(os.temp_dir(), f"hew-offload-cancel-{os.pid()}");
+    process.run(f"mkfifo {fifo}").expect("create fifo");
+    let outcome = scope within 100ms {
+        match fs.read(fifo) {
+            .Ok(text) => f"read {text}",
+            .Err(error) => f"failed {error}",
+        }
+    } handle failure {
+        match failure {
+            .Deadline { message } => "deadline",
+            .Fault { message } => "fault",
+        }
+    };
+    println(outcome);
+    // Opening the write end releases the abandoned read; its result is dropped.
+    fs.write(fifo, "late contents").expect("release the reader");
+    fs.delete(fifo).expect("remove fifo");
+    let name = path.basename(fifo);
+    println(f"caller still owns {name.starts_with("hew-offload-cancel-")}");
+}

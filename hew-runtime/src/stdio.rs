@@ -9,7 +9,8 @@
 )]
 
 use hew_cabi::string::{string_as_bytes, HewString};
-use std::io::{self, Write};
+
+use crate::output::{write, Stream};
 
 /// Write a string to stdout without a trailing newline.
 ///
@@ -19,9 +20,7 @@ use std::io::{self, Write};
 #[no_mangle]
 pub unsafe extern "C" fn hew_io_write(s: *const HewString) {
     // SAFETY: the caller supplies a live managed string handle; null is empty.
-    let bytes = unsafe { string_as_bytes(s) };
-    let _ = io::stdout().write_all(bytes);
-    let _ = io::stdout().flush();
+    write(Stream::Out, unsafe { string_as_bytes(s) });
 }
 
 /// Write a string to stderr without a trailing newline.
@@ -32,9 +31,7 @@ pub unsafe extern "C" fn hew_io_write(s: *const HewString) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_io_write_err(s: *const HewString) {
     // SAFETY: the caller supplies a live managed string handle; null is empty.
-    let bytes = unsafe { string_as_bytes(s) };
-    let _ = io::stderr().write_all(bytes);
-    let _ = io::stderr().flush();
+    write(Stream::Err, unsafe { string_as_bytes(s) });
 }
 
 // ---------------------------------------------------------------------------

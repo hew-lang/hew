@@ -40,7 +40,7 @@
 //! not a linkable symbol, so call-target resolution reads endpoint-owning
 //! rows only and leaves the witness calls to their runtime families.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::Span;
 
@@ -124,6 +124,9 @@ pub struct ExternTable {
     /// opaque-handle method resolution probe (mirrors the legacy
     /// first-match scan over source declarations).
     by_symbol_and_module: HashMap<(String, Option<String>), DefId>,
+    /// Declarations marked `#[offload]`: a call parks its task and runs the
+    /// C function on the blocking pool. Per declaration, like provenance.
+    offloaded: HashSet<DefId>,
 }
 
 impl ExternTable {
@@ -254,6 +257,18 @@ impl ExternTable {
                 .or_insert_with(|| declaration);
         }
         self.declarations.insert(declaration, record);
+    }
+
+    /// Mark a validated `#[offload]` declaration.
+    pub(crate) fn mark_offload(&mut self, declaration: DefId) {
+        self.offloaded.insert(declaration);
+    }
+
+    /// Whether a call through `declaration` parks its task while the C
+    /// function runs on the blocking pool.
+    #[must_use]
+    pub fn is_offload(&self, declaration: DefId) -> bool {
+        self.offloaded.contains(&declaration)
     }
 
     /// Whether `declaration` names a registered extern declaration — the

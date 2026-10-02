@@ -89,6 +89,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         "every" => &[ActorReceiveFn],
         "max_heap" => &[ActorDecl],
         "extern_symbol" => &[ImplMethod, ExternFn],
+        "offload" => &[ExternFn],
         "runtime" => &[ImplMethod],
         // Not gated to `std/` by `RESERVED_SUBSTRATE_ATTRIBUTES` today (it is
         // used by non-stdlib code, e.g.
@@ -111,7 +112,7 @@ impl Parser<'_> {
         quoted_arguments: bool,
     ) {
         let (valid, hint) = match attr.name.as_str() {
-            "test" | "real_time" => (argument_count == 0, "remove the arguments"),
+            "test" | "real_time" | "offload" => (argument_count == 0, "remove the arguments"),
             "ignore" | "should_panic" => (
                 argument_count <= 1 && quoted_arguments,
                 "use no argument or one quoted string, such as (\"reason\")",

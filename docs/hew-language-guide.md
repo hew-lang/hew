@@ -5132,3 +5132,32 @@ Ordinary function signatures, fields, aliases, and other Hew declarations use
 `T`, not `&T`. There is no `&expr` operation and no conversion from `T` to
 `&T`. Mutable FFI access uses the raw-pointer spelling `*mut T`; Hew does not
 provide `&mut T` or `&var T`.
+
+### Blocking foreign calls — `#[offload]`
+
+A C function that blocks in the operating system takes `#[offload]`. The call
+reads like any other, but it parks only the calling task while the function
+runs on the runtime's blocking pool:
+
+```hew,ignore
+extern "C" {
+    #[offload]
+    fn render_report(template: string, rows: Vec<string>) -> string;
+}
+
+fn report(rows: Vec<string>) -> string {
+    scope within 5s {
+        unsafe { render_report("monthly", rows) }
+    } handle failure {
+        "report timed out"
+    }
+}
+```
+
+The job gets its own copy of each argument, so a deadline or cancellation
+resumes the caller immediately while the C call finishes on the pool and its
+result is discarded there. Parameters and the result must be copyable values
+(scalars, `string`, `bytes`, collections and records of them); a `consume`
+parameter, a variadic function or an `#[opaque]` handle is
+`E_OFFLOAD_SIGNATURE`. The standard library's file system and DNS calls are
+declared this way.

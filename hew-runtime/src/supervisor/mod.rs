@@ -540,12 +540,11 @@ pub(crate) unsafe fn trap_with_code(code: i32, reported: bool) {
         // unrecovered fault and the process reports `1` (HEW-SPEC-2026 5.8)
         // after its typed line. Terminating here rather than returning to the
         // generated `llvm.trap` is what keeps the private trap code out of the
-        // process status. Buffered output is flushed first, as `exit()` does.
+        // process status. Queued output is written first.
         if !reported {
             crate::fault::report_trap_code(code);
         }
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        let _ = std::io::Write::flush(&mut std::io::stderr());
+        crate::output::flush();
         crate::test_report::finish(1);
         // JUSTIFIED: a trap with no recovery authority ends the run; the OS
         // reclaims what the skipped destructors would have released.

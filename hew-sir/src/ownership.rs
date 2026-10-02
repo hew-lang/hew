@@ -487,6 +487,11 @@ pub enum SuspendKind {
     NativeIo {
         operation: hew_types::runtime_call::AsyncIoOp,
     },
+    /// An `#[offload]` extern call: the job owns copies of its inputs and its
+    /// result, and cancellation resumes the caller without waiting for it.
+    Offload {
+        function: crate::OffloadId,
+    },
     Await,
     RestartWait,
     ActorSend,

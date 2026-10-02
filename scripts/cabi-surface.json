@@ -1910,45 +1910,6 @@
     },
     {
       "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_async_file_read( *const HewString, *const HewWaker, ) -> *const HewAsyncIo"
-      },
-      "symbol": "hew_async_file_read"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_async_file_write( *const HewString, *const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo"
-      },
-      "symbol": "hew_async_file_write"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_async_file_write_string( *const HewString, *const HewString, *const HewWaker, ) -> *const HewAsyncIo"
-      },
-      "symbol": "hew_async_file_write_string"
-    },
-    {
-      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -2109,6 +2070,36 @@
         "native": "fn hew_async_io_take_handle( *const HewAsyncIo, *mut i64, ) -> i32"
       },
       "symbol": "hew_async_io_take_handle"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_io_take_offload( *const HewAsyncIo, *mut u8, usize, usize, ) -> i32",
+        "wasm32-wasip1": "fn hew_async_io_take_offload( *const HewAsyncIo, *mut u8, usize, usize, ) -> i32"
+      },
+      "symbol": "hew_async_io_take_offload"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_offload( OffloadRun, OffloadRelease, *mut u8, usize, usize, *const HewWaker, ) -> *const HewAsyncIo",
+        "wasm32-wasip1": "fn hew_async_offload( OffloadRun, OffloadRelease, *mut u8, usize, usize, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_offload"
     },
     {
       "availability": [
@@ -5787,35 +5778,9 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dns_lookup_host_timed( *const HewString, i64, ) -> *mut HewString"
-      },
-      "symbol": "hew_dns_lookup_host_timed"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_dns_resolve( *const HewString) -> *mut HewVec"
       },
       "symbol": "hew_dns_resolve"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_dns_resolve_timed( *const HewString, i64, ) -> *mut HewVec"
-      },
-      "symbol": "hew_dns_resolve_timed"
     },
     {
       "availability": [
@@ -11862,66 +11827,6 @@
         "wasm32-wasip1": "fn hew_print_value( u8, u64, bool)"
       },
       "symbol": "hew_print_value"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_println_bool( u8)",
-        "wasm32-wasip1": "fn hew_println_bool( u8)"
-      },
-      "symbol": "hew_println_bool"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_println_f64( f64)",
-        "wasm32-wasip1": "fn hew_println_f64( f64)"
-      },
-      "symbol": "hew_println_f64"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_println_int( i64)",
-        "wasm32-wasip1": "fn hew_println_int( i64)"
-      },
-      "symbol": "hew_println_int"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_println_str( *const HewString)",
-        "wasm32-wasip1": "fn hew_println_str( *const HewString)"
-      },
-      "symbol": "hew_println_str"
     },
     {
       "availability": [

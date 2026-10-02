@@ -2224,6 +2224,7 @@ pub fn lower_program_with_mono_cap(
                         // fact, not `diagnostic_source_modules` absence.
                         provenance,
                         runtime_capability,
+                        offload: type_check_output.extern_contracts.is_offload(declaration),
                         span: func.span.clone(),
                     }));
                 }
@@ -2478,6 +2479,9 @@ pub fn lower_program_with_mono_cap(
                                     // pass emitted it.
                                     provenance,
                                     runtime_capability,
+                                    offload: type_check_output
+                                        .extern_contracts
+                                        .is_offload(declaration),
                                     span: func.span.clone(),
                                 }));
                             }
@@ -2739,6 +2743,7 @@ pub fn lower_program_with_mono_cap(
                                 function.name.name.as_str(),
                             ),
                             provenance,
+                            offload: false,
                             span: function.span.clone(),
                         }));
                     }
@@ -2895,6 +2900,7 @@ pub fn lower_program_with_mono_cap(
             return_ty,
             provenance,
             runtime_capability,
+            offload: false,
             span: hew_parser::ast::Span::default(),
         }));
     }

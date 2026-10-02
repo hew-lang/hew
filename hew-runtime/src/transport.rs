@@ -19,7 +19,6 @@ use std::sync::{
     Arc, OnceLock,
 };
 
-use crate::blocking_pool::{shared_blocking_pool_opt, spawn_blocking_result, BlockingPoolError};
 use crate::lifetime::poison_safe::PoisonSafeRw;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -1214,48 +1213,13 @@ pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
     tcp_register_owned_stream(stream)
 }
 
-/// Resolve `addr` through the shared blocking pool with an optional deadline.
-///
-/// `deadline_ms <= 0` resolves with no deadline. The shared pool keeps the
-/// scheduler thread free while `getaddrinfo` runs.
-///
-/// On `IoError::TimedOut` the caller should set errno=ETIMEDOUT (110 on
-/// Linux, 60 on macOS) — caller's responsibility because errno values are
-/// platform-specific. The pool returns `BlockingPoolError::PoolStopped` for
-/// any non-timeout failure including a `getaddrinfo` error.
-fn resolve_addr_via_pool(
-    target: String,
-    deadline_ms: i64,
-) -> Result<Vec<SocketAddr>, BlockingPoolError> {
-    let deadline = if deadline_ms <= 0 {
-        None
-    } else {
-        #[expect(clippy::cast_sign_loss, reason = "checked > 0 above")]
-        Some(std::time::Duration::from_millis(deadline_ms as u64))
-    };
-    // Fail closed when no runtime is installed: reaching this offload without a
-    // runtime is a programming error, but it must return a defined error to the
-    // C caller rather than abort in `rt_current()` across the ABI boundary.
-    let Some(pool) = shared_blocking_pool_opt() else {
-        return Err(BlockingPoolError::NoRuntime);
-    };
-    // SAFETY: shared_blocking_pool_opt returns the current runtime's pool, valid
-    // for that runtime's lifetime; this offload runs on a scheduler/reactor
-    // thread that cleanup joins before the runtime (and its pool) is dropped,
-    // so the pointer stays valid for this call.
-    unsafe {
-        spawn_blocking_result(
-            pool,
-            move || {
-                target
-                    .to_socket_addrs()
-                    .map(Iterator::collect::<Vec<_>>)
-                    .ok()
-            },
-            deadline,
-        )
-    }
-    .and_then(|opt| opt.ok_or(BlockingPoolError::PoolStopped))
+/// Resolve `target` (`host:port`) with the system resolver. `None` on a
+/// resolver error.
+fn resolve_addr(target: &str) -> Option<Vec<SocketAddr>> {
+    target
+        .to_socket_addrs()
+        .map(Iterator::collect::<Vec<_>>)
+        .ok()
 }
 
 /// Connect to a TCP endpoint at `addr` (`host:port`).
@@ -1271,15 +1235,12 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
     unsafe { hew_tcp_connect_timed(addr, 0) }
 }
 
-/// Connect to a TCP endpoint at `addr` (`host:port`) with a single-budget
-/// deadline that covers BOTH the DNS resolution and the TCP handshake.
+/// Connect to a TCP endpoint at `addr` (`host:port`), blocking the calling
+/// thread. Hew code connects through `hew_async_tcp_connect` instead.
 ///
 /// `deadline_ms <= 0` disables the deadline (no time limit). Otherwise the
-/// caller has at most `deadline_ms` milliseconds across:
-///   1. `getaddrinfo` running on the shared blocking pool, and
-///   2. `TcpStream::connect_timeout` for the residual budget.
-///
-/// On deadline expiry returns -1 with errno=ETIMEDOUT (110 Linux, 60 macOS).
+/// handshake gets what remains of `deadline_ms` after `getaddrinfo`, which
+/// itself is not bounded. On expiry returns -1 with errno=ETIMEDOUT.
 ///
 /// # Safety
 ///
@@ -1301,43 +1262,12 @@ pub unsafe extern "C" fn hew_tcp_connect_timed(addr: *const c_char, deadline_ms:
     };
 
     let start = std::time::Instant::now();
-    let addrs = match resolve_addr_via_pool(connect_addr.to_owned(), deadline_ms) {
-        Ok(a) => a,
-        Err(BlockingPoolError::TimedOut) => {
-            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
-            // Cleanup-all-exits: no partial socket allocated; only thread-local
-            // state needs an update so callers can read structured errors.
-            hew_cabi::sink::set_last_error_with_errno(
-                format!("hew_tcp_connect: DNS deadline expired after {deadline_ms} ms"),
-                etimedout_errno(),
-            );
-            return -1;
-        }
-        Err(BlockingPoolError::PoolStopped) => {
-            // getaddrinfo returned an error.
-            hew_cabi::sink::set_last_error_with_errno(
-                String::from("hew_tcp_connect: DNS resolution failed"),
-                0,
-            );
-            return -1;
-        }
-        Err(BlockingPoolError::WorkerPanicked) => {
-            hew_cabi::sink::set_last_error_with_errno(
-                String::from("hew_tcp_connect: DNS resolution worker panicked"),
-                0,
-            );
-            return -1;
-        }
-        Err(BlockingPoolError::NoRuntime) => {
-            // Fail closed: no runtime installed, so no blocking pool to offload
-            // DNS onto. Clean -1 with EINVAL rather than a SIGABRT across the ABI.
-            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
-            hew_cabi::sink::set_last_error_with_errno(
-                String::from("hew_tcp_connect: no runtime installed"),
-                22, // EINVAL: entrypoint called before hew_sched_init
-            );
-            return -1;
-        }
+    let Some(addrs) = resolve_addr(connect_addr) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            String::from("hew_tcp_connect: DNS resolution failed"),
+            0,
+        );
+        return -1;
     };
     let Some(sock_addr) = addrs.into_iter().next() else {
         hew_cabi::sink::set_last_error_with_errno(
@@ -1483,12 +1413,10 @@ pub extern "C" fn hew_tcp_set_write_timeout(fd: c_int, timeout_ms: c_int) -> c_i
     0
 }
 
-/// Connect to a TCP endpoint with an explicit timeout that covers BOTH
-/// DNS resolution and the TCP handshake (single-budget deadline).
+/// Connect to a TCP endpoint with a timeout, blocking the calling thread.
+/// The handshake gets what remains of the timeout after `getaddrinfo`.
 ///
-/// Returns a positive connection handle, or -1 on error. DNS now runs on the
-/// shared blocking pool so the calling scheduler thread is not parked while
-/// `getaddrinfo` runs.
+/// Returns a positive connection handle, or -1 on error.
 ///
 /// # Safety
 ///
@@ -1516,36 +1444,8 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
     let target = format!("{host_str}:{port}");
     let start = std::time::Instant::now();
     let total = std::time::Duration::from_millis(timeout_ms_u64);
-    let addrs = match resolve_addr_via_pool(target, i64::from(timeout_ms)) {
-        Ok(a) => a,
-        Err(BlockingPoolError::TimedOut) => {
-            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
-            hew_cabi::sink::set_last_error_with_errno(
-                format!("hew_tcp_connect_timeout: DNS deadline expired after {timeout_ms} ms"),
-                etimedout_errno(),
-            );
-            return -1;
-        }
-        Err(BlockingPoolError::PoolStopped) => {
-            return -1;
-        }
-        Err(BlockingPoolError::WorkerPanicked) => {
-            hew_cabi::sink::set_last_error_with_errno(
-                String::from("hew_tcp_connect: DNS resolution worker panicked"),
-                0,
-            );
-            return -1;
-        }
-        Err(BlockingPoolError::NoRuntime) => {
-            // Fail closed: no runtime installed, so no blocking pool to offload
-            // DNS onto. Clean -1 with EINVAL rather than a SIGABRT across the ABI.
-            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
-            hew_cabi::sink::set_last_error_with_errno(
-                String::from("hew_tcp_connect_timeout: no runtime installed"),
-                22, // EINVAL: entrypoint called before hew_sched_init
-            );
-            return -1;
-        }
+    let Some(addrs) = resolve_addr(&target) else {
+        return -1;
     };
     let Some(sock_addr) = addrs.into_iter().next() else {
         return -1;
@@ -2353,49 +2253,6 @@ mod tests {
                 unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
                 remove_stream(handle);
             },
-        );
-    }
-
-    /// A blocking-pool FFI entrypoint reached with NO runtime installed must
-    /// fail closed with a clean errno return, never abort in `rt_current()`
-    /// across the C ABI. This is the negative test the original blocking-pool
-    /// inventory lacked: `hew_tcp_connect*` reached the pool unguarded and would
-    /// SIGABRT when called before `hew_sched_init` installs a runtime.
-    #[test]
-    fn tcp_connect_without_runtime_fails_closed() {
-        let _lock = crate::scheduler::SchedTestLock::acquire();
-        assert!(
-            crate::runtime::rt_default().is_none(),
-            "test requires the default runtime slot to be empty"
-        );
-        let _ = hew_cabi::sink::take_last_errno();
-
-        let addr = std::ffi::CString::new("example.com:80").expect("valid C string");
-        // SAFETY: `addr` is a valid, NUL-terminated C string; the entrypoint must
-        // return -1 with no runtime installed, never abort.
-        let rc = unsafe { hew_tcp_connect(addr.as_ptr()) };
-        assert_eq!(
-            rc, -1,
-            "connect with no runtime installed must return -1, not abort"
-        );
-        assert_eq!(
-            hew_cabi::sink::take_last_errno(),
-            22,
-            "a no-runtime blocking offload must surface EINVAL (22)"
-        );
-
-        // The port-form entrypoint fails closed on the same guarded path.
-        let host = std::ffi::CString::new("example.com").expect("valid C string");
-        // SAFETY: `host` is a valid, NUL-terminated C string.
-        let rc = unsafe { hew_tcp_connect_timeout(host.as_ptr(), 80, 1000) };
-        assert_eq!(
-            rc, -1,
-            "connect_timeout with no runtime installed must return -1, not abort"
-        );
-        assert_eq!(
-            hew_cabi::sink::take_last_errno(),
-            22,
-            "a no-runtime blocking offload must surface EINVAL (22)"
         );
     }
 

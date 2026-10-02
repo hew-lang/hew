@@ -257,6 +257,7 @@ pub(crate) struct CallableContext<'a> {
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
     vtables: &'a [crate::SemVtable],
+    offloads: &'a [crate::ExternSignature],
 }
 
 /// Index an already-verified module's callable table.
@@ -272,6 +273,7 @@ pub(crate) fn callable_context<'a>(
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
     vtables: &'a [crate::SemVtable],
+    offloads: &'a [crate::ExternSignature],
 ) -> CallableContext<'a> {
     CallableContext {
         defs,
@@ -279,6 +281,7 @@ pub(crate) fn callable_context<'a>(
         actors,
         supervisors,
         vtables,
+        offloads,
         by_id: callables
             .iter()
             .map(|callable| (callable.id, callable))
@@ -2043,6 +2046,7 @@ fn verify_callable_table<'a>(
         actors: &module.actors,
         supervisors: &module.supervisors,
         vtables: &module.vtables,
+        offloads: &module.offloads,
     }
 }
 
@@ -5582,6 +5586,37 @@ fn verify_terminator_shape(
                             if argument_types.is_some_and(|arguments| operation.contract().matches_signature(variants.defs, &arguments, &value.ty))
                                 && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                 }
+                // The job owns every input: a copy for a plain value, a moved
+                // owner otherwise. The result is the declared extern result.
+                crate::SuspendKind::Offload { function } => callable_context
+                    .and_then(|context| context.offloads.get(usize::try_from(function.0).ok()?))
+                    .is_some_and(|signature| {
+                        let owns = |ty: &ResolvedTy| OwnKind::of_ty(ty, variants.facts);
+                        resumes.len() == 1
+                            && inputs.len() == signature.params.len()
+                            && inputs
+                                .iter()
+                                .zip(&signature.params)
+                                .all(|(input, parameter)| {
+                                    types.get(&input.operand.value) == Some(parameter)
+                                        && match owns(parameter) {
+                                            Ok(OwnKind::Owned) => {
+                                                input.decision == crate::BoundaryDecision::Move
+                                            }
+                                            Ok(OwnKind::None) => {
+                                                input.decision == crate::BoundaryDecision::Copy
+                                            }
+                                            _ => false,
+                                        }
+                                })
+                            && match result {
+                                crate::CallResult::Unit => signature.result == ResolvedTy::Unit,
+                                crate::CallResult::Value(value) => {
+                                    value.ty == signature.result && owns(&value.ty) == Ok(value.own)
+                                }
+                                crate::CallResult::Never => false,
+                            }
+                    }),
                 crate::SuspendKind::Sleep => {
                     resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)
@@ -6183,7 +6218,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &hew_types::DefTable::fixture(),
             &function,
@@ -6205,7 +6240,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &hew_types::DefTable::fixture(),
             &function,
@@ -6226,7 +6261,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics = verify_function_with_context(

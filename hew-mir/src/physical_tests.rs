@@ -637,6 +637,7 @@ fn module_with_return() -> SemModule {
         },
     );
     SemModule {
+        offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
@@ -2224,6 +2225,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         ],
     };
     let physical = PhysicalModule {
+        offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         debug: PhysicalDebug::default(),
         regex_patterns: Vec::new(),

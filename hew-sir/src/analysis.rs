@@ -571,6 +571,7 @@ mod tests {
             let _ = fact_service.require(ty);
         }
         SemModule {
+            offloads: Vec::new(),
             defs: hew_types::DefTable::fixture(),
             debug: crate::SemDebugFacts::default(),
             actors: Vec::new(),

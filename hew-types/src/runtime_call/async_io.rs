@@ -41,8 +41,6 @@ impl IoHandleKind {
 pub enum AsyncIoResume {
     /// Transfer bytes on success; return empty bytes on ordinary I/O failure.
     Bytes,
-    /// Discard the successful byte count and return 0; return -1 on failure.
-    WriteStatus,
     /// Return the successful byte count; return -1 on failure.
     WriteCount,
     /// Transfer an accepted connection; return the invalid handle on failure.
@@ -74,9 +72,6 @@ pub enum AsyncIoLoan {
 )]
 pub enum AsyncIoOp {
     #[default]
-    FileReadBytes,
-    FileWriteString,
-    FileWriteBytes,
     TcpRead,
     TcpWrite,
     TcpAccept,
@@ -89,21 +84,15 @@ impl AsyncIoOp {
     #[must_use]
     pub const fn argument_loan(self) -> AsyncIoLoan {
         match self {
-            Self::FileReadBytes
-            | Self::FileWriteString
-            | Self::FileWriteBytes
-            | Self::TcpConnect
-            | Self::TcpConnectTimeout
-            | Self::StdinReadLine => AsyncIoLoan::UntilSubmitReturns,
+            Self::TcpConnect | Self::TcpConnectTimeout | Self::StdinReadLine => {
+                AsyncIoLoan::UntilSubmitReturns
+            }
             Self::TcpRead | Self::TcpWrite | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
         }
     }
     #[must_use]
     pub const fn c_symbol(self) -> &'static str {
         match self {
-            Self::FileReadBytes => "hew_file_read_bytes",
-            Self::FileWriteString => "hew_file_write",
-            Self::FileWriteBytes => "hew_file_write_bytes",
             Self::TcpRead => "hew_tcp_read",
             Self::TcpWrite => "hew_tcp_write",
             Self::TcpAccept => "hew_tcp_accept",
@@ -114,13 +103,10 @@ impl AsyncIoOp {
     }
 
     /// Compiler-private submission entry. Its inputs are borrowed for submit;
-    /// file inputs are copied by the operation, socket loans last to quiescence.
+    /// connect inputs are copied by the operation, socket loans last to quiescence.
     #[must_use]
     pub const fn submit_symbol(self) -> &'static str {
         match self {
-            Self::FileReadBytes => "hew_async_file_read",
-            Self::FileWriteString => "hew_async_file_write_string",
-            Self::FileWriteBytes => "hew_async_file_write",
             Self::TcpRead => "hew_async_tcp_read",
             Self::TcpWrite => "hew_async_tcp_write",
             Self::TcpAccept => "hew_async_tcp_accept",
@@ -133,8 +119,7 @@ impl AsyncIoOp {
     #[must_use]
     pub const fn resume(self) -> AsyncIoResume {
         match self {
-            Self::FileReadBytes | Self::TcpRead | Self::StdinReadLine => AsyncIoResume::Bytes,
-            Self::FileWriteString | Self::FileWriteBytes => AsyncIoResume::WriteStatus,
+            Self::TcpRead | Self::StdinReadLine => AsyncIoResume::Bytes,
             Self::TcpAccept | Self::TcpConnect | Self::TcpConnectTimeout => {
                 AsyncIoResume::Connection
             }
@@ -174,9 +159,6 @@ impl AsyncIoOp {
         // I/O errors belong to the source wrapper's Result/error channel,
         // not the logical-fault set on RuntimeSemanticContract.
         match self {
-            Self::FileReadBytes => runtime_semantic_contract(&[PATH], FreshOwned(Bytes), &[]),
-            Self::FileWriteString => runtime_semantic_contract(&[PATH, PATH], BitCopy(I32), &[]),
-            Self::FileWriteBytes => runtime_semantic_contract(&[PATH, DATA], BitCopy(I32), &[]),
             Self::TcpRead => runtime_semantic_contract(&[CONNECTION], FreshOwned(Bytes), &[]),
             Self::StdinReadLine => runtime_semantic_contract(&[], FreshOwned(Bytes), &[]),
             Self::TcpConnect => runtime_semantic_contract(
@@ -220,9 +202,6 @@ impl RuntimeCallFamily {
             return false;
         };
         let owner = match op {
-            AsyncIoOp::FileReadBytes | AsyncIoOp::FileWriteString | AsyncIoOp::FileWriteBytes => {
-                "std.fs"
-            }
             AsyncIoOp::TcpRead
             | AsyncIoOp::TcpWrite
             | AsyncIoOp::TcpAccept
@@ -248,32 +227,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one row and five refusals per native I/O operation"
-    )]
     fn native_io_externs_require_exact_owner_signature_and_borrow_contract() {
         let connection = handle("std.net.Connection");
         let listener = handle("std.net.Listener");
         for (op, module, params, result) in [
-            (
-                AsyncIoOp::FileReadBytes,
-                "std.fs",
-                vec![ResolvedTy::String],
-                ResolvedTy::Bytes,
-            ),
-            (
-                AsyncIoOp::FileWriteString,
-                "std.fs",
-                vec![ResolvedTy::String, ResolvedTy::String],
-                ResolvedTy::I32,
-            ),
-            (
-                AsyncIoOp::FileWriteBytes,
-                "std.fs",
-                vec![ResolvedTy::String, ResolvedTy::Bytes],
-                ResolvedTy::I32,
-            ),
             (
                 AsyncIoOp::TcpRead,
                 "std.net",
@@ -381,7 +338,7 @@ mod tests {
             AsyncIoLoan::UntilQuiescent
         );
         assert_eq!(
-            AsyncIoOp::FileReadBytes.argument_loan(),
+            AsyncIoOp::TcpConnect.argument_loan(),
             AsyncIoLoan::UntilSubmitReturns
         );
     }

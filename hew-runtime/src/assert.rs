@@ -16,7 +16,8 @@
 #[no_mangle]
 pub unsafe extern "C" fn hew_assert(cond: u8) {
     if cond == 0 {
-        eprintln!("assertion failed");
+        crate::output::write(crate::output::Stream::Err, b"assertion failed\n");
+        crate::output::flush();
         // SAFETY: abort() is always safe to call.
         unsafe { libc::abort() };
     }

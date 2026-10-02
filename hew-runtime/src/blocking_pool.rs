@@ -207,212 +207,6 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     0
 }
 
-/// Reasons a [`spawn_blocking_result`] call may fail without producing a value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockingPoolError {
-    /// The optional deadline elapsed before the worker produced a result. The
-    /// task will still run to completion on the pool thread; its result is
-    /// discarded when the worker writes it to the now-orphaned slot.
-    TimedOut,
-    /// The pool was null or has been stopped; the task was never enqueued.
-    PoolStopped,
-    /// No runtime is installed, so there is no pool to offload onto. Surfaced by
-    /// the fail-closed [`shared_blocking_pool_opt`] path when a C-ABI offload
-    /// entrypoint is reached before `hew_sched_init` (production) or without a
-    /// runtime test guard (tests). The task was never enqueued; the entrypoint
-    /// returns a clean error to the C caller instead of aborting.
-    NoRuntime,
-    /// The worker caught a panic from the submitted closure and reported it to
-    /// the waiting caller.
-    WorkerPanicked,
-}
-
-enum SlotOutcome<T> {
-    Pending,
-    Ready(T),
-    Panicked(String),
-}
-
-/// Result slot shared between the caller (waits) and the worker (writes).
-struct Slot<T> {
-    outcome: Mutex<SlotOutcome<T>>,
-    ready: Condvar,
-}
-
-/// Heap-allocated context handed to the C trampoline. Owns the `FnOnce`
-/// closure (in an `Option` so it can be moved out by value) and a strong
-/// reference to the result slot.
-struct TaskCtx<T, F> {
-    slot: Arc<Slot<T>>,
-    f: Option<F>,
-}
-
-/// C trampoline: recover the boxed context, run the closure, publish the
-/// result, signal the caller. Runs entirely on a pool worker thread.
-///
-/// # Safety
-///
-/// `arg` must have been constructed by `Box::into_raw(Box::new(TaskCtx<T, F>))`
-/// in the matching `spawn_blocking_result::<T, F>` call. The pool calls this
-/// trampoline exactly once per submission; the function reclaims ownership.
-unsafe extern "C" fn spawn_blocking_trampoline<T, F>(arg: *mut c_void)
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    // SAFETY: `arg` was constructed by `Box::into_raw(Box::new(TaskCtx<T,F>))`
-    // in the matching `spawn_blocking_result::<T, F>` call. The pool calls
-    // this trampoline exactly once per submission; we reclaim ownership.
-    let ctx = unsafe { Box::from_raw(arg.cast::<TaskCtx<T, F>>()) };
-    let TaskCtx { slot, mut f } = *ctx;
-    // Take the FnOnce out of the Option so we can call it by value.
-    let f = f.take().expect("FnOnce only invoked once");
-    let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(value) => SlotOutcome::Ready(value),
-        Err(payload) => {
-            let message = crate::util::take_panic_payload_message(payload);
-            SlotOutcome::Panicked(message)
-        }
-    };
-    // Publish the outcome. If the caller has already given up (timed out), it
-    // is stored and dropped when the last Arc drops.
-    let mut guard = slot.outcome.lock_or_recover();
-    *guard = outcome;
-    slot.ready.notify_one();
-}
-
-/// Submit a closure to the blocking pool, park the calling thread on a
-/// condvar-guarded result slot, and return the closure's value or an error.
-///
-/// `deadline` is optional: `None` parks indefinitely; `Some(d)` returns
-/// `Err(BlockingPoolError::TimedOut)` if the worker has not produced a result
-/// within `d`. On timeout the worker thread continues running the closure to
-/// completion — its result is stored into the shared slot and dropped when the
-/// last `Arc` reference goes away. There is no resource leak: the pool thread
-/// is reclaimed naturally and the heap allocations live exactly until both
-/// caller and worker drop their `Arc`.
-///
-/// This is a Rust-only API (no `#[no_mangle]`). The C ABI of the pool is
-/// unchanged — internally the closure is heap-boxed and a stable C trampoline
-/// is registered with [`hew_blocking_pool_submit`].
-///
-/// # Saturation
-///
-/// The pool has a fixed size ([`HEW_BLOCKING_POOL_SIZE`]). If every worker is
-/// occupied with non-cancellable blocking syscalls, additional submissions
-/// queue and parked callers will time out at their per-call deadline. The
-/// pool is never deadlocked — workers drain the queue as previous tasks
-/// complete.
-///
-/// WASM-TODO(blocking-pool): there is no blocking pool on WASM; until a
-/// WASM-compatible deadline primitive exists (web-sys + Promise
-/// integration, wasi-threads, or polled futures), transport callers on WASM
-/// keep their pre-existing unguarded blocking shape.
-///
-/// # Errors
-///
-/// Returns `Err(BlockingPoolError::PoolStopped)` if `pool` is null or the
-/// pool has been stopped (so the task could not be enqueued). Returns
-/// `Err(BlockingPoolError::TimedOut)` if `deadline` is `Some(d)` and `d`
-/// elapses before the worker publishes a result. Returns
-/// `Err(BlockingPoolError::WorkerPanicked)` if the submitted closure panics.
-///
-/// # Panics
-///
-/// Panics in the trampoline if a `Box` reclaim fails — this should be
-/// impossible because the trampoline owns a pointer it produced itself.
-///
-/// # Safety
-///
-/// `pool` must either be null or a valid pointer returned by
-/// [`hew_blocking_pool_new`] that has not yet been freed with
-/// [`hew_blocking_pool_stop`]. Callers must not race a `stop` against a
-/// `spawn_blocking_result` on the same pool — the pool pointer itself becomes
-/// invalid after stop returns.
-pub unsafe fn spawn_blocking_result<T, F>(
-    pool: *mut HewBlockingPool,
-    f: F,
-    deadline: Option<Duration>,
-) -> Result<T, BlockingPoolError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    if pool.is_null() {
-        return Err(BlockingPoolError::PoolStopped);
-    }
-
-    let slot: Arc<Slot<T>> = Arc::new(Slot {
-        outcome: Mutex::new(SlotOutcome::Pending),
-        ready: Condvar::new(),
-    });
-
-    // Box the closure + a clone of the Arc so the C trampoline can recover
-    // both via a single `*mut c_void`.
-    let ctx_box: *mut TaskCtx<T, F> = Box::into_raw(Box::new(TaskCtx::<T, F> {
-        slot: Arc::clone(&slot),
-        f: Some(f),
-    }));
-    let ctx: *mut c_void = ctx_box.cast();
-
-    // SAFETY: pool non-null is checked above; trampoline + ctx pointer are
-    // valid for the life of the task. The pool guarantees the trampoline is
-    // called at most once.
-    let submit_status =
-        unsafe { hew_blocking_pool_submit(pool, spawn_blocking_trampoline::<T, F>, ctx) };
-    if submit_status != 0 {
-        // Pool was stopped between the null check and submit. Reclaim the
-        // Box we leaked above so we don't leak memory; the worker will never
-        // run the trampoline, so we own the allocation.
-        // SAFETY: `ctx_box` is the exact pointer we leaked; we never handed
-        // ownership to a worker because submit failed.
-        unsafe {
-            let _ = Box::from_raw(ctx_box);
-        }
-        return Err(BlockingPoolError::PoolStopped);
-    }
-
-    // Park on the condvar until the worker publishes a result or the deadline
-    // expires. cleanup-all-exits invariant: on the timeout path we explicitly
-    // drop the guard and the Arc — the worker still holds a reference and
-    // will drop the slot's storage after publishing.
-    let mut guard = slot.outcome.lock_or_recover();
-    match deadline {
-        None => {
-            while matches!(*guard, SlotOutcome::Pending) {
-                guard = slot.ready.wait_or_recover(guard);
-            }
-        }
-        Some(d) => {
-            let start = std::time::Instant::now();
-            while matches!(*guard, SlotOutcome::Pending) {
-                let elapsed = start.elapsed();
-                let Some(remaining) = d.checked_sub(elapsed) else {
-                    return Err(BlockingPoolError::TimedOut);
-                };
-                let (next_guard, wait_result) =
-                    slot.ready.wait_timeout_or_recover(guard, remaining);
-                guard = next_guard;
-                if wait_result.timed_out() && matches!(*guard, SlotOutcome::Pending) {
-                    // cleanup-all-exits: dropping `guard` releases the lock
-                    // before we return; `slot` (Arc) stays alive on the worker
-                    // side and is freed when the worker publishes and drops.
-                    return Err(BlockingPoolError::TimedOut);
-                }
-            }
-        }
-    }
-
-    match std::mem::replace(&mut *guard, SlotOutcome::Pending) {
-        SlotOutcome::Ready(value) => Ok(value),
-        SlotOutcome::Panicked(message) => {
-            crate::set_last_error(format!("blocking pool worker panicked: {message}"));
-            Err(BlockingPoolError::WorkerPanicked)
-        }
-        SlotOutcome::Pending => unreachable!("worker outcome was observed ready"),
-    }
-}
-
 /// Per-runtime owner of a `*mut HewBlockingPool`.
 ///
 /// Held in a [`OnceLock`] field on the runtime (`RuntimeInner::blocking_pool`);
@@ -574,8 +368,7 @@ fn worker_loop(inner: &PoolInner) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CStr;
-    use std::sync::atomic::{AtomicU32, AtomicUsize};
+    use std::sync::atomic::AtomicU32;
 
     /// A count paired with a Mutex+Condvar "done" latch so the submitting
     /// thread can wait for the worker to actually finish, rather than racing
@@ -596,6 +389,30 @@ mod tests {
     }
 
     unsafe extern "C" fn noop(_: *mut c_void) {}
+
+    type Job<T> = (Box<dyn FnOnce() -> T + Send>, std::sync::mpsc::Sender<T>);
+
+    unsafe extern "C" fn run_boxed<T>(arg: *mut c_void) {
+        // SAFETY: run_job transfers this box to the sole pool callback.
+        let (job, done) = *unsafe { Box::from_raw(arg.cast::<Job<T>>()) };
+        let _ = done.send(job());
+    }
+
+    /// Run `job` on `pool` and wait for its value.
+    unsafe fn run_job<T: Send + 'static>(
+        pool: *mut HewBlockingPool,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (done, value) = std::sync::mpsc::channel();
+        let boxed: Job<T> = (Box::new(job), done);
+        let boxed = Box::into_raw(Box::new(boxed));
+        // SAFETY: the caller supplies a live pool; the box goes to one callback.
+        let status = unsafe { hew_blocking_pool_submit(pool, run_boxed::<T>, boxed.cast()) };
+        assert_eq!(status, 0);
+        value
+            .recv_timeout(Duration::from_secs(10))
+            .expect("pool job finished")
+    }
 
     /// Normal pool round-trip: submit, execute, stop.
     ///
@@ -818,8 +635,8 @@ mod tests {
     /// null), so a submitted closure that touches a runtime authority must fall
     /// through to the installed default rather than trap. This is the
     /// blocking-pool arm of the off-dispatch inventory: the only production
-    /// closure (`transport::resolve_addr_via_pool`'s `getaddrinfo`) reads no
-    /// authority today, but were one to, the fallback must carry it. A TLS-only
+    /// job (an `#[offload]` extern call) reads no authority today, but were
+    /// one to, the fallback must carry it. A TLS-only
     /// `rt_current()` would panic here on the pool thread.
     #[test]
     fn pool_closure_resolves_runtime_via_default_fallback() {
@@ -836,12 +653,9 @@ mod tests {
             // The closure runs on a pool worker thread, off the dispatch path.
             // Resolve `rt_current()` there and report the address it selected
             // (a raw pointer is not `Send`; the address is what we compare).
-            let got = spawn_blocking_result(
-                pool,
-                || std::ptr::from_ref(crate::runtime::rt_current()) as usize,
-                None,
-            )
-            .expect("pool closure must complete");
+            let got = run_job(pool, || {
+                std::ptr::from_ref(crate::runtime::rt_current()) as usize
+            });
 
             assert_eq!(
                 got, want as usize,
@@ -849,131 +663,6 @@ mod tests {
                  the rt_current() fallback (null TLS), not trap or pick a different \
                  runtime"
             );
-
-            hew_blocking_pool_stop(pool);
-        }
-    }
-
-    /// Normal completion: closure returns a value, caller observes it.
-    #[test]
-    fn spawn_blocking_result_normal_completion() {
-        // SAFETY: test owns pool lifetime.
-        unsafe {
-            let pool = hew_blocking_pool_new();
-
-            let result = spawn_blocking_result(pool, || 42_i32, None);
-            assert_eq!(result, Ok(42));
-
-            // Follow-up call on the same pool also succeeds — proves no
-            // shared state was wedged.
-            let result2 = spawn_blocking_result(pool, || "hello".to_string(), None);
-            assert_eq!(result2.as_deref(), Ok("hello"));
-
-            hew_blocking_pool_stop(pool);
-        }
-    }
-
-    #[test]
-    fn worker_panic_reports_and_pool_survives() {
-        crate::hew_clear_error();
-
-        // SAFETY: test owns pool lifetime.
-        unsafe {
-            let pool = hew_blocking_pool_new();
-
-            let result = spawn_blocking_result::<(), _>(
-                pool,
-                || panic!("blocking worker intentional panic"),
-                None,
-            );
-            assert_eq!(result, Err(BlockingPoolError::WorkerPanicked));
-
-            let error_ptr = crate::hew_last_error();
-            assert!(
-                !error_ptr.is_null(),
-                "a panicking blocking worker must record a diagnostic"
-            );
-            // SAFETY: spawn_blocking_result populated this thread's last-error slot.
-            let error = CStr::from_ptr(error_ptr)
-                .to_str()
-                .expect("last error should be utf-8");
-            assert!(
-                error.contains("blocking pool worker panicked"),
-                "unexpected last error: {error}"
-            );
-            assert!(
-                error.contains("blocking worker intentional panic"),
-                "panic payload must be included in the diagnostic: {error}"
-            );
-
-            let following = spawn_blocking_result(pool, || 41_i32 + 1, None);
-            assert_eq!(following, Ok(42), "the pool queue must remain serviceable");
-
-            hew_blocking_pool_stop(pool);
-        }
-    }
-
-    #[test]
-    fn hostile_worker_panic_payload_is_quarantined_and_pool_survives() {
-        static PAYLOAD_DROPS: AtomicUsize = AtomicUsize::new(0);
-
-        struct HostilePayload;
-        impl Drop for HostilePayload {
-            fn drop(&mut self) {
-                PAYLOAD_DROPS.fetch_add(1, Ordering::SeqCst);
-                panic!("hostile blocking-worker payload destructor");
-            }
-        }
-
-        PAYLOAD_DROPS.store(0, Ordering::SeqCst);
-        // SAFETY: test owns the pool and stops it after all submissions finish.
-        unsafe {
-            let pool = hew_blocking_pool_new();
-            let result = spawn_blocking_result::<(), _>(
-                pool,
-                || std::panic::panic_any(HostilePayload),
-                None,
-            );
-            assert_eq!(result, Err(BlockingPoolError::WorkerPanicked));
-            assert_eq!(PAYLOAD_DROPS.load(Ordering::SeqCst), 1);
-            assert_eq!(spawn_blocking_result(pool, || 42, None), Ok(42));
-            hew_blocking_pool_stop(pool);
-        }
-    }
-
-    /// Timeout: closure runs longer than deadline; caller returns `TimedOut`
-    /// and the pool thread cleanly publishes its discarded result. After the
-    /// timeout, a follow-up call on the same pool succeeds (no held lock).
-    #[test]
-    fn spawn_blocking_result_timeout_discards_result() {
-        // SAFETY: test owns pool lifetime.
-        unsafe {
-            let pool = hew_blocking_pool_new();
-
-            // Use a Barrier so the test does not depend on wall-clock racing.
-            // The task waits for the test to release it; the test waits up to
-            // 100 ms which deterministically expires before the release.
-            let release = Arc::new(std::sync::Barrier::new(2));
-            let release_clone = Arc::clone(&release);
-
-            let result = spawn_blocking_result(
-                pool,
-                move || {
-                    release_clone.wait();
-                    99_u64
-                },
-                Some(Duration::from_millis(50)),
-            );
-            assert_eq!(result, Err(BlockingPoolError::TimedOut));
-
-            // Release the worker so it can publish its discarded result and
-            // free the slot. Without this the test thread leaks a barrier
-            // refcount but does not deadlock.
-            release.wait();
-
-            // Follow-up call composes: pool is not wedged.
-            let result2 = spawn_blocking_result(pool, || 7_i32, None);
-            assert_eq!(result2, Ok(7));
 
             hew_blocking_pool_stop(pool);
         }
@@ -993,12 +682,11 @@ mod tests {
         assert_eq!(p1, p2, "the pool is a per-runtime singleton");
         assert!(!p1.is_null(), "the pool must be allocated");
 
-        // Submit through the pool and observe the result. This proves it is
-        // wired through `spawn_blocking_result` correctly.
+        // Submit through the pool and observe the result.
         // SAFETY: shared_blocking_pool returns a valid pool for the installed
         // runtime; it stays valid until the guard drops it below.
-        let result = unsafe { spawn_blocking_result(p1, || 1729_u32, None) };
-        assert_eq!(result, Ok(1729));
+        let result = unsafe { run_job(p1, || 1729_u32) };
+        assert_eq!(result, 1729);
     }
 
     /// Two live runtimes own DIFFERENT blocking pools — the deglob's core teeth.
@@ -1033,11 +721,11 @@ mod tests {
 
         // Both pools are live and independently usable.
         // SAFETY: pool_a came from rt_a's live pool; rt_a is still in scope.
-        let ran_a = unsafe { spawn_blocking_result(pool_a, || 41_i32 + 1, None) };
+        let ran_a = unsafe { run_job(pool_a, || 41_i32 + 1) };
         // SAFETY: pool_b came from rt_b's live pool; rt_b is still in scope.
-        let ran_b = unsafe { spawn_blocking_result(pool_b, || 20_i32 + 22, None) };
-        assert_eq!(ran_a, Ok(42));
-        assert_eq!(ran_b, Ok(42));
+        let ran_b = unsafe { run_job(pool_b, || 20_i32 + 22) };
+        assert_eq!(ran_a, 42);
+        assert_eq!(ran_b, 42);
 
         // Dropping rt_a then rt_b stops each pool (joins its workers); reaching
         // the end of the test without hanging is the teardown-ordering proof.
@@ -1057,8 +745,8 @@ mod tests {
             let _enter = unsafe { crate::runtime::enter(&rt) };
             let pool = shared_blocking_pool();
             // SAFETY: pool is this runtime's live pool.
-            let ran = unsafe { spawn_blocking_result(pool, || 7_i32, None) };
-            assert_eq!(ran, Ok(7));
+            let ran = unsafe { run_job(pool, || 7_i32) };
+            assert_eq!(ran, 7);
             // rt drops here: its pool is stopped (workers joined) without hanging.
         }
 
@@ -1072,8 +760,8 @@ mod tests {
         );
         // A stale/stopped handle would reject work; a live fresh pool accepts it.
         // SAFETY: pool2 is rt2's live pool.
-        let ran = unsafe { spawn_blocking_result(pool2, || 99_i32, None) };
-        assert_eq!(ran, Ok(99));
+        let ran = unsafe { run_job(pool2, || 99_i32) };
+        assert_eq!(ran, 99);
     }
 
     /// `shared_blocking_pool()` is an init/mutate site (it spawns threads), so it
@@ -1119,19 +807,7 @@ mod tests {
         let pool = shared_blocking_pool_opt().expect("a runtime is installed");
         assert!(!pool.is_null(), "an installed runtime yields a live pool");
         // SAFETY: pool is the installed runtime's live pool.
-        let ran = unsafe { spawn_blocking_result(pool, || 7_u32, None) };
-        assert_eq!(ran, Ok(7));
-    }
-
-    /// Null pool: caller gets `PoolStopped` without leaking the boxed task
-    /// ctx. Post-stop submit (a stopped-but-not-freed pool) is unreachable
-    /// through the safe API: `hew_blocking_pool_stop` frees the Box. The
-    /// `PoolStopped` branch in `spawn_blocking_result` is therefore covered
-    /// by the null pointer path here.
-    #[test]
-    fn spawn_blocking_result_null_pool_returns_error() {
-        // SAFETY: null pointer is the condition under test.
-        let result = unsafe { spawn_blocking_result::<i32, _>(std::ptr::null_mut(), || 1, None) };
-        assert_eq!(result, Err(BlockingPoolError::PoolStopped));
+        let ran = unsafe { run_job(pool, || 7_u32) };
+        assert_eq!(ran, 7);
     }
 }

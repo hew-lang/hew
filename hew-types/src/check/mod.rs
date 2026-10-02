@@ -2637,6 +2637,8 @@ impl Checker {
         // default. Check it only after member re-resolution so aliases and
         // imports have reached their semantic `Ty` identity.
         self.validate_wire_optional_field_admission(program);
+        // Offload signatures need every member type's class facts.
+        self.validate_offload_declarations();
 
         // Build the actor protocol descriptor side-table BEFORE body checking.
         //

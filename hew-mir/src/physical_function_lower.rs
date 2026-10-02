@@ -897,6 +897,24 @@ impl FunctionLowerer<'_> {
                 })
             }
             SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::Offload { function },
+                inputs,
+                result,
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::Offload {
+                function: *function,
+                args: self.argument_transfers(inputs)?,
+                result: match result {
+                    CallResult::Unit | CallResult::Never => None,
+                    CallResult::Value(value) => Some(self.value(value.id)?),
+                },
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::NativeIo { operation },
                 inputs,
                 result: CallResult::Value(result),

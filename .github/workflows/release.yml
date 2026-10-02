@@ -1605,6 +1605,31 @@ jobs:
             -f version="${VERSION}"
 
   # ─────────────────────────────────────────────────────────────────────────
+  # npm packages — hand the release tag to the publishing workflow
+  # ─────────────────────────────────────────────────────────────────────────
+  # npm trusted publishing binds each package to publish-npm-packages.yml and
+  # its `npm` environment, so that workflow owns the build and publish and
+  # this job only starts it on the tag ref (dist-tag `next` for prereleases).
+  npm-packages:
+    needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write # dispatch publish-npm-packages.yml
+    steps:
+      - name: Dispatch npm package publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh workflow run publish-npm-packages.yml \
+            --ref "${RELEASE_TAG}" \
+            -f operation=release \
+            -f release_tag="${RELEASE_TAG}" \
+            -f dry_run=false
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Playground — assert the immutable prepublished release image
   # ─────────────────────────────────────────────────────────────────────────
   # The job's contract is the release image itself: for this tag, an image

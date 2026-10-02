@@ -6,19 +6,22 @@
 //! timeout (`HEW_POOL_IDLE_MS`, default ten seconds) exits, so the pool shrinks
 //! back after a burst. The pool is opaque to C callers (Box-allocated).
 //!
-//! Stopping the pool waits for every job except an abandonable one: a job
-//! that owns all of its inputs and whose caller has stopped waiting, such as
-//! an `#[offload]` call whose caller was cancelled. Its thread is left to
-//! finish the call on its own, so exit never waits on a syscall nobody reads.
+//! An abandonable job owns all of its inputs, such as an `#[offload]` call.
+//! Once its caller gives up ([`Detach`]), its thread no longer counts against
+//! the cap, so calls blocked in the OS for good never starve later work. Stop
+//! waits for every job except a running abandonable one; its thread is left
+//! to finish the call on its own, so exit never waits on a syscall nobody
+//! reads.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
 
@@ -53,8 +56,26 @@ struct Queue {
     threads: usize,
     /// Threads waiting for a job.
     idle: usize,
-    /// Threads running an abandonable job; stop does not join them.
-    abandonable: Vec<ThreadId>,
+    /// Abandonable jobs running now; stop does not join their threads.
+    abandonable: Vec<Running>,
+    /// Running abandonable jobs whose callers gave up. Their threads do not
+    /// count against the cap.
+    detached: usize,
+    next_job: u64,
+}
+
+/// One running abandonable job.
+struct Running {
+    thread: ThreadId,
+    job: u64,
+    detached: bool,
+}
+
+impl Queue {
+    /// Threads that count against the cap.
+    fn counted(&self) -> usize {
+        self.threads - self.detached
+    }
 }
 
 /// Shared state between the pool handle and worker threads.
@@ -67,12 +88,12 @@ struct PoolInner {
     idle_timeout: Duration,
     /// Jobs that found every thread busy at the cap and had to queue.
     saturations: AtomicU64,
+    workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 /// Elastic blocking thread pool.
 pub struct HewBlockingPool {
     inner: Arc<PoolInner>,
-    workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for HewBlockingPool {
@@ -99,14 +120,16 @@ fn new_pool(max_threads: usize, idle_timeout: Duration) -> *mut HewBlockingPool 
                 threads: 0,
                 idle: 0,
                 abandonable: Vec::new(),
+                detached: 0,
+                next_job: 0,
             }),
             work: Condvar::new(),
             settled: Condvar::new(),
             max_threads: max_threads.max(1),
             idle_timeout,
             saturations: AtomicU64::new(0),
+            workers: Mutex::new(Vec::new()),
         }),
-        workers: Mutex::new(Vec::new()),
     }))
 }
 
@@ -123,9 +146,10 @@ pub unsafe extern "C" fn hew_blocking_pool_new() -> *mut HewBlockingPool {
     new_pool(HEW_BLOCKING_POOL_MAX, idle_timeout_from_env())
 }
 
-impl HewBlockingPool {
-    fn spawn_worker(&self) {
-        let shared = Arc::clone(&self.inner);
+impl PoolInner {
+    /// Start a thread already counted in `threads`.
+    fn spawn_worker(self: &Arc<Self>) {
+        let shared = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("hew-blocking".into())
             .spawn(move || worker_loop(&shared));
@@ -138,7 +162,7 @@ impl HewBlockingPool {
             Ok(handle) => workers.push(handle),
             Err(error) => {
                 // The job stays queued for an existing thread; undo the count.
-                let mut queue = self.inner.queue.lock_or_recover();
+                let mut queue = self.queue.lock_or_recover();
                 queue.threads -= 1;
                 crate::observe::record_pool_threads(queue.threads);
                 drop(queue);
@@ -151,6 +175,24 @@ impl HewBlockingPool {
         }
     }
 
+    /// Count a new thread if queued work has no idle thread and the cap
+    /// allows one. Returns whether the caller must spawn it.
+    fn should_grow(&self, queue: &mut Queue) -> bool {
+        if queue.tasks.len() <= queue.idle {
+            return false;
+        }
+        if queue.counted() >= self.max_threads {
+            self.saturations.fetch_add(1, Ordering::Relaxed);
+            crate::observe::record_pool_saturation();
+            return false;
+        }
+        queue.threads += 1;
+        crate::observe::record_pool_threads(queue.threads);
+        true
+    }
+}
+
+impl HewBlockingPool {
     /// Threads alive now.
     #[cfg(test)]
     pub(crate) fn thread_count(&self) -> usize {
@@ -235,25 +277,59 @@ unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> i32 {
     }
     queue.tasks.push_back(task);
     // More queued jobs than waiting threads: grow, or record saturation.
-    let grow = if queue.tasks.len() > queue.idle {
-        if queue.threads < p.inner.max_threads {
-            queue.threads += 1;
-            crate::observe::record_pool_threads(queue.threads);
-            true
-        } else {
-            p.inner.saturations.fetch_add(1, Ordering::Relaxed);
-            crate::observe::record_pool_saturation();
-            false
-        }
-    } else {
-        false
-    };
+    let grow = p.inner.should_grow(&mut queue);
     drop(queue);
     p.inner.work.notify_one();
     if grow {
-        p.spawn_worker();
+        p.inner.spawn_worker();
     }
     0
+}
+
+thread_local! {
+    /// The abandonable job this pool thread is running, if any.
+    static CURRENT_JOB: RefCell<Option<(Weak<PoolInner>, u64)>> = const { RefCell::new(None) };
+}
+
+/// Tells the pool that the caller of a running abandonable job gave up.
+pub(crate) struct Detach {
+    pool: Weak<PoolInner>,
+    job: u64,
+}
+
+impl Detach {
+    /// The job running on this thread, when it is an abandonable pool job.
+    pub(crate) fn current() -> Option<Self> {
+        CURRENT_JOB.with_borrow(|job| {
+            job.as_ref().map(|(pool, job)| Self {
+                pool: Weak::clone(pool),
+                job: *job,
+            })
+        })
+    }
+
+    /// Stop counting the job's thread against the cap and give queued work
+    /// a thread in its place. Does nothing once the job has finished.
+    pub(crate) fn detach(self) {
+        let Some(inner) = self.pool.upgrade() else {
+            return;
+        };
+        let mut queue = inner.queue.lock_or_recover();
+        let Some(running) = queue
+            .abandonable
+            .iter_mut()
+            .find(|running| running.job == self.job && !running.detached)
+        else {
+            return;
+        };
+        running.detached = true;
+        queue.detached += 1;
+        let grow = queue.running && inner.should_grow(&mut queue);
+        drop(queue);
+        if grow {
+            inner.spawn_worker();
+        }
+    }
 }
 
 /// Per-runtime owner of a `*mut HewBlockingPool`.
@@ -367,13 +443,18 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
         while queue.threads > queue.abandonable.len() {
             queue = p.inner.settled.wait_or_recover(queue);
         }
-        (std::mem::take(&mut queue.tasks), queue.abandonable.clone())
+        let abandoned: Vec<ThreadId> = queue
+            .abandonable
+            .iter()
+            .map(|running| running.thread)
+            .collect();
+        (std::mem::take(&mut queue.tasks), abandoned)
     };
     for task in queued {
         // SAFETY: the submitter keeps `arg` valid until `func` completes.
         unsafe { (task.func)(task.arg) };
     }
-    let workers = std::mem::take(&mut *p.workers.lock_or_recover());
+    let workers = std::mem::take(&mut *p.inner.workers.lock_or_recover());
     for handle in workers {
         if abandoned.contains(&handle.thread().id()) {
             // Dropping the handle detaches the thread.
@@ -392,7 +473,7 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
 
 /// Worker thread main loop: take jobs in submission order; exit after the idle
 /// timeout with nothing queued, or once the pool stops and its queue is empty.
-fn worker_loop(inner: &PoolInner) {
+fn worker_loop(inner: &Arc<PoolInner>) {
     loop {
         let task = {
             let mut queue = inner.queue.lock_or_recover();
@@ -424,23 +505,35 @@ fn worker_loop(inner: &PoolInner) {
         let Some(task) = task else {
             return;
         };
-        let id = std::thread::current().id();
-        if task.abandonable {
-            inner.queue.lock_or_recover().abandonable.push(id);
+        let job = task.abandonable.then(|| {
+            let mut queue = inner.queue.lock_or_recover();
+            let job = queue.next_job;
+            queue.next_job += 1;
+            queue.abandonable.push(Running {
+                thread: std::thread::current().id(),
+                job,
+                detached: false,
+            });
+            drop(queue);
             inner.settled.notify_all();
-        }
+            CURRENT_JOB.set(Some((Arc::downgrade(inner), job)));
+            job
+        });
         crate::observe::record_blocking_start();
         // SAFETY: the submitter guarantees `func` and `arg` are valid.
         unsafe {
             (task.func)(task.arg);
         }
         crate::observe::record_blocking_finish();
-        if task.abandonable {
-            inner
-                .queue
-                .lock_or_recover()
-                .abandonable
-                .retain(|thread| *thread != id);
+        if let Some(job) = job {
+            CURRENT_JOB.set(None);
+            let mut queue = inner.queue.lock_or_recover();
+            if let Some(index) = queue.abandonable.iter().position(|r| r.job == job) {
+                // A detached thread counts against the cap again.
+                if queue.abandonable.swap_remove(index).detached {
+                    queue.detached -= 1;
+                }
+            }
         }
     }
 }
@@ -656,6 +749,63 @@ mod tests {
         *gate.open.lock_or_recover() = true;
         gate.opened.notify_all();
         wait_for(&gate, 1);
+    }
+
+    /// A job whose caller gave up stops counting against the cap: work queued
+    /// behind it gets a thread while the abandoned job stays blocked.
+    #[test]
+    fn detached_job_frees_its_place_for_queued_work() {
+        static DETACH: Mutex<Option<Detach>> = Mutex::new(None);
+        static STARTED: Condvar = Condvar::new();
+        unsafe extern "C" fn blocked(arg: *mut c_void) {
+            *DETACH.lock_or_recover() = Detach::current();
+            STARTED.notify_all();
+            // SAFETY: the submission transfers one boxed job.
+            unsafe { gated_job(arg) };
+        }
+        let pool = new_pool(1, Duration::from_secs(10));
+        // SAFETY: the pool lives until stopped below.
+        let handle = unsafe { &*pool };
+        let gate = new_gate();
+        let job = Box::into_raw(Box::new(GatedJob {
+            gate: Arc::clone(&gate),
+            id: 0,
+        }));
+        // SAFETY: the pool is live and the submission transfers its argument.
+        assert_eq!(unsafe { submit_abandonable(pool, blocked, job.cast()) }, 0);
+        let mut detach = DETACH.lock_or_recover();
+        while detach.is_none() {
+            let (next, waited) = STARTED.wait_timeout_or_recover(detach, Duration::from_secs(10));
+            detach = next;
+            assert!(!waited.timed_out() || detach.is_some(), "job never started");
+        }
+        let detach = detach.take().expect("the job is running on the pool");
+        let (done, finished) = std::sync::mpsc::channel();
+        let boxed: Job<()> = (Box::new(|| ()), done);
+        // SAFETY: the pool is live and the box goes to one callback.
+        let status = unsafe {
+            hew_blocking_pool_submit(pool, run_boxed::<()>, Box::into_raw(Box::new(boxed)).cast())
+        };
+        assert_eq!(status, 0);
+        assert_eq!(
+            handle.saturation_count(),
+            1,
+            "the cap holds while the caller waits"
+        );
+        detach.detach();
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("queued work runs beside the detached job");
+        assert_eq!(handle.thread_count(), 2);
+        assert!(
+            gate.order.lock_or_recover().is_empty(),
+            "the job is still blocked"
+        );
+        *gate.open.lock_or_recover() = true;
+        gate.opened.notify_all();
+        wait_for(&gate, 1);
+        // SAFETY: the pool is live and not used after this call.
+        unsafe { hew_blocking_pool_stop(pool) };
     }
 
     /// Three times the cap completes: the pool grows to its cap, queues the

@@ -148,6 +148,9 @@ pub struct HewAsyncIo {
     cleanup: Mutex<Cleanup>,
     #[cfg(not(target_arch = "wasm32"))]
     deadline: Mutex<Option<deadline::Deadline>>,
+    /// The running pool job producing the result, told when its caller gives up.
+    #[cfg(not(target_arch = "wasm32"))]
+    detach: Mutex<Option<crate::blocking_pool::Detach>>,
 }
 
 #[derive(Default)]
@@ -249,6 +252,7 @@ impl HewAsyncIo {
             net,
             cleanup: Mutex::new(Cleanup::default()),
             deadline: Mutex::new(None),
+            detach: Mutex::new(None),
         })
     }
 
@@ -288,6 +292,21 @@ impl HewAsyncIo {
                 Arc::from_raw(operation)
             };
             net::advance(&operation);
+        }
+    }
+
+    /// Register the pool job now producing this result, so a caller that
+    /// gives up releases the job's thread from the pool's cap. Runs on the
+    /// job's thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn produced_by(&self, detach: crate::blocking_pool::Detach) {
+        let state = self.state.lock_or_recover();
+        if matches!(*state, State::Pending(_)) {
+            // Cancellation changes the state under this lock, then takes this.
+            *self.detach.lock_or_recover() = Some(detach);
+        } else {
+            drop(state);
+            detach.detach();
         }
     }
 
@@ -357,6 +376,11 @@ impl HewAsyncIo {
             self.clear_deadline();
             if let Some(net) = &self.net {
                 net.slot.forget(self);
+            }
+            if won {
+                if let Some(detach) = self.detach.lock_or_recover().take() {
+                    detach.detach();
+                }
             }
         }
         // Releasing a readiness target can call user-supplied runtime callbacks.

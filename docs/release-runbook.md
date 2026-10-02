@@ -502,11 +502,14 @@ macOS release notes:
 - [ ] The GitHub Release has the seven platform archives, the WASI library
       archive, both npm tarballs, the checksum manifest and, for a final
       release, the Linux packages; `gh attestation verify <asset> --repo
-  hew-lang/hew` passes for a downloaded archive
+hew-lang/hew` passes for a downloaded archive
 - [ ] Download and smoke-test at least one platform archive
 - [ ] `docker run --rm ghcr.io/hew-lang/hew:<version> version` reports the tag
 - [ ] Homebrew formula updated: `brew install hew-lang/hew/hew`
-- [ ] docs.hew.sh shows the new release's standard library
+- [ ] docs.hew.sh shows the new release's standard library. Once the run's
+      artefacts have expired (90 days), redeploy from the tagged checkout with
+      `make release && make publish-docs` and run the `wrangler pages deploy`
+      command it prints
 - [ ] VS Code extension tagged and published from vscode-hew
 - [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
 - [ ] Verify the live `hew --version` on a freshly-installed binary matches the tagged version.

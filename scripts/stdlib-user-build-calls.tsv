@@ -10,6 +10,7 @@ std.crypto.sign	sign.keypair();
 std.deque	deque.new();
 std.encoding.base64	base64.encode("".to_bytes());
 std.encoding.binary	binary.put_u16_le(0);
+std.encoding.cbor	let _ = cbor.encode(1);
 std.encoding.compress	let _ = compress.gzip_compress("".to_bytes());
 std.encoding.csv	let _ = csv.parse("");
 std.encoding.hex	hex.encode("".to_bytes());

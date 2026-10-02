@@ -723,11 +723,21 @@ surrounding context takes the type its typed sibling branches join to,
 whichever position those siblings take:
 
 ```hew
-let low = if fresh { .None } else { cached };   // cached: Option<i64>
-let out = match parsed {
-    .Err(e) => .Err(e.code),
-    .Ok(v) => validate(v),                       // Result<i64, i64>
-};
+type Problem { code: i64; }
+
+fn validate(v: i64) -> Result<i64, i64> {
+    .Ok(v)
+}
+
+fn join(fresh: bool, cached: Option<i64>, parsed: Result<i64, Problem>) {
+    let low = if fresh { .None } else { cached };
+    let out = match parsed {
+        .Err(e) => .Err(e.code),
+        .Ok(v) => validate(v),
+    };
+    println(low ?? 0);
+    println(out handle problem { problem });
+}
 ```
 
 A join whose every branch is contextual, or whose only typed siblings

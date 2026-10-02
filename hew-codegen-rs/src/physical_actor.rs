@@ -1574,6 +1574,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     *target,
                     result,
                 )?;
+                self.release_handle(release::Handle::ActorCall, value)?;
                 self.clear_owned(*operation)?;
                 return self.emit_result_edge(Some(result), normal);
             }
@@ -3054,6 +3055,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         ty: &ResolvedTy,
         tag: IntValue<'ctx>,
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        self.value_emitter().actor_unit_variant(ty, tag)
+    }
+}
+
+impl<'ctx> ValueEmitter<'_, 'ctx> {
+    /// Construct the field-less variant a runtime status tag names. The payload
+    /// seat stays zeroed: the enum's drop glue dispatches on the tag, so a
+    /// variant that declares no fields never reads it. Enums whose other
+    /// variants do carry payloads (`ActorError.Rejected`, `ActorError.Failed`)
+    /// are built at their own construction sites, never from a status tag.
+    pub(super) fn actor_unit_variant(
+        &self,
+        ty: &ResolvedTy,
+        tag: IntValue<'ctx>,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
         let glue = self
             .module
             .variant_glue
@@ -3062,7 +3078,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("delivery status requires its exact variant recipe".into())
             })?;
-        let layout = self.value_emitter().variant_layout(&glue.ty)?;
+        let layout = self.variant_layout(&glue.ty)?;
         let object = llvm_type(self.ctx, &layout.object.repr)?
             .into_struct_type()
             .const_zero();

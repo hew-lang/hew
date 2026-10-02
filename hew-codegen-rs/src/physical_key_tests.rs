@@ -22,6 +22,8 @@ mod defer;
 mod panic;
 #[path = "physical_select_tests.rs"]
 mod select;
+#[path = "physical_suspend_shape_tests.rs"]
+mod suspend_shape;
 
 type HashCallback = unsafe extern "C" fn(*const c_void, *mut u64, *mut *mut c_void) -> i32;
 type EqCallback =

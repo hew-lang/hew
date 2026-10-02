@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 mod core_acceptance;
+mod ir_size;
 mod ratchet;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
@@ -50,6 +51,7 @@ fn run() -> Result<()> {
         }
         Some("ratchet") => ratchet::run(&args[1..]),
         Some("core-acceptance") => core_acceptance::run(&args[1..]),
+        Some("ir-size") => ir_size::run(&args[1..]),
         Some("runtime-declarations") => runtime_declarations(&args[1..]),
         Some("--help" | "-h") => {
             print_usage();
@@ -95,6 +97,7 @@ fn usage() -> String {
         "  sandbox-fixtures  update or validate sandbox bytecode fixtures",
         "  ratchet           check|issues against the unified expected-failure ledger",
         "  core-acceptance   run audited native cases at O0 and O2",
+        "  ir-size           compare O2 LLVM instruction counts with ir-budget.tsv",
         "  runtime-declarations  write or check declaration-owned FFI metadata",
     ]
     .join("\n")

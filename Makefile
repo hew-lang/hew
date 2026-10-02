@@ -82,7 +82,7 @@
 .PHONY: coverage coverage-runtime
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: perf-verify-linear
-.PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
+.PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build ir-size-verify
 .PHONY: hew-check-all
 .PHONY: grammar-parity downstream-check
 
@@ -695,7 +695,7 @@ ci-shard-1: observe-functional-test test-cabi \
 
 ci-shard-2: libhew-link-race-test test \
 	test-leak-oracle-selftest \
-	compile-determinism-verify compile-determinism-selftest \
+	compile-determinism-verify compile-determinism-selftest ir-size-verify \
 	test-obligation-site-diff stdlib-user-build-clean stdlib-errno-gate \
 	test-extern-bytes test-host-client
 
@@ -1177,6 +1177,15 @@ test-package-install: hew-native ## Test: prove installed packages import and ex
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-cli/src/*.rs
 compile-determinism-verify: hew-native
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/compile-determinism-corpus.sh
+
+# IR-size ratchet: O2 LLVM instruction counts (not wall-clock) for the
+# LL-oracle corpus, generated suspension programs and one real suspend-heavy
+# case, against the ceilings in tests/ll-oracle/ir-budget.tsv. A count over its
+# ceiling fails; ceilings are lowered, never raised.
+# inputs: tests/ll-oracle/corpus/*.hew tests/ll-oracle/ir-budget.tsv xtask/src/ir_size.rs
+# inputs: hew-hir/src/*.rs hew-sir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
+ir-size-verify: hew-native
+	cargo run -p xtask -- ir-size --hew-bin "$(DEBUG_HEW)"
 
 # inputs: scripts/tests/test_compile_determinism_corpus.py scripts/compile-determinism-corpus.sh
 compile-determinism-selftest:

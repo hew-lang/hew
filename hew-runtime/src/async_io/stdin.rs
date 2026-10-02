@@ -155,9 +155,6 @@ fn fill(buffer: &mut Buffer) -> io::Result<bool> {
             }
             _ => {}
         }
-        if poll.revents & libc::POLLNVAL != 0 {
-            return Err(io::Error::from_raw_os_error(libc::EBADF));
-        }
         let start = buffer.data.len();
         buffer.data.resize(start + READ_CHUNK, 0);
         // SAFETY: the region past `start` is READ_CHUNK initialized bytes.
@@ -175,6 +172,12 @@ fn fill(buffer: &mut Buffer) -> io::Result<bool> {
             0 => buffer.eof = true,
             count if count < 0 => {
                 let error = io::Error::last_os_error();
+                // macOS poll(2) reports POLLNVAL for /dev/null, so read decides:
+                // a closed descriptor 0 has no input to deliver.
+                if error.raw_os_error() == Some(libc::EBADF) {
+                    buffer.eof = true;
+                    return Ok(true);
+                }
                 match error.kind() {
                     io::ErrorKind::Interrupted => continue,
                     io::ErrorKind::WouldBlock => return Ok(false),

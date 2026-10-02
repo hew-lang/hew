@@ -112,7 +112,8 @@ fn a_refused_file_leaves_every_file_unwritten() {
     );
     assert!(
         stderr(&output).contains("migration refused")
-            && stderr(&output).contains(&format!("{}:1:", bad.display())),
+            && slashes(&stderr(&output))
+                .contains(&format!("{}:1:", slashes(&bad.display().to_string()))),
         "a refusal names the file, line and column: {}",
         stderr(&output)
     );
@@ -124,6 +125,11 @@ fn a_refused_file_leaves_every_file_unwritten() {
     ]
     .map(|file| std::fs::read(dir.path().join(file)).unwrap());
     assert_eq!(before, after);
+}
+
+/// Compare paths the way the report prints them on every host.
+fn slashes(text: &str) -> String {
+    text.replace('\\', "/")
 }
 
 fn snapshot(dir: &Path, files: &[&str]) -> Vec<Vec<u8>> {
@@ -144,7 +150,7 @@ fn preview_reports_every_change_and_writes_nothing() {
     let preview = migrate(&["--check"], dir.path());
     assert_eq!(preview.status.code(), Some(1), "{}", stderr(&preview));
     assert_eq!(snapshot(dir.path(), &TREE), before);
-    let report = stderr(&preview);
+    let report = slashes(&stderr(&preview));
     for file in TREE {
         assert!(report.contains(file), "{report}");
     }

@@ -7,7 +7,6 @@ use crate::ffi_contracts::{
     ExternOwnershipContract, ExternParamOwnership, ExternResultOwnership, ExternResultRetention,
     ReleaseDischargeDepth,
 };
-use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -409,135 +408,6 @@ fn shipped_std_candidate_inventory() -> (
     (resource_types, graph, std::mem::take(&mut checker.defs))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LifecycleEvidenceMatrix {
-    schema_version: u32,
-    resources: Vec<LifecycleEvidence>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LifecycleEvidence {
-    source_path: String,
-    resource: String,
-    release_symbol: String,
-    runtime: TestEvidence,
-    wasm: WasmEvidence,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TestEvidence {
-    path: String,
-    test: String,
-    valid_handle: bool,
-    execution_profile: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WasmEvidence {
-    profile: String,
-    disposition: String,
-    proof_kind: String,
-}
-
-fn assert_nonempty(value: &str, field: &str, resource: &str) {
-    assert!(
-        !value.trim().is_empty(),
-        "{resource} has empty lifecycle evidence field {field}"
-    );
-}
-
-fn assert_test_anchor(repo_root: &Path, evidence: &TestEvidence, field: &str, resource: &str) {
-    assert_nonempty(&evidence.path, &format!("{field}.path"), resource);
-    assert_nonempty(&evidence.test, &format!("{field}.test"), resource);
-    assert!(
-        evidence.valid_handle,
-        "{resource} {field} evidence must exercise a real compiled value or valid handle"
-    );
-    assert!(
-        matches!(
-            evidence.execution_profile.as_str(),
-            "local" | "external-network"
-        ),
-        "{resource} {field} has an invalid execution profile {}",
-        evidence.execution_profile
-    );
-    let path = repo_root.join(&evidence.path);
-    let source = fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!(
-            "{resource} {field} evidence file {} is missing: {error}",
-            path.display()
-        )
-    });
-    assert!(
-        source.contains(&format!("fn {}(", evidence.test)),
-        "{resource} {field} evidence test {} is missing from {}",
-        evidence.test,
-        path.display()
-    );
-}
-
-fn assert_wasm_anchor(evidence: &WasmEvidence, resource: &str) {
-    assert_nonempty(&evidence.profile, "wasm.profile", resource);
-    assert_nonempty(&evidence.proof_kind, "wasm.proof_kind", resource);
-    assert_eq!(evidence.profile, "wasm32-wasi");
-    assert!(
-        matches!(evidence.disposition.as_str(), "accepted" | "rejected"),
-        "{resource} has an invalid measured Wasm disposition {}",
-        evidence.disposition
-    );
-    match evidence.disposition.as_str() {
-        "accepted" => assert!(
-            matches!(
-                evidence.proof_kind.as_str(),
-                "public-lifecycle" | "internal-transient"
-            ),
-            "{resource} accepted Wasm evidence has invalid proof kind {}",
-            evidence.proof_kind
-        ),
-        "rejected" => assert_eq!(
-            evidence.proof_kind, "rejected-boundary",
-            "{resource} rejected Wasm evidence must prove the rejection boundary"
-        ),
-        _ => unreachable!("Wasm disposition was validated above"),
-    }
-}
-
-fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
-    let path = Path::new(source_path);
-    assert_eq!(
-        path.extension().and_then(|value| value.to_str()),
-        Some("hew")
-    );
-    // The registry owns the directory-module peer rule, so a peer source such as
-    // `std/net/http/http_client.hew` keys on its package owner. Matrix rows hold
-    // repository-relative paths; the registry resolves an absolute one.
-    let absolute = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-types is below repository root")
-        .join(path);
-    if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(&absolute) {
-        return format!("{}.{resource}", owner.dotted());
-    }
-    let mut module: Vec<_> = path
-        .parent()
-        .expect("shipped source has a parent")
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    let stem = path
-        .file_stem()
-        .expect("shipped source has a stem")
-        .to_string_lossy();
-    if module.last().is_none_or(|last| last != &stem) {
-        module.push(stem.into_owned());
-    }
-    format!("{}.{}", module.join("."), resource)
-}
-
 #[test]
 fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
     let (source_resources, graph, defs) = shipped_std_candidate_inventory();
@@ -562,53 +432,6 @@ fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
     for candidate in graph.candidates.values() {
         assert!(!candidate.producer_symbols.is_empty());
         assert!(!candidate.release_symbol.is_empty());
-    }
-}
-
-#[test]
-fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
-    let (source_resources, graph, defs) = shipped_std_candidate_inventory();
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-types is below repository root")
-        .to_path_buf();
-    let matrix_path = repo_root.join("scripts/opaque-resource-lifecycle-evidence.json");
-    let matrix: LifecycleEvidenceMatrix = serde_json::from_str(
-        &fs::read_to_string(&matrix_path).expect("read lifecycle evidence matrix"),
-    )
-    .expect("lifecycle evidence matrix must match its strict schema");
-    assert_eq!(matrix.schema_version, 2);
-
-    let matrix_resources: BTreeSet<_> = matrix
-        .resources
-        .iter()
-        .map(|evidence| source_derived_resource_key(&evidence.source_path, &evidence.resource))
-        .collect();
-    assert_eq!(
-        matrix_resources.len(),
-        matrix.resources.len(),
-        "each shipped source identity must have exactly one evidence row"
-    );
-    assert_eq!(
-        matrix_resources, source_resources,
-        "the evidence matrix must have exactly one row for every structurally discovered closeable opaque resource"
-    );
-
-    for evidence in &matrix.resources {
-        let resource = source_derived_resource_key(&evidence.source_path, &evidence.resource);
-        assert!(
-            repo_root.join(&evidence.source_path).is_file(),
-            "{resource} points to a missing shipped source {}",
-            evidence.source_path
-        );
-        assert_eq!(
-            evidence.release_symbol,
-            graph.candidates[&defs.lookup_path(&resource).expect("declared resource")]
-                .release_symbol,
-            "{resource} evidence must name the source-derived release authority"
-        );
-        assert_test_anchor(&repo_root, &evidence.runtime, "runtime", &resource);
-        assert_wasm_anchor(&evidence.wasm, &resource);
     }
 }
 

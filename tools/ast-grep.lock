@@ -1,5 +1,5 @@
 # Tool versions and ABI for structural linting. The grammar revision and
-# archive digest are shared with grammar-parity in downstream/tree-sitter.lock.
+# archive digest live in downstream/tree-sitter.lock.
 AST_GREP_CARGO_PACKAGE=ast-grep
 AST_GREP_VERSION=0.45.0
 TREE_SITTER_CLI_CARGO_PACKAGE=tree-sitter-cli

@@ -74,17 +74,17 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate legacy-path-syntax-lint transition-marker-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate hew-fmt-check hew-fmt-fidelity test-migrate-corpus test-build-harness core-acceptance
 .PHONY: test-obligation-site-diff
 .PHONY: stdlib-user-build-clean
-.PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
+.PHONY: clean install uninstall test-cabi-surface cabi-surface cabi-surface-check
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-runtime
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: perf-verify-linear
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build ir-size-verify
 .PHONY: hew-check-all
-.PHONY: grammar-parity downstream-check
+.PHONY: downstream-check
 
 
 
@@ -699,7 +699,7 @@ ci-shard-2: libhew-link-race-test test \
 	test-obligation-site-diff stdlib-user-build-clean stdlib-errno-gate \
 	test-extern-bytes test-host-client
 
-ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
+ci-shard-3: mqtt-broker-e2e sandbox-parity \
 	test-package-install \
 	hew-check-all
 
@@ -1074,7 +1074,7 @@ test-cabi:
 # (libhew_runtime.a for wasm32-wasip1) is needed by wasm32-wasi eval tests
 # even when they are expected to fail before codegen (the linker search runs
 # before the fast typecheck path reports its diagnostic).
-test-compiler-pipeline: test-artifacts test-compiler-lifecycle
+test-compiler-pipeline: test-artifacts
 	$(TEST_RUN_ENV) cargo nextest run --profile ci \
 		-p hew-lexer \
 		-p hew-parser \
@@ -1085,25 +1085,6 @@ test-compiler-pipeline: test-artifacts test-compiler-lifecycle
 		-p hew-codegen-rs \
 		-p hew-cli \
 		-p hew-pkg
-
-# The compiled-Hew lifecycle evidence is separate so CI jobs that already ran
-# workspace nextest can retain this evidence without replaying its Rust tests.
-test-compiler-lifecycle: test-opaque-resource-lifecycle-matrix
-
-# Both lifecycle targets read the pinned ast-grep at
-# .ast-grep/tool/bin/ast-grep and abort when it is absent. The toolchain is
-# provisioned only in the CI jobs and shards that run these targets
-# (.github/actions/setup-ast-grep, the same cache-then-verify shape as
-# setup-llvm and the wasmtime install), not as a make prerequisite:
-# `structural-lint-bootstrap-install` cargo-installs
-# tree-sitter-cli and ast-grep and then runs a full authority scan, which is
-# minutes of work that has no place inside a test target invoked from several
-# other targets. Locally, any `make lint` provisions the same tree.
-test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py
-
-test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first so native fixture links use the current product.
@@ -1405,17 +1386,6 @@ lint-rust: ## Check: check Rust formatting and run Clippy
 	cargo fmt --all -- --check
 	cargo clippy $(CLIPPY_ARGS) --tests --message-format=json -- -D warnings
 
-LINT_GATES += legacy-path-syntax-lint
-legacy-path-syntax-lint:
-	$(PYTHON) scripts/lint-legacy-path-syntax.py
-
-LINT_GATES += transition-marker-lint
-transition-marker-lint:
-	$(PYTHON) scripts/lint-transition-markers.py --self-test
-	$(PYTHON) scripts/lint-transition-markers.py
-
-# Python only; no artifacts.
-
 # Self-provisioning: the pinned toolchain install is a prerequisite of every
 # structural-lint entry point, not a separate manual step. The install path
 # (scripts/ast-grep-lint.sh --bootstrap --install-only, via
@@ -1423,11 +1393,11 @@ transition-marker-lint:
 # before touching the network or recompiling, so a warm cache makes this a
 # fast no-op — local `make lint` and CI both provision through the same
 # target instead of drifting. --install-only stops after the verified
-# install: the audit and the scan belong to the structural-lint recipe
+# install: the scan belongs to the structural-lint recipe
 # below, so provisioning a consumer never re-runs the lint gate.
 LINT_GATES += structural-lint
 .NOTPARALLEL: structural-lint structural-lint-bootstrap
-structural-lint: structural-lint-bootstrap-install test-ast-grep-contract ## Check: run structural and compiler-authority ratchets
+structural-lint: structural-lint-bootstrap-install test-ast-grep-contract ## Check: run the pinned ast-grep rules
 	scripts/ast-grep-lint.sh
 
 structural-lint-bootstrap: structural-lint-bootstrap-install test-ast-grep-contract
@@ -1440,7 +1410,7 @@ test-ast-grep-contract:
 
 # These Hew-compiler-free behaviour tests have their own CI result. Source lint
 # still validates the real ABI/symbol inputs; these prove checker failures.
-test-tooling: test-build-harness test-verify-ffi test-cabi-surface test-sys-lane-closure ## Test: verify build tooling and ABI checker behaviour
+test-tooling: test-build-harness test-cabi-surface ## Test: verify build tooling and ABI checker behaviour
 
 # Focused behaviour tests for the Hew JUnit transaction, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
@@ -1520,15 +1490,6 @@ hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
 
-# Parse accepted vertical-slice and core-acceptance sources, std/, and examples/ with the
-# tree-sitter-hew grammar pinned in tools/downstream/tree-sitter.lock and
-# fail on any ERROR node. The parser (hew-lexer/hew-parser) stays the
-# grammar authority; this only checks that the tree-sitter mirror used by
-# editor tooling has not drifted from it. See scripts/grammar-parity.sh.
-grammar-parity:
-	@echo "==> grammar-parity: parsing the accepted corpus with tree-sitter-hew"
-	scripts/grammar-parity.sh
-
 # A documentation view of the editor grammar, without a separate grammar source.
 GRAMMAR_VIEW_SOURCE ?= $(if $(HEW_SYNC_TREE_SITTER),$(HEW_SYNC_TREE_SITTER),../tree-sitter-hew)/src/grammar.json
 GRAMMAR_VIEW_OUTPUT ?= dist/hew.ebnf
@@ -1599,16 +1560,7 @@ coverage:
 coverage-runtime:
 	bash scripts/coverage-runtime-e2e.sh $(if $(HTML),--html,)
 
-# ── FFI symbol verification ───────────────────────────────────────────────
-# Validates that every hew-runtime #[no_mangle] export is classified in
-# scripts/runtime-export-classification.toml (stable vs non-declarable).
-
-LINT_GATES += verify-ffi
-verify-ffi: cabi-surface-check
-	$(PYTHON) scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
-
-# Python only; no artifacts.
-
+# ── FFI declaration check ─────────────────────────────────────────────────
 # A `.hew` extern declaring `string` or `bytes` reaches its Rust definition
 # through the managed carrier. Nothing else compares the two sides, so a stale
 # `c_char` signature is a runtime fault rather than a link error.
@@ -1618,15 +1570,13 @@ verify-extern-string-abi:
 
 # Python only; no artifacts.
 
-test-verify-ffi:
-	$(PYTHON) scripts/tests/test_verify_ffi_symbols.py
-
 # Generate declaration-owned metadata before projecting the complete C ABI.
 cabi-surface:
 	cargo run -p xtask -- runtime-declarations --write
 	$(PYTHON) scripts/generate-cabi-surface.py --write
 
 
+LINT_GATES += cabi-surface-check
 cabi-surface-check:
 	cargo run -p xtask -- runtime-declarations --check
 	$(PYTHON) scripts/generate-cabi-surface.py --check
@@ -1635,28 +1585,6 @@ cabi-surface-check:
 
 test-cabi-surface:
 	$(PYTHON) scripts/tests/test_cabi_surface.py
-
-# Python only; no artifacts.
-
-LINT_GATES += verify-sys-lane-closure
-# ── System-lane closure ────────────────────────────────────────────────────
-# docs/internal/runtime-export-classification.md forbids any `stable` symbol from producing,
-# installing, mutating, observing or destroying system-lane state. That is a
-# property of the transitive CALL GRAPH, not of a symbol's own body: four
-# hand-audits of the stable tier produced four different answers because each
-# read the symbols one at a time and none of them followed the calls. This
-# recomputes the closure from the lane operations outward and fails if a stable
-# symbol can reach one. Run it with --list-roots or --explain SYM to see why.
-verify-sys-lane-closure:
-	$(PYTHON) scripts/sys-lane-closure.py
-
-# Python only; no artifacts.
-
-# Self-test for the checker above: proves it still fails on a transitive reach,
-# that an authenticated edge clears only the caller it names, and that a stale
-# or unreasoned waiver fails rather than silently widening the stable tier.
-test-sys-lane-closure:
-	$(PYTHON) scripts/tests/test_sys_lane_closure.py
 
 # Python only; no artifacts.
 

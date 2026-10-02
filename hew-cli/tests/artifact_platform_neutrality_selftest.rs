@@ -32,7 +32,6 @@ const ARTIFACT_ROOTS: &[&str] = &["hew-cli/tests/fixtures"];
 
 /// Individual files outside the roots above, compared/parsed byte-for-byte.
 const ARTIFACT_FILES: &[&str] = &[
-    "scripts/structural-authority-inventory.tsv",
     "wasm-capability-manifest.toml",
     "hew-types/src/wasm_capabilities_generated.rs",
     "examples/playground/wasm-capabilities.json",

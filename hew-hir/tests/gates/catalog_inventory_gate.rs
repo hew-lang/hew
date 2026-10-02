@@ -31,8 +31,7 @@ fn catalog_runtime_symbols_are_classified() {
             // C-ABI symbol exposed at the generated-code host boundary; LayoutDescriptorSymbol
             // entries name `#[no_mangle] pub static` descriptors in
             // `hew-runtime/src/layout_intrinsics.rs`, not extern "C" fns, and the
-            // runtime export classification gate only enumerates fn exports (see
-            // `scripts/verify-ffi-symbols.py:4`). All three are out of scope here.
+            // runtime export classification only enumerates fn exports. All three are out of scope here.
             BuiltinLinkage::CompilerIntrinsic { .. }
             | BuiltinLinkage::CalleeNameDispatchOnly
             | BuiltinLinkage::LayoutDescriptorSymbol { .. } => {

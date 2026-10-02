@@ -2894,8 +2894,8 @@ fn builtin_option_extractors_consume_the_receiver() {
             value.expect("the value is present")
         }
 
-        fn take_or(consume value: Option<string>, consume fallback: string) -> string {
-            value.unwrap_or(fallback)
+        fn take_or(consume value: Option<string>, consume err: string) -> Result<string, string> {
+            value.ok_or(err)
         }
         "#,
     );
@@ -2904,7 +2904,7 @@ fn builtin_option_extractors_consume_the_receiver() {
         "builtin Option extractors must type-check: {:#?}",
         output.errors
     );
-    for method in ["expect", "unwrap_or"] {
+    for method in ["expect", "ok_or"] {
         let key = output
             .method_call_rewrites
             .iter()
@@ -2928,7 +2928,7 @@ fn builtin_option_extractors_consume_the_receiver() {
 
 #[test]
 fn builtin_option_extractors_refuse_a_borrowed_receiver() {
-    // `expect`/`unwrap_or` take `consume self`, so a borrowed parameter needs
+    // `expect`/`ok_or` take `consume self`, so a borrowed parameter needs
     // `consume` like any other consuming method call.
     let output = check_source(
         r#"

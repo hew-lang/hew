@@ -17,20 +17,6 @@ impl<T, E> Result<T, E> {
             .Err(_) => true,
         }
     }
-    /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-    pub fn unwrap_or(consume self, consume fallback: T) -> T {
-        match self {
-            .Ok(v) => v,
-            .Err(_) => fallback,
-        }
-    }
-    /// Unwrap the `Ok` value, or compute a fallback from the error with `f`.
-    pub fn unwrap_or_else(consume self, f: fn(E) -> T) -> T {
-        match self {
-            .Ok(v) => v,
-            .Err(e) => f(e),
-        }
-    }
     /// Discard the error, converting to `Some` on `Ok` or `None` on `Err`.
     pub fn ok(consume self) -> Option<T> {
         match self {

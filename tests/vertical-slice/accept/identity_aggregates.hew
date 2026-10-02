@@ -44,17 +44,17 @@ fn main() -> i64 {
     }
     var nodes: HashMap<NodeId, i64> = HashMap.new();
     nodes.insert(node_id, 11);
-    if nodes.get(node_id).unwrap_or(0) != 11 {
+    if (nodes.get(node_id) ?? 0) != 11 {
         return 8;
     }
     var locations: HashMap<Location, i64> = HashMap.new();
     locations.insert(location, 12);
-    if locations.get(location).unwrap_or(0) != 12 {
+    if (locations.get(location) ?? 0) != 12 {
         return 9;
     }
     var pids: HashMap<RemotePid<Worker>, i64> = HashMap.new();
     pids.insert(pid, 13);
-    if pids.get(pid).unwrap_or(0) != 13 {
+    if (pids.get(pid) ?? 0) != 13 {
         return 10;
     }
     let node_text = to_string(node_id);

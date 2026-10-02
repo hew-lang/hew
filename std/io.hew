@@ -9,7 +9,7 @@
 //!
 //! fn main() {
 //!     io.write("enter your name: ");
-//!     let name = io.read_line().unwrap_or("stranger");
+//!     let name = io.read_line() ?? "stranger";
 //!     io.write("hello, ");
 //!     io.write(name);
 //!     io.write("\n");

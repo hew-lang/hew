@@ -1,6 +1,6 @@
 import std.io;
 
 fn main() {
-    let name = io.read_line().unwrap_or("stranger");
+    let name = io.read_line() ?? "stranger";
     println(f"hello {name}");
 }

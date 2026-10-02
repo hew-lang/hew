@@ -5,5 +5,5 @@ actor W { receive fn take(p: dyn Pinger) -> i64 { p.ping() } }
 fn main() {
     let w = spawn W;
     let d: dyn Pinger = P { r: Rc.new(5) };
-    println(w.take(d).unwrap_or(-1));
+    println(w.take(d) handle _e { -1 });
 }

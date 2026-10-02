@@ -484,7 +484,7 @@
     "id": "types/option_result_methods",
     "category": "types",
     "name": "Option and Result Methods",
-    "description": "is_some, is_none, is_ok, is_err, unwrap, unwrap_or on Option and Result",
+    "description": "is_some, is_none, is_ok, is_err, `??` and `handle` recovery on Option and Result",
     "source_path": "types/option_result_methods.hew",
     "expected_path": "types/option_result_methods.expected",
     "capabilities": {

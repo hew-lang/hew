@@ -8,11 +8,11 @@ actor Keeper {
     var h: Holder;
 
     receive fn grab() -> string {
-        slot.take().unwrap_or("none")
+        (slot.take() ?? "none")
     }
 
     receive fn grab_name() -> string {
-        h.name.take().unwrap_or("none")
+        (h.name.take() ?? "none")
     }
 
     receive fn put(v: string) {
@@ -22,13 +22,13 @@ actor Keeper {
 
 fn main() {
     var name: Option<string> = .Some("ada");
-    println(name.take().unwrap_or("none"));
+    println(name.take() ?? "none");
     println(name.is_none());
     println(name.take().is_none());
     name = .Some("grace");
-    println(name.take().unwrap_or("none"));
+    println(name.take() ?? "none");
     var h = Holder { name: .Some("lin"), count: 1 };
-    println(h.name.take().unwrap_or("none"));
+    println(h.name.take() ?? "none");
     println(h.name.is_none());
     println(h.count);
     let k = spawn Keeper(slot: .Some("a"), h: Holder { name: .Some("bob"), count: 2 });

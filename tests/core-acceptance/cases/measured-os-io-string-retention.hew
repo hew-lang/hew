@@ -9,7 +9,7 @@ fn one_frame() -> i64 {
         .Some(value) => value,
         .None => return 91,
     };
-    let env = os.env("PATH").unwrap_or("");
+    let env = os.env("PATH") ?? "";
     let cwd = os.cwd();
     let home = os.home_dir();
     let host = os.hostname();

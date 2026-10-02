@@ -27,7 +27,7 @@ fn frame() -> HashMap<i64, string> {
 fn main() {
     let sink = frame();
     print(sink.len());
-    print(sink.get(0).unwrap_or("missing"));
-    print(sink.get(1).unwrap_or("missing"));
+    print(sink.get(0) ?? "missing");
+    print(sink.get(1) ?? "missing");
     print("OK");
 }

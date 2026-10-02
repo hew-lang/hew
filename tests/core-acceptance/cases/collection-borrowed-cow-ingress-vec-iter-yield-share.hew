@@ -1,7 +1,7 @@
 fn keep_expensive(totals: HashMap<string, i64>) -> i64 {
     var kept: HashMap<string, i64> = HashMap.new();
     for category in totals.keys() {
-        let cents = totals.get(category).unwrap_or(0);
+        let cents = totals.get(category) ?? 0;
         if cents > 500 {
             kept.insert(category, cents);
         }
@@ -13,7 +13,7 @@ fn best_category(totals: HashMap<string, i64>) -> string {
     var best_name = "";
     var best_cents = -1;
     for category in totals.keys() {
-        let cents = totals.get(category).unwrap_or(0);
+        let cents = totals.get(category) ?? 0;
         if cents > best_cents {
             best_cents = cents;
             best_name = category;

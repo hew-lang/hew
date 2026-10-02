@@ -53,7 +53,7 @@ std.path	path.combine("a", "b");
 std.pipeline	pipeline.from(1);
 std.process	let _ = process.run("true");
 std.random	random.seed(1);
-std.result	let _: i64 = Result.Ok(1).unwrap_or(0);
+std.result	let _: i64 = Result.Ok(1).is_ok();
 std.semaphore	semaphore.new(1);
 std.sort	sort.sort_ints([1]);
 std.stream	let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe"); tx.close(); rx.close();

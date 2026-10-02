@@ -633,7 +633,7 @@ pub fn lines(s: string) -> Vec<string> {
         if found.is_none() {
             break;
         }
-        let idx = found.unwrap_or(0);
+        let idx = found ?? 0;
         var end = start + idx;
         if end > start && s.slice(end - 1, end) == "\r" {
             end = end - 1;

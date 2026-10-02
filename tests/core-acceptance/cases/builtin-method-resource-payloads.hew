@@ -1,7 +1,8 @@
-// `unwrap_or`, `ok_or` and `expect` take their fallback or error by
+// `??` and `handle` evaluate their fallback only on absence or error, so a
+// present payload never builds one. `ok_or` and `expect` take their error by
 // consumption, so a payload with no copy operation moves through either arm
-// and closes exactly once; an unused fallback or error closes when the
-// method returns.
+// and closes exactly once; an unused `ok_or` error closes when the method
+// returns.
 #[resource]
 type Buf {
     data: Vec<i64>;
@@ -21,11 +22,11 @@ fn make(n: i64) -> Buf {
 
 fn main() {
     let none: Option<Buf> = .None;
-    none.unwrap_or(make(1)).close();
+    (none ?? make(1)).close();
     let some: Option<Buf> = .Some(make(2));
-    some.unwrap_or(make(3)).close();
+    (some ?? make(3)).close();
     let failed: Result<Buf, string> = .Err("bad");
-    failed.unwrap_or(make(4)).close();
+    (failed handle _e { make(4) }).close();
     let present: Option<Buf> = .Some(make(5));
     present.expect("present").close();
     let missing: Option<i64> = .None;

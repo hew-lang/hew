@@ -1,6 +1,7 @@
-//! `hew fmt --migrate` rewrites retired spellings syntactically: every file
-//! migrates on its own, nothing is type-checked, and any refusal leaves every
-//! file as it was.
+//! `hew fmt --migrate` rewrites retired spellings: punctuation and paths
+//! syntactically, bare variants by the type the checker says their context
+//! expects. Type errors never block it, and any refusal leaves every file as
+//! it was.
 mod support;
 
 use std::path::Path;
@@ -242,4 +243,69 @@ fn a_migrated_file_keeps_its_permissions() {
     assert!(output.status.success(), "{}", stderr(&output));
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o640);
+}
+
+/// Bare variants respell by the type their context expects: `.Ok` where the
+/// return type selects `Result`, `Option.None` and `Colour.Red` where nothing
+/// does. An unrelated type error neither blocks the pass nor changes, and a
+/// directory-module peer respells against its module.
+#[test]
+fn migrate_respells_bare_variants_by_their_context() {
+    let dir = support::tempdir();
+    let path = dir.path().join("variants.hew");
+    std::fs::write(
+        &path,
+        concat!(
+            "enum Colour { Red; Green; }\n",
+            "fn pick(n: i64) -> Result<i64, string> {\n",
+            "    if n < 0 { return Err(\"neg\"); }\n",
+            "    let none = None;\n",
+            "    let colour = Red;\n",
+            "    let typed: Colour = Green;\n",
+            "    let wrong: i64 = \"text\";\n",
+            "    Ok(n)\n",
+            "}\n",
+            "fn main() {}\n",
+        ),
+    )
+    .unwrap();
+    let module = dir.path().join("shapes");
+    std::fs::create_dir(&module).unwrap();
+    std::fs::write(
+        module.join("shapes.hew"),
+        "pub fn first(values: Vec<i64>) -> Option<i64> { if values.is_empty() { None } else { Some(values[0]) } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        module.join("extra.hew"),
+        "pub fn wrap(value: i64) -> Option<i64> { Some(value) }\n",
+    )
+    .unwrap();
+
+    let output = migrate(&[], dir.path());
+    assert!(output.status.success(), "{}", stderr(&output));
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    for spelling in [
+        "return .Err(\"neg\");",
+        "let none = Option.None;",
+        "let colour = Colour.Red;",
+        "let typed: Colour = .Green;",
+        "let wrong: i64 = \"text\";",
+        "    .Ok(n)\n",
+    ] {
+        assert!(
+            migrated.contains(spelling),
+            "missing `{spelling}`:\n{migrated}"
+        );
+    }
+    let entry = std::fs::read_to_string(module.join("shapes.hew")).unwrap();
+    let peer = std::fs::read_to_string(module.join("extra.hew")).unwrap();
+    assert!(
+        entry.contains(".None") && entry.contains(".Some(values[0])"),
+        "{entry}"
+    );
+    assert!(peer.contains(".Some(value)"), "{peer}");
+
+    let again = migrate(&["--check"], dir.path());
+    assert!(again.status.success(), "{}", stderr(&again));
 }

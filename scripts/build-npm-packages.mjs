@@ -22,7 +22,6 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const REPO_ROOT = resolve(process.env.HEW_SOURCE_ROOT ?? SCRIPT_REPO_ROOT);
 const STAGING_ROOT = resolve(REPO_ROOT, process.env.HEW_NPM_STAGE_ROOT ?? "target/npm/@hew-lang");
-const GITHUB_PACKAGES_REGISTRY = "https://npm.pkg.github.com";
 
 // Use the development Wasm profile for fast local iteration.
 const wasmProfile = process.env.NPM_WASM_PROFILE === "dev" ? "dev" : "release";
@@ -56,7 +55,8 @@ function run(cmd, args, opts = {}) {
  *
  * wasm-pack sets the package name to `@<scope>/<crate-name>` (e.g.
  * `@hew-lang/hew-wasm`). We rename it to the canonical name and update
- * `publishConfig` for GitHub Packages.
+ * `publishConfig`. The registry is chosen at publish time, so npmjs and the
+ * GitHub Packages mirror receive the same staged package.
  */
 function buildWasmCrate({ crate, outName, version, source }) {
   const stagingDir = join(STAGING_ROOT, outName);
@@ -83,9 +83,11 @@ function buildWasmCrate({ crate, outName, version, source }) {
   pkg.name = `@hew-lang/${outName}`;
   pkg.version = version;
   pkg.hewSource = source;
-  pkg.publishConfig = {
-    registry: GITHUB_PACKAGES_REGISTRY,
-    access: "public",
+  pkg.publishConfig = { access: "public" };
+  pkg.repository = {
+    type: "git",
+    url: "git+https://github.com/hew-lang/hew.git",
+    directory: "hew-wasm",
   };
   // Remove the .gitignore wasm-pack emits so `npm pack` captures all files.
   delete pkg[".gitignore"];
@@ -156,10 +158,7 @@ function buildSandboxVm({ version, source }) {
       url: "git+https://github.com/hew-lang/hew.git",
       directory: "hew-sandbox-vm",
     },
-    publishConfig: {
-      registry: GITHUB_PACKAGES_REGISTRY,
-      access: "public",
-    },
+    publishConfig: { access: "public" },
   };
   writeFileSync(
     join(stagingDir, "package.json"),

@@ -152,7 +152,7 @@ fn test_heap_property() -> i32 {
     heap = heap_push_all(heap, seeds3);
     // Verify heap property: parent <= children
     var ok = true;
-    for i in 0 .. heap.len() {
+    for i in 0..heap.len() {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {

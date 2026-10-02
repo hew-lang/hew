@@ -13,7 +13,7 @@ import std.net.http.http_async_client;
 import std.string;
 
 fn serve(consume listener: net.Listener, requests: i64) {
-    for r in 0 .. requests {
+    for r in 0..requests {
         let conn = listener.accept();
         var raw = "";
         var reads = 0;

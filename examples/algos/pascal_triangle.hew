@@ -9,7 +9,7 @@ fn binomial(n: i64, k: i64) -> i64 {
         kk = n - kk;
     }
     var result = 1;
-    for i in 0 .. kk {
+    for i in 0..kk {
         result = result * (n - i);
         result = result / (i + 1);
     }

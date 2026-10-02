@@ -54,7 +54,7 @@ pub fn decode(s: string) -> bytes {
     }
     // Collect 6-bit values
     var vals: bytes = bytes.new();
-    for i in 0 .. data_len {
+    for i in 0..data_len {
         let ch = s.slice(i, i + 1);
         let v = decode_char(ch);
         if v < 0 {

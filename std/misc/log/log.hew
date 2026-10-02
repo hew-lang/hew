@@ -207,7 +207,7 @@ pub fn field_bool(key: string, val: bool) -> string {
 fn join_fields(fields: Vec<string>) -> string {
     var result = "";
     let n = fields.len();
-    for i in 0 .. n {
+    for i in 0..n {
         let f = fields[i];
         if result.len() > 0 {
             result = result + " " + f;

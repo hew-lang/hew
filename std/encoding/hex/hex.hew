@@ -43,7 +43,7 @@ pub fn decode(s: string) -> bytes {
     if slen % 2 != 0 {
         return out;
     }
-    for i in (0 .. slen).step_by(2) {
+    for i in (0..slen).step_by(2) {
         let hi = hex_char_to_nibble(s.slice(i, i + 1));
         let lo = hex_char_to_nibble(s.slice(i + 1, i + 2));
         if hi < 0 {
@@ -60,7 +60,7 @@ pub fn decode(s: string) -> bytes {
 /// Encode binary data to a hex string, optionally uppercase.
 fn encode_impl(data: bytes, upper: bool) -> string {
     var out: bytes = bytes.new();
-    for i in 0 .. data.len() {
+    for i in 0..data.len() {
         let b = data[i];
         let hi = b as i32 / 16;
         let lo = b as i32 % 16;

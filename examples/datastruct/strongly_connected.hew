@@ -7,28 +7,28 @@
 fn build_directed(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
     let num_edges = esrc.len();
     var degree: Vec<i64> = Vec.new();
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         degree.push(0);
     }
-    for i in 0 .. num_edges {
+    for i in 0..num_edges {
         let s = esrc[i];
         degree.set(s, degree[s] + 1);
     }
     var adj_offsets: Vec<i64> = Vec.new();
     adj_offsets.push(0);
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         adj_offsets.push(adj_offsets[i] + degree[i]);
     }
     let total = adj_offsets[num_nodes];
     var adj_nodes: Vec<i64> = Vec.new();
-    for i in 0 .. total {
+    for i in 0..total {
         adj_nodes.push(0);
     }
     var pos: Vec<i64> = Vec.new();
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         pos.push(adj_offsets[i]);
     }
-    for i in 0 .. num_edges {
+    for i in 0..num_edges {
         let s = esrc[i];
         let d = edst[i];
         adj_nodes.set(pos[s], d);
@@ -41,12 +41,12 @@ fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64) 
     // Iterative DFS recording finish order
     var order: Vec<i64> = Vec.new();
     var visited: Vec<i64> = Vec.new();
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         visited.push(0);
     }
     // Stack entries: node*2 for "enter", node*2+1 for "exit"
     var stack: Vec<i64> = Vec.new();
-    for start in 0 .. num_nodes {
+    for start in 0..num_nodes {
         if visited[start] == 0 {
             stack.push(start * 2);
             while !stack.is_empty() {
@@ -80,7 +80,7 @@ fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64) 
 fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, order: Vec<i64>) -> Vec<i64> {
     // DFS on transpose in reverse finish order
     var comp: Vec<i64> = Vec.new();
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         comp.push(0 - 1);
     }
     var comp_id = 0;
@@ -117,7 +117,7 @@ fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64,
 
 fn count_components(comp: Vec<i64>, num_nodes: i64) -> i64 {
     var max_c = 0;
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         let c = comp[i];
         if c > max_c {
             max_c = c;
@@ -171,7 +171,7 @@ fn main() {
     // Build transpose graph
     var tsrc: Vec<i64> = Vec.new();
     var tdst: Vec<i64> = Vec.new();
-    for i in 0 .. num_edges {
+    for i in 0..num_edges {
         tsrc.push(edst[i]);
         tdst.push(esrc[i]);
     }
@@ -250,7 +250,7 @@ fn main() {
     }
     // Test 8: All nodes assigned a component (no -1)
     var all_assigned = true;
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         if comp[i] < 0 {
             all_assigned = false;
         }

@@ -35,7 +35,7 @@ fn main() {
         pass = false;
         println("FAIL length");
     }
-    for k in 0 .. 6 {
+    for k in 0..6 {
         if merged[k] as i64 != k + 1 {
             pass = false;
             println("FAIL at:");

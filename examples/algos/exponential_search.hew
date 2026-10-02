@@ -147,7 +147,7 @@ fn main() {
     }
     // Test 7: large array, find near end
     var v7: Vec<i64> = Vec.new();
-    for i in 0 .. 100 {
+    for i in 0..100 {
         v7.push(i * 3);
     }
     let r7 = exponential_search(v7, 291);

@@ -155,7 +155,7 @@ fn legacy_packed_args_note() -> string {
 fn split_legacy_packed_args(args: string) -> Vec<string> {
     let raw_parts = string.split(args, " ");
     var filtered: Vec<string> = Vec.new();
-    for i in 0 .. raw_parts.len() {
+    for i in 0..raw_parts.len() {
         let part = raw_parts[i];
         if part != "" {
             filtered.push(part);

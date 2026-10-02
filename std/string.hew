@@ -99,7 +99,7 @@ pub fn to_int(s: string) -> Result<i64, string> {
         7
     };
     var result = 0;
-    for i in start .. slen {
+    for i in start..slen {
         let digit = s.slice(i, i + 1);
         let d = digit_value(digit);
         if d < 0 {
@@ -208,7 +208,7 @@ fn digit_value(ch: string) -> i64 {
 
 fn find_exponent_index(s: string, start: i64, end: i64) -> i64 {
     var exponent_index = -1;
-    for i in start .. end {
+    for i in start..end {
         let ch = s.slice(i, i + 1);
         let is_exponent = ch == "e" || ch == "E";
         if is_exponent {
@@ -227,7 +227,7 @@ fn is_valid_float_significand(s: string, start: i64, end: i64) -> bool {
     }
     var saw_digit = false;
     var saw_decimal = false;
-    for i in start .. end {
+    for i in start..end {
         let ch = s.slice(i, i + 1);
         let is_decimal = ch == ".";
         if is_decimal {
@@ -259,7 +259,7 @@ fn is_valid_float_exponent(s: string, start: i64, end: i64) -> bool {
     if index >= end {
         return false;
     }
-    for i in index .. end {
+    for i in index..end {
         let digit = s.slice(i, i + 1);
         let value = digit_value(digit);
         if value < 0 {
@@ -274,7 +274,7 @@ fn parse_float_significand(s: string, start: i64, end: i64) -> f64 {
     var fraction = 0.0;
     var fraction_scale = 1.0;
     var saw_decimal = false;
-    for i in start .. end {
+    for i in start..end {
         let ch = s.slice(i, i + 1);
         let is_decimal = ch == ".";
         if is_decimal {
@@ -306,7 +306,7 @@ fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
         index = start + 1;
     }
     var exponent = 0;
-    for i in index .. end {
+    for i in index..end {
         let digit = s.slice(i, i + 1);
         let value = digit_value(digit);
         exponent = exponent * 10 + value;
@@ -325,7 +325,7 @@ fn apply_float_exponent(value: f64, exponent: i64) -> f64 {
     } else {
         exponent
     };
-    for i in 0 .. exp_abs {
+    for i in 0..exp_abs {
         scale = scale * 10.0;
     }
     if exponent < 0 {
@@ -454,7 +454,7 @@ pub fn is_numeric(s: string) -> bool {
     if slen == 0 {
         return false;
     }
-    for i in 0 .. slen {
+    for i in 0..slen {
         let d = digit_value(s.slice(i, i + 1));
         if d < 0 {
             return false;
@@ -557,7 +557,7 @@ pub fn contains(s: string, sub: string) -> bool {
 /// ```
 pub fn is_ascii(s: string) -> bool {
     let len = s.len();
-    for i in 0 .. len {
+    for i in 0..len {
         // In-bounds loop: char_at(i) is always Some; treat the unreachable
         // None defensively as non-ASCII rather than unwrapping.
         let ch = match s.char_at(i) {
@@ -670,7 +670,7 @@ pub fn join(parts: Vec<string>, sep: string) -> string {
         return "";
     }
     var result = parts[0];
-    for i in 1 .. n {
+    for i in 1..n {
         result = result + sep + parts[i];
     }
     result

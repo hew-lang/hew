@@ -1,7 +1,7 @@
 fn spiral_matrix(n: i64) -> i64 {
     let total = n * n;
     var mat: Vec<i64> = Vec.new();
-    for idx in 0 .. total {
+    for idx in 0..total {
         mat.push(0);
     }
     var top = 0;
@@ -53,7 +53,7 @@ const ITERS: i64 = 50000;
 fn main() {
     let n = 20;
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + spiral_matrix(n);
     }
     println("bench_spiral_matrix");

@@ -49,7 +49,7 @@ actor Broker {
     receive fn publish(topic: string, payload: string) {
         published = published + 1;
         var delivered = 0;
-        for i in 0 .. sub_topics.len() {
+        for i in 0..sub_topics.len() {
             if sub_topics[i] == topic {
                 let target = sub_actors[i];
                 let _ = target.on_message(sub_topics[i], payload);

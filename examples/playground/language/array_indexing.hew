@@ -10,7 +10,7 @@ fn main() {
     // Sum by index: the sandbox VM iterates ranges but not collection values
     // directly, so indexing is intentional here.
     // hew:allow(needless_range_loop)
-    for i in 0 .. xs.len() {
+    for i in 0..xs.len() {
         total = total + xs[i];
     }
     println(f"total: {total}");

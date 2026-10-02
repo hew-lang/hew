@@ -14,7 +14,7 @@ fn main() {
     // large prime instead of accumulating the raw value. Go wraps where Hew
     // traps, so the Go twin folds the same way and both print one checksum.
     var sum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         sum = (sum + factorial(20)) % 1000000007;
     }
     println(ITERS);

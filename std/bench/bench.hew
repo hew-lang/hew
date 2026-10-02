@@ -72,14 +72,14 @@ impl SuiteMethods for Suite {
         if warmup < 1 {
             warmup = 1;
         }
-        for wi in 0 .. warmup {
+        for wi in 0..warmup {
             f();
         }
         // Measure
         var min_ns: i64 = 9223372036854775807;
         var max_ns: i64 = 0;
         var total_ns: i64 = 0;
-        for i in 0 .. iterations {
+        for i in 0..iterations {
             let start = datetime.now_nanos();
             f();
             let end = datetime.now_nanos();
@@ -99,7 +99,7 @@ impl SuiteMethods for Suite {
     /// Print results as a human-readable table.
     fn report(self) {
         println(f"=== {self.name} ===");
-        for i in 0 .. self.results.len() {
+        for i in 0..self.results.len() {
             let r = self.results[i];
             let avg_str = format_time(r.avg_ns);
             let min_str = format_time(r.min_ns);
@@ -111,7 +111,7 @@ impl SuiteMethods for Suite {
     /// Print results as a JSON array.
     fn report_json(self) {
         var json = f"\{\"suite\":\"{self.name}\",\"benchmarks\":[";
-        for i in 0 .. self.results.len() {
+        for i in 0..self.results.len() {
             let r = self.results[i];
             if i > 0 {
                 json = json + ",";

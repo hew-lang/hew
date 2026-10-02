@@ -16,7 +16,7 @@ fn main() {
         dist.push(INF);
     }
     // Diagonal = 0
-    for i in 0 .. n {
+    for i in 0..n {
         dist.set(i * n + i, 0);
     }
     // Edges
@@ -28,9 +28,9 @@ fn main() {
     dist.set(1 * n + 3, 5);
 
     // Floyd-Warshall
-    for k in 0 .. n {
-        for i in 0 .. n {
-            for j in 0 .. n {
+    for k in 0..n {
+        for i in 0..n {
+            for j in 0..n {
                 let through_k = dist[i * n + k] + dist[k * n + j];
                 if through_k < dist[i * n + j] {
                     dist.set(i * n + j, through_k);
@@ -57,8 +57,8 @@ fn main() {
     expected.push(12);
     expected.push(0);
     var ok = 1;
-    for i in 0 .. n {
-        for j in 0 .. n {
+    for i in 0..n {
+        for j in 0..n {
             let d = dist[i * n + j];
             let e = expected[i * n + j];
             print(d);

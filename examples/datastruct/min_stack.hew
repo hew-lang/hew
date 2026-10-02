@@ -126,7 +126,7 @@ fn main() {
     vals.push(20);
     vals.push(80);
     vals.push(10);
-    for i in 0 .. 8 {
+    for i in 0..8 {
         let v = vals[i];
         data2.push(v);
         if mins2.is_empty() {

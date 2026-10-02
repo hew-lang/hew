@@ -2,7 +2,7 @@ fn lcs(a: Vec<i64>, b: Vec<i64>, m: i64, n: i64) -> i64 {
     let cols = n + 1;
     let total = (m + 1) * cols;
     var dp: Vec<i64> = Vec.new();
-    for idx in 0 .. total {
+    for idx in 0..total {
         dp.push(0);
     }
     var i = 1;
@@ -34,14 +34,14 @@ fn main() {
     let n = 50;
     var a: Vec<i64> = Vec.new();
     var b: Vec<i64> = Vec.new();
-    for k in 0 .. m {
+    for k in 0..m {
         a.push(k % 7);
     }
-    for k in 0 .. n {
+    for k in 0..n {
         b.push(k % 9);
     }
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + lcs(a, b, m, n);
     }
     println("bench_lcs");

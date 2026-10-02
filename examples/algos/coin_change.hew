@@ -16,7 +16,7 @@ fn main() {
         dp.push(INF);
     }
     for i in 1 .. amount + 1 {
-        for j in 0 .. num_coins {
+        for j in 0..num_coins {
             let c: i64 = coins[j] as i64;
             if c <= i {
                 let prev = dp[i - c];

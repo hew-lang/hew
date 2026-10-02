@@ -106,7 +106,7 @@ fn build_heap(arr: Vec<i32>, var heap: Vec<i32>) -> Vec<i32> {
 
 fn check_max_heap_property(heap: Vec<i32>) -> bool {
     var ok = true;
-    for i in 0 .. heap.len() {
+    for i in 0..heap.len() {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {

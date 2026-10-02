@@ -37,7 +37,7 @@ fn main() {
     let c = spawn Counter(count: 0);
     // Fill the bounded mailbox in deterministic batches without spelling out
     // ten separate completion calls in the main loop.
-    for batch in 0 .. 100 {
+    for batch in 0..100 {
         let batch_index: i64 = batch;
         send_batch(c, 10);
         let batch_count = read_count(c);

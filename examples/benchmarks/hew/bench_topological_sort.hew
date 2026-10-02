@@ -91,7 +91,7 @@ fn main() {
     adj_offsets = built_offsets;
     in_degree = built_degree;
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + topological_sort(adj_nodes, adj_offsets, in_degree, n);
     }
     println("bench_topological_sort");

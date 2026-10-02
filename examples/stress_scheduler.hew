@@ -35,9 +35,9 @@ fn main() {
     println("=== Stress: Scheduler ===");
     let collector = spawn Collector(count: 0);
     // Spawn 50 workers, each processing 20 messages
-    for i in 0 .. 50 {
+    for i in 0..50 {
         let w = spawn Worker(id: i);
-        for j in 0 .. 20 {
+        for j in 0..20 {
             let _ = w.process(j);
         }
         let _ = collector.tick();

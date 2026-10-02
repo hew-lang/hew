@@ -22,10 +22,10 @@ fn main() {
     for i in 0 .. rows * cols {
         dp.push(0);
     }
-    for i in 1 .. rows {
+    for i in 1..rows {
         let w: i32 = weights[i - 1];
         let v: i32 = values[i - 1];
-        for j in 1 .. cols {
+        for j in 1..cols {
             let exclude = dp[(i - 1) * cols + j];
             if w as i64 <= j {
                 let include = dp[(i - 1) * cols + (j - w as i64)] + v;

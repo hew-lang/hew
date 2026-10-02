@@ -28,7 +28,7 @@ fn main() {
     // Every match's submatches as a row-major table (group 0 = whole match).
     let rows = re.find_all_submatch(text);
     println(f"rows={rows.len()} groups_per_row={rows.width()}");
-    for i in 0 .. rows.len() {
+    for i in 0..rows.len() {
         let whole = match rows.whole(i) {
             .Some(w) => w,
             .None => "?",

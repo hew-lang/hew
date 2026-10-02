@@ -17,7 +17,7 @@ fn make_ht(capacity: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(EMPTY);
         v.push(NONE);
     }
@@ -189,7 +189,7 @@ fn mm_count(ht: Vec<i64>, nodes: Vec<i64>, key: i64) -> i64 {
 
 fn vec_contains(v: Vec<i64>, val: i64) -> bool {
     let len = v.len();
-    for i in 0 .. len {
+    for i in 0..len {
         if v[i] == val {
             return true;
         }

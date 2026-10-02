@@ -55,7 +55,7 @@ actor Acceptor {
     receive fn start() {
         let listener = net.listen(address).expect("listen");
         events.mark(f"port {listener.local_port()}").expect("record port");
-        for index in 1 .. 4 {
+        for index in 1..4 {
             let conn = listener.accept();
             if index <= 2 {
                 let session = spawn Session(conn: conn, events: events);

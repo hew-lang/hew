@@ -36,7 +36,7 @@ actor Coordinator {
     receive fn sync(name: string, local_count: i64) {
         sync_count = sync_count + 1;
         // Find the replica and update its known total
-        for i in 0 .. replica_names.len() {
+        for i in 0..replica_names.len() {
             if replica_names[i] == name {
                 replica_totals.set(i, local_count);
                 break;

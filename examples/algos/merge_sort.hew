@@ -38,7 +38,7 @@ fn merge_sort(var v: Vec<i64>) -> Vec<i64> {
                         aux.push(v[j]);
                         j = j + 1;
                     }
-                    for k in 0 .. aux.len() {
+                    for k in 0..aux.len() {
                         v.set(start + k, aux[k]);
                     }
                     start = start + width + width;
@@ -119,7 +119,7 @@ fn main() {
     big.push(4);
     big.push(0);
     var exp_big: Vec<i64> = Vec.new();
-    for x in 0 .. 10 {
+    for x in 0..10 {
         exp_big.push(x);
     }
     passed = passed + run_test("ten_elements", big, exp_big);

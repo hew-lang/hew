@@ -46,7 +46,7 @@ fn main() {
     // sends frames — an ordinary call would deadlock the two sides.
     fork d.run();
     // Producer side: drive the local sink, then close it to signal EOF.
-    for i in 0 .. 3 {
+    for i in 0..3 {
         sink.send(f"frame-{i}".to_bytes()).expect("send");
     }
     sink.close();

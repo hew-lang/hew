@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1589u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1590u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1589] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1590] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -2179,6 +2179,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1589] = {
      "*const c_void, *mut c_void, u64, ) -> bool\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_dist_bound_port", "{\"native\": \"fn hew_dist_bound_port() -> i64\"}",
+     "native", "non-declarable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dist_inject_swim_gossip",
      "{\"native\": \"fn hew_dist_inject_swim_gossip( u16, i32, u64) -> i64\"}",
      "native", "non-declarable", "not-applicable", "not-applicable",

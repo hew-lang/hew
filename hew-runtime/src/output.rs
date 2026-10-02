@@ -2,11 +2,13 @@
 //!
 //! Every write from Hew code (`print`, `println`, `io.write`, `io.write_err`)
 //! and every user-visible runtime report copies its bytes into one
-//! process-wide queue and returns. A single drainer job on the blocking pool
-//! writes the queue to the two streams in order, so stdout and stderr writes
-//! never reorder against each other and a worker never waits on a slow
-//! terminal or pipe. Without a pool (before the runtime starts, after it
-//! stops, or on wasm32) the writer drains on the calling thread.
+//! process-wide queue and returns. One dedicated drainer thread writes the
+//! queue to the two streams in order, so stdout and stderr writes never
+//! reorder against each other and a worker never waits on a slow terminal or
+//! pipe. The drainer shares no pool with program work, so blocked offloaded
+//! calls can never stall output. Without a runtime (before it starts, after it
+//! stops, or on wasm32), or if the thread cannot start, the writer drains on
+//! the calling thread.
 //!
 //! A writer that gets more than [`BACKLOG`] bytes ahead of the drainer waits
 //! for it. Terminal paths call [`flush`] before the process ends.
@@ -30,7 +32,7 @@ struct Queue {
     chunks: VecDeque<(Stream, Vec<u8>)>,
     /// Bytes queued or being written.
     bytes: usize,
-    /// A drainer owns the queue until it finds it empty.
+    /// Chunks are queued or being written; flush waits for this to clear.
     draining: bool,
 }
 
@@ -40,32 +42,32 @@ static QUEUE: Mutex<Queue> = Mutex::new(Queue {
     draining: false,
 });
 static PROGRESS: Condvar = Condvar::new();
+/// Signalled when the queue gains a chunk for the drainer thread.
+#[cfg(not(target_arch = "wasm32"))]
+static WORK: Condvar = Condvar::new();
 
 /// Queue a copy of `bytes` for `stream`, in order with every other write.
 pub(crate) fn write(stream: Stream, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
-    let start = {
-        let mut queue = QUEUE.lock_or_recover();
-        while queue.bytes >= BACKLOG {
-            queue = PROGRESS.wait_or_recover(queue);
-        }
-        if !queue.draining && pool().is_none() {
-            // No pool and nothing queued: write in place, in order under the lock.
-            emit(stream, bytes);
-            return;
-        }
-        match queue.chunks.back_mut() {
-            Some((last, chunk)) if *last == stream => chunk.extend_from_slice(bytes),
-            _ => queue.chunks.push_back((stream, bytes.to_vec())),
-        }
-        queue.bytes += bytes.len();
-        !std::mem::replace(&mut queue.draining, true)
-    };
-    if start {
-        start_drainer();
+    let mut queue = QUEUE.lock_or_recover();
+    while queue.bytes >= BACKLOG {
+        queue = PROGRESS.wait_or_recover(queue);
     }
+    if !queue.draining && !drainer_running() {
+        // Nothing queued and no drainer: write in place, in order under the lock.
+        emit(stream, bytes);
+        return;
+    }
+    match queue.chunks.back_mut() {
+        Some((last, chunk)) if *last == stream => chunk.extend_from_slice(bytes),
+        _ => queue.chunks.push_back((stream, bytes.to_vec())),
+    }
+    queue.bytes += bytes.len();
+    queue.draining = true;
+    #[cfg(not(target_arch = "wasm32"))]
+    WORK.notify_one();
 }
 
 /// Wait until everything queued so far has been written.
@@ -76,53 +78,48 @@ pub(crate) fn flush() {
     }
 }
 
+/// Whether queued writes reach the drainer thread, starting it on the first
+/// write under a runtime. Called with the queue locked.
 #[cfg(not(target_arch = "wasm32"))]
-fn pool() -> Option<*mut crate::blocking_pool::HewBlockingPool> {
-    crate::blocking_pool::shared_blocking_pool_opt()
+fn drainer_running() -> bool {
+    static DRAINER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if crate::runtime::rt_current_opt().is_none() {
+        return false;
+    }
+    *DRAINER.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("hew-output".into())
+            .spawn(drain)
+            .is_ok()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
-fn pool() -> Option<()> {
-    None
+fn drainer_running() -> bool {
+    false
 }
 
-fn start_drainer() {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(pool) = pool() {
-        // SAFETY: the pool belongs to the installed runtime; the job takes no
-        // argument.
-        let status = unsafe {
-            crate::blocking_pool::hew_blocking_pool_submit(pool, drain_job, std::ptr::null_mut())
-        };
-        if status == 0 {
-            return;
-        }
-    }
-    drain();
-}
-
+/// The drainer thread: write each batch outside the lock, for the life of the
+/// process.
 #[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn drain_job(_: *mut std::ffi::c_void) {
-    drain();
-}
-
 fn drain() {
+    let mut queue = QUEUE.lock_or_recover();
     loop {
-        let batch = {
-            let mut queue = QUEUE.lock_or_recover();
-            if queue.chunks.is_empty() {
-                queue.draining = false;
-                PROGRESS.notify_all();
-                return;
-            }
-            std::mem::take(&mut queue.chunks)
-        };
+        if queue.chunks.is_empty() {
+            queue.draining = false;
+            PROGRESS.notify_all();
+            queue = WORK.wait_or_recover(queue);
+            continue;
+        }
+        let batch = std::mem::take(&mut queue.chunks);
+        drop(queue);
         let mut written = 0;
         for (stream, bytes) in &batch {
             emit(*stream, bytes);
             written += bytes.len();
         }
-        QUEUE.lock_or_recover().bytes -= written;
+        queue = QUEUE.lock_or_recover();
+        queue.bytes -= written;
         PROGRESS.notify_all();
     }
 }

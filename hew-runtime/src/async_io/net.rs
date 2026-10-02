@@ -249,7 +249,8 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
             &io::Error::from_raw_os_error(libc::EBADF),
         ));
     }
-    if slot.has_waiter(direction) {
+    // Standard input queues concurrent readers; a socket takes one per direction.
+    if !slot.is_stdin() && slot.has_waiter(direction) {
         return Err(IoFailure::from_io(
             "TCP handle already has pending I/O",
             &io::Error::from_raw_os_error(libc::EBUSY),

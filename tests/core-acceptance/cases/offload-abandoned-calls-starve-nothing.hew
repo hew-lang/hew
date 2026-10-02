@@ -1,0 +1,39 @@
+// Sixty-four #[offload] calls stay blocked in the OS for good, each abandoned
+// by its caller's deadline: as many as the blocking pool's cap. Their threads
+// stop counting against the cap, so a later call with no deadline still runs,
+// and output, an actor's output and exit never wait on them.
+extern "C" {
+    #[offload]
+    fn pause() -> i32;
+    #[offload]
+    fn usleep(micros: u32) -> i32;
+}
+
+actor Talker {
+    receive fn say(text: string) {
+        println(text);
+    }
+}
+
+fn abandon(count: i64) -> i64 {
+    var gave_up = 0;
+    for i in 0..count {
+        gave_up += scope within 1ms {
+            let _ = unsafe { pause() };
+            0
+        } handle failure {
+            1
+        };
+    }
+    gave_up
+}
+
+fn main() {
+    println(f"gave up {abandon(64)}");
+    println(f"slept {unsafe { usleep(1000) }}");
+    let talker = spawn Talker();
+    talker.say("from actor").expect("say");
+    sleep(100ms);
+    println("main after actor");
+    exit(3);
+}

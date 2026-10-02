@@ -22,15 +22,14 @@ import std.encoding.utf8;
 ///
 /// The call waits without holding a scheduler thread, so other tasks keep
 /// running while input is silent. The trailing `\n` or `\r\n` is removed and
-/// invalid UTF-8 becomes U+FFFD. Returns `None` at end of input or on a read
-/// error; a final line without a newline is still returned first.
+/// invalid UTF-8 becomes U+FFFD. Returns `None` at end of input; a final line
+/// without a newline is still returned first. A read error traps.
 ///
-/// A read that a deadline or an enclosing scope cancels consumes nothing:
-/// the next read returns the line that was pending.
+/// Concurrent reads take lines in the order they started, each line going to
+/// exactly one of them. A read that a deadline or an enclosing scope cancels
+/// consumes nothing: the next read returns the line that was pending.
 pub fn read_line() -> Option<string> {
-    var line = unsafe {
-        hew_stdin_read_line()
-    };
+    var line = next_line();
     if line.is_empty() {
         return .None;
     }
@@ -65,20 +64,34 @@ pub fn write_err(s: string) {
 
 /// Read standard input to its end.
 ///
-/// Waits like `read_line`. Invalid UTF-8 becomes U+FFFD.
+/// Waits like `read_line`, and a read error traps. Invalid UTF-8 becomes
+/// U+FFFD.
 pub fn read_all() -> string {
-    var all = unsafe {
-        hew_stdin_read_line()
-    };
+    var all = next_line();
     var reading = !all.is_empty();
     while reading {
-        let more = unsafe {
-            hew_stdin_read_line()
-        };
+        let more = next_line();
         reading = !more.is_empty();
         all.append(more);
     }
     utf8.decode_lossy(all)
+}
+
+/// One raw line with its newline; empty only at end of input. A failed read
+/// leaves its message in the stream error slot, which a success clears.
+fn next_line() -> bytes {
+    let line = unsafe {
+        hew_stdin_read_line()
+    };
+    if line.is_empty() {
+        let failure = unsafe {
+            hew_stream_last_error()
+        };
+        if failure != "" {
+            panic(f"io: {failure}");
+        }
+    }
+    line
 }
 
 // ── Declarative bytes receiver FFI ───────────────────────────────────
@@ -126,6 +139,7 @@ extern "C" {
     // One line with its newline, or the unterminated last line; empty at
     // end of input. A waiting call: it suspends the task.
     fn hew_stdin_read_line() -> bytes;
+    fn hew_stream_last_error() -> string;
     fn hew_io_write(s: string);
     fn hew_io_write_err(s: string);
 }

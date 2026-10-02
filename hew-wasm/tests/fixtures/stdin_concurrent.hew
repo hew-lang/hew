@@ -1,0 +1,24 @@
+import std.io;
+
+fn reader() -> string {
+    io.read_line().unwrap_or("<none>")
+}
+
+fn main() {
+    var first = "";
+    var second = "";
+    scope {
+        let x = fork reader();
+        let y = fork reader();
+        first = await x;
+        second = await y;
+    };
+    // Which reader starts first is the scheduler's choice; each line goes to
+    // exactly one of them.
+    if first == "one" && second == "two" || first == "two" && second == "one" {
+        println("one line each");
+    } else {
+        println(f"unexpected {first} {second}");
+    }
+    println(f"rest=[{io.read_all()}]");
+}

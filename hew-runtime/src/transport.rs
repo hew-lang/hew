@@ -848,7 +848,11 @@ static TCP_OPS: HewTransportOps = HewTransportOps {
     destroy: Some(tcp_destroy),
 };
 
-#[cfg(test)]
+/// The port a TCP transport's listener is bound to, or `None` for another
+/// transport or before it listens.
+///
+/// # Safety
+/// `transport` is null or valid for the duration of the call.
 pub(crate) unsafe fn hew_transport_tcp_bound_port(transport: *mut HewTransport) -> Option<u16> {
     if transport.is_null() {
         return None;

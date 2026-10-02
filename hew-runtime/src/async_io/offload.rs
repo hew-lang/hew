@@ -112,8 +112,12 @@ unsafe extern "C" fn run_offload_job(context: *mut std::ffi::c_void) {
         // Cancelled before it started: only the arguments are released.
         return;
     }
+    if let Some(detach) = crate::blocking_pool::Detach::current() {
+        operation.produced_by(detach);
+    }
     // A C call cannot unwind: a panic inside it aborts the process.
     env.run();
+    crate::blocking_pool::job_finishing();
     operation.complete(Ok(IoValue::Offload(env)));
 }
 

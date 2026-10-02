@@ -6,7 +6,7 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (391 packages)
+  Apache License 2.0 (389 packages)
   MIT License (114 packages)
   Unicode License v3 (19 packages)
   BSD 3-Clause "New" or "Revised" License (9 packages)
@@ -668,11 +668,10 @@ Apache License 2.0
 Apache License 2.0
   * cmov 0.5.4 — https://github.com/RustCrypto/utils
   * ctutils 0.4.2 — https://github.com/RustCrypto/utils
-  * encoding_rs 0.8.41 — https://github.com/hsivonen/encoding_rs
+  * encoding_rs 0.8.42 — https://github.com/hsivonen/encoding_rs
   * lru-slab 0.1.3 — https://github.com/Ralith/lru-slab
-  * multiversion-macros 0.9.0 — https://github.com/calebzulawski/multiversion
-  * multiversion 0.9.0 — https://github.com/calebzulawski/multiversion
   * multiversion_no_op 1.0.0 — https://github.com/hsivonen/multiversion_no_op
+  * siphasher 1.0.4 — https://github.com/jedisct1/rust-siphash
   * static_assertions 1.1.0 — https://github.com/nvzqz/static-assertions-rs
   * tinyvec 1.13.3 — https://github.com/Lokathor/tinyvec
   * ureq-proto 0.6.4 — https://github.com/algesten/ureq-proto
@@ -1345,8 +1344,8 @@ Apache License 2.0
 
 ================================================================================
 Apache License 2.0
-  * zerocopy-derive 0.8.57 — https://github.com/google/zerocopy
-  * zerocopy 0.8.57 — https://github.com/google/zerocopy
+  * zerocopy-derive 0.8.59 — https://github.com/google/zerocopy
+  * zerocopy 0.8.59 — https://github.com/google/zerocopy
 
                                  Apache License
                            Version 2.0, January 2004
@@ -1975,10 +1974,10 @@ Apache License 2.0
   * ciborium 0.2.2 — https://github.com/enarx/ciborium
   * codespan-reporting 0.13.1 — https://github.com/brendanzab/codespan
   * email-encoding 0.4.2 — https://github.com/lettre/email-encoding
-  * quinn-proto 0.11.18 — https://github.com/quinn-rs/quinn
-  * quinn-udp 0.5.15 — https://github.com/quinn-rs/quinn
+  * quinn-proto 0.11.19 — https://github.com/quinn-rs/quinn
+  * quinn-udp 0.5.16 — https://github.com/quinn-rs/quinn
   * quinn 0.11.12 — https://github.com/quinn-rs/quinn
-  * rustls-platform-verifier 0.7.0 — https://github.com/rustls/rustls-platform-verifier
+  * rustls-platform-verifier 0.7.1 — https://github.com/rustls/rustls-platform-verifier
   * unarray 0.1.4 — https://github.com/cameron1024/unarray
   * ureq 3.4.2 — https://github.com/algesten/ureq
 
@@ -4084,7 +4083,7 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * tokio-rustls 0.26.5 — https://github.com/rustls/tokio-rustls
+  * tokio-rustls 0.26.6 — https://github.com/rustls/tokio-rustls
 
                               Apache License
                         Version 2.0, January 2004
@@ -5959,7 +5958,7 @@ Apache License 2.0
   * bstr 1.13.1 — https://github.com/BurntSushi/bstr
   * bumpalo 3.20.3 — https://github.com/fitzgen/bumpalo
   * cast 0.3.0 — https://github.com/japaric/cast.rs
-  * cc 1.4.7 — https://github.com/rust-lang/cc-rs
+  * cc 1.5.1 — https://github.com/rust-lang/cc-rs
   * cfg-if 1.0.5 — https://github.com/rust-lang/cfg-if
   * chunked_transfer 1.5.0 — https://github.com/frewsxcv/rust-chunked-transfer
   * cmake 0.1.58 — https://github.com/rust-lang/cmake-rs
@@ -5979,7 +5978,7 @@ Apache License 2.0
   * errno 0.3.14 — https://github.com/lambda-fairy/rust-errno
   * fastrand 2.5.0 — https://github.com/smol-rs/fastrand
   * filetime 0.2.29 — https://github.com/alexcrichton/filetime
-  * find-msvc-tools 0.1.13 — https://github.com/rust-lang/cc-rs
+  * find-msvc-tools 0.1.14 — https://github.com/rust-lang/cc-rs
   * flate2 1.1.10 — https://github.com/rust-lang/flate2-rs
   * fnv 1.0.7 — https://github.com/servo/rust-fnv
   * form_urlencoded 1.2.2 — https://github.com/servo/rust-url
@@ -5991,7 +5990,7 @@ Apache License 2.0
   * hashbrown 0.17.1 — https://github.com/rust-lang/hashbrown
   * heck 0.5.0 — https://github.com/withoutboats/heck
   * httparse 1.10.1 — https://github.com/seanmonstar/httparse
-  * hyper-rustls 0.27.9 — https://github.com/rustls/hyper-rustls
+  * hyper-rustls 0.27.10 — https://github.com/rustls/hyper-rustls
   * idna 1.1.0 — https://github.com/servo/rust-url/
   * idna_adapter 1.2.2 — https://github.com/hsivonen/idna_adapter
   * indexmap 1.9.3 — https://github.com/bluss/indexmap
@@ -6001,8 +6000,8 @@ Apache License 2.0
   * itertools 0.14.0 — https://github.com/rust-itertools/itertools
   * itertools 0.15.0 — https://github.com/rust-itertools/itertools
   * jobserver 0.1.35 — https://github.com/rust-lang/jobserver-rs
-  * js-sys 0.3.105 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
-  * lazy_static 1.5.0 — https://github.com/rust-lang-nursery/lazy-static.rs
+  * js-sys 0.3.106 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
+  * lazy_static 1.5.1 — https://github.com/rust-lang-nursery/lazy-static.rs
   * linux-raw-sys 0.12.1 — https://github.com/sunfishcode/linux-raw-sys
   * lock_api 0.4.14 — https://github.com/Amanieu/parking_lot
   * log 0.4.34 — https://github.com/rust-lang/log
@@ -6016,10 +6015,10 @@ Apache License 2.0
   * parking_lot 0.12.5 — https://github.com/Amanieu/parking_lot
   * parking_lot_core 0.9.12 — https://github.com/Amanieu/parking_lot
   * percent-encoding 2.3.2 — https://github.com/servo/rust-url/
-  * pest 2.9.1 — https://github.com/pest-parser/pest
-  * pest_derive 2.9.1 — https://github.com/pest-parser/pest
-  * pest_generator 2.9.1 — https://github.com/pest-parser/pest
-  * pest_meta 2.9.1 — https://github.com/pest-parser/pest
+  * pest 2.9.2 — https://github.com/pest-parser/pest
+  * pest_derive 2.9.2 — https://github.com/pest-parser/pest
+  * pest_generator 2.9.2 — https://github.com/pest-parser/pest
+  * pest_meta 2.9.2 — https://github.com/pest-parser/pest
   * pkg-config 0.3.34 — https://github.com/rust-lang/pkg-config-rs
   * proptest 1.11.0 — https://github.com/proptest-rs/proptest
   * rayon-core 1.13.0 — https://github.com/rayon-rs/rayon
@@ -6041,7 +6040,7 @@ Apache License 2.0
   * signal-hook-registry 1.4.8 — https://github.com/vorner/signal-hook
   * signal-hook 0.3.18 — https://github.com/vorner/signal-hook
   * simd_cesu8 1.2.0 — https://github.com/seancroach/simd_cesu8
-  * smallvec 1.16.1 — https://github.com/servo/rust-smallvec
+  * smallvec 1.16.2 — https://github.com/servo/rust-smallvec
   * socket2 0.6.5 — https://github.com/rust-lang/socket2
   * stable_deref_trait 1.2.1 — https://github.com/storyyeller/stable_deref_trait
   * stacker 0.1.25 — https://github.com/rust-lang/stacker
@@ -6064,16 +6063,16 @@ Apache License 2.0
   * wait-timeout 0.2.1 — https://github.com/alexcrichton/wait-timeout
   * wasi 0.11.1+wasi-snapshot-preview1 — https://github.com/bytecodealliance/wasi
   * wasip2 1.0.4+wasi-0.2.12 — https://github.com/bytecodealliance/wasi-rs
-  * wasm-bindgen-futures 0.4.78 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures
-  * wasm-bindgen-macro-support 0.2.128 — https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support
-  * wasm-bindgen-macro 0.2.128 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
-  * wasm-bindgen-shared 0.2.128 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
-  * wasm-bindgen-test-macro 0.3.78 — https://github.com/wasm-bindgen/wasm-bindgen
-  * wasm-bindgen-test-shared 0.2.128 — https://github.com/rustwasm/wasm-bindgen/tree/master/crates/test-shared
-  * wasm-bindgen-test 0.3.78 — https://github.com/wasm-bindgen/wasm-bindgen
-  * wasm-bindgen 0.2.128 — https://github.com/wasm-bindgen/wasm-bindgen
+  * wasm-bindgen-futures 0.4.79 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures
+  * wasm-bindgen-macro-support 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support
+  * wasm-bindgen-macro 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
+  * wasm-bindgen-shared 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
+  * wasm-bindgen-test-macro 0.3.79 — https://github.com/wasm-bindgen/wasm-bindgen
+  * wasm-bindgen-test-shared 0.2.129 — https://github.com/rustwasm/wasm-bindgen/tree/master/crates/test-shared
+  * wasm-bindgen-test 0.3.79 — https://github.com/wasm-bindgen/wasm-bindgen
+  * wasm-bindgen 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen
   * wasmparser 0.259.0 — https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
-  * web-sys 0.3.105 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
+  * web-sys 0.3.106 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
   * wit-bindgen 0.57.1 — https://github.com/bytecodealliance/wit-bindgen
   * xattr 1.6.1 — https://github.com/Stebalien/xattr
   * yasna 0.6.0 — https://github.com/qnighy/yasna.rs
@@ -8641,14 +8640,14 @@ Apache License 2.0
   * litrs 1.0.0 — https://github.com/LukasKalbertodt/litrs
   * miniz_oxide 0.9.1 — https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
   * num-conv 0.2.2 — https://github.com/jhpratt/num-conv
-  * pest_vm 2.9.1 — https://github.com/pest-parser/pest
+  * pest_vm 2.9.2 — https://github.com/pest-parser/pest
   * pin-project-lite 0.2.17 — https://github.com/taiki-e/pin-project-lite
   * portable-atomic 1.15.0 — https://github.com/taiki-e/portable-atomic
   * proc-macro2 1.0.107 — https://github.com/dtolnay/proc-macro2
   * quote 1.0.47 — https://github.com/dtolnay/quote
   * r-efi 5.3.0 — https://github.com/r-efi/r-efi
   * r-efi 6.0.0 — https://github.com/r-efi/r-efi
-  * rand 0.10.2 — https://github.com/rust-random/rand
+  * rand 0.10.3 — https://github.com/rust-random/rand
   * rand 0.8.8 — https://github.com/rust-random/rand
   * rand 0.9.5 — https://github.com/rust-random/rand
   * rand_chacha 0.9.0 — https://github.com/rust-random/rand
@@ -8657,7 +8656,7 @@ Apache License 2.0
   * ref-cast-impl 1.0.27 — https://github.com/dtolnay/ref-cast
   * ref-cast 1.0.27 — https://github.com/dtolnay/ref-cast
   * rustc-hash 2.1.3 — https://github.com/rust-lang/rustc-hash
-  * rustls-platform-verifier-android 0.1.1 — https://github.com/rustls/rustls-platform-verifier
+  * rustls-platform-verifier-android 0.2.0 — https://github.com/rustls/rustls-platform-verifier
   * rustversion 1.0.23 — https://github.com/dtolnay/rustversion
   * ryu 1.0.23 — https://github.com/dtolnay/ryu
   * semver 1.0.28 — https://github.com/dtolnay/semver
@@ -8668,13 +8667,12 @@ Apache License 2.0
   * serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
   * shlex 2.0.1 — https://github.com/comex/rust-shlex
   * simdutf8 0.1.5 — https://github.com/rusticstuff/simdutf8
-  * siphasher 1.0.3 — https://github.com/jedisct1/rust-siphash
   * snow 0.10.0 — https://github.com/mcginty/snow
   * syn 2.0.119 — https://github.com/dtolnay/syn
   * syn 3.0.6 — https://github.com/dtolnay/syn
   * sync_wrapper 1.0.2 — https://github.com/Actyx/sync_wrapper
-  * thiserror-impl 2.0.20 — https://github.com/dtolnay/thiserror
-  * thiserror 2.0.20 — https://github.com/dtolnay/thiserror
+  * thiserror-impl 2.0.21 — https://github.com/dtolnay/thiserror
+  * thiserror 2.0.21 — https://github.com/dtolnay/thiserror
   * time-core 0.1.9 — https://github.com/time-rs/time
   * time-macros 0.2.32 — https://github.com/time-rs/time
   * time 0.3.55 — https://github.com/time-rs/time
@@ -9165,7 +9163,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ================================================================================
 BSD 3-Clause "New" or "Revised" License
-  * encoding_rs 0.8.41 — https://github.com/hsivonen/encoding_rs
+  * encoding_rs 0.8.42 — https://github.com/hsivonen/encoding_rs
 
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 
@@ -9597,7 +9595,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH REGARD TO
 
 ================================================================================
 MIT License
-  * instability 0.3.13 — https://github.com/ratatui/instability
+  * instability 0.3.14 — https://github.com/ratatui/instability
 
 # MIT License
 
@@ -10129,7 +10127,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 MIT License
-  * hyper-util 0.1.20 — https://github.com/hyperium/hyper-util
+  * hyper-util 0.1.21 — https://github.com/hyperium/hyper-util
 
 Copyright (c) 2023-2025 Sean McArthur
 
@@ -10218,7 +10216,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 MIT License
-  * lru 0.18.4 — https://github.com/jeromefroe/lru-rs.git
+  * lru 0.18.5 — https://github.com/jeromefroe/lru-rs.git
 
 MIT License
 
@@ -10641,7 +10639,7 @@ SOFTWARE.
 
 ================================================================================
 MIT License
-  * libredox 0.1.24 — https://gitlab.redox-os.org/redox-os/libredox.git
+  * libredox 0.1.25 — https://gitlab.redox-os.org/redox-os/libredox.git
 
 MIT License
 
@@ -12153,7 +12151,7 @@ Unicode License v3
   * potential_utf 0.1.6 — https://github.com/unicode-org/icu4x
   * tinystr 0.8.4 — https://github.com/unicode-org/icu4x
   * writeable 0.6.4 — https://github.com/unicode-org/icu4x
-  * yoke-derive 0.8.3 — https://github.com/unicode-org/icu4x
+  * yoke-derive 0.8.4 — https://github.com/unicode-org/icu4x
   * yoke 0.8.3 — https://github.com/unicode-org/icu4x
   * zerofrom-derive 0.1.8 — https://github.com/unicode-org/icu4x
   * zerofrom 0.1.8 — https://github.com/unicode-org/icu4x

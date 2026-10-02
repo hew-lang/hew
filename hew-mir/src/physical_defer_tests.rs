@@ -167,7 +167,9 @@ fn physical_defer_preserves_failed_result_absence() {
         dest: value,
         source: result,
     };
-    refuses(&failed, "uninitialized");
+    // Block 9 joins the success and failure paths, so the read is reported
+    // against the joined state.
+    refuses(&failed, "not initialized on every path");
 }
 
 #[test]

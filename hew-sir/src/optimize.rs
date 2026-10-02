@@ -151,19 +151,22 @@ fn canonicalize_verified_function(
     // public call boundary. This deliberately makes dead-block compaction a
     // separate audited transformation: later passes can follow this shape
     // without inventing a second validation convention.
-    let diagnostics = crate::verify::verify_function_with_context(
-        defs,
-        function,
-        callable_context,
-        facts,
-        aggregate_shapes,
-        variant_shapes,
-        resources,
-    );
-    if !diagnostics.is_empty() {
-        return Err(diagnostics);
+    // A body with no folded branch is the verified input, byte for byte.
+    if folded_branches > 0 {
+        let diagnostics = crate::verify::verify_function_with_context(
+            defs,
+            function,
+            callable_context,
+            facts,
+            aggregate_shapes,
+            variant_shapes,
+            resources,
+        );
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
     }
-    if !verify_cfg_discard_safety(&before_folding, function).is_empty() {
+    if folded_branches > 0 && !verify_cfg_discard_safety(&before_folding, function).is_empty() {
         // Constant folding is optional. If removing the unselected region
         // would erase a trap or ownership obligation, retain the original
         // verified CFG instead of turning a refused optimization into a
@@ -174,17 +177,20 @@ fn canonicalize_verified_function(
 
     let post_fold_cfg = build_cfg_index(function);
     let (removed_blocks, block_remap) = compact_unreachable(function, post_fold_cfg.reachable());
-    let diagnostics = crate::verify::verify_function_with_context(
-        defs,
-        function,
-        callable_context,
-        facts,
-        aggregate_shapes,
-        variant_shapes,
-        resources,
-    );
-    if !diagnostics.is_empty() {
-        return Err(diagnostics);
+    let compacted = !removed_blocks.is_empty() || block_remap.iter().any(|(old, new)| old != new);
+    if compacted {
+        let diagnostics = crate::verify::verify_function_with_context(
+            defs,
+            function,
+            callable_context,
+            facts,
+            aggregate_shapes,
+            variant_shapes,
+            resources,
+        );
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
     }
     Ok(CfgCanonicalizationReport {
         folded_branches,

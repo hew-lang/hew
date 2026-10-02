@@ -6020,6 +6020,8 @@ fn label(colour: Colour) -> string {
 
     // ── #1290 Symlink-cycle regression ──────────────────────────────────────
 
+    // Windows requires elevated rights for symlinks, so this is unix-only.
+    #[cfg(unix)]
     #[test]
     fn plan_workspace_rename_disk_scan_skips_symlinked_directory() {
         // Regression for issue #1290: a symlink pointing to an ancestor directory
@@ -6045,13 +6047,7 @@ fn label(colour: Colour) -> string {
 
         // Create a directory symlink that points back at the workspace root.
         let loop_path = project_root.join("loop");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(project_root, &loop_path).unwrap();
-        #[cfg(not(unix))]
-        {
-            // Windows requires elevated rights for symlinks; skip on non-unix.
-            return;
-        }
 
         let util_uri = Url::from_checked_file_path(&util_path).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();

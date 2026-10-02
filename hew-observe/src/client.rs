@@ -51,10 +51,16 @@ pub enum ClientError {
     /// Could not connect to the unix socket (stale path, permissions, etc.).
     Connect(io::Error),
     /// Failed to configure socket read/write timeouts.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "built only by the unix-socket transport")
+    )]
     Timeout(io::Error),
     /// Failed to write the HTTP request.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "built only by the unix-socket transport")
+    )]
     Write(io::Error),
     /// Failed to read the HTTP response (status line, headers, or body).
     Read(io::Error),

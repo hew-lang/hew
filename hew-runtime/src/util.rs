@@ -62,7 +62,7 @@ pub(crate) fn push_json_string(out: &mut String, s: &str) {
 //
 // KEEP(wasm32): reached from `take_panic_payload_message`, whose own note
 // explains why the whole pair is native-only.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = panic_payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -108,7 +108,7 @@ pub(crate) fn quarantine_panic_payload(mut payload: Box<dyn std::any::Any + Send
 // diagnostic and the payload is released through `quarantine_panic_payload`,
 // which contains a hostile `Drop` rather than letting a second unwind escape
 // the runtime boundary.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
     let message = panic_payload_message(payload.as_ref());
     quarantine_panic_payload(payload);

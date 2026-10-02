@@ -28,12 +28,15 @@
 //! registers from `bridge::bridge_init`, and profiler registers from
 //! `profiler::register_reset_hooks`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::lifetime::PoisonSafe;
 
 /// A zero-argument, infallible cleanup callback.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) type ResetHook = fn();
 
 /// Global list of reset hooks, populated at init time.
+#[cfg(not(target_arch = "wasm32"))]
 static RESET_HOOKS: PoisonSafe<Vec<ResetHook>> = PoisonSafe::new(Vec::new());
 
 /// Register a reset hook.
@@ -41,6 +44,7 @@ static RESET_HOOKS: PoisonSafe<Vec<ResetHook>> = PoisonSafe::new(Vec::new());
 /// Hooks registered here will be called in order when `session_reset` fires.
 /// Callers are responsible for guarding against duplicate registration (e.g.
 /// with `std::sync::Once`).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn register_reset_hook(hook: ResetHook) {
     RESET_HOOKS.access(|hooks| hooks.push(hook));
 }
@@ -50,6 +54,7 @@ pub(crate) fn register_reset_hook(hook: ResetHook) {
 /// Called from both `hew_sched_shutdown` paths (WASM cooperative and native
 /// work-stealing) after the actor drain completes and before scheduler statics
 /// are cleared.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn session_reset() {
     // Snapshot the hooks under the lock, then release the lock before
     // calling each hook.  This avoids a potential deadlock if a hook

@@ -81,6 +81,7 @@ pub(crate) fn resolve_target(target: local_handles::HewLocalPidId) -> Option<Act
 /// Select dependencies are alternatives. A timer or an independently driven
 /// source is a possible escape, so that turn cannot prove a closed actor knot.
 /// This registration replaces the owner's single strict dependency atomically.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn select_alternatives(
     owner: ActorIncarnation,
     targets: Vec<ActorIncarnation>,

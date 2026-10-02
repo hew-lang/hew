@@ -1,3 +1,6 @@
+// The only test executes the Node sandbox VM, which is unix-only (see below).
+#![cfg(unix)]
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -37,7 +40,6 @@ struct Capabilities {
 // Windows runners do not provision the hew-sandbox-vm npm toolchain for
 // this harness. `make sandbox-parity` runs it directly on a provisioned
 // Linux CI runner.
-#[cfg(unix)]
 #[test]
 fn playground_manifest_sources_run_at_native_sandbox_parity() {
     set_test_hewpath();

@@ -134,6 +134,7 @@ fn main() {
 }
 "#;
 
+#[cfg(unix)]
 const FAILING: &str = r#"
 import std.io;
 

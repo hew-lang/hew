@@ -20,6 +20,5 @@ pub(crate) mod local_handles;
 pub(crate) mod poison_safe;
 
 pub(crate) use poison_safe::PoisonSafe;
-// live on not(wasm32) — env/link/monitor/transport/hew_node; dead here; consumers in native-only modules
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use poison_safe::PoisonSafeRw;

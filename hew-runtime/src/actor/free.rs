@@ -28,6 +28,7 @@ pub struct DrainOutcomeRepr {
 }
 
 #[inline]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn actor_free_state_is_quiescent(state: i32) -> bool {
     state == HewActorState::Stopped as i32
         || state == HewActorState::Crashed as i32
@@ -287,7 +288,7 @@ pub(crate) unsafe fn retire_parked_activations() {
 
 /// Outcome of [`decide_finalize_by_latch`] — the canonical "is it safe to
 /// finalize this quiescent-but-possibly-re-enqueued actor?" decision.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum FinalizeDecision {
     /// Safe to finalize. Carries the state to hand to
     /// [`finalize_quiescent_actor_cleanup`]; that value drives only the
@@ -338,6 +339,7 @@ pub(crate) enum FinalizeDecision {
 ///   `Stopped || Crashed` test) keeps this decision consistent with the sibling
 ///   free paths and routes `Suspended` to the same fail-closed leak — closing a
 ///   latent finalize-over-a-parked-frame on the cleanup path.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
     if !a.checked_invocation.load(Ordering::Acquire).is_null()
         || a.native_completion
@@ -1419,6 +1421,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
     drain_outcome_from_lists(still_live, crashed)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
     if ids.is_empty() {
         return Ok(ptr::null_mut());
@@ -1438,6 +1441,7 @@ fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
     Ok(out)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn write_drain_outcome_repr(
     out: &mut DrainOutcomeRepr,
     outcome: DrainOutcome,
@@ -2138,6 +2142,7 @@ pub(crate) unsafe fn actor_send_result_internal(
 /// # Safety
 ///
 /// `data` must point to `size` readable bytes.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn actor_send_pinned(
     pin: &crate::lifetime::live_actors::ActorPin,
     msg_type: i32,
@@ -3099,6 +3104,7 @@ pub(crate) enum TrapMailboxReclaim {
     /// The caller is the scheduler frame that owns the mailbox consumer.
     OwnedActivation,
     /// Drain only if no scheduler frame owns the mailbox consumer.
+    #[cfg(not(target_arch = "wasm32"))]
     IfQuiescent,
     /// Exact pre-fix counterfactual used by the ownership witness.
     #[cfg(test)]
@@ -3141,6 +3147,8 @@ fn publish_crash_fault_record(
     supervisor: *mut c_void,
     supervisor_child_index: i32,
 ) -> crate::exit_status::FaultRecord {
+    #[cfg(target_arch = "wasm32")]
+    let _ = supervisor_child_index;
     if terminal != HewActorState::Crashed as i32 {
         return crate::exit_status::FaultRecord::NONE;
     }
@@ -3472,6 +3480,7 @@ pub(crate) unsafe fn hew_actor_trap_inner(
             // SAFETY: the calling activation owns the mailbox consumer.
             unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
         }
+        #[cfg(not(target_arch = "wasm32"))]
         TrapMailboxReclaim::IfQuiescent => {
             // Test activation ownership under the same terminal-reclaim lock as
             // ActivationOwnership's terminal-state test, final drain, and

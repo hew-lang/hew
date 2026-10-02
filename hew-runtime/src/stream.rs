@@ -49,9 +49,14 @@ use hew_cabi::string::{
     string_as_bytes, string_as_str, string_from_utf8, string_release, HewString,
 };
 use std::collections::VecDeque;
-use std::ffi::{c_int, c_void};
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::c_int;
+use std::ffi::c_void;
 use std::fs;
-use std::io::{BufReader, Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
+use std::io::{BufReader, Read};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::TcpStream;
 use std::ptr;
 use std::sync::Arc;
@@ -127,6 +132,7 @@ fn adapter_select_readiness(upstream: SelectReadiness) -> SelectReadiness {
 
 trait StreamBacking: Send + std::fmt::Debug {
     /// The backing owns this transport handle; native operations only borrow it.
+    #[cfg(not(target_arch = "wasm32"))]
     fn native_connection(&self) -> Option<i32> {
         None
     }
@@ -179,6 +185,7 @@ impl HewStream {
     /// The shared pipe core when this stream is the read half of an
     /// in-memory pipe; `None` for a content stream (socket, file, adapter).
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pipe_core(&self) -> Option<&Arc<crate::channel_core::ChannelCore>> {
         self.channel.as_ref()
     }
@@ -1549,6 +1556,7 @@ pub unsafe extern "C" fn hew_sink_peer_closed(sink: *mut HewSink) -> i32 {
 /// `sink` must be null or a live `HewSink` pointer not yet freed — the exact
 /// pointer `hew_actor_gen_sink_register` recorded. After this call `sink` is
 /// dangling (mirrors `hew_sink_close`'s contract).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn fault_close_registered_sink(sink: *mut HewSink, faulted_actor_id: u64) {
     if sink.is_null() {
         return;

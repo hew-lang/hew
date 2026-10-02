@@ -33,16 +33,19 @@ impl NativeActorCompletion {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn crash_action(&self) -> Option<i32> {
         self.crash
             .filter(|_| self.phase.load(Ordering::Acquire) >= 2)
             .map(|_| self.crash_action.load(Ordering::Relaxed))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_finished(&self) -> bool {
         self.phase.load(Ordering::Acquire) == 2
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cleanup_in_progress(&self) -> bool {
         matches!(self.phase.load(Ordering::Acquire), 1 | 3)
     }

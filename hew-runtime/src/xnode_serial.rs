@@ -266,6 +266,7 @@ fn register_codec_into(
 // points call, so they stay reachable without an allow of their own.
 
 /// The complete request codec for `(dispatch, msg_type)`, if registered.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn lookup_request(dispatch: *const c_void, msg_type: i32) -> Option<ThunkPair> {
     let key = CodecKey::new(dispatch, msg_type);
     let reg = THUNK_REGISTRY.lock().ok()?;
@@ -273,6 +274,7 @@ pub(crate) fn lookup_request(dispatch: *const c_void, msg_type: i32) -> Option<T
 }
 
 /// The complete reply codec for `(dispatch, request msg_type)`, if registered.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn lookup_reply(dispatch: *const c_void, msg_type: i32) -> Option<ThunkPair> {
     let key = CodecKey::new(dispatch, msg_type);
     let reg = REPLY_REGISTRY.lock().ok()?;
@@ -280,6 +282,7 @@ pub(crate) fn lookup_reply(dispatch: *const c_void, msg_type: i32) -> Option<Thu
 }
 
 /// Look up the reply DESERIALIZE thunk for `(dispatch, request msg_type)`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn lookup_reply_deserialize(
     dispatch: *const c_void,
     msg_type: i32,
@@ -298,7 +301,7 @@ pub(crate) fn lookup_reply_deserialize(
 /// # Safety
 /// `data` must be valid for `len` bytes (or null when `len == 0`).
 // KEEP(wasm32): see the codec note above; caller is hew_node.rs.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn decode_reply(
     dispatch: *const c_void,
     msg_type: i32,
@@ -315,6 +318,7 @@ pub(crate) unsafe fn decode_reply(
 }
 
 /// Look up the request SERIALIZE thunk for `(dispatch, msg_type)`, if registered.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn lookup_serialize(dispatch: *const c_void, msg_type: i32) -> Option<SerializeThunk> {
     let key = CodecKey::new(dispatch, msg_type);
     let reg = THUNK_REGISTRY.lock().ok()?;
@@ -332,7 +336,7 @@ pub(crate) fn lookup_serialize(dispatch: *const c_void, msg_type: i32) -> Option
 /// `value_ptr` must point to a valid value of the message type for `msg_type`;
 /// `out_len` must be a valid writable pointer.
 // KEEP(wasm32): see the codec note above; caller is hew_node.rs.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn encode_payload(
     dispatch: *const c_void,
     msg_type: i32,

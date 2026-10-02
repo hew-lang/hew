@@ -10,11 +10,14 @@ use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 use crate::actor::HEW_MAX_WORKERS;
 use crate::lifetime::PoisonSafe;
-use crate::util::{CondvarExt, MutexExt};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::util::CondvarExt;
+use crate::util::MutexExt;
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 const SHARD_COUNT: usize = HEW_MAX_WORKERS + 1;
@@ -26,9 +29,9 @@ const OBSERVE_BARRIER_OK: i64 = 0;
 // reader. They are the fail-closed half of a shipping surface: `std/observe.hew`
 // declares the call, `hew-types` maps `RuntimeCall::ObserveBarrier` to the symbol,
 // and `hew-codegen-rs` emits its i64 signature.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 const OBSERVE_BARRIER_ERR_WORKER_CONTEXT: i64 = -1;
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 const OBSERVE_BARRIER_ERR_TIMEOUT: i64 = -2;
 #[cfg(not(target_arch = "wasm32"))]
 const OBSERVE_BARRIER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -148,7 +151,7 @@ pub struct RuntimeHookSnapshot {
 // `#[cfg(not(target_arch = "wasm32"))]` in lib.rs while `pub mod observe` is
 // ungated, so the caller vanishes on wasm32 (which ships `scheduler_wasm`) and
 // only there. Live on macOS, Linux, FreeBSD and Windows.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn configure_from_env() {
     let enabled = std::env::var("HEW_OBSERVE")
         .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on" | "hot"));
@@ -177,7 +180,7 @@ pub fn set_hot_tier_enabled(enabled: bool) {
 /// overwrite each other's in-flight tickets, `computed_dispatch_watermark`
 /// would advance past live dispatches, and `hew_observe_barrier` could return
 /// OK while work is still running.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn set_current_worker_shard(worker_id: usize) {
     let shard = worker_id.saturating_add(1).min(SHARD_COUNT - 1);
     WORKER_SHARD.with(|slot| slot.set(shard));
@@ -203,6 +206,7 @@ fn shard_sum(shards: &[AtomicU64; SHARD_COUNT]) -> u64 {
 
 // Reached unconditionally from `reset_live_safe_counters`, whose own KEEP note
 // explains why that entry point is native-only; no allow of its own is needed.
+#[cfg(not(target_arch = "wasm32"))]
 fn shard_reset(shards: &[AtomicU64; SHARD_COUNT]) {
     for counter in shards {
         counter.store(0, Ordering::Relaxed);
@@ -233,7 +237,6 @@ pub(crate) fn record_heap_free(size: u64) {
 // (`scheduler.rs`), which lib.rs gates behind `#[cfg(not(target_arch =
 // "wasm32"))]`; this module is ungated, so wasm32 sees a definition with no
 // caller. Deleting it breaks every native build.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_actor_turn(duration_ns: u64) {
     if observe_hot_tier_enabled() {
         shard_add(&ACTOR_TURNS_TOTAL, 1);
@@ -352,13 +355,13 @@ pub(crate) fn observe_dispatch_abandon(ticket: ObserveDispatchTicket) {
 // genuinely-unused recorder still warns on the primary target.
 
 // KEEP(wasm32): scheduler.rs park path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_scheduler_park() {
     SCHEDULER_PARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): scheduler.rs unpark path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_scheduler_unpark() {
     SCHEDULER_UNPARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
@@ -374,14 +377,12 @@ pub(crate) fn record_coroutine_frame_free(frame_bytes: u64) {
 }
 
 // KEEP(wasm32): scheduler.rs coroutine suspend path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_coroutine_suspend() {
     COROUTINES_SUSPENDS_TOTAL.fetch_add(1, Ordering::Relaxed);
     COROUTINES_SUSPENDED.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): scheduler.rs coroutine resume path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_coroutine_resume() {
     COROUTINES_RESUMES_TOTAL.fetch_add(1, Ordering::Relaxed);
     let _ = COROUTINES_SUSPENDED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -390,13 +391,13 @@ pub(crate) fn record_coroutine_resume() {
 }
 
 // KEEP(wasm32): reactor.rs registration path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_reactor_registration() {
     REACTOR_REGISTRATIONS_LIVE.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): reactor.rs deregistration path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_reactor_unregistration(count: u64) {
     let _ =
         REACTOR_REGISTRATIONS_LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -405,19 +406,19 @@ pub(crate) fn record_reactor_unregistration(count: u64) {
 }
 
 // KEEP(wasm32): reactor.rs readiness dispatch.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_reactor_ready_event() {
     REACTOR_READY_EVENTS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): reactor.rs slot table.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_io_handle_opened() {
     IO_HANDLES_LIVE.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): reactor.rs slot table.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_io_handle_closed() {
     let _ = IO_HANDLES_LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         value.checked_sub(1)
@@ -425,43 +426,41 @@ pub(crate) fn record_io_handle_closed() {
 }
 
 // KEEP(wasm32): blocking_pool.rs thread accounting.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_pool_threads(threads: usize) {
     POOL_THREADS.store(threads as u64, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): blocking_pool.rs admission.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_pool_saturation() {
     POOL_SATURATIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): crash.rs fault handler.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_actor_crash() {
     ACTORS_CRASHES_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): supervisor.rs restart path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_actor_restart() {
     ACTORS_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): arena.rs reset path.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_arena_reset() {
     ARENA_RESETS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): blocking_pool.rs job entry.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_blocking_start() {
     THREADS_BLOCKING_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 // KEEP(wasm32): blocking_pool.rs job exit.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_blocking_finish() {
     let _ = THREADS_BLOCKING_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         value.checked_sub(1)
@@ -1152,7 +1151,7 @@ pub extern "C" fn hew_observe_series() -> *mut HewString {
 /// counter-reset half of the public metrics C ABI. lib.rs gates `pub mod
 /// scheduler` behind `#[cfg(not(target_arch = "wasm32"))]` while `pub mod
 /// observe` is unconditional, so only wasm32 sees no caller.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn reset_live_safe_counters() {
     shard_reset(&HEAP_ALLOCATED_TOTAL);
     shard_reset(&HEAP_FREED_TOTAL);
@@ -1187,7 +1186,7 @@ pub(crate) fn reset_live_safe_counters() {
 /// after workers are joined — both in the native-only `scheduler` module.
 /// Dropping it would silently leak a prior session's metrics registry and
 /// dispatch-ticket state into the next JIT/AOT reload cycle.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn reset_all() {
     reset_live_safe_counters();
     COROUTINES_LIVE.store(0, Ordering::Relaxed);
@@ -1218,7 +1217,7 @@ pub(crate) fn reset_all() {
 /// behind `#[cfg(not(target_arch = "wasm32"))]`. Structurally identical to the
 /// sibling registrations in bridge.rs, tracing.rs and profiler/mod.rs on the
 /// same shared `session::RESET_HOOKS` registry.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn register_reset_hooks() {
     use std::sync::Once;
     static ONCE: Once = Once::new();

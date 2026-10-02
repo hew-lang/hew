@@ -180,9 +180,15 @@ pub struct App {
 
     /// When true, periodically re-scan the discovery directory and
     /// reconnect if the current profiler is gone or a new one appears.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "read only by the unix discovery rescan")
+    )]
     auto_discover: bool,
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "read only by the unix discovery rescan")
+    )]
     last_discovery_scan: Instant,
 
     prev_messages_sent: u64,

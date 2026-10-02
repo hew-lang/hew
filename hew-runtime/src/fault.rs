@@ -132,6 +132,7 @@ thread_local! {
 /// Called at the spawn site, on the spawning thread, and carried into the new
 /// task's thread with [`with_owning_actor`].
 #[must_use]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn owning_actor_at_spawn() -> u64 {
     let actor = crate::actor::hew_actor_self();
     if actor.is_null() {
@@ -143,6 +144,7 @@ pub(crate) fn owning_actor_at_spawn() -> u64 {
 
 /// Run `body` as work owned by actor `id`, so a release inside it discloses
 /// that actor's crash. Restores the previous owner, for nested task threads.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn with_owning_actor<T>(id: u64, body: impl FnOnce() -> T) -> T {
     let previous = OWNING_ACTOR.with(|cell| cell.replace(id));
     let result = body();
@@ -354,6 +356,7 @@ pub unsafe extern "C" fn hew_fault_finish_cleanup(fault: *mut HewFault) -> *mut 
 ///
 /// # Safety
 /// `fault` transfers one optional unique fault owner.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn finish_race_loser(fault: *mut HewFault) -> *mut HewFault {
     if fault.is_null() {
         return fault;

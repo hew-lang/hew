@@ -26,7 +26,9 @@
 //! `&Mutex<T>` or `&RwLock<T>`. Raw `.lock()` / `.read()` / `.write()`
 //! on a wrapped global is unreachable by type.
 
-use std::sync::{Mutex, PoisonError, RwLock, TryLockError};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::RwLock;
+use std::sync::{Mutex, PoisonError, TryLockError};
 
 /// A happens-before beacon that is only materialised under `ThreadSanitizer`.
 ///
@@ -98,8 +100,7 @@ impl TsanSync {
 }
 
 /// Error returned by fail-closed lock accessors when the inner lock is poisoned.
-// live on not(wasm32) — PoisonSafeRw::read/write; dead on wasm32; callers in native-only modules
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PoisonedLock;
 
@@ -170,15 +171,13 @@ impl<T> PoisonSafe<T> {
 /// Use [`PoisonSafeRw::read_access`] for shared-read access,
 /// [`PoisonSafeRw::access`] for exclusive-write access, and
 /// [`PoisonSafeRw::try_access`] for non-blocking write attempts.
-// live on not(wasm32) — env/link/monitor/transport/hew_node; dead on wasm32; callers in native-only modules
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PoisonSafeRw<T> {
     inner: RwLock<T>,
     tsan: TsanSync,
 }
 
-// Methods live on not(wasm32); dead on wasm32; impl suppressed here so lint stays armed on native.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> PoisonSafeRw<T> {
     /// Construct a new `PoisonSafeRw<T>` wrapping `value`.
     pub(crate) const fn new(value: T) -> Self {

@@ -138,9 +138,11 @@ pub(crate) enum FaultRuling {
     Handled,
     /// Ownership moved to a live parent supervisor that accepted the
     /// escalation. PROVISIONAL — the parent's ruling settles the record.
+    #[cfg(not(target_arch = "wasm32"))]
     Escalated,
     /// Ownership moved to an armed restart timer. PROVISIONAL — the restart's
     /// effect when the timer fires settles the record.
+    #[cfg(not(target_arch = "wasm32"))]
     ArmedForRestart,
     /// No recovery authority remains, or a transfer to one failed.
     Unrecovered,
@@ -285,6 +287,7 @@ impl ExitStatusAuthority {
             || self.publication_in_flight()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn unsettled(&self) -> bool {
         self.open_count() > 0 || self.publication_in_flight()
     }
@@ -383,6 +386,7 @@ impl RoleFaultIndex {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn attribute(&self, record: FaultRecord, roles: Vec<RoleKey>) {
         if !record.is_some() || roles.is_empty() {
             return;
@@ -398,6 +402,7 @@ impl RoleFaultIndex {
             .retain(|(id, _)| *id != record.as_raw());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn pending(state: &RoleFaultState, role: RoleKey) -> bool {
         state.open.iter().any(|(_, roles)| roles.contains(&role))
     }
@@ -406,11 +411,13 @@ impl RoleFaultIndex {
 static ROLE_FAULTS: RoleFaultIndex = RoleFaultIndex::new();
 
 /// Attribute an open record to the roles it is pending under.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn attribute_supervised_fault(record: FaultRecord, roles: Vec<RoleKey>) {
     ROLE_FAULTS.attribute(record, roles);
 }
 
 /// Whether a fault is still pending under this role.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn role_has_unsettled_fault(role: RoleKey) -> bool {
     let state = ROLE_FAULTS.state.lock_or_recover();
     RoleFaultIndex::pending(&state, role)
@@ -423,6 +430,7 @@ pub(crate) fn role_has_unsettled_fault(role: RoleKey) -> bool {
 /// resolves an exit code: reading the authority while either is true asks a
 /// question whose answer has not been decided yet, which is what made a
 /// program's exit status depend on which thread ran first.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn has_unsettled_faults() -> bool {
     AUTHORITY.unsettled()
 }

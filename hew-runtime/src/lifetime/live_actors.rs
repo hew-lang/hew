@@ -44,6 +44,7 @@ pub(crate) struct ActorPtr(pub(crate) *mut HewActor);
 // SAFETY: see doc on ActorPtr above.
 unsafe impl Send for ActorPtr {}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
     // SAFETY: callers invoke this only after successful removal from the live
     // map and retain allocation ownership until finalization.
@@ -189,6 +190,7 @@ pub(crate) fn actor_count_for_test() -> usize {
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by `drain_all_for_cleanup`).
 /// Only removes the entry if the stored pointer matches `actor`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and not yet freed.
     let id = unsafe { (*actor).id };
@@ -211,8 +213,7 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
 }
 
 /// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
-// live on not(wasm32) — drain_quiesced_actor; dead on wasm32; caller actor.rs:2716
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
     let actor = with_live_actors_opt(|map| {
         let tracked = map.as_mut()?.remove(&actor_id)?;
@@ -342,8 +343,6 @@ pub(crate) fn swap_slot_under_registry_lock(
 ///
 /// Returns `Some(f(..))` if `actor_id` maps to `expected`; `None` otherwise.
 /// The `LIVE_ACTORS` lock is held across `f`.
-// live on not(wasm32) — monitor.rs + link.rs; dead on wasm32; callers monitor.rs:98, link.rs:201
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
     expected: *mut HewActor,
@@ -373,8 +372,7 @@ pub(crate) fn with_live_actor_by_id<R>(
 ///
 /// **Do not use this for send/ask dispatch** — use [`with_actor_send_by_id`]
 /// instead so the actor cannot be freed between lookup and dereference.
-// live on not(wasm32) — remote routing probes; dead on wasm32
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
@@ -393,16 +391,12 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
 /// The `Release` ordering on drop pairs with the free path's `Acquire`
 /// load of `send_pin_count`, ensuring all writes from the pinned
 /// operation are visible to the freer before it reclaims the allocation.
-// live on not(wasm32); dead on wasm32.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) struct ActorPin(*mut HewActor);
 
 // SAFETY: `HewActor` is `Send`; the guard only touches the atomic
 // `send_pin_count` field.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 unsafe impl Send for ActorPin {}
 
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Drop for ActorPin {
     fn drop(&mut self) {
         // SAFETY: the pointer was validated-live when the pin was taken.
@@ -487,8 +481,6 @@ pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
 /// self-deadlocks against this function.
 ///
 /// Returns `Some(f(ptr))` if the actor is live, `None` if not found.
-// live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id; dead on wasm32
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_actor_send_by_id<R>(
     actor_id: u64,
     f: impl FnOnce(*mut HewActor) -> R,
@@ -515,8 +507,6 @@ pub(crate) fn with_actor_send_by_id<R>(
 /// guards; the check stays because it is what makes wrong-actor delivery
 /// unrepresentable at the resolve→submit seam rather than merely unlikely, and
 /// `supervisor.rs` fabricates the collision to keep it honest.
-// live on not(wasm32) — supervisor role ask + by-id ask; dead on wasm32.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_actor_send_by_identity<R>(
     actor_id: u64,
     expected_serial: u64,
@@ -554,7 +544,6 @@ pub(crate) struct ActorIncarnation {
 
 // The whole surface is the native wake edge: wasm32 has its own cooperative
 // scheduler, reply channel and mailbox, and never resolves an incarnation.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl ActorIncarnation {
     /// No wake target.
     ///
@@ -625,8 +614,6 @@ impl ActorIncarnation {
 /// registry lock, and the free path drains `send_pin_count` to zero before
 /// reclaiming the box, so `f` cannot race the target into a free or an address
 /// reuse.
-// live on not(wasm32) — the scheduler wake edge; dead on wasm32.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_live_incarnation<R>(
     target: ActorIncarnation,
     f: impl FnOnce(&ActorPin) -> R,
@@ -651,7 +638,6 @@ pub(crate) fn with_live_incarnation<R>(
 /// so a concurrent teardown cannot free the actor mid-read. Returns `None` when
 /// the actor is not live (the caller then takes the existing fail-closed
 /// `ActorStopped` rejection — never a fabricated key) or has no dispatch set.
-// live on not(wasm32) — cross-node inbound decode; dead on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dispatch_ptr_by_id(actor_id: u64) -> Option<*const std::ffi::c_void> {
     with_live_actors_opt(|map| {
@@ -716,6 +702,7 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 /// pointers are unpinned, so a concurrent free would dangle them. On WASM the
 /// caller must own the single cooperative thread with no activation in
 /// progress.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
@@ -741,6 +728,7 @@ pub(crate) fn snapshot_live_actor_ids() -> Vec<u64> {
 ///
 /// Returns the drained map so the caller can free each actor.
 /// Called by `actor::cleanup_all_actors` after worker threads have stopped.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
     let drained = with_live_actors_opt(|map| match map.as_mut() {
         Some(m) => std::mem::take(m),

@@ -50,7 +50,6 @@
 //! No `thread::sleep`. Blocking `send` / `recv` use `Condvar::wait`
 //! (`not_full` / `not_empty`) and signal on every state change.
 
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #![cfg(not(target_arch = "wasm32"))]
 // SendError / RecvError are exhaustive discriminants — their docstrings
 // enumerate every failure mode. The `# Errors` section would be a verbatim

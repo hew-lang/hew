@@ -300,7 +300,6 @@ thread_local! {
 // the only build where the drain has no entry point. Deleting it reopens the
 // same-drain ABA / tcache double-free closed by the ownership guard
 // `crash-recovery-frame-owner-is-single-authority`).
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn quarantine_reclaimed_frame(frame: *mut c_void) {
     if frame.is_null() {
         return;
@@ -813,7 +812,6 @@ unsafe fn discard_frame_crash_cleanup_registry(frame: *mut c_void) {
 // KEEP(wasm32): same native crash-drain path as `quarantine_reclaimed_frame`;
 // this half discharges the frame's typed escrow owners before the storage is
 // released.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 unsafe fn run_frame_crash_cleanups(frame: *mut c_void) {
     // Detach before running user/resource thunks so recursive runtime calls
     // cannot observe a half-drained registry.

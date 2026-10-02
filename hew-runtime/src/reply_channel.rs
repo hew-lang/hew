@@ -825,6 +825,7 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
 /// - `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
 /// - `out_size` must be a valid, non-null writable pointer.
 /// - Must be called at most once per channel.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hew_reply_wait_with_size(
     ch: *mut HewReplyChannel,
     out_size: *mut usize,

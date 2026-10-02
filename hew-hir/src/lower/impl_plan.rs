@@ -52,19 +52,30 @@ impl LowerCtx {
         symbol_owner: &str,
         method_name: &str,
     ) -> String {
+        match self.collision_owner_suffix(declaration) {
+            Some(suffix) => crate::node::HirImplBlock::method_symbol(
+                &format!("{symbol_owner}{suffix}"),
+                method_name,
+            ),
+            None => crate::node::HirImplBlock::method_symbol(symbol_owner, method_name),
+        }
+    }
+
+    /// The reversible encoding of a declaration's path that
+    /// `emitted_impl_method_symbol` appends to the owner of a method whose
+    /// symbol another body shares.
+    fn collision_owner_suffix(&self, declaration: hew_types::DefId) -> Option<String> {
         use std::fmt::Write as _;
 
         if !self.impl_method_symbol_collisions.contains(&declaration) {
-            return crate::node::HirImplBlock::method_symbol(symbol_owner, method_name);
+            return None;
         }
-        let mut encoded = String::with_capacity(self.defs.path(declaration).len() * 2);
+        let mut encoded = String::with_capacity(self.defs.path(declaration).len() * 2 + 3);
+        encoded.push_str("$i$");
         for byte in self.defs.path(declaration).bytes() {
             write!(&mut encoded, "{byte:02x}").expect("writing a symbol to String cannot fail");
         }
-        crate::node::HirImplBlock::method_symbol(
-            &format!("{symbol_owner}$i${encoded}"),
-            method_name,
-        )
+        Some(encoded)
     }
 }
 
@@ -251,13 +262,20 @@ pub(super) fn record_impl_body_owner(
     base_symbol_self_name: &str,
     planned: &[(hew_types::DefId, String)],
 ) {
+    // The owner is the one every method's symbol is built from, so a
+    // collision encoding a symbol carries is not part of it.
     let selected_owner = planned
         .iter()
         .find_map(|(declaration, _)| {
-            ctx.impl_body_plan
-                .symbols
-                .get(declaration)
-                .and_then(|symbol| symbol.rsplit_once("::").map(|(owner, _)| owner.to_string()))
+            let symbol = ctx.impl_body_plan.symbols.get(declaration)?;
+            let (owner, _) = symbol.rsplit_once("::")?;
+            let suffix = ctx.collision_owner_suffix(*declaration).unwrap_or_default();
+            Some(
+                owner
+                    .strip_suffix(suffix.as_str())
+                    .unwrap_or(owner)
+                    .to_string(),
+            )
         })
         .unwrap_or_else(|| base_symbol_self_name.to_string());
     ctx.impl_body_plan

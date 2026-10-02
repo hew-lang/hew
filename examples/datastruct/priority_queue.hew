@@ -149,7 +149,7 @@ fn main() {
     pq2 = pq_insert_all(pq2, ascending);
     var r7 = 1;
     var prev_val = 0;
-    for i in 0 .. 5 {
+    for i in 0..5 {
         let (drained, v) = pq_extract_min(pq2);
         pq2 = drained;
         if v < prev_val {

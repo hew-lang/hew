@@ -44,7 +44,7 @@ machine TrafficLight {
 
 fn main() {
     var light = TrafficLight.Red;
-    for _ in 0 .. 4 {
+    for _ in 0..4 {
         let report = light.step(.Tick);
         for output in report.outputs {
             match output {

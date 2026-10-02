@@ -33,7 +33,7 @@ impl ActorMsg for Counter {
 }
 
 fn lookup_counter() -> Result<RemotePid<Counter>, LookupError> {
-    for attempt in 0 .. 40 {
+    for attempt in 0..40 {
         let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
         match found {
             .Ok(counter) => return .Ok(counter),

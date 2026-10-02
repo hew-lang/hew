@@ -74,7 +74,7 @@ fn main() {
     let monitor = spawn Monitor(readings: empty, logger: logger, threshold: 30);
     let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
     let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);
-    for cycle in 0 .. 6 {
+    for cycle in 0..6 {
         let _ = s1.tick(cycle);
         let _ = s2.tick(cycle);
         sleep(30ms);

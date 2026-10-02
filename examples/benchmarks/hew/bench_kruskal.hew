@@ -36,7 +36,7 @@ fn union(var parent: Vec<i64>, var rank: Vec<i64>, a: i64, b: i64) -> (Vec<i64>,
 fn kruskal(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, sorted_idx: Vec<i64>, num_edges: i64, n: i64) -> i64 {
     var parent: Vec<i64> = Vec.new();
     var rank: Vec<i64> = Vec.new();
-    for i in 0 .. n {
+    for i in 0..n {
         parent.push(i);
         rank.push(0);
     }
@@ -65,10 +65,10 @@ fn kruskal(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, sorted_idx
 }
 
 fn sort_edges_by_weight(edge_wt: Vec<i64>, var sorted_idx: Vec<i64>, num_edges: i64) -> Vec<i64> {
-    for i in 0 .. num_edges {
+    for i in 0..num_edges {
         sorted_idx.push(i);
     }
-    for i in 0 .. num_edges {
+    for i in 0..num_edges {
         var j = i + 1;
         while j < num_edges {
             let wi = edge_wt[sorted_idx[i]];
@@ -91,7 +91,7 @@ fn main() {
     var edge_src: Vec<i64> = Vec.new();
     var edge_dst: Vec<i64> = Vec.new();
     var edge_wt: Vec<i64> = Vec.new();
-    for src in 0 .. n {
+    for src in 0..n {
         var dst = 1;
         while dst <= 3 {
             let neighbour = (src + dst) % n;
@@ -106,7 +106,7 @@ fn main() {
     var sorted_idx: Vec<i64> = Vec.new();
     sorted_idx = sort_edges_by_weight(edge_wt, sorted_idx, num_edges);
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + kruskal(edge_src, edge_dst, edge_wt, sorted_idx, num_edges, n);
     }
     println("bench_kruskal");

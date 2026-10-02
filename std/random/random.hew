@@ -116,7 +116,7 @@ pub fn crypto_bytes(n: i64) -> bytes {
 pub fn crypto_u64() -> u64 {
     let b = crypto_bytes(8);
     var v: u64 = 0;
-    for i in 0 .. 8 {
+    for i in 0..8 {
         v = v | b[i] as u64 << i as u64 * 8;
     }
     v
@@ -191,7 +191,7 @@ pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 {
         panic("random.choices: only one sample is supported");
     }
     var previous = 0.0;
-    for i in 0 .. weights.len() {
+    for i in 0..weights.len() {
         let weight = weights[i];
         if weight <= previous || weight != weight {
             panic("random.choices: weights must be strictly increasing");

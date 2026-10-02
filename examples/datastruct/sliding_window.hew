@@ -12,7 +12,7 @@ fn deque_create(capacity: i64) -> Vec<i64> {
     d.push(0); // index 0: front
     d.push(0); // index 1: back
     d.push(capacity); // index 2: capacity
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         d.push(0);
     }
     d
@@ -71,7 +71,7 @@ fn sliding_window_max(arr: Vec<i64>, k: i64) -> Vec<i64> {
     let n = arr.len();
     var result: Vec<i64> = Vec.new();
     var dq = deque_create(n + 1);
-    for i in 0 .. n {
+    for i in 0..n {
         // Remove elements outside the window from front
         while !deque_is_empty(dq) {
             if deque_front(dq) < i - k + 1 {
@@ -212,7 +212,7 @@ fn main() {
         ok4 = 0;
     }
     if ok4 == 1 {
-        for i in 0 .. 3 {
+        for i in 0..3 {
             if res4[i] != 4 {
                 ok4 = 0;
             }

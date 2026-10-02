@@ -1,6 +1,6 @@
 // FizzBuzz for the numbers 1 through 15.
 fn main() {
-    for i in 1 ..= 15 {
+    for i in 1..=15 {
         if i % 15 == 0 {
             println("FizzBuzz");
         } else {

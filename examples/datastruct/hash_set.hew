@@ -15,7 +15,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 fn make_set(capacity: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(EMPTY);
     }
     v
@@ -91,7 +91,7 @@ fn set_size(set: Vec<i64>) -> i64 {
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
     var count = 0;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         let val = set[i];
         if val != EMPTY {
             if val != DELETED {

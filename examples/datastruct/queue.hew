@@ -123,11 +123,11 @@ fn main() {
     // Test 7: many elements FIFO
     total = total + 1;
     var q2 = queue_new();
-    for i in 0 .. 50 {
+    for i in 0..50 {
         q2 = queue_enqueue(q2, i);
     }
     var r7 = 1;
-    for i in 0 .. 50 {
+    for i in 0..50 {
         let (drained, val) = queue_dequeue(q2);
         q2 = drained;
         if val != i {

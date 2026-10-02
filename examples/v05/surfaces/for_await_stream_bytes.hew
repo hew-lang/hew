@@ -13,7 +13,7 @@ actor DrainBytes {
             .Ok(pair) => pair,
             .Err(error) => panic(error),
         };
-        for i in 0 .. frames {
+        for i in 0..frames {
             let frame = f"frame-{i}".to_bytes();
             sink.send(frame).expect("send");
         }

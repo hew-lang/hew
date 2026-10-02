@@ -37,16 +37,16 @@ fn main() {
     // Dijkstra using simple O(V^2) approach
     var dist: Vec<i32> = Vec.new();
     var visited: Vec<i32> = Vec.new();
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         dist.push(INF);
         visited.push(0);
     }
     dist.set(0, 0);
-    for iter in 0 .. num_nodes {
+    for iter in 0..num_nodes {
         // Find unvisited node with minimum distance
         var u = 0 - 1;
         var min_dist = INF;
-        for i in 0 .. num_nodes {
+        for i in 0..num_nodes {
             if visited[i] == 0 {
                 if dist[i] < min_dist {
                     min_dist = dist[i];
@@ -80,7 +80,7 @@ fn main() {
     expected.push(4);
     expected.push(7);
     var ok = 1;
-    for i in 0 .. num_nodes {
+    for i in 0..num_nodes {
         println(dist[i]);
         if dist[i] != expected[i] {
             ok = 0;

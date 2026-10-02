@@ -8,7 +8,7 @@ fn main() {
     let target = 9;
     var found_i = 0 - 1;
     var found_j = 0 - 1;
-    for i in 0 .. nums.len() {
+    for i in 0..nums.len() {
         var j = i + 1;
         while j < nums.len() {
             if nums[i] + nums[j] == target {
@@ -36,7 +36,7 @@ fn main() {
     nums2.push(4);
     var fi2 = 0 - 1;
     var fj2 = 0 - 1;
-    for a in 0 .. nums2.len() {
+    for a in 0..nums2.len() {
         var b = a + 1;
         while b < nums2.len() {
             if nums2[a] + nums2[b] == 6 {

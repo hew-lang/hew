@@ -6,7 +6,7 @@
 fn bv_create(num_bits: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     let num_words = (num_bits + 31) / 32;
-    for i in 0 .. num_words {
+    for i in 0..num_words {
         v.push(0);
     }
     v
@@ -48,7 +48,7 @@ fn bv_get_bit(bv: Vec<i64>, bit: i64) -> i64 {
 // Shift left by repeated doubling
 fn bv_shl(val: i64, shift: i64) -> i64 {
     var result = val;
-    for i in 0 .. shift {
+    for i in 0..shift {
         result = result * 2;
     }
     result
@@ -57,7 +57,7 @@ fn bv_shl(val: i64, shift: i64) -> i64 {
 // Bitwise AND via bit-by-bit extraction
 fn bv_and(a: i64, b: i64) -> i64 {
     var result = 0;
-    for i in 0 .. 32 {
+    for i in 0..32 {
         let bit_a = bv_get_ith_bit(a, i);
         let bit_b = bv_get_ith_bit(b, i);
         if bit_a == 1 {
@@ -72,7 +72,7 @@ fn bv_and(a: i64, b: i64) -> i64 {
 // Bitwise OR via bit-by-bit
 fn bv_or(a: i64, b: i64) -> i64 {
     var result = 0;
-    for i in 0 .. 32 {
+    for i in 0..32 {
         let bit_a = bv_get_ith_bit(a, i);
         let bit_b = bv_get_ith_bit(b, i);
         if bit_a == 1 {
@@ -94,9 +94,9 @@ fn bv_get_ith_bit(val: i64, i: i64) -> i64 {
 fn bv_count_ones(bv: Vec<i64>) -> i64 {
     var count = 0;
     let num_words = bv.len();
-    for w in 0 .. num_words {
+    for w in 0..num_words {
         let word = bv[w];
-        for b in 0 .. 32 {
+        for b in 0..32 {
             if bv_get_ith_bit(word, b) == 1 {
                 count = count + 1;
             }

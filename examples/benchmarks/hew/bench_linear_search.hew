@@ -1,7 +1,7 @@
 // Benchmark: Linear Search
 // Searches sequentially through the array from start to end.
 fn linear_search(v: Vec<i64>, target: i64) -> i64 {
-    for i in 0 .. v.len() {
+    for i in 0..v.len() {
         if v[i] == target {
             return i;
         }
@@ -13,11 +13,11 @@ const ITERS: i64 = 100000;
 
 fn main() {
     var v: Vec<i64> = Vec.new();
-    for i in 0 .. 10000 {
+    for i in 0..10000 {
         v.push(i);
     }
     var sum = 0;
-    for iter in 0 .. ITERS {
+    for iter in 0..ITERS {
         sum = sum + linear_search(v, 7777);
     }
     println(ITERS);

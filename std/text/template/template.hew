@@ -135,7 +135,7 @@ impl Display for TemplateError {
 // ── Internal context helpers ──────────────────────────────────────────
 fn lookup_scalar(ctx: Ctx, key: string) -> string {
     let n = ctx.skeys.len();
-    for i in 0 .. n {
+    for i in 0..n {
         if ctx.skeys[i] == key {
             return ctx.svals[i];
         }
@@ -150,7 +150,7 @@ fn is_truthy(ctx: Ctx, key: string) -> bool {
 
 fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
-    for i in 0 .. n {
+    for i in 0..n {
         if ctx.lkeys[i] == key {
             return ctx.lstart[i];
         }
@@ -160,7 +160,7 @@ fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
 
 fn lookup_list_len(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
-    for i in 0 .. n {
+    for i in 0..n {
         if ctx.lkeys[i] == key {
             return ctx.llen[i];
         }
@@ -339,7 +339,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     let list_len = lookup_list_len(ctx, key);
     var out = "";
     if list_start >= 0 {
-        for i in 0 .. list_len {
+        for i in 0..list_len {
             let elem = ctx.litems[list_start + i];
             let rendered = render_segment(body, ctx, elem, true);
             match rendered {
@@ -622,7 +622,7 @@ impl Ctx {
         self.lkeys.push(key);
         self.lstart.push(start);
         self.llen.push(n);
-        for i in 0 .. n {
+        for i in 0..n {
             self.litems.push(items[i]);
         }
     }

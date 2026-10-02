@@ -5,7 +5,7 @@ fn mat_create(rows: i64, cols: i64) -> Vec<i64> {
     m.push(rows);
     m.push(cols);
     let total = rows * cols;
-    for i in 0 .. total {
+    for i in 0..total {
         m.push(0);
     }
     m
@@ -36,8 +36,8 @@ fn mat_transpose(m: Vec<i64>) -> Vec<i64> {
     let rows = m[0];
     let cols = m[1];
     var t = mat_create(cols, rows);
-    for r in 0 .. rows {
-        for c in 0 .. cols {
+    for r in 0..rows {
+        for c in 0..cols {
             let val = mat_get(m, r, c);
             t = mat_set(t, c, r, val);
         }
@@ -49,8 +49,8 @@ fn mat_add(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
     let rows = mat_rows(a);
     let cols = mat_cols(a);
     var result = mat_create(rows, cols);
-    for r in 0 .. rows {
-        for c in 0 .. cols {
+    for r in 0..rows {
+        for c in 0..cols {
             let sum = mat_get(a, r, c) + mat_get(b, r, c);
             result = mat_set(result, r, c, sum);
         }
@@ -63,10 +63,10 @@ fn mat_multiply(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
     let a_cols = mat_cols(a);
     let b_cols = mat_cols(b);
     var result = mat_create(a_rows, b_cols);
-    for r in 0 .. a_rows {
-        for c in 0 .. b_cols {
+    for r in 0..a_rows {
+        for c in 0..b_cols {
             var sum = 0;
-            for k in 0 .. a_cols {
+            for k in 0..a_cols {
                 sum = sum + mat_get(a, r, k) * mat_get(b, k, c);
             }
             result = mat_set(result, r, c, sum);

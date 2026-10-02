@@ -118,7 +118,7 @@ fn all_digits(s: string) -> bool {
     if n == 0 {
         return false;
     }
-    for i in 0 .. n {
+    for i in 0..n {
         if !is_digit_char(s.slice(i, i + 1)) {
             return false;
         }
@@ -143,7 +143,7 @@ fn is_alphanumeric_identifier(s: string) -> bool {
     if n == 0 {
         return false;
     }
-    for i in 0 .. n {
+    for i in 0..n {
         if !is_identifier_char(s.slice(i, i + 1)) {
             return false;
         }

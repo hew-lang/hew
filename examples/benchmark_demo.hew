@@ -15,7 +15,7 @@ fn fibonacci(n: i32) -> i64 {
 
 fn sum_to(n: i64) -> i64 {
     var total: i64 = 0;
-    for i in 0 .. n {
+    for i in 0..n {
         total = total + i;
     }
     total

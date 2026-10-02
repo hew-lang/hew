@@ -188,12 +188,12 @@ fn fmt_if_let_or_pattern_roundtrip() {
 #[test]
 fn fmt_for_loop() {
     let src = r"fn main() {
-    for i in 0 .. 10 {
+    for i in 0..10 {
         println(i);
     }
 }";
     let out = roundtrip(src);
-    assert!(out.contains("for i in 0 .. 10 {"), "output: {out}");
+    assert!(out.contains("for i in 0..10 {"), "output: {out}");
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn fmt_labeled_while_roundtrip() {
 #[test]
 fn fmt_labeled_for_roundtrip() {
     exact_roundtrip(
-        "fn main() {\n    @rows: for i in 0 .. n {\n        for j in 0 .. m {\n            if cond {\n                break @rows;\n            }\n        }\n    }\n}\n",
+        "fn main() {\n    @rows: for i in 0..n {\n        for j in 0..m {\n            if cond {\n                break @rows;\n            }\n        }\n    }\n}\n",
     );
 }
 
@@ -1042,15 +1042,26 @@ fn fmt_index_expr() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_range_expression() {
-    let src = "fn main() { for i in 0 .. 10 { println(i); } }";
+fn fmt_range_atoms_print_tight() {
+    let src = "fn main() { for i in 0 .. n { f(i); } for j in a.b ..= c.len() { f(j); } }";
     let out = roundtrip(src);
-    assert!(out.contains("0 .. 10"), "output: {out}");
+    assert!(out.contains("0..n"), "output: {out}");
+    assert!(out.contains("a.b..=c.len()"), "output: {out}");
+}
+
+#[test]
+fn fmt_range_compound_operands_print_spaced() {
+    let src = "fn main() { for i in n-1..m { f(i); } for j in 0..=(a + b) { f(j); } let s = v[a..b + 1]; let t = v[a .. b]; }";
+    let out = roundtrip(src);
+    assert!(out.contains("n - 1 .. m"), "output: {out}");
+    assert!(out.contains("0 ..= (a + b)"), "output: {out}");
+    assert!(out.contains("v[a .. b + 1]"), "output: {out}");
+    assert!(out.contains("v[a..b]"), "output: {out}");
 }
 
 #[test]
 fn fmt_inclusive_range_roundtrip() {
-    exact_roundtrip("fn main() {\n    for i in 0 ..= 9 {\n        println(i);\n    }\n}\n");
+    exact_roundtrip("fn main() {\n    for i in 0..=9 {\n        println(i);\n    }\n}\n");
 }
 
 // -----------------------------------------------------------------------
@@ -1488,7 +1499,7 @@ impl Point {
 
 fn main() {
     var p = Point.origin();
-    for i in 0 .. MAX {
+    for i in 0..MAX {
         println(i);
     }
 }
@@ -1708,7 +1719,7 @@ fn bar() {
 #[test]
 fn fmt_generator_function() {
     exact_roundtrip(
-        "gen fn counting(n: i32) -> i32 {\n    for i in 0 .. n {\n        yield i;\n    }\n}\n",
+        "gen fn counting(n: i32) -> i32 {\n    for i in 0..n {\n        yield i;\n    }\n}\n",
     );
 }
 

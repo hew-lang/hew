@@ -22,7 +22,7 @@
 // ── Helpers ───────────────────────────────────────────────────────────
 fn copy_ints(v: Vec<i64>) -> Vec<i64> {
     var out: Vec<i64> = Vec.new();
-    for i in 0 .. v.len() {
+    for i in 0..v.len() {
         out.push(v[i]);
     }
     out
@@ -30,7 +30,7 @@ fn copy_ints(v: Vec<i64>) -> Vec<i64> {
 
 fn copy_generic<T>(v: Vec<T>) -> Vec<T> {
     var out: Vec<T> = Vec.new();
-    for i in 0 .. v.len() {
+    for i in 0..v.len() {
         out.push(v[i]);
     }
     out
@@ -93,7 +93,7 @@ fn sort_by_core<T>(var v: Vec<T>, less: fn(T, T) -> bool) -> Vec<T> {
             }
             start = end;
         }
-        for i in 0 .. n {
+        for i in 0..n {
             v.set(i, scratch[i]);
         }
         width = if width > n / 2 {
@@ -163,7 +163,7 @@ fn sort_ints_core(var v: Vec<i64>) -> (Vec<i64>, i64) {
             }
             start = end;
         }
-        for i in 0 .. n {
+        for i in 0..n {
             v.set(i, scratch[i]);
         }
         width = if width > n / 2 {
@@ -227,7 +227,7 @@ fn sort_strings_core(var v: Vec<string>) -> (Vec<string>, i64) {
             }
             start = end;
         }
-        for i in 0 .. n {
+        for i in 0..n {
             v.set(i, scratch[i]);
         }
         width = if width > n / 2 {

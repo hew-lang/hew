@@ -3,10 +3,10 @@
 fn mat_mul(a: Vec<i32>, b: Vec<i32>, n: i32) -> Vec<i32> {
     var c: Vec<i32> = Vec.new();
     let n64: i64 = n as i64;
-    for i in 0 .. n64 {
-        for j in 0 .. n64 {
+    for i in 0..n64 {
+        for j in 0..n64 {
             var sum = 0;
-            for k in 0 .. n64 {
+            for k in 0..n64 {
                 sum = sum + a[i * n64 + k] * b[k * n64 + j];
             }
             c.push(sum as i32);

@@ -185,7 +185,7 @@ fn encode_impl(s: string) -> string {
     // codepoints: each non-unreserved byte becomes %XX.
     let data = s.to_bytes();
     var out = "";
-    for i in 0 .. data.len() {
+    for i in 0..data.len() {
         let b = data[i];
         if is_unreserved_byte(b) {
             out = out + string.from_char(b as i64);
@@ -265,7 +265,7 @@ fn decode_query_impl(params: string) -> Vec<(string, string)> {
         return decoded;
     }
     let entries = string.split(params, "&");
-    for i in 0 .. entries.len() {
+    for i in 0..entries.len() {
         let entry = entries[i];
         match entry.find("=") {
             .Some(eq) => {
@@ -330,7 +330,7 @@ pub fn encode_query(params: string) -> string {
 fn encode_query_impl(params: string) -> string {
     var encoded: Vec<string> = Vec.new();
     let lines = string.lines(params);
-    for i in 0 .. lines.len() {
+    for i in 0..lines.len() {
         let line = lines[i];
         match line.find("=") {
             .Some(eq) => {

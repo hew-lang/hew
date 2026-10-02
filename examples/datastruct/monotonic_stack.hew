@@ -37,11 +37,11 @@ fn stack_size(s: Vec<i64>) -> i64 {
 fn next_greater_element(arr: Vec<i64>) -> Vec<i64> {
     let n = arr.len();
     var result: Vec<i64> = Vec.new();
-    for i in 0 .. n {
+    for i in 0..n {
         result.push(0 - 1);
     }
     var stk = stack_new();
-    for i in 0 .. n {
+    for i in 0..n {
         let val = arr[i];
         // Pop all indices whose values are less than current
         while !stack_is_empty(stk) {
@@ -208,7 +208,7 @@ fn main() {
     arr3.push(1);
     let nge3 = next_greater_element(arr3);
     var nge3_ok = 1;
-    for i in 0 .. 5 {
+    for i in 0..5 {
         if nge3[i] != 0 - 1 {
             nge3_ok = 0;
         }
@@ -240,7 +240,7 @@ fn main() {
     arr5.push(3);
     let nge5 = next_greater_element(arr5);
     var nge5_ok = 1;
-    for i in 0 .. 3 {
+    for i in 0..3 {
         if nge5[i] != 0 - 1 {
             nge5_ok = 0;
         }

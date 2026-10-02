@@ -40,7 +40,7 @@ fn is_id_head_str(c: string) -> bool {
 // with `for j in i + 1 .. n`, whose empty range skips on its own.
 fn extract_ids_in_line(line: string, var out: Vec<string>) -> Vec<string> {
     let n = line.len();
-    for i in 0 .. n {
+    for i in 0..n {
         let head = line.slice(i, i + 1);
         if is_id_head_str(head) {
             // Walk the digit run.
@@ -140,7 +140,7 @@ fn main() {
     } else {
         5
     };
-    for k in 0 .. limit {
+    for k in 0..limit {
         let id = keys[k];
         if let .Some(c) = index.get(id) {
             println(f"{id} {c}");

@@ -94,7 +94,7 @@ fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, var result: Vec<i64>
     if is_leaf(nodes, node) {
         let start = node_data_start(nodes, node);
         let len = node_data_len(nodes, node);
-        for i in 0 .. len {
+        for i in 0..len {
             result.push(data[start + i]);
         }
         return result;
@@ -229,7 +229,7 @@ fn main() {
         col_ok = 0;
     }
     if col_ok == 1 {
-        for i in 0 .. 8 {
+        for i in 0..8 {
             let expected = (i + 1) * 10;
             if collected[i] != expected {
                 col_ok = 0;

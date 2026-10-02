@@ -1,12 +1,12 @@
 fn reverse_string(s: string) -> i64 {
     let n = s.len();
     var result: Vec<i64> = Vec.new();
-    for i in 0 .. n {
+    for i in 0..n {
         let j = n - 1 - i;
         result.push(j);
     }
     var checksum = 0;
-    for k in 0 .. n {
+    for k in 0..n {
         let j = result[k];
         if s.char_at(j) == s.char_at(k) {
             checksum = checksum + 1;
@@ -21,7 +21,7 @@ const ITERS: i64 = 200000;
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + reverse_string(s);
     }
     println("bench_string_reverse");

@@ -7,7 +7,7 @@
 fn main() {
     // for-loop: `i` is the loop variable, rebound on every iteration
     println("for loop 0..5:");
-    for i in 0 .. 5 {
+    for i in 0..5 {
         println(i);
     }
     // while-loop with a `var` accumulator — shows real reassignment

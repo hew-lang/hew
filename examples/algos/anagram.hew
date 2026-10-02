@@ -4,15 +4,15 @@ fn is_anagram(a: string, b: string) -> bool {
         return false;
     }
     let alpha = "abcdefghijklmnopqrstuvwxyz";
-    for k in 0 .. 26 {
+    for k in 0..26 {
         var ca = 0;
         var cb = 0;
-        for i in 0 .. a.len() {
+        for i in 0..a.len() {
             if a.char_at(i) == alpha.char_at(k) {
                 ca = ca + 1;
             }
         }
-        for i in 0 .. b.len() {
+        for i in 0..b.len() {
             if b.char_at(i) == alpha.char_at(k) {
                 cb = cb + 1;
             }

@@ -10,7 +10,7 @@ fn swap(var v: Vec<i64>, i: i64, j: i64) -> Vec<i64> {
 
 fn bubble_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
-    for i in 0 .. n {
+    for i in 0..n {
         for j in 0 .. n - 1 - i {
             if v[j] > v[j + 1] {
                 v = swap(v, j, j + 1);

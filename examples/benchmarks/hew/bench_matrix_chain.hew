@@ -2,7 +2,7 @@ fn matrix_chain(dims: Vec<i64>, n: i64) -> i64 {
     let INF = 999999;
     let total = n * n;
     var dp: Vec<i64> = Vec.new();
-    for idx in 0 .. total {
+    for idx in 0..total {
         dp.push(0);
     }
     var length = 2;
@@ -11,7 +11,7 @@ fn matrix_chain(dims: Vec<i64>, n: i64) -> i64 {
         while i <= n - length {
             let j = i + length - 1;
             dp.set(i * n + j, INF);
-            for k in i .. j {
+            for k in i..j {
                 let cost = dp[i * n + k] + dp[(k + 1) * n + j] + dims[i] * dims[k + 1] * dims[j + 1];
                 if cost < dp[i * n + j] {
                     dp.set(i * n + j, cost);
@@ -31,11 +31,11 @@ fn main() {
     let n = num_matrices;
     let num_dims = num_matrices + 1;
     var dims: Vec<i64> = Vec.new();
-    for k in 0 .. num_dims {
+    for k in 0..num_dims {
         dims.push(k % 7 * 5 + 10);
     }
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + matrix_chain(dims, n);
     }
     println("bench_matrix_chain");

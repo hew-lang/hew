@@ -403,7 +403,7 @@ fn find_response_header(header_section: string, name: string) -> string {
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
     var found = "";
-    for i in 0 .. n {
+    for i in 0..n {
         let line = lines[i];
         // A colon at index 0 is an empty header name — skip it, exactly as
         // the old `colon > 0` guard did.
@@ -448,7 +448,7 @@ fn declared_content_length(header_section: string) -> i64 {
 /// inject extra CRLF-delimited headers or split the request line.
 fn contains_control_char(s: string) -> bool {
     let n = s.len();
-    for i in 0 .. n {
+    for i in 0..n {
         // In-bounds loop: char_at(i) is always Some; the unreachable None
         // fails CLOSED (treat as a control character -> reject).
         let b = match s.char_at(i) {

@@ -15,7 +15,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 fn make_keys(capacity: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(EMPTY);
     }
     v
@@ -23,7 +23,7 @@ fn make_keys(capacity: i64) -> Vec<i64> {
 
 fn make_vals(capacity: i64) -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         v.push(0);
     }
     v
@@ -77,7 +77,7 @@ fn get_freq(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
 // Count frequencies of all elements in data array
 fn count_all(data: Vec<i64>, var keys: Vec<i64>, var vals: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
     let len = data.len();
-    for i in 0 .. len {
+    for i in 0..len {
         let (counted_keys, counted_vals) = count_element(keys, vals, data[i]);
         keys = counted_keys;
         vals = counted_vals;
@@ -91,7 +91,7 @@ fn find_top1(keys: Vec<i64>, vals: Vec<i64>) -> i64 {
     let EMPTY = 0 - 1;
     var best_key = EMPTY;
     var best_val = 0;
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         let k = keys[i];
         if k != EMPTY {
             let v = vals[i];
@@ -111,14 +111,14 @@ fn find_topk(keys: Vec<i64>, vals: Vec<i64>, k: i64) -> Vec<i64> {
     var result: Vec<i64> = Vec.new();
     // Make a copy of vals to mark used entries
     var used: Vec<i64> = Vec.new();
-    for i in 0 .. capacity {
+    for i in 0..capacity {
         used.push(0);
     }
     var found = 0;
     while found < k {
         var best_idx = 0 - 1;
         var best_val = 0;
-        for i in 0 .. capacity {
+        for i in 0..capacity {
             let ki = keys[i];
             if ki != EMPTY {
                 if used[i] == 0 {
@@ -246,10 +246,10 @@ fn main() {
     // Test 8: Larger dataset
     var data2: Vec<i64> = Vec.new();
     // 5 appears 10 times, 6 appears 5 times, 7 appears 1 time
-    for i in 0 .. 10 {
+    for i in 0..10 {
         data2.push(5);
     }
-    for i in 0 .. 5 {
+    for i in 0..5 {
         data2.push(6);
     }
     data2.push(7);

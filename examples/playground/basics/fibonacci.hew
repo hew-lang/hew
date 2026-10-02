@@ -10,7 +10,7 @@ fn fib(n: i64) -> i64 {
 }
 
 fn main() {
-    for i in 0 .. 10 {
+    for i in 0..10 {
         println(f"fib({i}) = {fib(i)}");
     }
 }

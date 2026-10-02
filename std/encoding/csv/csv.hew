@@ -177,7 +177,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
                 cur_field = "";
                 if cur_row.len() > 0 {
                     if has_headers && rows.len() == 0 && headers.len() == 0 {
-                        for i in 0 .. cur_row.len() {
+                        for i in 0..cur_row.len() {
                             headers.push(cur_row[i]);
                         }
                     } else {
@@ -199,7 +199,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
             cur_field = "";
             if cur_row.len() > 0 {
                 if has_headers && rows.len() == 0 && headers.len() == 0 {
-                    for i in 0 .. cur_row.len() {
+                    for i in 0..cur_row.len() {
                         headers.push(cur_row[i]);
                     }
                 } else {
@@ -233,7 +233,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
     if has_pending_field || cur_row.len() > 0 {
         cur_row.push(cur_field);
         if has_headers && rows.len() == 0 && headers.len() == 0 {
-            for i in 0 .. cur_row.len() {
+            for i in 0..cur_row.len() {
                 headers.push(cur_row[i]);
             }
         } else {
@@ -244,7 +244,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
     // Generate synthetic headers if no header row
     if !has_headers && rows.len() > 0 {
         let ncols = rows[0].len();
-        for i in 0 .. ncols {
+        for i in 0..ncols {
             headers.push(f"col{i}");
         }
     }
@@ -253,7 +253,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
 
 /// Find the column index for a header name. Returns -1 if not found.
 fn find_header(headers: Vec<string>, name: string) -> i32 { // INTERNAL-ABI: sentinel -1 for not-found; used only by get_by_name impl
-    for i in 0 .. headers.len() {
+    for i in 0..headers.len() {
         if headers[i] == name {
             return i as i32;
         }

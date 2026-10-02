@@ -2,7 +2,7 @@ fn knapsack(weights: Vec<i64>, values: Vec<i64>, n: i64, cap: i64) -> i64 {
     let cols = cap + 1;
     let total = (n + 1) * cols;
     var dp: Vec<i64> = Vec.new();
-    for idx in 0 .. total {
+    for idx in 0..total {
         dp.push(0);
     }
     var i = 1;
@@ -35,12 +35,12 @@ fn main() {
     let cap = 100;
     var weights: Vec<i64> = Vec.new();
     var values: Vec<i64> = Vec.new();
-    for k in 0 .. n {
+    for k in 0..n {
         weights.push(k % 10 + 1);
         values.push(k % 15 + 3);
     }
     var checksum = 0;
-    for i in 0 .. ITERS {
+    for i in 0..ITERS {
         checksum = checksum + knapsack(weights, values, n, cap);
     }
     println("bench_knapsack");

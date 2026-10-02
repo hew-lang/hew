@@ -87,7 +87,7 @@ fn sparse_set(var n: Vec<i64>, head: i64, idx: i64, val: i64) -> (Vec<i64>, i64)
 fn sparse_set_all(var n: Vec<i64>, head: i64, pairs: Vec<i64>) -> (Vec<i64>, i64) {
     var curr_head = head;
     let count = pairs.len() / 2;
-    for i in 0 .. count {
+    for i in 0..count {
         let (grown, new_head) = sparse_set(n, curr_head, pairs[i * 2], pairs[i * 2 + 1]);
         n = grown;
         curr_head = new_head;
@@ -137,7 +137,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
     if a.len() != b.len() {
         return 0;
     }
-    for i in 0 .. a.len() {
+    for i in 0..a.len() {
         if a[i] != b[i] {
             return 0;
         }

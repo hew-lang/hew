@@ -126,7 +126,7 @@ fn main() {
     big.push(4);
     big.push(0);
     var exp_big: Vec<i64> = Vec.new();
-    for x in 0 .. 10 {
+    for x in 0..10 {
         exp_big.push(x);
     }
     passed = passed + run_test("ten_elements", big, exp_big);

@@ -6,9 +6,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const sourceRoot = resolve(
-  process.env.HEW_SOURCE_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), ".."),
-);
+const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const stagingRoot = resolve(sourceRoot, process.argv[2] ?? process.env.HEW_NPM_STAGE_ROOT ?? "target/npm/@hew-lang");
 
 async function loadPackage(name, wasm = false) {

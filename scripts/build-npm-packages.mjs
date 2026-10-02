@@ -8,7 +8,6 @@
  *
  * Environment:
  *   NPM_WASM_PROFILE=dev   — use debug wasm-pack profile (fast local builds)
- *   HEW_SOURCE_ROOT=<path>  — build a checkout other than the script's checkout
  *
  * Usage:
  *   node scripts/build-npm-packages.mjs
@@ -19,8 +18,7 @@ import { mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from "node:fs"
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SCRIPT_REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
-const REPO_ROOT = resolve(process.env.HEW_SOURCE_ROOT ?? SCRIPT_REPO_ROOT);
+const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const STAGING_ROOT = resolve(REPO_ROOT, process.env.HEW_NPM_STAGE_ROOT ?? "target/npm/@hew-lang");
 
 // Use the development Wasm profile for fast local iteration.
@@ -40,9 +38,7 @@ function sourceIdentity() {
   let tag;
   try { tag = git(["describe", "--tags", "--exact-match", "HEAD"]); }
   catch { /* Development commits need no release tag. */ }
-  // Publishing checks out release tooling beside the tagged source. That
-  // tooling is not an input to the compiler or VM source build.
-  return { commit, ...(tag ? { tag } : {}), dirty: git(["status", "--porcelain", "--untracked-files=normal", "--", ".", ":!release-machinery"]) !== "" };
+  return { commit, ...(tag ? { tag } : {}), dirty: git(["status", "--porcelain", "--untracked-files=normal"]) !== "" };
 }
 
 function run(cmd, args, opts = {}) {

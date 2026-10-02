@@ -9,6 +9,8 @@
 #   - Manual dispatch (workflow_dispatch)
 #
 # Coverage vs. ci.yml:
+#   - Checks release identity, dependency policy, notices and installer
+#     ordering (a superset of release.yml's validate job)
 #   - Builds ALL release artifacts (hew-cli, hew-lsp, hew-observe, hew-lib)
 #   - Runs full Rust workspace tests (matching ci.yml scope)
 #   - Requires native acceptance, C-ABI tests and sanitizer execution
@@ -52,6 +54,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Release identity and dependency policy — the same checks release.yml's
+  # validate job runs on the tag, so a tag never meets them for the first time.
+  # ─────────────────────────────────────────────────────────────────────────
+  gate-release-checks:
+    name: Release Gate — Identity and dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check release identity
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$(scripts/release-identity.sh)"
+          # A release/vX.Y.Z branch must carry the version it is named for.
+          if [[ "${BRANCH}" == release/v* && "${BRANCH}" != "release/${tag}" ]]; then
+            echo "::error::branch ${BRANCH} carries version ${tag}"
+            exit 1
+          fi
+
+      - uses: ./.github/actions/setup-release-checks
+
+      - name: Validate release dependencies, notices and installer
+        run: make release-checks
+
   # ─────────────────────────────────────────────────────────────────────────
   # Sanitizers — executed ASan hard gate. TSan and Miri remain nightly lanes.
   # ─────────────────────────────────────────────────────────────────────────

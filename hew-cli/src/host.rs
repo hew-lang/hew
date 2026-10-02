@@ -75,6 +75,7 @@ pub(super) fn emit(
             address_sanitizer: crate::link::address_sanitizer_requested(),
             debug_source: None,
             link_freestanding_wasm: false,
+            build_info: None,
         },
     )
     .map_err(|error| {

@@ -384,6 +384,7 @@ fn emit_module_with_triple(
             address_sanitizer: link::address_sanitizer_requested(),
             debug_source: debug.then_some(source_path).flatten(),
             link_freestanding_wasm,
+            build_info: Some(env!("HEW_VERSION")),
         },
     )
     .map_err(|error| {

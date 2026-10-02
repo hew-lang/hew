@@ -16,7 +16,8 @@ bash installers/docker/assemble-test-tarball.sh
 echo ""
 echo "==> Step 2: Building Ubuntu 24.04 test image"
 docker build \
-    -f installers/docker/Dockerfile.ubuntu-test \
+    -f installers/docker/Dockerfile.release \
+    --target clean-room-test \
     --build-context tarball=dist/test-tarball \
     -t hew-ubuntu-test \
     .

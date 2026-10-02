@@ -89,18 +89,21 @@ directly and does not define a competing build graph. See the
 
 ### Test suite overview
 
-| Suite             | Command                       | Scope                                                                                                                             | Speed  |
-| ----------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| Rust ratchet      | `make test`                   | Rust tests compared with the known-failure set                                                                                    | medium |
-| Strict Rust       | `make test-strict`            | Selected Rust tests with no known-failure allowance                                                                               | medium |
-| Native acceptance | `make core-acceptance`        | Retained source/ABI cases with their specified outcomes at O0 and O2                                                              | medium |
-| Native safety     | `make core-safety`            | Instrumented ownership and lifecycle cases                                                                                        | medium |
-| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers                                                                                           | medium |
-| Runtime (no-net)  | `make test-runtime-unit`      | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile)                                      | fast   |
-| Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `tests/expected-failures.tsv` (suite `hew-suite`)                                  | medium |
-| Grammar parity    | `make grammar-parity`         | Vertical-slice accept fixtures, `std/**`, `examples/**` parsed with the pinned tree-sitter-hew grammar; fails on any `ERROR` node | fast   |
+| Suite             | Command                       | Scope                                                                                                                                                     | Speed  |
+| ----------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Rust ratchet      | `make test`                   | Rust tests compared with the known-failure set                                                                                                            | medium |
+| Strict Rust       | `make test-strict`            | Selected Rust tests with no known-failure allowance                                                                                                       | medium |
+| Native acceptance | `make core-acceptance`        | Retained source/ABI cases with their specified outcomes at O0 and O2                                                                                      | medium |
+| Native safety     | `make core-safety`            | Instrumented ownership and lifecycle cases                                                                                                                | medium |
+| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers                                                                                                                   | medium |
+| Runtime (no-net)  | `make test-runtime-unit`      | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile)                                                              | fast   |
+| Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `tests/expected-failures.tsv` (suite `hew-suite`)                                                          | medium |
+| IR size           | `make ir-size-verify`         | O2 LLVM instruction counts for the LL-oracle corpus, generated suspension programs and a real suspend-heavy case, against `tests/ll-oracle/ir-budget.tsv` | fast   |
+| Grammar parity    | `make grammar-parity`         | Vertical-slice accept fixtures, `std/**`, `examples/**` parsed with the pinned tree-sitter-hew grammar; fails on any `ERROR` node                         | fast   |
 
 Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipeline` for compiler iteration. Run `make test` before opening a PR.
+
+`make ir-size-verify` is a ratchet like `tests/expected-failures.tsv`: a program whose O2 instruction count exceeds its `ir-budget.tsv` ceiling fails, and a ceiling is only ever lowered, never raised. A program more than 10% under its ceiling prints a hint; the change that shrank it lowers the row in the same PR.
 
 ### Changing Hew syntax
 

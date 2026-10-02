@@ -38,7 +38,9 @@ mod support;
 
 use std::fmt::Write as _;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 use support::hew_binary;
 
 /// The volume matters. A pipe holds 64 KiB before it blocks, so a small

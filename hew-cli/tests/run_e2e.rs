@@ -1,6 +1,7 @@
 mod support;
 
 use std::process::Command;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use support::{hew_binary, repo_root, require_codegen, run_bounded_hew_run, strip_ansi};

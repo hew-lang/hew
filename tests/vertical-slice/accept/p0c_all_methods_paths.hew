@@ -11,7 +11,7 @@ fn result_unwrap<T, E>(consume res: Result<T, E>) -> T {
 }
 
 fn result_unwrap_or<T, E>(consume res: Result<T, E>, consume fallback: T) -> T {
-    (res handle _e { fallback })
+    (res handle _ { fallback })
 }
 
 fn main() {
@@ -28,7 +28,7 @@ fn main() {
     let fallback_res = result_unwrap_or(err, 17);
     let result_through_closure = |reason: string| {
         let failed: Result<i64, string> = .Err(reason);
-        (failed handle _e { 19 })
+        (failed handle _ { 19 })
     };
     let closure_res = result_through_closure("closure");
     let pred_ok: Result<i64, string> = .Ok(1);

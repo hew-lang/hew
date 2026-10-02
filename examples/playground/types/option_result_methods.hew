@@ -25,11 +25,7 @@ fn main() {
     let unwrap_ok = ok_for_unwrap.expect("ok_for_unwrap is present");
     println(unwrap_ok);
     let ok_with_handle: Result<i64, string> = .Ok(5);
-    println(ok_with_handle handle _e {
-        0
-    });
+    println(ok_with_handle handle _ { 0 });
     let err_with_handle: Result<i64, string> = .Err("fallback");
-    println(err_with_handle handle _e {
-        0
-    });
+    println(err_with_handle handle _ { 0 });
 }

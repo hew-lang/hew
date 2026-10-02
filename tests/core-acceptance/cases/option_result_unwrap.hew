@@ -27,9 +27,9 @@ fn main() -> i64 {
     let ri: Result<i32, string> = .Ok(2);
     let riv = ri.expect("ri is present");
     let ru: Result<i64, string> = .Ok(8);
-    println(ru handle _e { 0 });
+    println(ru handle _ { 0 });
     let rv: Result<i32, string> = .Ok(8);
-    let rvv = rv handle _e { 0 };
+    let rvv = rv handle _ { 0 };
     let p: Result<i64, string> = .Ok(7);
     let ok = p.is_ok();
     let err = p.is_err();

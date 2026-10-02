@@ -3,5 +3,5 @@ pub fn imported_option<T>(consume opt: Option<T>) -> T {
 }
 
 pub fn imported_result<T, E>(consume res: Result<T, E>, consume fallback: T) -> T {
-    (res handle _e { fallback })
+    (res handle _ { fallback })
 }

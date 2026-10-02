@@ -11,7 +11,7 @@ fn result_unwrap<T, E>(consume res: Result<T, E>) -> T {
 }
 
 fn result_unwrap_or<T, E>(consume res: Result<T, E>, consume fallback: T) -> T {
-    (res handle _e { fallback })
+    (res handle _ { fallback })
 }
 
 fn main() {

@@ -35,9 +35,9 @@ actor Monitor {
     var checks: i64;
 
     receive fn check() {
-        let a = c1.get_count() handle _e { 0 };
-        let b = c2.get_count() handle _e { 0 };
-        let c = c3.get_count() handle _e { 0 };
+        let a = c1.get_count() handle _ { 0 };
+        let b = c2.get_count() handle _ { 0 };
+        let c = c3.get_count() handle _ { 0 };
         checks += 1;
         println(f"[check #{checks}] counters: {a}, {b}, {c}");
     }
@@ -68,8 +68,8 @@ fn main() {
         sleep(300ms);
         round += 1;
     }
-    let total1 = c1.get_count() handle _e { 0 };
-    let total2 = c2.get_count() handle _e { 0 };
-    let total3 = c3.get_count() handle _e { 0 };
+    let total1 = c1.get_count() handle _ { 0 };
+    let total2 = c2.get_count() handle _ { 0 };
+    let total3 = c3.get_count() handle _ { 0 };
     println(f"Final: alpha={total1}, beta={total2}, gamma={total3}");
 }

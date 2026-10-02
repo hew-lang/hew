@@ -34,7 +34,7 @@ fn test_chain_terminal_on_empty_vec() {
 fn test_option_chain_into_result() {
     let port: Option<string> = .Some("8080");
     let parsed: Result<i64, string> = port.map(|text: string| text.len()).ok_or("no port");
-    assert((parsed handle _e { 0 }) == 4);
+    assert((parsed handle _ { 0 }) == 4);
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn test_method_type_params_do_not_capture_caller_params() {
     let no_number: Option<i64> = .None;
     assert((lengths(.Some("a")) ?? 0) == 1);
     assert(lengths(no_text).is_none());
-    assert((require(.Some(4)) handle _e { 0 }) == 4);
+    assert((require(.Some(4)) handle _ { 0 }) == 4);
     assert(require(no_number).err().expect("error") == "none");
     let failed: Result<i64, i64> = .Err(3);
     assert(relabel(failed).err().expect("error") == "relabelled");

@@ -17,9 +17,7 @@ fn main() {
     println(find_note(orders.clone(), 2) ?? "none");
     println(find_note(orders, 9) ?? "missing");
     let parsed: Result<i64, string> = Option.Some("42").map(|text: string| text.len()).ok_or("empty");
-    println(parsed.map(|n: i64| n + 1) handle _e {
-        0
-    });
+    println(parsed.map(|n: i64| n + 1) handle _ { 0 });
     let failed: Result<i64, string> = .Err("bad");
     println(failed.map_err(|e: string| f"{e}!").err() ?? "ok");
 }

@@ -360,9 +360,7 @@ fn parse_status_code(status_line: string) -> i64 {
     // Guarded by is_numeric + len == 3 above: the parse cannot fail; a
     // defensive None maps to the transport-failure convention (-1) via the
     // range gate below.
-    let code = string.to_int(code_str) handle _e {
-        -1
-    };
+    let code = string.to_int(code_str) handle _ { -1 };
     if code < 100 || code > 599 {
         return -1;
     }

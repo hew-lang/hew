@@ -49,6 +49,13 @@ after the last dotted component of the package name; `-o PATH` overrides it.
 If the package declares `[native]`, Hew builds that crate first and links it as
 a prerequisite.
 
+Every native executable records the compiler that built it, in a read-only
+`.hewbuildinfo` section (`__DATA,__hewbuildinfo` on macOS, `.hewinfo` on
+Windows) that linking and optimization keep. The record is the text
+`HEW-BUILD-INFO: hew <version> <target triple>`, with the same version
+`hew --version` prints, so `strings app | grep HEW-BUILD-INFO` shows which
+compiler produced a deployed binary. WebAssembly output carries no record.
+
 The `--` separator is mandatory when passing program arguments — everything before `--` is parsed as `hew run` options, and everything after is forwarded to your program as `os.args()`. Without `--`, unrecognised flags produce a usage error.
 
 **Working inside the Hew source checkout?** A compiler built from a checkout

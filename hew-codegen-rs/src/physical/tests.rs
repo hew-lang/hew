@@ -1191,6 +1191,7 @@ fn physical_emit_option_instruments_generated_code_with_asan() {
             address_sanitizer: true,
             debug_source: None,
             link_freestanding_wasm: false,
+            build_info: None,
         },
     )
     .expect("emit ASan-instrumented physical module");
@@ -1293,6 +1294,40 @@ fn extern_byte_calls_reuse_entry_storage() {
                 }
                 instruction = current.get_next_instruction();
             }
+        }
+    }
+}
+
+#[test]
+fn build_info_record_survives_optimization_only_when_requested() {
+    let triple = native_emission_triple();
+    let verified = verified_scalar_for(&triple);
+    let expected = build_info::build_info_text("9.9.9-test", &triple);
+    for opt_level in [OptLevel::O0, OptLevel::O2] {
+        for build_info in [Some("9.9.9-test"), None] {
+            let dir = tempfile::tempdir().expect("build info output directory");
+            let artefacts = emit_physical_object(
+                &verified,
+                &PhysicalEmitOptions {
+                    module_name: "build_info",
+                    out_dir: dir.path(),
+                    target_triple: Some(&triple),
+                    opt_level,
+                    emit_llvm: false,
+                    address_sanitizer: false,
+                    debug_source: None,
+                    link_freestanding_wasm: false,
+                    build_info,
+                },
+            )
+            .expect("emit build info object");
+            let object = std::fs::read(artefacts.native_obj_path.expect("native object"))
+                .expect("read build info object");
+            let record = format!("{expected}\0");
+            let found = object
+                .windows(record.len())
+                .any(|window| window == record.as_bytes());
+            assert_eq!(found, build_info.is_some(), "{opt_level:?} {build_info:?}");
         }
     }
 }

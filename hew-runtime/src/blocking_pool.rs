@@ -61,6 +61,9 @@ struct Queue {
     /// Running abandonable jobs whose callers gave up. Their threads do not
     /// count against the cap.
     detached: usize,
+    /// Running abandonable jobs that have handed over their result. Their
+    /// threads take queued work next, so a submitter does not grow for it.
+    finishing: usize,
     next_job: u64,
 }
 
@@ -69,12 +72,34 @@ struct Running {
     thread: ThreadId,
     job: u64,
     detached: bool,
+    finishing: bool,
 }
 
 impl Queue {
     /// Threads that count against the cap.
     fn counted(&self) -> usize {
         self.threads - self.detached
+    }
+
+    /// Threads that take a queued job without a new thread starting.
+    fn available(&self) -> usize {
+        self.idle + self.finishing
+    }
+
+    /// Drop a finished abandonable job's record. Its thread counts against
+    /// the cap again and is no longer finishing.
+    fn finish(&mut self, job: u64) {
+        if let Some(index) = self.abandonable.iter().position(|r| r.job == job) {
+            let running = self.abandonable.swap_remove(index);
+            self.detached -= usize::from(running.detached);
+            self.finishing -= usize::from(running.finishing);
+        }
+    }
+
+    fn running_job(&mut self, job: u64) -> Option<&mut Running> {
+        self.abandonable
+            .iter_mut()
+            .find(|running| running.job == job)
     }
 }
 
@@ -121,6 +146,7 @@ fn new_pool(max_threads: usize, idle_timeout: Duration) -> *mut HewBlockingPool 
                 idle: 0,
                 abandonable: Vec::new(),
                 detached: 0,
+                finishing: 0,
                 next_job: 0,
             }),
             work: Condvar::new(),
@@ -178,7 +204,7 @@ impl PoolInner {
     /// Count a new thread if queued work has no idle thread and the cap
     /// allows one. Returns whether the caller must spawn it.
     fn should_grow(&self, queue: &mut Queue) -> bool {
-        if queue.tasks.len() <= queue.idle {
+        if queue.tasks.len() <= queue.available() {
             return false;
         }
         if queue.counted() >= self.max_threads {
@@ -291,6 +317,23 @@ thread_local! {
     static CURRENT_JOB: RefCell<Option<(Weak<PoolInner>, u64)>> = const { RefCell::new(None) };
 }
 
+/// Tell the pool that the abandonable job on this thread has handed over its
+/// result: the thread takes queued work next, so a caller that submits again
+/// at once reuses it instead of starting another thread.
+pub(crate) fn job_finishing() {
+    let Some((pool, job)) = CURRENT_JOB.with_borrow(Clone::clone) else {
+        return;
+    };
+    let Some(inner) = pool.upgrade() else {
+        return;
+    };
+    let mut queue = inner.queue.lock_or_recover();
+    if let Some(running) = queue.running_job(job).filter(|running| !running.finishing) {
+        running.finishing = true;
+        queue.finishing += 1;
+    }
+}
+
 /// Tells the pool that the caller of a running abandonable job gave up.
 pub(crate) struct Detach {
     pool: Weak<PoolInner>,
@@ -316,9 +359,8 @@ impl Detach {
         };
         let mut queue = inner.queue.lock_or_recover();
         let Some(running) = queue
-            .abandonable
-            .iter_mut()
-            .find(|running| running.job == self.job && !running.detached)
+            .running_job(self.job)
+            .filter(|running| !running.detached)
         else {
             return;
         };
@@ -474,9 +516,15 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
 /// Worker thread main loop: take jobs in submission order; exit after the idle
 /// timeout with nothing queued, or once the pool stops and its queue is empty.
 fn worker_loop(inner: &Arc<PoolInner>) {
+    let mut finished = None;
     loop {
         let task = {
             let mut queue = inner.queue.lock_or_recover();
+            // Retire the last job under the lock that takes the next one, so
+            // a finishing thread is never briefly neither busy nor available.
+            if let Some(job) = finished.take() {
+                queue.finish(job);
+            }
             loop {
                 if let Some(task) = queue.tasks.pop_front() {
                     break Some(task);
@@ -513,6 +561,7 @@ fn worker_loop(inner: &Arc<PoolInner>) {
                 thread: std::thread::current().id(),
                 job,
                 detached: false,
+                finishing: false,
             });
             drop(queue);
             inner.settled.notify_all();
@@ -525,16 +574,10 @@ fn worker_loop(inner: &Arc<PoolInner>) {
             (task.func)(task.arg);
         }
         crate::observe::record_blocking_finish();
-        if let Some(job) = job {
+        if job.is_some() {
             CURRENT_JOB.set(None);
-            let mut queue = inner.queue.lock_or_recover();
-            if let Some(index) = queue.abandonable.iter().position(|r| r.job == job) {
-                // A detached thread counts against the cap again.
-                if queue.abandonable.swap_remove(index).detached {
-                    queue.detached -= 1;
-                }
-            }
         }
+        finished = job;
     }
 }
 
@@ -804,6 +847,54 @@ mod tests {
         *gate.open.lock_or_recover() = true;
         gate.opened.notify_all();
         wait_for(&gate, 1);
+        // SAFETY: the pool is live and not used after this call.
+        unsafe { hew_blocking_pool_stop(pool) };
+    }
+
+    /// A caller that submits again as soon as an abandonable job hands over
+    /// its result reuses that job's thread instead of starting another, even
+    /// before the thread returns to the pool.
+    #[test]
+    fn a_finishing_job_takes_the_next_submission() {
+        static HANDED_OVER: Mutex<bool> = Mutex::new(false);
+        static SIGNAL: Condvar = Condvar::new();
+        unsafe extern "C" fn hand_over(arg: *mut c_void) {
+            job_finishing();
+            *HANDED_OVER.lock_or_recover() = true;
+            SIGNAL.notify_all();
+            // Still on the thread: return only once the next job is queued.
+            // SAFETY: the submission transfers one boxed job.
+            unsafe { gated_job(arg) };
+        }
+        let pool = new_pool(4, Duration::from_mins(1));
+        // SAFETY: the pool lives until stopped below.
+        let handle = unsafe { &*pool };
+        let gate = new_gate();
+        let job = Box::into_raw(Box::new(GatedJob {
+            gate: Arc::clone(&gate),
+            id: 0,
+        }));
+        // SAFETY: the pool is live and the submission transfers its argument.
+        let status = unsafe { submit_abandonable(pool, hand_over, job.cast()) };
+        assert_eq!(status, 0);
+        let mut handed_over = HANDED_OVER.lock_or_recover();
+        while !*handed_over {
+            let (next, waited) =
+                SIGNAL.wait_timeout_or_recover(handed_over, Duration::from_secs(10));
+            handed_over = next;
+            assert!(!waited.timed_out() || *handed_over, "job never ran");
+        }
+        drop(handed_over);
+        submit_gated(pool, &gate, 1);
+        assert_eq!(
+            handle.thread_count(),
+            1,
+            "the finishing thread takes the job"
+        );
+        *gate.open.lock_or_recover() = true;
+        gate.opened.notify_all();
+        wait_for(&gate, 2);
+        assert_eq!(handle.thread_count(), 1);
         // SAFETY: the pool is live and not used after this call.
         unsafe { hew_blocking_pool_stop(pool) };
     }

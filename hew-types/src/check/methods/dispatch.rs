@@ -2901,6 +2901,10 @@ impl Checker {
     }
 }
 
+/// An associated function a binder's bounds reach: its declaring trait, its
+/// signature and the bounds of that trait that reach it.
+type BinderMethod = (crate::DefId, FnSig, Vec<TraitRef>);
+
 impl Checker {
     /// The generic binder a call head names: `T` in `T.make(n)` when `T` is
     /// no value in scope.
@@ -2922,20 +2926,29 @@ impl Checker {
     }
 
     /// The associated function `method` a bound on `param` declares, with
-    /// the bound that reaches it, or the refusal to report.
+    /// the bounds that reach it, or the refusal to report. One trait bound
+    /// at several arguments (`F: From<Low> + From<Io>`) yields every such
+    /// bound; the call's arguments choose between them.
     fn binder_trait_method(
         &mut self,
         param: crate::ParamHead,
         method: &str,
-    ) -> Result<(crate::DefId, FnSig, TraitRef), Box<(TypeErrorKind, String)>> {
-        let mut hits: Vec<(crate::DefId, FnSig, TraitRef)> = Vec::new();
+    ) -> Result<BinderMethod, Box<(TypeErrorKind, String)>> {
+        let mut hits: Vec<BinderMethod> = Vec::new();
         for bound in self.active_bounds_of(param.id) {
             for declaring in self.collect_all_declaring_traits_for_method(bound.trait_id, method) {
-                if hits.iter().any(|(known, _, _)| *known == declaring) {
+                if let Some((_, _, bounds)) =
+                    hits.iter_mut().find(|(known, _, _)| *known == declaring)
+                {
+                    // Only the declaring trait's own bounds carry arguments
+                    // its signature uses.
+                    if declaring == bound.trait_id && bounds[0].trait_id == declaring {
+                        bounds.push(bound.clone());
+                    }
                     continue;
                 }
                 if let Some((_, sig)) = self.lookup_trait_method_with_origin(declaring, method) {
-                    hits.push((declaring, sig, bound.clone()));
+                    hits.push((declaring, sig, vec![bound.clone()]));
                 }
             }
         }
@@ -2955,7 +2968,7 @@ impl Checker {
                 ),
             )));
         }
-        let Some((declaring, sig, bound)) = hits.pop() else {
+        let Some((declaring, sig, bounds)) = hits.pop() else {
             return Err(Box::new((
                 TypeErrorKind::UndefinedMethod,
                 format!(
@@ -2974,7 +2987,7 @@ impl Checker {
                 ),
             )));
         }
-        Ok((declaring, sig, bound))
+        Ok((declaring, sig, bounds))
     }
 
     /// Check `T.method(args)` where `T` is a generic binder: the method is
@@ -2987,7 +3000,7 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let (declaring, mut sig, bound) = match self.binder_trait_method(param, method) {
+        let (declaring, mut sig, bounds) = match self.binder_trait_method(param, method) {
             Ok(selected) => selected,
             Err(refusal) => {
                 let (kind, message) = *refusal;
@@ -3000,22 +3013,26 @@ impl Checker {
             }
         };
         // `Self` is the binder; a bound's own arguments fill its trait's
-        // parameters (`from(value: Source)` under `F: From<Low>`).
+        // parameters (`from(value: Source)` under `F: From<Low>`). Under
+        // several bounds of the trait, the parameters are holes the
+        // arguments fill, and the filled holes choose the bound.
         let mut substitution: HashMap<crate::ParamHead, Ty> =
             HashMap::from([(crate::ParamHead::receiver(declaring), Ty::param(param))]);
-        let trait_args = if declaring == bound.trait_id {
-            if let Some(info) = self.trait_info(declaring) {
-                substitution.extend(
-                    info.type_params
-                        .iter()
-                        .copied()
-                        .zip(bound.args.iter().cloned()),
-                );
-            }
-            bound.args
+        let trait_params = if declaring == bounds[0].trait_id {
+            self.trait_info(declaring)
+                .map(|info| info.type_params.clone())
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
+        let holes: Vec<Ty> = match bounds.as_slice() {
+            [bound] => bound.args.clone(),
+            _ => trait_params
+                .iter()
+                .map(|_| Ty::Var(crate::ty::TypeVar::fresh()))
+                .collect(),
+        };
+        substitution.extend(trait_params.iter().copied().zip(holes.iter().cloned()));
         sig.params = sig
             .params
             .iter()
@@ -3041,6 +3058,22 @@ impl Checker {
                 owner_type_args: &[],
             }),
         );
+        // Application freshens the signature's open variables; link the
+        // holes to their applied copies, which the arguments have filled.
+        if bounds.len() > 1 {
+            for (declared, applied) in sig.params.iter().zip(&applied.params) {
+                self.try_unify_with_owner_identity(declared, applied);
+            }
+        }
+        let trait_args = if trait_params.is_empty() {
+            Vec::new()
+        } else if bounds.len() == 1 {
+            holes
+        } else if let Some(args) = self.select_binder_bound(param, method, &holes, &bounds, span) {
+            args
+        } else {
+            return Ty::Error;
+        };
         let target = self.trait_method_ids_of(declaring, method).map_or_else(
             || CallTarget::Unsupported {
                 reason: format!("trait method `{callee}.{method}` has no declaration identity"),
@@ -3056,6 +3089,64 @@ impl Checker {
             }),
         );
         self.project_assoc_types(&applied.return_type)
+    }
+
+    /// The one bound whose arguments agree with the holes a call filled,
+    /// committed into the substitution. When none or several agree, the
+    /// call is reported ambiguous unless an argument already failed.
+    fn select_binder_bound(
+        &mut self,
+        param: crate::ParamHead,
+        method: &str,
+        holes: &[Ty],
+        bounds: &[TraitRef],
+        span: &Span,
+    ) -> Option<Vec<Ty>> {
+        let chosen = self.agreeing_binder_bound(holes, bounds);
+        if chosen.is_some()
+            || holes
+                .iter()
+                .any(|hole| self.subst.resolve(hole).contains_error())
+        {
+            return chosen;
+        }
+        let mut shown: Vec<String> = bounds
+            .iter()
+            .map(|bound| format!("`{}`", self.trait_ref_display(bound)))
+            .collect();
+        shown.sort_unstable();
+        self.report_error(
+            TypeErrorKind::AmbiguousTraitMethod,
+            span,
+            format!(
+                "ambiguous associated function `{method}` on `{}`: the arguments do not \
+                 choose one of its bounds {}",
+                param.spelling,
+                shown.join(", ")
+            ),
+        );
+        None
+    }
+
+    fn agreeing_binder_bound(&mut self, holes: &[Ty], bounds: &[TraitRef]) -> Option<Vec<Ty>> {
+        let mut agreeing = bounds.iter().filter(|bound| {
+            let snapshot = self.subst.snapshot();
+            let agree = bound
+                .args
+                .iter()
+                .zip(holes)
+                .all(|(arg, hole)| self.try_unify_with_owner_identity(arg, hole));
+            self.subst.restore(snapshot);
+            agree
+        });
+        let chosen = agreeing.next()?.clone();
+        if agreeing.next().is_some() {
+            return None;
+        }
+        for (arg, hole) in chosen.args.iter().zip(holes) {
+            self.try_unify_with_owner_identity(arg, hole);
+        }
+        Some(chosen.args)
     }
 
     /// The `From` conversion a bound on the binder `target` provides from

@@ -1,0 +1,133 @@
+// One trait bound at several arguments: the call's arguments choose the
+// bound, so each conversion reaches the impl for its own source type. A
+// binder call inside an inherent impl takes the binder as `Self`, and a
+// caller's own binder satisfies a callee's bound inferred from the result.
+trait Conv<A> {
+    fn conv(a: A) -> Self;
+}
+
+type Tag {
+    text: string;
+}
+
+impl Conv<i64> for Tag {
+    fn conv(a: i64) -> Tag {
+        Tag { text: f"int {a}" }
+    }
+}
+
+impl Conv<string> for Tag {
+    fn conv(a: string) -> Tag {
+        Tag { text: f"str {a}" }
+    }
+}
+
+fn both<T: Conv<i64> + Conv<string>>(n: i64, s: string) -> Vec<T> {
+    [T.conv(n), T.conv(s), T.conv(7), T.conv(s.len())]
+}
+
+type LowError {
+    code: i64;
+}
+
+type IoError {
+    code: i64;
+}
+
+type AppError {
+    code: i64;
+}
+
+impl From<LowError> for AppError {
+    fn from(value: LowError) -> AppError {
+        AppError { code: value.code + 100 }
+    }
+}
+
+impl From<IoError> for AppError {
+    fn from(value: IoError) -> AppError {
+        AppError { code: value.code + 900 }
+    }
+}
+
+fn lift<F: From<LowError> + From<IoError>>(io: IoError, low: LowError) -> Vec<F> {
+    [F.from(io), F.from(low)]
+}
+
+fn read(n: i64) -> Result<i64, IoError> {
+    if n > 0 { .Ok(n) } else { .Err(IoError { code: n }) }
+}
+
+fn checked<F: From<LowError> + From<IoError>>(n: i64) -> Result<i64, F> {
+    let v = read(n)?;
+    .Ok(v)
+}
+
+trait Make {
+    fn make(n: i64) -> Self;
+    fn get(self) -> i64;
+}
+
+type Cell {
+    v: i64;
+}
+
+impl Make for Cell {
+    fn make(n: i64) -> Cell {
+        Cell { v: n * 10 }
+    }
+    fn get(self) -> i64 {
+        self.v
+    }
+}
+
+type Holder<T> {
+    n: i64;
+}
+
+impl<T: Make> Make for Holder<T> {
+    fn make(n: i64) -> Holder<T> {
+        Holder { n: n + 1000 }
+    }
+    fn get(self) -> i64 {
+        self.n
+    }
+}
+
+impl<T: Make> Holder<T> {
+    fn inner(self) -> i64 {
+        T.make(self.n).get()
+    }
+    fn fresh(self) -> T {
+        T.make(self.n + 1)
+    }
+}
+
+fn build<T: Make>(n: i64) -> T {
+    T.make(n)
+}
+
+fn outer<U: Make>(n: i64) -> U {
+    build(n + 1)
+}
+
+fn main() {
+    let tags: Vec<Tag> = both(5, "five");
+    for tag in tags {
+        println(tag.text);
+    }
+    let errors: Vec<AppError> = lift(IoError { code: 1 }, LowError { code: 2 });
+    for error in errors {
+        println(error.code);
+    }
+    let failed: Result<i64, AppError> = checked(-3);
+    match failed {
+        .Ok(v) => println(v),
+        .Err(e) => println(e.code),
+    }
+    let holder: Holder<Cell> = Holder { n: 3 };
+    println(holder.inner());
+    println(holder.fresh().get());
+    let cell: Cell = outer(1);
+    println(cell.get());
+}

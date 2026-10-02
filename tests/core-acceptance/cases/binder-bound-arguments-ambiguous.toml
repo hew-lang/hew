@@ -1,0 +1,28 @@
+[[case]]
+id = "binder-bound-arguments-ambiguous"
+intent = "A binder call under one trait bound at several arguments is refused when its arguments fit more than one bound or none, and accepted when they fit exactly one; an argument that already failed adds no ambiguity."
+source = "cases/binder-bound-arguments-ambiguous.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "AmbiguousTraitMethod"
+line = 31
+column = 5
+message = "the arguments do not choose one of its bounds `Conv<i32>`, `Conv<i64>`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "AmbiguousTraitMethod"
+line = 35
+column = 5
+message = "the arguments do not choose one of its bounds `Conv<i64>`, `Conv<string>`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedVariable"
+line = 43
+column = 12
+message = "undefined variable `undefined`"

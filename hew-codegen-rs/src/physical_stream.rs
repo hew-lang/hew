@@ -397,7 +397,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.initialize_stream_fault(request)?;
         self.leave(&mut join, suspend::EXIT_UNWIND)?;
         let selected = self.enter_join(&join)?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
+        self.release_stream_operation(request)?;
         let ([some_block, none_block, cancel_block], unwind_block) = self.dispatch_exits(
             selected,
             [
@@ -639,7 +639,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.initialize_stream_fault(request)?;
         self.leave(&mut join, suspend::EXIT_UNWIND)?;
         let selected = self.enter_join(&join)?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
+        self.release_stream_operation(request)?;
         let ([sent_block, closed_block, cancel_block], unwind_block) = self.dispatch_exits(
             selected,
             [

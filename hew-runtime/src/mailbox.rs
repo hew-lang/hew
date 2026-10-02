@@ -3126,6 +3126,10 @@ pub(crate) unsafe fn mailbox_request_stop(mb: *mut HewMailbox) {
     // SAFETY: Caller guarantees `mb` is valid when non-null.
     let mb = unsafe { &*mb };
     mb.stop_requested.store(true, Ordering::Release);
+    // Pairs with the fence in `park_suspended_activation`: either the stopper
+    // reads the parked `Suspended` state and wakes it, or the parker reads
+    // this latch.
+    std::sync::atomic::fence(Ordering::SeqCst);
 }
 
 /// Record the forceful terminal cause before latching cancellation.

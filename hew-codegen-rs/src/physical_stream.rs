@@ -365,6 +365,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
+        // Every exit converges on one release of the operation; its code
+        // then selects the element, the end, the cancel or the unwind edge.
+        const SOME: u64 = suspend::EXIT_NORMAL;
+        const NONE: u64 = suspend::EXIT_UNWIND + 1;
+        let mut join = self.exit_join("stream.next.release");
         self.builder.position_at_end(some);
         self.finish_stream(request, waker, cancelled)?;
         let take = coro::external(
@@ -378,7 +383,31 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[request.into(), slot.into()],
             "stream.read.taken",
         )?;
+        self.leave(&mut join, SOME)?;
+        self.builder.position_at_end(none);
+        self.finish_stream(request, waker, cancelled)?;
+        self.leave(&mut join, NONE)?;
+        self.builder.position_at_end(cancelled);
+        self.free_handle("hew_stream_cancel_native", request)?;
+        self.drain_stream(request, waker)?;
+        self.initialize_cancellation_fault()?;
+        self.leave(&mut join, suspend::EXIT_CANCEL)?;
+        self.builder.position_at_end(failed);
+        self.finish_stream(request, waker, cancelled)?;
+        self.initialize_stream_fault(request)?;
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        let selected = self.enter_join(&join)?;
         self.release_handle(release::Handle::StreamOperation, request)?;
+        let ([some_block, none_block, cancel_block], unwind_block) = self.dispatch_exits(
+            selected,
+            [
+                (SOME, "stream.next.element"),
+                (NONE, "stream.next.end"),
+                (suspend::EXIT_CANCEL, "stream.next.cancel"),
+            ],
+            "stream.next.unwind",
+        )?;
+        self.builder.position_at_end(some_block);
         let value = self
             .builder
             .build_load(element_ty, slot, "stream.element")
@@ -386,22 +415,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option.id)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;
-        self.builder.position_at_end(none);
-        self.finish_stream(request, waker, cancelled)?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
+        self.builder.position_at_end(none_block);
         self.write_variant_value(self.slots[result.0 as usize], 1, &[], option.id)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;
-        self.builder.position_at_end(cancelled);
-        self.free_handle("hew_stream_cancel_native", request)?;
-        self.drain_stream(request, waker)?;
-        self.initialize_cancellation_fault()?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
+        self.builder.position_at_end(cancel_block);
         self.emit_edge(cancel)?;
-        self.builder.position_at_end(failed);
-        self.finish_stream(request, waker, cancelled)?;
-        self.initialize_stream_fault(request)?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
+        self.builder.position_at_end(unwind_block);
         self.emit_edge(unwind)
     }
 
@@ -598,13 +618,40 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
+        // Every exit converges on one release; peer closure reads the release
+        // outcome only after it.
+        const SENT: u64 = suspend::EXIT_NORMAL;
+        const CLOSED: u64 = suspend::EXIT_UNWIND + 1;
+        let mut join = self.exit_join("stream.send.release");
         self.builder.position_at_end(sent);
         self.finish_stream(request, waker, cancelled)?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
-        self.emit_edge(normal)?;
+        self.leave(&mut join, SENT)?;
         self.builder.position_at_end(peer_closed);
         self.finish_stream(request, waker, cancelled)?;
+        self.leave(&mut join, CLOSED)?;
+        self.builder.position_at_end(cancelled);
+        self.free_handle("hew_stream_cancel_native", request)?;
+        self.drain_stream(request, waker)?;
+        self.initialize_cancellation_fault()?;
+        self.leave(&mut join, suspend::EXIT_CANCEL)?;
+        self.builder.position_at_end(failed);
+        self.finish_stream(request, waker, cancelled)?;
+        self.initialize_stream_fault(request)?;
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        let selected = self.enter_join(&join)?;
         self.release_handle(release::Handle::StreamOperation, request)?;
+        let ([sent_block, closed_block, cancel_block], unwind_block) = self.dispatch_exits(
+            selected,
+            [
+                (SENT, "stream.send.accepted"),
+                (CLOSED, "stream.send.rejected"),
+                (suspend::EXIT_CANCEL, "stream.send.cancel"),
+            ],
+            "stream.send.unwind",
+        )?;
+        self.builder.position_at_end(sent_block);
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(closed_block);
         let status = self
             .builder
             .build_load(
@@ -615,16 +662,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("read rejected element release outcome")?
             .into_int_value();
         self.emit_call_outcome(status, None, Some(closed), Some(unwind))?;
-        self.builder.position_at_end(cancelled);
-        self.free_handle("hew_stream_cancel_native", request)?;
-        self.drain_stream(request, waker)?;
-        self.initialize_cancellation_fault()?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
+        self.builder.position_at_end(cancel_block);
         self.emit_edge(cancel)?;
-        self.builder.position_at_end(failed);
-        self.finish_stream(request, waker, cancelled)?;
-        self.initialize_stream_fault(request)?;
-        self.release_handle(release::Handle::StreamOperation, request)?;
+        self.builder.position_at_end(unwind_block);
         self.emit_edge(unwind)
     }
 }

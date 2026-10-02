@@ -61,7 +61,10 @@ struct Cli {
 
 #[derive(Debug)]
 enum ConnectError {
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "built only by the unix profiler discovery")
+    )]
     NoProfilerForPid(u32),
     #[cfg(unix)]
     MultipleProfilers(Vec<AmbiguousProfiler>),

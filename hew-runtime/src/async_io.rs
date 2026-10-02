@@ -106,12 +106,30 @@ impl Drop for AcceptedConnection {
     }
 }
 
-// wasm32 produces only `StdinLine`; the other values come from native
-// producers, and the shared take entries still name them.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) enum IoValue {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
+        )
+    )]
     Bytes(Vec<u8>),
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
+        )
+    )]
     StreamItem(Option<Vec<u8>>),
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
+        )
+    )]
     Count(i64),
     #[cfg(not(target_arch = "wasm32"))]
     Connection(AcceptedConnection),

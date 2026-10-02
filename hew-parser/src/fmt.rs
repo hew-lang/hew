@@ -4056,6 +4056,48 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Write a binary operator with its surrounding spaces. A range prints
+    /// tight (`0..n`) when both operands are atoms and spaced
+    /// (`a + 1 .. b.len() - 1`) otherwise.
+    fn write_binary_op(&mut self, op: BinaryOp, left: &Spanned<Expr>, right: &Spanned<Expr>) {
+        let tight = matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive)
+            && self.is_range_atom(left)
+            && self.is_range_atom(right);
+        if tight {
+            self.write(binary_op_str(op));
+        } else {
+            self.write(" ");
+            self.write(binary_op_str(op));
+            self.write(" ");
+        }
+    }
+
+    /// Whether a range operand reads as a single unit: a literal, a name, a
+    /// field access, or a call whose callee and arguments are themselves
+    /// atoms. A parenthesized operand is compound.
+    fn is_range_atom(&self, expr: &Spanned<Expr>) -> bool {
+        if self.source_parenthesizes(&expr.1) {
+            return false;
+        }
+        match &expr.0 {
+            Expr::Literal(_) | Expr::Ident(_) => true,
+            Expr::Unary {
+                op: UnaryOp::Negate,
+                operand,
+            } => matches!(operand.0, Expr::Literal(_)),
+            Expr::FieldAccess { object, .. } => self.is_range_atom(object),
+            Expr::Call { function, args, .. } => {
+                self.is_range_atom(function)
+                    && args.iter().all(|arg| self.is_range_atom(arg.expr()))
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.is_range_atom(receiver)
+                    && args.iter().all(|arg| self.is_range_atom(arg.expr()))
+            }
+            _ => false,
+        }
+    }
+
     /// Format an expression with precedence tracking for correct parenthesization.
     ///
     /// `parent_prec` is the precedence of the enclosing binary operator (0 at top level).
@@ -4082,9 +4124,7 @@ impl<'a> Formatter<'a> {
                 self.write("(");
             }
             self.format_expr_prec(left, prec, false);
-            self.write(" ");
-            self.write(binary_op_str(*op));
-            self.write(" ");
+            self.write_binary_op(*op, left, right);
             self.format_expr_prec(right, prec, true);
             if needs_parens {
                 self.write(")");
@@ -4147,9 +4187,7 @@ impl<'a> Formatter<'a> {
             Expr::Binary { left, op, right } => {
                 let prec = binop_precedence(*op);
                 self.format_expr_prec(left, prec, false);
-                self.write(" ");
-                self.write(binary_op_str(*op));
-                self.write(" ");
+                self.write_binary_op(*op, left, right);
                 self.format_expr_prec(right, prec, true);
             }
             Expr::Unary { op, operand } => {
@@ -4659,13 +4697,17 @@ impl<'a> Formatter<'a> {
                 end,
                 inclusive,
             } => {
+                let spaced = matches!((start, end), (Some(s), Some(e)) if !self.is_range_atom(s) || !self.is_range_atom(e));
                 if let Some(s) = start {
                     self.format_expr(s);
                 }
-                if *inclusive {
-                    self.write("..=");
+                let op = if *inclusive { "..=" } else { ".." };
+                if spaced {
+                    self.write(" ");
+                    self.write(op);
+                    self.write(" ");
                 } else {
-                    self.write("..");
+                    self.write(op);
                 }
                 if let Some(e) = end {
                     self.format_expr(e);
@@ -5958,7 +6000,7 @@ fn main() {
             "left is (middle is right)",
             "left is (a && b)",
             "(a == b) & mask",
-            "a || (b .. c)",
+            "a || (b..c)",
         ] {
             let source = format!("fn main() {{\n    let value = {expression};\n}}\n");
             assert_eq!(roundtrip(&source), source);

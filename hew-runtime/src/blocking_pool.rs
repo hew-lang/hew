@@ -5,6 +5,11 @@
 //! the saturation counter records it. A thread that stays idle for the idle
 //! timeout (`HEW_POOL_IDLE_MS`, default ten seconds) exits, so the pool shrinks
 //! back after a burst. The pool is opaque to C callers (Box-allocated).
+//!
+//! Stopping the pool waits for every job except an abandonable one: a job
+//! that owns all of its inputs and whose caller has stopped waiting, such as
+//! an `#[offload]` call whose caller was cancelled. Its thread is left to
+//! finish the call on its own, so exit never waits on a syscall nobody reads.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -14,7 +19,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread::JoinHandle;
+use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
 
 use crate::util::{CondvarExt, MutexExt};
@@ -32,6 +37,8 @@ pub type HewBlockingFn = unsafe extern "C" fn(arg: *mut c_void);
 struct Task {
     func: HewBlockingFn,
     arg: *mut c_void,
+    /// Stop may leave this job running instead of waiting for it.
+    abandonable: bool,
 }
 
 // SAFETY: The `arg` pointer is passed to the function by the submitter and is
@@ -46,12 +53,16 @@ struct Queue {
     threads: usize,
     /// Threads waiting for a job.
     idle: usize,
+    /// Threads running an abandonable job; stop does not join them.
+    abandonable: Vec<ThreadId>,
 }
 
 /// Shared state between the pool handle and worker threads.
 struct PoolInner {
     queue: Mutex<Queue>,
     work: Condvar,
+    /// Signalled when a thread exits or starts an abandonable job.
+    settled: Condvar,
     max_threads: usize,
     idle_timeout: Duration,
     /// Jobs that found every thread busy at the cap and had to queue.
@@ -87,8 +98,10 @@ fn new_pool(max_threads: usize, idle_timeout: Duration) -> *mut HewBlockingPool 
                 running: true,
                 threads: 0,
                 idle: 0,
+                abandonable: Vec::new(),
             }),
             work: Condvar::new(),
+            settled: Condvar::new(),
             max_threads: max_threads.max(1),
             idle_timeout,
             saturations: AtomicU64::new(0),
@@ -166,6 +179,42 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     func: HewBlockingFn,
     arg: *mut c_void,
 ) -> i32 {
+    submit(
+        pool,
+        Task {
+            func,
+            arg,
+            abandonable: false,
+        },
+    )
+}
+
+/// Submit a job that stop may leave running: it owns every input, touches no
+/// runtime-owned state when it finishes, and by the time the pool stops its
+/// caller has stopped waiting for it.
+///
+/// Returns 0 on success, -1 if the pool is null or has been stopped.
+///
+/// # Safety
+///
+/// As [`hew_blocking_pool_submit`], and `func` must stay sound to finish after
+/// the owning runtime has been dropped.
+pub(crate) unsafe fn submit_abandonable(
+    pool: *mut HewBlockingPool,
+    func: HewBlockingFn,
+    arg: *mut c_void,
+) -> i32 {
+    submit(
+        pool,
+        Task {
+            func,
+            arg,
+            abandonable: true,
+        },
+    )
+}
+
+unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> i32 {
     if pool.is_null() {
         return -1;
     }
@@ -181,10 +230,10 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
         drop(queue);
         // SAFETY: the caller keeps `arg` valid until `func` completes, which
         // is before this call returns.
-        unsafe { func(arg) };
+        unsafe { (task.func)(task.arg) };
         return 0;
     }
-    queue.tasks.push_back(Task { func, arg });
+    queue.tasks.push_back(task);
     // More queued jobs than waiting threads: grow, or record saturation.
     let grow = if queue.tasks.len() > queue.idle {
         if queue.threads < p.inner.max_threads {
@@ -295,7 +344,8 @@ pub fn shared_blocking_pool_opt() -> Option<*mut HewBlockingPool> {
     crate::runtime::rt_current_opt().map(crate::runtime::RuntimeInner::blocking_pool)
 }
 
-/// Stop the pool: reject new work, let workers finish the queue, and join them.
+/// Stop the pool: reject new work, run the queue, and join every thread except
+/// those still inside an abandonable job, which finish on their own.
 ///
 /// # Safety
 ///
@@ -308,10 +358,27 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
     }
     // SAFETY: caller guarantees `pool` is valid and surrenders ownership.
     let p = unsafe { *Box::from_raw(pool) };
-    p.inner.queue.lock_or_recover().running = false;
-    p.inner.work.notify_all();
+    let (queued, abandoned) = {
+        let mut queue = p.inner.queue.lock_or_recover();
+        queue.running = false;
+        p.inner.work.notify_all();
+        // Free threads drain the queue and exit. Once only abandonable jobs
+        // hold threads, nothing else will take what is still queued.
+        while queue.threads > queue.abandonable.len() {
+            queue = p.inner.settled.wait_or_recover(queue);
+        }
+        (std::mem::take(&mut queue.tasks), queue.abandonable.clone())
+    };
+    for task in queued {
+        // SAFETY: the submitter keeps `arg` valid until `func` completes.
+        unsafe { (task.func)(task.arg) };
+    }
     let workers = std::mem::take(&mut *p.workers.lock_or_recover());
     for handle in workers {
+        if abandoned.contains(&handle.thread().id()) {
+            // Dropping the handle detaches the thread.
+            continue;
+        }
         if let Err(panic_payload) = handle.join() {
             let message = format!(
                 "blocking pool worker panicked during teardown: {}",
@@ -349,6 +416,7 @@ fn worker_loop(inner: &PoolInner) {
                     // never counts this thread as able to take its job.
                     queue.threads -= 1;
                     crate::observe::record_pool_threads(queue.threads);
+                    inner.settled.notify_all();
                     break None;
                 }
             }
@@ -356,12 +424,24 @@ fn worker_loop(inner: &PoolInner) {
         let Some(task) = task else {
             return;
         };
+        let id = std::thread::current().id();
+        if task.abandonable {
+            inner.queue.lock_or_recover().abandonable.push(id);
+            inner.settled.notify_all();
+        }
         crate::observe::record_blocking_start();
         // SAFETY: the submitter guarantees `func` and `arg` are valid.
         unsafe {
             (task.func)(task.arg);
         }
         crate::observe::record_blocking_finish();
+        if task.abandonable {
+            inner
+                .queue
+                .lock_or_recover()
+                .abandonable
+                .retain(|thread| *thread != id);
+        }
     }
 }
 
@@ -543,6 +623,39 @@ mod tests {
             order = next;
             assert!(!waited.timed_out() || order.len() >= count, "jobs stalled");
         }
+    }
+
+    /// Stop leaves a thread inside an abandonable job running and returns; the
+    /// work queued behind it still runs before stop returns.
+    #[test]
+    fn stop_leaves_an_abandonable_job_running_and_runs_the_queue() {
+        static QUEUED_RAN: AtomicU32 = AtomicU32::new(0);
+        unsafe extern "C" fn queued(_: *mut c_void) {
+            QUEUED_RAN.fetch_add(1, Ordering::SeqCst);
+        }
+        let pool = new_pool(1, Duration::from_secs(10));
+        let gate = new_gate();
+        let job = Box::into_raw(Box::new(GatedJob {
+            gate: Arc::clone(&gate),
+            id: 0,
+        }));
+        // SAFETY: the pool is live and each submission transfers its argument.
+        unsafe {
+            assert_eq!(submit_abandonable(pool, gated_job, job.cast()), 0);
+            assert_eq!(
+                hew_blocking_pool_submit(pool, queued, std::ptr::null_mut()),
+                0
+            );
+            hew_blocking_pool_stop(pool);
+        }
+        assert_eq!(QUEUED_RAN.load(Ordering::SeqCst), 1, "stop runs the queue");
+        assert!(
+            gate.order.lock_or_recover().is_empty(),
+            "the job is still blocked"
+        );
+        *gate.open.lock_or_recover() = true;
+        gate.opened.notify_all();
+        wait_for(&gate, 1);
     }
 
     /// Three times the cap completes: the pool grows to its cap, queues the

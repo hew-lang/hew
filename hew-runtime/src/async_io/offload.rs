@@ -160,9 +160,10 @@ pub unsafe extern "C" fn hew_async_offload(
             env,
         )));
         // SAFETY: the pool is installed; the job is owned until its callback.
-        let status = unsafe {
-            crate::blocking_pool::hew_blocking_pool_submit(pool, run_offload_job, job.cast())
-        };
+        // It owns its arguments and finishing it touches only the job, so
+        // runtime exit leaves a call whose caller gave up running.
+        let status =
+            unsafe { crate::blocking_pool::submit_abandonable(pool, run_offload_job, job.cast()) };
         if status == 0 {
             return Arc::into_raw(operation);
         }

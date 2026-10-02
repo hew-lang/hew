@@ -1,0 +1,29 @@
+// The program ends while an abandoned #[offload] read is still blocked in the
+// OS. Its caller gave up at the deadline, so exit does not wait for the call:
+// nothing ever opens the write end of the pipe.
+import std.fs;
+
+import std.os;
+
+import std.path;
+
+import std.process;
+
+fn main() {
+    let fifo = path.combine(os.temp_dir(), f"hew-offload-exit-{os.pid()}");
+    process.run(f"mkfifo {fifo}").expect("create fifo");
+    let outcome = scope within 50ms {
+        match fs.read(fifo) {
+            .Ok(text) => f"read {text}",
+            .Err(error) => f"failed {error}",
+        }
+    } handle failure {
+        match failure {
+            .Deadline { message } => "deadline",
+            .Fault { message } => "fault",
+        }
+    };
+    // Removing the name does not release the blocked open.
+    fs.delete(fifo).expect("remove fifo");
+    println(outcome);
+}

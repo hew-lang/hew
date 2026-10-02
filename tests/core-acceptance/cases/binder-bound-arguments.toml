@@ -1,0 +1,11 @@
+[[case]]
+id = "binder-bound-arguments"
+intent = "Under `T: Conv<i64> + Conv<string>` and `F: From<Low> + From<Io>`, `T.conv(x)` and `F.from(e)` reach the impl the argument's type selects; `T.make` inside `impl<T: Make> Holder<T>` takes `T` as `Self`; a caller's binder satisfies a bound inferred from the expected result."
+source = "cases/binder-bound-arguments.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "int 5\nstr five\nint 7\nint 4\n901\n102\n897\n30\n40\n20\n"
+exit = 0

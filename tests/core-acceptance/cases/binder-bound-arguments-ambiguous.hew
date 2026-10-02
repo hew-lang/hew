@@ -1,0 +1,52 @@
+// The arguments must choose exactly one bound: an integer literal fits
+// both integer widths, and a float fits neither bound. An argument that
+// already failed adds no ambiguity of its own.
+trait Conv<A> {
+    fn conv(a: A) -> Self;
+}
+
+type Tag {
+    text: string;
+}
+
+impl Conv<i64> for Tag {
+    fn conv(a: i64) -> Tag {
+        Tag { text: f"i64 {a}" }
+    }
+}
+
+impl Conv<i32> for Tag {
+    fn conv(a: i32) -> Tag {
+        Tag { text: f"i32 {a}" }
+    }
+}
+
+impl Conv<string> for Tag {
+    fn conv(a: string) -> Tag {
+        Tag { text: a }
+    }
+}
+
+fn widths<T: Conv<i64> + Conv<i32>>() -> T {
+    T.conv(5)
+}
+
+fn neither<T: Conv<i64> + Conv<string>>() -> T {
+    T.conv(1.5)
+}
+
+fn chosen<T: Conv<i64> + Conv<string>>() -> T {
+    T.conv(5)
+}
+
+fn failed<T: Conv<i64> + Conv<string>>() -> T {
+    T.conv(undefined)
+}
+
+fn main() {
+    let tag: Tag = chosen();
+    let wide: Tag = widths();
+    let none: Tag = neither();
+    let _lost: Tag = failed();
+    println(f"{tag.text} {wide.text} {none.text}");
+}

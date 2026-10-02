@@ -241,11 +241,26 @@ fn apply_bare_variant_fixes(source: &str, diagnostics: &[FileDiagnostic]) -> Str
 }
 
 /// The first diagnostic in `after` whose code occurs more often than in
-/// `before`, ignoring the bare variants this pass removes.
+/// `before`, ignoring the bare variants this pass removes. A diagnostic at
+/// exactly a bare variant's site in `before` is a consequence of that site,
+/// so it does not count: the respelled site must check without it. One
+/// inside the site's payload stays, since the respelling keeps the payload.
 fn first_new_diagnostic<'a>(
     before: &[FileDiagnostic],
     after: &'a [FileDiagnostic],
 ) -> Option<&'a FileDiagnostic> {
+    let sites: Vec<_> = before
+        .iter()
+        .filter(|diagnostic| diagnostic.kind == TypeErrorKind::BareVariantExpr)
+        .map(|diagnostic| diagnostic.span.clone())
+        .collect();
+    let before: Vec<_> = before
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.kind == TypeErrorKind::BareVariantExpr || !sites.contains(&diagnostic.span)
+        })
+        .cloned()
+        .collect();
     let count = |diagnostics: &[FileDiagnostic], kind: &TypeErrorKind| {
         diagnostics
             .iter()
@@ -254,6 +269,6 @@ fn first_new_diagnostic<'a>(
     };
     after.iter().find(|diagnostic| {
         diagnostic.kind != TypeErrorKind::BareVariantExpr
-            && count(after, &diagnostic.kind) > count(before, &diagnostic.kind)
+            && count(after, &diagnostic.kind) > count(&before, &diagnostic.kind)
     })
 }

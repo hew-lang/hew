@@ -1,0 +1,35 @@
+[[case]]
+id = "offload-signature-held-handles"
+intent = "`#[offload]` refuses an `#[opaque]` handle or raw pointer held inside a record, enum payload or collection, as a parameter or result, and accepts a record of plain values."
+source = "cases/offload-signature-held-handles.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 23
+column = 5
+message = "q_wrap` parameter 0 is `Wrap`, which is or holds an `#[opaque]` handle"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 25
+column = 5
+message = "q_slots` parameter 0 is `Vec<Slot>`, which is or holds an `#[opaque]` handle"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 27
+column = 5
+message = "q_open` returns `Wrap`, which is or holds an `#[opaque]` handle"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 29
+column = 5
+message = "q_fill` parameter 0 is `*mut u8`, which is or holds a pointer"

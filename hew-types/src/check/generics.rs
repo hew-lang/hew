@@ -369,6 +369,7 @@ impl Checker {
                     bounds: param_bounds,
                     type_arg: type_arg.clone(),
                     span: span.clone(),
+                    scope_bounds: self.active_param_bounds(),
                 });
                 continue;
             }
@@ -394,6 +395,7 @@ impl Checker {
             if resolved_arg.has_inference_var() {
                 continue;
             }
+            self.current_type_param_bounds.push(entry.scope_bounds);
             self.report_unsatisfied_type_param_bounds(
                 entry.type_param,
                 &entry.bounds,
@@ -406,6 +408,7 @@ impl Checker {
                 &resolved_arg,
                 &entry.span,
             );
+            self.current_type_param_bounds.pop();
         }
     }
 
@@ -1044,7 +1047,11 @@ impl Checker {
         };
         let saved_module = std::mem::replace(&mut self.current_module, module);
         let saved_file = std::mem::replace(&mut self.current_module_idx, file);
+        // `Self` in a trait declaration is the trait's receiver binder, never
+        // the impl being checked when the lookup happens.
+        let saved_self = self.current_self_type.take();
         let result = f(self);
+        self.current_self_type = saved_self;
         self.current_module = saved_module;
         self.current_module_idx = saved_file;
         result

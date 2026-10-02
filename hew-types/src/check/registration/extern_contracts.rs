@@ -682,10 +682,20 @@ impl Checker {
 
     /// Why the pool job cannot own a value of `ty`, if it cannot.
     fn offload_refusal(&self, ty: &Ty) -> Option<&'static str> {
-        if self.contains_opaque_handle(ty) {
-            return Some(
-                "is an `#[opaque]` handle that its caller-side owner may release while the job runs",
-            );
+        match self.caller_owned_part(ty, &mut Vec::new()) {
+            Some(CallerOwned::Handle) => {
+                return Some(
+                    "is or holds an `#[opaque]` handle that its caller-side owner may release \
+                     while the job runs",
+                );
+            }
+            Some(CallerOwned::Pointer) => {
+                return Some(
+                    "is or holds a pointer into memory its caller-side owner may release while \
+                     the job runs",
+                );
+            }
+            None => {}
         }
         let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
             return Some("has no checked value class");
@@ -701,15 +711,51 @@ impl Checker {
         }
     }
 
-    fn contains_opaque_handle(&self, ty: &Ty) -> bool {
+    /// The memory a caller-side owner keeps inside a `ty` value: an
+    /// `#[opaque]` handle, a raw pointer or a view, at any depth of its
+    /// fields, payloads, elements and type arguments. A handle outranks a
+    /// pointer so the report does not depend on member order.
+    fn caller_owned_part(&self, ty: &Ty, seen: &mut Vec<crate::NominalId>) -> Option<CallerOwned> {
         match ty {
+            Ty::Pointer { .. } | Ty::Borrow { .. } => Some(CallerOwned::Pointer),
+            Ty::Tuple(items) => items
+                .iter()
+                .filter_map(|item| self.caller_owned_part(item, seen))
+                .min(),
+            Ty::Array(item, _) | Ty::Slice(item) => self.caller_owned_part(item, seen),
             Ty::Named { head, args } => {
-                matches!(head, crate::TypeHead::Nominal(nominal)
-                    if self.opaque_type_ids.contains(&nominal.id))
-                    || args.iter().any(|arg| self.contains_opaque_handle(arg))
+                let mut found = args
+                    .iter()
+                    .filter_map(|arg| self.caller_owned_part(arg, seen))
+                    .min();
+                if let crate::TypeHead::Nominal(nominal) = head {
+                    if self.opaque_type_ids.contains(&nominal.id) {
+                        return Some(CallerOwned::Handle);
+                    }
+                    if !seen.contains(&nominal.id) {
+                        seen.push(nominal.id);
+                        if let Some(def) = self.type_def_view().of_ty(ty) {
+                            let payloads =
+                                def.variants.values().flat_map(|variant| match variant {
+                                    VariantDef::Unit => Vec::new(),
+                                    VariantDef::Tuple(items) => items.iter().collect(),
+                                    VariantDef::Struct(fields) => {
+                                        fields.iter().map(|(_, ty)| ty).collect()
+                                    }
+                                });
+                            let members = def
+                                .fields
+                                .values()
+                                .chain(payloads)
+                                .filter_map(|member| self.caller_owned_part(member, seen))
+                                .min();
+                            found = found.into_iter().chain(members).min();
+                        }
+                    }
+                }
+                found
             }
-            Ty::Pointer { pointee, .. } => self.contains_opaque_handle(pointee),
-            _ => false,
+            _ => None,
         }
     }
 
@@ -751,4 +797,12 @@ impl Checker {
             &self.defs,
         )
     }
+}
+
+/// Memory inside an offload argument or result that its caller-side owner
+/// keeps, in reporting precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CallerOwned {
+    Handle,
+    Pointer,
 }

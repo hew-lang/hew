@@ -2997,6 +2997,9 @@ pub(super) struct DeferredBoundCheck {
     pub(super) bounds: Vec<TraitRef>,
     pub(super) type_arg: Ty,
     pub(super) span: Span,
+    /// The bounds in force at the call, so a type argument that settles to
+    /// the caller's own binder is checked against the caller's bounds.
+    pub(super) scope_bounds: ParamBounds,
 }
 
 /// Result of resolving a bare actor reference (`spawn Account(...)`, or the

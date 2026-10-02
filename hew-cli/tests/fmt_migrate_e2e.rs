@@ -309,3 +309,48 @@ fn migrate_respells_bare_variants_by_their_context() {
     let again = migrate(&["--check"], dir.path());
     assert!(again.status.success(), "{}", stderr(&again));
 }
+
+/// A bare variant whose respelling cannot check refuses the migration: the
+/// inference failure at `first(None)` is a consequence of the bare site, so
+/// it must not survive as `first(.None)`.
+#[test]
+fn a_respelling_that_still_fails_at_its_site_refuses() {
+    let dir = support::tempdir();
+    let path = dir.path().join("generic.hew");
+    let source = concat!(
+        "fn first<T>(o: Option<T>) -> bool {\n",
+        "    match o { .Some(_) => true, .None => false }\n",
+        "}\n",
+        "fn main() { println(first(None)); }\n",
+    );
+    std::fs::write(&path, source).unwrap();
+
+    let output = migrate(&[], dir.path());
+    assert!(!output.status.success(), "{}", stderr(&output));
+    let reported = stderr(&output);
+    assert!(
+        reported.contains("migration refused")
+            && reported.contains("generic.hew:")
+            && reported.contains("InferenceFailed"),
+        "{reported}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+}
+
+/// An error inside a bare variant's payload is not the site's own: it
+/// survives the respelling unchanged and does not block the migration.
+#[test]
+fn an_error_inside_a_payload_still_migrates() {
+    let dir = support::tempdir();
+    let path = dir.path().join("payload.hew");
+    std::fs::write(
+        &path,
+        "fn wrap() -> Option<i64> { Some(missing) }\nfn main() {}\n",
+    )
+    .unwrap();
+
+    let output = migrate(&[], dir.path());
+    assert!(output.status.success(), "{}", stderr(&output));
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains(".Some(missing)"), "{migrated}");
+}

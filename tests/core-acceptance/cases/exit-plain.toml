@@ -1,0 +1,10 @@
+[[case]]
+id = "exit-plain"
+intent = "A plain `exit(code)` with no task scope in the function is unaffected."
+source = "cases/exit-plain.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "tick\n"
+exit = 5

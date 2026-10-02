@@ -1,0 +1,10 @@
+[[case]]
+id = "exit-scope-within-loop"
+intent = "`exit(code)` after repeated `scope within` expressions in a loop stops at the chosen iteration."
+source = "cases/exit-scope-within-loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "0\n1\n"
+exit = 6

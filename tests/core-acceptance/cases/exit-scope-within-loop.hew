@@ -1,0 +1,14 @@
+fn main() {
+    for i in 0..4 {
+        let r = scope within 10ms {
+            i
+        } handle failure {
+            99
+        };
+        println(r);
+        if r == 1 {
+            exit(6);
+        }
+    }
+    println("loop finished");
+}

@@ -1,0 +1,9 @@
+fn main() {
+    let n = scope within 1ms {
+        0
+    } handle failure {
+        1
+    };
+    println(n);
+    println("done");
+}

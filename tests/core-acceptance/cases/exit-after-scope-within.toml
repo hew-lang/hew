@@ -1,0 +1,10 @@
+[[case]]
+id = "exit-after-scope-within"
+intent = "`exit(code)` after a completed `scope within` ends the program with that code."
+source = "cases/exit-after-scope-within.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "0\n"
+exit = 3

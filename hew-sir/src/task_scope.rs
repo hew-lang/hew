@@ -61,7 +61,13 @@ pub(crate) fn verify(function: &SemFunction) -> Result<(), String> {
         block
             .terminator
             .visit_successors(|edge| successors.push(edge.target));
-        if successors.is_empty() && !stack.is_empty() {
+        // `Unreachable` follows a call that ends the process (`exit`), which by
+        // the specification runs no lexical cleanup and drains no child; every
+        // other exit must have drained its scopes.
+        if successors.is_empty()
+            && !stack.is_empty()
+            && !matches!(block.terminator, SemTerminator::Unreachable)
+        {
             return Err("function exit leaves an undrained task scope".into());
         }
         for target in successors {

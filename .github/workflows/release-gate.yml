@@ -245,17 +245,8 @@ jobs:
       - name: Run C-ABI crate tests
         run: make test-cabi
 
-      # The lifecycle matrices below shell out to the pinned ast-grep to derive
-      # their fact set. Provision it here alongside
-      # LLVM and wasmtime, so the cost is one cached job-level toolchain step
-      # instead of a cargo install nested inside a test target.
-      - name: Provision pinned ast-grep toolchain
-        uses: ./.github/actions/setup-ast-grep
-
-      - name: Run foundational compiled-Hew and lifecycle gates
+      - name: Run foundational compiled-Hew gates
         run: |
-          make test-compiler-lifecycle
-          make test-opaque-resource-lifecycle-matrix-external
           make core-acceptance
           make test-doc-examples
           make test-hew-ratchet

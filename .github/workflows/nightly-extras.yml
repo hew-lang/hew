@@ -71,7 +71,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           cache-shared-key: nightly-ledger-issues
-      - name: Require every ledger issue to resolve
+      - name: Report closed and uncited ratchet issues
         env:
           GH_TOKEN: ${{ github.token }}
         run: make ledger-issues

@@ -564,11 +564,15 @@ fn walk_expr(
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
         | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             walk_expr(receiver, subst, residual_domain, disc);
             for arg in args {
                 walk_expr(arg, subst, residual_domain, disc);
+            }
+        }
+        HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+            for operand in receiver.receiver().into_iter().chain(args) {
+                walk_expr(operand, subst, residual_domain, disc);
             }
         }
         HirExprKind::AwaitTask { operand: child, .. } => {

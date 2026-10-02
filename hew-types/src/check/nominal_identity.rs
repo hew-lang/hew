@@ -541,7 +541,11 @@ impl Checker {
             .and_then(|rewrite| match rewrite {
                 MethodCallRewrite::RewriteToFunction { target, .. }
                 | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
-                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+                | MethodCallRewrite::StaticTraitDispatch { target, .. }
+                | MethodCallRewrite::BinderStaticCall(super::types::BinderTraitCall {
+                    target,
+                    ..
+                }) => Some(target),
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key));

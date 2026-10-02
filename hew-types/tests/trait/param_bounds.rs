@@ -6,7 +6,7 @@ use crate::common;
 
 use common::typecheck;
 use hew_types::error::TypeErrorKind;
-use hew_types::{CallTarget, TypeCheckOutput};
+use hew_types::{CallTarget, MethodCallRewrite, TypeCheckOutput};
 
 const TYPES: &str = r"
 type Low {
@@ -83,31 +83,35 @@ fn error_of(output: &TypeCheckOutput, kind: &TypeErrorKind) -> String {
         .clone()
 }
 
-/// The one binder call the program makes, as `(Self spelling, method name)`.
-/// The selection is complete, and refused until code generation can take
-/// `Self` from the binder's instantiation.
+/// The binder calls the program makes, as `(Self spelling, method name)`.
+fn binder_calls(output: &TypeCheckOutput) -> Vec<(String, String)> {
+    output
+        .method_call_rewrites
+        .values()
+        .filter_map(|rewrite| match rewrite {
+            MethodCallRewrite::BinderStaticCall(call) => Some(call),
+            _ => None,
+        })
+        .map(|call| {
+            let CallTarget::StaticTraitMethod { method, .. } = call.target else {
+                panic!("a binder call targets its trait method: {:?}", call.target);
+            };
+            (
+                call.self_param.spelling.to_string(),
+                output.defs.name(method).to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The one binder call a clean program makes.
 fn binder_call(output: &TypeCheckOutput) -> (String, String) {
-    let refusals: Vec<_> = output.errors.iter().collect();
-    let [refusal] = refusals.as_slice() else {
-        panic!("expected only the build refusal, got: {refusals:#?}");
-    };
-    assert_eq!(refusal.kind, TypeErrorKind::InvalidOperation);
-    assert!(
-        refusal.message.contains("cannot build yet"),
-        "{}",
-        refusal.message
-    );
-    let calls: Vec<_> = output.binder_trait_calls.values().collect();
+    assert_clean(output);
+    let calls = binder_calls(output);
     let [call] = calls.as_slice() else {
         panic!("expected one binder call, got: {calls:#?}");
     };
-    let CallTarget::StaticTraitMethod { method, .. } = call.target else {
-        panic!("a binder call targets its trait method: {:?}", call.target);
-    };
-    (
-        call.self_param.spelling.to_string(),
-        output.defs.name(method).to_string(),
-    )
+    call.clone()
 }
 
 #[test]
@@ -259,7 +263,7 @@ fn read<T: Make>(t: T) -> i64 {
 ",
     );
     assert_clean(&output);
-    assert!(output.binder_trait_calls.is_empty());
+    assert!(binder_calls(&output).is_empty());
 }
 
 #[test]

@@ -599,18 +599,23 @@ impl Verifier {
                 receiver,
                 args,
                 ..
-            }
-            | HirExprKind::CallTraitMethodStatic {
-                target,
-                receiver,
-                args,
-                ..
             } => {
                 self.executable_call_target(target, expr);
 
                 self.expr(receiver);
                 for arg in args {
                     self.expr(arg);
+                }
+            }
+            HirExprKind::CallTraitMethodStatic {
+                target,
+                receiver,
+                args,
+                ..
+            } => {
+                self.executable_call_target(target, expr);
+                for operand in receiver.receiver().into_iter().chain(args) {
+                    self.expr(operand);
                 }
             }
             HirExprKind::VarSelfMethodCall {
@@ -1356,7 +1361,8 @@ mod tests {
         let static_trait = executable_expr(
             &mut ids,
             HirExprKind::CallTraitMethodStatic {
-                receiver: Box::new(static_trait_receiver),
+                receiver: crate::StaticTraitSelf::Receiver(Box::new(static_trait_receiver)),
+                trait_args: Vec::new(),
                 target: unsupported("static trait call"),
                 receiver_type_param: hew_types::ParamHead::for_test("T"),
                 args: Vec::new(),

@@ -123,11 +123,15 @@ pub(super) fn collect_captures_walk(
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
         | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             for arg in args {
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+            for operand in receiver.receiver().into_iter().chain(args) {
+                collect_captures_walk(operand, param_ids, seen, captures, self_id);
             }
         }
         HirExprKind::RemoteActorAsk {
@@ -374,11 +378,15 @@ pub(super) fn collect_general_closure_captures_walk(
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
         | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+            for operand in receiver.receiver().into_iter().chain(args) {
+                collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
             }
         }
         HirExprKind::RemoteActorAsk {

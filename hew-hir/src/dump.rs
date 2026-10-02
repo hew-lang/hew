@@ -923,7 +923,15 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 ret_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
+            match receiver {
+                crate::StaticTraitSelf::Receiver(receiver) => {
+                    dump_expr(defs, out, receiver, indent + 4);
+                }
+                crate::StaticTraitSelf::Type(self_ty) => {
+                    writeln!(out, "{pad}    self-type {}", self_ty.user_facing())
+                        .expect("write to string");
+                }
+            }
             for arg in args {
                 dump_expr(defs, out, arg, indent + 4);
             }

@@ -574,11 +574,15 @@ pub(super) fn scan_expr_for_call_shape(
         }
         HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
         | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             for a in args {
                 scan_expr_for_call_shape(a, callable, diagnostics);
+            }
+        }
+        HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+            for operand in receiver.receiver().into_iter().chain(args) {
+                scan_expr_for_call_shape(operand, callable, diagnostics);
             }
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }

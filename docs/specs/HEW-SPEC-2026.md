@@ -717,6 +717,22 @@ for user-declared enums and for the prelude variants `Some`, `None`, `Ok`,
 and `Err` — there is no prelude exception, because a prelude exception is a
 second rule to teach where one does the work.
 
+At a join — the branches of `if`/`else`, `if let`/`else` and the arms of
+`match` — a branch whose value is `.Variant` with no expected type from the
+surrounding context takes the type its typed sibling branches join to,
+whichever position those siblings take:
+
+```hew
+let low = if fresh { .None } else { cached };   // cached: Option<i64>
+let out = match parsed {
+    .Err(e) => .Err(e.code),
+    .Ok(v) => validate(v),                       // Result<i64, i64>
+};
+```
+
+A join whose every branch is contextual, or whose only typed siblings
+diverge, has no type to give and the variant is `E_CONTEXT_VARIANT_NO_TYPE`.
+
 The bare spelling — a variant name with neither the leading dot nor a type
 qualifier — is **not** part of edition 2026:
 

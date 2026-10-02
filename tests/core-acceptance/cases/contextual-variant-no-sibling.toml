@@ -1,0 +1,49 @@
+[[case]]
+id = "contextual-variant-no-sibling"
+intent = "A contextual variant whose siblings are all contextual, all diverge, or are not an enum still has no type."
+source = "cases/contextual-variant-no-sibling.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 3
+column = 21
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.None` requires an expected enum or machine type"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 3
+column = 36
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.Some` requires an expected enum or machine type"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 8
+column = 21
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.None` requires an expected enum or machine type"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 13
+column = 32
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant requires one expected enum or machine type, found `i64`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 18
+column = 33
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.None` requires an expected enum or machine type"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 18
+column = 52
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.Some` requires an expected enum or machine type"

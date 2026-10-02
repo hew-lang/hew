@@ -179,7 +179,6 @@ signature-application	check_lambda_actor_call	hew-types/src/check/calls.rs	stage
 signature-application	check_lambda_body	hew-types/src/check/expressions/synthesize_spawn_forms.rs	stage-1	lambda body checking against its declared return type moved from check_lambda
 signature-application	check_lambda_pid_method	hew-types/src/check/methods/named_method_resolution.rs	stage-1	lambda-actor send/ask arguments checked against the lambda's declared parameter type
 signature-application	check_local_recovery	hew-types/src/check/expressions/synthesize.rs	stage-1	recovery body is checked against the successful payload type
-signature-application	check_match_expr	hew-types/src/check/expressions/synthesize_spawn_forms.rs	stage-1	match arm bodies checked against the match's expected result type
 signature-application	check_match_stmt	hew-types/src/check/statements.rs	stage-1	match-statement arms checked against the statement's expected type
 signature-application	check_method_call_inner	hew-types/src/check/methods/dispatch.rs	stage-1	method-dispatch paths that check a receiver or operand shape, not a named signature's parameters
 signature-application	check_return_operand	hew-types/src/check/statements.rs	stage-1	return operand checked against the enclosing function's declared return type
@@ -208,3 +207,6 @@ checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower/consts.rs	s
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower/private_refs.rs	stage-2	consume checked private body references
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/test_entry.rs	stage-2	consume checked test entry declarations
 signature-application	check_supervisor_init_args	hew-types/src/check/items.rs	stage-1	apply selected supervisor initializer signature
+signature-application	check_branch_body	hew-types/src/check/branch_join.rs	stage-1	a join branch body checked against the join's expected type or its typed sibling's type
+signature-application	check_match_expr	hew-types/src/check/expressions/synthesize_spawn_forms.rs	stage-1	match arm guards checked against bool
+signature-application	check_match_arm_body	hew-types/src/check/expressions/synthesize_spawn_forms.rs	stage-1	match arm bodies checked against the match's expected result type, moved from check_match_expr

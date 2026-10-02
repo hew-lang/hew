@@ -33,6 +33,21 @@ impl LowerCtx {
             Some(hew_types::ErrorConversion::From { method }) => {
                 self.lower_from_conversion(method, value, target, edge_span)
             }
+            Some(hew_types::ErrorConversion::Binder(call)) => {
+                let args = LoweredCallArgs {
+                    args: vec![value],
+                    evaluation_order: Vec::new(),
+                };
+                let kind = self.make_binder_trait_call(&call, args, target.clone(), edge_span);
+                HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: target.clone(),
+                    intent: IntentKind::Consume,
+                    kind,
+                    span: edge_span.clone(),
+                }
+            }
             None => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

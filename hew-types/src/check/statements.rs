@@ -1,4 +1,4 @@
-use super::branch_join::BranchArmExit;
+use super::branch_join::{BranchArmExit, BranchBody};
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -778,32 +778,35 @@ impl Checker {
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
                 let entry = self.env.ownership_snapshot();
-                let then_ty = self.check_block(then_block, expected);
-                let then_exit = BranchArmExit {
-                    ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join(&then_ty),
-                };
                 // An `else if` link is itself a two-way branch, so recursing
                 // gives the chain its join for free: each link restores to its
                 // own entry, which is this arm's restored state.
-                if let Some(eb) = else_block {
-                    if let Some(ref if_stmt) = eb.if_stmt {
-                        self.env.restore_ownership(&entry);
-                        let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1, expected);
-                        let else_skips = Self::arm_skips_join(&else_ty);
-                        self.join_two_way(&entry, then_exit, else_skips);
-                        self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
-                    } else if let Some(block) = &eb.block {
-                        self.env.restore_ownership(&entry);
-                        let else_ty = self.check_block(block, expected);
-                        let else_skips = Self::arm_skips_join(&else_ty);
-                        self.join_two_way(&entry, then_exit, else_skips);
-                        self.unify_branches(&then_ty, &else_ty, span)
-                    } else {
-                        self.join_fall_through(&entry, then_exit);
-                        Ty::Unit
-                    }
+                let (else_body, join_span) = match else_block {
+                    Some(hew_parser::ast::ElseBlock {
+                        if_stmt: Some(if_stmt),
+                        ..
+                    }) => (Some(BranchBody::Stmt(if_stmt)), &if_stmt.1),
+                    Some(hew_parser::ast::ElseBlock {
+                        block: Some(block), ..
+                    }) => (Some(BranchBody::Block(block)), span),
+                    _ => (None, span),
+                };
+                if let Some(else_body) = else_body {
+                    let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                        &entry,
+                        BranchBody::Block(then_block),
+                        false,
+                        else_body,
+                        expected,
+                    );
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+                    self.unify_branches(&then_ty, &else_ty, join_span)
                 } else {
+                    let then_ty = self.check_block(then_block, expected);
+                    let then_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join(&then_ty),
+                    };
                     self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
@@ -815,24 +818,23 @@ impl Checker {
             } => {
                 let entry = self.env.ownership_snapshot();
                 self.check_condition(conditions);
-                let then_ty = self.check_block(body, expected);
-                let then_exit = BranchArmExit {
-                    ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join(&then_ty),
-                };
-                self.env.pop_scope();
                 if let Some(else_expr) = else_body {
-                    self.env.restore_ownership(&entry);
-                    let else_ty = match expected {
-                        Some(expected) => {
-                            self.check_expr_with_expected(&else_expr.0, &else_expr.1, expected)
-                        }
-                        None => self.synthesize(&else_expr.0, &else_expr.1),
-                    };
-                    let else_skips = Self::arm_skips_join(&else_ty);
-                    self.join_two_way(&entry, then_exit, else_skips);
+                    let [(then_ty, then_exit), (else_ty, else_exit)] = self.check_two_way_join(
+                        &entry,
+                        BranchBody::Block(body),
+                        true,
+                        BranchBody::Expr(else_expr),
+                        expected,
+                    );
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    let then_ty = self.check_block(body, expected);
+                    let then_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join(&then_ty),
+                    };
+                    self.env.pop_scope();
                     self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }

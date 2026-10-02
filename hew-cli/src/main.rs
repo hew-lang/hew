@@ -37,6 +37,7 @@ mod help;
 mod host;
 mod link;
 mod machine;
+mod migrate_variants;
 mod native_link;
 mod package;
 mod platform;
@@ -2284,8 +2285,7 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut excluded = 0usize;
-    let mut unchanged = 0usize;
-    let mut changed = Vec::new();
+    let mut planned = Vec::new();
     let mut refused = false;
     for file in files {
         let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
@@ -2308,22 +2308,46 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             continue;
         };
         match hew_parser::fmt::migrate_syntax(source) {
-            Ok(migrated) if migrated.as_bytes() == original => unchanged += 1,
-            Ok(migrated) => changed.push((file, original, migrated)),
+            Ok(migrated) => planned.push((file, original, migrated)),
             Err(error) => {
                 refused = true;
                 for site in error.refusals {
+                    let (line, column) =
+                        crate::diagnostic::offset_to_line_col(source, site.span.start);
                     eprintln!(
-                        "Error: migration refused {}:{}-{}: {}",
+                        "Error: migration refused {}:{line}:{column}: {}",
                         file.display(),
-                        site.span.start,
-                        site.span.end,
                         site.reason
                     );
                 }
             }
         }
     }
+    // Bare variants respell by the type their context expects, so they wait
+    // for the checker, which reads every file's syntax-migrated text.
+    if !refused {
+        let mut texts: Vec<(PathBuf, String)> = planned
+            .iter()
+            .map(|(file, _, migrated)| ((*file).clone(), migrated.clone()))
+            .collect();
+        for refusal in migrate_variants::respell_bare_variants(&mut texts) {
+            refused = true;
+            eprintln!(
+                "Error: migration refused {}:{}:{}: {}",
+                refusal.file.display(),
+                refusal.line,
+                refusal.column,
+                refusal.reason
+            );
+        }
+        for ((_, _, migrated), (_, respelled)) in planned.iter_mut().zip(texts) {
+            *migrated = respelled;
+        }
+    }
+    let (changed, unchanged): (Vec<_>, Vec<_>) = planned
+        .into_iter()
+        .partition(|(_, original, migrated)| migrated.as_bytes() != original.as_slice());
+    let unchanged = unchanged.len();
     let summary = |verb: &str| {
         eprintln!(
             "migration: {} {verb}, {unchanged} unchanged, {excluded} excluded",

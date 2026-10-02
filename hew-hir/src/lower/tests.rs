@@ -1095,7 +1095,10 @@ fn finish_dyn(consume value: dyn Finish) -> i64 {
             panic!("expected static trait dispatch, got {:#?}", call.kind);
         };
         assert_eq!(
-            receiver.intent,
+            receiver
+                .receiver()
+                .expect("a method call has a receiver")
+                .intent,
             IntentKind::Read,
             "a discarded exact receiver result preserves the original owner"
         );
@@ -1114,7 +1117,10 @@ fn finish_dyn(consume value: dyn Finish) -> i64 {
         );
     };
     assert_eq!(
-        receiver.intent,
+        receiver
+            .receiver()
+            .expect("a method call has a receiver")
+            .intent,
         IntentKind::Consume,
         "a captured exact receiver result transfers the original owner"
     );

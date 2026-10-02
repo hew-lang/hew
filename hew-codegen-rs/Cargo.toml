@@ -19,7 +19,7 @@ hew-types = { path = "../hew-types" }
 hew-parser = { path = "../hew-parser" }
 # Trap discriminants remain shared with the runtime.
 hew-runtime = { path = "../hew-runtime", default-features = false }
-inkwell = { version = "=0.9.0", default-features = false, features = [
+inkwell = { version = "0.9", default-features = false, features = [
   "llvm22-1",
   "target-x86",
   "target-aarch64",

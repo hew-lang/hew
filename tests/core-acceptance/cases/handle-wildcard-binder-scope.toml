@@ -1,0 +1,10 @@
+[[case]]
+id = "handle-wildcard-binder-scope"
+intent = "`handle _ { recovery }` on a scope discards the structured failure: a scope that completes yields its value and one that hits its deadline yields the recovery."
+source = "cases/handle-wildcard-binder-scope.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "fast!\nrecovered\n"
+exit = 0

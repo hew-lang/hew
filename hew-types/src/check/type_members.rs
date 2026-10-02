@@ -469,6 +469,16 @@ impl Checker {
         if let crate::check::dispatch_table::MethodSelection::Ambiguous(traits) =
             self.select_method(&receiver, method)
         {
+            if let Some(result) = self.check_concrete_from_call(
+                &receiver,
+                &head.canonical_type,
+                method,
+                &traits,
+                args,
+                span,
+            ) {
+                return Some(result);
+            }
             for arg in args {
                 let (expr, arg_span) = arg.expr();
                 self.synthesize(expr, arg_span);

@@ -339,7 +339,7 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, _span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
-            Expr::Handle { error, .. } if error.0 == Ident::new(self.name) => {
+            Expr::Handle { error, .. } if error.0 == Some(Ident::new(self.name)) => {
                 self.starts.push(error.1.start);
             }
             Expr::IfLet { conditions, .. } => {
@@ -593,7 +593,7 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
-            Expr::Handle { error, .. } if error.0 == Ident::new(self.name) => {
+            Expr::Handle { error, .. } if error.0 == Some(Ident::new(self.name)) => {
                 self.spans.push(error.1.clone());
             }
             Expr::FieldAccess { field, .. } if field.0.name.as_str() == self.name => {

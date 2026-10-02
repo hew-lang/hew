@@ -3339,6 +3339,20 @@ impl<'a> Formatter<'a> {
                 .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr))
     }
 
+    /// A handler block holding one short expression stays on one line:
+    /// `x handle _ { 0 }`.
+    fn can_format_handler_inline(&self, block: &Block) -> bool {
+        const MAX_INLINE_HANDLER_BYTES: usize = 40;
+        block.stmts.is_empty()
+            && !self.next_block_has_comments()
+            && block.trailing_expr.as_deref().is_some_and(|trailing| {
+                // Measure the printed form, not the source, so a second pass
+                // over the output reaches the same decision.
+                Self::can_format_expr_inline(&trailing.0)
+                    && format_expression(trailing).len() <= MAX_INLINE_HANDLER_BYTES
+            })
+    }
+
     fn next_block_has_comments(&self) -> bool {
         if self.comments.is_empty() {
             return false;
@@ -4688,9 +4702,17 @@ impl<'a> Formatter<'a> {
             } => {
                 self.format_expr_prec(operand, 1, false);
                 self.write(" handle ");
-                self.write_ident(error.0);
+                match error.0 {
+                    Some(name) => self.write_ident(name),
+                    None => self.write("_"),
+                }
                 self.write(" ");
-                self.format_expr(body);
+                match &body.0 {
+                    Expr::Block(block) if self.can_format_handler_inline(block) => {
+                        self.format_gen_block_inline(block);
+                    }
+                    _ => self.format_expr(body),
+                }
             }
             Expr::Range {
                 start,
@@ -6149,6 +6171,76 @@ fn main() -> string {
         _ => \"error\",
     };
     msg
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn short_handler_block_stays_on_one_line() {
+        let src = "\
+fn f(r: Result<i64, string>) -> i64 {
+    let a = r handle _ { 0 };
+    let b = r handle problem { problem.len() };
+    a + b
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+        let expanded = "\
+fn f(r: Result<i64, string>) -> i64 {
+    r handle _ {
+        0
+    }
+}
+";
+        let collapsed = "\
+fn f(r: Result<i64, string>) -> i64 {
+    r handle _ { 0 }
+}
+";
+        assert_eq!(roundtrip_source(expanded), collapsed);
+    }
+
+    #[test]
+    fn handler_block_inline_decision_is_stable_at_the_length_limit() {
+        // The limit applies to the printed form, so source spacing that the
+        // formatter rewrites cannot flip the decision on a second pass.
+        let tight = "\
+fn f(r: Result<i64, string>) -> string {
+    r handle _ { concat_words(first_word,second_word_xyz) }
+}
+";
+        let once = roundtrip_source(tight);
+        assert_eq!(roundtrip_source(&once), once);
+        let spaced = "\
+fn f(r: Result<i64, string>) -> string {
+    r handle _ { concat_words(first_word, second_word_xyz) }
+}
+";
+        assert_eq!(roundtrip_source(spaced), once);
+    }
+
+    #[test]
+    fn multi_statement_handler_block_stays_expanded() {
+        let src = "\
+fn f(r: Result<i64, string>) -> i64 {
+    r handle _ {
+        println(\"failed\");
+        0
+    }
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn handler_block_with_comment_stays_expanded() {
+        let src = "\
+fn f(r: Result<i64, string>) -> i64 {
+    r handle _ {
+        // fall back to zero
+        0
+    }
 }
 ";
         assert_eq!(roundtrip_source(src), src);

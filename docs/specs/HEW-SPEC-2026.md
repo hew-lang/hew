@@ -604,7 +604,8 @@ The fallback must have the payload type (or diverge). `??` accepts only
 Success supplies the success payload. Only an error runs the block, with
 `problem` bound to the error payload. The block must produce the success
 payload type or diverge. `handle` is contextual, and the error binder is
-user-named and scoped to the block. It is not a surrounding exception handler:
+user-named and scoped to the block; `handle _ { recovery }` binds nothing when
+the block does not need the error. It is not a surrounding exception handler:
 an inner `?` in the operand retains its enclosing function's return edge.
 
 Handler blocks are ordinary lexical blocks: `return`, `break`, `continue`,

@@ -164,12 +164,8 @@ impl Conn {
 
 #[test]
 fn websocket_nonpositive_deadlines_disable_but_positive_overflow_is_rejected() {
-    assert((checked_recv_deadline(-9223372036854775807) handle _e {
-        -1
-    }) == 0);
-    assert((checked_recv_deadline(0) handle _e {
-        -1
-    }) == 0);
+    assert((checked_recv_deadline(-9223372036854775807) handle _ { -1 }) == 0);
+    assert((checked_recv_deadline(0) handle _ { -1 }) == 0);
     assert(checked_recv_deadline(2147483647).is_ok());
     assert(checked_recv_deadline(2147483648).is_err());
 }

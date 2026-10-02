@@ -1,0 +1,31 @@
+// `handle _` on a scope: the structured failure is discarded, so only the
+// recovery value shows whether the scope succeeded or hit its deadline.
+actor Echo {
+    receive fn slow(label: string) -> string {
+        sleep(1s);
+        label
+    }
+    receive fn quick(label: string) -> string {
+        label + "!"
+    }
+}
+
+fn call_within(echo: Echo, label: string, slow: bool, limit: duration) -> string {
+    scope within limit {
+        let reply = if slow {
+            echo.slow(label)
+        } else {
+            echo.quick(label)
+        };
+        match reply {
+            .Ok(text) => text,
+            .Err(_) => "failed",
+        }
+    } handle _ { "recovered" }
+}
+
+fn main() {
+    let echo = spawn Echo;
+    println(call_within(echo, "fast", false, 5s));
+    println(call_within(echo, "late", true, 50ms));
+}

@@ -18,7 +18,7 @@
 //!
 //! fn main() {
 //!     // Char classification
-//!     let cp = unicode.codepoint_at("café", 3) handle _e { 0 };  // 233 ('é')
+//!     let cp = unicode.codepoint_at("café", 3) handle _ { 0 };  // 233 ('é')
 //!     println(unicode.is_lower(cp));              // true
 //!     println(unicode.is_upper(cp));              // false
 //!     println(unicode.to_upper(cp));              // 201 ('É')

@@ -203,11 +203,26 @@ impl LowerCtx {
         }
     }
 
+    /// Bind a handler's error payload. A named binder takes the checker's
+    /// identity; the wildcard `_` is unreadable, so it gets none, but still
+    /// owns the payload so cleanup matches a named binder.
+    fn bind_handler_error(
+        &mut self,
+        name: Option<Ident>,
+        ty: ResolvedTy,
+        span: &Span,
+    ) -> HirBinding {
+        match name {
+            Some(name) => self.bind_checked(name.to_string(), ty, false, span.clone()),
+            None => self.bind("_".to_string(), ty, false, span.clone()),
+        }
+    }
+
     pub(super) fn lower_scope_recovery(
         &mut self,
         operand: &Spanned<Expr>,
         body: &Spanned<Expr>,
-        name: &str,
+        name: Option<Ident>,
         binding_span: &Span,
         failure_ty: ResolvedTy,
         span: &Span,
@@ -225,7 +240,7 @@ impl LowerCtx {
         };
         self.try_register_enum_instantiation_ty(&failure_ty, binding_span);
         self.push_scope();
-        let error = self.bind_checked(name.to_string(), failure_ty, false, binding_span.clone());
+        let error = self.bind_handler_error(name, failure_ty, binding_span);
         let handler = self.lower_expr(body, IntentKind::Read);
         self.pop_scope();
         (
@@ -245,7 +260,7 @@ impl LowerCtx {
         &mut self,
         operand: &Spanned<Expr>,
         body: &Spanned<Expr>,
-        error: Option<&Spanned<Ident>>,
+        error: Option<&Spanned<Option<Ident>>>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let Some(recovery) = self.recovery_kinds.get(&self.mk_key(span)).cloned() else {
@@ -256,8 +271,7 @@ impl LowerCtx {
                 return self
                     .unsupported_postfix_try(span, "scope recovery requires an error binder");
             };
-            let name = name.name.as_str();
-            return self.lower_scope_recovery(operand, body, name, binding_span, failure_ty, span);
+            return self.lower_scope_recovery(operand, body, *name, binding_span, failure_ty, span);
         }
         let scrutinee = self.lower_expr(operand, IntentKind::Read);
         self.try_register_enum_instantiation_ty(&scrutinee.ty, &operand.1);
@@ -293,17 +307,12 @@ impl LowerCtx {
         self.push_scope();
         let error_bindings = if let (Some((name, binding_span)), Some(error_ty)) = (error, error_ty)
         {
-            let binding = self.bind_checked(
-                name.to_string(),
-                error_ty.clone(),
-                false,
-                binding_span.clone(),
-            );
+            let binding = self.bind_handler_error(*name, error_ty.clone(), binding_span);
             vec![HirMatchArmBinding {
                 span: binding.span.clone(),
                 binding: binding.id,
                 field_idx: 0,
-                name: name.to_string(),
+                name: binding.name.clone(),
                 ty: error_ty,
             }]
         } else {

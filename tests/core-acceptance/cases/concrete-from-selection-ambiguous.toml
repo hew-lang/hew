@@ -1,0 +1,28 @@
+[[case]]
+id = "concrete-from-selection-ambiguous"
+intent = "`Target.from(value)` is refused when the argument fits more than one `From` impl or none, and accepted when it fits exactly one; an argument that already failed adds no ambiguity."
+source = "cases/concrete-from-selection-ambiguous.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "AmbiguousTraitMethod"
+line = 39
+column = 16
+message = "ambiguous associated function `from` on `Count`: the arguments do not choose one of its impls `From<i32>`, `From<i64>`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "AmbiguousTraitMethod"
+line = 40
+column = 16
+message = "ambiguous associated function `from` on `Name`: the arguments do not choose one of its impls `From<char>`, `From<string>`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedVariable"
+line = 41
+column = 27
+message = "undefined variable `undefined`"

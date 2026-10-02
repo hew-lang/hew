@@ -3137,7 +3137,8 @@ fn main() {
 ```
 
 `r handle e { fallback }` is the short form of that match: success supplies
-the payload and only an error runs the block, with `e` bound to the error.
+the payload and only an error runs the block, with `e` bound to the error;
+write `r handle _ { fallback }` when the block does not need the error.
 `.is_ok()`/`.is_err()` also work directly as method calls on `Result`, with
 no import needed (`Option` has the matching `.is_some()`/`.is_none()`/
 `.expect()`, and `opt ?? fallback` supplies a default for an absent value),
@@ -3686,7 +3687,7 @@ Use `?` to short-circuit Err and propagate it; the enclosing fn must return a Re
 import std.string;
 fn main() {
     println(string.from_int(42));            // 42
-    println(string.to_int("100") handle _e { 0 });  // 100
+    println(string.to_int("100") handle _ { 0 });  // 100
     println(string.repeat("*", 3));          // ***
     println(string.pad_left("7", 3, "0"));   // 007
 }

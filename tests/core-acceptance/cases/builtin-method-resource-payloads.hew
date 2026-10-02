@@ -26,7 +26,7 @@ fn main() {
     let some: Option<Buf> = .Some(make(2));
     (some ?? make(3)).close();
     let failed: Result<Buf, string> = .Err("bad");
-    (failed handle _e { make(4) }).close();
+    (failed handle _ { make(4) }).close();
     let present: Option<Buf> = .Some(make(5));
     present.expect("present").close();
     let missing: Option<i64> = .None;

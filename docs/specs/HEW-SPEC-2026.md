@@ -5011,7 +5011,8 @@ supervisor MyPool {
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
   - `stop: <duration>` (optional) — the graceful-stop deadline (default
-    `5s`). `stop: 0s` terminates immediately.
+    `5s`). `stop: 0s` terminates immediately. A child still running when the
+    deadline passes is terminated and its `#[on(stop)]` hook does not run.
   - `count: <N>` — pool arity. Required on a `pool` child, rejected on a
     `child` declaration; it has no default, because a pool with a guessed size
     is a guess about capacity.

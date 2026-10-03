@@ -12,7 +12,7 @@ const PRINT_LN = { id: 0, family: "Print", detail: { kind: "Str", newline: true 
 function pkg(overrides) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.0-rc6",
+    hew_version: "0.6.0-rc7",
     compiler_version: "v1-executor-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

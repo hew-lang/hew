@@ -31,19 +31,18 @@ validate ─► build ─────────────► package and pro
    `release-tags` ruleset is the decision to release.
 6. **Publish jobs** run in parallel from the same artefacts:
 
-   | Job                       | Destination                                                        | Environment (approval) |
-   | ------------------------- | ------------------------------------------------------------------ | ---------------------- |
-   | `publish-npm`             | npmjs `@hew-lang/{wasm,sandbox-vm}`, provenance                    | `npm`                  |
-   | `publish-github-packages` | GitHub Packages mirror of the same tarballs                        | `npm`                  |
-   | `publish-ghcr`            | `ghcr.io/hew-lang/hew:<version>` (+ `latest` for finals), attested | `ghcr`                 |
-   | `publish-homebrew`        | dispatches `hew-lang/homebrew-hew` `update-formula.yml`            | `homebrew`             |
-   | `publish-docs`            | docs.hew.sh (Cloudflare Pages `hew-docs`)                          | `docs`                 |
-   | `verify-playground-image` | observes `ghcr.io/hew-lang/playground:<tag>`                       | none (read-only)       |
+   | Job                       | Destination                                                        |
+   | ------------------------- | ------------------------------------------------------------------ |
+   | `publish-npm`             | npmjs `@hew-lang/{wasm,sandbox-vm}`, provenance                    |
+   | `publish-github-packages` | GitHub Packages mirror of the same tarballs                        |
+   | `publish-ghcr`            | `ghcr.io/hew-lang/hew:<version>` (+ `latest` for finals), attested |
+   | `publish-homebrew`        | dispatches `hew-lang/homebrew-hew` `update-formula.yml`            |
+   | `publish-docs`            | docs.hew.sh (Cloudflare Pages `hew-docs`)                          |
 
-   The jobs reach their environments together, so one **Review deployments**
-   click in the run can approve all four environments at once. Prereleases
-   publish npm on dist-tag `next` and never move Docker `latest`; finals take
-   `latest` on both.
+   Every publish job names the one `release` environment. GitHub's
+   **Review deployments** dialog approves by environment, so a single click
+   releases all five waiting jobs. Prereleases publish npm on dist-tag `next`
+   and never move Docker `latest`; finals take `latest` on both.
 
 Every publish job skips a destination that already holds the version, and a
 published GitHub Release is never modified, so **Re-run failed jobs** on the
@@ -66,19 +65,18 @@ Release artefacts on the GitHub Release:
 
 ## One-time setup
 
-Environments gate every external destination. An environment a workflow names
-but nobody configured is created unprotected and would publish without a
-click, so create each with a required reviewer and a `v*` tag policy:
+One protected environment, `release`, gates every external destination. An
+environment a workflow names but nobody configured is created unprotected and
+would publish without a click, so create it with a required reviewer and a
+`v*` tag policy (`bash npm-user-steps.sh env` does the same):
 
 ```bash
-for env in npm ghcr homebrew docs; do
-  gh api -X PUT "repos/hew-lang/hew/environments/${env}" --input - <<JSON
+gh api -X PUT "repos/hew-lang/hew/environments/release" --input - <<JSON
 {"reviewers":[{"type":"User","id":37180}],"prevent_self_review":false,
  "deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}
 JSON
-  gh api -X POST "repos/hew-lang/hew/environments/${env}/deployment-branch-policies" \
-    -f name='v*' -f type=tag
-done
+gh api -X POST "repos/hew-lang/hew/environments/release/deployment-branch-policies" \
+  -f name='v*' -f type=tag
 ```
 
 Repository secrets: `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`,
@@ -86,10 +84,10 @@ Repository secrets: `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`,
 and notarization), `HOMEBREW_TAP_TOKEN` (actions:write on
 `hew-lang/homebrew-hew`), `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 npm needs no token: `@hew-lang/wasm` and `@hew-lang/sandbox-vm` each trust
-publisher `hew-lang/hew`, workflow file `release.yml`, environment `npm`.
+publisher `hew-lang/hew`, workflow file `release.yml`, environment `release`.
 Until that binding names `release.yml`, `publish-npm` fails authentication;
 re-point the trust (`npm trust revoke`, then `npm trust github ... --file
-release.yml --env npm`) and re-run the failed job.
+release.yml --env release`) and re-run the failed job.
 
 ## Downstream repositories
 
@@ -113,8 +111,12 @@ published Hew release; nothing here pushes into them.
   registry and uploads the lockfile to commit. Once `playground-sandbox` is on
   npmjs, drop the scope's registry lines and pin the packages from npmjs, where
   `npm audit signatures` verifies their provenance.
-- **playground**: its release image is published before the tag (Phase 5);
-  `verify-playground-image` asserts it.
+- **playground**: the release does not depend on a pinned playground image.
+  The playground repository consumes the published `@hew-lang` packages and
+  release assets after the tag, and builds and deploys on its own pipeline.
+  hew.sh and hew.run stay on GitHub Packages until the playground repository
+  publishes `@hew-lang/playground-sandbox` to npmjs through its `publish-sdk.yml`
+  after each Hew release.
 
 ## v0.6.0-rc3 native candidate scope
 
@@ -388,95 +390,25 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 1. Confirm every release bar and the final-candidate checklist are green on
    the exact candidate commit, including sanitizer evidence, required secrets,
    and branch protection.
-2. Before creating the signed tag, publish the candidate playground image from
-   the exact reviewed playground commit that introduced the candidate contract:
-
-   ```bash
-   PLAYGROUND_CONTRACT_REF=21be84bb97436436b640f2acd09fb6dd2e0fbf94
-   PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>
-   HEW_RELEASE_SHA=<exact-40-character-hew-sha>
-   VERSION=<version-without-v-prefix>
-   PLAYGROUND_CHECKOUT="$(mktemp -d)"
-   git clone https://github.com/hew-lang/playground.git "${PLAYGROUND_CHECKOUT}"
-   git -C "${PLAYGROUND_CHECKOUT}" checkout --detach "${PLAYGROUND_REF}"
-   test "$(git -C "${PLAYGROUND_CHECKOUT}" rev-parse HEAD)" = "${PLAYGROUND_REF}"
-   git -C "${PLAYGROUND_CHECKOUT}" merge-base --is-ancestor \
-     "${PLAYGROUND_CONTRACT_REF}" HEAD
-   test -z "$(git -C "${PLAYGROUND_CHECKOUT}" status --porcelain)"
-   (
-     cd "${PLAYGROUND_CHECKOUT}"
-     . ./toolchains.env
-     test "${HEW_DEFAULT_VERSION}" = "${VERSION}"
-     test "${HEW_CANDIDATE_SHA}" = "${HEW_RELEASE_SHA}"
-     env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES -u MAKEFILES -u GNUMAKEFLAGS \
-       HEW_EXAMPLES_REF="${HEW_RELEASE_SHA}" \
-       HEW_VERSION="${VERSION}" \
-       PLAYGROUND_PLATFORM=linux/amd64 \
-       PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground \
-       scripts/publish-release-image.sh candidate
-   )
-   PLAYGROUND_IMAGE=ghcr.io/hew-lang/playground:v${VERSION}
-   PLAYGROUND_IMAGE_DIGEST="$(docker buildx imagetools inspect \
-     "${PLAYGROUND_IMAGE}" --format '{{json .Manifest}}' | jq -er '.digest')"
-   if ! [[ "${PLAYGROUND_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-     echo "invalid playground image digest" >&2
-     exit 1
-   fi
-   gh variable set PLAYGROUND_RELEASE_IMAGE_LOCK \
-     --body "v${VERSION}@${PLAYGROUND_IMAGE_DIGEST}" --repo hew-lang/hew
-   ```
-
-   After the Hew candidate SHA is fixed, first merge a separately reviewed,
-   minimal playground `toolchains.env` bump that sets `HEW_DEFAULT_VERSION` to
-   the candidate version and `HEW_CANDIDATE_SHA` to that exact Hew commit.
-   `PLAYGROUND_REF` is the resulting exact clean playground commit; the
-   `merge-base` check proves it contains the candidate publisher merged in #34.
-   `HEW_EXAMPLES_REF` is the exact candidate commit. The playground publisher
-   accepts the untagged repository path and itself publishes the exact
-   `ghcr.io/hew-lang/playground:v${VERSION}` tag. It stages the authorized Hew
-   checkout, scrubs inherited GNU Make parser controls, uses candidate authority,
-   and stamps the SHA as `org.opencontainers.image.revision`. Record the clean
-   playground SHA, candidate SHA, platform, image digest, and smoke result before
-   continuing. The version-scoped `PLAYGROUND_RELEASE_IMAGE_LOCK` is the
-   pre-tag handoff: it records the immutable raw manifest/index digest without
-   requiring another Hew or playground commit. Do not use a Make target or the
-   `publish` mode before tagging: publish authority requires the remote signed tag.
-
-3. Create the signed tag and push it only after the preceding evidence is recorded:
+2. Create the signed tag and push it only after the preceding evidence is recorded:
 
    ```bash
    git tag -s "$release_tag" -m "Hew $release_tag"
    git push origin "$release_tag"
    ```
 
-4. The tag runs `.github/workflows/release.yml` (see "What happens on a `v*`
-   tag"). Approve the `npm`, `ghcr`, `homebrew` and `docs` environments when
-   the run reaches them; everything else proceeds on its own. If a job fails,
+3. The tag runs `.github/workflows/release.yml` (see "What happens on a `v*`
+   tag"). Approve the `release` environment once when
+   the run reaches it; everything else proceeds on its own. If a job fails,
    fix the cause and use **Re-run failed jobs**; destinations that already hold
    the version are skipped.
-5. Verify npm with `npm view @hew-lang/wasm@<version> dist-tags version` and,
+4. Verify npm with `npm view @hew-lang/wasm@<version> dist-tags version` and,
    from a scratch project that installs both packages, `npm audit signatures`
    (verified registry signatures and attestations). A prerelease must hold
    `next`, never `latest`.
-6. `verify-playground-image` only observes the pre-tag candidate image; it
-   never dispatches mutable downstream state. The tag must resolve to the exact
-   digest recorded in `PLAYGROUND_RELEASE_IMAGE_LOCK`, expose exactly the
-   `linux/amd64` release platform, and its
-   `org.opencontainers.image.revision` label must bind the release commit. The
-   job validates the registry's digest header and the raw manifest/index
-   bytes before inspecting the platform and revision. Then verify the published
-   image, API, and `hew run` smoke path against the candidate version. Running
-   `scripts/assert-playground-release-image.sh` outside Actions requires
-   `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic GitHub PAT with
-   the `read:packages` scope (and organization SSO authorization when the
-   organization requires it).
-   Any intentional post-tag rebuild must use
-   `scripts/publish-release-image.sh publish` manually from that same exact clean
-   playground checkout. Reconfirm the new digest and update the version-scoped
-   lock before re-running the job; never dispatch a mutable remote branch.
-7. Once npm and the playground image are green, pin the candidate and cut over
-   the banner in `hew.sh` and `hew.run` (see "Downstream repositories").
-8. Rebuild Android from the tagged candidate and verify its artifact.
+5. Pin the candidate and cut over the banner in `hew.sh` and `hew.run` (see
+   "Downstream repositories").
+6. Rebuild Android from the tagged candidate and verify its artifact.
 
 Do not tag until `release-gate.yml` and the `release.yml` dry run are green on
 the release branch. In particular, `gate-sanitizers` must have executed ASan

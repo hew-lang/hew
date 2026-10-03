@@ -8,16 +8,14 @@
 #   │            its clean-room test, docs site)
 #   └────────► release-assets (required set + checksums)
 #                ─► github-release (draft, upload, provenance, publish)
-#                     ─► publish-npm, publish-github-packages  [environment npm]
-#                     ─► publish-ghcr                          [environment ghcr]
-#                     ─► publish-homebrew                      [environment homebrew]
-#                     ─► publish-docs                          [environment docs]
-#                     ─► verify-playground-image
+#                     ─► publish-npm, publish-github-packages, publish-ghcr,
+#                        publish-homebrew, publish-docs   [environment release]
 #
 # Every publish job consumes the artefacts built earlier in the same run and
 # skips a destination that already holds this version, so "Re-run failed
 # jobs" is the recovery path. The GitHub Release goes out on the signed tag;
-# each external destination waits for its environment's approval.
+# every external destination waits on the one `release` environment, so a
+# single approval releases them all.
 #
 # Triggers:
 #   push v* tag         build and publish.
@@ -30,7 +28,7 @@
 # commit and matches every committed version identity, and an environment
 # whose deployment policy admits only v* tags.
 #
-# npm trusted publishing names THIS file (release.yml) and environment `npm`
+# npm trusted publishing names THIS file (release.yml) and environment `release`
 # for @hew-lang/wasm and @hew-lang/sandbox-vm; publish-npm must stay in this
 # file. The GitHub Packages mirror authenticates with GITHUB_TOKEN.
 #
@@ -38,7 +36,7 @@
 # APPLE_API_KEY_ID, APPLE_API_ISSUER_ID (macOS signing and notarization; a tag
 # run fails without them), HOMEBREW_TAP_TOKEN (actions:write on
 # hew-lang/homebrew-hew), CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
-# (docs.hew.sh). Variable: PLAYGROUND_RELEASE_IMAGE_LOCK (see the runbook).
+# (docs.hew.sh).
 # docs/release-runbook.md describes the environments and approvals.
 
 name: Release
@@ -1603,7 +1601,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # npm — @hew-lang/wasm and @hew-lang/sandbox-vm. npmjs is the primary
   # registry (OIDC trusted publishing with provenance, bound to release.yml and
-  # environment `npm`); GitHub Packages is an independent mirror. Prereleases
+  # environment `release`); GitHub Packages is an independent mirror. Prereleases
   # take dist-tag `next`, finals `latest`. A version already present is skipped.
   # ─────────────────────────────────────────────────────────────────────────
   publish-npm:
@@ -1612,7 +1610,7 @@ jobs:
     name: Publish to npmjs
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    environment: npm
+    environment: release
     permissions:
       contents: read
       id-token: write # npm trusted publishing
@@ -1669,7 +1667,7 @@ jobs:
     name: Mirror npm packages to GitHub Packages
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    environment: npm
+    environment: release
     permissions:
       contents: read
       packages: write
@@ -1722,7 +1720,7 @@ jobs:
     if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    environment: ghcr
+    environment: release
     permissions:
       contents: read
       packages: write # push the image
@@ -1801,7 +1799,7 @@ jobs:
     if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    environment: homebrew
+    environment: release
     steps:
       - name: Dispatch the homebrew-hew formula update
         env:
@@ -1822,7 +1820,7 @@ jobs:
     if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: docs
+    environment: release
     steps:
       - name: Download docs site
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1841,66 +1839,3 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npx --yes wrangler@4.147.0 pages deploy site/ --project-name hew-docs
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Playground — assert the immutable image published before the tag
-  # ─────────────────────────────────────────────────────────────────────────
-  # For this tag, ghcr.io/hew-lang/playground:<tag> must resolve to the exact
-  # digest recorded in vars.PLAYGROUND_RELEASE_IMAGE_LOCK
-  # (`<tag>@sha256:<64 hex>`), expose linux/amd64 and carry this commit as its
-  # revision label. This job observes the image; it publishes nothing.
-  verify-playground-image:
-    needs: [validate, github-release]
-    if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-    env:
-      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-
-    steps:
-      - name: Validate immutable playground image handoff
-        id: image-lock
-        shell: bash
-        env:
-          PLAYGROUND_RELEASE_IMAGE_LOCK: ${{ vars.PLAYGROUND_RELEASE_IMAGE_LOCK }}
-        run: |
-          set -euo pipefail
-
-          JOB_TIMEOUT_MINUTES=15
-          FINALIZATION_RESERVE_MINUTES=2
-          ASSERTION_BUDGET_MINUTES=$((JOB_TIMEOUT_MINUTES - FINALIZATION_RESERVE_MINUTES))
-          ASSERTION_DEADLINE_EPOCH=$(($(date +%s) + ASSERTION_BUDGET_MINUTES * 60))
-
-          if ! [[ "${PLAYGROUND_RELEASE_IMAGE_LOCK:-}" =~ ^v[0-9A-Za-z.-]+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::vars.PLAYGROUND_RELEASE_IMAGE_LOCK must be <release-tag>@sha256:<64 lowercase hex digits>"
-            exit 1
-          fi
-          LOCK_TAG="${PLAYGROUND_RELEASE_IMAGE_LOCK%%@*}"
-          IMAGE_DIGEST="${PLAYGROUND_RELEASE_IMAGE_LOCK#*@}"
-          if [[ "${LOCK_TAG}" != "${RELEASE_TAG}" ]]; then
-            echo "::error::playground image lock is for ${LOCK_TAG}, not ${RELEASE_TAG}"
-            exit 1
-          fi
-          {
-            echo "image_digest=${IMAGE_DIGEST}"
-            echo "assert_deadline_epoch=${ASSERTION_DEADLINE_EPOCH}"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Assert immutable release image identity
-        shell: bash
-        env:
-          IMAGE_REPOSITORY: hew-lang/playground
-          IMAGE_TAG: ${{ needs.validate.outputs.tag }}
-          EXPECTED_DIGEST: ${{ steps.image-lock.outputs.image_digest }}
-          EXPECTED_PLATFORM: linux/amd64
-          EXPECTED_REVISION: ${{ github.sha }}
-          GHCR_TOKEN: ${{ github.token }}
-          GHCR_USERNAME: ${{ github.actor }}
-          DEADLINE_EPOCH: ${{ steps.image-lock.outputs.assert_deadline_epoch }}
-        run: scripts/assert-playground-release-image.sh

@@ -585,6 +585,12 @@ impl Checker {
         }
 
         self.enforce_signature_bounds(sig, &resolved_type_args, span);
+        if let Some(GenericCallee::Method {
+            type_name, method, ..
+        }) = &callee
+        {
+            self.enforce_receiver_obligations(sig, method, type_name, span);
+        }
 
         if record_call_type_args && !sig.type_params.is_empty() {
             self.record_concrete_call_type_args(span, &resolved_type_args);

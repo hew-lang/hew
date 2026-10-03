@@ -6,7 +6,7 @@ fn option_unwrap_or<T>(consume opt: Option<T>, consume fallback: T) -> T {
     (opt ?? fallback)
 }
 
-fn result_unwrap<T, E>(consume res: Result<T, E>) -> T {
+fn result_unwrap<T, E: Display>(consume res: Result<T, E>) -> T {
     res.expect("res is present")
 }
 

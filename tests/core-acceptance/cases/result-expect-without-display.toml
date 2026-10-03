@@ -1,0 +1,14 @@
+[[case]]
+id = "result-expect-without-display"
+intent = "Result expect on an error type with no Display impl is refused at the call, naming the missing Display bound."
+source = "cases/result-expect-without-display.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+severity = "error"
+line = 11
+column = 17
+message = "`Result::expect` requires `E: Display`"

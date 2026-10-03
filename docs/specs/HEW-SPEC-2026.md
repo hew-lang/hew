@@ -674,7 +674,7 @@ an absent value becomes an error, through methods the caller writes:
 | --- | --- |
 | `Result<T, E>.map_err(f)` | `f: fn(E) -> F` applied to the `Err` payload, yielding `Result<T, F>` |
 | `Option<T>.ok_or(e)` | `Some(v)` becomes `Ok(v)`; `None` becomes `Err(e)` |
-| `Result<T, E>.expect(reason)` | the `Ok` payload, or a trap carrying `reason` |
+| `Result<T, E>.expect(reason)` | the `Ok` payload, or a trap carrying `reason` followed by the error's `Display` text; requires `E: Display`, and a call on an error type without one is a type error |
 
 `expect(reason)` is the one deliberate crash-on-failure form. There is no
 `unwrap()`: a crash whose message is the error text tells a reader what

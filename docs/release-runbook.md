@@ -234,7 +234,6 @@ release identity and `make release-checks`, then runs:
 | macOS x86_64 (`macos-15-intel`) | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace, codegen E2E (native)                         |
 | Windows x86_64                  | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
 | FreeBSD x86_64                  | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
-| FreeBSD aarch64                 | hew-cli                                              | Native compiler build + compiled-program smoke under QEMU    |
 
 **Wait for both workflows to go green, including `gate-sanitizers`.**
 The sanitizer job executes ASan directly, so a missing, skipped, or red run
@@ -256,7 +255,7 @@ exception in `deny.toml`. When the dependency graph changes, run `make licenses`
 and commit `Cargo.lock` and `THIRD-PARTY-LICENSES` together. Generation uses the
 locked graph and fails if a licence cannot be resolved.
 
-PR CI runs the dependency-policy part (`make dependency-policy`) on every PR.
+Release validation runs the dependency-policy part (`make dependency-policy`).
 `make pre-release` runs the full set before platform validation.
 
 ## Phase 4 — Local cross-platform validation (optional but recommended)

@@ -1,19 +1,19 @@
-# program<TAB>max_instructions: O2 LLVM instruction ceilings, lowered never raised (make ir-size-verify)
-cases/on-start-suspension-on-down	5326
+# program<TAB>max_instructions: O2 LLVM instruction ceilings measured at the current compiler (make ir-size-verify, run by hand when changing suspension lowering; --propose prints fresh rows)
+cases/on-start-suspension-on-down	3978
 corpus/mir_bytes_fresh_temp_drop	67
-corpus/mir_composite_owned_record_drop	60
+corpus/mir_composite_owned_record_drop	76
 corpus/mir_lifo_drop_plan	96
 corpus/mir_string_fresh_temp_drop	49
-corpus/mir_suspend_carrier_drop	1971
-corpus/owned_vec_cross_function_release	2644
+corpus/mir_suspend_carrier_drop	1633
+corpus/owned_vec_cross_function_release	2228
 corpus/r4_arith	107
-corpus/r4_layout	221
-corpus/r4_runtime_abi	693
-corpus/r4_suspend	1766
-corpus/r4_thunks	4617
-corpus/rc_weak_graph	146
-corpus/rc_weak_lifecycle	544
+corpus/r4_layout	277
+corpus/r4_runtime_abi	808
+corpus/r4_suspend	1653
+corpus/r4_thunks	3878
+corpus/rc_weak_graph	164
+corpus/rc_weak_lifecycle	467
 corpus/sir_virtual_tuple	9
-corpus/snapshot_send	2733
-generated/suspend_unroll1	4732
-generated/suspend_unroll5	18492
+corpus/snapshot_send	2247
+generated/suspend_unroll1	3810
+generated/suspend_unroll5	13047

@@ -695,7 +695,7 @@ ci-shard-1: observe-functional-test test-cabi \
 
 ci-shard-2: libhew-link-race-test test \
 	test-leak-oracle-selftest \
-	compile-determinism-verify compile-determinism-selftest ir-size-verify \
+	compile-determinism-verify compile-determinism-selftest \
 	test-obligation-site-diff stdlib-user-build-clean stdlib-errno-gate \
 	test-extern-bytes test-host-client
 

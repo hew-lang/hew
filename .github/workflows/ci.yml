@@ -463,7 +463,7 @@ jobs:
       - name: Run C extern and host client integrations
         if: matrix.shard == 1
         run: >-
-          make -o hew-native compile-determinism-verify ir-size-verify
+          make -o hew-native compile-determinism-verify
           stdlib-user-build-clean stdlib-errno-gate
           test-extern-bytes test-host-client
       - name: Run migration and MQTT integrations

@@ -1122,6 +1122,12 @@ jobs:
           done
           ls -l dist/npm
 
+      - name: Check the tarballs publish
+        run: |
+          for pkg in wasm sandbox-vm; do
+            npm publish "./dist/npm/hew-lang-${pkg}-${RELEASE_TAG#v}.tgz" --dry-run --ignore-scripts --access public --tag next
+          done
+
       - name: Upload npm tarballs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1536,7 +1542,7 @@ jobs:
               echo "::notice::${name}@${VERSION} already on ${REGISTRY}; skipping"
               continue
             fi
-            if ! npm publish "packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
+            if ! npm publish "./packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
               --provenance --tag "${DIST_TAG}" --registry "${REGISTRY}"; then
               echo "::error::publishing ${name}@${VERSION} to ${REGISTRY} failed"
               status=1
@@ -1586,7 +1592,7 @@ jobs:
               echo "::notice::${name}@${VERSION} already on ${REGISTRY}; skipping"
               continue
             fi
-            if ! npm publish "packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
+            if ! npm publish "./packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
               --tag "${DIST_TAG}" --registry "${REGISTRY}"; then
               echo "::error::publishing ${name}@${VERSION} to ${REGISTRY} failed"
               status=1

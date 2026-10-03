@@ -2724,6 +2724,10 @@ pub struct FnSig {
     pub type_params: Vec<crate::ParamHead>,
     /// The trait bounds on `type_params`, associated-type bindings included.
     pub bounds: ParamBounds,
+    /// Bounds the enclosing impl places on the receiver's type arguments
+    /// (`impl<T, E: Display> Result<T, E>`), instantiated for one receiver.
+    /// A call enforces them where it is checked.
+    pub receiver_obligations: Vec<ReceiverObligation>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
     /// Ownership explicitly declared for each parameter, aligned with `params`.
@@ -2797,6 +2801,15 @@ pub struct FnSig {
     pub is_builtin_variant: bool,
 }
 
+/// One impl-level bound on a receiver type argument: `param` of the impl is
+/// instantiated to `arg` for this receiver and must satisfy `bound`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiverObligation {
+    pub param: crate::ParamHead,
+    pub arg: Ty,
+    pub bound: TraitRef,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct GenericLambdaSig {
     pub(super) call_sig: FnSig,
@@ -2809,6 +2822,7 @@ impl Default for FnSig {
             impl_method: None,
             type_params: vec![],
             bounds: ParamBounds::default(),
+            receiver_obligations: vec![],
             param_names: vec![],
             params: vec![],
             param_ownership: vec![],
@@ -3000,6 +3014,8 @@ pub(super) struct DeferredBoundCheck {
     /// The bounds in force at the call, so a type argument that settles to
     /// the caller's own binder is checked against the caller's bounds.
     pub(super) scope_bounds: ParamBounds,
+    /// The method whose impl-level bound this is, named in the diagnostic.
+    pub(super) required_by: Option<String>,
 }
 
 /// Result of resolving a bare actor reference (`spawn Account(...)`, or the

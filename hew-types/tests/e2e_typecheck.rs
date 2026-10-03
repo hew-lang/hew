@@ -732,7 +732,7 @@ fn method_call_dispatches_resource_wrapper_through_impl() {
 import std.net.http;
 
 fn respond(req: http.Request) -> i64 {
-    req.respond_text(200, "ok").expect("respond_text succeeds");
+    let _sent = req.respond_text(200, "ok").is_ok();
     0
 }
 "#,
@@ -2313,7 +2313,7 @@ fn main() {
     match http.listen(":8080") {
         .Ok(server) => {
             let req = server.accept();
-            req.respond(200, "text/plain", "Hello, Hew!").expect("respond succeeds");
+            let _sent = req.respond(200, "text/plain", "Hello, Hew!").is_ok();
             req.close();
             server.close();
         }
@@ -2364,7 +2364,7 @@ fn wasm_http_server_surface_rejected_before_codegen() {
 
         fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
-            req.respond_text(200, "ok").expect("respond_text succeeds");
+            let _sent = req.respond_text(200, "ok").is_ok();
             server.close();
             req.path()
         }

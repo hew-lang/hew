@@ -95,7 +95,7 @@ pub fn new<T>() -> Arena<T> {
     Arena { clone_guard: clone_guard, arena_id: arena_id, generation_counter: generation_counter, slots: slots, free: free }
 }
 
-impl<T: Clone> Arena<T> {
+impl<T> Arena<T> {
     /// Insert `value` and return a fresh `Key<T>` naming it.
     ///
     /// Reuses a freed slot when one is available; otherwise appends a new slot.
@@ -115,6 +115,14 @@ impl<T: Clone> Arena<T> {
             Key { arena_id: self.arena_id, index: index, generation: generation }
         }
     }
+    /// The number of live values in the arena.
+    fn len(self) -> i64 {
+        self.slots.len() - self.free.len()
+    }
+}
+
+// Reading a value back copies it out of the slot, so these need `T: Clone`.
+impl<T: Clone> Arena<T> {
     /// Return a copy of the value named by `key`, or `None` if the key is stale.
     ///
     /// The arena keeps its own value, so this copies one out and needs
@@ -162,10 +170,6 @@ impl<T: Clone> Arena<T> {
             }
             .None => .None,
         }
-    }
-    /// The number of live values in the arena.
-    fn len(self) -> i64 {
-        self.slots.len() - self.free.len()
     }
     /// Return `true` if `key` still names a live value.
     fn contains(self, key: Key<T>) -> bool {

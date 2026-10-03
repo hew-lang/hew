@@ -2305,6 +2305,7 @@ mod tests {
             FnSig {
                 impl_method: None,
                 type_params: vec![crate::ParamHead::for_test("T")],
+                receiver_obligations: vec![],
                 bounds: crate::check::ParamBounds::default(),
                 param_names: vec!["item".to_string()],
                 params: vec![Ty::param(crate::ParamHead::for_test("T"))],

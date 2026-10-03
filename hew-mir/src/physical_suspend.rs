@@ -258,6 +258,11 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .filter(|block| lifetimes.is_reachable(block.id))
         {
             for operation in &block.ops {
+                // A scope's runtime handle lives in the resumable frame even
+                // when `exit` leaves its drain unreachable.
+                if matches!(operation.kind, hew_sir::SemOpKind::TaskScopeEnter { .. }) {
+                    resumable.insert(function.callable);
+                }
                 let ty = match &operation.kind {
                     hew_sir::SemOpKind::DestroyValue { value } => Some(&types[&value.value]),
                     hew_sir::SemOpKind::StoreAssign { place, .. }
@@ -450,6 +455,9 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     _ => None,
                 };
                 if action.is_some_and(|action| releases.suspends(action)) {
+                    resumable.insert(function.callable);
+                }
+                if matches!(operation, super::PhysicalOp::TaskScopeEnter { .. }) {
                     resumable.insert(function.callable);
                 }
             }

@@ -1,0 +1,10 @@
+[[case]]
+id = "handle-wildcard-binder"
+intent = "`handle _ { recovery }` binds no error, runs only on failure, nests with a named binder, and releases an owned error payload."
+source = "cases/handle-wildcard-binder.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n-1\nnone\nkey 3\nbad y\n7\nmissing -2/-2\n"
+exit = 0

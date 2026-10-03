@@ -604,7 +604,8 @@ The fallback must have the payload type (or diverge). `??` accepts only
 Success supplies the success payload. Only an error runs the block, with
 `problem` bound to the error payload. The block must produce the success
 payload type or diverge. `handle` is contextual, and the error binder is
-user-named and scoped to the block. It is not a surrounding exception handler:
+user-named and scoped to the block; `handle _ { recovery }` binds nothing when
+the block does not need the error. It is not a surrounding exception handler:
 an inner `?` in the operand retains its enclosing function's return edge.
 
 Handler blocks are ordinary lexical blocks: `return`, `break`, `continue`,
@@ -933,8 +934,8 @@ fn main() {
     println(buf.is_empty()); // bool
     println(buf.contains(72)); // bool — linear scan
     println(n);
-    println(last.unwrap_or(0));
-    println(b.unwrap_or(0));
+    println(last ?? 0);
+    println(b ?? 0);
 }
 ```
 
@@ -3410,12 +3411,13 @@ enum Result<T, E> {
 `var self` method it needs a `var` binding, field or actor state field.
 
 Both types carry their methods in every program, with no import, like
-`.len()`. `Option<T>` has `is_some`, `is_none`, `expect`, `unwrap_or`,
-`unwrap_or_else`, `map`, `and_then`, `or_else`, `ok_or` and `take`;
-`Result<T, E>` has `is_ok`, `is_err`, `expect`, `unwrap_or`,
-`unwrap_or_else`, `ok`, `err`, `map`, `map_err`, `and_then` and `or_else`.
+`.len()`. `Option<T>` has `is_some`, `is_none`, `expect`, `map`,
+`and_then`, `or_else`, `ok_or` and `take`; `Result<T, E>` has `is_ok`,
+`is_err`, `expect`, `ok`, `err`, `map`, `map_err`, `and_then` and `or_else`.
 The predicates borrow their receiver; `take` mutates it; the others consume
-it. `unwrap_or` and `ok_or` also consume their fallback or error argument.
+it. `ok_or` also consumes its error argument. A default for an absent
+`Option` is `??`; a fallback for a failed `Result` is `handle` (see Local
+recovery).
 
 User-authored functions may return `Result<T, E>` or `Option<T>` and use `?`
 for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std.fs.IoError`:

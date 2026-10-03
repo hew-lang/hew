@@ -761,11 +761,17 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 body: handler,
             } => {
                 self.walk_expr(&operand.0, &operand.1, body);
-                self.push_scope(vec![BindingInfo {
-                    kind: BindingKind::Local,
-                    name: error.0.name.as_str(),
-                    span: error.1.clone(),
-                }]);
+                self.push_scope(
+                    error
+                        .0
+                        .iter()
+                        .map(|name| BindingInfo {
+                            kind: BindingKind::Local,
+                            name: name.name.as_str(),
+                            span: error.1.clone(),
+                        })
+                        .collect(),
+                );
                 self.walk_expr(&handler.0, &handler.1, body);
                 self.pop_scope();
             }

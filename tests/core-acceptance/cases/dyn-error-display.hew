@@ -19,7 +19,7 @@ fn parse(text: string) -> i64 fails dyn Error {
 }
 
 fn main() {
-    let width = parse("") handle _problem {
+    let width = parse("") handle _ {
         println("caught");
         0
     };

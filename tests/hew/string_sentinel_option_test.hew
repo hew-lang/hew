@@ -7,8 +7,8 @@
 // ── find ────────────────────────────────────────────────────────────────────
 #[test]
 fn test_find_hit_returns_exact_byte_index() {
-    assert("hello world".find("world").unwrap_or(-1) == 6);
-    assert("abcabc".find("bc").unwrap_or(-1) == 1);
+    assert(("hello world".find("world") ?? -1) == 6);
+    assert(("abcabc".find("bc") ?? -1) == 1);
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn test_find_at_index_zero_is_some_zero_not_none() {
     // distinguishable from a miss.
     let r = ":x".find(":");
     assert(r.is_some());
-    assert(r.unwrap_or(-1) == 0);
+    assert((r ?? -1) == 0);
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn test_find_miss_returns_none() {
 #[test]
 fn test_find_empty_needle_is_some_zero() {
     // strstr semantics: the empty needle matches at offset 0.
-    assert("abc".find("").unwrap_or(-1) == 0);
+    assert(("abc".find("") ?? -1) == 0);
 }
 
 // ── char_at (byte-indexed) ──────────────────────────────────────────────────
@@ -37,12 +37,12 @@ fn test_find_empty_needle_is_some_zero() {
 fn test_char_at_in_range_returns_exact_byte() {
     let c = "abc".char_at(1);
     assert(c.is_some());
-    assert(c.unwrap_or('?') == 'b');
+    assert((c ?? '?') == 'b');
 }
 
 #[test]
 fn test_char_at_index_zero_is_some() {
-    assert("abc".char_at(0).unwrap_or('?') == 'a');
+    assert(("abc".char_at(0) ?? '?') == 'a');
 }
 
 #[test]
@@ -57,8 +57,8 @@ fn test_char_at_out_of_bounds_returns_none_not_trap() {
 #[test]
 fn test_codepoint_at_utf8_in_range_returns_exact_codepoint() {
     // "a" = U+0061; "é" = U+00E9 (2 bytes in UTF-8, one codepoint).
-    assert("aé".codepoint_at_utf8(0).unwrap_or(-1) == 97);
-    assert("aé".codepoint_at_utf8(1).unwrap_or(-1) == 233);
+    assert(("aé".codepoint_at_utf8(0) ?? -1) == 97);
+    assert(("aé".codepoint_at_utf8(1) ?? -1) == 233);
 }
 
 #[test]

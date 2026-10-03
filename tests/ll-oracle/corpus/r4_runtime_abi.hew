@@ -33,7 +33,7 @@ fn main() {
     v.push(3);
     println(v.len());
     let x = v.get(0);
-    println(x.unwrap_or(-1));
+    println(x ?? -1);
     let last = v.pop();
     println(last);
 

@@ -1,0 +1,11 @@
+// `exit` runs no cleanup and drains no child, so a function that holds a task
+// scope may end at it without a drain on that path.
+fn main() {
+    let n = scope within 1ms {
+        0
+    } handle failure {
+        1
+    };
+    println(n);
+    exit(3);
+}

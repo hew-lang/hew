@@ -29,15 +29,17 @@ use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox_header::{normalize_coalesce_fallback, Origin};
-use crate::read_slot::{
-    hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::read_slot::read_slot_retain;
+use crate::read_slot::{hew_read_slot_free, read_slot_deposit_status, HewReadSlot, ReadStatus};
 use crate::set_last_error;
 
 /// Messages this process has sent and received. The scheduler reports them as
@@ -1422,14 +1424,17 @@ struct SlowPathQueue {
 /// freed address (#3147). The registration id is minted from a monotonic
 /// counter scoped to the whole process and never reused, so it identifies
 /// exactly the registration that minted it.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) type BlockedSenderId = u64;
 
 /// Monotonic counter for [`BlockedSenderId`]; never reuses an id within a
 /// process. `0` is reserved as "no registration" (an admitted-immediately
 /// send never parks a waiter and so never needs to be detached).
+#[cfg(not(target_arch = "wasm32"))]
 static NEXT_BLOCKED_SENDER_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Mint the next [`BlockedSenderId`].
+#[cfg(not(target_arch = "wasm32"))]
 fn next_blocked_sender_id() -> BlockedSenderId {
     // 1 is the first valid id; in practice u64 will never wrap during a process.
     NEXT_BLOCKED_SENDER_ID.fetch_add(1, Ordering::Relaxed)
@@ -1440,6 +1445,7 @@ fn next_blocked_sender_id() -> BlockedSenderId {
 /// cancellation, or close wins the registration race.
 #[derive(Debug)]
 struct BlockedSender {
+    #[cfg(not(target_arch = "wasm32"))]
     id: BlockedSenderId,
     sender: ActorIncarnation,
     slot: *mut HewReadSlot,
@@ -2699,8 +2705,10 @@ pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
 }
 
 /// The block-send registration owns the copied message and parked continuation.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MAILBOX_AWAIT_SEND_SUSPEND: i32 = 0;
 /// The message was admitted immediately; the caller must continue without parking.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MAILBOX_AWAIT_SEND_READY: i32 = 1;
 
 /// Register a cooperative producer wait for a bounded `Block` mailbox.
@@ -2716,6 +2724,7 @@ pub(crate) const MAILBOX_AWAIT_SEND_READY: i32 = 1;
 ///
 /// `mb`, `actor`, and `slot` must remain valid for registration; `data` must
 /// cover `size` readable bytes (or be null for zero size).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn mailbox_await_send(
     mb: *mut HewMailbox,
     msg_type: i32,
@@ -2846,6 +2855,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
         // An ask waiter has no capacity-wait read slot and is never detached
         // by id (its caller is suspended on the reply channel instead); mint
         // one anyway so every waiter carries a unique, non-zero identity.
+        #[cfg(not(target_arch = "wasm32"))]
         id: next_blocked_sender_id(),
         sender: ActorIncarnation::NONE,
         slot: ptr::null_mut(),
@@ -2866,6 +2876,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
 /// # Safety
 ///
 /// `mb` must be a live pointer supplied to [`mailbox_await_send`].
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn mailbox_detach_await_send(mb: *mut HewMailbox, id: BlockedSenderId) {
     if mb.is_null() || id == 0 {
         return;

@@ -7,9 +7,11 @@
 mod support;
 
 use std::fmt::Write as _;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use support::{hew_binary, repo_root, require_codegen};
@@ -41,6 +43,7 @@ fn main() {
 }
 "#;
 
+#[cfg(unix)]
 const ENDLESS: &str = r#"
 fn main() {
     var i = 0;

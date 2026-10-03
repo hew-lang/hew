@@ -18,14 +18,13 @@ report without failing.
 
 ## Layout
 
-| Path                                    | Domain                         | Invariant                                                                                          |
-| --------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `rules/rust/fail-closed/`               | codegen + checker fail-closed  | CLAUDE.md §2 (Fail-Closed Codegen), §3 (Type Inference Boundary)                                   |
-| `scripts/structural-authority-audit.py` | cross-stage semantic authority | Parsed AST inventory plus intraprocedural owner-shortening flow into registry/ID/call-target keys. |
-| `rules/rust/panics-nyi/`                | panic / NYI hygiene            | no new NYI; `unreachable!("desc")`; propagate errors                                               |
-| `rules/rust/concurrency-drop/`          | concurrency + drop safety      | CLAUDE.md §1 (Drop Safety), §9 (Concurrency Safety)                                                |
-| `rules/rust/hygiene/`                   | unsafe / debug hygiene         | `// SAFETY:` justification, `transmute` audit, no `dbg!`                                           |
-| `rules/hew/`                            | Hew-language patterns (`.hew`) | idiomatic / redundant-construct lints                                                              |
+| Path                           | Domain                         | Invariant                                                        |
+| ------------------------------ | ------------------------------ | ---------------------------------------------------------------- |
+| `rules/rust/fail-closed/`      | codegen + checker fail-closed  | CLAUDE.md §2 (Fail-Closed Codegen), §3 (Type Inference Boundary) |
+| `rules/rust/panics-nyi/`       | panic / NYI hygiene            | no new NYI; `unreachable!("desc")`; propagate errors             |
+| `rules/rust/concurrency-drop/` | concurrency + drop safety      | CLAUDE.md §1 (Drop Safety), §9 (Concurrency Safety)              |
+| `rules/rust/hygiene/`          | unsafe / debug hygiene         | `// SAFETY:` justification, `transmute` audit, no `dbg!`         |
+| `rules/hew/`                   | Hew-language patterns (`.hew`) | idiomatic / redundant-construct lints                            |
 
 ## Conventions
 
@@ -41,13 +40,10 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 
 ### Rust — fail-closed (`error`, gates CI)
 
-| Rule                                               | Hits                           | Catches                                                                                                                                                                                                                                                                                                                         |
-| -------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ok-question-in-lowering`                          | 0                              | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2).                                                                                                                                                                                                                                   |
-| `ty-var-constructed-post-inference`                | 0                              | Building `Ty::Var(..)` in post-inference crates (CLAUDE.md §3).                                                                                                                                                                                                                                                                 |
-| `semantic-owner-shortening-sink` (authority audit) | inventory-ratcheted            | `short_name(owner)`, qualified-path leaf extraction, or a module alias flowing through local bindings into registry, `DefId`, `NominalId`, or `CallTarget` keys. Display/diagnostic formatting and ordinary collection `.last()` calls are controls.                                                                            |
-| `hir-ast-boundary` (authority audit)               | 78-row inventory, per-function | D486 stage one: hew-hir reading `hew_parser::ast::{Item,Expr,Stmt,Pattern}` variants or `ImportDecl.resolved_items` instead of the checker's `TypeCheckOutput`. Rows are `<fact>:<enclosing function>`; a new function reaching one of these forms is a reviewed addition, a new call inside an already-listed function is not. |
-| `sir-hir-fact-rederivation` (authority audit)      | 7-row inventory, per-file      | D486 stage one: hew-sir re-deriving a checker/HIR fact instead of consuming it -- `require_variant_shape` computing a payload's variant shape from a `ResolvedTy` on every call, and independent `arm.predicate` shape matches in `lower_match.rs`.                                                                             |
+| Rule                                | Hits | Catches                                                                                       |
+| ----------------------------------- | ---- | --------------------------------------------------------------------------------------------- |
+| `ok-question-in-lowering`           | 0    | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
+| `ty-var-constructed-post-inference` | 0    | Building `Ty::Var(..)` in post-inference crates (CLAUDE.md §3).                               |
 
 ### Rust — panics / NYI (`warning`)
 
@@ -98,6 +94,5 @@ ast-grep's native `// ast-grep-ignore` (or `// ast-grep-ignore: <rule-id>`) supp
 
 ## Gating status
 
-`make structural-lint` runs the complete pinned scan and the fail-closed authority
-inventory. Every error finding fails the gate. The `warning`/`info`/`hint` rules
+`make structural-lint` runs the complete pinned scan. Every error finding fails the gate. The `warning`/`info`/`hint` rules
 remain advisory.

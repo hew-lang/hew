@@ -8,13 +8,13 @@ fn main() {
         } else {
             Option.None
         };
-        value.unwrap_or(22)
+        (value ?? 22)
     };
     let abstract_opt = option_through_closure(0);
     let imported_opt = p0c_helpers.imported_option(Option.Some(23));
-    let method_path_opt = Option.Some(24).unwrap_or(0);
+    let method_path_opt = Option.Some(24) ?? 0;
     let res: Result<i64, string> = Result.Ok(25);
-    let abstract_res = res.unwrap_or(0);
+    let abstract_res = res handle _ { 0 };
     let imported_res: Result<i64, string> = Result.Err("missing");
     let imported_fallback = p0c_helpers.imported_result(imported_res, 26);
     println(f"{concrete} / {abstract_opt} / {imported_opt} / {method_path_opt} / {abstract_res} / {imported_fallback}");

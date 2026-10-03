@@ -112,9 +112,7 @@ pub fn lookup_host_timed(hostname: string, deadline_ms: i64) -> string {
         unsafe {
             hew_dns_lookup_host(hostname)
         }
-    } handle failure {
-        ""
-    }
+    } handle failure { "" }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

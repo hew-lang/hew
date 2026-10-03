@@ -479,6 +479,7 @@ pub(crate) fn run_to_quiescence() {
 /// The shutdown drain's poll: where the threaded runtime sleeps while workers
 /// finish, the driver runs the work itself, moving the clock to the next timer
 /// once nothing is ready so cleanup that sleeps still completes.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn drain_poll(interval: std::time::Duration) {
     if !active() {
         std::thread::sleep(interval);

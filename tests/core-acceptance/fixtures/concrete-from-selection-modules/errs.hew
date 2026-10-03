@@ -1,0 +1,23 @@
+pub type LowError {
+    code: i64;
+}
+
+pub type IoError {
+    code: i64;
+}
+
+pub type AppError {
+    code: i64;
+}
+
+impl From<LowError> for AppError {
+    fn from(value: LowError) -> AppError {
+        AppError { code: value.code + 100 }
+    }
+}
+
+impl From<IoError> for AppError {
+    fn from(value: IoError) -> AppError {
+        AppError { code: value.code + 900 }
+    }
+}

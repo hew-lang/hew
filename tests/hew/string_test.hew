@@ -91,9 +91,9 @@ fn test_from_char_rejects_i64_max_instead_of_narrowing() {
 
 #[test]
 fn test_to_int_parses_signed_decimal_strings() {
-    assert(string.to_int("12345").unwrap_or(-1) == 12345);
-    assert(string.to_int("-19").unwrap_or(0) == -19);
-    assert(string.to_int("+8").unwrap_or(-1) == 8);
+    assert((string.to_int("12345") handle _ { -1 }) == 12345);
+    assert((string.to_int("-19") handle _ { 0 }) == -19);
+    assert((string.to_int("+8") handle _ { -1 }) == 8);
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn test_to_int_parses_real_zero_as_ok() {
     // `Ok(0)` proves a genuine zero is distinguishable from a failed parse.
     let z = string.to_int("0");
     assert(z.is_ok());
-    assert(z.unwrap_or(-1) == 0);
+    assert((z handle _ { -1 }) == 0);
 }
 
 #[test]

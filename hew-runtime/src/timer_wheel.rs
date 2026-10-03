@@ -64,7 +64,7 @@ static INSERT_HOOK: OnceLock<InsertHook> = OnceLock::new();
 //
 // KEEP(wasm32): wasm32 ticks its wheel from the host driver and never
 // registers, so `notify_inserted` is a no-op there.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn register_insert_hook(hook: InsertHook) {
     let _ = INSERT_HOOK.set(hook);
 }

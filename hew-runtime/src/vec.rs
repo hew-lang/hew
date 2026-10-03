@@ -3448,6 +3448,7 @@ pub unsafe extern "C" fn hew_vec_reverse_i32(v: *mut HewVec) {
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
     cabi_guard!(v.is_null(), Vec::new());
     // SAFETY: caller guarantees v is a valid HewVec.

@@ -72,8 +72,8 @@ test("runProgram reads two stdin lines from the page input buffer byte-cleanly",
 import std.io;
 
 fn main() {
-    let first = io.read_line().unwrap_or("<none>");
-    let second = io.read_line().unwrap_or("<none>");
+    let first = io.read_line() ?? "<none>";
+    let second = io.read_line() ?? "<none>";
     println(f"{first}|{second}");
 }
 `,
@@ -116,10 +116,10 @@ test("runProgram read_all keeps line endings and the unterminated tail after a r
 import std.io;
 
 fn main() {
-    let first = io.read_line().unwrap_or("<none>");
+    let first = io.read_line() ?? "<none>";
     let rest = io.read_all();
     println(f"{first}|[{rest}]");
-    let after = io.read_line().unwrap_or("<none>");
+    let after = io.read_line() ?? "<none>";
     println(after);
 }
 `,
@@ -137,8 +137,8 @@ test("runProgram records each consumed stdin line as a replay.input event withou
 import std.io;
 
 fn main() {
-    let a = io.read_line().unwrap_or("<none>");
-    let b = io.read_line().unwrap_or("<none>");
+    let a = io.read_line() ?? "<none>";
+    let b = io.read_line() ?? "<none>";
     println(a);
     println(b);
 }

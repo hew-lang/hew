@@ -915,7 +915,9 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         } => {
             collect_locals_from_spanned_expr(operand, offset, locals);
             if span_contains_offset(&body.1, offset) {
-                locals.push(local_completion(error.0.name.as_str()));
+                if let Some(name) = error.0 {
+                    locals.push(local_completion(name.name.as_str()));
+                }
                 collect_locals_from_spanned_expr(body, offset, locals);
             }
         }

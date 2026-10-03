@@ -71,6 +71,7 @@ pub extern "C" fn hew_deterministic_get_seed() -> u64 {
 ///
 /// If a global seed is set, returns `global_seed + worker_id`.
 /// Otherwise returns `worker_id + 1` (the default).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn effective_worker_seed(worker_id: u64) -> u64 {
     let seed = GLOBAL_SEED.load(Ordering::Acquire);
     if seed != 0 {

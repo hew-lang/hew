@@ -187,11 +187,7 @@ impl Checker {
                          once, and a call by name cannot choose between the impls",
                         receiver.user_facing(),
                     ),
-                    vec![
-                        "give the impls distinct method names, or for `From` let `?` and \
-                          `return error` apply the impl for the error's own type"
-                            .to_string(),
-                    ],
+                    vec!["give the impls distinct method names".to_string()],
                 );
                 return;
             }

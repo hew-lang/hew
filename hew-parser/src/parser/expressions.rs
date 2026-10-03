@@ -547,13 +547,7 @@ impl Parser<'_> {
                 self.advance();
                 let error_span = self.peek_span();
                 let error = self.expect_ident()?;
-                if error.name == sym::UNDERSCORE {
-                    self.error_at(
-                        "a handler requires a named error binding".to_string(),
-                        error_span,
-                    );
-                    return None;
-                }
+                let error = (error.name != sym::UNDERSCORE).then_some(error);
                 let body_start = self.peek_span().start;
                 let body = self.parse_block()?;
                 let end = self.peek_span().start;

@@ -115,7 +115,7 @@ fn mqtt_str(s: string) -> bytes {
     let slen: i64 = s.len();
     var buf = u16_be(slen as i32);
     for i in 0..slen {
-        buf.push(s.char_at(i).unwrap_or('\0') as u8);
+        buf.push((s.char_at(i) ?? '\0') as u8);
     }
     buf
 }

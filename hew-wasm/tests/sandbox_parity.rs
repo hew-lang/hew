@@ -1,12 +1,17 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Output;
 use std::sync::OnceLock;
 
+#[cfg(unix)]
 use assert_cmd::Command;
+#[cfg(unix)]
 use hew_wasm::sandbox::{compile_to_sandbox_bytecode, Diagnostic};
 
+#[cfg(unix)]
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
+#[cfg(unix)]
 const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
@@ -504,6 +509,10 @@ const PARITY_CASES: &[ParityCase] = &[
 
 #[derive(Debug, Clone, Copy)]
 struct ParityCase {
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "read only by the unix-only VM parity tests")
+    )]
     test_name: &'static str,
     source_rel: &'static str,
 }
@@ -610,6 +619,7 @@ fn identity_w7_record_resource_does_not_join_runtime_admission() {
     }
 }
 
+#[cfg(unix)]
 fn assert_case(case: &ParityCase, stdin: &str) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);
@@ -650,6 +660,7 @@ fn assert_case(case: &ParityCase, stdin: &str) {
     assert_exact_stdout(case, &native);
 }
 
+#[cfg(unix)]
 fn assert_stderr_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     assert_eq!(
         String::from_utf8_lossy(&sandbox.stderr),
@@ -661,6 +672,7 @@ fn assert_stderr_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     );
 }
 
+#[cfg(unix)]
 fn assert_exact_stdout(case: &ParityCase, native: &Output) {
     let expected = match case.test_name {
         "trap_residual" => Some(
@@ -690,6 +702,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
     }
 }
 
+#[cfg(unix)]
 fn assert_no_error_diagnostics(case: &ParityCase, diagnostics: &[Diagnostic]) {
     assert!(
         diagnostics
@@ -701,6 +714,7 @@ fn assert_no_error_diagnostics(case: &ParityCase, diagnostics: &[Diagnostic]) {
     );
 }
 
+#[cfg(unix)]
 fn assert_exit_code_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     assert_eq!(
         sandbox.status.code(),
@@ -712,6 +726,7 @@ fn assert_exit_code_parity(case: &ParityCase, native: &Output, sandbox: &Output)
     );
 }
 
+#[cfg(unix)]
 fn assert_stdout_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     assert_eq!(
         String::from_utf8_lossy(&sandbox.stdout),
@@ -723,6 +738,7 @@ fn assert_stdout_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     );
 }
 
+#[cfg(unix)]
 fn run_native(source_path: &Path, stdin: &str) -> Output {
     Command::new(hew_binary())
         .arg("run")
@@ -736,6 +752,7 @@ fn run_native(source_path: &Path, stdin: &str) -> Output {
         .unwrap_or_else(|err| panic!("failed to spawn native `hew run`: {err}"))
 }
 
+#[cfg(unix)]
 fn run_sandbox(bytecode_path: &Path, stdin_path: &Path) -> Output {
     Command::new("npm")
         .arg("--prefix")
@@ -755,6 +772,7 @@ fn run_sandbox(bytecode_path: &Path, stdin_path: &Path) -> Output {
         .unwrap_or_else(|err| panic!("failed to spawn sandbox parity runner: {err}"))
 }
 
+#[cfg(unix)]
 fn ensure_native_toolchain() {
     static NATIVE_TOOLCHAIN: OnceLock<()> = OnceLock::new();
     NATIVE_TOOLCHAIN.get_or_init(|| {
@@ -765,6 +783,7 @@ fn ensure_native_toolchain() {
     });
 }
 
+#[cfg(unix)]
 fn ensure_parity_runner_built() {
     static PARITY_RUNNER: OnceLock<()> = OnceLock::new();
     PARITY_RUNNER.get_or_init(|| {
@@ -794,6 +813,7 @@ fn ensure_parity_runner_built() {
     });
 }
 
+#[cfg(unix)]
 fn run_bootstrap_command(label: &str, command: &mut std::process::Command) {
     let output = command
         .output()
@@ -805,6 +825,7 @@ fn run_bootstrap_command(label: &str, command: &mut std::process::Command) {
     );
 }
 
+#[cfg(unix)]
 fn hew_binary() -> PathBuf {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_hew") {
         return PathBuf::from(path);
@@ -813,6 +834,7 @@ fn hew_binary() -> PathBuf {
     target_debug_dir().join(format!("hew{}", std::env::consts::EXE_SUFFIX))
 }
 
+#[cfg(unix)]
 fn target_debug_dir() -> PathBuf {
     if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(target_dir).join("debug");
@@ -832,14 +854,17 @@ fn repo_root() -> &'static Path {
         .as_path()
 }
 
+#[cfg(unix)]
 fn set_test_hewpath() {
     std::env::set_var("HEW_STD", repo_root().join("std"));
 }
 
+#[cfg(unix)]
 fn diagnostics_dump(diagnostics: &[Diagnostic]) -> String {
     serde_json::to_string_pretty(diagnostics).expect("diagnostics should serialize")
 }
 
+#[cfg(unix)]
 fn describe_output(output: &Output) -> String {
     format!(
         "status: {:?}\nstdout:\n{}\nstderr:\n{}",

@@ -154,7 +154,7 @@ fn invoke<'ctx>(
         child,
         child_frame,
     )?;
-    combine(values, frame, fault, status)
+    combine(values, frame.state, fault, status)
 }
 
 fn publish_fault<'ctx>(
@@ -181,50 +181,117 @@ fn publish_fault<'ctx>(
     Ok(())
 }
 
+/// Fold a finished release into the frame's fault record: a non-zero `status`
+/// joins the raised fault in `fault` to the sink and republishes the sink to
+/// the siblings still to release. The rule is emitted once as
+/// `__hew_release_outcome`, so a release site is one call.
 fn combine<'ctx>(
     values: &ValueEmitter<'_, 'ctx>,
-    frame: &coro::Frame<'ctx>,
+    state: PointerValue<'ctx>,
     fault: PointerValue<'ctx>,
     status: IntValue<'ctx>,
 ) -> CodegenResult<()> {
-    let failed = values
-        .ctx
-        .append_basic_block(values.value, "release.failed");
-    let done = values
-        .ctx
-        .append_basic_block(values.value, "release.continue");
-    let ok = values
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            status,
-            status.get_type().const_zero(),
-            "release.ok",
-        )
-        .llvm_ctx("test release outcome")?;
-    values
-        .builder
-        .build_conditional_branch(ok, done, failed)
-        .llvm_ctx("preserve release failure")?;
-    values.builder.position_at_end(failed);
-    let raised = values
-        .builder
-        .build_load(
-            values.ctx.ptr_type(AddressSpace::default()),
-            fault,
-            "release.fault",
-        )
-        .llvm_ctx("take release fault")?;
     let (primary, primary_status) = values
         .fault_sink
         .ok_or_else(|| CodegenError::FailClosed("consuming release has no fault owner".into()))?;
-    values.record_release_fault(primary, primary_status, raised, status)?;
-    publish_fault(values, frame)?;
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let name = "__hew_release_outcome";
+    let thunk = if let Some(thunk) = values.llvm.get_function(name) {
+        thunk
+    } else {
+        let thunk = values.llvm.add_function(
+            name,
+            values.ctx.void_type().fn_type(
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    values.ctx.i32_type().into(),
+                    pointer.into(),
+                ],
+                false,
+            ),
+            Some(Linkage::Internal),
+        );
+        thunk.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            values.ctx.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                0,
+            ),
+        );
+        let builder = values.ctx.create_builder();
+        builder.position_at_end(values.ctx.append_basic_block(thunk, "entry"));
+        let inner = ValueEmitter {
+            module: values.module,
+            ctx: values.ctx,
+            llvm: values.llvm,
+            builder: &builder,
+            value: thunk,
+            fault_sink: None,
+        };
+        let param = |index| thunk.get_nth_param(index).unwrap();
+        let failed = values.ctx.append_basic_block(thunk, "release.failed");
+        let done = values.ctx.append_basic_block(thunk, "release.continue");
+        let ok = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                param(3).into_int_value(),
+                values.ctx.i32_type().const_zero(),
+                "release.ok",
+            )
+            .llvm_ctx("test release outcome")?;
+        builder
+            .build_conditional_branch(ok, done, failed)
+            .llvm_ctx("preserve release failure")?;
+        builder.position_at_end(failed);
+        let raised = builder
+            .build_load(pointer, param(2).into_pointer_value(), "release.fault")
+            .llvm_ctx("take release fault")?;
+        inner.fold_release_fault(
+            param(0).into_pointer_value(),
+            param(1).into_pointer_value(),
+            raised,
+            param(3).into_int_value(),
+        )?;
+        let active = builder
+            .build_load(
+                pointer,
+                param(0).into_pointer_value(),
+                "release.context.fault",
+            )
+            .llvm_ctx("borrow retained cleanup fault")?;
+        let publish = coro::external(
+            values.llvm,
+            "hew_coro_state_set_cleanup_fault",
+            values.ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        builder
+            .build_call(publish, &[param(4).into(), active.into()], "")
+            .llvm_ctx("publish cleanup context to following siblings")?;
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("continue releasing siblings")?;
+        builder.position_at_end(done);
+        builder
+            .build_return(None)
+            .llvm_ctx("finish release outcome")?;
+        thunk
+    };
     values
         .builder
-        .build_unconditional_branch(done)
-        .llvm_ctx("continue releasing siblings")?;
-    values.builder.position_at_end(done);
+        .build_call(
+            thunk,
+            &[
+                primary.into(),
+                primary_status.into(),
+                fault.into(),
+                status.into(),
+                state.into(),
+            ],
+            "",
+        )
+        .llvm_ctx("fold the release outcome")?;
     Ok(())
 }
 
@@ -257,6 +324,268 @@ pub(super) fn slot<'ctx>(
     }
 }
 
+/// A runtime operation handle whose release drains the operation before it
+/// frees it. Every site releases through one `__hew_release_handle_*` thunk per
+/// kind, so a suspending site carries one call rather than the drain loop.
+#[derive(Clone, Copy)]
+pub(super) enum Handle {
+    ActorCall,
+    RemoteCall,
+    /// A detached-owner cursor, or null when nothing was displaced.
+    Cursor,
+}
+
+impl Handle {
+    const fn thunk(self) -> &'static str {
+        match self {
+            Self::ActorCall => "__hew_release_handle_actor_call",
+            Self::RemoteCall => "__hew_release_handle_remote_call",
+            Self::Cursor => "__hew_release_handle_cursor",
+        }
+    }
+
+    /// The runtime's cleanup poll, cleanup fault and free for a drained
+    /// operation; a cursor has none.
+    const fn operation(self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self {
+            Self::ActorCall => Some((
+                "hew_actor_call_cleanup_poll",
+                "hew_actor_call_cleanup_fault",
+                "hew_actor_call_free",
+            )),
+            Self::RemoteCall => Some((
+                "hew_remote_call_cleanup_poll",
+                "hew_remote_call_cleanup_fault",
+                "hew_remote_call_free",
+            )),
+            Self::Cursor => None,
+        }
+    }
+}
+
+/// Drain and free `handle` through its shared thunk; a drain fault joins the
+/// caller's active fault after every remaining owner is released.
+pub(super) fn handle<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+    handle: PointerValue<'ctx>,
+    kind: Handle,
+) -> CodegenResult<()> {
+    // An operation with nothing left to drain, the usual case, completes in
+    // one plain call; only an unfinished drain starts the suspending thunk.
+    let settled = if let Some(operation) = kind.operation() {
+        let ready = ready_release(values, kind, operation)?;
+        let (fault, status) = values
+            .fault_sink
+            .ok_or_else(|| CodegenError::FailClosed("release context lacks a fault slot".into()))?;
+        let done = suspend::call_value(
+            values.builder,
+            ready,
+            &[
+                handle.into(),
+                frame.state.into(),
+                fault.into(),
+                status.into(),
+            ],
+            "release.operation.ready",
+        )?
+        .into_int_value();
+        let draining = values
+            .ctx
+            .append_basic_block(values.value, "release.operation.drain");
+        let settled = values
+            .ctx
+            .append_basic_block(values.value, "release.operation.settled");
+        let finished = values
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                done,
+                done.get_type().const_zero(),
+                "release.operation.finished",
+            )
+            .llvm_ctx("test settled operation")?;
+        values
+            .builder
+            .build_conditional_branch(finished, settled, draining)
+            .llvm_ctx("skip the drain of a settled operation")?;
+        values.builder.position_at_end(draining);
+        Some(settled)
+    } else {
+        None
+    };
+    let callee = custom(
+        values.ctx,
+        values.llvm,
+        values.module,
+        kind.thunk(),
+        |values, frame, source| handle_body(values, frame, source, kind),
+    )?;
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let source = scratch(values, frame, pointer.into(), "release.handle")?;
+    values
+        .builder
+        .build_store(source, handle)
+        .llvm_ctx("transfer operation handle to consuming release")?;
+    invoke(
+        values,
+        frame,
+        callee.as_global_value().as_pointer_value(),
+        source,
+    )?;
+    if let Some(settled) = settled {
+        values
+            .builder
+            .build_unconditional_branch(settled)
+            .llvm_ctx("finish the drained operation")?;
+        values.builder.position_at_end(settled);
+    }
+    Ok(())
+}
+
+/// The plain function that releases an operation whose cleanup is already
+/// complete: poll once, and when ready fold any cleanup fault into the
+/// caller's record and free it, returning one. A zero return leaves the
+/// operation untouched for the suspending thunk to drain.
+fn ready_release<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    kind: Handle,
+    (poll, fault, free): (&str, &str, &str),
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let name = format!("{}$ready", kind.thunk());
+    if let Some(function) = values.llvm.get_function(&name) {
+        return Ok(function);
+    }
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = values.ctx.i32_type();
+    let function = values.llvm.add_function(
+        &name,
+        i32_ty.fn_type(&[pointer.into(); 4], false),
+        Some(Linkage::Internal),
+    );
+    function.add_attribute(
+        inkwell::attributes::AttributeLoc::Function,
+        values.ctx.create_enum_attribute(
+            inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+            0,
+        ),
+    );
+    let builder = values.ctx.create_builder();
+    builder.position_at_end(values.ctx.append_basic_block(function, "entry"));
+    let param = |index| function.get_nth_param(index).unwrap().into_pointer_value();
+    let (owner, state) = (param(0), param(1));
+    let inner = ValueEmitter {
+        module: values.module,
+        ctx: values.ctx,
+        llvm: values.llvm,
+        builder: &builder,
+        value: function,
+        fault_sink: Some((param(2), param(3))),
+    };
+    let settled = values.ctx.append_basic_block(function, "settled");
+    let pending = values.ctx.append_basic_block(function, "pending");
+    let poll_fn = coro::external(
+        values.llvm,
+        poll,
+        i32_ty.fn_type(&[pointer.into(); 2], false),
+    )?;
+    let status = suspend::call_value(
+        &builder,
+        poll_fn,
+        &[owner.into(), state.into()],
+        "release.operation.status",
+    )?
+    .into_int_value();
+    let waiting = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_zero(),
+            "release.operation.waiting",
+        )
+        .llvm_ctx("test unfinished operation cleanup")?;
+    builder
+        .build_conditional_branch(waiting, pending, settled)
+        .llvm_ctx("wait for operation cleanup")?;
+    builder.position_at_end(pending);
+    builder
+        .build_return(Some(&i32_ty.const_zero()))
+        .llvm_ctx("leave an unfinished drain to the thunk")?;
+    builder.position_at_end(settled);
+    let take_fault = coro::external(
+        values.llvm,
+        fault,
+        pointer.fn_type(&[pointer.into()], false),
+    )?;
+    let raised = suspend::call_value(
+        &builder,
+        take_fault,
+        &[owner.into()],
+        "release.operation.fault",
+    )?;
+    let slot = builder
+        .build_alloca(pointer, "release.operation.fault.slot")
+        .llvm_ctx("own operation cleanup fault")?;
+    builder
+        .build_store(slot, raised)
+        .llvm_ctx("own operation cleanup fault")?;
+    let code_fn = coro::external(
+        values.llvm,
+        "hew_fault_code",
+        i32_ty.fn_type(&[pointer.into()], false),
+    )?;
+    let code = suspend::call_value(
+        &builder,
+        code_fn,
+        &[raised.into()],
+        "release.operation.code",
+    )?
+    .into_int_value();
+    combine(&inner, state, slot, code)?;
+    let free = external_drop(values.ctx, values.llvm, free)?;
+    builder
+        .build_call(free, &[owner.into()], "")
+        .llvm_ctx("free drained operation")?;
+    builder
+        .build_return(Some(&i32_ty.const_int(1, false)))
+        .llvm_ctx("finish a settled operation")?;
+    Ok(function)
+}
+
+fn handle_body<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+    source: PointerValue<'ctx>,
+    kind: Handle,
+) -> CodegenResult<()> {
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let owner = values
+        .builder
+        .build_load(pointer, source, "release.handle.owner")
+        .llvm_ctx("consume operation handle")?
+        .into_pointer_value();
+    let (poll, fault, free) = match kind {
+        Handle::ActorCall => (
+            "hew_actor_call_cleanup_poll",
+            "hew_actor_call_cleanup_fault",
+            "hew_actor_call_free",
+        ),
+        Handle::RemoteCall => (
+            "hew_remote_call_cleanup_poll",
+            "hew_remote_call_cleanup_fault",
+            "hew_remote_call_free",
+        ),
+        Handle::Cursor => return drain_cursor_inline(values, frame, owner),
+    };
+    drain_operation(values, frame, owner, poll, fault)?;
+    let free = external_drop(values.ctx, values.llvm, free)?;
+    values
+        .builder
+        .build_call(free, &[owner.into()], "")
+        .llvm_ctx("free drained operation")?;
+    Ok(())
+}
+
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn release_loaded(
         &self,
@@ -276,6 +605,42 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_store(source, value)
             .llvm_ctx("transfer owner to consuming release")?;
         slot(&values, frame, source, layout, action)
+    }
+
+    /// Release a stream operation: any displaced owners drain through the
+    /// shared cursor thunk, and nothing starts when none were displaced.
+    pub(super) fn release_stream_operation(
+        &self,
+        operation: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("stream operation release lacks continuation".into())
+        })?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let begin = coro::external(
+            self.llvm,
+            "hew_stream_operation_release_begin",
+            pointer.fn_type(&[pointer.into()], false),
+        )?;
+        let cursor = suspend::call_value(
+            &self.builder,
+            begin,
+            &[operation.into()],
+            "stream.release.cursor",
+        )?
+        .into_pointer_value();
+        drain_cursor(&self.value_emitter(), frame, cursor)
+    }
+
+    pub(super) fn release_handle(
+        &self,
+        kind: Handle,
+        operation: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("operation release lacks caller continuation".into())
+        })?;
+        handle(&self.value_emitter(), frame, operation, kind)
     }
 }
 
@@ -352,7 +717,7 @@ fn body<'ctx>(
                     callee,
                     &[receiver, fault.into()],
                 )?;
-                combine(values, frame, fault, status)
+                combine(values, frame.state, fault, status)
             }
             hew_mir::physical::ResourceRelease::Generator => generator(values, frame, source),
             hew_mir::physical::ResourceRelease::ActorRequest => cursor(
@@ -364,24 +729,7 @@ fn body<'ctx>(
                 None,
             ),
             hew_mir::physical::ResourceRelease::ActorCall => {
-                let owner = values
-                    .builder
-                    .build_load(pointer, source, "release.call")
-                    .llvm_ctx("consume actor call")?
-                    .into_pointer_value();
-                drain_operation(
-                    values,
-                    frame,
-                    owner,
-                    "hew_actor_call_cleanup_poll",
-                    "hew_actor_call_cleanup_fault",
-                )?;
-                let free = external_drop(values.ctx, values.llvm, "hew_actor_call_free")?;
-                values
-                    .builder
-                    .build_call(free, &[owner.into()], "")
-                    .llvm_ctx("free drained actor call")?;
-                Ok(())
+                handle_body(values, frame, source, Handle::ActorCall)
             }
             hew_mir::physical::ResourceRelease::Stream => cursor(
                 values,
@@ -529,7 +877,7 @@ fn body<'ctx>(
     }
 }
 
-pub(super) fn drain_operation<'ctx>(
+fn drain_operation<'ctx>(
     values: &ValueEmitter<'_, 'ctx>,
     frame: &coro::Frame<'ctx>,
     owner: PointerValue<'ctx>,
@@ -618,7 +966,7 @@ pub(super) fn drain_operation<'ctx>(
         "release.operation.code",
     )?
     .into_int_value();
-    combine(values, frame, fault, code)
+    combine(values, frame.state, fault, code)
 }
 
 fn cursor<'ctx>(
@@ -651,7 +999,7 @@ fn cursor<'ctx>(
     let begin = coro::external(values.llvm, begin_name, pointer.fn_type(&types, false))?;
     let cursor =
         suspend::call_value(values.builder, begin, &args, "release.cursor")?.into_pointer_value();
-    drain_cursor(values, frame, cursor)
+    drain_cursor_inline(values, frame, cursor)
 }
 
 /// Drain detached owners using the caller's checked suspension capability.
@@ -673,7 +1021,38 @@ pub(super) fn drain<'ctx>(
     })
 }
 
+/// Drain detached owners through the shared cursor thunk. Nothing is started
+/// when no owner was displaced.
 pub(super) fn drain_cursor<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+    cursor: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let drain = values
+        .ctx
+        .append_basic_block(values.value, "release.cursor.drain");
+    let done = values
+        .ctx
+        .append_basic_block(values.value, "release.cursor.skip");
+    let present = values
+        .builder
+        .build_is_not_null(cursor, "release.cursor.displaced")
+        .llvm_ctx("test displaced owners")?;
+    values
+        .builder
+        .build_conditional_branch(present, drain, done)
+        .llvm_ctx("skip an empty cursor")?;
+    values.builder.position_at_end(drain);
+    handle(values, frame, cursor, Handle::Cursor)?;
+    values
+        .builder
+        .build_unconditional_branch(done)
+        .llvm_ctx("finish displaced owners")?;
+    values.builder.position_at_end(done);
+    Ok(())
+}
+
+fn drain_cursor_inline<'ctx>(
     values: &ValueEmitter<'_, 'ctx>,
     frame: &coro::Frame<'ctx>,
     cursor: PointerValue<'ctx>,
@@ -902,7 +1281,7 @@ fn generator<'ctx>(
         "release.generator.code",
     )?
     .into_int_value();
-    combine(values, frame, fault, code)?;
+    combine(values, frame.state, fault, code)?;
     let free = external_drop(values.ctx, values.llvm, "hew_checked_generator_free")?;
     values
         .builder

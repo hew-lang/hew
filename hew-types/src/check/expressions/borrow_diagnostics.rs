@@ -24,6 +24,17 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
+    /// `scopes` plus the scope a handler's named error binder opens; the
+    /// wildcard `_` opens none.
+    fn with_handler_binder(
+        scopes: &[DangerousRcScope],
+        binder: Option<Ident>,
+    ) -> Vec<DangerousRcScope> {
+        let mut handler_scopes = scopes.to_vec();
+        handler_scopes.extend(binder.map(|name| HashMap::from([(name.to_string(), None)])));
+        handler_scopes
+    }
+
     /// If `expr` is a bare identifier matching one of the visible dangerous Rc
     /// bindings (or a block expression whose trailing expression is), emit a
     /// fail-closed error.
@@ -38,8 +49,7 @@ impl Checker {
                 self.check_expr_is_rc_param_return(&right.0, &right.1, scopes);
             }
             Expr::Handle { error, body, .. } => {
-                let mut handler_scopes = scopes.to_vec();
-                handler_scopes.push(HashMap::from([(error.0.to_string(), None)]));
+                let handler_scopes = Self::with_handler_binder(scopes, error.0);
                 self.check_expr_is_rc_param_return(&body.0, &body.1, &handler_scopes);
             }
             Expr::Ident(ident) => {
@@ -956,8 +966,12 @@ impl Checker {
             }
             Expr::Coalesce { right: body, .. } | Expr::Handle { body, .. } => {
                 let mut branch_bindings = bindings.clone();
-                if let Expr::Handle { error, .. } = expr {
-                    branch_bindings.remove(error.0.name.as_str());
+                if let Expr::Handle {
+                    error: (Some(name), _),
+                    ..
+                } = expr
+                {
+                    branch_bindings.remove(name.name.as_str());
                 }
                 self.check_expr_for_owned_handle_field_return(
                     &body.0,

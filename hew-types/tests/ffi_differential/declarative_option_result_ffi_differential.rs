@@ -22,7 +22,7 @@ fn exercise_option(opt_i64: Option<i64>, opt_str: Option<string>, consume opt_po
 
 fn exercise_result(r_i64: Result<i64, string>, consume r_f64: Result<f64, string>) {
     let _: bool = r_i64.is_err();
-    let _: f64 = r_f64.unwrap_or(0.0);
+    let _: Option<f64> = r_f64.ok();
 }
 "#;
     let output = typecheck(source);
@@ -47,7 +47,7 @@ fn exercise_result(r_i64: Result<i64, string>, consume r_f64: Result<f64, string
         ("std.option", "is_none"),
         ("std.option", "expect"),
         ("std.result", "is_err"),
-        ("std.result", "unwrap_or"),
+        ("std.result", "ok"),
     ] {
         assert!(
             targets

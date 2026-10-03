@@ -3122,24 +3122,27 @@ fn main() {
 
 Inside an Option-returning fn, `o?` yields the inner value on Some and early-returns None on None.
 
-### Hand-rolled unwrap_or via match
+### Matching a Result for a default
 
 ```hew
-fn unwrap_or(r: Result<i64, string>, fallback: i64) -> i64 {
+fn value_or(r: Result<i64, string>, fallback: i64) -> i64 {
     match r { .Ok(v) => v, .Err(_) => fallback }
 }
 fn main() {
     let ok: Result<i64, string> = .Ok(42);
     let err: Result<i64, string> = .Err("bad");
-    println(unwrap_or(ok, 0));    // 42
-    println(unwrap_or(err, -1));  // -1
+    println(value_or(ok, 0));     // 42
+    println(value_or(err, -1));   // -1
 }
 ```
 
-`r.unwrap_or(fallback)`/`.is_ok()`/`.is_err()` also work directly as method
-calls on `Result`, with no import needed (`Option` has the matching
-`.is_some()`/`.is_none()`/`.expect()`/`.unwrap_or()` — see below), along
-with the combinators in "Option and Result methods" below.
+`r handle e { fallback }` is the short form of that match: success supplies
+the payload and only an error runs the block, with `e` bound to the error;
+write `r handle _ { fallback }` when the block does not need the error.
+`.is_ok()`/`.is_err()` also work directly as method calls on `Result`, with
+no import needed (`Option` has the matching `.is_some()`/`.is_none()`/
+`.expect()`, and `opt ?? fallback` supplies a default for an absent value),
+along with the combinators in "Option and Result methods" below.
 
 ### Option .is_some() / .is_none()
 
@@ -3162,8 +3165,8 @@ For Option presence checks, `.is_some()`/`.is_none()` read cleanly and return `b
 fn main() {
     let some_five: Option<i64> = .Some(5);
     let none_i64: Option<i64> = .None;
-    println(some_five.map(|x: i64| x * 2).unwrap_or(0));  // 10
-    println(none_i64.unwrap_or_else(|| 99));              // 99
+    println(some_five.map(|x: i64| x * 2) ?? 0);  // 10
+    println(none_i64 ?? 99);                      // 99
 
     let ok: Result<i64, string> = .Ok(10);
     match ok.map(|x: i64| x + 1) { .Ok(v) => println(v), .Err(_) => {} }  // 11
@@ -3174,12 +3177,12 @@ fn main() {
 ```
 
 Like `.len()`, these methods need no import. `Option` has `map`,
-`and_then`, `or_else`, `unwrap_or_else`, `ok_or` and `take`; `Result` has
-`map`, `map_err`, `and_then`, `or_else`, `unwrap_or_else`, `ok` and `err`.
+`and_then`, `or_else`, `ok_or` and `take`; `Result` has `map`, `map_err`,
+`and_then`, `or_else`, `ok` and `err`.
 The extracting and combining methods consume the value they are called
 on, so a borrowed parameter needs `consume` to use them; `??` supplies a
-default without consuming. `unwrap_or` and `ok_or` consume their fallback
-or error argument as well.
+default without consuming, and `handle` does the same for a `Result`.
+`ok_or` consumes its error argument as well.
 
 ### Option .take()
 
@@ -3187,7 +3190,7 @@ or error argument as well.
 fn main() {
     var pending: Option<string> = .Some("job");
     let job = pending.take();
-    println(job.unwrap_or("none"));     // job
+    println(job ?? "none");            // job
     println(pending.is_none());         // true
 }
 ```
@@ -3353,7 +3356,7 @@ fn main() {
 }
 ```
 
-`.find(needle)` returns `Option<i64>` — `Some(byte_index)` of the first occurrence, or `None` when the needle does not occur. Consume it with `match`, or use `.unwrap_or(-1)` when a sentinel is convenient.
+`.find(needle)` returns `Option<i64>` — `Some(byte_index)` of the first occurrence, or `None` when the needle does not occur. Consume it with `match`, or use `?? -1` when a sentinel is convenient.
 
 ### .len() and .contains()
 
@@ -3684,13 +3687,13 @@ Use `?` to short-circuit Err and propagate it; the enclosing fn must return a Re
 import std.string;
 fn main() {
     println(string.from_int(42));            // 42
-    println(string.to_int("100").unwrap_or(0));  // 100
+    println(string.to_int("100") handle _ { 0 });  // 100
     println(string.repeat("*", 3));          // ***
     println(string.pad_left("7", 3, "0"));   // 007
 }
 ```
 
-Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` returns `Option<i64>` — use `.unwrap_or(default)` or `match` to handle a parse failure.
+Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` returns `Result<i64, string>` — use `handle` or `match` to recover from a parse failure.
 
 ### std.math helpers
 

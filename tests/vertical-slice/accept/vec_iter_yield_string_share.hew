@@ -24,13 +24,13 @@
 fn keep_expensive(totals: HashMap<string, i64>) -> i64 {
     var kept: HashMap<string, i64> = HashMap.new();
     for category in totals.keys() {
-        let cents = totals.get(category).unwrap_or(0);
+        let cents = totals.get(category) ?? 0;
         if cents > 500 {
             kept.insert(category, cents);
         }
         // Abandonment point after the conditional move: `unwrap()` lowers a
         // trap edge inside the body region.
-        let probe = totals.get("groceries-heap".to_upper()).unwrap_or(0) + totals.len();
+        let probe = (totals.get("groceries-heap".to_upper()) ?? 0) + totals.len();
         if probe < 0 {
             return -1;
         }
@@ -42,7 +42,7 @@ fn best_category(totals: HashMap<string, i64>) -> string {
     var best_name = "";
     var best_cents = -1;
     for category in totals.keys() {
-        let cents = totals.get(category).unwrap_or(0);
+        let cents = totals.get(category) ?? 0;
         if cents > best_cents {
             best_cents = cents;
             best_name = category;
@@ -77,7 +77,7 @@ fn first_with_prefix(names: Vec<string>) -> string {
 
 fn find_over(totals: HashMap<string, i64>, floor: i64) -> string {
     for category in totals.keys() {
-        if totals.get(category).unwrap_or(0) > floor {
+        if (totals.get(category) ?? 0) > floor {
             return category;
         }
     }

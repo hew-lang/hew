@@ -551,10 +551,11 @@ pub enum Expr {
         right: Box<Spanned<Expr>>,
     },
     /// Recover one Result expression. The error binder exists only in the
-    /// ordinary lexical handler block, not in the operand or continuation.
+    /// ordinary lexical handler block, not in the operand or continuation;
+    /// `None` is the wildcard `_`, which binds nothing.
     Handle {
         operand: Box<Spanned<Expr>>,
-        error: Spanned<Ident>,
+        error: Spanned<Option<Ident>>,
         body: Box<Spanned<Expr>>,
     },
     Range {

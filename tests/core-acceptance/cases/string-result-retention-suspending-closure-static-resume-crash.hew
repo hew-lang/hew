@@ -49,7 +49,7 @@ fn main() {
     // entered within a wall-clock millisecond, and a baseline taken one frame
     // early reads back as a leak of exactly that frame.
     let _ = observe.barrier();
-    let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
+    let frame_baseline = observe.read("coroutines.frame_bytes_live") ?? 0;
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
     let r = runner.go(0);
@@ -62,13 +62,13 @@ fn main() {
     // a crashed dispatch is attributed before its frame is freed. Read the
     // balance until it settles, bounded, so a real leak still prints its
     // retained bytes and fails the case.
-    var retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+    var retained = (observe.read("coroutines.frame_bytes_live") ?? 0) - frame_baseline;
     for _ in 0 .. 200 {
         if retained == 0 {
             break;
         }
         let _ = observe.barrier();
-        retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+        retained = (observe.read("coroutines.frame_bytes_live") ?? 0) - frame_baseline;
     }
     println(retained);
 }

@@ -17,7 +17,7 @@ import std.io;
 import std.time.datetime;
 
 fn reader() -> string {
-    io.read_line().unwrap_or("eof")
+    io.read_line() ?? "eof"
 }
 
 fn ticks() -> i64 {
@@ -54,8 +54,8 @@ fn main() {
         .Some("deadline")
     };
     println(f"elapsed {datetime.now_ms() - start}");
-    println(first.unwrap_or("eof"));
-    println(io.read_line().unwrap_or("eof"));
+    println(first ?? "eof");
+    println(io.read_line() ?? "eof");
 }
 "#;
 
@@ -73,7 +73,7 @@ fn main() {
         }
     }
     println("end");
-    println(io.read_line().unwrap_or("eof again"));
+    println(io.read_line() ?? "eof again");
 }
 "#;
 
@@ -81,7 +81,7 @@ const QUEUED: &str = r#"
 import std.io;
 
 fn reader() -> string {
-    io.read_line().unwrap_or("eof")
+    io.read_line() ?? "eof"
 }
 
 fn main() {
@@ -108,7 +108,7 @@ import std.io;
 
 fn impatient() -> string {
     scope within 100ms {
-        io.read_line().unwrap_or("eof")
+        io.read_line() ?? "eof"
     } handle failure {
         "deadline"
     }
@@ -116,7 +116,7 @@ fn impatient() -> string {
 
 fn patient() -> string {
     sleep(20ms);
-    io.read_line().unwrap_or("eof")
+    io.read_line() ?? "eof"
 }
 
 fn main() {
@@ -130,10 +130,11 @@ fn main() {
     };
     println(f"x {first}");
     println(f"y {second}");
-    println(f"after {io.read_line().unwrap_or("eof")}");
+    println(f"after {io.read_line() ?? "eof"}");
 }
 "#;
 
+#[cfg(unix)]
 const FAILING: &str = r#"
 import std.io;
 

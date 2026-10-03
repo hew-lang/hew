@@ -2,19 +2,15 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-// KEEP(wasm32 non-test): `AtomicBool` types `SupervisorControl::teardown_claimed`,
-// the single-shot claim that makes supervisor reclamation happen exactly once —
-// but `SupervisorControl` and its impl are `#[cfg(not(target_arch = "wasm32"))]`
-// while this import is unconditional. It is also used by
-// `LocalHandles::fail_next_registration` under `cfg(test)`. A wasm32 non-test
-// build is therefore the only configuration with no user for this one name;
-// `AtomicUsize` and `Ordering` still have users there, which is why rustc flags
-// the name and not the line. Split out so the allow covers `AtomicBool` alone.
-#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(unused_imports))]
+// `AtomicBool` types `SupervisorControl` (native) and the `cfg(test)`
+// registration-failure injector; a wasm32 non-test build has no user.
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex, PoisonError};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 use crate::lifetime::PoisonSafe;
@@ -530,6 +526,7 @@ impl LocalHandles {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn begin_shutdown(&self) {
         let mut state = self
             .publication_gate
@@ -612,6 +609,7 @@ impl LocalHandles {
     }
 
     #[cfg(any(test, target_arch = "wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn reopen_after_shutdown(&self) {
         let mut state = self
             .publication_gate
@@ -853,6 +851,7 @@ impl LocalHandles {
             .access(|state| (state.routes.len(), state.actor_tokens.len()))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn actor_route_count(&self) -> usize {
         self.state.access(|state| state.actor_tokens.len())
     }
@@ -1070,6 +1069,7 @@ pub(crate) fn begin_current_actor_publication(
 }
 
 /// Start one actor publication in an explicitly selected runtime authority.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_actor_publication_in(
     handles: &LocalHandles,
 ) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
@@ -1085,6 +1085,7 @@ pub(crate) fn begin_supervisor_publication_in(
 
 /// Retire an exact direct actor route in the current runtime authority.
 #[cfg(target_arch = "wasm32")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn retire_current_actor(token: HewLocalPidId, actor_id: u64) -> RetireActorResult {
     current_handles().map_or(RetireActorResult::AlreadyRetired, |handles| {
         handles.retire_actor(token, actor_id)
@@ -1102,6 +1103,7 @@ pub(crate) fn retire_actor_in(
 }
 
 /// Assert that actor cleanup retired every direct actor route.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn assert_current_actor_routes_empty() {
     let count = current_handles().map_or(0, LocalHandles::actor_route_count);
     assert_eq!(count, 0, "local actor handle routes survived actor cleanup");
@@ -1122,6 +1124,7 @@ pub(crate) fn current_publication_open_for_test() -> bool {
 }
 
 /// Close publication and wait for every in-flight spawn before bulk drain.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_current_shutdown() {
     if let Some(handles) = current_handles() {
         handles.begin_shutdown();
@@ -1156,6 +1159,7 @@ pub(crate) fn assert_current_supervisors_empty() {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn finish_current_shutdown() {
     if let Some(handles) = current_handles() {
         handles.reopen_after_shutdown();

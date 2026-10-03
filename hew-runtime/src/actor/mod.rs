@@ -11,7 +11,7 @@
 use crate::lifetime::live_actors;
 use std::cell::Cell;
 use std::collections::HashMap;
-// live on not(wasm32) — drain_actors; dead here; caller actor.rs:2729
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -24,6 +24,7 @@ use crate::internal::types::{
     AskError, HewActorState, HewDispatchFn, HewError, HewOverflowPolicy, HewSysDispatchFn,
 };
 use crate::mailbox::{self, HewMailbox};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::reply_channel::{self, HewReplyChannel};
 #[cfg(test)]
 use crate::scheduler;
@@ -440,6 +441,7 @@ thread_local! {
 
 /// Write `err` to the local-ask error slot and return `null`.
 #[inline]
+#[cfg(not(target_arch = "wasm32"))]
 fn actor_ask_null(err: AskError) -> *mut c_void {
     record_ask_error(err);
     ptr::null_mut()
@@ -479,6 +481,7 @@ pub(crate) fn actor_ask_null_actor_stopped() -> *mut c_void {
 
 /// Clear the local-ask error slot (called on successful ask return).
 #[inline]
+#[cfg(not(target_arch = "wasm32"))]
 fn actor_ask_clear() {
     LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
 }
@@ -503,6 +506,7 @@ pub(crate) fn actor_ask_take_last_error_raw() -> i32 {
 /// calling this function, so `ErrClosed` never reaches the `_` arm in
 /// practice.
 #[inline]
+#[cfg(not(target_arch = "wasm32"))]
 fn send_err_to_ask_err(code: i32) -> AskError {
     const FULL: i32 = HewError::ErrMailboxFull as i32;
     match code {
@@ -1476,7 +1480,7 @@ pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
 // `#[cfg(not(target_arch = "wasm32"))]` while `pub mod actor` is ungated — the
 // same asymmetry already annotated elsewhere in this file. The bit it writes,
 // `HewActor::state_drop_borrowed`, is READ on both targets.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording borrowed state provenance");
@@ -1502,7 +1506,7 @@ pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
 // the native-only supervisor module; it flips provenance to owned once the
 // template deep-clone breaks the alias. Same cfg asymmetry as
 // `mark_state_drop_borrowed`.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording owned state provenance");
@@ -1514,6 +1518,7 @@ pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
         .store(false, Ordering::Release);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
     let token = actor
         .suspended_cancel_token
@@ -1666,8 +1671,6 @@ fn record_terminate_wait_poll_tick() {
     TERMINATE_WAIT_POLL_TICKS.fetch_add(1, Ordering::Relaxed);
 }
 
-// live on not(wasm32) — actor_stop/drain wait-loop; dead on wasm32; caller actor.rs:1194
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[cfg(not(test))]
 #[inline]
 fn record_terminate_wait_poll_tick() {}
@@ -1676,7 +1679,6 @@ fn record_terminate_wait_poll_tick() {}
 ///
 /// Test wrapper around [`live_actors::with_live_actor_by_id`].
 #[cfg(test)]
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
     expected: *mut HewActor,

@@ -6,9 +6,9 @@ type Slot {
 
 fn main() {
     var pending: Option<string> = .Some("job");
-    println(pending.take().unwrap_or("none"));
+    println(pending.take() ?? "none");
     println(pending.is_none());
     var slot = Slot { job: .Some("field") };
-    println(slot.job.take().unwrap_or("none"));
-    println(slot.job.take().unwrap_or("none"));
+    println(slot.job.take() ?? "none");
+    println(slot.job.take() ?? "none");
 }

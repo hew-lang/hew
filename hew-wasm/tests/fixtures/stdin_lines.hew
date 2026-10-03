@@ -1,8 +1,8 @@
 import std.io;
 
 fn main() {
-    let first = io.read_line().unwrap_or("<none>");
-    let second = io.read_line().unwrap_or("<none>");
+    let first = io.read_line() ?? "<none>";
+    let second = io.read_line() ?? "<none>";
     println(f"first=[{first}] second=[{second}]");
     let rest = io.read_all();
     println(f"rest=[{rest}]");

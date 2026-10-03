@@ -1,0 +1,9 @@
+// The wildcard binder is not a name: the recovery block cannot read it.
+fn parse(text: string) -> Result<i64, string> {
+    if text == "7" { .Ok(7) } else { .Err(text) }
+}
+
+fn main() {
+    let read = parse("x") handle _ { _.len() };
+    println(read);
+}

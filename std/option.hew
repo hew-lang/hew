@@ -24,26 +24,6 @@ impl<T> Option<T> {
             .None => panic(reason),
         }
     }
-    /// Unwrap the value, or return `fallback` if `None`.
-    pub fn unwrap_or(consume self, consume fallback: T) -> T {
-        match self {
-            .Some(v) => v,
-            .None => fallback,
-        }
-    }
-    /// Unwrap the value, or compute a fallback from `f` if `None`. Prefer
-    /// this over `unwrap_or` when the fallback is expensive to build, since
-    /// `f` runs only on the `None` path.
-    pub fn unwrap_or_else(consume self, f: fn() -> T) -> T {
-        match self {
-            .Some(v) => v,
-            // Braced, not a bare `f()`: the pinned tree-sitter-hew grammar
-            // does not yet parse a zero-argument call as a bare match-arm body.
-            .None => {
-                f()
-            }
-        }
-    }
     /// Apply `f` to the contained value, or return `None` unchanged.
     pub fn map<U>(consume self, f: fn(T) -> U) -> Option<U> {
         match self {

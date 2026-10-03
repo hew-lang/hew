@@ -164,6 +164,82 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 }
 
+/// How a suspending operation leaves its shared release block.
+pub(super) const EXIT_NORMAL: u64 = 0;
+pub(super) const EXIT_CANCEL: u64 = 1;
+pub(super) const EXIT_UNWIND: u64 = 2;
+
+/// The exits of one suspending operation converging on a single release: each
+/// exit records its fault, leaves with a code, and the release block frees the
+/// operation once before the code selects the outgoing MIR edge.
+pub(super) struct ExitJoin<'ctx> {
+    block: BasicBlock<'ctx>,
+    exits: Vec<(IntValue<'ctx>, BasicBlock<'ctx>)>,
+}
+
+impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn exit_join(&self, name: &str) -> ExitJoin<'ctx> {
+        ExitJoin {
+            block: self.ctx.append_basic_block(self.value, name),
+            exits: Vec::new(),
+        }
+    }
+
+    /// Branch from the current block into the join, tagged with `code`.
+    pub(super) fn leave(&self, join: &mut ExitJoin<'ctx>, code: u64) -> CodegenResult<()> {
+        let from = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::FailClosed("operation exit lacks its block".into()))?;
+        self.builder
+            .build_unconditional_branch(join.block)
+            .llvm_ctx("converge operation exits")?;
+        join.exits
+            .push((self.ctx.i32_type().const_int(code, false), from));
+        Ok(())
+    }
+
+    /// Position in the join and return the code of the exit that reached it.
+    pub(super) fn enter_join(&self, join: &ExitJoin<'ctx>) -> CodegenResult<IntValue<'ctx>> {
+        self.builder.position_at_end(join.block);
+        if let Some((code, _)) = join.exits.first() {
+            if join.exits.iter().all(|(other, _)| other == code) {
+                return Ok(*code);
+            }
+        }
+        let selected = self
+            .builder
+            .build_phi(self.ctx.i32_type(), "operation.exit")
+            .llvm_ctx("select operation exit")?;
+        for (code, from) in &join.exits {
+            selected.add_incoming(&[(code, *from)]);
+        }
+        Ok(selected.as_basic_value().into_int_value())
+    }
+
+    /// Dispatch on `selected` into one block per `(code, name)` arm; every
+    /// other code reaches `fallback`. Each block is left empty and positioned
+    /// by the caller.
+    pub(super) fn dispatch_exits<const N: usize>(
+        &self,
+        selected: IntValue<'ctx>,
+        arms: [(u64, &str); N],
+        fallback: &str,
+    ) -> CodegenResult<([BasicBlock<'ctx>; N], BasicBlock<'ctx>)> {
+        let blocks = arms.map(|(_, name)| self.ctx.append_basic_block(self.value, name));
+        let fallback = self.ctx.append_basic_block(self.value, fallback);
+        let cases: Vec<_> = arms
+            .iter()
+            .zip(&blocks)
+            .map(|((code, _), block)| (self.ctx.i32_type().const_int(*code, false), *block))
+            .collect();
+        self.builder
+            .build_switch(selected, fallback, &cases)
+            .llvm_ctx("dispatch operation exit")?;
+        Ok((blocks, fallback))
+    }
+}
+
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_finish(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         if let Some(frame) = &self.frame {
@@ -204,42 +280,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     pub(super) fn free_handle(&self, name: &str, handle: PointerValue<'ctx>) -> CodegenResult<()> {
-        if name == "hew_stream_operation_free_native" {
-            let frame = self.frame.as_ref().ok_or_else(|| {
-                CodegenError::FailClosed("stream operation release lacks continuation".into())
-            })?;
-            let pointer = self.ctx.ptr_type(AddressSpace::default());
-            let begin = coro::external(
-                self.llvm,
-                "hew_stream_operation_release_begin",
-                pointer.fn_type(&[pointer.into()], false),
-            )?;
-            let cursor = call_value(
-                &self.builder,
-                begin,
-                &[handle.into()],
-                "stream.release.cursor",
-            )?
-            .into_pointer_value();
-            return release::drain_cursor(&self.value_emitter(), frame, cursor);
-        }
-        let cleanup = match name {
-            "hew_actor_call_free" => Some((
-                "hew_actor_call_cleanup_poll",
-                "hew_actor_call_cleanup_fault",
-            )),
-            "hew_remote_call_free" => Some((
-                "hew_remote_call_cleanup_poll",
-                "hew_remote_call_cleanup_fault",
-            )),
-            _ => None,
-        };
-        if let Some((poll, fault)) = cleanup {
-            let frame = self.frame.as_ref().ok_or_else(|| {
-                CodegenError::FailClosed("call cleanup lacks continuation".into())
-            })?;
-            release::drain_operation(&self.value_emitter(), frame, handle, poll, fault)?;
-        }
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let free = coro::external(
             self.llvm,
@@ -357,15 +397,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_unconditional_branch(cancelled)
             .llvm_ctx("run sleep cancellation cleanup")?;
+        let mut join = self.exit_join("sleep.release");
         self.builder.position_at_end(completed);
-        self.free_handle("hew_coro_sleep_free", operation)?;
-        self.emit_edge(normal)?;
+        self.leave(&mut join, EXIT_NORMAL)?;
         self.builder.position_at_end(cancelled);
+        self.leave(&mut join, EXIT_CANCEL)?;
+        self.builder.position_at_end(failed);
+        self.leave(&mut join, EXIT_UNWIND)?;
+        let selected = self.enter_join(&join)?;
         self.free_handle("hew_coro_sleep_free", operation)?;
+        let ([normal_block, cancel_block], unwind_block) = self.dispatch_exits(
+            selected,
+            [(EXIT_NORMAL, "sleep.normal"), (EXIT_CANCEL, "sleep.cancel")],
+            "sleep.unwind",
+        )?;
+        self.builder.position_at_end(normal_block);
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(cancel_block);
         self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
-        self.builder.position_at_end(failed);
-        self.free_handle("hew_coro_sleep_free", operation)?;
+        self.builder.position_at_end(unwind_block);
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
         self.emit_edge(unwind)?;
         Ok(())

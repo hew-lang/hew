@@ -194,6 +194,7 @@ fn reclaim_pending_wheel_ref(ctx: &Arc<PeriodicCtx>) {
 /// have fired. The `Arc` refcount guarantees exactly one free across the
 /// callback and this function; ctxs are kept alive by the registry references
 /// held in `timers` for the whole duration, so no raw ctx is ever dangling.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
     let timers = ACTOR_TIMERS.access(|lock| {
         lock.as_mut()
@@ -276,6 +277,7 @@ pub(crate) fn quiesce_periodic_timers() {
 }
 
 /// Open periodic-timer admission for a newly installed runtime generation.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn reset_periodic_admission() {
     let _admission = PERIODIC_ADMISSION
         .write()

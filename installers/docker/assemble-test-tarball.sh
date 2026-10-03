@@ -3,7 +3,7 @@
 # Must be run from the repo root after `make release`.
 #
 # Output: dist/test-tarball/ — a directory with the tarball layout:
-#   bin/hew
+#   bin/hew, bin/hew-lsp, bin/hew-observe
 #   lib/libhew.a and target-specific libraries
 #   std/**/*.hew
 
@@ -23,7 +23,9 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}/bin" "${STAGING}/lib" "${STAGING}/std"
 
 # Binaries (codegen is embedded in the hew binary)
-install -m755 "${REPO_DIR}/build/bin/hew" "${STAGING}/bin/hew"
+for binary in hew hew-lsp hew-observe; do
+    install -m755 "${REPO_DIR}/build/bin/${binary}" "${STAGING}/bin/${binary}"
+done
 
 # Complete release library layout, including WASI and native target subtrees.
 cp -LR "${REPO_DIR}/build/lib/." "${STAGING}/lib/"

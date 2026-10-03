@@ -118,23 +118,6 @@ jobs:
       - name: Verify build tooling and checker behaviour
         run: make -k test-tooling compile-determinism-selftest test-obligation-site-diff
 
-  # Advisories, yanked crates, licences and sources are checked on every PR so
-  # a bad lock entry fails here rather than at release time.
-  dependency-policy:
-    name: Dependency policy
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - uses: ./.github/actions/setup-rust-build
-        with:
-          cache-shared-key: dependency-policy
-          tools: cargo-deny@0.19.6
-
-      - name: Check licences, advisories and sources
-        run: make dependency-policy
-
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
   # Runs analysis and source-to-VM tests, checks manifest freshness and builds
@@ -301,7 +284,6 @@ jobs:
         nextest,
         corpus,
         tooling,
-        dependency-policy,
       ]
     if: always()
     runs-on: ubuntu-24.04
@@ -354,10 +336,9 @@ jobs:
         env:
           BUILD_RESULT: ${{ needs.compiled-hew-linux.result }}
           SHARD_RESULT: ${{ needs.compiled-hew-shards.result }}
-          DEPENDENCY_POLICY_RESULT: ${{ needs.dependency-policy.result }}
         run: |
           set -euo pipefail
-          for leg in BUILD_RESULT SHARD_RESULT DEPENDENCY_POLICY_RESULT; do
+          for leg in BUILD_RESULT SHARD_RESULT; do
             result="${!leg}"
             if [ "$result" = success ]; then
               continue
@@ -587,4 +568,4 @@ jobs:
       - name: Install compiled Hew artefacts
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
       - name: Check source corpus and sandbox parity
-        run: make -o hew-native -o wasm-runtime grammar-parity sandbox-parity hew-check-all
+        run: make -o hew-native -o wasm-runtime sandbox-parity hew-check-all

@@ -1,0 +1,4 @@
+fn main() {
+    println("tick");
+    exit(5);
+}

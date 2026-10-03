@@ -7,9 +7,9 @@ use super::{
     verify_aggregate_project_borrow, verify_aggregate_project_copy, verify_borrow_dependency,
     verify_clone_action, verify_destroy_action, verify_tuple_get, verify_tuple_make,
     verify_value_recipe, verify_variant_make, ArgumentTransfer, BTreeMap, BTreeSet, BinaryOp,
-    BlockId, DestroyAction, OwnKind, PhysicalConst, PhysicalEdge, PhysicalError, PhysicalFunction,
-    PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalRepr, PhysicalRuntimeAction,
-    PhysicalRuntimeCarrier, ResolvedTy, StorageId, StorageOrigin,
+    BlockId, DestroyAction, OwnKind, PhysicalBlock, PhysicalConst, PhysicalEdge, PhysicalError,
+    PhysicalFunction, PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalRepr,
+    PhysicalRuntimeAction, PhysicalRuntimeCarrier, ResolvedTy, StorageId, StorageOrigin,
 };
 
 #[allow(
@@ -556,8 +556,13 @@ pub(crate) fn verify_initialization(
     }
     let borrows = &BorrowDependents::of(function);
     let mut incoming = BTreeMap::from([(function.entry, vec![entry])]);
-    let mut pending = vec![function.entry];
-    while let Some(block_id) = pending.pop() {
+    // Visit blocks in loop-aware reverse postorder, lowest rank first, each at
+    // most once per round. A loop settles before the code after it runs, so a
+    // body with hundreds of loops and suspension joins costs a few visits per
+    // block instead of a re-run of everything downstream per loop.
+    let order = reverse_postorder(function, &blocks);
+    let mut pending = BTreeSet::from([(order[&function.entry], function.entry)]);
+    while let Some((_, block_id)) = pending.pop_first() {
         let block = blocks.get(&block_id).ok_or_else(|| {
             PhysicalError::new(format!("physical CFG has no block {}", block_id.0))
         })?;
@@ -604,12 +609,45 @@ pub(crate) fn verify_initialization(
                     true
                 };
                 if changed {
-                    pending.push(target);
+                    pending.insert((order.get(&target).copied().unwrap_or(usize::MAX), target));
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Reverse-postorder rank of every block reachable from the entry. Any rank
+/// order reaches the same fixpoint; this one makes it cheap.
+fn reverse_postorder(
+    function: &PhysicalFunction,
+    blocks: &BTreeMap<BlockId, &PhysicalBlock>,
+) -> BTreeMap<BlockId, usize> {
+    let mut seen = BTreeSet::from([function.entry]);
+    let mut postorder = Vec::new();
+    let mut stack = vec![(function.entry, 0usize)];
+    while let Some((block, next)) = stack.pop() {
+        let edges = blocks
+            .get(&block)
+            .map(|block| defer::edges(&block.terminator))
+            .unwrap_or_default();
+        // Last edge first: a branch lists its loop body before its exit, so
+        // the exit finishes first and ranks after the whole loop.
+        if let Some(edge) = edges.len().checked_sub(next + 1).and_then(|i| edges.get(i)) {
+            stack.push((block, next + 1));
+            if seen.insert(edge.target) {
+                stack.push((edge.target, 0));
+            }
+        } else {
+            postorder.push(block);
+        }
+    }
+    postorder
+        .into_iter()
+        .rev()
+        .enumerate()
+        .map(|(rank, block)| (block, rank))
+        .collect()
 }
 
 pub(crate) fn initialized(

@@ -1,0 +1,11 @@
+[[case]]
+id = "concrete-from-selection"
+intent = "`Target.from(value)` with several `From` impls on the target reaches the impl the argument's type selects, including a generic impl, and agrees with the impl `?` applies at a failure edge."
+source = "cases/concrete-from-selection.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "901\n102\n105\n906\ntext\nwrapped\n897\n897\n"
+exit = 0

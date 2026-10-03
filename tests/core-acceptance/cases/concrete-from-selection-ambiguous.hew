@@ -1,0 +1,43 @@
+// The arguments must choose exactly one `From` impl: an integer literal fits
+// both integer widths, and a float fits neither. An argument that already
+// failed adds no ambiguity of its own.
+type Count {
+    n: i64;
+}
+
+impl From<i64> for Count {
+    fn from(value: i64) -> Count {
+        Count { n: value }
+    }
+}
+
+impl From<i32> for Count {
+    fn from(value: i32) -> Count {
+        Count { n: 1000 }
+    }
+}
+
+type Name {
+    text: string;
+}
+
+impl From<string> for Name {
+    fn from(value: string) -> Name {
+        Name { text: value }
+    }
+}
+
+impl From<char> for Name {
+    fn from(value: char) -> Name {
+        Name { text: "char" }
+    }
+}
+
+fn main() {
+    let wide: i64 = 5;
+    let chosen = Count.from(wide);
+    let both = Count.from(5);
+    let none = Name.from(1.5);
+    let _lost = Name.from(undefined);
+    println(f"{chosen.n} {both.n} {none.text}");
+}

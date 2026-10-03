@@ -17,14 +17,10 @@ The two sources must not duplicate a symbol.
 
 The combined classification feeds these consumers:
 
-- `scripts/verify-ffi-symbols.py --classify …`
-- the required CI lint gate (`make verify-ffi`, which runs `--classify stable --validate`)
 - the stable runtime-symbol set consumed by `hew-mir::runtime_symbols` and
   codegen-rs runtime lowering
-- the C ABI surface generator and the FFI ownership contract projection
-
-The verifier scans `hew-runtime` and `hew-std` exports and fails closed when an
-export is missing, duplicated, or assigned to the wrong crate.
+- the C ABI surface generator (`make cabi-surface`) and the FFI ownership
+  contract projection
 
 ## Two-tier model
 
@@ -132,74 +128,15 @@ no signal.
 The test is whether the caller can put the system channel into a state the runtime
 did not derive from an authenticated event, read it, or destroy it.
 
-### The property is TRANSITIVE, and it is computed
+### The property is transitive
 
-Everything above is a property of what a symbol *does*, and every audit of it
-read the symbols one at a time. That method enumerated this table four times
-and got four different answers — 3 symbols, then 9, then 16, then 17 — because
-a symbol does not have to touch the lane itself to breach the invariant. It
+A symbol does not have to touch the lane itself to breach the invariant; it
 only has to *call* something that does. `hew_actor_free` names no lane state
-anywhere in its body; it reaches `hew_mailbox_free` four calls down and
-destroys the lane there.
-
-So the rule is stated over the call graph:
-
-> A symbol is disqualified from `stable` if it, or **anything it can reach**,
-> produces, installs, mutates, observes, or destroys system-lane state.
-
-and `scripts/sys-lane-closure.py` (`make verify-sys-lane-closure`, part of
-`make lint`) computes it rather than asserting it:
-
-1. **Roots** — every function in `hew-runtime/src` and `hew-std/src` whose own
-   body names `sys_queue`, `sys_count`, `sys_dispatch`, `HewSysMsg` or
-   `Origin::Sys`. Comments, string literals and character literals are blanked
-   first so prose can neither mint nor hide a root, and so a brace that is data
-   is not read as syntax; test-only items are dropped, including whole files
-   behind a `#[cfg(test)] mod x;` in their parent. `#[cfg(any(target_arch =
-   "wasm32", test))]` is production wasm code and is deliberately NOT dropped.
-2. **Reachability** — reverse breadth-first search from the roots over call
-   edges, so the result is everything that can reach a lane operation, however
-   far away.
-3. **Verdict** — the gate fails if any `stable` or `stable-stdlib` symbol is in
-   that closure, and prints a witness path for each.
-
-The gate **fails closed**. A body it cannot brace-balance is a hard error
-naming the symbol and its `file:line`, never a skip: a symbol the parser drops
-is a symbol that can reach the system queue without appearing in the closure,
-which is the same defect class the gate exists to remove.
-
-Escapes live in `[sys-lane-closure.authenticated-edges]` and
-`[sys-lane-closure.non-roots]` in `scripts/runtime-export-classification.toml`.
-Each needs a written reason, each is checked for staleness, and an
-authenticated edge clears exactly one caller→callee pair — a *new* caller of
-the same callee still fails. An authenticated edge's **caller must not itself
-be user-declarable**, and the gate enforces that: an authenticated edge claims
-the runtime rather than the caller decides what crosses into the system queue,
-but a caller a program can name in an `extern` rt block composes the call's
-arguments, so it picks the destination and the reason. That rule is what keeps
-a waived callee from being re-exposed by a thin `stable` forwarder sitting one
-hop above it, without anyone having to notice the forwarder. `scripts/tests/test_sys_lane_closure.py` proves
-the gate still fails on a transitive reach, so a green run means something.
-
-This does not replace the judgement above; it replaces the enumeration. The
-question "is this edge authenticated?" is still answered by a human, but the
-question "which edges are there?" is no longer answered by reading.
-
-An edge waiver has one limit worth naming, because the first draft of this
-section ran into it. Cutting `free_actor_resources_with_options →
-hew_mailbox_free` makes the gate green for *every* caller of that edge at once,
-including `hew_actor_free` — the very symbol the transitive rule was written to
-catch. What the waiver can honestly say is "the runtime, not the caller, chose
-to reclaim this actor", and that sentence is false for a destructor a user
-`extern "rt"` block may name and point at any actor it holds. So
-`hew_actor_free` is `non-declarable`, and the waiver covers only the routes where the
-sentence is true: spawn rollback, `hew_exit` / runtime cleanup, and supervisor
-and group teardown. `hew_supervisor_remove_child` moved to `non-declarable` for the
-same reason and at the same limit: it reached the raw destructor on a
-caller-selected child index, and supervisor ownership does not change what the
-call reaches. Run `python3 scripts/sys-lane-closure.py --explain
-hew_actor_free` after deleting the edge to see the witness path this reasoning
-is about.
+in its body, yet it reaches `hew_mailbox_free` four calls down and destroys the
+lane there. A symbol is therefore disqualified from `stable` if it, or
+**anything it can reach**, produces, installs, mutates, observes, or destroys
+system-lane state. Judge a candidate by following its calls, not by reading
+its own body.
 
 ## Host requirements
 

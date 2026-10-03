@@ -1,0 +1,29 @@
+name: Setup release checks
+description: >
+  Install the pinned tools `make release-checks` needs (Python 3.12, the
+  repository Rust toolchain, cargo-deny 0.19.6 and cargo-about 0.9.0). The tag
+  release workflow and the pre-tag release gate share this so both run the
+  same dependency, notice and installer checks.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python 3.12
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: "3.12"
+
+    - uses: ./.github/actions/setup-rust-build
+      with:
+        cache-shared-key: release-license
+        tools: cargo-deny@0.19.6
+
+    - name: Install cargo-about 0.9.0
+      shell: bash
+      run: |
+        set -euo pipefail
+        archive="cargo-about-0.9.0-x86_64-unknown-linux-musl.tar.gz"
+        curl -fsSL "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.0/${archive}" -o "$RUNNER_TEMP/$archive"
+        echo "7a1a1bfb3ae3b6feabe9e1d6147a6b34b85bd0339bfd8b0ec11b312dee10d99a  $RUNNER_TEMP/$archive" | sha256sum --check
+        tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+        install -m 755 "$RUNNER_TEMP/cargo-about-0.9.0-x86_64-unknown-linux-musl/cargo-about" "$HOME/.cargo/bin/cargo-about"

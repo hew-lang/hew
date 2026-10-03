@@ -69,10 +69,15 @@ mod tests {
         attributes::{Attribute, AttributeLoc},
         context::Context,
         module::Module,
-        targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
+        targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
         AddressSpace, OptimizationLevel,
     };
-    use std::{path::PathBuf, process::Command, sync::OnceLock};
+    // The execution proof below links and runs a binary; it exists on Linux only.
+    #[cfg(target_os = "linux")]
+    use inkwell::targets::FileType;
+    use std::sync::OnceLock;
+    #[cfg(target_os = "linux")]
+    use std::{path::PathBuf, process::Command};
 
     fn initialize_targets() {
         static INIT: OnceLock<()> = OnceLock::new();

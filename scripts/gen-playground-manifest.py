@@ -188,7 +188,7 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # containing Vec<T>; the emitter routes through cmp.eq and the VM's
     # canonicalComparable handles records and vectors recursively.
     "types/generic_aggregate_eq": "runnable",
-    # types/option_result_methods: is_some/is_none/is_ok/is_err/unwrap/unwrap_or
+    # types/option_result_methods: is_some/is_none/is_ok/is_err/unwrap/??/handle
     # now lower via enum.tag/enum.payload bytecode sequences.
     "types/option_result_methods": "runnable",
     # basics/display_scalars: f-string interpolation for all canonical integer

@@ -1,89 +1,41 @@
 # syntax=docker/dockerfile:1
-# Self-contained multi-stage Alpine build for the Hew compiler.
-# All binaries are built statically inside Docker — no gcompat, no glibc.
+# Hew compiler image, assembled from an extracted Linux release archive.
+#
+# The image carries the same binaries, libhew.a and std/ as the published
+# hew-v<version>-linux-<arch>.tar.gz; nothing is compiled here. Files go to the
+# FHS layout the .deb/.rpm packages use (share/hew/std beside bin/).
+#
+# Targets (always pass --target; the last stage is the test image):
+#   runtime          the published ghcr.io/hew-lang/hew image
+#   clean-room-test  runtime plus the installation test, run in CI before the
+#                    runtime image may be published
 #
 # Usage:
-#   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew compile main.hew
+#   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew run main.hew
 #
-# Build:
-#   docker buildx build -f installers/docker/Dockerfile.release \
-#     --build-arg VERSION=0.1.6 -t hew:local .
+# Build (from the repository root, after extracting a release archive into
+# dist/test-tarball, for example with installers/docker/assemble-test-tarball.sh):
+#   docker buildx build -f installers/docker/Dockerfile.release --target runtime \
+#     --build-context tarball=dist/test-tarball \
+#     --build-arg VERSION=0.6.0 -t hew:local .
+
+FROM ubuntu:24.04 AS runtime
 
 ARG VERSION=0.0.0
+ARG REVISION=unknown
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Stage 0: Pre-built LLVM for Alpine (musl)
-# ═════════════════════════════════════════════════════════════════════════════
-# Built by alpine-llvm.yml and pushed to GHCR. Contains /opt/llvm-22 with the
-# static LLVM libraries, configs, and tools required by llvm-sys.
-# Alpine 3.21 does not ship the pinned LLVM 22 toolchain, so we use this image.
-FROM ghcr.io/hew-lang/llvm-alpine:22.1.0-v2 AS llvm
+# gcc + libc-dev: hew invokes the system C compiler to link compiled objects.
+# The runtime and standard library are in libhew.a; no Rust is needed.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Stage 1: Rust binaries + all std staticlibs (musl-static)
-# ═════════════════════════════════════════════════════════════════════════════
-FROM rust:alpine3.21 AS rust-builder
+COPY --from=tarball bin/hew bin/hew-lsp bin/hew-observe /usr/local/bin/
+COPY --from=tarball lib/libhew.a /usr/local/lib/libhew.a
+COPY --from=tarball std/ /usr/local/share/hew/std/
 
-# Copy pre-built LLVM from the llvm stage
-COPY --from=llvm /opt/llvm-22 /opt/llvm-22
-
-# musl-dev: libc headers for static linking
-# clang: C/C++ compiler for crates and native link steps
-# gcc/g++: crtbeginS.o and friends plus the C++ driver used for the LLVM shim;
-#      clang links feature-test binaries against
-#      the GCC runtime files on Alpine (aws-lc-sys build probes need them)
-# linux-headers: linux/random.h for the aws-lc-sys getrandom feature probe
-# libffi-dev: llvm-config --system-libs includes -lffi; the static-pie link
-#      needs Alpine's libffi.a
-# zlib-static/zstd-static: compression libs for LLVM (static)
-RUN apk add --no-cache \
-    musl-dev clang gcc g++ linux-headers libffi-dev \
-    zlib-dev zlib-static zstd-dev zstd-static
-
-ENV LLVM_PREFIX=/opt/llvm-22
-ENV LLVM_SYS_221_PREFIX=/opt/llvm-22
-ENV PATH=/opt/llvm-22/bin:$PATH
-# gcc, not clang: clang targeting x86_64-unknown-linux-musl does not search
-# Alpine's gcc runtime dir (crtbeginS.o, libgcc), which breaks the aws-lc-sys
-# feature-probe links; Alpine's own gcc handles musl natively.
-ENV CC=gcc
-ENV CXX=g++
-
-WORKDIR /src
-COPY . .
-
-# On Alpine musl, +crt-static is the default — binaries are fully static.
-RUN cargo build --release \
-    -p hew-cli \
-    -p hew-lsp \
-    -p hew-observe
-RUN cargo build -p hew-lib --profile release-lib
-
-# ═════════════════════════════════════════════════════════════════════════════
-# Stage 2: Minimal runtime image
-# ═════════════════════════════════════════════════════════════════════════════
-FROM alpine:edge
-
-ARG VERSION
-
-# gcc + musl-dev: needed by `hew compile` to link compiled programs (cc driver + libc).
-# lld is intentionally omitted — it pulls in 170MB of shared LLVM libs.
-# The compiler falls back to GNU ld when lld is absent.
-RUN apk add --no-cache ca-certificates gcc musl-dev
-
-# Non-root user
-RUN adduser -D -u 1000 hew
-
-# Binaries
-COPY --from=rust-builder /src/target/release/hew     /usr/local/bin/hew
-COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp
-COPY --from=rust-builder /src/target/release/hew-observe /usr/local/bin/hew-observe
-
-# Combined runtime + stdlib library
-COPY --from=rust-builder /src/target/release-lib/libhew.a /usr/local/lib/hew/libhew.a
-
-# Standard library Hew source files
-COPY std/ /usr/local/share/hew/std/
+# ubuntu:24.04 ships uid 1000 as `ubuntu`; replace it with an unprivileged hew.
+RUN userdel -r ubuntu && useradd -m -u 1000 -U hew
 
 USER hew
 WORKDIR /work
@@ -93,8 +45,20 @@ LABEL org.opencontainers.image.title="Hew" \
       org.opencontainers.image.url="https://hew.sh" \
       org.opencontainers.image.source="https://github.com/hew-lang/hew" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0" \
-      org.opencontainers.image.authors="Stephen Olesen <slepp@slepp.ca>" \
-      org.opencontainers.image.version="${VERSION}"
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 
 ENTRYPOINT ["/usr/local/bin/hew"]
 CMD ["--help"]
+
+FROM runtime AS clean-room-test
+
+USER root
+WORKDIR /work
+COPY installers/docker/test-stdlib.hew /work/test.hew
+COPY scripts/lib/timeout.sh /work/scripts/lib/timeout.sh
+COPY installers/docker/test-install.sh /work/installers/docker/test-install.sh
+RUN chmod +x /work/installers/docker/test-install.sh
+
+ENTRYPOINT []
+CMD ["/bin/bash", "/work/installers/docker/test-install.sh"]

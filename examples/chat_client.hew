@@ -100,7 +100,7 @@ fn main() {
     fork reader.pump();
     loop {
         // End of input leaves the chat like `/quit`.
-        let line = io.read_line().unwrap_or("/quit");
+        let line = io.read_line() ?? "/quit";
         if line.contains("/quit") {
             // Sink close drains the queued protocol marker before publishing
             // EOF to the peer, so `/quit` cannot race ahead of disconnect.

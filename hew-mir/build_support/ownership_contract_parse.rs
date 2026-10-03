@@ -66,9 +66,8 @@ fn quoted_list(body: &str) -> Vec<String> {
 ///
 /// Every axis is validated against a closed vocabulary — an unknown spelling
 /// aborts the build rather than degrading to a default — and the
-/// owned-result couplings from `verify-ffi-symbols.py` are re-checked here so
-/// the generated compiler table can never carry a row the out-of-band
-/// validator would reject.
+/// owned-result couplings are checked here so the generated compiler table
+/// can never carry an inconsistent row.
 fn validate_contract_row(symbol: &str, row: &ContractRow) {
     assert!(
         ["fresh", "retained", "owned", "borrowed", "none"].contains(&row.result.as_str()),
@@ -230,9 +229,8 @@ fn validate_contract_graph(contracts: &std::collections::BTreeMap<String, Contra
 /// Parse the full `[[ownership.contracts]]` table from TOML source. Every
 /// axis is validated against the closed schema vocabularies here
 /// (fail-closed: an unknown spelling aborts rather than degrading to a
-/// default), and the owned-result/release-symbol coupling from
-/// `verify-ffi-symbols.py` is re-checked so the generated compiler table can
-/// never carry a row the out-of-band validator would reject.
+/// default), and the owned-result/release-symbol coupling is checked so the
+/// generated compiler table can never carry an inconsistent row.
 ///
 /// Any table header other than `[[ownership.contracts]]` closes out the
 /// contract being accumulated and enters a skip state: keys inside a foreign

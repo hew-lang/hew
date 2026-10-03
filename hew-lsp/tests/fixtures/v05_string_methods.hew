@@ -11,7 +11,7 @@ fn string_methods_probe(text: string) -> i64 {
     let alpha: bool = text.is_alpha();
     let alnum: bool = text.is_alphanumeric();
     let cloned: string = text.clone();
-    found.unwrap_or(-1) + (ch.unwrap_or('\0') as i64)
+    (found ?? -1) + ((ch ?? '\0') as i64)
 }
 
 fn string_methods_use() -> i64 {

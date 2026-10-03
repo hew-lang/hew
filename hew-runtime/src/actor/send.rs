@@ -190,6 +190,7 @@ pub unsafe extern "C" fn hew_actor_await_send_by_id(
 ///
 /// `actor` must remain pinned, `data` must cover `size` readable bytes, and
 /// `sender`/`slot` must satisfy [`mailbox::mailbox_await_send`].
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn actor_await_send_pinned(
     actor: *mut HewActor,
     msg_type: i32,

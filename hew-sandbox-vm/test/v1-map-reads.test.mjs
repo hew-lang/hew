@@ -33,7 +33,7 @@ function mapPackage(cases = [{ name: "Some", fields: ["0"] }, { name: "None", fi
 
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.0-rc5",
+    hew_version: "0.6.0-rc6",
     compiler_version: "v1-map-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

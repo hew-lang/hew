@@ -394,20 +394,26 @@ fn optional_default_associates_right_below_logical_operators() {
 }
 
 #[test]
-fn local_handler_requires_named_binding_and_block() {
+fn local_handler_requires_binder_and_block() {
     for source in [
         "fn f() { value handle { 7 } }",
         "fn f() { value handle problem 7 }",
-        "fn f() { value handle _ { 7 } }",
     ] {
         assert!(!parse(source).errors.is_empty(), "{source}");
     }
 }
 
 #[test]
+fn local_handler_accepts_wildcard_binding() {
+    let parsed = parse("fn f() { value handle _ { 7 } }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+}
+
+#[test]
 fn local_recovery_formatting_preserves_nested_expression_meaning() {
     for source in [
         "fn f() { a handle first { b handle second { second } } }",
+        "fn f() { a handle _ { b handle _ { 0 } } }",
         "fn f() { (a handle problem { 7 }) + 1 }",
         "fn f() { a ?? (b handle problem { 7 }) }",
         "fn f() { await (a ?? b) }",

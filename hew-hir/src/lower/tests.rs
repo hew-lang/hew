@@ -2651,14 +2651,6 @@ fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() 
                     let child = value.expect("the payload is present");
                     child
                 }}
-                fn result_unwrap_or_probe(consume value: Result<Value, string>, consume fallback: Value) -> Value {{
-                    let child = value.unwrap_or(fallback);
-                    child
-                }}
-                fn option_unwrap_or_probe(consume value: Option<Value>, consume fallback: Value) -> Value {{
-                    let child = value.unwrap_or(fallback);
-                    child
-                }}
                 fn field_probe(value: Value) -> Value {{
                     let child = value.get_field("key").expect("a").expect("b");
                     child
@@ -2696,13 +2688,7 @@ fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() 
             assert_eq!(arms[0].body.ty, expected);
         }
         // The std Option/Result methods are calls whose result keeps it.
-        for name in [
-            "result_expect_probe",
-            "option_expect_probe",
-            "result_unwrap_or_probe",
-            "option_unwrap_or_probe",
-            "field_probe",
-        ] {
+        for name in ["result_expect_probe", "option_expect_probe", "field_probe"] {
             let expression = first_let_value(function_named(&lowered, name));
             let HirExprKind::Call { args, .. } = &expression.kind else {
                 panic!("payload extraction must lower to a method call: {expression:#?}")

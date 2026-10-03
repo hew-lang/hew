@@ -9,7 +9,7 @@ actor Store {
         data.insert(key, prefix);
     }
     receive fn get(key: string) -> string {
-        data.get(key).unwrap_or("missing")
+        (data.get(key) ?? "missing")
     }
     receive fn remove(key: string) {
         data.remove(key);
@@ -32,7 +32,7 @@ fn main() {
     store.remove("name").expect("remove");
     assert(store.get("name").expect("missing") == "missing");
     assert(original.len() == 1);
-    assert(original.get("kept").unwrap_or("missing") == "original");
+    assert((original.get("kept") ?? "missing") == "original");
     stop(store);
     stopped(store);
     println("actor map updates preserve state ownership");

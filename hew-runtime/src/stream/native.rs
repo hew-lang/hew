@@ -4,7 +4,9 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
+#[cfg(not(target_arch = "wasm32"))]
+use hew_cabi::vec::HewTypeOwnershipKind;
+use hew_cabi::vec::HewValueLayout;
 
 use super::{HewSink, HewStream};
 #[cfg(not(target_arch = "wasm32"))]

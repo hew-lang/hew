@@ -96,11 +96,11 @@ pub use self::types::{
     OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind,
     PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind,
-    ResolvedTraitDefault, ResultReturnKind, SpanKey, StackHint, StructuralWitness, TraitRef,
-    TryConversionKind, TryWidthCastLowering, TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind,
-    TypeDefView, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
-    WidthCastLowering,
+    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverObligation, ReceiverUpdate,
+    RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, StackHint, StructuralWitness,
+    TraitRef, TryConversionKind, TryWidthCastLowering, TypeAliasDef, TypeCheckOutput, TypeDef,
+    TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp,
+    WidthCastKind, WidthCastLowering,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,

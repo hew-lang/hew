@@ -1,0 +1,11 @@
+[[case]]
+id = "result-expect-display"
+intent = "Result expect on an error type with one Display impl traps with the reason and the error's Display text, while Option expect and Result expect over string errors need no extra impl."
+source = "cases/result-expect-display.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n8\nAda\n"
+stderr = "hew: failure: UserPanic (212): load failed: broken\n"
+exit = 1

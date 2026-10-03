@@ -1,0 +1,13 @@
+enum Failure {
+    Message(string);
+    Code(i64);
+}
+
+fn load() -> Result<string, Failure> {
+    .Err(Failure.Message("broken"))
+}
+
+fn main() {
+    let value = load().expect("load failed");
+    println(value);
+}

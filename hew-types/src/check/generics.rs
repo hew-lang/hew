@@ -274,7 +274,31 @@ impl Checker {
     /// signature's binders, so they are instantiated with the same arguments.
     pub(super) fn enforce_signature_bounds(&mut self, sig: &FnSig, type_args: &[Ty], span: &Span) {
         let bounds = self.instantiate_bounds(&sig.type_params, &sig.bounds, type_args);
-        self.enforce_named_type_param_bounds(&sig.type_params, &bounds, type_args, span);
+        self.enforce_named_type_param_bounds(&sig.type_params, &bounds, type_args, span, None);
+    }
+
+    /// Enforce the impl-level bounds on a method call's receiver
+    /// (`impl<T, E: Display> Result<T, E>` bounds `E` for `expect`), naming
+    /// the method in the diagnostic.
+    pub(super) fn enforce_receiver_obligations(
+        &mut self,
+        sig: &FnSig,
+        method: &str,
+        owner: &str,
+        span: &Span,
+    ) {
+        let origin = format!("{owner}::{method}");
+        for obligation in &sig.receiver_obligations {
+            let mut bounds = ParamBounds::default();
+            bounds.push(obligation.param.id, obligation.bound.clone());
+            self.enforce_named_type_param_bounds(
+                &[obligation.param],
+                &bounds,
+                std::slice::from_ref(&obligation.arg),
+                span,
+                Some(&origin),
+            );
+        }
     }
 
     fn instantiate_bounds(
@@ -329,7 +353,7 @@ impl Checker {
             return;
         }
         let bounds = self.instantiate_bounds(&type_def.type_params, &type_def.bounds, type_args);
-        self.enforce_named_type_param_bounds(&type_def.type_params, &bounds, type_args, span);
+        self.enforce_named_type_param_bounds(&type_def.type_params, &bounds, type_args, span, None);
     }
 
     /// Bound enforcement over a binder list and its bounds, for a call's or
@@ -340,6 +364,7 @@ impl Checker {
         bounds: &ParamBounds,
         type_args: &[Ty],
         span: &Span,
+        required_by: Option<&str>,
     ) {
         for (idx, param) in type_params.iter().enumerate() {
             let param_bounds: Vec<TraitRef> = bounds.of(param.id).cloned().collect();
@@ -370,6 +395,7 @@ impl Checker {
                     type_arg: type_arg.clone(),
                     span: span.clone(),
                     scope_bounds: self.active_param_bounds(),
+                    required_by: required_by.map(str::to_owned),
                 });
                 continue;
             }
@@ -381,7 +407,13 @@ impl Checker {
             // the call's resolved type args become fully concrete and the
             // monomorphisation registry can mint a key for it.
             self.pin_projection_only_assoc_bindings(&param_bounds, &resolved_arg);
-            self.report_unsatisfied_type_param_bounds(*param, &param_bounds, &resolved_arg, span);
+            self.report_unsatisfied_type_param_bounds(
+                *param,
+                &param_bounds,
+                &resolved_arg,
+                span,
+                required_by,
+            );
             self.report_unsatisfied_assoc_type_bindings(*param, &param_bounds, &resolved_arg, span);
         }
     }
@@ -401,6 +433,7 @@ impl Checker {
                 &entry.bounds,
                 &resolved_arg,
                 &entry.span,
+                entry.required_by.as_deref(),
             );
             self.report_unsatisfied_assoc_type_bindings(
                 entry.type_param,
@@ -418,6 +451,7 @@ impl Checker {
         bounds: &[TraitRef],
         resolved_arg: &Ty,
         span: &Span,
+        required_by: Option<&str>,
     ) {
         for bound in bounds {
             let marker = self.trait_marker(bound.trait_id);
@@ -442,14 +476,27 @@ impl Checker {
                 continue;
             }
             let bound_display = self.trait_ref_display(bound);
-            let msg = format!(
-                "type `{}` does not implement trait `{bound_display}` required by `{}`",
-                resolved_arg.user_facing(),
-                param.spelling
-            );
+            let msg = match required_by {
+                Some(origin) => format!(
+                    "`{origin}` requires `{}: {bound_display}`, but type `{}` does not implement `{bound_display}`",
+                    param.spelling,
+                    resolved_arg.user_facing(),
+                ),
+                None => format!(
+                    "type `{}` does not implement trait `{bound_display}` required by `{}`",
+                    resolved_arg.user_facing(),
+                    param.spelling
+                ),
+            };
             // A Display bound fails because nothing renders the type, so name
             // the impl the program is missing rather than its absent methods.
-            let suggestions = if marker == Some(MarkerTrait::Display) {
+            let suggestions = if required_by.is_some() && marker == Some(MarkerTrait::Display) {
+                let shown = resolved_arg.user_facing();
+                vec![format!(
+                    "implement `{bound_display}` for `{shown}`, or `impl Error for {shown}` \
+                     (which requires `{bound_display}`), or use `handle`/`match` instead"
+                )]
+            } else if marker == Some(MarkerTrait::Display) {
                 vec![format!(
                     "write `impl {bound_display} for {} {{ fn fmt(...) -> string {{ ... }} }}`, \
                      or render the parts that already have one",

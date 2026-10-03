@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::builtin_names::{builtin_named_type, builtin_type_def as builtin_named_type_def};
 #[cfg(test)]
 use crate::check::TypeDefKind;
-use crate::check::{FnSig, FnSigView, TypeDef};
+use crate::check::{FnSig, FnSigView, ReceiverObligation, TypeDef};
 use crate::resolved_ty::{mangle_impl_self_name, ResolvedTy};
 use crate::BuiltinType;
 use crate::Ty;
@@ -49,6 +49,15 @@ pub(crate) fn instantiate_named_method_sig(
     sig.bounds = sig
         .bounds
         .map_types(|ty| ty.substitute_type_params_parallel(&subst_map));
+    for (parameter, bound) in sig.bounds.iter() {
+        if let Some((param, arg)) = subst_map.iter().find(|(param, _)| param.id == *parameter) {
+            sig.receiver_obligations.push(ReceiverObligation {
+                param: *param,
+                arg: arg.clone(),
+                bound: bound.clone(),
+            });
+        }
+    }
     sig.bounds.retain(|param, _| remaining.contains(&param));
     sig
 }

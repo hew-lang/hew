@@ -1,0 +1,29 @@
+enum Failure {
+    Message(string);
+    Code(i64);
+}
+
+impl Display for Failure {
+    fn fmt(self) -> string {
+        match self {
+            .Message(text) => text,
+            .Code(code) => f"code {code}",
+        }
+    }
+}
+
+fn load() -> Result<string, Failure> {
+    .Err(Failure.Message("broken"))
+}
+
+fn main() {
+    // Display-free error types and Option keep working without the bound.
+    let ok: Result<i64, Failure> = .Ok(7);
+    println(ok.expect("seven"));
+    let named: Result<i64, string> = .Ok(8);
+    println(named.expect("eight"));
+    let found: Option<string> = .Some("Ada");
+    println(found.expect("a name was present"));
+    let value = load().expect("load failed");
+    println(value);
+}

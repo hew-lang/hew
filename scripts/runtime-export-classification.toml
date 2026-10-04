@@ -301,6 +301,7 @@ stable = [
   "hew_file_read_stream_open",
   "hew_file_size",
   "hew_file_write",
+  "hew_file_write_atomic",
   "hew_file_write_bytes",
   "hew_float_to_string",
   "hew_fs_copy",
@@ -3705,6 +3706,13 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_file_write"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_write_atomic"
 result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""

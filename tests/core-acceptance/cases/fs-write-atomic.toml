@@ -1,0 +1,10 @@
+[[case]]
+id = "fs-write-atomic"
+intent = "`fs.write_atomic` replaces an existing file with the new bytes and leaves no staging file, a staging-named file it did not create survives, and a target in a missing directory is NotCommitted with nothing created."
+source = "cases/fs-write-atomic.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "committed\n8\nstaging files left: 0\nnot committed: not found\nmissing target exists: false\nforeign staging file kept: true\n"
+exit = 0

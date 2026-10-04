@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1593u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1594u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1593] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1594] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -2551,6 +2551,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1593] = {
     {"hew_file_write",
      "{\"native\": \"fn hew_file_write( *const HewString, *const HewString) -> "
      "i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_write_atomic",
+     "{\"native\": \"fn hew_file_write_atomic( *const HewString, *const "
+     "BytesTriple, ) -> i32\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_write_bytes",

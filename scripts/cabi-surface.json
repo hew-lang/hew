@@ -6708,6 +6708,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_file_write_atomic( *const HewString, *const BytesTriple, ) -> i32"
+      },
+      "symbol": "hew_file_write_atomic"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_file_write_bytes( *const HewString, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_file_write_bytes"

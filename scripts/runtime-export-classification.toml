@@ -886,9 +886,15 @@ stable-stdlib = [
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
   "hew_dns_resolve",
-  "hew_ed25519_generate_pkcs8_hew",
-  "hew_ed25519_public_key_from_pkcs8_hew",
-  "hew_ed25519_sign_hew",
+  "hew_ed25519_expanded_check",
+  "hew_ed25519_key_expanded",
+  "hew_ed25519_key_free",
+  "hew_ed25519_key_from_expanded",
+  "hew_ed25519_key_from_pkcs8",
+  "hew_ed25519_key_from_seed",
+  "hew_ed25519_key_is_valid",
+  "hew_ed25519_key_public",
+  "hew_ed25519_key_sign",
   "hew_ed25519_verify_hew",
   "hew_encrypt_last_open_error_code",
   "hew_compress_last_error",
@@ -4234,18 +4240,54 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# ed25519 signing — hew-std/src/sign.rs. Borrowed BytesTriple params; fresh
-# bytes results (key material / signatures).
+# ed25519 signing — hew-std/src/sign.rs. Key material is a runtime-owned
+# handle released by hew_ed25519_key_free; bytes params are borrowed and bytes
+# results (public keys, expanded material, signatures) are fresh.
 [[ownership.contracts]]
-symbol = "hew_ed25519_generate_pkcs8_hew"
+symbol = "hew_ed25519_key_from_seed"
 result = "fresh"
-params = []
+params = ["borrow"]
+release-symbol = "hew_ed25519_key_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_expanded_check"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_from_expanded"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ed25519_key_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_from_pkcs8"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ed25519_key_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_sign"
+result = "fresh"
+params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_ed25519_public_key_from_pkcs8_hew"
+symbol = "hew_ed25519_key_public"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
@@ -4253,11 +4295,19 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_ed25519_sign_hew"
+symbol = "hew_ed25519_key_expanded"
 result = "fresh"
-params = ["borrow", "borrow"]
+params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_ed25519_verify_hew"

@@ -40,6 +40,13 @@ chrono = { version = "0.4.45", default-features = false, features = [
   "std",
 ] }
 cron = "0.17"
+ed25519-dalek = { version = "3", default-features = false, features = [
+  "digest",
+  "fast",
+  "hazmat",
+  "pkcs8",
+  "zeroize",
+] }
 flate2 = "1"
 ipnet = "2"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = [

@@ -5639,9 +5639,9 @@ fn wasm_rejects_crypto_sign_module_calls() {
         import std.crypto.sign;
 
         fn main() {
-            let kp = sign.keypair();
+            let key = sign.from_seed(sign.generate_seed());
             let msg = bytes [0x01, 0x02, 0x03];
-            let _ = sign.sign(msg, kp.private_key);
+            let _ = sign.verify(msg, msg, msg);
         }
         ",
     );
@@ -5696,9 +5696,9 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
         import std.crypto.sign;
 
         fn main() {
-            let kp = sign.keypair();
+            let key = sign.from_seed(sign.generate_seed());
             let msg = bytes [0x01, 0x02, 0x03];
-            let _ = sign.sign(msg, kp.private_key);
+            let _ = sign.verify(msg, msg, msg);
         }
         ",
     );

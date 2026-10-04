@@ -5964,40 +5964,14 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_ed25519_generate_pkcs8( *mut u8) -> i32"
-      },
-      "symbol": "hew_ed25519_generate_pkcs8"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_ed25519_generate_pkcs8_hew() -> BytesTriple"
-      },
-      "symbol": "hew_ed25519_generate_pkcs8_hew"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_public_key_from_pkcs8( *const u8, usize, *mut u8, ) -> i32"
+        "native": "fn hew_ed25519_expanded_check( *const BytesTriple) -> i32"
       },
-      "symbol": "hew_ed25519_public_key_from_pkcs8"
+      "symbol": "hew_ed25519_expanded_check"
     },
     {
       "availability": [
@@ -6008,22 +5982,9 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_public_key_from_pkcs8_hew( *const BytesTriple, ) -> BytesTriple"
+        "native": "fn hew_ed25519_key_expanded( *const Ed25519Key) -> BytesTriple"
       },
-      "symbol": "hew_ed25519_public_key_from_pkcs8_hew"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_ed25519_sign( *const u8, usize, *const u8, usize, *mut u8, ) -> i32"
-      },
-      "symbol": "hew_ed25519_sign"
+      "symbol": "hew_ed25519_key_expanded"
     },
     {
       "availability": [
@@ -6034,22 +5995,87 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_sign_hew( *const BytesTriple, *const BytesTriple, ) -> BytesTriple"
+        "native": "fn hew_ed25519_key_free( *mut Ed25519Key)"
       },
-      "symbol": "hew_ed25519_sign_hew"
+      "symbol": "hew_ed25519_key_free"
     },
     {
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_verify( *const u8, usize, *const u8, usize, *const u8, usize, ) -> i32"
+        "native": "fn hew_ed25519_key_from_expanded( *const BytesTriple, ) -> *mut Ed25519Key"
       },
-      "symbol": "hew_ed25519_verify"
+      "symbol": "hew_ed25519_key_from_expanded"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_ed25519_key_from_pkcs8( *const BytesTriple, ) -> *mut Ed25519Key"
+      },
+      "symbol": "hew_ed25519_key_from_pkcs8"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_ed25519_key_from_seed( *const BytesTriple) -> *mut Ed25519Key"
+      },
+      "symbol": "hew_ed25519_key_from_seed"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_ed25519_key_is_valid( *const Ed25519Key) -> bool"
+      },
+      "symbol": "hew_ed25519_key_is_valid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_ed25519_key_public( *const Ed25519Key) -> BytesTriple"
+      },
+      "symbol": "hew_ed25519_key_public"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_ed25519_key_sign( *const Ed25519Key, *const BytesTriple, ) -> BytesTriple"
+      },
+      "symbol": "hew_ed25519_key_sign"
     },
     {
       "availability": [

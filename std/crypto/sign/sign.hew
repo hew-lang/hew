@@ -1,15 +1,15 @@
-//! Ed25519 asymmetric signing and verification.
+//! Ed25519 signing keys and signature verification (RFC 8032).
 //!
-//! Provides key-pair generation, message signing, and signature verification
-//! using Ed25519 (RFC 8032).
+//! A `SigningKey` comes from a 32-byte seed, a 64-byte expanded key (the
+//! clamped scalar followed by the nonce prefix, the form RFC 8032 derives
+//! from a seed) or a PKCS#8 document. Every constructor normalizes to the
+//! expanded form, so a key signs the same way however it was loaded. A key is
+//! opaque: it exists only once its material checked out, so signing never
+//! meets a malformed key. Keys persist as their seed or `expanded()`
+//! material.
 //!
-//! Keys are raw byte buffers:
-//!
-//! - **Private key** (`keypair.private_key`): 83 bytes — an Ed25519 PKCS#8 v2
-//!   document accepted by `sign`.
-//! - **Public key** (`keypair.public_key`): 32 bytes — the raw Curve25519
-//!   public point accepted by `verify`.
-//! - **Signature**: 64 bytes — the raw Ed25519 signature (r ‖ s).
+//! - **Public key**: 32 bytes, the encoded curve point `verify` takes.
+//! - **Signature**: 64 bytes (R ‖ S).
 //!
 //! # Examples
 //!
@@ -17,55 +17,153 @@
 //! import std.crypto.sign;
 //!
 //! fn main() {
-//!     let kp = sign.keypair();
-//!     var message: bytes = bytes.new();
-//!     message.push(104); message.push(101); message.push(119); // "hew"
-//!     let sig = sign.sign(message, kp.private_key);
-//!     let ok = sign.verify(message, sig, kp.public_key);
-//!     println(ok);
+//!     let key = sign.from_seed(sign.generate_seed()).expect("32-byte seed");
+//!     let message = "hew".to_bytes();
+//!     let signature = key.sign(message);
+//!     println(sign.verify(message, signature, key.public_key()));
 //! }
 //! ```
 
-/// An Ed25519 key pair.
-///
-/// `private_key` is an 83-byte PKCS#8 v2 document; pass it to `sign`.
-/// `public_key` is the 32-byte raw public point; pass it to `verify`.
-pub type Ed25519KeyPair {
-    private_key: bytes;
-    public_key: bytes;
+import std.crypto.crypto;
+
+/// Why key material was refused.
+pub enum KeyError {
+    /// The material has this many bytes, not the 32 or 64 required.
+    InvalidLength(i64);
+    /// The PKCS#8 document does not hold an Ed25519 key, or its embedded
+    /// public key does not match.
+    InvalidEncoding;
+    /// The expanded key's scalar is not RFC 8032 clamped.
+    NotClamped;
+    /// The 64 bytes are a seed followed by its public key, as Go's
+    /// `crypto/ed25519` and libsodium store a private key, not an expanded
+    /// key. Load the first 32 bytes with `from_seed`.
+    SeedAndPublic;
 }
 
-/// Generate a fresh Ed25519 key pair.
-///
-/// Returns an `Ed25519KeyPair` with the 83-byte PKCS#8 private-key document
-/// and the 32-byte public key.  Both are freshly allocated `bytes` values
-/// owned by the caller.
-pub fn keypair() -> Ed25519KeyPair {
-    let private_key = unsafe {
-        hew_ed25519_generate_pkcs8_hew()
-    };
-    let public_key = unsafe {
-        hew_ed25519_public_key_from_pkcs8_hew(private_key)
-    };
-    Ed25519KeyPair { private_key: private_key, public_key: public_key }
-}
-
-/// Sign `message` with `private_key` (an 83-byte PKCS#8 Ed25519 document).
-///
-/// Returns the 64-byte signature as `bytes`.
-/// Panics if `private_key` is not a valid 83-byte Ed25519 PKCS#8 document.
-pub fn sign(message: bytes, private_key: bytes) -> bytes {
-    unsafe {
-        hew_ed25519_sign_hew(message, private_key)
+/// Print a `KeyError` with its detail.
+impl Display for KeyError {
+    fn fmt(self) -> string {
+        match self {
+            KeyError.InvalidLength(length) => f"InvalidLength({length})",
+            KeyError.InvalidEncoding => "InvalidEncoding",
+            KeyError.NotClamped => "NotClamped",
+            KeyError.SeedAndPublic => "SeedAndPublic: a seed followed by its public key; load the seed with from_seed",
+        }
     }
+}
+
+impl Error for KeyError {}
+
+/// The runtime-owned key material behind a `SigningKey`.
+#[opaque]
+type KeyHandle {
+}
+
+/// An Ed25519 signing key. Build one with `from_seed`, `from_expanded` or
+/// `from_pkcs8`; it holds checked secret material and the public key derived
+/// from it, and zeroes the material when it is released.
+#[resource]
+pub type SigningKey {
+    handle: KeyHandle;
+}
+
+impl SigningKey {
+    /// Sign `message`, returning the 64-byte signature.
+    fn sign(self, message: bytes) -> bytes {
+        unsafe {
+            hew_ed25519_key_sign(self.handle, message)
+        }
+    }
+
+    /// The 32-byte public key that verifies this key's signatures.
+    fn public_key(self) -> bytes {
+        unsafe {
+            hew_ed25519_key_public(self.handle)
+        }
+    }
+
+    /// The 64-byte expanded secret material, for storing the key; load it
+    /// again with `from_expanded`.
+    fn expanded(self) -> bytes {
+        unsafe {
+            hew_ed25519_key_expanded(self.handle)
+        }
+    }
+
+    /// Release the key, zeroing its secret material.
+    fn close(consume self) {
+        unsafe {
+            hew_ed25519_key_free(self.handle)
+        };
+    }
+}
+
+fn checked_key(consume handle: KeyHandle, refusal: KeyError) -> Result<SigningKey, KeyError> {
+    if unsafe {
+        hew_ed25519_key_is_valid(handle)
+    } {
+        .Ok(SigningKey { handle: handle })
+    } else {
+        unsafe {
+            hew_ed25519_key_free(handle)
+        };
+        .Err(refusal)
+    }
+}
+
+/// Draw a fresh 32-byte seed from the operating system's random source.
+pub fn generate_seed() -> bytes {
+    crypto.random_bytes(32).expect("the system random source")
+}
+
+/// Build a signing key from a 32-byte seed (RFC 8032 private key).
+pub fn from_seed(seed: bytes) -> Result<SigningKey, KeyError> {
+    if seed.len() != 32 {
+        return .Err(KeyError.InvalidLength(seed.len()));
+    }
+    checked_key(unsafe {
+        hew_ed25519_key_from_seed(seed)
+    }, KeyError.InvalidLength(seed.len()))
+}
+
+/// Build a signing key from 64 bytes of expanded material: a clamped scalar
+/// followed by the nonce prefix.
+///
+/// `NotClamped` when the scalar's low three bits are set, bit 255 is set or
+/// bit 254 is clear. `SeedAndPublic` when the bytes are a seed followed by
+/// its own public key, the 64-byte private key Go and libsodium write.
+pub fn from_expanded(expanded: bytes) -> Result<SigningKey, KeyError> {
+    let verdict = unsafe {
+        hew_ed25519_expanded_check(expanded)
+    };
+    if verdict == 1 {
+        return .Err(KeyError.InvalidLength(expanded.len()));
+    }
+    if verdict == 2 {
+        return .Err(KeyError.NotClamped);
+    }
+    if verdict == 3 {
+        return .Err(KeyError.SeedAndPublic);
+    }
+    checked_key(unsafe {
+        hew_ed25519_key_from_expanded(expanded)
+    }, KeyError.NotClamped)
+}
+
+/// Build a signing key from a PKCS#8 v1 or v2 Ed25519 document, such as
+/// one `ring` or OpenSSL wrote.
+pub fn from_pkcs8(document: bytes) -> Result<SigningKey, KeyError> {
+    checked_key(unsafe {
+        hew_ed25519_key_from_pkcs8(document)
+    }, KeyError.InvalidEncoding)
 }
 
 /// Verify that `signature` is a valid Ed25519 signature over `message`
 /// under `public_key` (32 bytes).
 ///
-/// Returns `true` if the signature is valid, `false` otherwise.
-/// Any malformed input (wrong key length, wrong signature length, bit-flip)
-/// returns `false` — never panics.
+/// Any malformed input (wrong key or signature length, non-canonical `S`)
+/// returns `false`.
 pub fn verify(message: bytes, signature: bytes, public_key: bytes) -> bool {
     (unsafe {
         hew_ed25519_verify_hew(message, signature, public_key)
@@ -74,8 +172,14 @@ pub fn verify(message: bytes, signature: bytes, public_key: bytes) -> bool {
 
 // ── FFI bindings ──────────────────────────────────────────────────────────
 extern "C" {
-    fn hew_ed25519_generate_pkcs8_hew() -> bytes;
-    fn hew_ed25519_public_key_from_pkcs8_hew(pkcs8: bytes) -> bytes;
-    fn hew_ed25519_sign_hew(message: bytes, private_key: bytes) -> bytes;
+    fn hew_ed25519_key_from_seed(seed: bytes) -> KeyHandle;
+    fn hew_ed25519_expanded_check(material: bytes) -> i32;
+    fn hew_ed25519_key_from_expanded(expanded: bytes) -> KeyHandle;
+    fn hew_ed25519_key_from_pkcs8(document: bytes) -> KeyHandle;
+    fn hew_ed25519_key_is_valid(key: KeyHandle) -> bool;
+    fn hew_ed25519_key_sign(key: KeyHandle, message: bytes) -> bytes;
+    fn hew_ed25519_key_public(key: KeyHandle) -> bytes;
+    fn hew_ed25519_key_expanded(key: KeyHandle) -> bytes;
+    fn hew_ed25519_key_free(consume key: KeyHandle);
     fn hew_ed25519_verify_hew(message: bytes, signature: bytes, public_key: bytes) -> i32;
 }

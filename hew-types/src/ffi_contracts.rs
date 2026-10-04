@@ -583,8 +583,9 @@ mod tests {
             "hew_zlib_compress_hew",
             "hew_zlib_decompress_hew",
             "hew_msgpack_from_json_hew",
-            "hew_ed25519_generate_pkcs8_hew",
-            "hew_ed25519_public_key_from_pkcs8_hew",
+            "hew_ed25519_key_sign",
+            "hew_ed25519_key_public",
+            "hew_ed25519_key_expanded",
             "hew_tcp_read",
         ] {
             let contract = extern_ownership_contract(symbol)

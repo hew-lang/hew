@@ -1,0 +1,10 @@
+[[case]]
+id = "sign-identity-rotation"
+intent = "A signing identity rotates through `fs.write_atomic` and reloads by length: a stored seed and its expanded form sign identically and verify under the rotated public key, corrupt material is InvalidEncoding, and a missing directory refuses the rotation."
+source = "cases/sign-identity-rotation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "seed identity verifies: true\nexpanded signs identically: true\nidentity 7 bytes: InvalidEncoding\ntrue\n"
+exit = 0

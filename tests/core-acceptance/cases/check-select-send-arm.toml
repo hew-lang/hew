@@ -1,0 +1,14 @@
+[[case]]
+id = "check-select-send-arm"
+intent = "A sink send is not a select source; the diagnostic names the three source forms, and a send deadline is written as `scope within`."
+source = "cases/check-select-send-arm.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 7
+column = 21
+message = "a select arm source is a task, an actor call, or a stream receive"

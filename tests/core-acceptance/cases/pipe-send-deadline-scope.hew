@@ -1,0 +1,30 @@
+import std.stream;
+
+// A full pipe's `send` waits for room; the deadline bounding it is a
+// `scope within`, not a select arm. Cancelling the wait leaves the queued
+// item intact and the pipe usable.
+fn main() {
+    let (output, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("pipe");
+    output.send("first".to_bytes()).expect("room for one");
+    let outcome = scope within 20ms {
+        match output.send("second".to_bytes()) {
+            .Ok(()) => "sent",
+            .Err(_) => "closed",
+        }
+    } handle failure {
+        match failure {
+            .Deadline { message } => "deadline",
+            .Fault { message } => "fault",
+        }
+    };
+    println(outcome);
+    match input.recv() {
+        .Some(item) => println(item.len()),
+        .None => println("empty"),
+    }
+    output.send("third".to_bytes()).expect("room again");
+    match input.recv() {
+        .Some(item) => println(item.len()),
+        .None => println("empty"),
+    }
+}

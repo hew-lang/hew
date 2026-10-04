@@ -663,6 +663,144 @@ impl Checker {
         }
     }
 
+    /// Check a `select`. Every source is prepared before dispatch, so sources
+    /// thread in order; exactly one body runs, so each body starts from the
+    /// state after the sources. Like `check_match_expr`, a concrete expected
+    /// type seeds the result so every body (the timer arm included) is
+    /// checked against it, and a body that needs context (`.None`) waits for
+    /// a typed body when there is none.
+    pub(in crate::check) fn check_select_expr(
+        &mut self,
+        arms: &[hew_parser::ast::SelectArm],
+        timeout: Option<&hew_parser::ast::TimeoutClause>,
+        span: &Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        // WASM-TODO(suspending-select): compile the readiness waitset for wasm32.
+        self.reject_wasm_feature(span, WasmUnsupportedFeature::Select);
+        if arms.is_empty() && timeout.is_none() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "a `select` needs at least one arm: a source arm \
+                 (`name from source => body`), or an `after` timer arm"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+        let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
+        let prepared_depth = self.prepared_select_tasks.len();
+        // Only the BODIES of a select are alternatives. Every arm's source is
+        // prepared before dispatch chooses a winner — all the asks are issued,
+        // all the receivers polled — so the sources run on one execution, in
+        // order, and handing the same affine value to two of them is a real
+        // double transfer. They thread sequentially; the same goes for the
+        // timeout duration, which arms the deadline before any arm fires.
+        let mut source_tys = Vec::with_capacity(arms.len());
+        let mut sources = Vec::with_capacity(arms.len());
+        for arm in arms {
+            self.env.push_scope();
+            let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
+            if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
+                if let Some((root, path)) = self.expr_place(&arm.source.0) {
+                    if let Some(binding) = self.env.lookup_ref(&root) {
+                        self.prepared_select_tasks
+                            .push(super::types::PreparedSelectTask {
+                                binding: binding.id,
+                                path,
+                                span: arm.source.1.clone(),
+                            });
+                    }
+                }
+            }
+            source_tys.push(ty);
+            sources.push(source);
+            self.env.pop_scope();
+        }
+        if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
+            self.select_sources
+                .insert(SpanKey::in_module(span, self.current_module_idx), checked);
+        }
+        if let Some(tc) = timeout {
+            self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
+        }
+        self.prepared_select_tasks.truncate(prepared_depth);
+
+        let resolved_expected = expected.map(|ty| self.subst.resolve(ty));
+        let mut result_ty: Option<Ty> = match &resolved_expected {
+            Some(ty) if !matches!(ty, Ty::Var(_) | Ty::Error) => Some(ty.clone()),
+            _ => None,
+        };
+        // Dispatch happens here: from this state exactly one body runs.
+        let entry = self.env.ownership_snapshot();
+        let mut arm_exits = Vec::with_capacity(arms.len() + 1);
+        let mut waiting = Vec::new();
+        for ((arm, source_ty), source) in arms.iter().zip(&source_tys).zip(&sources) {
+            self.env.push_scope();
+            self.env.restore_ownership(&entry);
+            if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. }))
+                && !self.reject_borrowed_consumption(&arm.source.0, &arm.source.1)
+            {
+                self.mark_expr_moved(&arm.source.0, &arm.source.1);
+            }
+            self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
+            if result_ty.is_none() && super::super::branch_join::expr_needs_context(&arm.body.0) {
+                let start = self.env.ownership_snapshot();
+                waiting.push((arm, self.env.suspend_scope(), start));
+                continue;
+            }
+            self.tail_ok_armed = tail_ok_armed;
+            self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
+            self.env.pop_scope();
+        }
+        if let Some(tc) = timeout {
+            self.env.restore_ownership(&entry);
+            self.tail_ok_armed = tail_ok_armed;
+            self.check_select_body(&tc.body, &mut result_ty, &mut arm_exits);
+        }
+        for (arm, scope, start) in waiting {
+            self.env.resume_scope(scope);
+            self.env.restore_ownership(&start);
+            self.tail_ok_armed = tail_ok_armed;
+            self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
+            self.env.pop_scope();
+        }
+        self.tail_ok_armed = false;
+        self.join_branch_ownership(&entry, &arm_exits);
+        // No typed body: `!` only when every body diverges; otherwise each
+        // body already reported its error, and `Error` keeps uses quiet.
+        result_ty.unwrap_or_else(|| {
+            if arm_exits.iter().all(|exit| exit.diverges) {
+                Ty::Never
+            } else {
+                Ty::Error
+            }
+        })
+    }
+
+    /// Check one `select` body against the select's type so far, record its
+    /// exit and fold its type into the result.
+    fn check_select_body(
+        &mut self,
+        body: &Spanned<Expr>,
+        result_ty: &mut Option<Ty>,
+        arm_exits: &mut Vec<BranchArmExit>,
+    ) {
+        let body_ty = if let Some(expected) = result_ty.as_ref() {
+            self.check_expr_with_expected(&body.0, &body.1, expected)
+        } else {
+            self.synthesize(&body.0, &body.1)
+        };
+        arm_exits.push(BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: Self::arm_skips_join(&body_ty),
+        });
+        // Diverging bodies (return, panic, break) do not constrain the result.
+        if result_ty.is_none() && !matches!(body_ty, Ty::Never | Ty::Error) {
+            *result_ty = Some(body_ty);
+        }
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "lambda checking combines contextual inference with capture analysis"

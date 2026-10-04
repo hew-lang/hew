@@ -353,98 +353,7 @@ impl Checker {
                 ty
             }
             Expr::Select { arms, timeout } => {
-                // WASM-TODO(suspending-select): compile the readiness waitset for wasm32.
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Select);
-                if arms.is_empty() && timeout.is_none() {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "a `select` needs at least one arm: a source arm \
-                         (`name from source => body`), or an `after` timer arm"
-                            .to_string(),
-                    );
-                    return Ty::Error;
-                }
-                let mut result_ty: Option<Ty> = None;
-                let prepared_depth = self.prepared_select_tasks.len();
-                // Only the BODIES of a select are alternatives. Every arm's
-                // source is prepared before dispatch chooses a winner — all the
-                // asks are issued, all the receivers polled — so the sources run
-                // on one execution, in order, and handing the same affine value
-                // to two of them is a real double transfer. They thread
-                // sequentially; the same goes for the timeout duration, which
-                // arms the deadline before any arm fires.
-                let mut source_tys = Vec::with_capacity(arms.len());
-                let mut sources = Vec::with_capacity(arms.len());
-                for arm in arms {
-                    self.env.push_scope();
-                    let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
-                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
-                        if let Some((root, path)) = self.expr_place(&arm.source.0) {
-                            if let Some(binding) = self.env.lookup_ref(&root) {
-                                self.prepared_select_tasks
-                                    .push(super::types::PreparedSelectTask {
-                                        binding: binding.id,
-                                        path,
-                                        span: arm.source.1.clone(),
-                                    });
-                            }
-                        }
-                    }
-                    source_tys.push(ty);
-                    sources.push(source);
-                    self.env.pop_scope();
-                }
-                if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
-                    self.select_sources
-                        .insert(SpanKey::in_module(span, self.current_module_idx), checked);
-                }
-                if let Some(tc) = timeout {
-                    self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
-                }
-                self.prepared_select_tasks.truncate(prepared_depth);
-
-                // Dispatch happens here: from this state exactly one body runs.
-                let entry = self.env.ownership_snapshot();
-                let mut arm_exits = Vec::with_capacity(arms.len() + 1);
-                for ((arm, source_ty), source) in arms.iter().zip(&source_tys).zip(&sources) {
-                    self.env.push_scope();
-                    self.env.restore_ownership(&entry);
-                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. }))
-                        && !self.reject_borrowed_consumption(&arm.source.0, &arm.source.1)
-                    {
-                        self.mark_expr_moved(&arm.source.0, &arm.source.1);
-                    }
-                    self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
-                    let body_ty = if let Some(expected) = &result_ty {
-                        self.check_against(&arm.body.0, &arm.body.1, expected)
-                    } else {
-                        self.synthesize(&arm.body.0, &arm.body.1)
-                    };
-                    arm_exits.push(BranchArmExit {
-                        ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join(&body_ty),
-                    });
-                    if result_ty.is_none() {
-                        result_ty = Some(body_ty);
-                    }
-                    self.env.pop_scope();
-                }
-                if let Some(tc) = timeout {
-                    self.env.restore_ownership(&entry);
-                    let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
-                    arm_exits.push(BranchArmExit {
-                        ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join(&timeout_ty),
-                    });
-                    if let Some(expected) = &result_ty {
-                        self.expect_type(expected, &timeout_ty, &tc.body.1);
-                    } else {
-                        result_ty = Some(timeout_ty);
-                    }
-                }
-                self.join_branch_ownership(&entry, &arm_exits);
-                result_ty.unwrap_or(Ty::Unit)
+                self.check_select_expr(arms, timeout.as_deref(), span, None)
             }
             Expr::Race(branches) => self.synthesize_race(branches, span),
             Expr::GenBlock { body } => {
@@ -809,6 +718,22 @@ impl Checker {
                 }
             }
 
+            (Expr::Select { arms, timeout }, _) => {
+                self.tail_ok_armed = tail_ok_armed;
+                let actual = self.check_select_expr(arms, timeout.as_deref(), span, Some(expected));
+                if matches!(actual, Ty::Never | Ty::Error) {
+                    actual
+                } else {
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        self.record_type(span, &actual);
+                        actual
+                    }
+                }
+            }
             (Expr::Match { scrutinee, arms }, _) => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 // A tail `match`'s arm bodies flow to the function return, so

@@ -1,0 +1,10 @@
+[[case]]
+id = "select-expected-type"
+intent = "A select checks every body, the timer arm included, against its expected type: a `.None` timer arm under `Option<bytes>`, integer arms under `i32`, a contextual first arm, and a tail select in a `Result` function."
+source = "cases/select-expected-type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "true\n2\nSome(7)\nOk(true)\n"
+exit = 0

@@ -43,6 +43,255 @@ fn assert_only_source_artifact(dir: &std::path::Path) {
     );
 }
 
+fn assert_duplicate_impl_diagnostic(
+    source: &str,
+    code: &str,
+    primary: (u64, u64),
+    previous: (u64, u64),
+) {
+    for action in ["check", "build"] {
+        for format in ["text", "json"] {
+            let (dir, path) = write_fixture(source);
+            let mut command = Command::new(hew_binary());
+            command.arg(action).arg(&path).current_dir(dir.path());
+            if action == "build" {
+                command
+                    .args(["--emit-obj", "-o"])
+                    .arg(dir.path().join("result.o"));
+            }
+            command.args(["--format", format]);
+            let output =
+                support::run_bounded_command(command, format!("duplicate impl {action} {format}"));
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{}",
+                describe_output(&output)
+            );
+            let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for forbidden in [
+                "E_HIR",
+                "CheckerBoundaryViolation",
+                "internal compiler error",
+            ] {
+                assert!(
+                    !stderr.contains(forbidden) && !stdout.contains(forbidden),
+                    "{}",
+                    describe_output(&output)
+                );
+            }
+            if format == "json" {
+                let diagnostics: Vec<Value> =
+                    serde_json::from_slice(&output.stdout).expect("JSON diagnostics");
+                let errors: Vec<_> = diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic["severity"] == "error")
+                    .collect();
+                assert_eq!(errors.len(), 1, "{diagnostics:#?}");
+                let error = errors[0];
+                assert_eq!(error["code"], code);
+                assert_eq!(error["channel"], "user");
+                assert_eq!(error["source"], "hew-types");
+                assert_eq!(error["file"], path.to_str().expect("fixture path"));
+                assert_eq!(error["span"]["start_line"], primary.0);
+                assert_eq!(error["span"]["start_col"], primary.1);
+                let notes = error["notes"].as_array().expect("diagnostic notes");
+                assert_eq!(notes.len(), 1, "{error:#?}");
+                assert_eq!(notes[0]["span"]["start_line"], previous.0);
+                assert_eq!(notes[0]["span"]["start_col"], previous.1);
+                assert!(notes[0]["message"]
+                    .as_str()
+                    .expect("note message")
+                    .starts_with("previous "));
+            } else {
+                assert!(
+                    stderr.contains(&format!(
+                        "{}:{}:{}: error:",
+                        path.display(),
+                        primary.0,
+                        primary.1
+                    )),
+                    "{stderr}"
+                );
+                assert!(
+                    stderr.contains(&format!(
+                        "{}:{}:{}: note: previous ",
+                        path.display(),
+                        previous.0,
+                        previous.1
+                    )),
+                    "{stderr}"
+                );
+            }
+            assert_only_source_artifact(dir.path());
+        }
+    }
+}
+
+#[test]
+fn duplicate_impl_heads_report_user_errors_without_check_or_build_artifacts() {
+    for second_body in ["\"r\"", "\"different\""] {
+        assert_duplicate_impl_diagnostic(
+            &format!(
+                "type R {{}}\n\
+                 impl Display for R {{ fn fmt(self) -> string {{ \"r\" }} }}\n\
+                 impl Display for R {{ fn fmt(self) -> string {{ {second_body} }} }}\n\
+                 fn main() {{}}"
+            ),
+            "ConflictingTraitImpl",
+            (3, 1),
+            (2, 1),
+        );
+    }
+    assert_duplicate_impl_diagnostic(
+        "trait Marker {}\n\
+         type R {}\n\
+         impl Marker for R {}\n\
+         impl Marker for R {}\n\
+         fn main() {}",
+        "ConflictingTraitImpl",
+        (4, 1),
+        (3, 1),
+    );
+    assert_duplicate_impl_diagnostic(
+        "trait Label { fn label(self) -> i64; }\n\
+         type Box<T> { value: T; }\n\
+         impl<T> Label for Box<T> { fn label(self) -> i64 { 1 } }\n\
+         impl<U> Label for Box<U> { fn label(self) -> i64 { 2 } }\n\
+         fn main() {}",
+        "ConflictingTraitImpl",
+        (4, 1),
+        (3, 1),
+    );
+    for receiver in ["string", "NodeId", "Location"] {
+        assert_duplicate_impl_diagnostic(
+            &format!(
+                "impl Display for {receiver} {{ fn fmt(self) -> string {{ \"first\" }} }}\n\
+                 impl Display for {receiver} {{ fn fmt(self) -> string {{ \"second\" }} }}\n\
+                 fn main() {{}}"
+            ),
+            "ConflictingTraitImpl",
+            (2, 1),
+            (1, 1),
+        );
+    }
+}
+
+#[test]
+fn duplicate_impl_admission_preserves_explicit_prelude_overrides() {
+    require_codegen();
+    for receiver in ["string", "NodeId", "Location"] {
+        for action in ["check", "build"] {
+            let (dir, path) = write_fixture(&format!(
+                "impl Display for {receiver} {{ fn fmt(self) -> string {{ \"override\" }} }}\n\
+                 fn render(value: {receiver}) -> string {{ f\"{{value}}\" }}\n\
+                 fn main() {{}}"
+            ));
+            let mut command = Command::new(hew_binary());
+            command.arg(action).arg(&path).current_dir(dir.path());
+            let artifact = dir.path().join("result.o");
+            if action == "build" {
+                command.args(["--emit-obj", "-o"]).arg(&artifact);
+            }
+            let output = support::run_bounded_command(
+                command,
+                format!("prelude override {receiver} {action}"),
+            );
+            assert!(output.status.success(), "{}", describe_output(&output));
+            if action == "check" {
+                assert_only_source_artifact(dir.path());
+            } else {
+                assert!(artifact.is_file(), "successful build must emit its object");
+            }
+        }
+    }
+}
+
+#[test]
+fn duplicate_impl_methods_report_definition_errors_without_artifacts() {
+    for implementation in [
+        "impl R {\n    fn f(self) -> i64 { 1 }\n    fn f(self) -> i64 { 2 }\n}",
+        "impl Display for R {\n    fn fmt(self) -> string { \"a\" }\n    fn fmt(self) -> string { \"b\" }\n}",
+    ] {
+        assert_duplicate_impl_diagnostic(
+            &format!("type R {{}}\n{implementation}\nfn main() {{}}"),
+            "DuplicateDefinition",
+            (4, 5),
+            (3, 5),
+        );
+    }
+    assert_duplicate_impl_diagnostic(
+        "type R {}\n\
+         impl R {\n    fn f(self) -> i64 { 1 }\n}\n\
+         impl R {\n    fn f(self) -> i64 { 2 }\n}\n\
+         fn main() {}",
+        "DuplicateDefinition",
+        (6, 5),
+        (3, 5),
+    );
+}
+
+#[test]
+fn duplicate_impl_cross_module_error_names_previous_source_without_artifacts() {
+    for action in ["check", "build"] {
+        let dir = support::tempdir();
+        for (name, source) in [
+            ("common.hew", "pub type R {}"),
+            (
+                "left.hew",
+                "import common;\nimpl Display for common.R { fn fmt(self) -> string { \"r\" } }",
+            ),
+            (
+                "right.hew",
+                "import common;\nimpl Display for common.R { fn fmt(self) -> string { \"r\" } }",
+            ),
+            ("main.hew", "import left; import right; fn main() {}"),
+        ] {
+            fs::write(dir.path().join(name), source).expect("module fixture");
+        }
+        let before = sorted_dir_entries(dir.path());
+        let mut command = Command::new(hew_binary());
+        command
+            .arg(action)
+            .arg(dir.path().join("main.hew"))
+            .current_dir(dir.path());
+        if action == "build" {
+            command
+                .args(["--emit-obj", "-o"])
+                .arg(dir.path().join("result.o"));
+        }
+        let output =
+            support::run_bounded_command(command, format!("cross-module duplicate impl {action}"));
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            describe_output(&output)
+        );
+        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        assert!(
+            stderr.contains(&format!(
+                "{}:2:1: error: conflicting implementation",
+                dir.path().join("right.hew").display()
+            )),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "{}:2:1: note: previous implementation here",
+                dir.path().join("left.hew").display()
+            )),
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_HIR") && !stderr.contains("internal compiler error"),
+            "{stderr}"
+        );
+        assert_eq!(sorted_dir_entries(dir.path()), before);
+    }
+}
+
 const CODEGEN_FRONT_ACCEPTED_FIXTURE: &str = "fn main() {\n    println(1 + 2);\n}\n";
 
 fn run_check_in_fixture_dir(dir: &std::path::Path) -> std::process::Output {

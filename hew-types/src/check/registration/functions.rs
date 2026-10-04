@@ -423,6 +423,11 @@ impl Checker {
                     let self_ty = self.resolve_impl_target(id);
                     let self_type_args = Self::impl_target_args(&self_ty);
                     self.current_self_type = Some((type_name.clone(), self_ty));
+                    if !self.admit_source_impl(id, span, SourceImplOrigin::Source) {
+                        self.current_self_type = prev_self_type;
+                        self.current_impl_surface_target = prev_impl_surface_target;
+                        return;
+                    }
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
                     let impl_trait = self.impl_trait_ref(id);

@@ -5502,13 +5502,19 @@ trait Codec<T> {
 ```
 
 `decode` returns the first complete frame with the bytes that follow it,
-or `Incomplete` with the buffer unchanged when more bytes are needed;
-`encode` returns one item's frame. The shape follows value semantics: a
-`var` parameter is the callee's own copy, so a codec hands the remaining
-bytes back instead of advancing the caller's buffer in place. `std.stream`
-ships `Lines` (`Codec<string>`) and
-`LengthPrefixed { width }` (`Codec<bytes>`); `lines()` is the `Lines`
-case as a method. Generic `frames(codec)` / `framed(codec)` adapters over
+or `Incomplete` with the bytes to keep when more bytes are needed (the
+buffer unchanged unless the codec discarded a malformed record); `encode`
+returns one item's frame. The shape follows value semantics: a `var`
+parameter is the callee's own copy, so a codec hands the remaining bytes
+back instead of advancing the caller's buffer in place. `std.stream` ships
+`Lines` (`Codec<string>`) and two `Codec<bytes>` framings:
+`LengthPrefixed { width, order, max }`, a 1-, 2- or 4-byte length in
+either byte order whose declared length above `max` is `Malformed` (a
+length-prefixed stream cannot resynchronize), and `Slip { max }` (RFC
+1055), which skips an empty, malformed or oversized record to the next
+END and never errors. Because `encode` returns `bytes`, an item past a
+codec's bound panics and names the codec. `lines()` is the `Lines` case
+as a method. Generic `frames(codec)` / `framed(codec)` adapters over
 a user codec are decided but not lowered in edition 2026 (§2.1.1).
 
 #### 6.4.7 Sockets

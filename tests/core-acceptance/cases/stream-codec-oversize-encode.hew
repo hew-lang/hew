@@ -1,0 +1,17 @@
+import std.encoding.binary;
+import std.stream;
+
+// A codec's `encode` returns bytes by trait contract, so an item past the
+// codec's bound panics and names the codec rather than truncating a prefix.
+fn main() {
+    let slip = stream.Slip { max: 4 };
+    println(slip.encode("ping".to_bytes()).len());
+    let prefixed = stream.LengthPrefixed { width: 1, order: binary.ByteOrder.Big, max: 1000 };
+    println(prefixed.encode("pong".to_bytes()).len());
+    var big = bytes.new();
+    for _ in 0..256 {
+        big.push(1);
+    }
+    println(prefixed.encode(big).len());
+    println("unreachable");
+}

@@ -150,8 +150,8 @@ const TLS_TRUST_BUNDLED: c_int = 0;
 const TLS_TRUST_PEM: c_int = 1;
 
 /// Connect failure classes, reported with an OS errno where one exists.
-const TLS_CONNECT_INVALID_ARGUMENT: c_int = 1;
-const TLS_CONNECT_TIMED_OUT: c_int = 2;
+pub(crate) const TLS_CONNECT_INVALID_ARGUMENT: c_int = 1;
+pub(crate) const TLS_CONNECT_TIMED_OUT: c_int = 2;
 const TLS_CONNECT_OS: c_int = 3;
 const TLS_CONNECT_TLS: c_int = 4;
 
@@ -980,7 +980,7 @@ pub unsafe extern "C" fn hew_tls_attach_native(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
     use crate::test_string::ManagedString;
@@ -1488,7 +1488,7 @@ mod tests {
     }
 
     /// A CA and a `localhost` leaf it signed, with the leaf's server config.
-    fn ca_and_server() -> (String, Arc<rustls::ServerConfig>) {
+    pub(crate) fn ca_and_server() -> (String, Arc<rustls::ServerConfig>) {
         let ca_key = rcgen::KeyPair::generate().expect("CA key");
         let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("CA params");
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);

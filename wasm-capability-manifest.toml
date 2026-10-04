@@ -352,14 +352,13 @@ id = "websocket"
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_ws_connect",
-  "hew_ws_recv",
-  "hew_ws_recv_timeout",
+  "hew_ws_recv_next",
   "hew_ws_server_new",
   "hew_ws_server_accept",
 ]
 enum_variant = "WebSocket"
 label = "std.net.websocket operations"
-prose_label = "`std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*`, `websocket.Message.*`"
+prose_label = "`std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*`"
 reason = "the std.net.websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet"
 checker = "reject"
 runtime = "native-only"

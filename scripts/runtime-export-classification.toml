@@ -1119,21 +1119,19 @@ stable-stdlib = [
   "hew_ws_close",
   "hew_ws_conn_is_valid",
   "hew_ws_connect",
-  "hew_ws_message_free",
   "hew_ws_last_errno",
   "hew_ws_last_error",
-  "hew_ws_message_is_valid",
-  "hew_ws_message_text",
-  "hew_ws_message_type",
-  "hew_ws_recv",
-  "hew_ws_recv_last_timed_out",
-  "hew_ws_recv_timeout",
+  "hew_ws_recv_next",
+  "hew_ws_send_binary",
   "hew_ws_send_text",
   "hew_ws_server_accept",
   "hew_ws_server_close",
   "hew_ws_server_new",
   "hew_ws_server_is_valid",
   "hew_ws_server_port",
+  "hew_ws_subprotocol",
+  "hew_ws_take_binary",
+  "hew_ws_take_text",
   "hew_xml_children_count",
   "hew_xml_free",
   "hew_xml_get_attribute",
@@ -4923,9 +4921,10 @@ release-symbol = ""
 discharge-depth = "none"
 
 # WebSocket — hew-std/src/websocket.rs. connect/server_accept return Box'd
-# HewWsConn handles (Box::from_raw in hew_ws_close); recv(_timeout) return
-# Box'd HewWsMessage handles; message_text returns a fresh alloc_cstring
-# string. Active-mode registration is declaration-owned.
+# HewWsConn handles (Box::from_raw in hew_ws_close). recv_next holds the
+# received payload inside the connection; take_text/take_binary hand it out as
+# a fresh managed string or bytes. Active-mode registration is
+# declaration-owned.
 [[ownership.contracts]]
 symbol = "hew_ws_close"
 result = "none"
@@ -4937,7 +4936,7 @@ discharge-depth = "none"
 [[ownership.contracts]]
 symbol = "hew_ws_connect"
 result = "fresh"
-params = ["borrow"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "borrow"]
 resource-result-type = "std.net.websocket.Conn"
 release-symbol = "hew_ws_close"
 discharge-depth = "shallow"
@@ -4945,66 +4944,20 @@ result-retention = "resource-transfer"
 result-retention-basis = "successful handshake returns one fresh Box::into_raw(HewWsConn), reclaimed by hew_ws_close"
 
 [[ownership.contracts]]
-symbol = "hew_ws_message_free"
+symbol = "hew_ws_recv_next"
 result = "none"
-params = ["consume"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_message_is_valid"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_message_text"
-result = "fresh"
-params = ["borrow"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_ws_message_type"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_recv"
-result = "fresh"
-params = ["borrow"]
-resource-result-type = "std.net.websocket.Message"
-resource-param-types = ["std.net.websocket.Conn"]
-release-symbol = "hew_ws_message_free"
-discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "build_message returns one Box::into_raw(HewWsMessage) owning its raw payload; text access copies a managed string and hew_ws_message_free reclaims both allocations"
-
-[[ownership.contracts]]
-symbol = "hew_ws_recv_last_timed_out"
-result = "none"
-params = []
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_recv_timeout"
-result = "fresh"
 params = ["borrow", "borrow"]
-resource-result-type = "std.net.websocket.Message"
 resource-param-types = ["std.net.websocket.Conn", ""]
-release-symbol = "hew_ws_message_free"
-discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "successful receive returns the same fresh build_message allocation as hew_ws_recv; timeout returns null and hew_ws_message_free reclaims any published message and payload"
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_send_binary"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.websocket.Conn", ""]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_ws_send_text"
@@ -5013,6 +4966,33 @@ params = ["borrow", "borrow"]
 resource-param-types = ["std.net.websocket.Conn", ""]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_subprotocol"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_ws_take_binary"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_ws_take_text"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ws_server_accept"

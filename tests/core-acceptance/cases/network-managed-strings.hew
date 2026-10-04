@@ -70,11 +70,12 @@ fn http_client_run(url: string) -> i64 {
 }
 
 fn websocket_client_run(url: string) -> i64 {
-    let connection = websocket.connect(url).expect("WebSocket client connects");
-    assert(connection.send_text("café\0雪") == 0);
-    let message = connection.recv_timeout(5000).expect("WebSocket reply arrives");
-    let text = message.text();
-    message.close();
+    let connection = websocket.connect(url, websocket.options()).expect("WebSocket client connects");
+    connection.send_text("café\0雪").expect("WebSocket send");
+    let text = match connection.recv_timeout(5s) {
+        .Ok(.Some(websocket.Message.Text(text))) => text,
+        _ => panic("WebSocket reply arrives as text"),
+    };
     assert(text == "reply\0雪");
     connection.close();
     0
@@ -107,14 +108,15 @@ fn websocket_exchange(executable: string) -> string {
     let address = f"127.0.0.1:{server.port()}";
     let child = process.start_argv(executable, ["websocket", f"ws://{address}/managed"]).expect("WebSocket client starts");
     let connection = server.accept();
-    let message = connection.recv();
-    let text = message.text();
-    message.close();
+    let text = match connection.recv() {
+        .Ok(.Some(websocket.Message.Text(text))) => text,
+        _ => panic("WebSocket request arrives as text"),
+    };
     assert(text == "café\0雪");
-    assert(connection.send_text("reply\0雪") == 0);
+    connection.send_text("reply\0雪").expect("WebSocket reply");
     connection.close();
     assert(child.wait() == 0);
-    // Connection, message and listener cleanup also compose with early return.
+    // Connection and listener cleanup also compose with early return.
     return address;
 }
 

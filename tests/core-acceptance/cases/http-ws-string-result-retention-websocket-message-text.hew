@@ -6,10 +6,10 @@ actor Client {
     var complete: i64;
 
     receive fn send_frames(unused: i64) {
-        match websocket.connect(url) {
+        match websocket.connect(url, websocket.options()) {
             .Ok(connection) => {
                 for _ in 0 .. frames {
-                    if connection.send_text("message-owner") != 0 {
+                    if connection.send_text("message-owner").is_err() {
                         panic("WebSocket retention send failed")
                     }
                 }
@@ -43,9 +43,10 @@ fn main() {
                 let _driver = fork drive_client(client);
                 let connection = server.accept();
                 for _ in 0 .. 50 {
-                    let message = connection.recv();
-                    println(message.text().len());
-                    message.close();
+                    match connection.recv() {
+                        .Ok(.Some(websocket.Message.Text(text))) => println(text.len()),
+                        _ => panic("WebSocket retention expected a text message"),
+                    }
                 }
                 match client.finished() {
                     .Ok(done) => {

@@ -1,0 +1,10 @@
+[[case]]
+id = "websocket-binary-messages"
+intent = "Text and binary WebSocket messages round-trip over loopback in order, including an empty and a 1 MiB binary message; a silent connection is TimedOut, an accepted connection has no subprotocol and the peer's close is `.None`."
+source = "cases/websocket-binary-messages.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "subprotocol: None\nsilent: TimedOut(0)\nbinary 0 true\nbinary 1048576 true\ntext 10\nbinary 4 true\npeer closed\n"
+exit = 0

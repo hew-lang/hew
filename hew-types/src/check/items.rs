@@ -2867,6 +2867,9 @@ impl Checker {
     }
 
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
+        if self.source_impl_is_rejected(span) {
+            return;
+        }
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.
             // Do not body-check an unsupported destructor and risk cascading

@@ -1663,31 +1663,12 @@ impl Checker {
     /// method signatures and this `Self`-arg applicability proof from the SAME
     /// impl, so they cannot drift).
     ///
-    /// Comparing the `Self` shape (rather than a source span) makes this robust
-    /// to the registration architecture re-processing the same impl across
-    /// module/import phases: a reprocessed impl re-presents an *identical*
-    /// `Self` shape and is correctly treated as the same impl, while a genuine
-    /// overlap presents a *different* shape. It also naturally scopes the check
-    /// to builtin/primitive receivers — user-record impls never reach this side
-    /// table — which is exactly where the drift fail-open lived.
-    ///
-    /// KNOWN GAP (tracked): two *genuinely-distinct* impls that share an
-    /// *identical* `Self` shape — e.g. two literal `impl<T> Acc for Vec<T>`
-    /// blocks — are NOT rejected here (they compare shape-equal and are treated
-    /// as a re-presentation). Closing this needs the impl's DEFINING identity,
-    /// but the only readily-available per-impl span (`impl.target_type` span)
-    /// cannot be used as the coherence key because the documented user-redeclare
-    /// path lets a user `pub trait Display` shadow the prelude `Display`: the
-    /// prelude `impl Display for i64` and the user `impl Display for i64` are
-    /// distinct traits that collapse to the same `(canonical, "Display")` key,
-    /// so a defining-span key would falsely reject that legal shadow. A correct
-    /// fix must additionally key on the trait's DEFINING identity (not its
-    /// name), which is a larger cross-cutting change tracked as a separate
-    /// follow-up ("trait-impl coherence: reject duplicate same-(type,trait)
-    /// impls via defining-identity"). The projection fix this method supports is
-    /// unaffected: first-wins keeps the dispatched method signature and the
-    /// applicability proof from the SAME (first) impl, so even an accepted
-    /// duplicate cannot cause the mis-projection fail-open this fix closes.
+    /// Source admission rejects distinct same-head impls by their block and
+    /// trait declaration identities before this side table is populated.
+    /// Shape equality here therefore represents re-registration of an admitted
+    /// impl or an explicit override of an implicit prelude impl. This extra
+    /// different-shape restriction remains builtin-specific; user-record
+    /// concrete specialisations do not reach this side table.
     pub(in crate::check) fn record_primitive_trait_impl_self_args(
         &mut self,
         canonical_key: String,
@@ -1704,9 +1685,8 @@ impl Checker {
                     .insert((canonical_key, trait_id), self_args);
             }
             Some(existing) if existing == &self_args => {
-                // Same impl (same Self shape), re-presented across a later
-                // registration phase — not a conflict. (See KNOWN GAP above:
-                // this also admits a genuine same-shape duplicate, tracked.)
+                // Source admission permits re-registration and prelude
+                // overrides, but rejects distinct same-head source impls.
             }
             Some(_) => {
                 // A second, structurally-different impl of the same trait on the

@@ -4,7 +4,7 @@
     redundant_imports,
     reason = "header retained verbatim from the pre-split file"
 )]
-use super::types::ImportBindingKey;
+use super::types::{ImportBindingKey, SourceImplOrigin};
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -17,6 +17,7 @@ use hew_parser::ast::WireMetadata;
 mod builtins;
 mod extern_contracts;
 mod functions;
+mod impl_coherence;
 mod imports;
 #[cfg(test)]
 mod tests;

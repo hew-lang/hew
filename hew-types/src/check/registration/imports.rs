@@ -1548,6 +1548,12 @@ impl Checker {
                         // mangled key.
                         let prev_self_type =
                             self.current_self_type.replace((type_name.clone(), self_ty));
+                        if !self.admit_source_impl(id, span, SourceImplOrigin::Source) {
+                            self.current_self_type = prev_self_type;
+                            self.current_module = importer_module;
+                            self.current_module_idx = importer_file;
+                            continue;
+                        }
                         let impl_trait = self.impl_trait_ref(id);
                         for method in &id.methods {
                             if !method.visibility.is_pub() {

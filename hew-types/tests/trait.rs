@@ -17,6 +17,8 @@ mod builtin_trait_method_projection;
 mod dyn_trait_coercion;
 #[path = "trait/error_trait.rs"]
 mod error_trait;
+#[path = "trait/impl_coherence.rs"]
+mod impl_coherence;
 #[path = "trait/iterator_trait_surface.rs"]
 mod iterator_trait_surface;
 #[path = "trait/param_bounds.rs"]

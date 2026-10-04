@@ -2849,6 +2849,43 @@ pub(super) struct TraitImplArgs {
     pub(super) params: Vec<crate::ParamHead>,
 }
 
+impl TraitImplArgs {
+    pub(super) fn same_head(&self, other: &Self) -> bool {
+        if self.params.len() != other.params.len() {
+            return false;
+        }
+        let substitutions = self
+            .params
+            .iter()
+            .copied()
+            .zip(other.params.iter().copied().map(Ty::param))
+            .collect();
+        self.target.substitute_type_params_parallel(&substitutions) == other.target
+            && self
+                .args
+                .iter()
+                .map(|arg| arg.substitute_type_params_parallel(&substitutions))
+                .eq(other.args.iter().cloned())
+    }
+}
+
+/// Implicit prelude implementations remain overridable by explicit source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceImplOrigin {
+    Prelude,
+    Source,
+}
+
+/// Source provenance for impl admission, separate from conformance and dispatch.
+#[derive(Debug, Clone)]
+pub(super) struct SourceImplDeclaration {
+    pub(super) declaration: crate::DefId,
+    pub(super) origin: SourceImplOrigin,
+    pub(super) head: TraitImplArgs,
+    pub(super) methods: HashMap<Symbol, Span>,
+    pub(super) source_module: Option<String>,
+}
+
 /// A trait a generic binder is bounded by, resolved once where the bound is
 /// written: `F: From<Low>`, `I: Iterator<Item = A>`, `T: Send`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3487,6 +3524,9 @@ pub struct Checker {
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
     pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
+    pub(super) source_impl_declarations:
+        HashMap<(ResolvedTy, Option<crate::DefId>), Vec<SourceImplDeclaration>>,
+    pub(super) rejected_impl_declarations: HashSet<crate::DefId>,
     /// Bound sites already reported as naming no trait or misapplying one.
     pub(super) reported_unknown_bounds: HashSet<SpanKey>,
     /// Dedup guard so a rejected overlapping primitive/builtin trait impl emits
@@ -4383,6 +4423,8 @@ impl Checker {
             trait_defs: HashMap::new(),
             trait_super: HashMap::new(),
             trait_impls: HashMap::new(),
+            source_impl_declarations: HashMap::new(),
+            rejected_impl_declarations: HashSet::new(),
             reported_unknown_bounds: HashSet::new(),
             conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),

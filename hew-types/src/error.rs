@@ -1284,17 +1284,13 @@ pub enum TypeErrorKind {
         /// Sorted names of the impl methods that are not on the trait.
         methods: Vec<String>,
     },
-    /// Two or more `impl <Trait> for <Type>` blocks target the same trait and
-    /// type constructor. Hew's single-crate coherence rule permits at most one
-    /// impl of a given trait per type constructor; specialization / overlapping
-    /// impls are a permanent non-goal (mission Q66.b, HEW-FUTURE §2.2). This
-    /// covers both overlapping (`impl<T> Acc for Vec<T>` + `impl Acc for
-    /// Vec<i64>`) and disjoint-concrete (`impl Acc for Vec<i64>` + `impl Acc for
-    /// Vec<string>`) duplicates, neither of which the associated-type binding
-    /// table (keyed by constructor name) can represent. Fail-closed: the second
-    /// impl is rejected at its declaration site rather than silently shadowed,
-    /// which would otherwise let its method signature and applicability proof
-    /// drift apart across the dispatch side tables.
+    /// Distinct source impls claim the same resolved trait and impl head,
+    /// including positional trait arguments and alpha-equivalent impl binders.
+    /// Explicit source may still override implicit prelude implementations.
+    /// Builtin receivers additionally reject different `Self` shapes for one
+    /// constructor and trait, because their dispatch side tables cannot
+    /// represent multiple applicability proofs. This does not change the
+    /// accepted generic/concrete specialisations of user-record impls.
     ///
     /// Envelope code: `E_CONFLICTING_TRAIT_IMPL`.
     ConflictingTraitImpl {

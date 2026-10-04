@@ -557,11 +557,24 @@ impl Checker {
             files.push(identity_module);
             self.declare_minted_items_in_scope(&files, identity_module);
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
+                let file = item_sources
+                    .get(item_ordinal)
+                    .and_then(|source| self.defs.module_for_source(source))
+                    .unwrap_or(identity_module);
+                // A graph may inventory only part of a lazily registered
+                // module. Impl blocks from the actual source still need their
+                // exact occurrences; minting an existing block is idempotent.
+                if matches!(item, Item::Impl(_)) {
+                    self.mint_item_declaration_identities(
+                        Some(file),
+                        Some(identity_module),
+                        crate::check::NominalNamespace::Owned,
+                        item_ordinal,
+                        item,
+                        span,
+                    );
+                }
                 if let Item::Import(decl) = item {
-                    let file = item_sources
-                        .get(item_ordinal)
-                        .and_then(|source| self.defs.module_for_source(source))
-                        .unwrap_or(identity_module);
                     self.bind_import_in_scope(file, decl, span);
                 }
                 self.declare_item_type_parameter_scopes(
@@ -922,6 +935,10 @@ impl Checker {
             }
         }
         // Pass 2: Register impl methods (after types exist)
+        let impl_origin = match import_spec {
+            StdlibBarePublication::Prelude => SourceImplOrigin::Prelude,
+            StdlibBarePublication::Import(_) => SourceImplOrigin::Source,
+        };
         for (index, (item, span)) in items.iter().enumerate() {
             self.current_item_source = item_sources.get(index).cloned();
             self.current_module_idx = self
@@ -947,6 +964,11 @@ impl Checker {
                     let self_ty = self.resolve_impl_target(id);
                     let self_type_args = Self::impl_target_args(&self_ty);
                     self.current_self_type = Some((type_name.clone(), self_ty));
+                    if !self.admit_source_impl(id, span, impl_origin) {
+                        self.current_self_type = prev_self_type;
+                        self.current_module = saved_importer_module;
+                        continue;
+                    }
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -1826,6 +1848,12 @@ impl Checker {
                         let self_ty = self.resolve_impl_target(id);
                         let self_type_args = Self::impl_target_args(&self_ty);
                         self.current_self_type = Some((type_name.clone(), self_ty));
+                        if !self.admit_source_impl(id, span, SourceImplOrigin::Source) {
+                            self.current_self_type = prev_self_type;
+                            self.current_module = saved_importer_module;
+                            self.current_module_idx = importer_file_idx;
+                            continue;
+                        }
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 

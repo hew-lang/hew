@@ -1060,6 +1060,9 @@ stable-stdlib = [
   "hew_sort_floats",
   "hew_tls_close",
   "hew_tls_connect",
+  "hew_tls_connect_errno",
+  "hew_tls_connect_failure",
+  "hew_tls_is_valid",
   "hew_tls_last_error",
   "hew_tls_read_result",
   "hew_tls_write_result",
@@ -5006,12 +5009,34 @@ discharge-depth = "none"
 [[ownership.contracts]]
 symbol = "hew_tls_connect"
 result = "fresh"
-params = ["borrow", "borrow"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "borrow"]
 resource-result-type = "std.net.tls.TlsStream"
 release-symbol = "hew_tls_close"
 discharge-depth = "shallow"
 result-retention = "resource-transfer"
 result-retention-basis = "successful TLS setup returns one fresh Box::into_raw(HewTlsStream), reclaimed by hew_tls_close"
+
+[[ownership.contracts]]
+symbol = "hew_tls_connect_errno"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tls_connect_failure"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tls_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.tls.TlsStream"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_tls_last_error"

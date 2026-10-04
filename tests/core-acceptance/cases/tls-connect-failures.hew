@@ -1,0 +1,41 @@
+import std.net;
+import std.net.tls;
+
+// `tls.connect` completes the handshake inside its deadline and reports each
+// failure as a typed `NetError`: a silent server is `TimedOut` within the
+// handshake deadline, a closed port is refused, and unusable trust input is
+// refused before any socket opens.
+fn describe(consume result: Result<tls.TlsStream, net.NetError>) -> string {
+    match result {
+        .Ok(_) => "connected",
+        .Err(NetError.TimedOut(_)) => "timed out",
+        .Err(NetError.ConnectionRefused(_)) => "refused",
+        .Err(NetError.InvalidArgument(detail)) => f"invalid: {detail}",
+        .Err(other) => f"other: {other}",
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let port = listener.local_port();
+    var options = tls.options();
+    options.handshake_timeout = 300ms;
+    let started = instant.now();
+    println(describe(tls.connect("127.0.0.1", port, options)));
+    let elapsed = started.elapsed();
+    println(f"within deadline: {elapsed >= 250ms && elapsed < 2s}");
+    listener.close();
+
+    let closed = net.listen("127.0.0.1:0").expect("listen");
+    let closed_port = closed.local_port();
+    closed.close();
+    println(describe(tls.connect("127.0.0.1", closed_port, options)));
+
+    var bad_pem = tls.options();
+    bad_pem.trust = tls.Trust.Pem("not a certificate".to_bytes());
+    println(describe(tls.connect("127.0.0.1", port, bad_pem)));
+    println(describe(tls.connect("127.0.0.1", 70000, tls.options())));
+    var negative = tls.options();
+    negative.io_timeout = 0s - 1s;
+    println(describe(tls.connect("127.0.0.1", port, negative)));
+}

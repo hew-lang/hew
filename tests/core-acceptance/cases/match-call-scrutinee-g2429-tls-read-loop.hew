@@ -1,19 +1,17 @@
 import std.net.tls;
 
+// Each turn matches a fresh TLS call result whose `Err` payload owns its
+// detail; the refused connections must not leak those payloads.
 fn main() -> i64 {
-    let stream = tls.connect("127.0.0.1", 1);
     var errs = 0;
-    var i = 0;
-    while i < 50 {
-        match tls.read(stream, 16) {
-            .Ok(data) => {
-                let n = data.len();
-            }
-            .Err(e) => {
+    for _ in 0..50 {
+        match tls.connect("127.0.0.1", 1, tls.options()) {
+            .Ok(stream) => tls.close(stream),
+            .Err(error) => {
+                let _detail = f"{error}";
                 errs = errs + 1;
             }
         }
-        i = i + 1;
     }
     if errs > 0 {
         0

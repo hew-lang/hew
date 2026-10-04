@@ -1,35 +1,55 @@
 //! TLS client connections.
 //!
-//! Provides encrypted TCP connections using TLS with system root
-//! certificates. Suitable for HTTPS clients, secure API calls, and
-//! any protocol that runs over TLS.
+//! `connect` opens a TCP connection, completes a verified TLS handshake and
+//! returns the stream, all within the handshake deadline. Verification is
+//! always on: `Trust.Bundled` trusts the Mozilla root programme compiled
+//! into Hew (not the operating system's store), `Trust.Pem` trusts only the
+//! certificates given.
 //!
 //! # Examples
 //!
 //! ```hew,no_run
-//! import std.net;
 //! import std.net.tls;
 //!
 //! fn main() {
-//!     let stream = tls.connect("example.com", 443);
+//!     let stream = tls.connect("example.com", 443, tls.options()).expect("connect");
 //!     let request = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
-//!     match tls.write(stream, request.to_bytes()) {
-//!         .Ok(_) => {}
-//!         .Err(err) => panic(to_string(err)),
-//!     }
-//!     let _response = match tls.read(stream, 4096) {
-//!         .Ok(data) => data,
-//!         .Err(err) => panic(to_string(err)),
-//!     };
-//!     tls.close(stream);
+//!     stream.write(request.to_bytes()).expect("write");
+//!     let response = stream.read(4096).expect("read");
+//!     println(response.len());
 //! }
 //! ```
 
 import std.net;
 
+/// Which certificate authorities a connection trusts.
+pub enum Trust {
+    /// The Mozilla root programme compiled into Hew.
+    Bundled;
+    /// Only the CA certificates in this PEM document.
+    Pem(bytes);
+}
+
+/// How `connect` verifies and bounds a connection.
+pub type TlsOptions {
+    /// The certificate authorities to trust.
+    trust: Trust;
+    /// Bounds the TCP connect and the handshake together; `0s` is none.
+    /// Resolving the host name comes first and is not bounded by it.
+    handshake_timeout: duration;
+    /// Bounds each read and write after the handshake; `0s` is none.
+    io_timeout: duration;
+}
+
+/// Bundled roots, a 10 second handshake deadline and no I/O timeout.
+pub fn options() -> TlsOptions {
+    TlsOptions { trust: Trust.Bundled, handshake_timeout: 10s, io_timeout: 0s }
+}
+
 /// An established TLS connection to a remote host.
 ///
-/// Created by `tls.connect(host, port)`. Must be released with `close()`.
+/// Created by `tls.connect(host, port, options)`. Released at scope exit or
+/// by `close()`.
 #[resource]
 #[opaque]
 pub type TlsStream {
@@ -169,36 +189,51 @@ impl TlsStream {
     }
 }
 
-/// Open a TLS connection to a remote host.
+const TLS_CONNECT_INVALID_ARGUMENT: i32 = 1;
+
+const TLS_CONNECT_TIMED_OUT: i32 = 2;
+
+const TLS_CONNECT_OS: i32 = 3;
+
+/// Open a verified TLS connection to `host:port`.
 ///
-/// Uses system root certificates to verify the server. Returns a
-/// `TlsStream` on success or a zero-value on failure.
-///
-/// # Examples
-///
-/// ```hew,no_run
-/// import std.net.tls;
-///
-/// fn main() {
-///     let stream = tls.connect("example.com", 443);
-/// }
-/// ```
-pub fn connect(host: string, port: i64) -> TlsStream {
-    let checked = match net.port_arg("tls.connect", port) {
-        .Ok(value) => value,
-        .Err(err) => {
-            panic(f"tls.connect failed");
-            0
-        }
+/// The TCP connect and the handshake complete within
+/// `options.handshake_timeout` or the result is `TimedOut`; resolving `host`
+/// precedes them and is not bounded by the deadline. A bad trust PEM,
+/// host or port is `InvalidArgument`; a certificate the trust does not
+/// accept, or a hostname mismatch, is `Other` with the alert in
+/// `last_error()`. Each call blocks its worker until it finishes.
+pub fn connect(host: string, port: i64, options: TlsOptions) -> Result<TlsStream, net.NetError> {
+    let checked = net.port_arg("tls.connect", port)?;
+    let handshake_ms = net.duration_ms("tls.connect handshake_timeout", options.handshake_timeout.millis())?;
+    let io_ms = net.duration_ms("tls.connect io_timeout", options.io_timeout.millis())?;
+    let (trust, pem): (i32, bytes) = match options.trust {
+        Trust.Bundled => (0, bytes.new()),
+        Trust.Pem(document) => (1, document),
     };
     unsafe {
-        hew_tls_connect(host, checked as i32) // INTERNAL-ABI: range-checked above
+        let stream = hew_tls_connect(host, checked as i32, trust, pem, handshake_ms, io_ms); // INTERNAL-ABI: port range-checked above
+        if hew_tls_is_valid(stream) {
+            return .Ok(stream);
+        }
+        let failure = hew_tls_connect_failure();
+        let errno = hew_tls_connect_errno();
+        if failure == TLS_CONNECT_INVALID_ARGUMENT {
+            .Err(NetError.InvalidArgument(hew_tls_last_error()))
+        } else if failure == TLS_CONNECT_TIMED_OUT {
+            .Err(NetError.TimedOut(errno))
+        } else if failure == TLS_CONNECT_OS {
+            .Err(net.net_error_from_errno(errno))
+        } else {
+            .Err(NetError.Other(errno))
+        }
     }
 }
 
 /// Return the last TLS client error observed on this thread.
 ///
-/// Failed `connect()` calls update this string. Successful connects clear it.
+/// A failed `connect()` records its detail here, including the alert of a
+/// verification failure. Successful connects clear it.
 pub fn last_error() -> string {
     unsafe {
         hew_tls_last_error()
@@ -229,7 +264,10 @@ pub fn close(consume stream: TlsStream) {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_tls_connect(host: string, port: i32) -> TlsStream;
+    fn hew_tls_connect(host: string, port: i32, trust: i32, pem: bytes, handshake_ms: i64, io_ms: i64) -> TlsStream;
+    fn hew_tls_is_valid(stream: TlsStream) -> bool;
+    fn hew_tls_connect_failure() -> i32;
+    fn hew_tls_connect_errno() -> i64;
     fn hew_tls_last_error() -> string;
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;

@@ -1267,10 +1267,9 @@ stdlib-user-build-clean: hew-native
 # tests/core-acceptance/cases/example-*.toml.
 #
 # The TLS client (examples/net/tls_client.hew) is intentionally NOT gated: it
-# dials a real public host (example.com:443) — a genuine outbound network
-# dependency that cannot run offline — and additionally exercises a known TLS
-# data-plane ABI gap (it fails closed on a short write). It ships a paired
-# .expected for local diffing only. See examples/README.md for the rationale.
+# dials a real public host (example.com:443), a genuine outbound network
+# dependency that cannot run offline. It ships a paired .expected for local
+# diffing only; tls-connect-failures covers connect offline.
 #
 # examples/benchmarks/hew is deliberately absent: those programs exist to be
 # timed, and the slowest runs for minutes, well past a core-acceptance case's

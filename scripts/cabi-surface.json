@@ -18205,9 +18205,48 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_tls_connect( *const HewString, c_int) -> *mut HewTlsStream"
+        "native": "fn hew_tls_connect( *const HewString, c_int, c_int, *const BytesTriple, i64, i64, ) -> *mut HewTlsStream"
       },
       "symbol": "hew_tls_connect"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_tls_connect_errno() -> i64"
+      },
+      "symbol": "hew_tls_connect_errno"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_tls_connect_failure() -> c_int"
+      },
+      "symbol": "hew_tls_connect_failure"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_tls_is_valid( *const HewTlsStream) -> bool"
+      },
+      "symbol": "hew_tls_is_valid"
     },
     {
       "availability": [

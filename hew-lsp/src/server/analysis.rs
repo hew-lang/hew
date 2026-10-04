@@ -1506,7 +1506,7 @@ pub(super) mod tests {
         // shape the accept fixture exercises: `tls.read(stream, n)`).
         let source = "import std.net.tls;\n\
                       fn probe() {\n\
-                      \x20   let stream = tls.connect(\"h\", 443);\n\
+                      \x20   let stream = tls.connect(\"h\", 443, tls.options()).expect(\"c\");\n\
                       \x20   let chunk = tls.read(stream, 16);\n\
                       }\n";
         let doc = analyze_repo_rooted("lsp_cov_tls", source);

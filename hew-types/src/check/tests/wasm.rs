@@ -666,7 +666,7 @@ mod wasm_rejects {
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
             "import std.net.tls;\n",
-            "fn main() { tls.connect(\"host\", 443); }\n",
+            "fn main() { let _ = tls.connect(\"host\", 443, tls.options()); }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
@@ -1028,7 +1028,7 @@ fn main() {
     fn native_tls_no_platform_error() {
         let source = concat!(
             "import std.net.tls;\n",
-            "fn main() { tls.connect(\"host\", 443); }\n",
+            "fn main() { let _ = tls.connect(\"host\", 443, tls.options()); }\n",
         );
         let result = hew_parser::parse(source);
         assert!(

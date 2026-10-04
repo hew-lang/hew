@@ -2894,7 +2894,6 @@ impl Checker {
 
         self.emit_dead_code_warnings();
 
-        self.default_unconstrained_range_types(&expr_types);
         // Re-record range bound spans with their concrete element types
         // (resolved after inference + defaulting) and validate fits.
         self.apply_deferred_range_bound_types(&mut expr_types);

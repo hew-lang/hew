@@ -1242,6 +1242,19 @@ impl Checker {
                 }
                 // Not a coercible const — fall through to default behaviour
                 let actual = self.synthesize(expr, span);
+                // A binding whose type is still an integer- or float-literal
+                // variable (a range-literal loop variable) takes the
+                // contextual width here. `expect_type` normalizes first, which
+                // resolves the variable to its literal kind and loses the root
+                // that `unify` promotes.
+                if matches!(actual, Ty::Var(_))
+                    && self.subst.resolve(&actual).is_numeric_literal()
+                    && !expected.is_numeric_literal()
+                    && self.try_unify_inference_with_owner_identity(expected, &actual)
+                {
+                    self.record_type(span, expected);
+                    return expected.clone();
+                }
                 let n = self.errors.len();
                 self.expect_type(expected, &actual, span);
                 if self.errors.len() > n {
@@ -2178,12 +2191,18 @@ impl Checker {
                         common_integer_type(&left_resolved, &right_resolved, self.pointer_width())
                     {
                         // When both bounds are integer literals (e.g. `0..8`),
-                        // use a fresh type variable so the element type can be
-                        // inferred from context (e.g. how the loop variable is
-                        // used).  If nothing constrains it, it stays as-is
-                        // and defaults to the literal type (i64).
+                        // the element is an integer-literal variable (Rust's
+                        // `{integer}`): casts and integer methods see an
+                        // integer at once, while a later use-site constraint
+                        // (e.g. `vec.push(i)` with `Vec<i32>`) still narrows
+                        // it. Unconstrained, it defaults to i64 with every
+                        // other integer literal.
                         if left_is_coercible && right_is_coercible {
                             let var_tv = TypeVar::fresh();
+                            self.subst.insert(var_tv, &Ty::IntLiteral).expect(
+                                "binding a fresh range element var to the integer literal kind \
+                                 must stay acyclic",
+                            );
                             // When a bound is a bare identifier referring to an
                             // unannotated `let`-bound literal (`let n = 6; ...
                             // 0 .. n`), that identifier's OWN inference var

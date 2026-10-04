@@ -1,0 +1,9 @@
+fn main() {
+    for v in 0..3 {
+        println(v as char);
+    }
+    let r: Range<u8> = 0..256;
+    for x in r {
+        println(x);
+    }
+}

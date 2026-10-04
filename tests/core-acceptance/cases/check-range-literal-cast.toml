@@ -1,0 +1,21 @@
+[[case]]
+id = "check-range-literal-cast"
+intent = "A range-literal element is an integer, so casting it to `char` is refused, and an expected `Range<u8>` still rejects a bound that does not fit."
+source = "cases/check-range-literal-cast.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "Mismatch"
+line = 3
+column = 17
+message = "cannot cast `i64` to `char`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 5
+column = 27
+message = "integer literal `256` does not fit in `u8`"

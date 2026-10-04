@@ -806,6 +806,12 @@ impl Checker {
         span: &Span,
     ) {
         let resolved_ty = self.normalize_for_use(ty);
+        // A literal-defaulting variable (a range-literal element) stays a
+        // variable in the binding so a later use can still narrow it.
+        let literal_var = match ty {
+            Ty::Var(_) if resolved_ty.is_numeric_literal() => Some(ty.clone()),
+            _ => None,
+        };
         let ty = &resolved_ty;
         // The place this pattern node destructures, if any. Taking it here is
         // what stops it leaking into a shape that is not a field of it: only
@@ -1077,8 +1083,12 @@ impl Checker {
                     self.record_pattern_place_transfer(&root, path, ty, span);
                 }
                 self.check_shadowing(name.name.as_str(), span);
-                self.env
-                    .define_with_span(*name, ty.clone(), is_mutable, span.clone());
+                self.env.define_with_span(
+                    *name,
+                    literal_var.unwrap_or_else(|| ty.clone()),
+                    is_mutable,
+                    span.clone(),
+                );
                 self.record_local_resolution(*name, span);
             }
             // TRANSITION(P1): deleted by A1 commit 2

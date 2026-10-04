@@ -1818,32 +1818,6 @@ impl Checker {
         }
     }
 
-    /// Default unconstrained Range type variables to i64. When both range
-    /// bounds are coercible integer literals (e.g. `0..10`) the type checker
-    /// creates `Range<fresh_var>`.  If nothing constrains the variable it
-    /// reaches the serializer unresolved.  Bind those to i64 so both the
-    /// Range and any derived bindings (loop induction variable) resolve.
-    pub(super) fn default_unconstrained_range_types(&mut self, expr_types: &HashMap<SpanKey, Ty>) {
-        for ty in expr_types.values() {
-            if let Ty::Named {
-                head: crate::TypeHead::Builtin(crate::BuiltinType::Range),
-                args,
-                ..
-            } = ty
-            {
-                if args.len() == 1 {
-                    if let Ty::Var(v) = &args[0] {
-                        if self.subst.lookup(*v).is_none() {
-                            self.subst.insert(*v, &Ty::I64).expect(
-                                "defaulting an unresolved numeric literal variable to i64 must stay acyclic",
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// Re-record the spans of coercible range bounds with their concrete
     /// resolved element type.
     ///
@@ -1851,7 +1825,7 @@ impl Checker {
     /// (e.g. `0..10`), `check_binary_op` creates a fresh `TypeVar` for the
     /// element type and pushes each bound's span + literal value to
     /// `deferred_range_bounds`.  After all inference and defaulting is
-    /// complete (including `default_unconstrained_range_types`), this pass
+    /// complete (including literal defaulting), this pass
     /// resolves each `TypeVar` to a concrete integer type, validates that the
     /// literal fits, and re-records the span so codegen generates the constant
     /// with the correct width (e.g. `i32` instead of the output-defaulted

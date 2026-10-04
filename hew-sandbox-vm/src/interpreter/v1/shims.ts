@@ -322,8 +322,9 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
   Len: (_host, args) => int(BigInt(vec(args, 0).items.length)),
   Slice: (_host, args) => {
     const items = vec(args, 0).items;
-    const start = Math.min(Math.max(index(args, 1), 0), items.length);
-    const end = Math.min(Math.max(index(args, 2), start), items.length);
+    const start = index(args, 1);
+    const end = index(args, 2);
+    checkSliceBounds(start, end, items.length);
     return {
       kind: "vector",
       elementType: "",
@@ -332,7 +333,8 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
   },
   SliceFrom: (_host, args) => {
     const items = vec(args, 0).items;
-    const start = Math.min(Math.max(index(args, 1), 0), items.length);
+    const start = index(args, 1);
+    checkSliceBounds(start, items.length, items.length);
     return {
       kind: "vector",
       elementType: "",
@@ -340,6 +342,17 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
     };
   },
 };
+
+/// A slice outside `0 <= start <= end <= length` faults like native's
+/// `IndexOutOfBounds` rather than clamping to the valid range.
+function checkSliceBounds(start: number, end: number, length: number): void {
+  if (start < 0 || end < start || end > length) {
+    throw new ShimFault(
+      "vector_bounds",
+      `slice ${start}..${end} out of bounds for length ${length}`,
+    );
+  }
+}
 
 /// `std.math`. Native emits the LLVM intrinsic for each of these, so the
 /// mapping is to the matching IEEE operation rather than to whatever JS spells

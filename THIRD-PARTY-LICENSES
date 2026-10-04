@@ -6,7 +6,7 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (389 packages)
+  Apache License 2.0 (388 packages)
   MIT License (114 packages)
   Unicode License v3 (19 packages)
   BSD 3-Clause "New" or "Revised" License (9 packages)
@@ -8609,7 +8609,6 @@ Apache License 2.0
   * hew-testutil 0.6.0-rc7
   * hew-types 0.6.0-rc7 — https://github.com/hew-lang/hew
   * hew-wasm 0.6.0-rc7 — https://github.com/hew-lang/hew
-  * hew-std-encoding-binary 0.6.0-rc7 — https://github.com/hew-lang/hew
   * hew-std-text-template 0.6.0-rc7 — https://github.com/hew-lang/hew
   * xtask 0.6.0-rc7 — https://github.com/hew-lang/hew
   * abnf_to_pest 0.5.1 — https://github.com/Nadrieril/dhall-rust

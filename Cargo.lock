@@ -2065,10 +2065,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hew-std-encoding-binary"
-version = "0.6.0-rc7"
-
-[[package]]
 name = "hew-std-text-template"
 version = "0.6.0-rc7"
 

@@ -44,7 +44,7 @@ hew lsp                 # thin launcher; forwards args to hew-lsp on the same PA
 ```
 
 `--pkg-path <DIR>` mirrors `hew check --pkg-path`, adding package search roots so
-`hew::pkg` imports resolve the same way in the editor as on the command line.
+package imports resolve the same way in the editor as on the command line.
 `--version` and `--help` print and exit without starting a session.
 
 Confirm the binary runs:
@@ -55,17 +55,28 @@ hew-lsp --version
 
 ## VS Code
 
-Install the **vscode-hew** extension from
-[hew-lang/vscode-hew](https://github.com/hew-lang/vscode-hew); it bundles the
-client and launches `hew-lsp` for `.hew` files. If the binary is not on
-`PATH`, set the extension's server-path setting to it (illustrative):
+Install **Hew Language** (`hew-lang.hew-lang`) from the
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=hew-lang.hew-lang),
+or run `code --install-extension hew-lang.hew-lang`. Open a `.hew` file to
+activate highlighting and the language server. The extension searches `PATH`
+and includes a bundled `hew-lsp` for supported platforms.
+
+To select a particular compiler installation, set `hew.lsp.serverPath` to the
+absolute path of its `hew-lsp` binary and `hew.formatterPath` to its `hew`
+binary. Use workspace settings in a workspace you trust, or user settings for
+a trusted installed toolchain. For example, on macOS or Linux:
 
 ```jsonc
 // .vscode/settings.json
 {
-  "hew.lsp.path": "${workspaceFolder}/target/release/hew-lsp"
+  "hew.lsp.serverPath": "/absolute/path/to/hew/bin/hew-lsp",
+  "hew.formatterPath": "/absolute/path/to/hew/bin/hew"
 }
 ```
+
+Use full paths rather than `${workspaceFolder}` or `~`; these settings are
+passed to executable discovery without variable expansion. On Windows, use
+paths to `hew-lsp.exe` and `hew.exe`, escaping backslashes in JSON.
 
 A minimal client is just stdio transport with a `.hew` document selector — any
 editor that can spawn a command works the same way:

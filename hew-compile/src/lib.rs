@@ -286,7 +286,7 @@ impl Session {
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<SessionOutput, SessionError> {
         let program = tco
-            .normalized_machines
+            .normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
         let mut lowered =
@@ -3692,7 +3692,7 @@ fn run_frontend_after_parse_with_dependency_cache(
         .typecheck_result
         .as_mut()
         .and_then(|result| result.tco.as_mut())
-        .and_then(|tco| tco.normalized_machines.as_mut())
+        .and_then(|tco| tco.normalized_program.as_mut())
     {
         flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
     } else {

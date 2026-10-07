@@ -24,10 +24,12 @@ use hew_parser::ast::{
 
 use crate::error::{TypeError, TypeErrorKind};
 
-/// One checked program authority and diagnostic provenance for its generated
-/// nodes. Original top-level items keep their declaration ordinal and span.
+/// The program the checker checks and HIR lowers when the compiler writes
+/// declarations of its own into it, with diagnostic provenance for the
+/// generated nodes. Original top-level items keep their declaration ordinal
+/// and span.
 #[derive(Debug, Clone)]
-pub struct NormalizedMachines {
+pub struct NormalizedProgram {
     pub program: Program,
     pub source_spans: HashMap<Span, Span>,
     /// Each machine's transitions as `(source state, authored body span)`,
@@ -38,7 +40,7 @@ pub struct NormalizedMachines {
 
 pub(super) fn normalize(
     program: &Program,
-) -> Result<Option<Arc<NormalizedMachines>>, Vec<TypeError>> {
+) -> Result<Option<Arc<NormalizedProgram>>, Vec<TypeError>> {
     let contains_machine = program
         .items
         .iter()
@@ -131,7 +133,7 @@ pub(super) fn normalize(
         }
     }
     project_normalized_imports(&mut normalized);
-    Ok(Some(Arc::new(NormalizedMachines {
+    Ok(Some(Arc::new(NormalizedProgram {
         program: normalized,
         source_spans: builder.source_spans,
         transitions: builder.transitions,

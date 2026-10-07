@@ -55,7 +55,7 @@ mod race;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod machine_effects;
 mod machine_normalize;
-pub use machine_normalize::NormalizedMachines;
+pub use machine_normalize::NormalizedProgram;
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
@@ -2498,20 +2498,20 @@ impl Checker {
         } else {
             self.has_checked_program = true;
         }
-        let normalized_machines = match machine_normalize::normalize(program) {
+        let normalized_program = match machine_normalize::normalize(program) {
             Ok(normalized) => normalized,
             Err(errors) => {
                 self.errors.extend(errors);
                 None
             }
         };
-        let program = normalized_machines
+        let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
         self.prepare_program(program, false);
         self.check_dependency_bodies(program);
         self.check_root_bodies(program);
-        self.finish_program(program, normalized_machines.as_ref())
+        self.finish_program(program, normalized_program.as_ref())
     }
 
     /// Deep-copy a sealed dependency-only checkpoint. Callers never copy a
@@ -3149,7 +3149,7 @@ impl Checker {
     fn finish_program(
         &mut self,
         program: &Program,
-        normalized_machines: Option<&std::sync::Arc<machine_normalize::NormalizedMachines>>,
+        normalized_program: Option<&std::sync::Arc<machine_normalize::NormalizedProgram>>,
     ) -> TypeCheckOutput {
         // Closure escape classification — runs after all bodies have
         // been type-checked. Walks each fn body (root + modules) looking
@@ -3631,7 +3631,7 @@ impl Checker {
         };
         // Machine purity follows each resource's release into its `close`.
         let resource_closes: HashMap<crate::NominalId, crate::DefId> =
-            if normalized_machines.is_some() {
+            if normalized_program.is_some() {
                 self.registry
                     .resource_type_ids()
                     .iter()
@@ -3659,7 +3659,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             resolved_annotation_types,
-            normalized_machines: normalized_machines.cloned(),
+            normalized_program: normalized_program.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
@@ -3809,7 +3809,7 @@ impl Checker {
                 .errors
                 .extend(machine_effects::validate(&output, &resource_closes));
         }
-        if let Some(normalized) = &normalized_machines {
+        if let Some(normalized) = &normalized_program {
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
                 if let Some(source) = normalized.source_spans.get(&diagnostic.span) {
                     diagnostic.span = source.clone();
@@ -3831,7 +3831,7 @@ impl Checker {
     /// two generated spans that disagree is dropped rather than resolved
     /// arbitrarily.
     fn project_machine_expr_types(
-        normalized: &NormalizedMachines,
+        normalized: &NormalizedProgram,
         expr_types: &mut HashMap<SpanKey, Ty>,
     ) {
         let mut projected: HashMap<SpanKey, Ty> = HashMap::new();

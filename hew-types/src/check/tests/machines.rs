@@ -48,7 +48,7 @@ fn generated_machine_parameters_keep_distinct_binding_spans() {
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
-    let normalized = output.normalized_machines.as_ref().expect("normalization");
+    let normalized = output.normalized_program.as_ref().expect("normalization");
     let mut bindings = std::collections::HashSet::new();
     let mut generated = 0;
     for (item, _) in &normalized.program.items {
@@ -113,7 +113,7 @@ fn machine_normalizes_owning_values_and_checked_staged_calls() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
-        .normalized_machines
+        .normalized_program
         .as_ref()
         .unwrap()
         .program

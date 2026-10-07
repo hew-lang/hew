@@ -374,7 +374,7 @@ pub enum VecCursorMode {
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
     /// Ordinary checked program produced by machine normalization, when present.
-    pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
+    pub normalized_program: Option<std::sync::Arc<super::machine_normalize::NormalizedProgram>>,
     pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     /// Checked local recovery semantics; HIR must consume this fact.
     pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,

@@ -170,29 +170,44 @@ impl Builder<'_, '_> {
             .cloned();
         let floor = boundary.as_ref().map_or(0, |body| body.floor);
         let loan_floor = boundary.as_ref().map_or(0, |body| body.loan_depth);
-        let mut steps = self.plan_task_joins(floor, true);
-        steps.extend(self.plan_argument_loans(loan_floor));
-        for step in &steps {
-            self.emit_exit_step(step)?;
-        }
-        self.argument_receiver_loans.truncate(loan_floor);
         let preserved = boundary
             .as_ref()
             .map(|b| b.preserved.clone())
             .unwrap_or_default();
-        let handback = if boundary.is_none() {
-            self.take_fault_handback()?
+        let mut steps = self.plan_task_joins(floor, true);
+        steps.extend(self.plan_argument_loans(loan_floor));
+        // The planned steps end these loans; no deferred body lowered on
+        // this path may treat them as its own.
+        self.argument_receiver_loans.truncate(loan_floor);
+        if self.callable.signature.hands_back_receiver() {
+            // The receiver handed back must cross every step after its take
+            // as an argument; this body keeps a private chain per fault site.
+            for step in &steps {
+                self.emit_exit_step(step, true)?;
+            }
+            let handback = if boundary.is_none() {
+                self.take_fault_handback()?
+            } else {
+                None
+            };
+            for step in self.plan_fault_drain(floor, &preserved, boundary.is_none()) {
+                self.emit_exit_step(&step, true)?;
+            }
+            self.set_terminator(
+                boundary.map_or(SemTerminator::ResumeUnwind { handback }, |body| {
+                    SemTerminator::Goto(edge(body.finish))
+                }),
+            )?;
         } else {
-            None
-        };
-        for step in self.plan_fault_drain(floor, &preserved, boundary.is_none()) {
-            self.emit_exit_step(&step)?;
+            steps.extend(self.plan_fault_drain(floor, &preserved, boundary.is_none()));
+            let end = boundary.map_or(super::cleanup::ExitEnd::Unwind, |body| {
+                super::cleanup::ExitEnd::Finish(body.finish)
+            });
+            let landing = self.current;
+            let top = self.enter_cleanup_ladder(&steps, end)?;
+            self.current = landing;
+            self.set_terminator(SemTerminator::Goto(edge(top)))?;
         }
-        self.set_terminator(
-            boundary.map_or(SemTerminator::ResumeUnwind { handback }, |body| {
-                SemTerminator::Goto(edge(body.finish))
-            }),
-        )?;
         let terminal = self.current;
         self.restore_control_state(&saved);
         self.current = terminal;

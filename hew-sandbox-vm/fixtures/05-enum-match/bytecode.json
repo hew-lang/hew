@@ -103,7 +103,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 4
+              "to": 6
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -125,7 +125,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -140,10 +140,7 @@
           "params": [],
           "term": {
             "op": "resume_unwind",
-            "span": {
-              "end": 227,
-              "start": 227
-            }
+            "span": null
           }
         },
         {
@@ -156,6 +153,32 @@
               "to": 5
             },
             "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
             "span": {
               "end": 227,
               "start": 227
@@ -163,7 +186,7 @@
           }
         },
         {
-          "id": 5,
+          "id": 7,
           "ops": [],
           "params": [],
           "term": {
@@ -294,7 +317,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 12
+                  "to": 13
                 },
                 "trap": "integer_overflow"
               }
@@ -304,7 +327,7 @@
               "args": [
                 12
               ],
-              "to": 11
+              "to": 12
             },
             "op": "checked.binary",
             "result": {
@@ -346,7 +369,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 8
+                  "to": 10
                 },
                 "trap": "integer_overflow"
               }
@@ -356,7 +379,7 @@
               "args": [
                 10
               ],
-              "to": 7
+              "to": 9
             },
             "op": "checked.binary",
             "result": {
@@ -395,7 +418,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 6
+              "to": 7
             },
             "op": "goto",
             "span": {
@@ -410,14 +433,37 @@
           "params": [],
           "term": {
             "op": "resume_unwind",
-            "span": {
-              "end": 133,
-              "start": 133
-            }
+            "span": null
           }
         },
         {
           "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 8
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 9,
           "ops": [],
           "params": [
             {
@@ -440,13 +486,13 @@
           }
         },
         {
-          "id": 8,
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 9
+              "to": 11
             },
             "op": "checked_raise",
             "span": {
@@ -457,13 +503,13 @@
           }
         },
         {
-          "id": 9,
+          "id": 11,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 10
+              "to": 7
             },
             "op": "goto",
             "span": {
@@ -473,19 +519,7 @@
           }
         },
         {
-          "id": 10,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 137,
-              "start": 137
-            }
-          }
-        },
-        {
-          "id": 11,
+          "id": 12,
           "ops": [],
           "params": [
             {
@@ -508,13 +542,13 @@
           }
         },
         {
-          "id": 12,
+          "id": 13,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 13
+              "to": 14
             },
             "op": "checked_raise",
             "span": {
@@ -525,27 +559,15 @@
           }
         },
         {
-          "id": 13,
+          "id": 14,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 14
+              "to": 7
             },
             "op": "goto",
-            "span": {
-              "end": 172,
-              "start": 172
-            }
-          }
-        },
-        {
-          "id": 14,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
             "span": {
               "end": 172,
               "start": 172

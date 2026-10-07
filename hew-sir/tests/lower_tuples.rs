@@ -95,6 +95,8 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
             "bb1:\n",
             "    return move %3\n",
             "bb2:\n",
+            "    goto bb3\n",
+            "bb3:\n",
             "    resume_unwind\n",
             "}\n"
         )

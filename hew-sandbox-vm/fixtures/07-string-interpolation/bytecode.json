@@ -122,7 +122,7 @@
               "args": [
                 5
               ],
-              "to": 4
+              "to": 8
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -154,7 +154,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 6
             },
             "op": "goto",
             "span": {
@@ -165,13 +165,16 @@
         },
         {
           "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
           "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 1
-            },
             {
               "dst": null,
               "op": "end_lifetime",
@@ -181,15 +184,62 @@
           ],
           "params": [],
           "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 56,
-              "start": 56
-            }
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
           }
         },
         {
-          "id": 4,
+          "id": 5,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 8,
           "ops": [
             {
               "dst": null,
@@ -237,7 +287,7 @@
               "args": [
                 8
               ],
-              "to": 5
+              "to": 9
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -256,7 +306,7 @@
           }
         },
         {
-          "id": 5,
+          "id": 9,
           "ops": [
             {
               "dst": null,
@@ -288,7 +338,7 @@
             "family": 1,
             "normal": {
               "args": [],
-              "to": 6
+              "to": 10
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -304,7 +354,7 @@
           }
         },
         {
-          "id": 6,
+          "id": 10,
           "ops": [
             {
               "dst": null,
@@ -317,7 +367,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 11
             },
             "op": "goto",
             "span": {
@@ -327,7 +377,7 @@
           }
         },
         {
-          "id": 7,
+          "id": 11,
           "ops": [
             {
               "dst": null,

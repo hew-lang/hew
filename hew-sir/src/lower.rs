@@ -2058,6 +2058,9 @@ struct Builder<'hir, 'service> {
     /// receiver has already moved into it, so a failing cleanup hands the
     /// receiver back out of it.
     dual_return: Option<ValueId>,
+    /// The fault cleanup rungs this body has emitted. Rungs are blocks, not
+    /// lexical state, so control-state snapshots never carry them.
+    cleanup_ladder: cleanup::CleanupLadder,
 }
 
 #[path = "lower_aggregate.rs"]

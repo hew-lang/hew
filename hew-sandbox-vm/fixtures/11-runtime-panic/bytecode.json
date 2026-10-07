@@ -51,7 +51,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 2
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -62,6 +62,15 @@
         },
         {
           "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
           "ops": [
             {
               "dst": null,
@@ -72,11 +81,38 @@
           ],
           "params": [],
           "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 22,
-              "start": 22
-            }
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
           }
         }
       ],

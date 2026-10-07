@@ -3,6 +3,12 @@
 //! temporaries, then per scope (innermost first) run its defers, end its scope
 //! loans and end its bindings. The `plan_*` functions compute that order from
 //! the builder's lexical state without emitting; the emitters replay it.
+//!
+//! Ordinary exits have one continuation each and emit their steps inline.
+//! Fault exits share one cleanup ladder per body: each step becomes a rung
+//! block identified by the step and the rung after it, so every fault site
+//! whose remaining cleanup is the same suffix jumps into the same blocks, and
+//! the cleanup a body emits grows with its owners, not with its fault sites.
 
 use std::collections::BTreeMap;
 
@@ -30,9 +36,23 @@ pub(super) enum ExitStep {
     },
     /// End a local binding's storage, or a deferred actor-state seat (D447).
     EndLifetime(PlaceId),
-    /// Dispatch the drained cleanup's outcome on a fault path whose normal and
-    /// fault successors coincide.
-    Dispatch,
+}
+
+/// Where a fault exit ends once its cleanup has run.
+#[derive(Clone, Copy)]
+pub(super) enum ExitEnd {
+    /// Leave the body with the fault.
+    Unwind,
+    /// Finish the enclosing deferred body or recovery boundary.
+    Finish(crate::BlockId),
+}
+
+/// The fault cleanup rungs a body has emitted: `(step, next rung)` to the
+/// rung's block. A rung's block runs the step and continues at the next rung.
+#[derive(Default)]
+pub(super) struct CleanupLadder {
+    rungs: BTreeMap<(ExitStep, crate::BlockId), crate::BlockId>,
+    unwind: Option<crate::BlockId>,
 }
 
 /// The ordered releases of a scope drain, and whether its outcome must be
@@ -85,21 +105,12 @@ impl Builder<'_, '_> {
     }
 
     /// Destroy every live owner not in `baseline`, newest first.
-    pub(super) fn plan_destroys(
-        &self,
-        baseline: &BTreeMap<ValueId, ResolvedTy>,
-        may_fault: &mut bool,
-    ) -> Vec<ExitStep> {
+    pub(super) fn plan_destroys(&self, baseline: &BTreeMap<ValueId, ResolvedTy>) -> Vec<ExitStep> {
         self.owned_live
-            .iter()
+            .keys()
             .rev()
-            .filter(|(value, _)| !baseline.contains_key(value))
-            .map(|(&value, _)| {
-                if let Some(ty) = self.value_ty(value) {
-                    *may_fault |= self.release_may_fault(&ty);
-                }
-                ExitStep::Destroy(value)
-            })
+            .filter(|value| !baseline.contains_key(value))
+            .map(|&value| ExitStep::Destroy(value))
             .collect()
     }
 
@@ -162,8 +173,11 @@ impl Builder<'_, '_> {
     }
 
     /// Emit one step into the current block, leaving the builder at its
-    /// continuation with the lexical state the step consumed removed.
-    pub(super) fn emit_exit_step(&mut self, step: &ExitStep) -> Result<(), String> {
+    /// continuation with the lexical state the step consumed removed. On a
+    /// fault path a finished defer dispatches its outcome at once: the
+    /// deferred body may itself have faulted, and the remaining steps run
+    /// under whichever fault is now active.
+    pub(super) fn emit_exit_step(&mut self, step: &ExitStep, fault: bool) -> Result<(), String> {
         match step {
             ExitStep::JoinScope { scope, mode } => {
                 let frame = self.task_scopes.pop().expect("active task scope");
@@ -209,7 +223,16 @@ impl Builder<'_, '_> {
                     .rposition(|action| action.id == *id)
                     .expect("pending defer");
                 let action = self.defers.remove(index);
-                self.emit_deferred_body(&action)
+                self.emit_deferred_body(&action)?;
+                if fault {
+                    let next = self.new_block(Vec::new());
+                    self.set_terminator(SemTerminator::CleanupDispatch {
+                        normal: edge(next),
+                        fault: edge(next),
+                    })?;
+                    self.current = next;
+                }
+                Ok(())
             }
             ExitStep::EndLifetime(place) => {
                 self.deferred_initialized.remove(place);
@@ -217,15 +240,6 @@ impl Builder<'_, '_> {
                     SemOpKind::EndLifetime { place: *place },
                     Provenance::Synthesized,
                 )
-            }
-            ExitStep::Dispatch => {
-                let next = self.new_block(Vec::new());
-                self.set_terminator(SemTerminator::CleanupDispatch {
-                    normal: edge(next),
-                    fault: edge(next),
-                })?;
-                self.current = next;
-                Ok(())
             }
         }
     }
@@ -238,7 +252,7 @@ impl Builder<'_, '_> {
         let previous_draining = self.cleanup_draining;
         self.cleanup_draining = true;
         for step in &plan.steps {
-            self.emit_exit_step(step)?;
+            self.emit_exit_step(step, false)?;
         }
         let loan_floor = self
             .scope_loan_floors
@@ -278,13 +292,8 @@ impl Builder<'_, '_> {
         preserved: &BTreeMap<ValueId, ResolvedTy>,
         leaves_body: bool,
     ) -> Vec<ExitStep> {
-        let mut may_fault = self.cleanup_may_fail;
-        let mut steps = self.plan_destroys(preserved, &mut may_fault);
-        let drain = self.plan_scope_drain(floor);
-        steps.extend(drain.steps);
-        if drain.ran_defer || may_fault || drain.may_fault {
-            steps.push(ExitStep::Dispatch);
-        }
+        let mut steps = self.plan_destroys(preserved);
+        steps.extend(self.plan_scope_drain(floor).steps);
         if leaves_body {
             // Spawn-supplied fields stay with the spawn, which destroys them
             // when init reports failure.
@@ -296,6 +305,58 @@ impl Builder<'_, '_> {
             );
         }
         steps
+    }
+
+    /// Emit `steps` as rungs of the body's cleanup ladder ending at `end`,
+    /// reusing every rung whose step and remaining cleanup were already
+    /// emitted, and return the first rung. New rungs are emitted top-down
+    /// from the current lexical state, which each step advances; once a rung
+    /// exists, so does everything below it.
+    pub(super) fn enter_cleanup_ladder(
+        &mut self,
+        steps: &[ExitStep],
+        end: ExitEnd,
+    ) -> Result<crate::BlockId, String> {
+        let site = self.current_site.take();
+        let bottom = match end {
+            ExitEnd::Finish(block) => block,
+            ExitEnd::Unwind => self.unwind_block()?,
+        };
+        let mut rungs = vec![(bottom, false); steps.len() + 1];
+        for (index, step) in steps.iter().enumerate().rev() {
+            let key = (step.clone(), rungs[index + 1].0);
+            rungs[index] = if let Some(&block) = self.cleanup_ladder.rungs.get(&key) {
+                (block, false)
+            } else {
+                let block = self.new_block(Vec::new());
+                self.cleanup_ladder.rungs.insert(key, block);
+                (block, true)
+            };
+        }
+        for (index, step) in steps.iter().enumerate() {
+            let (block, fresh) = rungs[index];
+            if !fresh {
+                break;
+            }
+            self.current = block;
+            self.emit_exit_step(step, true)?;
+            self.set_terminator(SemTerminator::Goto(edge(rungs[index + 1].0)))?;
+        }
+        self.current_site = site;
+        Ok(rungs[0].0)
+    }
+
+    /// The body's one `resume_unwind`, the bottom of every ladder that
+    /// leaves the body.
+    fn unwind_block(&mut self) -> Result<crate::BlockId, String> {
+        if let Some(block) = self.cleanup_ladder.unwind {
+            return Ok(block);
+        }
+        let block = self.new_block(Vec::new());
+        self.current = block;
+        self.set_terminator(SemTerminator::ResumeUnwind { handback: None })?;
+        self.cleanup_ladder.unwind = Some(block);
+        Ok(block)
     }
 }
 

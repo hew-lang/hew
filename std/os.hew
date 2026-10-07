@@ -1,7 +1,7 @@
 //! Operating system interfaces.
 //!
-//! Access command-line arguments, environment variables, and system
-//! information.
+//! Access command-line arguments, environment variables, system
+//! information and termination requests.
 //!
 //! # Examples
 //!
@@ -18,6 +18,8 @@
 //!     println(home);
 //! }
 //! ```
+
+import std.stream;
 
 /// Return all command-line arguments, including the program name.
 ///
@@ -172,8 +174,56 @@ pub fn temp_dir() -> string {
     }
 }
 
+/// Receive the process's termination requests: SIGTERM and SIGINT on Unix,
+/// Ctrl-C, Ctrl-Break and console close on Windows.
+///
+/// Each request delivers one `()`; requests that arrive before the next
+/// receive coalesce into one. While any such stream is open, a request no
+/// longer starts runtime shutdown: the program decides when to stop, and
+/// returning from `main` drains its actors as usual. Closing every stream
+/// restores the default reaction (spec §5.9). The stream never ends on its
+/// own, and it is a `select` source. Windows ends the process as soon as a
+/// console close request is handed over, so the program cannot rely on acting
+/// on that one; Ctrl-C and Ctrl-Break leave it running.
+///
+/// # Examples
+///
+/// ```
+/// import std.os;
+///
+/// fn main() {
+///     let stop = os.shutdown_signal();
+///     var ticks = 0;
+///     loop {
+///         let stopping = select {
+///             request from stop.recv() => true,
+///             after 10ms => false,
+///         };
+///         ticks += 1;
+///         if stopping || ticks == 3 {
+///             break;
+///         }
+///     }
+///     println(f"stopped after {ticks} ticks");
+/// }
+/// ```
+pub fn shutdown_signal() -> stream.Stream<()> {
+    unsafe {
+        let pair = hew_shutdown_signal_stream();
+        if !hew_stream_pair_is_valid(pair) {
+            panic(f"shutdown_signal: {hew_stream_last_error()}");
+        }
+        let requests: stream.Stream<()> = stream.pair_stream(pair);
+        pair.close();
+        requests
+    }
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
+    fn hew_shutdown_signal_stream() -> stream.StreamPair;
+    fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
+    fn hew_stream_last_error() -> string;
     fn hew_args_count() -> i32;
     fn hew_args_get(index: i32) -> string;
     fn hew_env_get(name: string) -> string;

@@ -35,6 +35,7 @@ pub enum WasmUnsupportedFeature {
     Timers,
     PeriodicTimers,
     FilesystemStreams,
+    TerminationSignals,
     HttpClient,
     Smtp,
     WebSocket,
@@ -64,6 +65,7 @@ impl WasmUnsupportedFeature {
         Self::Timers,
         Self::PeriodicTimers,
         Self::FilesystemStreams,
+        Self::TerminationSignals,
         Self::HttpClient,
         Self::Smtp,
         Self::WebSocket,
@@ -93,6 +95,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
             Self::FilesystemStreams => WasmCapabilityId("filesystem-streams"),
+            Self::TerminationSignals => WasmCapabilityId("termination-signals"),
             Self::HttpClient => WasmCapabilityId("http-client"),
             Self::Smtp => WasmCapabilityId("smtp"),
             Self::WebSocket => WasmCapabilityId("websocket"),
@@ -123,6 +126,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
             Self::FilesystemStreams => WasmFeatureDisposition::Reject,
+            Self::TerminationSignals => WasmFeatureDisposition::Reject,
             Self::HttpClient => WasmFeatureDisposition::Reject,
             Self::Smtp => WasmFeatureDisposition::Reject,
             Self::WebSocket => WasmFeatureDisposition::Reject,
@@ -153,6 +157,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
             Self::FilesystemStreams => "File-backed stream operations",
+            Self::TerminationSignals => "Termination signal subscription",
             Self::HttpClient => "std.net.http.http_client operations",
             Self::Smtp => "std.net.smtp operations",
             Self::WebSocket => "std.net.websocket operations",
@@ -183,6 +188,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::PeriodicTimers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::FilesystemStreams => "a file-backed stream reads its chunks through the native I/O reactor, which is not compiled for wasm32; the in-memory pipe half of the same handle types is implemented",
+            Self::TerminationSignals => "termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events",
             Self::HttpClient => "the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
             Self::Smtp => "the std.net.smtp transport is still native-only; no wasm32 SMTP bridge exists yet",
             Self::WebSocket => "the std.net.websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet",
@@ -243,6 +249,7 @@ pub mod wasm_capability_ids {
     pub const SUSPENSION_DEADLINE: WasmCapabilityId = WasmCapabilityId("suspension-deadline");
     pub const TASKS: WasmCapabilityId = WasmCapabilityId("tasks");
     pub const TCP_NETWORKING: WasmCapabilityId = WasmCapabilityId("tcp-networking");
+    pub const TERMINATION_SIGNALS: WasmCapabilityId = WasmCapabilityId("termination-signals");
     pub const TIMERS_EVERY: WasmCapabilityId = WasmCapabilityId("timers-every");
     pub const TIMERS_SLEEP: WasmCapabilityId = WasmCapabilityId("timers-sleep");
     pub const TIMER_SUSPENSION: WasmCapabilityId = WasmCapabilityId("timer-suspension");
@@ -287,6 +294,7 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
 pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
     WasmFunctionRejection { module: "std.fs", function: "read", feature: WasmUnsupportedFeature::FilesystemStreams },
     WasmFunctionRejection { module: "std.stream", function: "open", feature: WasmUnsupportedFeature::FilesystemStreams },
+    WasmFunctionRejection { module: "std.os", function: "shutdown_signal", feature: WasmUnsupportedFeature::TerminationSignals },
     WasmFunctionRejection { module: "std.net.http", function: "request", feature: WasmUnsupportedFeature::HttpClient },
     WasmFunctionRejection { module: "std.net.http", function: "request_string", feature: WasmUnsupportedFeature::HttpClient },
     WasmFunctionRejection { module: "std.net.http", function: "set_timeout", feature: WasmUnsupportedFeature::HttpClient },
@@ -322,6 +330,7 @@ pub struct DeterministicOperation {
 
 /// Source declaration paths refused by the deterministic driver.
 pub const DETERMINISTIC_FUNCTION_REJECTIONS: &[DeterministicOperation] = &[
+    DeterministicOperation { identity: "std.os.shutdown_signal", capability: WasmCapabilityId("termination-signals") },
     DeterministicOperation { identity: "std.net.listen", capability: WasmCapabilityId("tcp-networking") },
     DeterministicOperation { identity: "std.net.connect", capability: WasmCapabilityId("tcp-networking") },
     DeterministicOperation { identity: "std.net.connect_timeout", capability: WasmCapabilityId("tcp-networking") },
@@ -347,6 +356,7 @@ pub const DETERMINISTIC_FUNCTION_REJECTIONS: &[DeterministicOperation] = &[
 
 /// Trusted compiler and runtime endpoints refused by the deterministic driver.
 pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
+    DeterministicOperation { identity: "hew_shutdown_signal_stream", capability: WasmCapabilityId("termination-signals") },
     DeterministicOperation { identity: "hew_http_request_hew", capability: WasmCapabilityId("http-client") },
     DeterministicOperation { identity: "hew_smtp_connect", capability: WasmCapabilityId("smtp") },
     DeterministicOperation { identity: "hew_smtp_connect_tls", capability: WasmCapabilityId("smtp") },

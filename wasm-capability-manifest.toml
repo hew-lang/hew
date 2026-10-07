@@ -297,6 +297,21 @@ tracking_label = "WASM-TODO(filesystem-streams):"
 native_only_functions = ["std.fs.read", "std.stream.open"]
 
 [[feature]]
+id = "termination-signals"
+deterministic = "refuse"
+deterministic_functions = ["std.os.shutdown_signal"]
+deterministic_endpoints = ["hew_shutdown_signal_stream"]
+enum_variant = "TerminationSignals"
+label = "Termination signal subscription"
+prose_label = "`std.os.shutdown_signal`"
+reason = "termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only signal dispatcher"
+categories = ["stdlib", "process"]
+native_only_functions = ["std.os.shutdown_signal"]
+
+[[feature]]
 id = "http-client"
 deterministic = "refuse"
 deterministic_endpoints = ["hew_http_request_hew"]

@@ -537,6 +537,7 @@ stable = [
   "hew_semaphore_release",
   "hew_semaphore_try_acquire",
   "hew_set_partition_policy",
+  "hew_shutdown_signal_stream",
   "hew_sink_clone",
   "hew_sink_close",
   "hew_sink_detach_await",
@@ -3714,6 +3715,16 @@ release-symbol = "hew_stream_pair_free"
 discharge-depth = "deep"
 result-retention = "resource-transfer"
 result-retention-basis = "returns one fresh Box::into_raw(HewStreamPair) holding the only owner of a new exit-watch stream; the child keeps no reference to it"
+
+[[ownership.contracts]]
+symbol = "hew_shutdown_signal_stream"
+result = "fresh"
+params = []
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one fresh Box::into_raw(HewStreamPair) holding the only owner of a new subscriber stream; the signal registry keeps only the queue core, released when the stream closes"
 
 [[ownership.contracts]]
 symbol = "hew_process_wait_error"

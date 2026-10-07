@@ -1,0 +1,10 @@
+[[case]]
+id = "pipe-try-send-wakes-receiver"
+intent = "`try_send` wakes a receiver already parked on the empty pipe instead of leaving it asleep beside the queued item."
+source = "cases/pipe-try-send-wakes-receiver.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n"
+exit = 0

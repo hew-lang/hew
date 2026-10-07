@@ -594,9 +594,9 @@ pub extern "C" fn hew_sched_init() -> c_int {
     crate::observe::configure_from_env();
     crate::observe::register_reset_hooks();
 
-    // Install SIGTERM/SIGINT handlers for graceful shutdown.
-    // SAFETY: Called from main thread during initialization.
-    unsafe { crate::shutdown::install_shutdown_signal_handlers() };
+    // SIGTERM/SIGINT without a `shutdown_signal()` subscriber now start
+    // graceful shutdown.
+    crate::shutdown_signal::install_runtime_handlers();
 
     // Phase 2: Spawn worker threads.
     // If ANY worker fails to spawn, treat it as an initialisation failure:
@@ -1419,7 +1419,7 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         }
 
         // 4. Check if a signal-initiated shutdown needs to be started.
-        crate::shutdown::check_signal_shutdown();
+        crate::shutdown_signal::check_pending();
 
         // 5. Park on the per-worker condvar until notified or timeout. Queue
         // state is probed once more under the same mutex wake notifiers acquire,

@@ -15314,6 +15314,19 @@
       "availability": [
         "native"
       ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_shutdown_signal_stream() -> *mut HewStreamPair"
+      },
+      "symbol": "hew_shutdown_signal_stream"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

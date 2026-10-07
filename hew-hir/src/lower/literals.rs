@@ -259,12 +259,13 @@ impl LowerCtx {
     /// desugar can reach a `Stream<T>`
     /// whose element no method call ever validated. The HIR layer rejects only
     /// the classes the witness can NEVER describe — builtin container/handle
-    /// nominals, opaque handles, function values, and unit/never — and admits
-    /// the rest; codegen's witness synthesis stays the fail-closed authority
+    /// nominals, opaque handles, function values and never — and admits the
+    /// rest, including the zero-sized `()`; codegen's witness synthesis stays the fail-closed authority
     /// for anything that slips past both layers.
     pub(super) fn queue_elem_witness_unsupported(ty: &ResolvedTy) -> Option<&'static str> {
         match ty {
-            ResolvedTy::String
+            ResolvedTy::Unit
+            | ResolvedTy::String
             | ResolvedTy::Bytes
             | ResolvedTy::F32
             | ResolvedTy::F64

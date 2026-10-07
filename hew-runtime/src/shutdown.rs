@@ -4,8 +4,9 @@
 //!
 //! 1. **Quiesce** — Close listener and periodic-event admission. Explicit
 //!    shutdown also rejects new root/external actor requests; accepted actor
-//!    turns retain their peer calls. Installed SIGTERM/SIGINT handlers trigger
-//!    this phase.
+//!    turns retain their peer calls. A termination signal with no
+//!    `shutdown_signal()` subscriber triggers this phase (see
+//!    [`crate::shutdown_signal`]).
 //!
 //! 2. **Drain** — Allow workers to continue processing remaining messages
 //!    for up to `drain_timeout` milliseconds. Supervisors stop their
@@ -418,106 +419,6 @@ pub extern "C" fn hew_shutdown_wait() -> c_int {
             PHASE_FAILED => return -2,
             _ => std::thread::sleep(DRAIN_POLL_INTERVAL),
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Signal handler — SIGTERM / SIGINT
-// ---------------------------------------------------------------------------
-
-/// Install SIGTERM and SIGINT handlers that trigger graceful shutdown.
-///
-/// # Safety
-///
-/// Must be called from the main thread before any other signal
-/// handlers are installed for these signals.
-#[cfg(unix)]
-pub unsafe fn install_shutdown_signal_handlers() {
-    // SAFETY: the handler performs only an async-signal-safe atomic store.
-    // Workers observe that flag and initiate shutdown in ordinary thread context.
-    unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = shutdown_signal_handler
-            as extern "C" fn(c_int, *mut libc::siginfo_t, *mut std::ffi::c_void)
-            as usize;
-        sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
-        libc::sigemptyset(&raw mut sa.sa_mask);
-
-        libc::sigaction(libc::SIGTERM, &raw const sa, std::ptr::null_mut());
-        libc::sigaction(libc::SIGINT, &raw const sa, std::ptr::null_mut());
-    }
-}
-
-/// Windows shutdown handler using `SetConsoleCtrlHandler`.
-///
-/// Handles `CTRL_C_EVENT`, `CTRL_BREAK_EVENT`, and `CTRL_CLOSE_EVENT` by
-/// transitioning the runtime to the QUIESCE phase, mirroring the Unix
-/// SIGTERM/SIGINT handler behaviour.
-///
-/// # Safety
-///
-/// Call from the main thread before registering other console control handlers.
-#[cfg(windows)]
-pub unsafe fn install_shutdown_signal_handlers() {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn SetConsoleCtrlHandler(
-            handler: Option<unsafe extern "system" fn(u32) -> i32>,
-            add: i32,
-        ) -> i32;
-    }
-
-    unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
-        // CTRL_C_EVENT = 0, CTRL_BREAK_EVENT = 1, CTRL_CLOSE_EVENT = 2
-        if ctrl_type <= 2 {
-            // Only set the pending flag. The phase transition is done by
-            // hew_shutdown_initiate (called from check_signal_shutdown).
-            SIGNAL_SHUTDOWN_PENDING.store(true, Ordering::Release);
-            return 1; // Handled
-        }
-        0 // Not handled
-    }
-
-    // SAFETY: `ctrl_handler` matches the `PHANDLER_ROUTINE` signature
-    // expected by `SetConsoleCtrlHandler`. Registering it is safe as long
-    // as the handler only performs signal-safe operations (atomic store).
-    unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), 1) };
-}
-
-/// Signal handler for SIGTERM/SIGINT (Unix only).
-///
-/// Only performs async-signal-safe operations: an atomic store.
-/// The actual shutdown work is done by the orchestration thread
-/// spawned in `hew_shutdown_initiate`.
-#[cfg(unix)]
-extern "C" fn shutdown_signal_handler(
-    _sig: c_int,
-    _info: *mut libc::siginfo_t,
-    _ctx: *mut std::ffi::c_void,
-) {
-    // We can't spawn a thread from a signal handler (not async-signal-safe).
-    // Set a flag that workers will notice during their park phase.
-    // The first worker to detect it calls hew_shutdown_initiate which
-    // performs the RUNNING → QUIESCE phase transition.
-    SIGNAL_SHUTDOWN_PENDING.store(true, Ordering::Release);
-}
-
-/// Flag set by the signal handler to indicate a signal-initiated shutdown.
-static SIGNAL_SHUTDOWN_PENDING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Called by the worker loop during its park phase to check if a
-/// signal-initiated shutdown needs to be started.
-///
-/// This is safe to call from any thread. Only the first caller that
-/// successfully claims the shutdown will spawn the orchestration thread.
-pub fn check_signal_shutdown() {
-    if SIGNAL_SHUTDOWN_PENDING
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-        .is_ok()
-    {
-        // We're in a normal thread context now, safe to spawn.
-        hew_shutdown_initiate(0); // 0 = default drain timeout
     }
 }
 

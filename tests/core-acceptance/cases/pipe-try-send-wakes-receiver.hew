@@ -1,0 +1,19 @@
+import std.stream;
+
+// A receiver already parked on an empty pipe wakes for a `try_send`, not only
+// for a waiting `send`.
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let got = scope within 5s {
+        let reader = fork rx.recv();
+        sleep(20ms);
+        tx.try_send(7).expect("try_send into an empty pipe");
+        await reader
+    } handle failure {
+        .None
+    };
+    println(f"{got ?? -1}");
+}

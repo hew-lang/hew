@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1599u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1600u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1600] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -5757,6 +5757,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
      "{\"native\": \"fn hew_shutdown_register_supervisor( *mut HewSupervisor, "
      ")\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_shutdown_signal_stream",
+     "{\"native\": \"fn hew_shutdown_signal_stream() -> *mut HewStreamPair\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_shutdown_unregister_supervisor",
      "{\"native\": \"fn hew_shutdown_unregister_supervisor( *mut "

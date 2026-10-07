@@ -1,0 +1,10 @@
+[[case]]
+id = "pipe-unit-items"
+intent = "A `Stream<()>` pipe carries zero-sized items: each `()` sent is one item, a select arm observes it, and closing the sink ends the stream."
+source = "cases/pipe-unit-items.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "tick\nthen 1 more\n"
+exit = 0

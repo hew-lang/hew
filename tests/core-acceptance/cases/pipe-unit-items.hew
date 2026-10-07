@@ -1,0 +1,25 @@
+import std.stream;
+
+// `()` items carry no bytes: each send is one item, and close is end of data.
+fn main() {
+    let (ticks, input): (stream.Sink<()>, stream.Stream<()>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    ticks.send(()).expect("first tick");
+    ticks.send(()).expect("second tick");
+    ticks.close();
+    let first = select {
+        tick from input.recv() => match tick {
+            .Some(_) => "tick",
+            .None => "end",
+        }
+        after 1s => "timeout",
+    };
+    println(first);
+    var rest = 0;
+    for tick in input {
+        rest += 1;
+    }
+    println(f"then {rest} more");
+}

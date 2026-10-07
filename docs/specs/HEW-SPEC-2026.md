@@ -5368,6 +5368,60 @@ refused call never reports `Dead`. A bare or `.Wait` completion call reports
 `mailbox(target)` submission reports its `SendFailure`, both with
 `reason == SendError.LocalShutdown` and the unaccepted request returned.
 
+**Termination signals.** SIGTERM and SIGINT on Unix, and Ctrl-C, Ctrl-Break
+and console close on Windows, are termination requests. By default a request
+starts runtime shutdown; `main` keeps running and observes it only through
+refused calls and cancelled waits. A program with no actors keeps the platform
+default and ends without cleanup.
+
+`os.shutdown_signal()` hands the decision to the program. It returns a
+`Stream<()>` that receives one `()` per request; requests that arrive before
+the next receive coalesce into one. While any such stream is open, a request
+starts no shutdown: root calls keep working, and the program stops by
+returning from `main`, which drains as usual. Closing every subscription
+restores the default. The stream never ends on its own and is a `select`
+source (§6.4.5):
+
+```hew
+import std.os;
+
+actor Journal {
+    var entries: i64 = 0;
+    receive fn record() {
+        entries += 1;
+    }
+    receive fn flush() -> i64 {
+        entries
+    }
+}
+
+fn main() {
+    let stop = os.shutdown_signal();
+    let journal = spawn Journal();
+    for i in 0..3 {
+        let stopping = select {
+            request from stop.recv() => true,
+            after 10ms => false,
+        };
+        if stopping {
+            break;
+        }
+        journal.record().expect("record");
+    }
+    let saved = journal.flush().expect("flush before exit");
+    println(f"flushed {saved} entries");
+}
+```
+
+Windows treats console close differently from Ctrl-C and Ctrl-Break: it ends
+the process as soon as the console control handler returns, so a close request
+reaches a subscriber, or starts the default shutdown, but neither can rely on
+running to completion. A Windows program that must save work on console close
+saves it before the request arrives.
+
+A signal handler installed through FFI competes with the runtime's own and is
+not supported; `shutdown_signal` is the program's way to observe a request.
+
 ---
 
 ## 6. Backpressure and bounded queues

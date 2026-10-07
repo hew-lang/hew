@@ -1085,6 +1085,47 @@ pub(crate) fn child_exit_stream(
     Ok(stream_only(stream))
 }
 
+/// One `os.shutdown_signal()` subscription: a queue the signal dispatcher
+/// feeds with `()` requests. Closing it withdraws the subscription.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct ShutdownSignal {
+    core: Arc<crate::channel_core::ChannelCore>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StreamBacking for ShutdownSignal {
+    fn next(&mut self) -> Option<Item> {
+        self.core.blocking_recv()
+    }
+
+    fn try_next(&mut self) -> Option<Item> {
+        self.core.try_recv()
+    }
+
+    fn close(&mut self) {
+        crate::shutdown_signal::unsubscribe(&self.core);
+        self.core.close_stream();
+    }
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+/// Give a shutdown-signal subscription its `Stream<()>` owner.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn shutdown_signal_stream(
+    core: Arc<crate::channel_core::ChannelCore>,
+) -> *mut HewStreamPair {
+    let stream = into_stream_ptr(ShutdownSignal {
+        core: Arc::clone(&core),
+    });
+    // SAFETY: stream was just allocated by into_stream_ptr.
+    unsafe { (*stream).channel = Some(core) };
+    stream_only(stream)
+}
+
 /// A stream that has already ended: the child was reaped before the wait.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ended_stream() -> *mut HewStreamPair {

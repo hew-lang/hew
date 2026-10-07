@@ -3739,6 +3739,8 @@ impl Checker {
             actor_coalesce_keys: std::mem::take(&mut self.actor_coalesce_keys),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
+            yield_ok_coercions: std::mem::take(&mut self.yield_ok_coercions),
+            failing_generators: std::mem::take(&mut self.failing_generators),
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),

@@ -104,6 +104,11 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/variant_edges.hew",
     },
     ParityCase {
+        // A failing generator yields `Result` items and ends on its error.
+        test_name: "failing_generators",
+        source_rel: "examples/sandbox-graduation/failing_generators.hew",
+    },
+    ParityCase {
         // Failure edges: `?` and `return error` keep the same error, apply a
         // declared `From` and erase into `dyn Error`.
         test_name: "error_edges",
@@ -778,6 +783,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         ),
         "variant_edges" => Some(
             "port: 8080\nhost: not a number: localhost\nuser: no setting named user\nlock: Store: Locked\nErr(Code: -2) Ok(3)\nErr(Note: noted: busy)\n",
+        ),
+        "failing_generators" => Some(
+            "Ok(line 0)\nOk(line 1)\nvalue 0\nvalue 10\nvalue 20\nvalue 30\nskipped: four is unlucky\nvalue -1\nline 0\nline 1\ncounted 2\nline 0\nline 1\nline 2\nstopped: Corrupt: 3\n",
         ),
         "error_edges" => Some(
             "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",

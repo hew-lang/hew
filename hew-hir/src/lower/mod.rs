@@ -1059,6 +1059,13 @@ struct LowerCtx {
     /// constructor so it returns the declared `Result`. See
     /// `TypeCheckOutput::tail_ok_coercions`.
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
+    /// See `TypeCheckOutput::yield_ok_coercions`.
+    yield_ok_coercions: std::collections::HashSet<SpanKey>,
+    /// See `TypeCheckOutput::failing_generators`.
+    failing_generators: std::collections::HashSet<SpanKey>,
+    /// The item type, `Result<Y, E>`, of the failing generator whose body is
+    /// being lowered; `None` in any other body, nested callables included.
+    failing_generator_item: Option<ResolvedTy>,
     result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
     /// Checker-bound parameter slot of each source argument, for calls whose

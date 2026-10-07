@@ -531,7 +531,19 @@ impl Checker {
                 } else if let Some((ok, err)) = ty.as_result() {
                     let ok_ty = ok.clone();
                     let err_ty = err.clone();
-                    if let Some(msg) = bad_ctx_msg {
+                    if let Some(edge) = self.current_failure_edge.clone() {
+                        // The enclosing callable's failure edge carries the
+                        // error out, converting it by the edge rule.
+                        if !self.select_error_conversion(
+                            crate::check::coerce::FailureEdge::Try,
+                            &err_ty,
+                            &edge,
+                            span,
+                        ) {
+                            return Ty::Error;
+                        }
+                        ok_ty
+                    } else if let Some(msg) = bad_ctx_msg {
                         self.report_error(TypeErrorKind::InvalidOperation, span, msg);
                         Ty::Error
                     } else {
@@ -1150,7 +1162,20 @@ impl Checker {
                 } else {
                     resolved
                 };
-                self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
+                // A failing generator yields its success payload; HIR makes
+                // the item `Ok(value)`.
+                let success = self
+                    .current_failure_edge
+                    .as_ref()
+                    .and(self.subst.resolve(&yield_ty).as_result())
+                    .map(|(success, _)| success.clone());
+                if let Some(success) = success {
+                    self.check_against(&val_expr.0, &val_expr.1, &success);
+                    self.yield_ok_coercions
+                        .insert(SpanKey::in_module(span, self.current_module_idx));
+                } else {
+                    self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
+                }
             } else {
                 self.synthesize(&val_expr.0, &val_expr.1);
             }

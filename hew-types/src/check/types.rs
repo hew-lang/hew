@@ -577,6 +577,13 @@ pub struct TypeCheckOutput {
     /// directly — no double-wrap). HIR lowering consumes this set to wrap the
     /// lowered tail in a synthetic `Ok(..)` variant constructor.
     pub tail_ok_coercions: HashSet<SpanKey>,
+    /// `yield` expressions of a failing generator (`gen fn f() -> Y fails E`)
+    /// whose value is the success payload: HIR yields it as `Ok(value)`.
+    pub yield_ok_coercions: HashSet<SpanKey>,
+    /// Function spans of the generators that fail through an edge. Each item
+    /// is a `Result<Y, E>`; `return error` and a failing `?` yield the error as
+    /// the last item and complete the generator.
+    pub failing_generators: HashSet<SpanKey>,
     /// Explicit Result constructor selected at a `fails` return boundary.
     pub result_return_coercions: HashMap<SpanKey, ResultReturnKind>,
     /// Checker-resolved assignment target classification keyed by the target
@@ -3289,6 +3296,8 @@ pub struct Checker {
     /// Function-tail Ok-coercion sites. Mirrors
     /// [`TypeCheckOutput::tail_ok_coercions`].
     pub(super) tail_ok_coercions: HashSet<SpanKey>,
+    pub(super) yield_ok_coercions: HashSet<SpanKey>,
+    pub(super) failing_generators: HashSet<SpanKey>,
     pub(super) result_return_coercions: HashMap<SpanKey, ResultReturnKind>,
     /// `true` while checking an expression that is the tail of a
     /// `Result`-returning function (and the if/match arm tails that flow to
@@ -4368,6 +4377,8 @@ impl Checker {
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
+            yield_ok_coercions: HashSet::new(),
+            failing_generators: HashSet::new(),
             result_return_coercions: HashMap::new(),
             tail_ok_armed: false,
             field_shorthand_values: Vec::new(),

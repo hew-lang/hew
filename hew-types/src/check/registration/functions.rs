@@ -2108,7 +2108,25 @@ impl Checker {
             rf.return_type.as_ref().map(|ty| &ty.0),
             Some(hew_parser::ast::TypeExpr::Fallible { .. })
         ) {
-            self.receive_fails_methods.insert(handler);
+            if rf.is_generator {
+                // TRANSITION: WHY a failing stream handler's items are
+                // `Result`s, which a stream cannot carry yet. WHEN stream
+                // items admit `Result`. WHAT: give it a failing `gen fn`'s
+                // edge, item by item.
+                self.report_error_with_suggestions(
+                    TypeErrorKind::InvalidOperation,
+                    &rf.span,
+                    "`fails` on a `receive gen fn` is not supported yet: its stream items would \
+                     be `Result`s, which a stream cannot carry"
+                        .to_string(),
+                    vec![
+                        "a local `gen fn .. fails E` yields `Result` items to its consumer"
+                            .to_string(),
+                    ],
+                );
+            } else {
+                self.receive_fails_methods.insert(handler);
+            }
         }
         self.actor_receive_methods.insert(handler);
         self.record_fn_sig_inference_holes(&method_name, hole_vars);

@@ -178,8 +178,10 @@ impl LowerCtx {
         // outer locals are candidates. See `collect_gen_captures`.
         let outer_bindings = self.visible_outer_bindings();
         self.generator_yield_tys.push(yield_ty.clone());
+        let enclosing_failing = self.failing_generator_item.take();
         let lowered_body = self
             .with_current_return_type(return_ty.clone(), |ctx| ctx.lower_block(body, &return_ty));
+        self.failing_generator_item = enclosing_failing;
         self.generator_yield_tys.pop();
         let captures = Self::collect_gen_captures(&lowered_body, &outer_bindings);
 
@@ -278,8 +280,10 @@ impl LowerCtx {
                 self.bind_checked(param.name.to_string(), ty, false, param.name_span.clone())
             })
             .collect();
+        let enclosing_failing = self.failing_generator_item.take();
         let lowered_body = self
             .with_current_return_type(ret_ty.clone(), |ctx| ctx.lower_expr(body, IntentKind::Read));
+        self.failing_generator_item = enclosing_failing;
         self.pop_scope();
         let captures =
             self.materialize_closure_captures(&lowered_body, &outer_bindings, checker_facts, span);

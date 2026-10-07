@@ -929,7 +929,7 @@ impl Checker {
         block_expected: Option<&Ty>,
     ) -> Ty {
         let prev_tail_ok_armed = self.tail_ok_armed;
-        if self.current_failure_edge.is_some() {
+        if self.current_failure_edge.is_some() && !fd.is_generator {
             self.tail_ok_armed = false;
             let actual = self.check_block(&fd.body, block_expected);
             if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
@@ -1105,10 +1105,8 @@ impl Checker {
         };
         // Generator bodies don't return the declared type — they yield it.
         // The body itself should return Unit (falls off the end).
-        let prev_failure_edge = std::mem::replace(
-            &mut self.current_failure_edge,
-            failure_edge(fd.return_type.as_ref(), &declared_ret),
-        );
+        let edge = self.function_failure_edge(fd, &declared_ret);
+        let prev_failure_edge = std::mem::replace(&mut self.current_failure_edge, edge);
         let expected_ret = self.function_body_return_type(fd, &declared_ret);
         // Store the declared yields type so Expr::Yield can check against it.
         self.current_return_type = Some(declared_ret);
@@ -1199,13 +1197,32 @@ impl Checker {
         self.machine_body_owner = prev_machine_body_owner;
     }
 
+    /// The failure edge `fd` declares. A failing generator's edge is its
+    /// item type's error, since each item is a `Result<Y, E>`; such a
+    /// generator is published for HIR.
+    fn function_failure_edge(&mut self, fd: &FnDecl, declared: &Ty) -> Option<Ty> {
+        let edge_carrier = if fd.is_generator {
+            declared
+                .as_generator()
+                .map_or(Ty::Error, |(yields, _)| yields.clone())
+        } else {
+            declared.clone()
+        };
+        let edge = failure_edge(fd.return_type.as_ref(), &edge_carrier);
+        if fd.is_generator && edge.is_some() {
+            self.failing_generators
+                .insert(SpanKey::in_module(&fd.fn_span, self.current_module_idx));
+        }
+        edge
+    }
+
     fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {
-        if self.current_failure_edge.is_some() {
+        if fd.is_generator {
+            Ty::Unit
+        } else if self.current_failure_edge.is_some() {
             declared
                 .as_result()
                 .map_or(Ty::Error, |(success, _)| success.clone())
-        } else if fd.is_generator {
-            Ty::Unit
         } else {
             declared.clone()
         }
@@ -2599,11 +2616,9 @@ impl Checker {
         // `return error e`, `?`, and a bare success tail the compiler wraps.
         // The body is checked against the success type, and the declared
         // `Result` stays in `current_return_type` for `return` and `?`.
-        let edge = if rf.is_generator {
-            None
-        } else {
-            failure_edge(rf.return_type.as_ref(), &declared_ret)
-        };
+        // A failing stream handler's edge is its item type's error, as a
+        // failing `gen fn`'s is.
+        let edge = failure_edge(rf.return_type.as_ref(), &declared_ret);
         let prev_failure_edge = std::mem::replace(&mut self.current_failure_edge, edge);
         let expected_ret = if rf.is_generator {
             Ty::Unit
@@ -2647,6 +2662,7 @@ impl Checker {
         }
         let actual = self.check_block(&rf.body, block_expected);
         if self.current_failure_edge.is_some()
+            && !rf.is_generator
             && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error)
         {
             if let Some(tail) = &rf.body.trailing_expr {

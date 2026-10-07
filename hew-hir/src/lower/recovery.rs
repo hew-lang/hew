@@ -3,6 +3,22 @@
 use super::*;
 use hew_parser::ast::Ident;
 
+/// Where a failing `?` takes its error.
+pub(super) enum TryExit {
+    /// `return Err(e)` from a body returning this `Result`.
+    Return(ResolvedTy),
+    /// Yield `Err(e)` as the last item of a failing generator with this item
+    /// type, then complete it.
+    GeneratorItem(ResolvedTy),
+}
+
+/// A variant of the prelude `Result`.
+#[derive(Clone, Copy)]
+pub(super) enum ResultVariant {
+    Ok,
+    Err,
+}
+
 impl LowerCtx {
     pub(super) fn unsupported_postfix_try(
         &mut self,
@@ -185,6 +201,87 @@ impl LowerCtx {
             return_ty,
             span,
         )
+    }
+
+    /// `value` as the `Ok` or `Err` of `result_ty`.
+    pub(super) fn wrap_result_variant(
+        &mut self,
+        value: HirExpr,
+        result_ty: &ResolvedTy,
+        variant: ResultVariant,
+        span: &Span,
+    ) -> HirExpr {
+        let name = match variant {
+            ResultVariant::Ok => "Ok",
+            ResultVariant::Err => "Err",
+        };
+        let Some((_, index)) = self.builtin_variant_predicate(BuiltinType::Result, name, span)
+        else {
+            return value;
+        };
+        self.try_register_enum_instantiation_ty(result_ty, span);
+        self.synthetic_variant_ctor(
+            "Result",
+            index,
+            Some(vec![("0".to_string(), value)]),
+            result_ty.clone(),
+            span,
+        )
+    }
+
+    /// A failing generator's error exit: yield the error, converted across the
+    /// edge at `span`, as the item `Err(e)`, then complete.
+    pub(super) fn failing_generator_exit(
+        &mut self,
+        error: HirExpr,
+        item_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
+        let Some((_, target)) = Self::resolved_result_parts(item_ty) else {
+            return self.error_conversion_boundary(error, span, "failing generator item");
+        };
+        let target = target.clone();
+        let error = self.apply_error_conversion(error, &target, span);
+        let item = self.wrap_result_variant(error, item_ty, ResultVariant::Err, span);
+        let yield_item = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Yield {
+                value: Some(Box::new(item)),
+                yield_ty: item_ty.clone(),
+            },
+            span: span.clone(),
+        };
+        let statements = vec![
+            HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Expr(yield_item),
+                span: span.clone(),
+            },
+            HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Return(None),
+                span: span.clone(),
+            },
+        ];
+        let block = HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements,
+            tail: None,
+            ty: ResolvedTy::Unit,
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(block),
+            span: span.clone(),
+        }
     }
 
     pub(super) fn apply_result_return_coercion(&mut self, value: HirExpr, span: &Span) -> HirExpr {
@@ -399,7 +496,28 @@ impl LowerCtx {
             );
         };
 
-        if let Some((ok_ty, err_ty)) = Self::resolved_result_parts(&scrutinee_ty) {
+        if let (Some((ok_ty, err_ty)), Some(item_ty)) = (
+            Self::resolved_result_parts(&scrutinee_ty),
+            self.failing_generator_item.clone(),
+        ) {
+            let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
+                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+            };
+            if &result_ty != ok_ty {
+                return self.unsupported_postfix_try(
+                    span,
+                    "`?` checker payload type disagrees with Result::Ok payload type",
+                );
+            }
+            let err_ty = err_ty.clone();
+            self.lower_result_postfix_try(
+                scrutinee,
+                result_ty,
+                err_ty,
+                TryExit::GeneratorItem(item_ty),
+                span,
+            )
+        } else if let Some((ok_ty, err_ty)) = Self::resolved_result_parts(&scrutinee_ty) {
             if Self::resolved_result_parts(&return_ty).is_none() {
                 return self.unsupported_postfix_try(
                     span,
@@ -418,7 +536,13 @@ impl LowerCtx {
                     ),
                 );
             }
-            self.lower_result_postfix_try(scrutinee, result_ty, err_ty.clone(), return_ty, span)
+            self.lower_result_postfix_try(
+                scrutinee,
+                result_ty,
+                err_ty.clone(),
+                TryExit::Return(return_ty),
+                span,
+            )
         } else if let Some(some_ty) = Self::resolved_option_inner(&scrutinee_ty) {
             if Self::resolved_option_inner(&return_ty).is_none() {
                 return self.unsupported_postfix_try(
@@ -449,7 +573,7 @@ impl LowerCtx {
         scrutinee: HirExpr,
         ok_ty: ResolvedTy,
         err_ty: ResolvedTy,
-        return_ty: ResolvedTy,
+        exit: TryExit,
         span: &std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         let Some((ok_predicate, _)) =
@@ -470,20 +594,29 @@ impl LowerCtx {
 
         let ok_body = self.synthetic_binding_ref(ok_name, ok_binding, ok_ty.clone(), span);
         let err_payload = self.synthetic_binding_ref(err_name, err_binding, err_ty.clone(), span);
-        let Some((_, target_err_ty)) = Self::resolved_result_parts(&return_ty) else {
-            return self
-                .unsupported_postfix_try(span, "`?` in a body whose return type is not Result");
+        let err_body = match exit {
+            TryExit::Return(return_ty) => {
+                let Some((_, target_err_ty)) = Self::resolved_result_parts(&return_ty) else {
+                    return self.unsupported_postfix_try(
+                        span,
+                        "`?` in a body whose return type is not Result",
+                    );
+                };
+                let target_err_ty = target_err_ty.clone();
+                let err_payload = self.apply_error_conversion(err_payload, &target_err_ty, span);
+                let err_ctor = self.synthetic_variant_ctor(
+                    "Result",
+                    err_idx,
+                    Some(vec![("0".to_string(), err_payload)]),
+                    return_ty,
+                    span,
+                );
+                self.synthetic_return_block_expr(err_ctor, span)
+            }
+            TryExit::GeneratorItem(item_ty) => {
+                self.failing_generator_exit(err_payload, &item_ty, span)
+            }
         };
-        let target_err_ty = target_err_ty.clone();
-        let err_payload = self.apply_error_conversion(err_payload, &target_err_ty, span);
-        let err_ctor = self.synthetic_variant_ctor(
-            "Result",
-            err_idx,
-            Some(vec![("0".to_string(), err_payload)]),
-            return_ty,
-            span,
-        );
-        let err_body = self.synthetic_return_block_expr(err_ctor, span);
 
         let arms = vec![
             HirMatchArm {

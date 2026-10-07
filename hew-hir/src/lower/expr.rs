@@ -1007,6 +1007,18 @@ impl LowerCtx {
                     ));
                     ResolvedTy::Unit
                 };
+                let value = if self.yield_ok_coercions.contains(&self.mk_key(&span)) {
+                    value.map(|value| {
+                        Box::new(self.wrap_result_variant(
+                            *value,
+                            &yield_ty,
+                            super::recovery::ResultVariant::Ok,
+                            &span,
+                        ))
+                    })
+                } else {
+                    value
+                };
                 (HirExprKind::Yield { value, yield_ty }, ResolvedTy::Unit)
             }
             Expr::Return(value) => {
@@ -1044,7 +1056,11 @@ impl LowerCtx {
                 (HirExprKind::Return { value }, ResolvedTy::Never)
             }
             Expr::ReturnError(value) => {
-                if self.result_return_coercions.get(&self.mk_key(&span))
+                if let Some(item_ty) = self.failing_generator_item.clone() {
+                    let value = self.lower_expr(value, IntentKind::Consume);
+                    let exit = self.failing_generator_exit(value, &item_ty, &span);
+                    (exit.kind, ResolvedTy::Never)
+                } else if self.result_return_coercions.get(&self.mk_key(&span))
                     == Some(&hew_types::ResultReturnKind::Error)
                 {
                     let value = self.lower_expr(value, IntentKind::Consume);

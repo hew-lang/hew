@@ -192,7 +192,7 @@ build_tarball() {
     local staging_root="${DIST_DIR}/.staging-$$"
     local staging="${staging_root}/hew-v${VERSION}-${PLATFORM}"
     rm -rf "${staging_root}"
-    mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
+    mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/include" "${staging}/completions"
 
     for bin in hew hew-lsp hew-observe; do
         if [[ -f "${release_dir}/${bin}" ]]; then
@@ -209,6 +209,7 @@ build_tarball() {
 
     # Standard library sources (all .hew files, including subdirectories)
     cp -r "${REPO_DIR}/std/." "${staging}/std/"
+    cp "${REPO_DIR}/hew-cabi/include/hew.h" "${staging}/include/hew.h"
 
     # Generate shell completions from built binaries
     for shell in bash zsh fish; do
@@ -462,7 +463,7 @@ build_alpine() {
         local staging_root="${DIST_DIR}/.alpine-staging-$$"
         local staging="${staging_root}/hew-v${VERSION}-${alpine_platform}"
         rm -rf "${staging_root}"
-        mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
+        mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/include" "${staging}/completions"
 
         local musl_release
         local musl_release_lib
@@ -489,6 +490,7 @@ build_alpine() {
 
         # Standard library sources (all .hew files, including subdirectories)
         cp -r "${REPO_DIR}/std/." "${staging}/std/"
+        cp "${REPO_DIR}/hew-cabi/include/hew.h" "${staging}/include/hew.h"
 
         # Generate shell completions from built binaries
         for shell in bash zsh fish; do
@@ -604,6 +606,7 @@ COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-observe   /usr/local/bin/hew-observe
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
+COPY --from=fetch /tmp/hew-install/hew/include           /usr/local/include/
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/hew"]
 CMD ["--help"]

@@ -45,6 +45,9 @@ package() {
     cp -r "$builddir/std/." "$pkgdir/usr/share/hew/std/"
   fi
 
+  mkdir -p "$pkgdir/usr/include"
+  cp -r "$builddir/include/." "$pkgdir/usr/include/"
+
   [ -f "$builddir/completions/hew.bash" ] && \
     install -Dm644 "$builddir/completions/hew.bash" \
       "$pkgdir/usr/share/bash-completion/completions/hew"

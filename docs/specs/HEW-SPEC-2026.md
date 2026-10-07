@@ -3288,11 +3288,50 @@ type FileInfo {
 | `*mut T`                  | `T*`                        | Mutable raw pointer        |
 | `*const u8`               | `const char*`               | C string (null-terminated) |
 | `fn(...) -> T`            | Function pointer            | C function pointer         |
+| `bytes` parameter         | `const HewBytes *`          | Borrowed view; see below   |
+| `bytes` result            | `HewBytes` by value         | Transfers one reference    |
+| `string` parameter        | `const HewString *`         | Opaque, borrowed           |
 
 `&T` is legal only within an `extern` function's parameter or return type
 tree. It is immutable, non-owning, and represented by one pointer. Foreign code
 owns the pointee and guarantees its lifetime; Hew never retains or drops it.
 Ordinary Hew declarations use `T`, and mutable foreign access uses `*mut T`.
+
+**`bytes` and `string` at the boundary (normative).** The public header
+`hew.h`, shipped in a release's `include/` directory, declares these types.
+
+- A `bytes` value is the triple `HewBytes { uint8_t *ptr; uint32_t offset;
+  uint32_t len; }`: `len` bytes starting `offset` bytes into a
+  reference-counted buffer. The empty value is `{NULL, 0, 0}`; every other
+  value has a non-null `ptr` that `hew_bytes_new` returned, and several values
+  may view one buffer.
+- A `bytes` parameter is passed as a pointer to the caller's triple. It is
+  borrowed for the call: the callee reads through it and never writes,
+  retains or releases it. A parameter declared `consume` is passed the same
+  way and transfers its one reference; the callee releases it with
+  `hew_bytes_drop` or returns it.
+- A `bytes` result is returned by value under the target's C convention and
+  transfers one reference to Hew. `hew_bytes_new(capacity)` allocates a
+  buffer whose reference count is one; `hew_bytes_clone_ref` and
+  `hew_bytes_drop` add and release references.
+- A `string` is an opaque `HewString *` handle to immutable UTF-8 whose layout
+  is private, and `NULL` is the empty string. A `string` parameter is
+  borrowed. C code that reads or produces text exchanges `bytes`: the Hew side
+  converts with `s.to_bytes()` and `std.encoding.utf8.decode`.
+
+```c
+#include "hew.h"
+
+/* extern "C" { fn xor_checksum(frame: bytes) -> bytes; } */
+HewBytes xor_checksum(const HewBytes *frame) {
+  uint8_t out[1] = {0};
+  const uint8_t *data = hew_bytes_data(frame);
+  for (uint32_t i = 0; i < frame->len; ++i) {
+    out[0] = (uint8_t)(out[0] ^ data[i]);
+  }
+  return hew_bytes_copy(out, 1);
+}
+```
 
 #### 3.9.4 Exporting Functions to C
 

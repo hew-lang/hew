@@ -66,6 +66,11 @@ in stdenv.mkDerivation rec {
       cp -r std/. $out/share/hew/std/
     fi
 
+    if [ -d include ]; then
+      mkdir -p $out/include
+      cp -r include/. $out/include/
+    fi
+
     if [ -f completions/hew.bash ]; then
       install -Dm644 completions/hew.bash \
         $out/share/bash-completion/completions/hew

@@ -37,6 +37,7 @@ override_dh_auto_install:
 	install -d $(DESTDIR)/usr/bin
 	install -d $(DESTDIR)/usr/lib/hew
 	install -d $(DESTDIR)/usr/share/hew/std
+	install -d $(DESTDIR)/usr/include
 	install -d $(DESTDIR)/usr/share/bash-completion/completions
 	install -d $(DESTDIR)/usr/share/zsh/site-functions
 	install -d $(DESTDIR)/usr/share/fish/vendor_completions.d
@@ -48,6 +49,7 @@ override_dh_auto_install:
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/libhew.a \
 	              $(DESTDIR)/usr/lib/hew/libhew.a
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/std/. $(DESTDIR)/usr/share/hew/std/ 2>/dev/null || true
+	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/include/. $(DESTDIR)/usr/include/
 	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.bash \
 	   $(DESTDIR)/usr/share/bash-completion/completions/hew 2>/dev/null || true
 	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.zsh \

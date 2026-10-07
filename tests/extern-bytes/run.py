@@ -141,7 +141,8 @@ def main():
         flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-O" + opt]
         if args.sanitize:
             flags += ["-fsanitize=address", "-fno-omit-frame-pointer"]
-        run([args.cc, *flags, "-c", source / "oracle.c", "-o", obj])
+        include = source.parents[1] / "hew-cabi" / "include"
+        run([args.cc, *flags, "-I", include, "-c", source / "oracle.c", "-o", obj])
         for case, exit_code, stdout, stderr in (
             ("round_trip", 0, b"owned extern bytes released: 34\n", b""),
             (

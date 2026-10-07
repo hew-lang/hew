@@ -45,6 +45,10 @@ package() {
     cp -r "${_srcdir}/std/." "${pkgdir}/usr/share/hew/std/"
   fi
 
+  # C headers
+  install -dm755 "${pkgdir}/usr/include"
+  cp -r "${_srcdir}/include/." "${pkgdir}/usr/include/"
+
   # Shell completions
   if [ -f "${_srcdir}/completions/hew.bash" ]; then
     install -Dm644 "${_srcdir}/completions/hew.bash" \

@@ -51,6 +51,10 @@ if [ -d std ]; then
   cp -r std/. %{buildroot}%{_datadir}/hew/std/
 fi
 
+# C headers
+install -dm755 %{buildroot}%{_includedir}
+cp -r include/. %{buildroot}%{_includedir}/
+
 # Shell completions
 [ -f completions/hew.bash ] && \
   install -Dm644 completions/hew.bash \
@@ -81,6 +85,7 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %{_bindir}/hew-observe
 %{_libdir}/hew/
 %{_datadir}/hew/
+%{_includedir}/hew.h
 
 %changelog
 * Thu Feb 19 2026 The Hew Project Developers <hello@hew.sh> - 0.1.0-1

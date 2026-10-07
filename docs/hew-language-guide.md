@@ -1838,11 +1838,73 @@ fn main() {
 }
 ```
 
-A completion call returns `Result<R, ActorError<E>>` in this build. Match or
-recover the envelope, or propagate it with `?` when the enclosing error type
-allows that propagation. There is one propagation spelling: `?` goes on the
-expression, so a forked call propagates as `(await task)?`. See the pending
-request-recovery contract above before writing explicit envelope types.
+A completion call returns `Result<R, ActorError<E>>`, where `E` is the
+handler's declared error. Match or recover the envelope, or propagate it with
+`?`. There is one propagation spelling: `?` goes on the expression, so a forked
+call propagates as `(await task)?`.
+
+When the enclosing function fails with its own error type, convert the
+envelope first. `.map_err(..)` converts at one call site; an
+`impl From<ActorError<E>> for MyError` lets every `?` on such a call convert.
+Match `ActorError.Failed(e)` to keep the handler's own error apart from
+delivery failures such as `Dead` or `Trapped`:
+
+```hew
+actor Store {
+    var blocks: Vec<bytes> = [];
+
+    receive fn put(block: bytes) {
+        blocks.push(block);
+    }
+
+    receive fn read(index: i64) -> bytes fails string {
+        match blocks.get(index) {
+            .Some(block) => block,
+            .None => return error f"no block {index}",
+        }
+    }
+}
+
+enum LoadError {
+    Missing(string);
+    Unavailable(string);
+}
+
+impl Display for LoadError {
+    fn fmt(self) -> string {
+        match self {
+            LoadError.Missing(why) => f"missing: {why}",
+            LoadError.Unavailable(why) => f"unavailable: {why}",
+        }
+    }
+}
+
+impl Error for LoadError {}
+
+impl From<ActorError<string>> for LoadError {
+    fn from(value: ActorError<string>) -> LoadError {
+        match value {
+            ActorError.Failed(why) => LoadError.Missing(why),
+            other => LoadError.Unavailable(f"{other}"),
+        }
+    }
+}
+
+fn load_pair(store: Store) -> bytes fails LoadError {
+    let first = store.read(0)?;
+    let second = store.read(1)?;
+    first + second
+}
+
+fn main() {
+    let store = spawn Store();
+    store.put(b"\x01\x02").expect("put is delivered");
+    match load_pair(store) {
+        .Ok(block) => println(block.len()),
+        .Err(error) => println(f"{error}"), // missing: no block 1
+    }
+}
+```
 
 ### Lifecycle hooks #[on(start)] and #[on(stop)]
 

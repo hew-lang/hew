@@ -185,6 +185,66 @@ An accidentally discarded `Result` from any call is `E_RESULT_DROPPED`.
 Neither an unbounded mailbox nor a unit-returning handler removes the
 obligation to handle the outcome.
 
+**Propagating a call's error.** `?` on a call result propagates the whole
+`ActorError<E, Req>`, so a caller whose own error type is not `ActorError`
+converts it first. `.map_err(..)` converts at one call site; an
+`impl From<ActorError<E>> for MyError` converts every `?` on such a call in
+the program. Either way, match `ActorError.Failed(e)` to keep the handler's
+declared error apart from delivery failures such as `Dead` or `Trapped`.
+
+```hew
+actor Store {
+    var blocks: Vec<bytes> = [];
+
+    receive fn put(block: bytes) {
+        blocks.push(block);
+    }
+
+    receive fn read(index: i64) -> bytes fails string {
+        match blocks.get(index) {
+            .Some(block) => block,
+            .None => return error f"no block {index}",
+        }
+    }
+}
+
+enum LoadError {
+    Missing(string);
+    Unavailable(string);
+}
+
+impl Display for LoadError {
+    fn fmt(self) -> string {
+        match self {
+            LoadError.Missing(why) => f"missing: {why}",
+            LoadError.Unavailable(why) => f"unavailable: {why}",
+        }
+    }
+}
+
+impl Error for LoadError {}
+
+fn load(store: Store, index: i64) -> bytes fails LoadError {
+    store.read(index).map_err(|error| match error {
+        ActorError.Failed(why) => LoadError.Missing(why),
+        other => LoadError.Unavailable(f"{other}"),
+    })?
+}
+
+fn main() {
+    let store = spawn Store();
+    store.put(b"\x01\x02").expect("put is delivered");
+    match load(store, 0) {
+        .Ok(block) => println(block.len()),
+        .Err(error) => println(f"{error}"),
+    }
+    match load(store, 5) {
+        .Ok(block) => println(block.len()),
+        .Err(error) => println(f"{error}"),
+    }
+}
+```
+
 **Mailbox policy at the sender.** `mailbox(worker)` yields an immutable typed
 one-way view of the same actor and mailbox; a receive call through that view
 submits under the destination's declared admission. It mutates nothing and

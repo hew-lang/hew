@@ -1,0 +1,10 @@
+[[case]]
+id = "cleanup-ladder-cancelled-defer"
+intent = "A cancelled body runs its defer before releasing its closable binding, once each."
+source = "cases/cleanup-ladder-cancelled-defer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "winner done\ndefer parked\nclosed parked\npicked 7\n"
+exit = 0

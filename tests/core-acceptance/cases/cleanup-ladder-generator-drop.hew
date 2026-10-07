@@ -1,0 +1,27 @@
+// A generator dropped half-consumed runs its deferred cleanup and releases
+// its closable binding once.
+#[resource]
+type Lease {
+    name: string;
+}
+
+impl Lease {
+    fn close(consume self) {
+        println("closed " + self.name);
+    }
+}
+
+gen fn words(label: string) -> string {
+    let lease = Lease { name: label };
+    defer println(label + " cleaned");
+    yield label;
+    yield "later";
+}
+
+fn main() {
+    let values = words("first");
+    match values.next() {
+        .Some(value) => println(value),
+        .None => panic("empty"),
+    }
+}

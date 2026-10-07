@@ -1,0 +1,11 @@
+[[case]]
+id = "cleanup-ladder-exit-paths"
+intent = "Closable owners in nested scopes are released once on early return, conditional close, error return and a bounds trap."
+source = "cases/cleanup-ladder-exit-paths.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "closed inner0\nclosed early0\nclosed outer0\nmode 0 ok 5\nclosed early1\nclosed inner1\nclosed outer1\nmode 1 ok 5\nclosed inner2\nclosed early2\nclosed outer2\nmode 2 ok -1\nclosed early0\nclosed outer0\ndead err Dead: the destination actor is gone and will not come back\nclosed inner3\nclosed early3\nclosed outer3\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

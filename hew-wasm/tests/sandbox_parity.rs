@@ -510,6 +510,23 @@ const PARITY_CASES: &[ParityCase] = &[
         test_name: "error_trait_fallible_main",
         source_rel: "tests/core-acceptance/cases/error-trait-fallible-main.hew",
     },
+    ParityCase {
+        // Fault exits of one body share cleanup rungs: every exit of a body
+        // with a closable binding and two asks closes it once.
+        test_name: "cleanup_ladder_shared_exits",
+        source_rel: "tests/core-acceptance/cases/cleanup-ladder-shared-exits.hew",
+    },
+    ParityCase {
+        // A shared defer rung reads mutable bindings as each exit left them.
+        test_name: "cleanup_ladder_defer_reads",
+        source_rel: "tests/core-acceptance/cases/cleanup-ladder-defer-reads.hew",
+    },
+    ParityCase {
+        // A failing close on a shared fault rung is reported after the ask's
+        // fault, once every remaining owner has been released.
+        test_name: "cleanup_ladder_fault_combine",
+        source_rel: "tests/core-acceptance/cases/cleanup-ladder-fault-combine.hew",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

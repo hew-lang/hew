@@ -1,0 +1,65 @@
+// Closable bindings and an owned temporary in nested scopes, released on an
+// early return, a conditional close, a bounds trap after an ask, and normal
+// completion.
+#[resource]
+type Lease {
+    name: string;
+}
+
+impl Lease {
+    fn close(consume self) {
+        println("closed " + self.name);
+    }
+}
+
+actor Store {
+    receive fn get(key: string) -> i64 {
+        key.len()
+    }
+}
+
+fn label(n: i64) -> string {
+    f"key-{n}"
+}
+
+fn exits(store: Store, mode: i64) -> Result<i64, ActorError> {
+    let outer = Lease { name: f"outer{mode}" };
+    let early = Lease { name: f"early{mode}" };
+    if mode == 1 {
+        early.close();
+    }
+    let got = store.get(label(mode))?;
+    {
+        let inner = Lease { name: f"inner{mode}" };
+        if mode == 2 {
+            return .Ok(-1);
+        }
+        let again = store.get(label(got))?;
+        if mode == 3 {
+            let v: Vec<i64> = Vec.new();
+            return .Ok(v[again]);
+        }
+    }
+    .Ok(got)
+}
+
+fn main() {
+    let live = spawn Store;
+    let dead = spawn Store;
+    stop(dead);
+    stopped(dead);
+    for mode in 0..3 {
+        match exits(live, mode) {
+            .Ok(v) => println(f"mode {mode} ok {v}"),
+            .Err(e) => println(f"mode {mode} err {e}"),
+        }
+    }
+    match exits(dead, 0) {
+        .Ok(v) => println(f"dead ok {v}"),
+        .Err(e) => println(f"dead err {e}"),
+    }
+    match exits(live, 3) {
+        .Ok(v) => println(f"trap ok {v}"),
+        .Err(e) => println(f"trap err {e}"),
+    }
+}

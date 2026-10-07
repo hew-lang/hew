@@ -1,0 +1,38 @@
+// A race cancels a body parked on a gate nothing feeds. Its defer runs before
+// its closable binding is released, and both run exactly once.
+import std.stream;
+
+#[resource]
+type Lease {
+    name: string;
+}
+
+impl Lease {
+    fn close(consume self) {
+        println("closed " + self.name);
+    }
+}
+
+fn parked(ready: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
+    let lease = Lease { name: "parked" };
+    defer println("defer parked");
+    ready.send(1).expect("ready");
+    gate.recv();
+    lease.name.len()
+}
+
+fn winner(ready: stream.Stream<i64>) -> i64 {
+    ready.recv();
+    println("winner done");
+    7
+}
+
+fn main() {
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (ready_tx, ready): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready");
+    let picked = race {
+        winner(ready),
+        parked(ready_tx, gate),
+    };
+    println("picked " + to_string(picked));
+}

@@ -90,6 +90,7 @@ impl LowerCtx {
                 let elem_ty = *elem_ty;
                 Some((ResolvedTy::Array(Box::new(elem_ty.clone()), len), elem_ty))
             }
+            ResolvedTy::Bytes => Some((ResolvedTy::Bytes, ResolvedTy::U8)),
             other => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -242,6 +243,36 @@ impl LowerCtx {
         self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
     }
 
+    /// The empty buffer a list literal fills: a `Vec`, or a `bytes` buffer
+    /// when the literal was checked against `bytes`.
+    fn make_sequence_new_expr(&mut self, ty: ResolvedTy, span: Span) -> HirExpr {
+        if ty != ResolvedTy::Bytes {
+            return self.make_vec_new_expr(ty, span);
+        }
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::BytesNew,
+            Vec::new(),
+            &ResolvedTy::Bytes,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::Bytes, IntentKind::Read, span)
+    }
+
+    /// Append one list-literal element to the buffer `make_sequence_new_expr`
+    /// made.
+    fn make_sequence_push_expr(&mut self, target: HirExpr, elem: HirExpr, span: Span) -> HirExpr {
+        if target.ty != ResolvedTy::Bytes {
+            return self.make_vec_push_expr(target, elem, span);
+        }
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::BytesPush,
+            vec![target, elem],
+            &ResolvedTy::Unit,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
+    }
+
     /// HIR retains semantic method identity and exact types, never an element ABI.
     pub(super) fn collection_call_kind(
         &mut self,
@@ -387,7 +418,7 @@ impl LowerCtx {
             node: self.ids.node(),
             kind: HirStmtKind::Let(
                 temp_binding,
-                Some(self.make_vec_new_expr(vec_ty.clone(), span.clone())),
+                Some(self.make_sequence_new_expr(vec_ty.clone(), span.clone())),
             ),
             span: span.clone(),
         };
@@ -404,7 +435,7 @@ impl LowerCtx {
                         IntentKind::Read,
                         lowered.span.clone(),
                     );
-                    let push_expr = self.make_vec_push_expr(vec_ref, lowered, span.clone());
+                    let push_expr = self.make_sequence_push_expr(vec_ref, lowered, span.clone());
                     statements.push(HirStmt {
                         node: self.ids.node(),
                         kind: HirStmtKind::Expr(push_expr),

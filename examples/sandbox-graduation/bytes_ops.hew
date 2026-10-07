@@ -1,0 +1,43 @@
+// Every bytes operation: construction, reads, ranges, mutation, equality,
+// concatenation and run tests, printed so both engines must agree on each
+// value. The last index is past the end and faults on both.
+fn show(b: bytes) -> string {
+    var out = "[";
+    for i in 0..b.len() {
+        if i > 0 {
+            out = out + " ";
+        }
+        out = out + f"{b[i]}";
+    }
+    out + "]"
+}
+
+fn main() {
+    var b = bytes.new();
+    b.push(1);
+    b.push(2);
+    b.push(3);
+    println(f"{show(b)} {b.len()} {b.is_empty()} {b.contains(2)} {b.contains(9)}");
+    b.set(0, 7);
+    println(f"{b[0]} {b.get(1) ?? 0} {b.get(9) ?? 0}");
+    println(f"{show(b[1..])} {show(b[..2])} {show(b[1..2])} {show(b[..])}");
+    var c = b"\x0a\x0b";
+    c.append(b);
+    println(show(c));
+    println(f"{c == b"\x0a\x0b\x07\x02\x03"} {c != b}");
+    let last = c.pop() ?? 0;
+    println(f"{last} {c.len()}");
+    c.clear();
+    println(f"{c.len()} {c.is_empty()}");
+    let header: bytes = [0x48, 0x45, 0x57];
+    let frame = header + b[..2] + b"\x00\xff";
+    println(show(frame));
+    println(f"{frame.starts_with(header)} {frame.starts_with(b)} {frame.ends_with([0, 255])} {frame.ends_with(b"")}");
+    var grown = header;
+    grown += b"\x21";
+    println(f"{show(grown)} {show(header)}");
+    let joined: bytes = [1] + [2];
+    println(f"{show(header + [0x3f])} {show([0x3c] + header)} {show(joined)}");
+    let at = frame.len();
+    println(frame[at]);
+}

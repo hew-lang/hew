@@ -3836,3 +3836,109 @@ fn main() -> i64 {
         "K without a Hash bound must still be rejected as a HashMap key"
     );
 }
+
+#[test]
+fn list_literal_typed_bytes_checks_each_element_as_u8() {
+    let output = check_source(
+        r"
+        fn main() {
+            let tag: u8 = 7;
+            let _ok: bytes = [0, 255, tag];
+            let _wide: bytes = [1, 256];
+            let _signed: bytes = [-1];
+            let _spread: bytes = [.._ok, 1];
+        }
+        ",
+    );
+    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages.len(), 3, "{messages:#?}");
+    assert!(
+        messages[0].contains("`256` does not fit in `u8`"),
+        "{messages:#?}"
+    );
+    assert!(messages[1].contains("`u8`"), "{messages:#?}");
+    assert!(
+        messages[2].contains("spread `..` is not allowed in a `bytes` literal"),
+        "{messages:#?}"
+    );
+}
+
+#[test]
+fn bytes_add_is_concatenation_and_other_operators_are_refused() {
+    let output = check_source(
+        r#"
+        fn main() {
+            let a = b"\x01";
+            let _joined: bytes = a + a;
+            let _bad = a - a;
+        }
+        "#,
+    );
+    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages, ["cannot apply `-` to `bytes` and `bytes`"]);
+}
+
+#[test]
+fn a_list_literal_joined_to_bytes_is_a_bytes_literal() {
+    let output = check_source(
+        r#"
+        fn main() {
+            let a = b"\x01";
+            let _tail: bytes = a + [2, 3];
+            let _head = [0] + a;
+            let _both: bytes = [1] + [2];
+            let _wide = a + [256];
+        }
+        "#,
+    );
+    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages.len(), 1, "{messages:#?}");
+    assert!(
+        messages[0].contains("`256` does not fit in `u8`"),
+        "{messages:#?}"
+    );
+}
+
+#[test]
+fn compound_assignment_takes_only_the_operators_its_target_admits() {
+    let output = check_source(
+        r#"
+        type Point { x: i64; }
+        fn main() {
+            var b = b"\x01";
+            b += b"\x02";
+            b += [3];
+            b -= b"\x01";
+            b *= b"\x01";
+            var s = "a";
+            s += "b";
+            s -= "a";
+            var v: Vec<i64> = [1];
+            v += [2];
+            var p = Point { x: 1 };
+            p += p;
+            var flag = true;
+            flag |= false;
+            flag += true;
+            var f = 1.5;
+            f *= 2.0;
+            f |= 1.0;
+            var n = 6;
+            n <<= 1;
+        }
+        "#,
+    );
+    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "cannot apply `-=` to `bytes`",
+            "cannot apply `*=` to `bytes`",
+            "cannot apply `-=` to `string`",
+            "cannot apply `+=` to `Vec<i64>`",
+            "cannot apply `+=` to `Point`",
+            "cannot apply `+=` to `bool`",
+            "cannot apply `|=` to `f64`",
+        ]
+    );
+}

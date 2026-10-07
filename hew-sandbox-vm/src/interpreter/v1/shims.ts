@@ -244,8 +244,71 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   // TextDecoder replaces each maximal invalid subsequence with U+FFFD, as
   // native lossy decoding does.
   BytesDecodeUtf8Lossy: (_host, args) => str(decodeUtf8(arg(args, 0))),
+  BytesNew: () => ({ kind: "vector", elementType: "u8", items: [] }),
   BytesIsEmpty: (_host, args) => bool(vec(args, 0).items.length === 0),
   BytesLen: (_host, args) => int(BigInt(vec(args, 0).items.length)),
+  BytesContains: (_host, args) => {
+    const byte = integer(args, 1);
+    return bool(vec(args, 0).items.some((item) => integer([item], 0) === byte));
+  },
+  BytesIndex: (_host, args) => {
+    const items = vec(args, 0).items;
+    const at = index(args, 1);
+    if (at < 0 || at >= items.length) {
+      throw new ShimFault(
+        "vector_bounds",
+        `bytes index ${at} out of bounds for length ${items.length}`,
+      );
+    }
+    return cloneValue(items[at]!);
+  },
+  // A native bytes range shares the buffer; a VM value is never aliased, so
+  // a copy is observably the same.
+  BytesSlice: (_host, args) => {
+    const items = vec(args, 0).items;
+    const start = index(args, 1);
+    const end = index(args, 2);
+    checkSliceBounds(start, end, items.length);
+    return byteVector(items.slice(start, end));
+  },
+  BytesSliceFrom: (_host, args) => {
+    const items = vec(args, 0).items;
+    const start = index(args, 1);
+    checkSliceBounds(start, items.length, items.length);
+    return byteVector(items.slice(start));
+  },
+  BytesConcat: (_host, args) =>
+    byteVector([...vec(args, 0).items, ...vec(args, 1).items]),
+  BytesStartsWith: (_host, args) =>
+    bool(runAt(vec(args, 0).items, vec(args, 1).items, 0)),
+  BytesEndsWith: (_host, args) => {
+    const items = vec(args, 0).items;
+    const run = vec(args, 1).items;
+    return bool(runAt(items, run, items.length - run.length));
+  },
+  // A mutating call receives its receiver by `move` and returns it.
+  BytesPush: (_host, args) => {
+    const target = vec(args, 0);
+    target.items.push(cloneValue(arg(args, 1)));
+    return target;
+  },
+  BytesSet: (_host, args) => {
+    const target = vec(args, 0);
+    const at = index(args, 1);
+    if (at < 0 || at >= target.items.length) {
+      throw new ShimFault(
+        "vector_bounds",
+        `bytes index ${at} out of bounds for length ${target.items.length}`,
+      );
+    }
+    target.items[at] = cloneValue(arg(args, 2));
+    return target;
+  },
+  BytesClear: (_host, args) => {
+    const target = vec(args, 0);
+    target.items.length = 0;
+    return target;
+  },
   BytesGet: (host, args, shape) => {
     if (!shape) {
       throw new TypeError(
@@ -342,6 +405,26 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
     };
   },
 };
+
+function byteVector(items: readonly VmValue[]): VmValue {
+  return { kind: "vector", elementType: "u8", items: items.map(cloneValue) };
+}
+
+/// Whether `run` occurs in `items` starting at `at`.
+function runAt(
+  items: readonly VmValue[],
+  run: readonly VmValue[],
+  at: number,
+): boolean {
+  return (
+    at >= 0 &&
+    at + run.length <= items.length &&
+    run.every(
+      (byte, offset) =>
+        integer([items[at + offset]!], 0) === integer([byte], 0),
+    )
+  );
+}
 
 /// A slice outside `0 <= start <= end <= length` faults like native's
 /// `IndexOutOfBounds` rather than clamping to the valid range.

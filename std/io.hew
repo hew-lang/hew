@@ -183,6 +183,18 @@ impl bytes {
     }
     #[extern_symbol(hew_bytes_append)]
     fn append(self, other: bytes) {}
+    /// Whether the buffer begins with the run `prefix`.
+    #[runtime(family = BytesStartsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
+    #[extern_symbol(hew_bytes_starts_with)]
+    fn starts_with(self, prefix: bytes) -> bool {
+        false
+    }
+    /// Whether the buffer ends with the run `suffix`.
+    #[runtime(family = BytesEndsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
+    #[extern_symbol(hew_bytes_ends_with)]
+    fn ends_with(self, suffix: bytes) -> bool {
+        false
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

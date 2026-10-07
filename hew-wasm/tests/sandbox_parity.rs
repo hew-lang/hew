@@ -100,6 +100,11 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/f32_arithmetic_precision.hew",
     },
     ParityCase {
+        // Every bytes operation, including ranges that share the buffer.
+        test_name: "bytes_ops",
+        source_rel: "examples/sandbox-graduation/bytes_ops.hew",
+    },
+    ParityCase {
         // A slice past the end faults on both engines instead of clamping.
         test_name: "slice_bounds",
         source_rel: "examples/sandbox-graduation/slice_bounds.hew",

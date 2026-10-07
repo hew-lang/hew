@@ -956,6 +956,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.append.owned",
                 )?;
             }
+            RuntimeCallFamily::BytesConcat => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_bytes_concat_owned",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[ptr.into(), ptr.into(), ptr.into()], false),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[
+                        self.slots[source(0)?.0 as usize].into(),
+                        self.slots[source(1)?.0 as usize].into(),
+                        self.slots[required_result()?.0 as usize].into(),
+                    ],
+                    "bytes.concat.owned",
+                )?;
+            }
             RuntimeCallFamily::StringIndex => {
                 return self.emit_string_index(
                     source(0)?,

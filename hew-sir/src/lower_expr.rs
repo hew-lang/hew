@@ -328,6 +328,16 @@ impl Builder<'_, '_> {
                         Ok(equals)
                     };
                 }
+                if *op == hew_parser::ast::BinaryOp::Add && self.ty(&left.ty) == ResolvedTy::Bytes {
+                    return self
+                        .lower_runtime_operation(
+                            expr,
+                            hew_types::RuntimeCallFamily::BytesConcat,
+                            &[left.as_ref(), right.as_ref()],
+                            true,
+                        )?
+                        .ok_or_else(|| "bytes concatenation must produce a value".to_string());
+                }
                 if self.ty(&left.ty) == ResolvedTy::String {
                     return match op {
                         hew_parser::ast::BinaryOp::Add => self

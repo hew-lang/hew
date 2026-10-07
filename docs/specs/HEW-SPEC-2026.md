@@ -979,39 +979,105 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 ### 3.3.2 The `bytes` Type
 
-`bytes` is a built-in compiler type with stdlib-registered methods: a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
+`bytes` is a built-in compiler type with stdlib-registered methods: a growable,
+heap-allocated byte buffer — semantically a `Vec<u8>` — with its own type name
+and value semantics.
 
 ```hew
 fn main() {
     var buf: bytes = bytes.new();
-    buf.push(0x48);    // push a byte value (i64)
-    buf.push(72);      // same as 'H' in ASCII
-    let n = buf.len(); // i64
-    let b = buf.get(0); // Option<u8> — first byte, or None when out of range
+    buf.push(0x48);     // append one u8
+    buf.push(72);       // same as 'H' in ASCII
+    let n = buf.len();  // i64
+    let b = buf.get(0); // Option<u8>: first byte, or None when out of range
     buf.set(1, 0xFF);   // overwrite byte at index 1
-    let last = buf.pop(); // Option<u8> — removes and returns last byte, None when empty
-    println(buf.is_empty()); // bool
-    println(buf.contains(72)); // bool — linear scan
+    let last = buf.pop(); // Option<u8>: removes the last byte, None when empty
+    println(buf.is_empty());
+    println(buf.contains(72)); // linear scan for one byte
     println(n);
     println(last ?? 0);
     println(b ?? 0);
 }
 ```
 
+**Construction.** A `bytes` value comes from a byte-string literal
+`b"\x01\x02"`, from `bytes.new()`, from `s.to_bytes()` (the UTF-8 encoding of a
+`string`), or from a list literal where `bytes` is expected: an annotated
+binding, a parameter, a return, either side of a `+` whose other side is
+`bytes`, and both sides of a `+` that is itself expected to be `bytes`. Each
+element of that list is checked as a `u8`, so a literal outside `0..=255` is
+refused at compile time, and a spread is refused: join buffers with `+`.
+
+```hew
+fn checksum(frame: bytes) -> u8 {
+    var sum: u8 = 0;
+    for byte in frame {
+        sum = sum.wrapping_add(byte);
+    }
+    sum
+}
+
+fn main() {
+    let tag: u8 = 0x2a;
+    let header: bytes = [0x48, 0x45, 0x57, tag];
+    let frame = header + b"\x00\x01";
+    println(frame.len());
+    println(checksum(frame));
+}
+```
+
+**Operators.**
+
+- `a == b` and `a != b` compare contents: two values are equal when they hold
+  the same bytes in the same order, whatever buffers back them. A slice equals
+  a fresh buffer with the same contents.
+- `a + b` is a fresh buffer holding the bytes of `a` followed by those of `b`;
+  both operands are unchanged. `buf += more` replaces `buf` with that result;
+  `+=` is the only compound assignment on `bytes`.
+  `buf.append(more)` extends `buf` in place, which is the cheaper way to grow a
+  buffer one piece at a time.
+- `b[i]` is the `u8` at index `i`, and an index outside `0..b.len()` faults with
+  `IndexOutOfBounds`. `b.get(i)` is the non-faulting read.
+- `b[a..c]`, `b[a..]`, `b[..c]` and `b[..]` are the bytes in that range as a
+  `bytes` value. A range shares the buffer, so it takes constant time
+  whatever its length; it is still an independent value, because a later write
+  through either side copies the shared bytes first. A range outside
+  `0..=b.len()`, or one that starts after it ends, faults with
+  `IndexOutOfBounds`.
+
+```hew
+fn main() {
+    let packet = b"\x02\x01\x02\x03\xff";
+    let body = packet[1..4];
+    var copy = body;
+    copy.push(9);
+    println(body == b"\x01\x02\x03");
+    println(copy.len());
+    println(packet.starts_with(b"\x02") && packet.ends_with(b"\xff"));
+}
+```
+
 **Methods on `bytes`:**
 
-| Method         | Signature          | Description                     |
-| -------------- | ------------------ | ------------------------------- |
-| `bytes.new()` | `() -> bytes`      | Create an empty byte buffer     |
-| `.push(b)`     | `(i64) -> ()`      | Append a byte                   |
-| `.pop()`       | `() -> Option<u8>` | Remove and return the last byte; `None` when empty |
-| `.get(i)`      | `(i64) -> Option<u8>` | Byte at index `i`; `None` out of range |
-| `.set(i, b)`   | `(i64, i64) -> ()` | Overwrite the byte at index `i` |
-| `.len()`       | `() -> i64`        | Number of bytes                 |
-| `.is_empty()`  | `() -> bool`       | True if len is 0                |
-| `.contains(b)` | `(i64) -> bool`    | True if the buffer contains `b` |
+| Method | Signature | Description |
+| --- | --- | --- |
+| `bytes.new()` | `() -> bytes` | An empty buffer |
+| `.len()` | `() -> i64` | Number of bytes |
+| `.is_empty()` | `() -> bool` | True if `len()` is 0 |
+| `.get(i)` | `(i64) -> Option<u8>` | Byte at index `i`; `None` out of range |
+| `.contains(b)` | `(u8) -> bool` | True if the buffer holds the byte `b` |
+| `.starts_with(p)` | `(bytes) -> bool` | True if the buffer begins with the run `p` |
+| `.ends_with(s)` | `(bytes) -> bool` | True if the buffer ends with the run `s` |
+| `.push(b)` | `(u8) -> ()` | Append one byte |
+| `.pop()` | `() -> Option<u8>` | Remove and return the last byte; `None` when empty |
+| `.set(i, b)` | `(i64, u8) -> ()` | Overwrite the byte at index `i`; faults out of range |
+| `.append(other)` | `(bytes) -> ()` | Append a copy of `other` |
+| `.clear()` | `() -> ()` | Remove every byte |
 
-`bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send`. At the runtime level, owned `bytes` values are treated as **immutable-shareable**: the runtime alias-shares them by refcount retain rather than deep-copying on send. A COW write-barrier (`ensure_unique`) forks the backing buffer before any in-place mutation when the refcount is greater than one, so actor isolation is preserved even when two actors hold retained references to the same buffer.
+Decode text with `std.encoding.utf8.decode`, which returns a `Result`, or
+`decode_lossy`, which replaces invalid sequences with U+FFFD.
+
+`bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send`. At the runtime level, owned `bytes` values are treated as **immutable-shareable**: the runtime alias-shares them by refcount retain rather than deep-copying on send. A COW write-barrier (`ensure_unique`) forks the backing buffer before any in-place mutation when the refcount is greater than one, so actor isolation is preserved even when two actors hold retained references to the same buffer. The C layout of a `bytes` value at a foreign call is in §3.9.3.
 
 ### 3.4 Ownership and References
 
@@ -6948,7 +7014,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered). `..` cannot begin an expression, so `..expr` at the start of a literal item is the spread of §3.1 and no range spelling is shadowed
-14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
 
 > **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.
 

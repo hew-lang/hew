@@ -587,13 +587,7 @@ impl Checker {
                 Ty::Never
             }
             Expr::ReturnError(value) => {
-                let error = self.current_return_type.as_ref().and_then(|ty| {
-                    self.subst
-                        .resolve(ty)
-                        .as_result()
-                        .map(|(_, error)| error.clone())
-                });
-                if let Some(error) = error.filter(|_| self.current_fails) {
+                if let Some(error) = self.current_failure_edge.clone() {
                     // A leading-dot variant names a member of the function's
                     // own error type; everything else crosses the edge by the
                     // failure-edge rule.

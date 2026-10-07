@@ -1008,7 +1008,7 @@ impl Checker {
         // not the outer function's.
         let prev_return_type = self.current_return_type.take();
         let previous_defer = self.deferred_body.take();
-        let prev_fails = std::mem::replace(&mut self.current_fails, false);
+        let prev_failure_edge = self.current_failure_edge.take();
 
         let previous_inferred_returns = self.inferred_lambda_returns.take();
         let ret_ty = if let Some(annotation) = return_type {
@@ -1043,7 +1043,7 @@ impl Checker {
 
         self.current_return_type = prev_return_type;
         self.deferred_body = previous_defer;
-        self.current_fails = prev_fails;
+        self.current_failure_edge = prev_failure_edge;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.task_scope_depth = prev_task_scope_depth;
         self.in_lambda_actor_body = prev_in_lambda_actor_body;

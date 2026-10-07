@@ -3504,7 +3504,10 @@ pub struct Checker {
     pub(super) current_return_type: Option<Ty>,
     /// Return constraints collected while a lambda's result type is inferred.
     pub(super) inferred_lambda_returns: Option<Vec<Ty>>,
-    pub(super) current_fails: bool,
+    /// The error type `E` of the enclosing callable's declared failure edge
+    /// (`fails E`), or `None` in a body without one. The one authority for
+    /// whether `return error` and a `Result` `?` may leave the body.
+    pub(super) current_failure_edge: Option<Ty>,
     pub(super) in_generator: bool,
     /// Set to `true` for the duration of synthesizing the inner expression of
     /// `Expr::Await(inner)`.  Enables `check_named_method_fallback` to
@@ -4418,7 +4421,7 @@ impl Checker {
             reported_unknown_dyn_traits: HashSet::new(),
             current_return_type: None,
             inferred_lambda_returns: None,
-            current_fails: false,
+            current_failure_edge: None,
             in_generator: false,
             suspension_operands: HashSet::new(),
             prepared_select_tasks: Vec::new(),

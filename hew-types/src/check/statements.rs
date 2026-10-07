@@ -759,7 +759,7 @@ impl Checker {
             // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
             // not the full Generator type, so `return 1` inside gen{} unifies
             // against i64 rather than Generator<Y, i64>.
-            let effective_expected = if self.current_fails {
+            let effective_expected = if self.current_failure_edge.is_some() {
                 self.result_return_coercions.insert(
                     SpanKey::in_module(span, self.current_module_idx),
                     super::ResultReturnKind::Success,

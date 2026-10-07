@@ -399,7 +399,7 @@ impl Checker {
                 let prev_in_generator = self.in_generator;
                 let prev_return_type = self.current_return_type.take();
                 let previous_defer = self.deferred_body.take();
-                let prev_fails = std::mem::replace(&mut self.current_fails, false);
+                let prev_failure_edge = self.current_failure_edge.take();
                 self.in_generator = true;
                 self.current_return_type = Some(gen_ty.clone());
 
@@ -418,7 +418,7 @@ impl Checker {
                 self.in_generator = prev_in_generator;
                 self.current_return_type = prev_return_type;
                 self.deferred_body = previous_defer;
-                self.current_fails = prev_fails;
+                self.current_failure_edge = prev_failure_edge;
 
                 // Unify the tail-expression type with the Return type-variable.
                 // Never / Error propagate vacuously (unify is a no-op for Error).

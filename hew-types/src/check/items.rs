@@ -929,7 +929,7 @@ impl Checker {
         block_expected: Option<&Ty>,
     ) -> Ty {
         let prev_tail_ok_armed = self.tail_ok_armed;
-        if self.current_fails {
+        if self.current_failure_edge.is_some() {
             self.tail_ok_armed = false;
             let actual = self.check_block(&fd.body, block_expected);
             if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
@@ -1105,10 +1105,9 @@ impl Checker {
         };
         // Generator bodies don't return the declared type — they yield it.
         // The body itself should return Unit (falls off the end).
-        let prev_fails = self.current_fails;
-        self.current_fails = matches!(
-            fd.return_type.as_ref().map(|ty| &ty.0),
-            Some(TypeExpr::Fallible { .. })
+        let prev_failure_edge = std::mem::replace(
+            &mut self.current_failure_edge,
+            failure_edge(fd.return_type.as_ref(), &declared_ret),
         );
         let expected_ret = self.function_body_return_type(fd, &declared_ret);
         // Store the declared yields type so Expr::Yield can check against it.
@@ -1189,7 +1188,7 @@ impl Checker {
         self.classify_stack_hints(fd);
 
         self.in_generator = prev_in_generator;
-        self.current_fails = prev_fails;
+        self.current_failure_edge = prev_failure_edge;
         self.current_return_type = None;
         self.current_function = prev_function;
         if in_actor {
@@ -1201,7 +1200,7 @@ impl Checker {
     }
 
     fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {
-        if self.current_fails {
+        if self.current_failure_edge.is_some() {
             declared
                 .as_result()
                 .map_or(Ty::Error, |(success, _)| success.clone())
@@ -2600,15 +2599,15 @@ impl Checker {
         // `return error e`, `?`, and a bare success tail the compiler wraps.
         // The body is checked against the success type, and the declared
         // `Result` stays in `current_return_type` for `return` and `?`.
-        let prev_fails = self.current_fails;
-        self.current_fails = !rf.is_generator
-            && matches!(
-                rf.return_type.as_ref().map(|ty| &ty.0),
-                Some(TypeExpr::Fallible { .. })
-            );
+        let edge = if rf.is_generator {
+            None
+        } else {
+            failure_edge(rf.return_type.as_ref(), &declared_ret)
+        };
+        let prev_failure_edge = std::mem::replace(&mut self.current_failure_edge, edge);
         let expected_ret = if rf.is_generator {
             Ty::Unit
-        } else if self.current_fails {
+        } else if self.current_failure_edge.is_some() {
             declared_ret
                 .as_result()
                 .map_or(Ty::Error, |(success, _)| success.clone())
@@ -2643,11 +2642,13 @@ impl Checker {
             Some(&expected_ret)
         };
         let prev_tail_ok_armed = self.tail_ok_armed;
-        if self.current_fails {
+        if self.current_failure_edge.is_some() {
             self.tail_ok_armed = false;
         }
         let actual = self.check_block(&rf.body, block_expected);
-        if self.current_fails && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+        if self.current_failure_edge.is_some()
+            && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error)
+        {
             if let Some(tail) = &rf.body.trailing_expr {
                 self.tail_ok_coercions
                     .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
@@ -2672,7 +2673,7 @@ impl Checker {
             );
         }
 
-        self.current_fails = prev_fails;
+        self.current_failure_edge = prev_failure_edge;
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;
         self.in_actor_handler_context = prev_actor_handler_context;
@@ -3041,6 +3042,21 @@ fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
         Ty::Named { head, args }
             if args.is_empty() && !head.is_param() && head.registry_key() == source_identity
     )
+}
+
+/// The failure edge a callable's return annotation declares: the `E` of
+/// `-> T fails E`, or `None` for a value return. An annotation whose types
+/// failed to resolve keeps an edge of `Ty::Error`, so its body's exits are
+/// not refused a second time.
+pub(super) fn failure_edge(
+    annotation: Option<&hew_parser::ast::Spanned<TypeExpr>>,
+    declared: &Ty,
+) -> Option<Ty> {
+    matches!(annotation.map(|ty| &ty.0), Some(TypeExpr::Fallible { .. })).then(|| {
+        declared
+            .as_result()
+            .map_or(Ty::Error, |(_, error)| error.clone())
+    })
 }
 
 /// The machine whose generated body `fd` is, if any.

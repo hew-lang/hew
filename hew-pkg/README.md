@@ -15,13 +15,16 @@ cd myproject
 hew check
 hew build
 hew run
-
-# Add a dependency
-hew add std.net.http --version "^1.0"
-
-# Install dependencies
-hew install
 ```
+
+Standard-library modules ship with the compiler. Use `import std.net.http;`
+in your source to access one; do not add it as a registry dependency.
+
+For third-party packages, first use `hew search <QUERY>` and
+`hew info <PACKAGE>` to confirm that the package and version are published.
+Then use `hew add <PACKAGE> --version <VERSION>` and `hew install` in your
+project. Packages found in a source repository may not yet be in the registry;
+follow that repository's instructions for using a clone or a local path.
 
 ## Commands
 
@@ -95,7 +98,7 @@ rules must retain the native crate's `Cargo.toml`.
 
 ## Manifest Format (hew.toml)
 
-`hew init` writes a starter manifest like:
+Example application manifest:
 
 ```toml
 [package]
@@ -109,9 +112,13 @@ keywords = ["hew", "web"]
 repository = "https://github.com/user/project"
 
 [dependencies]
-"std.net.http" = "^1.0"
-"ecosystem.db.postgres" = "~2.0"
+local_dep = { version = "0.1.0", path = "../local_dep" }
 ```
+
+This example expects a sibling library created with `hew init --lib local_dep`.
+Use `hew install` to prepare the dependency, then `import local_dep;` in your
+source. A registry dependency uses a published package name and version
+requirement instead of `path`.
 
 The `edition` field selects the Hew language edition the package's sources
 target. Currently only `"2026"` is accepted; the compiler refuses to build a

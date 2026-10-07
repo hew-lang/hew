@@ -40,7 +40,7 @@ Key boundary checks most contributors encounter:
 
 ## What to Work On
 
-- Check [open issues](https://github.com/hew-lang/hew/issues) for tasks labeled `good first issue` or `help wanted`
+- Check [open issues](https://github.com/hew-lang/hew/issues) for current work. Beginner-friendly tasks are not always available; ask in [GitHub Discussions](https://github.com/orgs/hew-lang/discussions) if you need help choosing a first contribution.
 - Bug reports and fixes are always welcome
 - For larger features or design changes, please open an issue first to discuss the approach
 

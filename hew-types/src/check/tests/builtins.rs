@@ -696,7 +696,7 @@ fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
          pub fn closed(value: i64, names: string) -> Result<(), string> {\n\
              if value > 0 { .Ok(()) } else { .Err(names) }\n\
          }\n\
-         fn check() -> Result<(), string> { closed(7, \"ok\")?; .Ok(()) }\n\
+         fn check() fails string { closed(7, \"ok\")?; }\n\
          fn main() {\n\
              let worker = spawn Worker();\n\
              let _sent = worker.ping();\n\

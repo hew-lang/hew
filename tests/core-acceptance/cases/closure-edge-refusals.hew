@@ -22,5 +22,17 @@ fn main() {
         }
         1
     };
-    println(f"{mixed("a"):?} {declared("b")}");
+    // Once a closure fails through an edge, a `?` on an `Option` has no
+    // `Option` return to leave through.
+    let absent = |text: string, extra: Option<i64>| {
+        let n = parse(text)?;
+        n + extra?
+    };
+    // A failing closure's `Result` tail with the edge's own error type would
+    // nest as data; it is refused with the `?` repair.
+    let nested = |text: string| {
+        let _ = parse(text)?;
+        parse(text)
+    };
+    println(f"{mixed("a"):?} {declared("b")} {absent("c", .None):?} {nested("d"):?}");
 }

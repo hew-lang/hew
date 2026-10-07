@@ -735,9 +735,9 @@ fn main() {
 fn result_propagation_lowers_expression_return_without_a_fake_value() {
     let lowered = lower_source(
         r#"
-        fn pair(value: Result<string, string>) -> Result<(string, string), string> {
+        fn pair(value: Result<string, string>) -> (string, string) fails string {
             let first = value?;
-            .Ok((first, "second"))
+            (first, "second")
         }
 
         fn main() {

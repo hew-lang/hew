@@ -972,10 +972,10 @@ fn array_literals_join_distinct_callables_into_their_written_type() {
 
 #[test]
 fn ok_coerced_tails_keep_the_written_callable_contract() {
-    let output = check_source("fn make() -> Result<fn() -> i64, string> { || 1 } fn main() {}");
+    let output = check_source("fn make() -> (fn() -> i64) fails string { || 1 } fn main() {}");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let output = check_source(
-        "fn make() -> Result<fn() -> i64, string> { || { sleep(1ms); 1 } } fn main() {}",
+        "fn make() -> (fn() -> i64) fails string { || { sleep(1ms); 1 } } fn main() {}",
     );
     assert_eq!(
         output

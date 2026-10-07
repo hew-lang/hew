@@ -38,14 +38,14 @@ fn statement_match(ok: bool, stop: bool) -> string {
     "continued"
 }
 
-fn try_comparison(ok: bool, stop: bool) -> Result<string, ProbeError> {
+fn try_comparison(ok: bool, stop: bool) -> string fails ProbeError {
     if text_result(ok)? != "ready" {
-        return .Err(ProbeError.Failed("unexpected"));
+        return error ProbeError.Failed("unexpected");
     }
     if stop {
-        return .Ok("stopped");
+        return "stopped";
     }
-    .Ok("continued")
+    "continued"
 }
 
 fn nested_match(some: bool, ok: bool) -> string {

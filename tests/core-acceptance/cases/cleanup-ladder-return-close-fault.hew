@@ -21,11 +21,11 @@ actor Store {
     }
 }
 
-fn copy_pair(store: Store) -> Result<bool, ActorError> {
+fn copy_pair(store: Store) -> bool fails ActorError {
     let left = Lease { name: "left" };
     let right = Lease { name: "right" };
     let ok = store.put("k", "v")?;
-    .Ok(ok)
+    ok
 }
 
 fn main() {

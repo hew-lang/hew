@@ -913,44 +913,28 @@ impl Checker {
         self.check_function_as(fd, &fn_name);
     }
 
-    /// Check a function body with the tail Ok-coercion armed for an explicit
-    /// `Result<_, _>` return.
-    ///
-    /// Arms `tail_ok_armed` only when `resolved_expected_ret` is `Result<_, _>`
-    /// and the function is not a generator (whose body yields Unit, not the
-    /// declared type). `check_block` and `synthesize` disarm the flag everywhere
-    /// but genuine function-return tail positions, so the coercion performed in
-    /// `check_against` is strictly tail-only and never fires in a non-tail
-    /// expression position.
-    fn check_body_with_tail_ok_coercion(
-        &mut self,
-        fd: &FnDecl,
-        resolved_expected_ret: &Ty,
-        block_expected: Option<&Ty>,
-    ) -> Ty {
-        let prev_tail_ok_armed = self.tail_ok_armed;
-        if self.current_failure_edge.is_some() && !fd.is_generator {
-            self.tail_ok_armed = false;
-            let actual = self.check_block(&fd.body, block_expected);
-            if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
-                if let Some(tail) = &fd.body.trailing_expr {
-                    self.tail_ok_coercions
-                        .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
-                } else if actual == Ty::Unit {
-                    if let Some(annotation) = &fd.return_type {
-                        self.result_return_coercions.insert(
-                            SpanKey::in_module(&annotation.1, self.current_module_idx),
-                            super::ResultReturnKind::Success,
-                        );
-                    }
+    /// Check a function body. A body with a failure edge produces its
+    /// success value: the tail is wrapped as `Ok(tail)`, and a unit body that
+    /// falls off its end returns `Ok(())`. Every other body is checked as
+    /// written; a `-> Result<T, E>` return is a value the body produces.
+    fn check_function_block(&mut self, fd: &FnDecl, block_expected: Option<&Ty>) -> Ty {
+        let actual = self.check_block(&fd.body, block_expected);
+        if self.current_failure_edge.is_some()
+            && !fd.is_generator
+            && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error)
+        {
+            if let Some(tail) = &fd.body.trailing_expr {
+                self.tail_ok_coercions
+                    .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
+            } else if actual == Ty::Unit {
+                if let Some(annotation) = &fd.return_type {
+                    self.result_return_coercions.insert(
+                        SpanKey::in_module(&annotation.1, self.current_module_idx),
+                        super::ResultReturnKind::Success,
+                    );
                 }
             }
-            self.tail_ok_armed = prev_tail_ok_armed;
-            return actual;
         }
-        self.tail_ok_armed = !fd.is_generator && resolved_expected_ret.as_result().is_some();
-        let actual = self.check_block(&fd.body, block_expected);
-        self.tail_ok_armed = prev_tail_ok_armed;
         actual
     }
 
@@ -1128,8 +1112,7 @@ impl Checker {
         } else {
             Some(&expected_ret)
         };
-        let actual =
-            self.check_body_with_tail_ok_coercion(fd, &resolved_expected_ret, block_expected);
+        let actual = self.check_function_block(fd, block_expected);
         // A completely empty body on a method whose `Self` is a compiler
         // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
@@ -2656,10 +2639,6 @@ impl Checker {
         } else {
             Some(&expected_ret)
         };
-        let prev_tail_ok_armed = self.tail_ok_armed;
-        if self.current_failure_edge.is_some() {
-            self.tail_ok_armed = false;
-        }
         let actual = self.check_block(&rf.body, block_expected);
         if self.current_failure_edge.is_some()
             && !rf.is_generator
@@ -2677,7 +2656,6 @@ impl Checker {
                 }
             }
         }
-        self.tail_ok_armed = prev_tail_ok_armed;
         if !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
             self.expect_type(
                 &expected_ret,

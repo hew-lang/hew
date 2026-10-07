@@ -770,13 +770,14 @@ else needs `impl Display for {rendered}`)"
             return None;
         }
         let Ty::Named { head, .. } = &resolved else {
-            self.report_error(
+            self.report_error_with_suggestions(
                 TypeErrorKind::ContextVariantNoType,
                 span,
                 format!(
                     "E_CONTEXT_VARIANT_NO_TYPE: contextual variant requires one expected enum or machine type, found `{}`",
                     resolved.user_facing()
                 ),
+                self.context_variant_edge_hint(),
             );
             return None;
         };

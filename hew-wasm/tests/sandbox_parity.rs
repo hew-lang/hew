@@ -109,6 +109,11 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/failing_generators.hew",
     },
     ParityCase {
+        // `fails E` is the failure edge and `-> Result` a value of one type.
+        test_name: "failure_edges",
+        source_rel: "examples/sandbox-graduation/failure_edges.hew",
+    },
+    ParityCase {
         // Failure edges: `?` and `return error` keep the same error, apply a
         // declared `From` and erase into `dyn Error`.
         test_name: "error_edges",
@@ -776,16 +781,19 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "stdin_concurrent" => Some("one line each\nrest=[three\nfour]\n"),
         "stdin_lines" => Some("first=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
         "closure_edges" => Some(
-            "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n",
+            "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n[Some(2), None]\nSome(9) None\n",
         ),
         "error_display" => Some(
-            "Missing: port\nPair: retries, 3\nOutOfRange: name: port, value: 70000\nClosed\nLocation: file: app.hew, line: 12\nStore: Closed\nRefused: the store is busy\nOther: Location: file: lib.hew, line: 4\n8080\n",
+            "Missing: port\nPair: retries, 3\nOutOfRange: name: port, value: 70000\nClosed\nLocation: file: app.hew, line: 12\nStore: Closed\nRefused: the store is busy\nOther: Location: file: lib.hew, line: 4\nLabeled: label: port, code: 2\nTag: 5\n8080\n",
         ),
         "variant_edges" => Some(
             "port: 8080\nhost: not a number: localhost\nuser: no setting named user\nlock: Store: Locked\nErr(Code: -2) Ok(3)\nErr(Note: noted: busy)\n",
         ),
         "failing_generators" => Some(
             "Ok(line 0)\nOk(line 1)\nvalue 0\nvalue 10\nvalue 20\nvalue 30\nskipped: four is unlucky\nvalue -1\nline 0\nline 1\ncounted 2\nline 0\nline 1\nline 2\nstopped: Corrupt: 3\n",
+        ),
+        "failure_edges" => Some(
+            "Ok(8080) Err(empty)\nOk(Ok(1)) Ok(Err(zero)) Err(refused)\nOk(abc) Err(nothing to read)\nOk(16160)\n",
         ),
         "error_edges" => Some(
             "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",

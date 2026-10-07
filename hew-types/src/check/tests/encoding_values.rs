@@ -521,9 +521,9 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
                     .Err(error) => .Err(error),
                 }}
             }}
-            fn result_probe(obj: Value) -> Result<Value, string> {{
+            fn result_probe(obj: Value) -> Value fails string {{
                 let child = required_field(obj, "field")?;
-                .Ok(child)
+                child
             }}
             fn optional_field(obj: Value) -> Option<Value> {{ .Some(obj) }}
             fn option_probe(obj: Value) -> Option<Value> {{

@@ -516,11 +516,6 @@ impl Checker {
             Some(ty) if !matches!(ty, Ty::Var(_) | Ty::Error) => Some(ty.clone()),
             _ => None,
         };
-        // When this `match` is itself a function-return tail, every arm body
-        // flows to the return and may Ok-coerce. Capture the armed state once;
-        // the per-arm guard check and pattern binding are not tail positions, so
-        // re-arm immediately before each arm body.
-        let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         // Exactly one arm BODY runs, so each body starts from the ownership
         // state at the match's entry rather than from whatever the previous arm
         // left behind, and the state after the match is the union over the arms
@@ -586,7 +581,6 @@ impl Checker {
                 waiting.push((arm, self.env.suspend_scope(), start, guard_diverges));
                 continue;
             }
-            self.tail_ok_armed = tail_ok_armed;
             self.check_match_arm_body(
                 arm,
                 guard_diverges,
@@ -600,7 +594,6 @@ impl Checker {
         for (arm, scope, start, guard_diverges) in waiting {
             self.env.resume_scope(scope);
             self.env.restore_ownership(&start);
-            self.tail_ok_armed = tail_ok_armed;
             self.check_match_arm_body(
                 arm,
                 guard_diverges,
@@ -612,10 +605,6 @@ impl Checker {
             self.env.pop_scope();
         }
         self.join_branch_ownership(&ownership_entry, &arm_exits);
-        // Leave the flag disarmed: the arm loop set it per-arm, and the
-        // exhaustiveness check below is not a tail position.
-        self.tail_ok_armed = false;
-
         // Exhaustiveness check for enums/Option/Result
         self.check_exhaustiveness(scrutinee_ty, arms, span);
 
@@ -688,7 +677,6 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         let prepared_depth = self.prepared_select_tasks.len();
         // Only the BODIES of a select are alternatives. Every arm's source is
         // prepared before dispatch chooses a winner — all the asks are issued,
@@ -754,23 +742,19 @@ impl Checker {
                 waiting.push((arm, self.env.suspend_scope(), start));
                 continue;
             }
-            self.tail_ok_armed = tail_ok_armed;
             self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
             self.env.pop_scope();
         }
         if let Some(tc) = timeout {
             self.env.restore_ownership(&entry);
-            self.tail_ok_armed = tail_ok_armed;
             self.check_select_body(&tc.body, &mut result_ty, &mut arm_exits);
         }
         for (arm, scope, start) in waiting {
             self.env.resume_scope(scope);
             self.env.restore_ownership(&start);
-            self.tail_ok_armed = tail_ok_armed;
             self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
             self.env.pop_scope();
         }
-        self.tail_ok_armed = false;
         self.join_branch_ownership(&entry, &arm_exits);
         // No typed body: `!` only when every body diverges; otherwise each
         // body already reported its error, and `Error` keeps uses quiet.
@@ -1010,7 +994,7 @@ impl Checker {
         let previous_defer = self.deferred_body.take();
         let prev_failure_edge = self.current_failure_edge.take();
 
-        let previous_inferred_returns = self.inferred_lambda_returns.take();
+        let previous_inferred = self.inferred_lambda.take();
         let prev_failure_edge_inferred = std::mem::replace(&mut self.failure_edge_inferred, false);
         let exits = crate::check::callables::FailureExits::of(body);
         let ret_ty = if let Some(annotation) = return_type {
@@ -1043,20 +1027,25 @@ impl Checker {
             }
             self.subst.resolve(&expected_ret)
         } else if let Some(result) = expected
-            .and_then(|(_, expected_ret)| self.inferred_lambda_failure_return(expected_ret, exits))
+            .and_then(|(_, expected_ret)| self.expected_lambda_failure_return(expected_ret, exits))
         {
-            self.check_inferred_failing_lambda(body, &result)
-        } else if let Some((_, expected_ret)) = expected {
+            self.check_expected_failing_lambda(body, &result)
+        } else if let Some((_, expected_ret)) = expected.filter(|(_, expected_ret)| {
+            !exits.any() || !matches!(self.subst.resolve(expected_ret), Ty::Var(_))
+        }) {
             self.current_return_type = Some(expected_ret.clone());
             self.check_against(&body.0, &body.1, expected_ret);
             expected_ret.clone()
-        } else if exits.any() {
-            let result = Ty::result(Ty::Var(TypeVar::fresh()), Ty::Var(TypeVar::fresh()));
-            self.check_inferred_failing_lambda(body, &result)
         } else {
-            self.infer_lambda_result(body)
+            // An open return infers: a `Result` exit opens the failure edge,
+            // an `Option` `?` propagates absence.
+            let ret = self.infer_lambda_result(body);
+            if let Some((_, expected_ret)) = expected {
+                self.expect_type(expected_ret, &ret, &body.1);
+            }
+            ret
         };
-        self.inferred_lambda_returns = previous_inferred_returns;
+        self.inferred_lambda = previous_inferred;
         self.record_value_transfer(&body.0, &body.1);
 
         self.current_return_type = prev_return_type;

@@ -17,6 +17,14 @@ fn try_map(items: Vec<string>, f: fn(string) -> i64 fails string) -> Vec<i64> fa
     out
 }
 
+fn positive(value: i64) -> Option<i64> {
+    if value > 0 {
+        .Some(value)
+    } else {
+        .None
+    }
+}
+
 fn main() {
     let declared = |text: string| -> i64 fails string {
         if text == "" {
@@ -50,4 +58,10 @@ fn main() {
         parse(text)?
     });
     println(f"{checked:?}");
+    // A closure whose `?` is on an `Option` opens no edge: absence
+    // propagates into its `Option` result.
+    let present: Vec<Option<i64>> = [.Some(1), .None];
+    println(f"{present.map(|o| positive(o? + 1)):?}");
+    let tripled = |o: Option<i64>| positive(o? * 3);
+    println(f"{tripled(.Some(3)):?} {tripled(.None):?}");
 }

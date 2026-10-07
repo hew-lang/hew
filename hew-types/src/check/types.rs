@@ -3299,15 +3299,6 @@ pub struct Checker {
     pub(super) yield_ok_coercions: HashSet<SpanKey>,
     pub(super) failing_generators: HashSet<SpanKey>,
     pub(super) result_return_coercions: HashMap<SpanKey, ResultReturnKind>,
-    /// `true` while checking an expression that is the tail of a
-    /// `Result`-returning function (and the if/match arm tails that flow to
-    /// the function return). Armed in `check_fn_decl` only when the declared
-    /// return is `Result<_, _>`, threaded through `check_block` /
-    /// `check_stmt_as_expr` tail positions, and disarmed on entry to
-    /// `synthesize` and around every non-tail sub-expression in
-    /// `check_against`. Gates the tail Ok-coercion so it never fires in a
-    /// non-tail expression position.
-    pub(super) tail_ok_armed: bool,
     /// Value spans of the shorthand fields (`Config { port }`) in the named
     /// field lists enclosing the expression being checked, so an unbound
     /// shorthand name reports as a shorthand. Pushed and truncated by
@@ -3518,14 +3509,15 @@ pub struct Checker {
     /// reports each written spelling once.
     pub(super) reported_unknown_dyn_traits: HashSet<(String, SpanKey)>,
     pub(super) current_return_type: Option<Ty>,
-    /// Return constraints collected while a lambda's result type is inferred.
-    pub(super) inferred_lambda_returns: Option<Vec<Ty>>,
+    /// The exits collected while a closure's result type is inferred; its
+    /// failure edge opens at its first `Result` `?` or `return error`.
+    pub(super) inferred_lambda: Option<super::callables::InferredLambda>,
     /// The error type `E` of the enclosing callable's declared failure edge
     /// (`fails E`), or `None` in a body without one. The one authority for
     /// whether `return error` and a `Result` `?` may leave the body.
     pub(super) current_failure_edge: Option<Ty>,
-    /// Whether `current_failure_edge` was inferred from a closure's first
-    /// failure exit rather than declared.
+    /// Whether `current_failure_edge` was inferred from a closure's failure
+    /// exits rather than declared.
     pub(super) failure_edge_inferred: bool,
     pub(super) in_generator: bool,
     /// The expansion context the implied Display impls of a re-prepared
@@ -4380,7 +4372,6 @@ impl Checker {
             yield_ok_coercions: HashSet::new(),
             failing_generators: HashSet::new(),
             result_return_coercions: HashMap::new(),
-            tail_ok_armed: false,
             field_shorthand_values: Vec::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -4444,7 +4435,7 @@ impl Checker {
             reported_actor_handle_type_spans: HashSet::new(),
             reported_unknown_dyn_traits: HashSet::new(),
             current_return_type: None,
-            inferred_lambda_returns: None,
+            inferred_lambda: None,
             current_failure_edge: None,
             failure_edge_inferred: false,
             in_generator: false,

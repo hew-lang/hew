@@ -594,6 +594,26 @@ impl Checker {
                 return;
             }
             self.report_type_mismatch(&expected_resolved, &actual_resolved, span);
+            self.suggest_success_value_repair(&expected_resolved, &actual_resolved);
+        }
+    }
+
+    /// A success value where a `Result` is expected: a value return builds
+    /// the `Result` itself, and a failure edge returns the value.
+    fn suggest_success_value_repair(&mut self, expected: &Ty, actual: &Ty) {
+        let Some((success, failure)) = expected.as_result() else {
+            return;
+        };
+        if actual.materialize_literal_defaults() != *success {
+            return;
+        }
+        let success = success.user_facing().to_string();
+        let failure = failure.user_facing().to_string();
+        if let Some(error) = self.errors.last_mut() {
+            error.suggestions.push(format!(
+                "build the `Result`: `.Ok(value)`, or declare the failure edge \
+                 `-> {success} fails {failure}` to return the value itself"
+            ));
         }
     }
 
@@ -903,37 +923,34 @@ impl Checker {
             return Ok(None);
         }
         let source = source.materialize_literal_defaults();
-        let mut candidates: Vec<&String> = definition
-            .variants
-            .iter()
-            .filter_map(|(name, variant)| match variant {
-                VariantDef::Tuple(payloads) => match payloads.as_slice() {
-                    [payload] if Self::bare_param(payload).is_none() => {
-                        let payload = Self::instantiate_type_def_member(
-                            payload,
-                            &definition.type_params,
-                            args,
-                        );
-                        (self.subst.resolve(&payload) == source).then_some(name)
-                    }
-                    _ => None,
-                },
-                VariantDef::Unit | VariantDef::Struct(_) => None,
+        let mut candidates: Vec<(String, u32)> = self
+            .defs
+            .members_of_kind(nominal.declaration(), crate::DeclarationKind::Variant)
+            .filter_map(|variant| {
+                let name = self.defs.name(variant);
+                let ordinal = self.defs.site(variant)?.ordinal();
+                match definition.variants.get(name.as_str())? {
+                    VariantDef::Tuple(payloads) => match payloads.as_slice() {
+                        [payload] if Self::bare_param(payload).is_none() => {
+                            let payload = Self::instantiate_type_def_member(
+                                payload,
+                                &definition.type_params,
+                                args,
+                            );
+                            (self.subst.resolve(&payload) == source)
+                                .then(|| (name.to_string(), ordinal))
+                        }
+                        _ => None,
+                    },
+                    VariantDef::Unit | VariantDef::Struct(_) => None,
+                }
             })
             .collect();
-        candidates.sort();
+        candidates.sort_by_key(|(_, ordinal)| *ordinal);
         match candidates.as_slice() {
             [] => Ok(None),
-            [name] => Ok(self
-                .defs
-                .member_of_kind(
-                    nominal.declaration(),
-                    hew_parser::ast::Symbol::intern(name),
-                    crate::DeclarationKind::Variant,
-                )
-                .and_then(|variant| self.defs.site(variant))
-                .map(crate::DeclarationOccurrence::ordinal)),
-            _ => Err(candidates.into_iter().cloned().collect()),
+            [(_, ordinal)] => Ok(Some(*ordinal)),
+            _ => Err(candidates.into_iter().map(|(name, _)| name).collect()),
         }
     }
 
@@ -970,6 +987,110 @@ impl Checker {
                 "declare which one: `impl From<{source_name}> for {target_name} \
                  {{ fn from(value: {source_name}) -> {target_name} {{ ... }} }}`"
             )],
+        );
+    }
+
+    /// The repair a contextual `Result` constructor needs in a body that
+    /// fails through its edge: the body produces the success value itself.
+    pub(super) fn context_variant_edge_hint(&self) -> Vec<String> {
+        if self.current_failure_edge.is_none() {
+            return Vec::new();
+        }
+        vec![
+            "this body fails through its failure edge, so it produces the success value \
+              itself: write `v` for `.Ok(v)` and `return error e` for `.Err(e)`"
+                .to_string(),
+        ]
+    }
+
+    /// A failure exit in a body with no failure edge (D578). The fix-it
+    /// declares the edge the body needs: a `-> Result<T, E>` value return
+    /// becomes `-> T fails E`, any other return `T` gains `fails E` with the
+    /// exit's own error type. A `gen {}` block has no edge to declare.
+    pub(super) fn report_no_failure_edge(&mut self, edge: FailureEdge, error: &Ty, span: &Span) {
+        let edge_name = edge.spelling();
+        let code = TypeErrorKind::NoFailureEdge.as_kind_str();
+        let recover = "recover here: `value handle e { ... }` or `match` on the `Result`";
+        if matches!(
+            self.effect_graph.current_body,
+            Some(super::effects::EffectBody::GeneratorBlock(_))
+        ) {
+            let suggestion = match edge {
+                FailureEdge::Try => recover.to_string(),
+                FailureEdge::ReturnError => {
+                    "move the generator into a `gen fn ... -> T fails E`, whose \
+                     `return error` ends it with a failure"
+                        .to_string()
+                }
+            };
+            self.report_error_with_suggestions(
+                TypeErrorKind::NoFailureEdge,
+                span,
+                format!(
+                    "{code}: {edge_name} leaves through a failure edge, and a `gen {{}}` block \
+                     has none"
+                ),
+                vec![suggestion],
+            );
+            return;
+        }
+        let error = self.subst.resolve(error).materialize_literal_defaults();
+        let declared = self
+            .current_return_type
+            .as_ref()
+            .map(|ret| self.subst.resolve(ret));
+        let (success, failure, value_result) = match &declared {
+            Some(ret) if self.in_generator => (
+                ret.as_generator()
+                    .map_or(Ty::Unit, |(yields, _)| yields.clone()),
+                error.clone(),
+                false,
+            ),
+            Some(ret) => match ret.as_result() {
+                Some((success, failure)) => (success.clone(), failure.clone(), true),
+                None => (ret.clone(), error.clone(), false),
+            },
+            None => (Ty::Unit, error.clone(), false),
+        };
+        // A declared error the exit does not carry would not compile under
+        // the suggested edge; the exit's own error does.
+        let keeps_declared_error = self.subst.resolve(&failure) == error;
+        let edge_error = if keeps_declared_error {
+            &failure
+        } else {
+            &error
+        };
+        let clause = fails_clause(&success, edge_error);
+        let message = if value_result {
+            format!(
+                "{code}: {edge_name} leaves through a failure edge, but this body returns \
+                 `{}` as a value",
+                declared
+                    .as_ref()
+                    .map_or_else(String::new, |ret| ret.user_facing().to_string())
+            )
+        } else {
+            format!("{code}: {edge_name} leaves through a failure edge, which this body does not declare")
+        };
+        let mut suggestions = vec![format!(
+            "declare the edge: `{clause}`; the body then produces the success value itself"
+        )];
+        if !keeps_declared_error {
+            suggestions.push(format!(
+                "or keep `{}` and give the exit a `{}`: `{}`",
+                failure.user_facing(),
+                failure.user_facing(),
+                fails_clause(&success, &failure)
+            ));
+        }
+        if edge == FailureEdge::Try {
+            suggestions.push(format!("or {recover}"));
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::NoFailureEdge,
+            span,
+            message,
+            suggestions,
         );
     }
 
@@ -1150,4 +1271,18 @@ fn disambiguate_mismatch_labels(expected: &Ty, actual: &Ty) -> (String, String) 
         qualify(expected, &expected_label),
         qualify(actual, &actual_label),
     )
+}
+
+/// The return clause `-> T fails E` for a success `T` and error `E`, or
+/// `fails E` for a unit success. A function-typed success is parenthesized:
+/// `fails` would otherwise bind to its own return.
+pub(super) fn fails_clause(success: &Ty, error: &Ty) -> String {
+    let error = error.user_facing();
+    match success {
+        Ty::Unit => format!("fails {error}"),
+        Ty::Function { .. } | Ty::Closure { .. } => {
+            format!("-> ({}) fails {error}", success.user_facing())
+        }
+        _ => format!("-> {} fails {error}", success.user_facing()),
+    }
 }

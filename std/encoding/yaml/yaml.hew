@@ -153,25 +153,25 @@ impl ValueMethods for Value {
             .Ok(text)
         }
     }
-    fn get_bool(self) -> Result<bool, AccessError> {
+    fn get_bool(self) -> bool fails AccessError {
         require_kind(self, Kind.Bool)?;
-        .Ok(unsafe {
+        unsafe {
             hew_yaml_get_bool(self) == 1
-        })
+        }
     }
-    fn get_int(self) -> Result<i64, AccessError> {
+    fn get_int(self) -> i64 fails AccessError {
         require_kind(self, Kind.Integer)?;
         if unsafe {
             hew_yaml_int_status(self)
         } == 1 {
-            .Ok(unsafe {
+            unsafe {
                 hew_yaml_get_int(self)
-            })
+            }
         } else {
-            .Err(AccessError.IntegerRange)
+            return error AccessError.IntegerRange;
         }
     }
-    fn get_u64(self) -> Result<u64, AccessError> {
+    fn get_u64(self) -> u64 fails AccessError {
         require_kind(self, Kind.Integer)?;
         if unsafe {
             hew_yaml_int_status(self)
@@ -179,26 +179,26 @@ impl ValueMethods for Value {
             if unsafe {
                 hew_yaml_get_int(self)
             } < 0 {
-                return .Err(AccessError.IntegerRange);
+                return error AccessError.IntegerRange;
             }
         }
-        .Ok(unsafe {
+        unsafe {
             hew_yaml_get_u64(self)
-        })
+        }
     }
-    fn get_float(self) -> Result<f64, AccessError> {
+    fn get_float(self) -> f64 fails AccessError {
         require_kind(self, Kind.Float)?;
-        .Ok(unsafe {
+        unsafe {
             hew_yaml_get_float(self)
-        })
+        }
     }
-    fn get_string(self) -> Result<string, AccessError> {
+    fn get_string(self) -> string fails AccessError {
         require_kind(self, Kind.String)?;
-        .Ok(unsafe {
+        unsafe {
             hew_yaml_get_string(self)
-        })
+        }
     }
-    fn get_field(self, key: string) -> Result<Option<Value>, AccessError> {
+    fn get_field(self, key: string) -> Option<Value> fails AccessError {
         require_kind(self, Kind.Mapping)?;
         let child = unsafe {
             hew_yaml_get_field(self, key)
@@ -206,12 +206,12 @@ impl ValueMethods for Value {
         if unsafe {
             hew_yaml_type(child)
         } < 0 {
-            .Ok(.None)
+            .None
         } else {
-            .Ok(.Some(child))
+            .Some(child)
         }
     }
-    fn mapping_keys(self) -> Result<Vec<string>, AccessError> {
+    fn mapping_keys(self) -> Vec<string> fails AccessError {
         require_kind(self, Kind.Mapping)?;
         let keys = unsafe {
             hew_yaml_object_keys(self)
@@ -221,22 +221,22 @@ impl ValueMethods for Value {
             let key = keys.array_get(index)?.expect("yaml: mapping key exists");
             let kind = key.type_of();
             if kind != Kind.String {
-                return .Err(AccessError.UnsupportedMappingKey(kind));
+                return error AccessError.UnsupportedMappingKey(kind);
             }
             strings.push(key.get_string()?);
         }
-        .Ok(strings)
+        strings
     }
-    fn array_len(self) -> Result<i64, AccessError> {
+    fn array_len(self) -> i64 fails AccessError {
         require_kind(self, Kind.Sequence)?;
-        .Ok(unsafe {
+        unsafe {
             hew_yaml_array_len(self) as i64
-        })
+        }
     }
-    fn array_get(self, index: i64) -> Result<Option<Value>, AccessError> {
+    fn array_get(self, index: i64) -> Option<Value> fails AccessError {
         require_kind(self, Kind.Sequence)?;
         if index < 0 || index > 2147483647 {
-            return .Err(AccessError.InvalidIndex(index));
+            return error AccessError.InvalidIndex(index);
         }
         let child = unsafe {
             hew_yaml_array_get(self, index as i32)
@@ -244,27 +244,25 @@ impl ValueMethods for Value {
         if unsafe {
             hew_yaml_type(child)
         } < 0 {
-            .Ok(.None)
+            .None
         } else {
-            .Ok(.Some(child))
+            .Some(child)
         }
     }
-    fn set(var self, key: string, child: Value) -> Result<(), AccessError> {
+    fn set(var self, key: string, child: Value) fails AccessError {
         require_kind(self, Kind.Mapping)?;
         // Assignment acquires an independent value; insertion transfers that owner.
         let owned_child = child;
         unsafe {
             hew_yaml_object_set(self, key, owned_child)
         };
-        .Ok(())
     }
-    fn push(var self, child: Value) -> Result<(), AccessError> {
+    fn push(var self, child: Value) fails AccessError {
         require_kind(self, Kind.Sequence)?;
         let owned_child = child;
         unsafe {
             hew_yaml_array_push(self, owned_child)
         };
-        .Ok(())
     }
 }
 

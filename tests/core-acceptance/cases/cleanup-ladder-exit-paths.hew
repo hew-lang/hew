@@ -22,7 +22,7 @@ fn label(n: i64) -> string {
     f"key-{n}"
 }
 
-fn exits(store: Store, mode: i64) -> Result<i64, ActorError> {
+fn exits(store: Store, mode: i64) -> i64 fails ActorError {
     let outer = Lease { name: f"outer{mode}" };
     let early = Lease { name: f"early{mode}" };
     if mode == 1 {
@@ -32,15 +32,15 @@ fn exits(store: Store, mode: i64) -> Result<i64, ActorError> {
     {
         let inner = Lease { name: f"inner{mode}" };
         if mode == 2 {
-            return .Ok(-1);
+            return -1;
         }
         let again = store.get(label(got))?;
         if mode == 3 {
             let v: Vec<i64> = Vec.new();
-            return .Ok(v[again]);
+            return v[again];
         }
-    }
-    .Ok(got)
+    };
+    got
 }
 
 fn main() {

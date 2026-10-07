@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n"
+stdout = "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n[Some(2), None]\nSome(9) None\n"
 exit = 0

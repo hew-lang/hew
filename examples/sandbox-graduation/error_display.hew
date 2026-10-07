@@ -39,6 +39,21 @@ enum AppError {
 
 impl Error for AppError {}
 
+// The implied Display keeps the `impl Error` header: its bounds, and a
+// binder whose spelling is a trait's.
+type Labeled<T: Display> {
+    label: T;
+    code: i64;
+}
+
+impl<T: Display> Error for Labeled<T> {}
+
+enum Tagged<Display> {
+    Tag(Display);
+}
+
+impl<Display> Error for Tagged<Display> {}
+
 fn load(key: string) -> i64 fails StoreError {
     if key == "port" {
         return error .Missing(key);
@@ -60,6 +75,9 @@ fn main() fails dyn Error {
     println(f"{AppError.Refused(Refusal.Busy)}");
     let other: dyn Error = Location { file: "lib.hew", line: 4 };
     println(f"{AppError.Other(other)}");
+    println(f"{Labeled { label: "port", code: 2 }}");
+    let tagged: Tagged<i64> = Tagged.Tag(5);
+    println(f"{tagged}");
     println(f"{report("host")?}");
     let port = load("port").context("reading the listen port")?;
     println(f"unreachable {port}");

@@ -2691,10 +2691,10 @@ fn process_child_methods_resolve_as_fielded_resource_methods() {
         r"
         import std.process;
 
-        fn manage(child: process.Child) -> Result<process.ExitStatus, process.ProcessError> {
+        fn manage(child: process.Child) -> process.ExitStatus fails process.ProcessError {
             child.terminate()?;
             child.kill()?;
-            child.wait()
+            child.wait()?
         }
         ",
     );

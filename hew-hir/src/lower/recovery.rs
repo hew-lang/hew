@@ -32,6 +32,28 @@ impl LowerCtx {
         )
     }
 
+    /// A `?` whose enclosing body cannot take its exit. The checker refuses
+    /// every such `?` (`E_NO_FAILURE_EDGE`, or the absence rule), so reaching
+    /// one here breaks its contract.
+    fn postfix_try_boundary(
+        &mut self,
+        span: &std::ops::Range<usize>,
+        reason: &str,
+    ) -> (HirExprKind, ResolvedTy) {
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "`?` expression".to_string(),
+                reason: reason.to_string(),
+            },
+            span.clone(),
+            "the checker admits `?` only where its enclosing body can take the exit",
+        ));
+        (
+            HirExprKind::Unsupported("unsupported `?` expression".into()),
+            ResolvedTy::Unit,
+        )
+    }
+
     /// Carry an error payload across the failure edge at `edge_span` by the
     /// checker-selected conversion into `target`, the enclosing error type.
     pub(super) fn apply_error_conversion(
@@ -490,10 +512,8 @@ impl LowerCtx {
         self.try_register_enum_instantiation_ty(&scrutinee_ty, &inner.1);
 
         let Some(return_ty) = self.current_return_type.clone() else {
-            return self.unsupported_postfix_try(
-                span,
-                "`?` without an enclosing Result/Option return type",
-            );
+            return self
+                .postfix_try_boundary(span, "`?` without an enclosing Result/Option return type");
         };
 
         if let (Some((ok_ty, err_ty)), Some(item_ty)) = (
@@ -519,10 +539,8 @@ impl LowerCtx {
             )
         } else if let Some((ok_ty, err_ty)) = Self::resolved_result_parts(&scrutinee_ty) {
             if Self::resolved_result_parts(&return_ty).is_none() {
-                return self.unsupported_postfix_try(
-                    span,
-                    "`?` in a body whose return type is not Result",
-                );
+                return self
+                    .postfix_try_boundary(span, "`?` in a body whose return type is not Result");
             }
             self.try_register_enum_instantiation_ty(&return_ty, span);
             let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
@@ -545,10 +563,8 @@ impl LowerCtx {
             )
         } else if let Some(some_ty) = Self::resolved_option_inner(&scrutinee_ty) {
             if Self::resolved_option_inner(&return_ty).is_none() {
-                return self.unsupported_postfix_try(
-                    span,
-                    "`?` in a body whose return type is not Option",
-                );
+                return self
+                    .postfix_try_boundary(span, "`?` in a body whose return type is not Option");
             }
             self.try_register_enum_instantiation_ty(&return_ty, span);
             let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
@@ -597,7 +613,7 @@ impl LowerCtx {
         let err_body = match exit {
             TryExit::Return(return_ty) => {
                 let Some((_, target_err_ty)) = Self::resolved_result_parts(&return_ty) else {
-                    return self.unsupported_postfix_try(
+                    return self.postfix_try_boundary(
                         span,
                         "`?` in a body whose return type is not Result",
                     );

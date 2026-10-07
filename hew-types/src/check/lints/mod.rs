@@ -539,7 +539,7 @@ pub(super) fn lint_source(
 /// - [`NodeVisitor::visit_stmt`] / [`NodeVisitor::visit_expr`] fire for every
 ///   node regardless of position, which the position-agnostic lints
 ///   (`len_zero_comparison`, `needless_bool`) use.
-pub(super) trait NodeVisitor {
+pub trait NodeVisitor {
     /// A block, visited before its contents are descended.
     fn visit_block(&mut self, _block: &Block) {}
     /// A statement, visited before its sub-nodes are descended.
@@ -558,7 +558,7 @@ pub(super) fn walk_body<V: NodeVisitor>(body: &Block, visitor: &mut V) {
     walk_block(body, visitor);
 }
 
-pub(super) fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
+pub fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
     visitor.visit_block(block);
     for (stmt, span) in &block.stmts {
         walk_stmt(stmt, span, visitor);
@@ -688,7 +688,7 @@ fn walk_call_args<V: NodeVisitor>(args: &[CallArg], visitor: &mut V) {
     clippy::match_same_arms,
     reason = "exhaustive expression visitor enumerates every Expr shape so a new node forces a decision; per-variant arms are kept even when two walks coincide"
 )]
-pub(super) fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     visitor.visit_expr(expr, span);
     if !visitor.enters_nested_callables()
         && matches!(

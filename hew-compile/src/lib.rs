@@ -139,7 +139,9 @@ impl DocumentSet {
         self.get(path).is_some()
     }
 
-    fn get(&self, path: &Path) -> Option<&str> {
+    /// The recorded content of `path`, under its given or canonical spelling.
+    #[must_use]
+    pub fn get(&self, path: &Path) -> Option<&str> {
         if self.sources.is_empty() {
             return None;
         }

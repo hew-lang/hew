@@ -52,6 +52,8 @@ mod expressions;
 mod generics;
 mod items;
 mod lints;
+/// The one exhaustive AST walk, shared with tools that rewrite source.
+pub use lints::{walk_block, walk_expr, NodeVisitor};
 mod race;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod machine_effects;

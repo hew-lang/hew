@@ -38,6 +38,7 @@ mod help;
 mod host;
 mod link;
 mod machine;
+mod migrate_fails;
 mod migrate_variants;
 mod native_link;
 mod package;
@@ -2302,9 +2303,10 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 ///
 /// The rewrite is syntactic, so each file migrates on its own: nothing is
 /// type-checked, and a deliberately invalid program migrates like any other.
-/// Files at or below an `exclude` path are left out. Every selected file is
-/// migrated in memory first; a refusal, or a file that changed on disk while
-/// it was being migrated, leaves every file unwritten. `check` previews the
+/// Files at or below an `exclude` path are left out, and a file that does
+/// not parse is skipped and reported while the others migrate. Every selected
+/// file is migrated in memory first; a refusal, or a file that changed on disk
+/// while it was being migrated, leaves every file unwritten. `check` previews the
 /// same report without writing. Each file is replaced atomically; an I/O
 /// failure stops the run and names what was and was not written. A second
 /// run changes nothing.
@@ -2321,6 +2323,7 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut excluded = 0usize;
+    let mut skipped = 0usize;
     let mut planned = Vec::new();
     let mut refused = false;
     for file in files {
@@ -2346,12 +2349,14 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         match hew_parser::fmt::migrate_syntax(source) {
             Ok(migrated) => planned.push((file, original, migrated)),
             Err(error) => {
-                refused = true;
+                // A file the migrator cannot read is left as it is; the
+                // others migrate without it.
+                skipped += 1;
                 for site in error.refusals {
                     let (line, column) =
                         crate::diagnostic::offset_to_line_col(source, site.span.start);
                     eprintln!(
-                        "Error: migration refused {}:{line}:{column}: {}",
+                        "Error: migration skipped {}:{line}:{column}: {}",
                         file.display(),
                         site.reason
                     );
@@ -2359,34 +2364,21 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             }
         }
     }
-    // Bare variants respell by the type their context expects, so they wait
-    // for the checker, which reads every file's syntax-migrated text.
     if !refused {
-        let mut texts: Vec<(PathBuf, String)> = planned
-            .iter()
-            .map(|(file, _, migrated)| ((*file).clone(), migrated.clone()))
-            .collect();
-        for refusal in migrate_variants::respell_bare_variants(&mut texts) {
-            refused = true;
-            eprintln!(
-                "Error: migration refused {}:{}:{}: {}",
-                refusal.file.display(),
-                refusal.line,
-                refusal.column,
-                refusal.reason
-            );
-        }
-        for ((_, _, migrated), (_, respelled)) in planned.iter_mut().zip(texts) {
-            *migrated = respelled;
-        }
+        refused = !migrate_by_the_checker(&mut planned);
     }
     let (changed, unchanged): (Vec<_>, Vec<_>) = planned
         .into_iter()
         .partition(|(_, original, migrated)| migrated.as_bytes() != original.as_slice());
     let unchanged = unchanged.len();
     let summary = |verb: &str| {
+        let skipped = if skipped == 0 {
+            String::new()
+        } else {
+            format!(", {skipped} skipped")
+        };
         eprintln!(
-            "migration: {} {verb}, {unchanged} unchanged, {excluded} excluded",
+            "migration: {} {verb}, {unchanged} unchanged, {excluded} excluded{skipped}",
             changed.len()
         );
     };
@@ -2400,11 +2392,153 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             eprintln!("{}: needs migration", file.display());
         }
         summary("to migrate");
-        return Ok(!changed.is_empty());
+        return if skipped == 0 {
+            Ok(!changed.is_empty())
+        } else {
+            Err(())
+        };
     }
     apply_migrations(&changed)?;
     summary("migrated");
+    if skipped > 0 {
+        eprintln!("the skipped files do not parse; fix them and run the migration again");
+        return Err(());
+    }
     Ok(false)
+}
+
+/// The checker-driven passes over every file's syntax-migrated text: bare
+/// variants respell by the type their context expects, then failing
+/// callables move to their failure edge. Returns whether no file refused.
+fn migrate_by_the_checker(planned: &mut [(&PathBuf, Vec<u8>, String)]) -> bool {
+    let mut texts: Vec<(PathBuf, String)> = planned
+        .iter()
+        .map(|(file, _, migrated)| ((*file).clone(), migrated.clone()))
+        .collect();
+    let sources: Vec<(&Path, &[u8])> = planned
+        .iter()
+        .map(|(file, original, _)| (file.as_path(), original.as_slice()))
+        .collect();
+    let mut refused = false;
+    for refusal in migrate_variants::respell_bare_variants(&mut texts) {
+        refused = true;
+        eprintln!(
+            "Error: migration refused {}: {}",
+            refusal_site(
+                &sources,
+                &texts,
+                &refusal.file,
+                refusal.line,
+                refusal.column
+            ),
+            refusal.reason
+        );
+    }
+    // A callable that fails through `?` or `return error` declares its
+    // failure edge; which exits move with it is the checker's call too.
+    if !refused {
+        refused = !convert_failure_edges(&mut texts, &sources);
+    }
+    for ((_, _, migrated), (_, respelled)) in planned.iter_mut().zip(texts) {
+        *migrated = respelled;
+    }
+    !refused
+}
+
+/// Where a position in a file's migrated text sits in the file itself: the
+/// one source line that reads like the migrated line, or the migrated text's
+/// position, labelled as such.
+fn refusal_site(
+    sources: &[(&Path, &[u8])],
+    texts: &[(PathBuf, String)],
+    file: &Path,
+    line: usize,
+    column: usize,
+) -> String {
+    let canonical = |path: &Path| std::fs::canonicalize(path).ok();
+    let wanted_file = canonical(file);
+    let Some(index) = sources.iter().position(|(path, _)| {
+        *path == file || (wanted_file.is_some() && canonical(path) == wanted_file)
+    }) else {
+        return format!("{}:{line}:{column}", file.display());
+    };
+    let (shown, original) = sources[index];
+    let at_migrated = || {
+        format!(
+            "{}:{line}:{column} (in the formatted text)",
+            shown.display()
+        )
+    };
+    let (Ok(original), Some(migrated)) = (
+        std::str::from_utf8(original),
+        texts
+            .get(index)
+            .and_then(|(_, text)| text.lines().nth(line.saturating_sub(1))),
+    ) else {
+        return at_migrated();
+    };
+    let wanted = migrated.trim();
+    let mut matches = original
+        .lines()
+        .enumerate()
+        .filter(|(_, candidate)| !wanted.is_empty() && candidate.trim() == wanted);
+    match (matches.next(), matches.next()) {
+        (Some((number, candidate)), None) => {
+            let indent = |text: &str| text.len() - text.trim_start().len();
+            let column = (column + indent(candidate))
+                .saturating_sub(indent(migrated))
+                .max(1);
+            format!("{}:{}:{column}", shown.display(), number + 1)
+        }
+        _ => at_migrated(),
+    }
+}
+
+/// Move each file's failing callables to their failure edge, reporting
+/// refusals and converted handlers. Returns whether no file refused.
+fn convert_failure_edges(texts: &mut [(PathBuf, String)], sources: &[(&Path, &[u8])]) -> bool {
+    let unconverted = texts.to_vec();
+    let (refusals, handlers) = migrate_fails::convert_failure_edges(texts);
+    for refusal in &refusals {
+        eprintln!(
+            "Error: migration refused {}: {}",
+            refusal_site(
+                sources,
+                &unconverted,
+                &refusal.file,
+                refusal.line,
+                refusal.column
+            ),
+            refusal.message
+        );
+    }
+    for note in handlers {
+        let callers = match &note.callers {
+            None => String::new(),
+            Some(callers) if callers.is_empty() => "; no caller in the migrated files".to_string(),
+            Some(callers) => {
+                let sites: Vec<_> = callers
+                    .iter()
+                    .map(|caller| {
+                        refusal_site(
+                            sources,
+                            &unconverted,
+                            &caller.file,
+                            caller.line,
+                            caller.column,
+                        )
+                    })
+                    .collect();
+                format!("; review its callers at {}", sites.join(", "))
+            }
+        };
+        eprintln!(
+            "note: {}: {}{callers}",
+            refusal_site(sources, &unconverted, &note.file, note.line, note.column),
+            note.message
+        );
+    }
+    refusals.is_empty()
 }
 
 /// Apply a migration plan: nothing is written unless every planned file still

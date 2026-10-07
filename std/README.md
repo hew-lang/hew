@@ -93,10 +93,10 @@ Every shipped module under `std/` should appear here.
 | --------------------------- | ---------------- | ----------------------------------------------------- |
 | [`io`](io.hew)              | `std.io`         | stdin, stdout, and stderr helpers                     |
 | [`scanner`](io/scanner.hew) | `std.io.scanner` | Line and word scanning over strings, stdin, and files |
-| [`fs`](fs.hew)              | `std.fs`         | File system operations                                |
+| [`fs`](fs.hew)              | `std.fs`         | File system operations and atomic writes              |
 | [`path`](path.hew)          | `std.path`       | File path and glob utilities                          |
 | [`os`](os.hew)              | `std.os`         | Operating system interfaces                           |
-| [`process`](process.hew)    | `std.process`    | Process execution                                     |
+| [`process`](process.hew)    | `std.process`    | Commands, child processes and piped stdio             |
 
 ### Collections, iteration, and concurrency
 
@@ -115,20 +115,20 @@ Every shipped module under `std/` should appear here.
 
 ### Encoding and wire formats
 
-| Module                                       | Import                  | Use for                                           |
-| -------------------------------------------- | ----------------------- | ------------------------------------------------- |
-| [`base64`](encoding/base64/base64.hew)       | `std.encoding.base64`   | Base64 encoding and decoding                      |
-| [`binary`](encoding/binary/binary.hew)       | `std.encoding.binary`   | Fixed-width integer encoding in either byte order |
-| [`compress`](encoding/compress/compress.hew) | `std.encoding.compress` | Compression and decompression                     |
-| [`csv`](encoding/csv/csv.hew)                | `std.encoding.csv`      | CSV parsing                                       |
-| [`hex`](encoding/hex/hex.hew)                | `std.encoding.hex`      | Hexadecimal encoding and decoding                 |
-| [`json`](encoding/json/json.hew)             | `std.encoding.json`     | JSON parsing and manipulation                     |
-| [`markdown`](encoding/markdown/markdown.hew) | `std.encoding.markdown` | Markdown to HTML conversion                       |
-| [`msgpack`](encoding/msgpack/msgpack.hew)    | `std.encoding.msgpack`  | MessagePack serialization                         |
-| [`protobuf`](encoding/protobuf/protobuf.hew) | `std.encoding.protobuf` | Protocol Buffers message construction             |
-| [`toml`](encoding/toml/toml.hew)             | `std.encoding.toml`     | TOML parsing and generation                       |
-| [`xml`](encoding/xml/xml.hew)                | `std.encoding.xml`      | XML parsing and manipulation                      |
-| [`yaml`](encoding/yaml/yaml.hew)             | `std.encoding.yaml`     | YAML parsing and generation                       |
+| Module                                       | Import                  | Use for                                   |
+| -------------------------------------------- | ----------------------- | ----------------------------------------- |
+| [`base64`](encoding/base64/base64.hew)       | `std.encoding.base64`   | Base64 encoding and decoding              |
+| [`binary`](encoding/binary/binary.hew)       | `std.encoding.binary`   | Checked fixed-width integers and binary32 |
+| [`compress`](encoding/compress/compress.hew) | `std.encoding.compress` | Compression and decompression             |
+| [`csv`](encoding/csv/csv.hew)                | `std.encoding.csv`      | CSV parsing                               |
+| [`hex`](encoding/hex/hex.hew)                | `std.encoding.hex`      | Hexadecimal encoding and decoding         |
+| [`json`](encoding/json/json.hew)             | `std.encoding.json`     | JSON parsing and manipulation             |
+| [`markdown`](encoding/markdown/markdown.hew) | `std.encoding.markdown` | Markdown to HTML conversion               |
+| [`msgpack`](encoding/msgpack/msgpack.hew)    | `std.encoding.msgpack`  | MessagePack serialization                 |
+| [`protobuf`](encoding/protobuf/protobuf.hew) | `std.encoding.protobuf` | Protocol Buffers message construction     |
+| [`toml`](encoding/toml/toml.hew)             | `std.encoding.toml`     | TOML parsing and generation               |
+| [`xml`](encoding/xml/xml.hew)                | `std.encoding.xml`      | XML parsing and manipulation              |
+| [`yaml`](encoding/yaml/yaml.hew)             | `std.encoding.yaml`     | YAML parsing and generation               |
 
 ### Crypto
 
@@ -138,7 +138,7 @@ Every shipped module under `std/` should appear here.
 | [`encrypt`](crypto/encrypt/encrypt.hew)    | `std.crypto.encrypt`  | Symmetric encryption and decryption               |
 | [`jwt`](crypto/jwt/jwt.hew)                | `std.crypto.jwt`      | JSON Web Token encoding and validation            |
 | [`password`](crypto/password/password.hew) | `std.crypto.password` | Password hashing and verification                 |
-| [`sign`](crypto/sign/sign.hew)             | `std.crypto.sign`     | Ed25519 key generation, signing, and verification |
+| [`sign`](crypto/sign/sign.hew)             | `std.crypto.sign`     | Ed25519 seeds, PKCS#8 keys, signing and verifying |
 
 ### Networking
 
@@ -154,9 +154,9 @@ Every shipped module under `std/` should appear here.
 | [`mime`](net/mime/mime.hew)                           | `std.net.mime`                   | MIME type detection                                                        |
 | [`quic`](net/quic/quic.hew)                           | `std.net.quic`                   | QUIC transport for internode messaging                                     |
 | [`smtp`](net/smtp/smtp.hew)                           | `std.net.smtp`                   | SMTP client for sending email                                              |
-| [`tls`](net/tls/tls.hew)                              | `std.net.tls`                    | TLS client connections                                                     |
+| [`tls`](net/tls/tls.hew)                              | `std.net.tls`                    | TLS client connections with deadlines and trust                            |
 | [`url`](net/url/url.hew)                              | `std.net.url`                    | URL parsing                                                                |
-| [`websocket`](net/websocket/websocket.hew)            | `std.net.websocket`              | WebSocket client and server support                                        |
+| [`websocket`](net/websocket/websocket.hew)            | `std.net.websocket`              | WebSocket text and binary messages, WSS and subprotocols                   |
 
 ### Text, time, and utilities
 

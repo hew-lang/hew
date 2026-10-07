@@ -355,6 +355,8 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
     DeterministicOperation { identity: "hew_smtp_send_once", capability: WasmCapabilityId("smtp") },
     DeterministicOperation { identity: "hew_smtp_send_html_once", capability: WasmCapabilityId("smtp") },
     DeterministicOperation { identity: "hew_ws_connect", capability: WasmCapabilityId("websocket") },
+    DeterministicOperation { identity: "hew_ws_send_text", capability: WasmCapabilityId("websocket") },
+    DeterministicOperation { identity: "hew_ws_send_binary", capability: WasmCapabilityId("websocket") },
     DeterministicOperation { identity: "hew_ws_recv_next", capability: WasmCapabilityId("websocket") },
     DeterministicOperation { identity: "hew_ws_server_new", capability: WasmCapabilityId("websocket") },
     DeterministicOperation { identity: "hew_ws_server_accept", capability: WasmCapabilityId("websocket") },

@@ -352,6 +352,8 @@ id = "websocket"
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_ws_connect",
+  "hew_ws_send_text",
+  "hew_ws_send_binary",
   "hew_ws_recv_next",
   "hew_ws_server_new",
   "hew_ws_server_accept",

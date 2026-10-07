@@ -22,6 +22,8 @@ in your source to access one; do not add it as a registry dependency.
 
 For third-party packages, first use `hew search <QUERY>` and
 `hew info <PACKAGE>` to confirm that the package and version are published.
+Check that the lookup succeeds against the registry: local-cache fallback does
+not confirm publication.
 Then use `hew add <PACKAGE> --version <VERSION>` and `hew install` in your
 project. Packages found in a source repository may not yet be in the registry;
 follow that repository's instructions for using a clone or a local path.

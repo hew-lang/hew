@@ -221,6 +221,13 @@ pub enum HewSubmitStatus {
     /// The message was taken and lost by policy: the sender's own newest-message
     /// discard, or the destination's declared coalescing or `drop_new` fallback.
     Discarded = 4,
+    /// A supervised role whose restart budget is spent took no message; the
+    /// message stays with the caller. Generated role sends answer it before
+    /// reaching the runtime.
+    RoleSpent = 5,
+    /// The runtime is shutting down and refused this root submission; the
+    /// message stays with the caller.
+    ShuttingDown = 6,
 }
 
 /// The sender policy code that discards the newest message on a full mailbox.
@@ -240,6 +247,7 @@ pub(crate) fn submission_status(outcome: crate::mailbox::SendOutcome) -> HewSubm
         SendOutcome::Failed => HewSubmitStatus::Full,
         SendOutcome::Closed => HewSubmitStatus::Closed,
         SendOutcome::Oom => HewSubmitStatus::Oom,
+        SendOutcome::ShuttingDown => HewSubmitStatus::ShuttingDown,
         SendOutcome::DroppedOld => {
             unreachable!("a `drop_old` coalesce fallback enqueues rather than reporting eviction")
         }

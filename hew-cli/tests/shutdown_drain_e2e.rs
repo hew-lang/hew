@@ -434,3 +434,65 @@ fn main() {
         );
     }
 }
+
+/// After SIGTERM starts runtime shutdown, the destination actor is alive but
+/// the runtime refuses new root calls. A bare call reports `NodeNotRunning`,
+/// never `Dead`; the rejecting views report `LocalShutdown` and keep the
+/// request.
+#[test]
+fn signal_shutdown_refuses_root_calls_as_local_shutdown() {
+    require_codegen();
+    let source = r#"
+actor Saver {
+    var n: i64 = 0;
+    receive fn tick() {
+        n = n + 1;
+    }
+}
+
+fn main() {
+    let saver = spawn Saver();
+    saver.tick().expect("a running runtime admits root calls");
+    println("READY");
+    for i in 0..1000 {
+        match saver.tick() {
+            .Ok(_) => sleep(10ms),
+            .Err(error) => {
+                println(f"BARE:{error}");
+                match policy(saver, on_full: .Reject).tick() {
+                    .Err(ActorError.Rejected(failure)) => println(f"REJECT:{failure.reason}"),
+                    _ => println("REJECT:other"),
+                }
+                match mailbox(saver).tick() {
+                    .Err(failure) => println(f"MAILBOX:{failure.reason}"),
+                    .Ok(_) => println("MAILBOX:accepted"),
+                }
+                return;
+            }
+        }
+    }
+}
+"#;
+    for opt_level in [0, 2] {
+        let dir = tempfile::tempdir().expect("create shutdown refusal fixture directory");
+        let binary = compile_fixture(source, dir.path(), opt_level);
+        let fixture = spawn_fixture(&binary);
+        wait_for_line(&fixture.lines, "READY");
+        let pid = i32::try_from(fixture.child.0.id()).expect("child PID fits pid_t");
+        // SAFETY: this live child belongs to the test; SIGTERM invokes its
+        // runtime shutdown handler while main keeps calling the actor.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        let (status, stdout, stderr) = finish_fixture(fixture);
+        assert!(status.success(), "shutdown exited {status}: {stderr}");
+        assert_eq!(
+            stdout,
+            [
+                "READY",
+                "BARE:NodeNotRunning: the local node is not running or is shutting down",
+                "REJECT:LocalShutdown: the local node is shutting down before the send could complete",
+                "MAILBOX:LocalShutdown: the local node is shutting down before the send could complete",
+            ],
+            "O{opt_level} stderr={stderr}"
+        );
+    }
+}

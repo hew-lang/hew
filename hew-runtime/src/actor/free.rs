@@ -2219,7 +2219,9 @@ pub(crate) unsafe fn actor_send_result_internal_reply(
             }
             // DropNew consumed the incoming payload but queued nothing.
             mailbox::SendOutcome::Dropped => HEW_ACTOR_SEND_MESSAGE_LOST,
-            mailbox::SendOutcome::Closed => HewError::ErrActorStopped as i32,
+            mailbox::SendOutcome::Closed | mailbox::SendOutcome::ShuttingDown => {
+                HewError::ErrActorStopped as i32
+            }
             // `Fail`-policy overflow is a genuine, caller-visible failure —
             // never silently dropped.
             mailbox::SendOutcome::Failed => HewError::ErrMailboxFull as i32,

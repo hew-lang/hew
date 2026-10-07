@@ -274,6 +274,13 @@ pub unsafe extern "C" fn hew_actor_call_poll(operation: *mut HewActorCall) -> i3
     unsafe { (*operation).poll() }
 }
 
+/// Whether a ready status hands the unaccepted request back to the caller: a
+/// Reject call refused for a full mailbox or for runtime shutdown. A Wait call
+/// cannot reject, so cleanup releases its request instead.
+fn call_returns_request(reject: bool, status: i32) -> bool {
+    status == AskError::MailboxFull as i32 || (reject && status == AskError::LocalShutdown as i32)
+}
+
 /// Transfer the selected reply, or the original request on a Reject refusal.
 /// No operation keeps either output address. Free the operation after taking.
 ///
@@ -296,7 +303,7 @@ pub unsafe extern "C" fn hew_actor_call_take(
             return status;
         }
         *request = ptr::null_mut();
-        if status == AskError::MailboxFull as i32 {
+        if call_returns_request(operation.reject, status) {
             *request = hew_actor_ask_wait_take_request(operation.admission);
         } else if status == 0 {
             let taken =

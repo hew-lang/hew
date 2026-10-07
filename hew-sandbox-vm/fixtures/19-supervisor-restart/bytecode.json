@@ -3120,7 +3120,7 @@
     "Trapped: the handler faulted before replying",
     "Dead: the destination actor is gone and will not come back",
     "TimedOut: the deadline elapsed before a reply arrived",
-    "NodeNotRunning: the local node is not running",
+    "NodeNotRunning: the local node is not running or is shutting down",
     "RoutingFailed: the destination node or actor could not be routed",
     "EncodeFailed: the request payload could not be encoded",
     "ConnectionDropped: the remote connection closed before the reply arrived",

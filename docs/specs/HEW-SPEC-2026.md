@@ -159,7 +159,8 @@ A completion call chooses its own admission through the other view:
 call on the handle does, with `Result<R, ActorError<E, Req>>`. `.Wait` is
 the bare-handle behaviour and parks the caller while the destination mailbox is
 full; `.Reject` refuses instead, and the call reports
-`ActorError.Rejected(failure)`, with `failure.reason == SendError.Full`.
+`ActorError.Rejected(failure)`, with `failure.reason == SendError.Full`, or
+`SendError.LocalShutdown` once runtime shutdown refuses root calls (§5.9).
 The owned request remains in `failure.message`; `.retry()` consumes it and
 resubmits to the original actor, while `.to(other)` consumes it and resubmits
 to a compatible handler. Both return the handler completion result. The
@@ -5351,6 +5352,21 @@ exactly like one raised mid-run.
 The rule does not depend on program shape. A program that contains a supervisor
 and ALSO spawns an unsupervised actor that crashes exits non-zero — the
 supervisor recovers what it supervises, and nothing else.
+
+### 5.9 Runtime Shutdown (normative)
+
+Runtime shutdown has three phases. *Quiesce* closes admission for new root
+work, listeners and periodic handlers; *drain* lets accepted actor turns,
+including the peer calls they make, finish within a bounded window (5s);
+*terminate* stops supervisors bottom-up and joins the workers. Returning from
+`main` drains without closing root admission, since the root has finished.
+
+Once quiesce closes root admission, the destination actor is still alive, so a
+refused call never reports `Dead`. A bare or `.Wait` completion call reports
+`ActorError.NodeNotRunning`: it holds no request to return. A
+`policy(target, on_full: .Reject)` call reports `ActorError.Rejected` and a
+`mailbox(target)` submission reports its `SendFailure`, both with
+`reason == SendError.LocalShutdown` and the unaccepted request returned.
 
 ---
 

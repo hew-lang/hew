@@ -316,7 +316,10 @@ pub enum ActorError<E, Req> {
     Dead;
     /// The caller's deadline elapsed before a reply arrived.
     TimedOut;
-    /// The local node is not running.
+    /// The local node is not running, or is shutting down and refused this
+    /// call before admitting it. A `policy(target, on_full: .Reject)` call
+    /// refused by shutdown reports `Rejected` with `SendError.LocalShutdown`
+    /// instead and returns its request.
     NodeNotRunning;
     /// The destination node or actor could not be routed.
     RoutingFailed;
@@ -336,7 +339,7 @@ impl<E: Display, Req> Display for ActorError<E, Req> {
             ActorError.Trapped => "Trapped: the handler faulted before replying",
             ActorError.Dead => "Dead: the destination actor is gone and will not come back",
             ActorError.TimedOut => "TimedOut: the deadline elapsed before a reply arrived",
-            ActorError.NodeNotRunning => "NodeNotRunning: the local node is not running",
+            ActorError.NodeNotRunning => "NodeNotRunning: the local node is not running or is shutting down",
             ActorError.RoutingFailed => "RoutingFailed: the destination node or actor could not be routed",
             ActorError.EncodeFailed => "EncodeFailed: the request payload could not be encoded",
             ActorError.ConnectionDropped => "ConnectionDropped: the remote connection closed before the reply arrived",

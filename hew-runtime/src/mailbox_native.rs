@@ -150,6 +150,7 @@ pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32
         }
         super::SendOutcome::Failed => -1,
         super::SendOutcome::Closed => AskError::ActorStopped as i32,
+        super::SendOutcome::ShuttingDown => AskError::LocalShutdown as i32,
         super::SendOutcome::Oom => AskError::SendFailed as i32,
         _ => unreachable!("native admission does not select an overflow policy"),
     }

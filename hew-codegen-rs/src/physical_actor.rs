@@ -2712,8 +2712,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .builder
                     .build_select(
                         spent,
-                        self.ctx.i32_type().const_int(5, false),
-                        self.ctx.i32_type().const_int(2, false),
+                        submit_status(self.ctx, HewSubmitStatus::RoleSpent),
+                        submit_status(self.ctx, HewSubmitStatus::Closed),
                         "submission.role.status",
                     )
                     .llvm_ctx("report why the role took no message")?
@@ -2918,6 +2918,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let dead_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorDead)?;
         let backpressure_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorBackpressure)?;
         let full_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorFull)?;
+        let local_shutdown_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorLocalShutdown)?;
         let accepted = self
             .builder
             .build_int_compare(
@@ -2989,10 +2990,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_int(5, false),
+                submit_status(self.ctx, HewSubmitStatus::RoleSpent),
                 "submission.spent",
             )
             .llvm_ctx("classify a spent supervised role")?;
+        let shutting_down = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                submit_status(self.ctx, HewSubmitStatus::ShuttingDown),
+                "submission.shutting_down",
+            )
+            .llvm_ctx("classify a runtime shutdown refusal")?;
         let reason = self
             .builder
             .build_select(closed, dead_tag, backpressure_tag, "submission.reason")
@@ -3014,7 +3024,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 reason.into_int_value(),
                 "submission.full_reason",
             )
-            .llvm_ctx("classify full rejection")?
+            .llvm_ctx("classify full rejection")?;
+        let reason = self
+            .builder
+            .build_select(
+                shutting_down,
+                local_shutdown_tag,
+                reason.into_int_value(),
+                "submission.shutdown_reason",
+            )
+            .llvm_ctx("classify shutdown rejection")?
             .into_int_value();
         let reason = self.actor_unit_variant(error_ty, reason)?;
         let failure_layout = self.module.target.layout(failure_ty).ok_or_else(|| {

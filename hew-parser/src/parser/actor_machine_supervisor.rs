@@ -71,9 +71,21 @@ impl Parser<'_> {
                 // No attribute is legal on an `init` block.
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
-                self.expect(&Token::LeftParen)?;
-                let params = self.parse_params();
-                self.expect(&Token::RightParen)?;
+                // `init { .. }` is the parameterless form written without its
+                // list. Refuse it with the spelling and keep the block, so the
+                // rest of the actor still parses.
+                let params = if self.peek() == Some(&Token::LeftBrace) {
+                    self.error_with_hint(
+                        "`init` takes a parameter list".to_string(),
+                        "write `init() { .. }`",
+                    );
+                    Vec::new()
+                } else {
+                    self.expect(&Token::LeftParen)?;
+                    let params = self.parse_params();
+                    self.expect(&Token::RightParen)?;
+                    params
+                };
                 let body = self.parse_block()?;
                 init = Some(ActorInit {
                     params,

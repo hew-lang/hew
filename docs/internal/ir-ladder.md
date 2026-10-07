@@ -299,8 +299,8 @@ in.
 | `alloc_place T` | — | `Place` | definite-initialization tracked (rule 4) | a `var` whose address is taken by an extern `&`/`&mut` parameter — **an ordinary function-owned place, the same rule as any other escaping `var`; there is no third memory class** [decision, plan §6] (the only way a local escapes SSA — a `BorrowMut` capture does **not** make the outer `var` a place, §1.3.5; and no such producer exists on `main` today, so P1 delivers the op and rule 4's function-owned clause with no producer to exercise them — `sir-domain-matrix.md` D-NOPLACE, which owns the phase); actor state fields (one place per field, owned by the runtime object, §1.3.6); environment fields of a closure, lambda actor, spawn task or generator (owned by the env allocation); coroutine frame slots; the payload record of a dispatched message (§5.6) |
 | `load.copy %p` | `Place` (initialized) | `Owned` | retain out; place stays initialized; type has `clone ≠ None` | `BindingRef` of an actor state field (a binding the checker resolved to a state field: `HirActorDecl.state_fields`) in value position when the field is not the receiver of a mutating call; `BindingRef` of a captured binding inside a closure/lambda/generator body (env field read); `HirGenCaptureSource::ActorStateField` snapshot at generator construction; read of an extern-addressed `var` |
 | `load.take %p` | `Place` (initialized) | `Owned` | place becomes `Uninit`; a function-owned place is `Uninit` at every exit (taken or `end_lifetime`d); a runtime-owned `CowValue` place must be `Init` again at every exit (unwind and cancel included); a runtime-owned `AffineResource`/`Linear` place may stay `Uninit` — its taken bit records that (§1.3.6, rule 4) | consuming use of an extern-addressed `var`; **a mutating receiver call on a runtime-owned place** (`push` on a state-field `Vec`, a `bytes` mutator on a state field, `VarSelfMethodCall` on a state field): `load.take` → `fork` → call → `store.init` of the result back. This is one sequence for **every** class whose carrier the callee borrows by pointer: `hew_vec_push_owned_move(v: *mut HewVec, …)` (vec.rs:2681) takes the collection by pointer whether the element is a `string` or a `Conn`, so a `Vec<Conn>` state field's `push` takes exactly this path with the `fork` realized as a register move (§1.3 `fork` row). On the unwind and cancel edges of that call the forked value is still live and the edge op is `store.init %p, %forked` — never a fabricated default. Only where the callee **consumes** the receiver — an `AffineResource`/`Linear` `VarSelfMethodCall`, which moves it in and returns `Self` — is there no fork, and the edge then leaves the place `Uninit` with its taken bit set; `hew_drop$State` skips it (§1.3.6). An explicit `close` of a `#[resource]` state field (spec §3.7.8.4 Path 2) is the same `load.take` with no store-back; `GeneratorNext` result take |
-| `store.init %p, %v` | `Place` (uninitialized), `%v : Owned` consumed | — | place becomes initialized | first assignment / declaration; `Assign` to a `let` or `var` state field inside `init {}`; the store-back after a place receiver call; the `ActorInit` producer storing a spawn argument or `HirField.default` value into a state field (§1.3.1) |
-| `store.assign %p, %v` | `Place` (`Init`, or `Uninit`/`Maybe` when it carries a taken bit), `%v : Owned` consumed | — | old value destroyed, then stored — bit-guarded on a place with a taken bit, so re-initializing a closed resource field is this op and not `store.init` (§1.3.6); rule 6a on a `let`-rooted place | `Assign` to a `var` state field outside `init {}` (§1.3.6); `Assign` to a `BorrowMut`-captured binding inside a closure body (the env field, §1.3.5); `Assign` to an extern-addressed `var`; `state.field = v` in a machine transition after the D287 desugar (§1.3.7) |
+| `store.init %p, %v` | `Place` (uninitialized), `%v : Owned` consumed | — | place becomes initialized | first assignment / declaration; `Assign` to a `let` or `var` state field inside `init() {}`; the store-back after a place receiver call; the `ActorInit` producer storing a spawn argument or `HirField.default` value into a state field (§1.3.1) |
+| `store.assign %p, %v` | `Place` (`Init`, or `Uninit`/`Maybe` when it carries a taken bit), `%v : Owned` consumed | — | old value destroyed, then stored — bit-guarded on a place with a taken bit, so re-initializing a closed resource field is this op and not `store.init` (§1.3.6); rule 6a on a `let`-rooted place | `Assign` to a `var` state field outside `init() {}` (§1.3.6); `Assign` to a `BorrowMut`-captured binding inside a closure body (the env field, §1.3.5); `Assign` to an extern-addressed `var`; `state.field = v` in a machine transition after the D287 desugar (§1.3.7) |
 | `end_lifetime %p` | `Place` (initialized) | — | destroys the contents; place uninitialized | scope exit of an extern-addressed `var`; actor stop (`hew_drop$State`); env release (`hew_drop$Env` from the arc `drop_fn`, or the generator env thunk) |
 
 `BitCopy` values have no ownership ops; `View` values are `None`-kind and are
@@ -622,8 +622,8 @@ An actor state field is a `Place` owned by the runtime object
   §3.4.3 forbids only *assignment* (line 636: "Any assignment to a `let`
   field from a `receive fn`, a plain actor method, or a lifecycle hook is
   rejected at check time"). Rule 6a names state-field places explicitly:
-  `store.assign` to a `let` field outside `init {}` → `E_OWN_MUTATE_LET`;
-  `store.init` inside `init {}` and the `load.take → fork → store.init`
+  `store.assign` to a `let` field outside `init() {}` → `E_OWN_MUTATE_LET`;
+  `store.init` inside `init() {}` and the `load.take → fork → store.init`
   sequence are not violations.
 - **Consuming use** of an `AffineResource`/`Linear` field — `VarSelfMethodCall`
   through a trait `var self` receiver (main refuses:
@@ -681,7 +681,7 @@ An actor state field is a `Place` owned by the runtime object
   rather than unwinding into a landingpad, and the `Release`-to-`Store` window
   cannot be observed. Without the rule `var conn:
   Conn` has **no admitted op** for `conn.close(); conn = Conn.open(2)`:
-  `store.assign` would require `Init`, `store.init` is reserved for `init {}`
+  `store.assign` would require `Init`, `store.init` is reserved for `init() {}`
   / a first assignment / the store-back after a place-receiver call, and rule
   4 refuses a store on `Uninit`/`Maybe`. `main` accepts that program and
   **double-closes**: probe `repros/ladder/state_reinit.hew` (`actor Holder { var
@@ -690,7 +690,7 @@ An actor state field is a `Place` owned by the runtime object
   `after`, `close 2` — the explicit close runs and the assignment's implicit
   release runs again over the same value. The bit-guarded store prints `close
   1` once. §11 row 35 (behaviour fix). 6a is unaffected: a `let` field
-  outside `init {}` is still `E_OWN_MUTATE_LET`.
+  outside `init() {}` is still `E_OWN_MUTATE_LET`.
 - **Enum-shaped resource fields carry the bit too.** The sentence
   "`Option<Conn>` and enum fields: `store.assign` — the old value is destroyed
   by glue, no take, no bit" is **deleted**: it contradicted the decision above
@@ -1021,7 +1021,7 @@ owned by the checker first and re-proved by the SIR verifier:
 
 | Family | Wall | SIR rule | code |
 | --- | --- | --- | --- |
-| COW value walls (ownership.md) | assign to a `let` (reassignment, `v.field =`, `v[i] =`, a `let` state field outside `init {}`) | 6a | `E_OWN_MUTATE_LET` |
+| COW value walls (ownership.md) | assign to a `let` (reassignment, `v.field =`, `v[i] =`, a `let` state field outside `init() {}`) | 6a | `E_OWN_MUTATE_LET` |
 | | `clone` a type with `clone == None` (incl. a capture or generator snapshot of such a type) | 6b | `E_OWN_CLONE_UNSUPPORTED` |
 | | send / capture-into-spawn / `receive gen fn` yield of a type whose send fact is false (incl. a `BorrowMut`-capturing closure), **and a `CoerceToDynTrait` into a `dyn … + Send` whose concrete is not `Send`** (§1.1, §11 row 37) | 6c | `E_OWN_SEND_UNSUPPORTED` |
 | move-checker family (spec §3.7.8, §3.7.8.1 item 4, §3.7.8.2) | use of any `Owned` binding after its consuming use — an `AffineResource`/`Linear`/`PersistentShare` rebind (`let h = g`), a `consume` argument, `consume self`, `close`, a spawned-call argument, a `#[resource]`/`LambdaPid` send, a select `TaskAwait` arm, **or an explicit `move` of a `CowValue`** (`actor move \|x\| { v.len() }`, `tests/vertical-slice/reject/cap_move.hew`); a read of an `AffineResource` state field that may have been closed (§1.3.6) | 2, 4 | `E_OWN_USE_AFTER_CONSUME` |
@@ -1205,7 +1205,7 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
    `Spawn { args }` (node.rs:1603) arguments are `Snapshot` operands like a
    send — the new actor's heap is another owner — and they arrive at the
    synthesized `ActorInit` producer (§6.5) as `Consume` header slots: with an
-   `init {}` block they are its parameters (today
+   `init() {}` block they are its parameters (today
    `lower_spawn_actor_init_args`, actor.rs:2685-2715); without one the
    `ActorInit` body is one `store.init` per state field from the argument of
    the same name (today `lower_spawn_actor_state_arg`, actor.rs:2790-2810,
@@ -1219,7 +1219,7 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
    - 6a: `store.assign` (or the mem2reg edge-argument reassignment) whose
      root binding is a non-`mutable` `HirBinding` (node.rs:1237), **or whose
      root is a `let` actor state field (`HirField.is_mutable == false`,
-     node.rs:1178) outside `init {}`** →
+     node.rs:1178) outside `init() {}`** →
      `E_OWN_MUTATE_LET`. `fork` and `load.take → fork → store.init` carry no
      binding-mutability obligation:
      `let v = Vec.new(); v.push(1)` is a COW mutation of the value, not of
@@ -2419,7 +2419,7 @@ same HIR→SIR path and the same verifier. **The producer set is closed**:
 | `LambdaActorBody` | `actor \|x\| { … }` body | env `Borrow` (a `BorrowMut` field is written through `store.assign`; the env is actor-local by 6c); the message taken per §5.6 | P4 |
 | `ActorHandler` | `receive fn` body | payload **`Consume`** (§5.6, one disposition); hidden state-place slot | P4 |
 | `ActorMethod` | plain `fn` in an actor body (`HirActorMethod`) | hidden state-place slot (`Borrow`, exactly as a handler's); declared params per §4.2; callable only from the same actor's handlers, hooks and methods | P4 |
-| `ActorInit` | `init {}` body, or one `store.init` per state field from the spawn argument of that name, plus `HirField.default` initializers | params **`Consume`** (the `Spawn` snapshots, rule 5) | P4 |
+| `ActorInit` | `init() {}` body, or one `store.init` per state field from the spawn argument of that name, plus `HirField.default` initializers | params **`Consume`** (the `Spawn` snapshots, rule 5) | P4 |
 | `LifecycleHook` | `#[on(...)]` body | params `Borrow` (§5.6) | P4 |
 | `StreamProducerPump` | the `receive gen fn` pump (peer-closed check, `GeneratorNext`, `Yield` as `Snapshot` onto the sink, node.rs:1649-1657) | message per §5.6; sink `Borrow` | P4 |
 | `SupervisorBootstrap`, `ChildInit` | supervisor setup; per-child `(config) -> Fresh State` init thunk (§5.7) | config `Borrow`; returns `Fresh` | P4 |
@@ -2745,7 +2745,7 @@ change no program.
 | # | Decision | Losing sentence | Winning sentence / evidence | Kind |
 | --- | --- | --- | --- | --- |
 | 1 | The user-facing surface is three COW walls plus the move-checker family plus definite initialization (§1.6) | ownership.md:189 "There is no fourth wall." | spec §3.7.8.1 item 4 "the move-checker tracks the single live binding"; §3.7.8.2 `MustConsumeAtScopeExit`; probes `tests/core-acceptance/cases/generator-binding-use-after-move.hew`, `repros/ladder/{cond_init,resource_early_close}.hew`, `repros/ladder/fork_unawaited.hew` | wording (codes move from `E_MIR_CHECK` to `E_OWN_*`) |
-| 2 | Wall 6a is assignment to a `let` (reassignment or through a projection; a `let` state field outside `init {}`), not a mutating method call | ownership.md:186 "mutation of a `let` — you mutate a value bound with `let`" (as read to cover `v.push`) | spec §3.4.3 "It controls whether the _binding_ can be reassigned, not whether the underlying data is mutable" and line 636 (assignment to a `let` field is the rejected form); §3.4.6 `ref1.push(1)` under "What IS Allowed"; `repros/ladder/mutate_let.hew` prints `1`; `repros/ladder/let_state_push.hew` prints `1` | wording |
+| 2 | Wall 6a is assignment to a `let` (reassignment or through a projection; a `let` state field outside `init() {}`), not a mutating method call | ownership.md:186 "mutation of a `let` — you mutate a value bound with `let`" (as read to cover `v.push`) | spec §3.4.3 "It controls whether the _binding_ can be reassigned, not whether the underlying data is mutable" and line 636 (assignment to a `let` field is the rejected form); §3.4.6 `ref1.push(1)` under "What IS Allowed"; `repros/ladder/mutate_let.hew` prints `1`; `repros/ladder/let_state_push.hew` prints `1` | wording |
 | 3 | `let y = x` is `copy_value` for `CowValue`/`PersistentShare`, `move` for `AffineResource`/`Linear` — the class being the element-joined class, so `let w = v` with `v: Vec<Conn>` stays a move | spec §3.7.2 "`let owned = data; // move, not copy` / `data is no longer valid`" for a `Vec` | ownership.md value model (calls borrow, values are COW); `main` already copies strings (`repros/ladder/bind_copy.hew` lines 3-5 pass) and moves generators/resources and `Vec<Conn>` (`tests/core-acceptance/cases/resource-vector-binding-use-after-move.hew`) | relaxation for `Vec<CowValue>`/closure rebinds (reject → accept) |
 | 4 | Copy legality is `TypeFacts.clone`, not class; `Rc`/`Weak` clone; a collection's `clone` follows its element | old draft §5.4 "`Generator` … rejected (6b)" read as a class rule; old §1.1 `Vec` row "`CowValue` / `DeepCopy`" regardless of element | spec §3.7.5 "`.clone()` creates another strong owner"; `repros/ladder/rc_clone.hew` prints `2`; `repros/ladder/vec_resource_drop.hew`, `vec_rc_weak.hew` | wording |
 | 5 | An `AffineResource`/`Linear` value — a `#[resource]` record, `Vec<Conn>`, **and `LambdaPid` although it has a `Retain` clone path** — is sent by `Transfer`; the sender's binding is consumed; `Share` of a `LambdaPid` was rejected (§2.1 rule 5) | ownership.md:147 "Sending a **non-sendable** value — a resource-shaped type … is a fail-closed compile error" | spec §3.7.8.1 item 4 "Sends … consume the value"; `repros/ladder/resource_send.hew` prints `sent`, `got 1`, `close 1`; `resource_send2.hew` → `use of moved value`; `tests/vertical-slice/reject/lambda_send_twice.hew` → `use of moved value \`w\`` | wording (matches `main`) |

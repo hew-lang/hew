@@ -56,7 +56,7 @@ fn main() {
 // ── Actor field mutability enforcement ──────────────────────────────────
 //
 // `var` fields are writable everywhere; `let` and bare fields may only be
-// assigned inside `init { }` (the constructor). Handlers, methods, and
+// assigned inside `init() { }` (the constructor). Handlers, methods, and
 // lifecycle hooks reject the write with a field-shaped MutabilityError that
 // names the declaration site and the `var` fix.
 

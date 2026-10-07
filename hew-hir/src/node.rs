@@ -419,7 +419,7 @@ impl HirImplBlock {
 /// Lowered actor declaration.
 ///
 /// Carries the structural shape of an `actor` item — state fields, optional
-/// `init { ... }` block, receive handlers (`receive fn`), regular methods, and
+/// `init() { ... }` block, receive handlers (`receive fn`), regular methods, and
 /// `#[on(start|stop|crash|upgrade)]` lifecycle hooks — together with lowered
 /// bodies, parameter bindings, runtime-configuration metadata lifted from the
 /// parser surface, and checker side-tables (`#[max_heap(N)]` arena cap).
@@ -1008,7 +1008,7 @@ pub struct HirField {
     /// Meaningful for `HirActorDecl::state_fields`, where it carries the
     /// surface `var` (true) vs `let`/bare (false) declaration so downstream
     /// consumers see the same mutability the checker enforced (immutable
-    /// fields are assignable only inside `init { }`). Other constructors
+    /// fields are assignable only inside `init() { }`). Other constructors
     /// pass the context's effective writability: machine state fields are
     /// `true` (written by transition bodies); record, type-decl, and machine
     /// event fields are `false` (writes are governed by the binding root,

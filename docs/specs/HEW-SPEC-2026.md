@@ -1119,7 +1119,33 @@ actor Counter {
 }
 ```
 
-A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init { }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
+A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init(...) { ... }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
+
+**The `init` block.** An actor's constructor is written `init(params) { body }`.
+The parameter list is required, and empty when the constructor takes none;
+`init { .. }` without it is refused with a fix-it to `init() { .. }`.
+
+```hew
+actor Outbox {
+    let capacity: i64;
+    var closed: bool = false;
+
+    init() {
+        if capacity < 1 {
+            closed = true;
+        }
+    }
+
+    receive fn is_closed() -> bool {
+        closed
+    }
+}
+
+fn main() {
+    let outbox = spawn Outbox(capacity: 0);
+    println(outbox.is_closed().expect("outbox replies"));
+}
+```
 
 **Who initializes a field (normative, D447).** Each state field has exactly one initializer, fixed at the declaration. A field with a default is initialized by that default, and `init` may replace it. A field without a default that `init` assigns is deferred to `init`: a `spawn` cannot name it, `init` must assign it on every path before it finishes (including every `return`), `init` may read it or call an actor method only after that assignment, and a branch that assigns it must do so in every arm (a loop body cannot be its first store). Every other field without a default is a required `spawn` argument. An `init` parameter follows the actor-field shadowing rule of the variables section: a parameter with a field's name is rejected, not bound over it. A fault inside `init` releases the deferred fields it has stored and the init arguments; the spawn releases the spawn-supplied fields and the unpublished state, and no handler or hook ever observes partial state.
 
@@ -6506,7 +6532,7 @@ unrecovered and the child's role is spent.
 **Signature rules (normative):**
 
 1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, `exit`, or `down`.
-2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
+2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init(...) { ... }` and ordinary actor methods).
 3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above. A crash hook cannot suspend: it rules on the restart before cleanup, so a hook that sleeps, awaits or calls a suspending function is rejected at compile time.
 4. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 5. A hook is **not** generic and has no `where` clause.
@@ -6530,7 +6556,7 @@ unrecovered and the child's role is spent.
 11. A supervisor shutdown deadline belongs to its child specification (§5.1), not an invented hook argument. Current deadline limitations are listed in §2.1.1.
 
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
-function after any `init { ... }` block. `#[on(stop)]` hooks lower to one
+function after any `init(...) { ... }` block. `#[on(stop)]` hooks lower to one
 resumable stop sequence that terminal cleanup runs on the live state before
 releasing it, so a stop hook may suspend. `#[on(crash)]` lowers to the crash hook
 slot used by supervisor crash routing; its `CrashAction` result selects the

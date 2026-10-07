@@ -1693,7 +1693,7 @@ impl Checker {
 
     /// Bind actor fields as writable regardless of declared mutability.
     ///
-    /// `init { }` is the actor's constructor: it must be able to assign
+    /// `init() { }` is the actor's constructor: it must be able to assign
     /// `let` fields their initial values, so the immutable-field rule does
     /// not apply inside the init body.
     pub(super) fn bind_actor_fields_for_init(&mut self, fields: &[FieldDecl]) {
@@ -1858,14 +1858,14 @@ impl Checker {
     /// Type-check an actor lifecycle hook (`#[on(start)]` or `#[on(stop)]`).
     ///
     /// Required shape (HEW-SPEC-2026 §9.1.2 rules 2-4):
-    /// - no parameters (actor fields are in scope by bare name, same as `init { }`)
+    /// - no parameters (actor fields are in scope by bare name, same as `init() { }`)
     /// - no type parameters
     /// - no `where` clause
     /// - return type `()` (omitted or explicitly unit)
     ///
     /// Hooks bind actor fields as bare names in scope with their declared
     /// mutability — `var` fields can be modified, `let` fields are
-    /// read-only (only `init { }` may assign them).
+    /// read-only (only `init() { }` may assign them).
     /// Diagnostics emitted here cover both signature shape (rejected
     /// statically) and body type-checking (delegated to `check_block`).
     pub(super) fn check_lifecycle_hook(
@@ -1918,7 +1918,7 @@ impl Checker {
 
         // Parameter shape: hooks take no explicit parameters. Hew actor
         // methods bind actor fields as bare names in scope (mirroring
-        // `init { }`); a hook reaches into mutable actor state the same
+        // `init() { }`); a hook reaches into mutable actor state the same
         // way. Reject any parameter list — the user's intent is almost
         // certainly to use a `self`-style receiver, which is not how
         // Hew actor methods work.
@@ -1929,7 +1929,7 @@ impl Checker {
                 format!(
                     "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must take \
                      no parameters; actor fields are in scope by bare name (see \
-                     `init {{ }}` for the same convention)",
+                     `init() {{ }}` for the same convention)",
                     hook.name
                 ),
             ));
@@ -1971,7 +1971,7 @@ impl Checker {
     /// `CrashInfo` and `CrashAction` are provided by `std/failure.hew`
     /// (also pre-bound via `register_builtin_failure_surface` for inline
     /// tests).  Body type-checking binds actor fields as bare names in
-    /// scope, same idiom as `init { }` / `#[on(start)]` / `#[on(stop)]`.
+    /// scope, same idiom as `init() { }` / `#[on(start)]` / `#[on(stop)]`.
     ///
     /// Runtime invocation of this hook is owned by failure-philosophy
     /// slice E3.  This slice validates the signature shape so the

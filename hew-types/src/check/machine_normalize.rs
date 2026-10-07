@@ -36,6 +36,38 @@ pub struct NormalizedProgram {
     /// keyed by the declaring module (`(root)` or its dotted path) and the
     /// machine name, so a refusal can name the transition it concerns.
     pub transitions: HashMap<(String, String), Vec<(String, Span)>>,
+    /// Each implied `Display` impl's span range and the type declaration a
+    /// diagnostic inside it is reported at.
+    pub implied_displays: Vec<(Span, Span)>,
+    /// The expansion context the implied Display impls name `Display` in.
+    pub implied_context: Option<hew_parser::ast::SyntaxContext>,
+}
+
+impl NormalizedProgram {
+    /// `machines` (or the source program, when no machine expanded) with the
+    /// implied Display impls written in.
+    pub(super) fn with_error_displays(
+        machines: Option<&Self>,
+        displays: super::error_display::ErrorDisplays,
+    ) -> Self {
+        Self {
+            program: displays.program,
+            source_spans: machines.map(|m| m.source_spans.clone()).unwrap_or_default(),
+            transitions: machines.map(|m| m.transitions.clone()).unwrap_or_default(),
+            implied_displays: displays.origins,
+            implied_context: Some(displays.context),
+        }
+    }
+
+    /// The source span a diagnostic at `span` in a generated node reports at.
+    pub(super) fn source_span(&self, span: &Span) -> Option<&Span> {
+        self.source_spans.get(span).or_else(|| {
+            self.implied_displays
+                .iter()
+                .find(|(range, _)| range.start <= span.start && span.end <= range.end)
+                .map(|(_, origin)| origin)
+        })
+    }
 }
 
 pub(super) fn normalize(
@@ -137,6 +169,8 @@ pub(super) fn normalize(
         program: normalized,
         source_spans: builder.source_spans,
         transitions: builder.transitions,
+        implied_displays: Vec::new(),
+        implied_context: None,
     })))
 }
 
@@ -145,7 +179,7 @@ pub(super) fn normalize(
 /// compile does not. Spans and item kinds settle it. Structural equality
 /// would recurse into every import's resolved body, and with a shared import
 /// DAG the same bodies are compared once per path that reaches them.
-fn same_item_list(left: &[Spanned<Item>], right: &[Spanned<Item>]) -> bool {
+pub(super) fn same_item_list(left: &[Spanned<Item>], right: &[Spanned<Item>]) -> bool {
     left.len() == right.len()
         && left
             .iter()
@@ -154,6 +188,103 @@ fn same_item_list(left: &[Spanned<Item>], right: &[Spanned<Item>]) -> bool {
                 left_span == right_span
                     && std::mem::discriminant(left_item) == std::mem::discriminant(right_item)
             })
+}
+
+/// Fresh spans for declaration parts copied into a generated declaration: a
+/// span-keyed fact about the copy never lands on the original.
+pub(super) trait FreshSpans {
+    fn fresh_span(&mut self) -> Span;
+
+    /// Give a copy of generic parameters and a where clause fresh spans
+    /// inside the generated declaration, so their bounds name the
+    /// declaration's own binders rather than the copied ones.
+    fn refresh_generics(
+        &mut self,
+        type_params: Option<&mut Vec<hew_parser::ast::TypeParam>>,
+        where_clause: Option<&mut hew_parser::ast::WhereClause>,
+    ) {
+        let bounds = type_params
+            .into_iter()
+            .flatten()
+            .flat_map(|param| param.bounds.iter_mut());
+        let mut predicates = where_clause
+            .into_iter()
+            .flat_map(|clause| clause.predicates.iter_mut());
+        let mut written: Vec<&mut hew_parser::ast::TraitBound> = bounds.collect();
+        for predicate in &mut predicates {
+            self.refresh_type(&mut predicate.ty);
+            written.extend(predicate.bounds.iter_mut());
+        }
+        for bound in written {
+            for (_, span) in &mut bound.path.segments {
+                *span = self.fresh_span();
+            }
+            for arg in bound.type_args.iter_mut().flatten() {
+                self.refresh_type(arg);
+            }
+            for binding in &mut bound.assoc_type_bindings {
+                self.refresh_type(&mut binding.ty);
+            }
+        }
+    }
+
+    /// Give a copied type expression fresh spans throughout.
+    fn refresh_type(&mut self, ty: &mut Spanned<TypeExpr>) {
+        ty.1 = self.fresh_span();
+        match &mut ty.0 {
+            TypeExpr::Named { path, type_args } => {
+                for (_, span) in &mut path.segments {
+                    *span = self.fresh_span();
+                }
+                if let Some(args) = type_args {
+                    for ty in args {
+                        self.refresh_type(ty);
+                    }
+                }
+            }
+            TypeExpr::Tuple(types) => {
+                for ty in types {
+                    self.refresh_type(ty);
+                }
+            }
+            TypeExpr::Option(ty) | TypeExpr::Slice(ty) | TypeExpr::Borrow(ty) => {
+                self.refresh_type(ty);
+            }
+            TypeExpr::Result { ok, err }
+            | TypeExpr::Fallible {
+                success: ok,
+                error: err,
+            } => {
+                self.refresh_type(ok);
+                self.refresh_type(err);
+            }
+            TypeExpr::Array { element, .. }
+            | TypeExpr::Pointer {
+                pointee: element, ..
+            } => self.refresh_type(element),
+            TypeExpr::Function {
+                params,
+                return_type,
+                ..
+            }
+            | TypeExpr::ActorFn {
+                params,
+                return_type,
+            } => {
+                for ty in params {
+                    self.refresh_type(ty);
+                }
+                self.refresh_type(return_type);
+            }
+            TypeExpr::QualifiedAssocPath(_) | TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+        }
+    }
+}
+
+impl FreshSpans for Builder {
+    fn fresh_span(&mut self) -> Span {
+        self.span()
+    }
 }
 
 type ExpansionKey = (Option<PathBuf>, String, Span, usize);
@@ -968,39 +1099,6 @@ impl Builder {
         }
     }
 
-    /// Give a copy of the machine's generic parameters and where clause
-    /// fresh spans inside the generated declaration, so their bounds name the
-    /// declaration's own binders rather than the machine's.
-    fn refresh_generics(
-        &mut self,
-        type_params: Option<&mut Vec<hew_parser::ast::TypeParam>>,
-        where_clause: Option<&mut hew_parser::ast::WhereClause>,
-    ) {
-        let bounds = type_params
-            .into_iter()
-            .flatten()
-            .flat_map(|param| param.bounds.iter_mut());
-        let mut predicates = where_clause
-            .into_iter()
-            .flat_map(|clause| clause.predicates.iter_mut());
-        let mut written: Vec<&mut hew_parser::ast::TraitBound> = bounds.collect();
-        for predicate in &mut predicates {
-            self.refresh_type(&mut predicate.ty);
-            written.extend(predicate.bounds.iter_mut());
-        }
-        for bound in written {
-            for (_, span) in &mut bound.path.segments {
-                *span = self.span();
-            }
-            for arg in bound.type_args.iter_mut().flatten() {
-                self.refresh_type(arg);
-            }
-            for binding in &mut bound.assoc_type_bindings {
-                self.refresh_type(&mut binding.ty);
-            }
-        }
-    }
-
     fn refresh_type_decl(&mut self, decl: &mut TypeDecl) -> Result<(), TypeError> {
         for item in &mut decl.body {
             match item {
@@ -1029,57 +1127,6 @@ impl Builder {
             }
         }
         Ok(())
-    }
-
-    fn refresh_type(&mut self, ty: &mut Spanned<TypeExpr>) {
-        ty.1 = self.span();
-        match &mut ty.0 {
-            TypeExpr::Named { path, type_args } => {
-                for (_, span) in &mut path.segments {
-                    *span = self.span();
-                }
-                if let Some(args) = type_args {
-                    for ty in args {
-                        self.refresh_type(ty);
-                    }
-                }
-            }
-            TypeExpr::Tuple(types) => {
-                for ty in types {
-                    self.refresh_type(ty);
-                }
-            }
-            TypeExpr::Option(ty) | TypeExpr::Slice(ty) | TypeExpr::Borrow(ty) => {
-                self.refresh_type(ty);
-            }
-            TypeExpr::Result { ok, err }
-            | TypeExpr::Fallible {
-                success: ok,
-                error: err,
-            } => {
-                self.refresh_type(ok);
-                self.refresh_type(err);
-            }
-            TypeExpr::Array { element, .. }
-            | TypeExpr::Pointer {
-                pointee: element, ..
-            } => self.refresh_type(element),
-            TypeExpr::Function {
-                params,
-                return_type,
-                ..
-            }
-            | TypeExpr::ActorFn {
-                params,
-                return_type,
-            } => {
-                for ty in params {
-                    self.refresh_type(ty);
-                }
-                self.refresh_type(return_type);
-            }
-            TypeExpr::QualifiedAssocPath(_) | TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
-        }
     }
 
     /// `State { ..base, field: value }` reads the fields the literal does not
@@ -1798,7 +1845,7 @@ fn item_sources(
 
 /// Import inventories are projections of the normalized graph, never a second
 /// normalization pass with different expression or method identities.
-fn project_normalized_imports(program: &mut Program) {
+pub(super) fn project_normalized_imports(program: &mut Program) {
     let Some(mut graph) = program.module_graph.take() else {
         return;
     };

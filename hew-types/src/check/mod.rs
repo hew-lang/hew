@@ -46,6 +46,7 @@ pub use self::dispatch::{
 };
 mod dyn_layout;
 pub mod effects;
+mod error_display;
 mod exhaustiveness;
 mod expressions;
 mod generics;
@@ -2498,17 +2499,36 @@ impl Checker {
         } else {
             self.has_checked_program = true;
         }
-        let normalized_program = match machine_normalize::normalize(program) {
-            Ok(normalized) => normalized,
-            Err(errors) => {
-                self.errors.extend(errors);
-                None
+        let (normalized_program, normalization_errors) = match machine_normalize::normalize(program)
+        {
+            Ok(normalized) => (normalized, Vec::new()),
+            Err(errors) => (None, errors),
+        };
+        self.errors.extend(normalization_errors.iter().cloned());
+        let checked = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
+        self.prepare_program(checked, false);
+        // Every impl is admitted: an `impl Error` no `Display` impl overlaps
+        // gets its implied one, and the program is prepared again with it.
+        let normalized_program = match self.synthesize_error_displays(checked) {
+            Some(displays) => {
+                let normalized =
+                    std::sync::Arc::new(machine_normalize::NormalizedProgram::with_error_displays(
+                        normalized_program.as_deref(),
+                        displays,
+                    ));
+                self.reset_for_program();
+                self.errors.extend(normalization_errors);
+                self.implied_display_context = normalized.implied_context;
+                self.prepare_program(&normalized.program, false);
+                Some(normalized)
             }
+            None => normalized_program,
         };
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
-        self.prepare_program(program, false);
         self.check_dependency_bodies(program);
         self.check_root_bodies(program);
         self.finish_program(program, normalized_program.as_ref())
@@ -2806,6 +2826,7 @@ impl Checker {
             lint_levels: self.lint_levels.clone(),
             lint_sources: self.lint_sources.clone(),
             import_type_name_aliases: self.import_type_name_aliases.clone(),
+            implied_display_context: self.implied_display_context,
         }
     }
 
@@ -2885,6 +2906,12 @@ impl Checker {
         self.capture_protected_prelude_bindings();
         self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
+        // Implied Display impls name `Display` in the expansion context the
+        // first preparation minted; the second mints the same row first.
+        if let Some(context) = self.implied_display_context {
+            let minted = self.mint_implied_display_context();
+            debug_assert_eq!(minted, Some(context), "the re-check mints the same context");
+        }
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so
         // later trait/source identity normalization can relate prelude traits
@@ -3809,9 +3836,9 @@ impl Checker {
                 .errors
                 .extend(machine_effects::validate(&output, &resource_closes));
         }
-        if let Some(normalized) = &normalized_program {
+        if let Some(normalized) = normalized_program {
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
-                if let Some(source) = normalized.source_spans.get(&diagnostic.span) {
+                if let Some(source) = normalized.source_span(&diagnostic.span) {
                     diagnostic.span = source.clone();
                 }
             }

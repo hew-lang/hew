@@ -1,0 +1,15 @@
+// `expect` needs its error to render; `impl Error` alone supplies that.
+enum ConfigError {
+    Missing(string);
+}
+
+impl Error for ConfigError {}
+
+fn load(key: string) -> i64 fails ConfigError {
+    return error .Missing(key);
+}
+
+fn main() {
+    let port = load("port").expect("config must load");
+    println(f"unreachable {port}");
+}

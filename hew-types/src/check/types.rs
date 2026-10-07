@@ -3512,6 +3512,9 @@ pub struct Checker {
     /// failure exit rather than declared.
     pub(super) failure_edge_inferred: bool,
     pub(super) in_generator: bool,
+    /// The expansion context the implied Display impls of a re-prepared
+    /// program name `Display` in; `None` on a program without them.
+    pub(super) implied_display_context: Option<hew_parser::ast::SyntaxContext>,
     /// Set to `true` for the duration of synthesizing the inner expression of
     /// `Expr::Await(inner)`.  Enables `check_named_method_fallback` to
     /// distinguish an actor ask under `await` (valid) from an actor ask without
@@ -4427,6 +4430,7 @@ impl Checker {
             current_failure_edge: None,
             failure_edge_inferred: false,
             in_generator: false,
+            implied_display_context: None,
             suspension_operands: HashSet::new(),
             prepared_select_tasks: Vec::new(),
             loop_depth: 0,

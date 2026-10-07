@@ -1,0 +1,20 @@
+// An implied Display is written into the error type's module; the modules a
+// program imports keep their own declarations, receiver methods included.
+import std.string;
+
+enum Problem {
+    Bad(string);
+}
+
+impl Error for Problem {}
+
+fn check(text: string) -> string fails Problem {
+    if text.is_empty() {
+        return error .Bad("empty");
+    }
+    string.trim(text)
+}
+
+fn main() {
+    println(f"{check("  ok  "):?} {check(""):?} {"abc".byte_len()}");
+}

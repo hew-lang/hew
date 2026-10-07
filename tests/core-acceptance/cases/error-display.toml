@@ -1,0 +1,11 @@
+[[case]]
+id = "error-display"
+intent = "`impl Error for X {}` supplies X's Display: the variant name, then its payloads, each through its own Display; a hand-written Display wins, and the text reaches `f\"{e}\"`, `dyn Error`, `.context` and a failing `main`."
+source = "../../examples/sandbox-graduation/error_display.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Missing: port\nPair: retries, 3\nOutOfRange: name: port, value: 70000\nClosed\nLocation: file: app.hew, line: 12\nStore: Closed\nRefused: the store is busy\nOther: Location: file: lib.hew, line: 4\n8080\n"
+stderr = "error: reading the listen port: Missing: port\n"
+exit = 1

@@ -779,3 +779,26 @@ fn actor_stop_is_distinct_from_a_stop_receive_handler() {
         );
     }
 }
+
+#[test]
+fn missing_associated_function_on_a_type_names_the_function() {
+    let output = check_source(
+        r"
+        type Point { x: i64; }
+        fn main() {
+            let _p = Point.no_such_fn(3);
+            let _b = bytes.no_such_fn(3);
+            let _s = string.no_such_fn(3);
+        }
+        ",
+    );
+    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "no associated function `no_such_fn` on `Point`",
+            "no associated function `no_such_fn` on `bytes`",
+            "no associated function `no_such_fn` on `string`",
+        ]
+    );
+}

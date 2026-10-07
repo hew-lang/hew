@@ -60,8 +60,8 @@ fn enum_constructor_mistakes_are_structured_user_errors() {
         ),
         (
             "Shape.Record(1, 2)",
-            TypeErrorKind::UndefinedFunction,
-            "Shape.Record",
+            TypeErrorKind::PathKindMismatch,
+            "`Shape.Record { left: .., right: .. }`",
         ),
     ] {
         let source = format!("enum Shape {{ Pair(i64, i64); Record {{ left: i64; right: i64; }} Unit; }}\nfn main() {{ let value = {expression}; }}");

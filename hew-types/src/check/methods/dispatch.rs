@@ -246,7 +246,7 @@ impl Checker {
                     TypeErrorKind::UndefinedFunction,
                     span,
                     format!(
-                        "undefined static function `{}.{method}`",
+                        "no associated function `{method}` on `{}`",
                         head.canonical_type
                     ),
                 );
@@ -509,6 +509,20 @@ impl Checker {
                     self.record_direct_call_target(span, target);
                 }
                 return sig.return_type;
+            }
+            // A primitive type name (`bytes.from(v)`) is a type head with no
+            // such associated function, not a value receiver.
+            if !receiver_is_binding && crate::ty::is_reserved_type_name(name.name.as_str()) {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedFunction,
+                    span,
+                    format!("no associated function `{method}` on `{name}`"),
+                );
+                return Ty::Error;
             }
         }
 

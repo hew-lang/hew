@@ -20,8 +20,8 @@ fn valid(text: string, expected: f64) {
 fn invalid(text: string) {
     match string.to_float(text) {
         .Ok(_) => panic("invalid float accepted"),
-        .Err(message) => {
-            if message != "string.to_float: invalid float literal" { panic("wrong float error"); }
+        .Err(error) => {
+            if f"{error}" != f"Invalid: {text}" { panic("wrong float error"); }
         }
     }
 }

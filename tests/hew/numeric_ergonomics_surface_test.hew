@@ -23,16 +23,16 @@ fn test_password_hash_custom_accepts_int_cost() {
     let cost: i64 = 2;
     let hash = match password.hash_custom("numeric-ergonomics", cost) {
         .Ok(h) => h,
-        .Err(message) => panic(message),
+        .Err(message) => panic(f"{message}"),
     };
     let matches = match password.verify("numeric-ergonomics", hash.clone()) {
         .Ok(v) => v,
-        .Err(message) => panic(message),
+        .Err(message) => panic(f"{message}"),
     };
     assert(matches);
     let mismatches = match password.verify("numeric-ergonomics-miss", hash) {
         .Ok(v) => v,
-        .Err(message) => panic(message),
+        .Err(message) => panic(f"{message}"),
     };
     assert(!mismatches);
 }

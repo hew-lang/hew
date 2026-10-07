@@ -11,7 +11,7 @@
 //! fn main() {
 //!     match csv.parse("name,age\nAlice,30\nBob,25") {
 //!         .Ok(table) => println(table.get_by_name(0, "name")), // "Alice"
-//!         .Err(error) => println(error),
+//!         .Err(error) => println(f"{error}"),
 //!     }
 //! }
 //! ```
@@ -80,34 +80,44 @@ impl TableMethods for Table {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// CSV that is not well formed, or a file that could not be read.
+pub enum CsvError {
+    /// A `"` inside a field that did not open with one.
+    UnescapedQuote;
+    /// Text after a quoted field's closing `"`.
+    TextAfterQuote;
+    /// The input ended inside a quoted field.
+    UnterminatedQuote;
+    /// The file could not be read.
+    Io(fs.IoError);
+}
+
+impl Error for CsvError {}
+
 /// Parse CSV data from a string (first row is treated as headers).
 ///
-/// Returns `Err(string)` if the input is not well-formed CSV. A malformed
+/// Fails with a `CsvError` if the input is not well-formed CSV. A malformed
 /// quote state is a failure, not a repairable shape: an unterminated quoted
 /// field otherwise parses as a complete table, which is exactly what a
 /// truncated file must not look like.
-pub fn parse(data: string) -> Result<Table, string> {
-    let parsed = parse_impl(data, true);
-    parsed
+pub fn parse(data: string) -> Table fails CsvError {
+    parse_impl(data, true)?
 }
 
 /// Parse CSV data from a string without treating the first row as headers.
 ///
-/// Returns `Err(string)` if the input is not well-formed CSV.
-pub fn parse_no_headers(data: string) -> Result<Table, string> {
-    let parsed = parse_impl(data, false);
-    parsed
+/// Fails with a `CsvError` if the input is not well-formed CSV.
+pub fn parse_no_headers(data: string) -> Table fails CsvError {
+    parse_impl(data, false)?
 }
 
 /// Parse CSV data from a file path (first row is treated as headers).
 ///
-/// Returns `Err(string)` if the file cannot be read or the input is not
-/// well-formed CSV.
-pub fn parse_file(path: string) -> Result<Table, string> {
-    match fs.read(path) {
-        .Ok(content) => parse_impl(content, true),
-        .Err(reason) => .Err(to_string(reason)),
-    }
+/// Fails with `CsvError.Io` if the file cannot be read, or another
+/// `CsvError` if the input is not well-formed CSV.
+pub fn parse_file(path: string) -> Table fails CsvError {
+    let content = fs.read(path)?;
+    parse_impl(content, true)?
 }
 // ── Internal parsing ──────────────────────────────────────────────────
 /// Parse CSV data with optional header row handling.
@@ -123,12 +133,12 @@ pub fn parse_file(path: string) -> Result<Table, string> {
 /// peeking at the character after '\r' inside the loop — both characters are
 /// consumed before advancing to the next field. Inside a quoted field
 /// (state 2), '\r\n' is preserved verbatim in the field value per RFC 4180 §2.6.
-fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
+fn parse_impl(data: string, has_headers: bool) -> Table fails CsvError {
     var headers: Vec<string> = Vec.new();
     var rows: Vec<Vec<string>> = Vec.new();
     let ilen = data.len();
     if ilen == 0 {
-        return .Ok(Table { hdrs: headers, data: rows });
+        return Table { hdrs: headers, data: rows };
     }
     // Current row accumulator and field accumulator.
     var cur_row: Vec<string> = Vec.new();
@@ -162,7 +172,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
         } else if ch == "\"" && state == 1 {
             // A quote may only open a field. Inside an unquoted field it is an
             // unescaped delimiter, not data (RFC 4180 §2.5).
-            return .Err("csv: unescaped quote inside an unquoted field");
+            return error CsvError.UnescapedQuote;
         } else if ch == "," && (state == 0 || state == 1 || state == 3) {
             // Field separator — emit current field, reset for next
             cur_row.push(cur_field);
@@ -213,7 +223,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
             // After a closing quote only ',' or a row terminator may follow
             // (RFC 4180 §2.5). Skipping the character would silently discard
             // input and hand back a table that does not describe the source.
-            return .Err("csv: unexpected text after a closing quote");
+            return error CsvError.TextAfterQuote;
         } else {
             // Regular character in Outside or InUnquoted state
             cur_field = cur_field + ch;
@@ -224,7 +234,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
     if state == 2 {
         // The input ended inside a quoted field. Flushing it would turn a
         // truncated document into a complete-looking table.
-        return .Err("csv: unterminated quoted field");
+        return error CsvError.UnterminatedQuote;
     }
     // EOF — flush any pending field/row (handles inputs without trailing newline).
     // A completely empty trailing line (state==0, cur_row empty, cur_field=="")
@@ -248,7 +258,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
             headers.push(f"col{i}");
         }
     }
-    .Ok(Table { hdrs: headers, data: rows })
+    Table { hdrs: headers, data: rows }
 }
 
 /// Find the column index for a header name. Returns -1 if not found.

@@ -9,53 +9,53 @@ fn assert_string_vec_eq(actual: Vec<string>, expected: Vec<string>) {
     }
 }
 
-fn assert_int_result_eq(actual: Result<i64, string>, expected: i64) {
+fn assert_int_result_eq(actual: Result<i64, string.NumberError>, expected: i64) {
     match actual {
         .Ok(value) => assert(value == expected),
-        .Err(message) => {
-            panic(message);
+        .Err(error) => {
+            panic(f"{error}");
             assert(0 == expected);
         }
     }
 }
 
-fn assert_int_result_string_eq(actual: Result<i64, string>, expected: string) {
+fn assert_int_result_string_eq(actual: Result<i64, string.NumberError>, expected: string) {
     match actual {
         .Ok(value) => assert(string.from_int(value) == expected),
-        .Err(message) => {
-            panic(message);
+        .Err(error) => {
+            panic(f"{error}");
             assert("" == expected);
         }
     }
 }
 
-fn assert_int_result_err(actual: Result<i64, string>, expected: string) {
+fn assert_int_result_err(actual: Result<i64, string.NumberError>, expected: string) {
     match actual {
         .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
             assert(value == 0);
         }
-        .Err(message) => assert(message == expected),
+        .Err(error) => assert(f"{error}" == expected),
     }
 }
 
-fn assert_float_result_eq(actual: Result<f64, string>, expected: f64) {
+fn assert_float_result_eq(actual: Result<f64, string.NumberError>, expected: f64) {
     match actual {
         .Ok(value) => assert(value == expected),
-        .Err(message) => {
-            panic(message);
+        .Err(error) => {
+            panic(f"{error}");
             assert(expected == 0.0);
         }
     }
 }
 
-fn assert_float_result_err(actual: Result<f64, string>, expected: string) {
+fn assert_float_result_err(actual: Result<f64, string.NumberError>, expected: string) {
     match actual {
         .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
             assert(value == 0.0);
         }
-        .Err(message) => assert(message == expected),
+        .Err(error) => assert(f"{error}" == expected),
     }
 }
 
@@ -119,14 +119,14 @@ fn test_to_int_accepts_i64_bounds() {
 
 #[test]
 fn test_to_int_rejects_overflow() {
-    assert_int_result_err(string.to_int("9223372036854775808"), "string.to_int: integer out of range");
-    assert_int_result_err(string.to_int("-9223372036854775809"), "string.to_int: integer out of range");
+    assert_int_result_err(string.to_int("9223372036854775808"), "OutOfRange: 9223372036854775808");
+    assert_int_result_err(string.to_int("-9223372036854775809"), "OutOfRange: -9223372036854775809");
 }
 
 #[test]
 fn test_to_int_rejects_sign_only_and_partial_parse_inputs() {
-    assert_int_result_err(string.to_int("-"), "string.to_int: invalid integer literal");
-    assert_int_result_err(string.to_int("12x"), "string.to_int: invalid integer literal");
+    assert_int_result_err(string.to_int("-"), "Invalid: -");
+    assert_int_result_err(string.to_int("12x"), "Invalid: 12x");
 }
 
 #[test]
@@ -145,8 +145,8 @@ fn test_to_float_accepts_leading_and_trailing_decimal_forms() {
 
 #[test]
 fn test_to_float_returns_error_for_invalid_literals() {
-    assert_float_result_err(string.to_float("4.5x"), "string.to_float: invalid float literal");
-    assert_float_result_err(string.to_float("+"), "string.to_float: invalid float literal");
+    assert_float_result_err(string.to_float("4.5x"), "Invalid: 4.5x");
+    assert_float_result_err(string.to_float("+"), "Invalid: +");
 }
 
 #[test]
@@ -166,9 +166,9 @@ fn test_try_to_float_round_trips_from_float_output() {
 
 #[test]
 fn test_to_float_rejects_invalid_literals() {
-    assert_float_result_err(string.to_float("1.2.3"), "string.to_float: invalid float literal");
-    assert_float_result_err(string.to_float("9e2ms"), "string.to_float: invalid float literal");
-    assert_float_result_err(string.to_float("-"), "string.to_float: invalid float literal");
+    assert_float_result_err(string.to_float("1.2.3"), "Invalid: 1.2.3");
+    assert_float_result_err(string.to_float("9e2ms"), "Invalid: 9e2ms");
+    assert_float_result_err(string.to_float("-"), "Invalid: -");
 }
 
 #[test]

@@ -9,6 +9,17 @@ fn assert_bytes_eq(actual: bytes, expected: bytes) {
     }
 }
 
+fn decode_error(text: string) -> string {
+    match hex.decode(text) {
+        .Ok(_) => "decoded",
+        .Err(e) => f"{e}",
+    }
+}
+
+fn must_decode(text: string) -> bytes {
+    hex.decode(text).expect("valid hex")
+}
+
 // ── Happy-path ────────────────────────────────────────────────────────
 #[test]
 fn test_encode_known_value() {
@@ -29,7 +40,7 @@ fn test_encode_upper_known_value() {
 
 #[test]
 fn test_decode_known_value() {
-    let result = hex.decode("dead");
+    let result = must_decode("dead");
     var expected: bytes = bytes.new();
     expected.push(222);
     expected.push(173);
@@ -44,7 +55,7 @@ fn test_round_trip_nonempty() {
     original.push(127);
     original.push(255);
     let encoded = hex.encode(original);
-    let decoded = hex.decode(encoded);
+    let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, original);
 }
 
@@ -52,22 +63,20 @@ fn test_round_trip_nonempty() {
 fn test_round_trip_empty() {
     let original: bytes = bytes.new();
     let encoded = hex.encode(original);
-    let decoded = hex.decode(encoded);
+    let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, original);
 }
 
 // ── Error / boundary ─────────────────────────────────────────────────
 #[test]
-fn test_decode_invalid_chars_returns_empty() {
-    let result = hex.decode("zzzz");
-    assert(result.len() == 0);
+fn test_decode_invalid_chars_fails() {
+    assert(decode_error("zzzz") == "InvalidDigit: index: 0, text: z");
 }
 
 #[test]
-fn test_decode_odd_length_returns_empty() {
-    // Odd number of hex digits is not valid
-    let result = hex.decode("abc");
-    assert(result.len() == 0);
+fn test_decode_odd_length_fails() {
+    // An odd number of hex digits leaves the last byte incomplete.
+    assert(decode_error("abc") == "OddLength: 3");
 }
 
 // ── Boundary bytes ────────────────────────────────────────────────────
@@ -99,16 +108,16 @@ fn test_encode_upper_single_byte_0xff() {
 #[test]
 fn test_decode_uppercase_string() {
     // decode("DEAD") and decode("dead") must produce the same bytes
-    let lower = hex.decode("dead");
-    let upper = hex.decode("DEAD");
+    let lower = must_decode("dead");
+    let upper = must_decode("DEAD");
     assert_bytes_eq(lower, upper);
 }
 
 #[test]
 fn test_decode_mixed_case_matches_lowercase() {
     // hex decode is case-insensitive across both nibble positions
-    let lower = hex.decode("deadbeef");
-    let mixed = hex.decode("DeAdBeEf");
+    let lower = must_decode("deadbeef");
+    let mixed = must_decode("DeAdBeEf");
     assert_bytes_eq(lower, mixed);
 }
 
@@ -123,24 +132,20 @@ fn test_encode_upper_round_trip_via_decode() {
     data.push(239);
     let upper_str = hex.encode_upper(data);
     assert(upper_str == "DEADBEEF");
-    let decoded = hex.decode(upper_str);
+    let decoded = must_decode(upper_str);
     assert_bytes_eq(decoded, data);
 }
 
 // ── Invalid character positions ───────────────────────────────────────
 #[test]
-fn test_decode_invalid_char_at_position_0_returns_empty() {
-    // First nibble is not a hex digit → empty bytes
-    let result = hex.decode("zead");
-    assert(result.len() == 0);
+fn test_decode_invalid_char_at_position_0_fails() {
+    assert(decode_error("zead") == "InvalidDigit: index: 0, text: z");
 }
 
 #[test]
-fn test_decode_invalid_char_at_last_nibble_returns_empty() {
-    // Last nibble 'G' is not a hex digit → empty bytes
-    // "deaG": 'd','e' valid; 'a' valid; 'G' invalid
-    let result = hex.decode("deaG");
-    assert(result.len() == 0);
+fn test_decode_invalid_char_at_last_nibble_fails() {
+    // "deaG": the fourth digit is not a hex digit.
+    assert(decode_error("deaG") == "InvalidDigit: index: 3, text: G");
 }
 
 // ── Multi-byte property round-trip ────────────────────────────────────
@@ -153,7 +158,7 @@ fn test_round_trip_multi_byte_64() {
         buf.push((i * 31 % 256) as u8);
     }
     let encoded = hex.encode(buf);
-    let decoded = hex.decode(encoded);
+    let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, buf);
 }
 
@@ -169,6 +174,6 @@ fn test_round_trip_all_256_byte_values() {
     let encoded = hex.encode(buf);
     // Encoded string must be exactly 512 chars (2 hex digits per byte).
     assert(encoded.len() == 512);
-    let decoded = hex.decode(encoded);
+    let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, buf);
 }

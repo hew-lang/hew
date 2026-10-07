@@ -123,7 +123,8 @@ fn garbage() -> bytes {
 fn test_gzip_decompress_reports_a_malformed_stream_as_a_failure() {
     match compress.gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(out) => panic(f"expected a malformed gzip stream to fail, got {out.len()} bytes"),
-        .Err(reason) => assert(reason.len() > 0),
+        .Err(.Decompress(reason)) => assert(reason.len() > 0),
+        .Err(other) => panic(f"expected a decompression failure, got {other}"),
     }
 }
 
@@ -131,7 +132,8 @@ fn test_gzip_decompress_reports_a_malformed_stream_as_a_failure() {
 fn test_zlib_decompress_reports_a_malformed_stream_as_a_failure() {
     match compress.zlib_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(out) => panic(f"expected a malformed zlib stream to fail, got {out.len()} bytes"),
-        .Err(reason) => assert(reason.len() > 0),
+        .Err(.Decompress(reason)) => assert(reason.len() > 0),
+        .Err(other) => panic(f"expected a decompression failure, got {other}"),
     }
 }
 
@@ -172,7 +174,7 @@ fn test_decompress_rejects_a_negative_output_limit() {
     };
     match compress.gzip_decompress(compressed, -1) {
         .Ok(out) => panic(f"expected a negative limit to be rejected, got {out.len()} bytes"),
-        .Err(reason) => assert(reason == "max output length must be non-negative, got -1"),
+        .Err(error) => assert(error == compress.CompressError.Decompress("max output length must be non-negative, got -1")),
     }
 }
 
@@ -188,7 +190,7 @@ fn test_decompress_rejects_output_over_the_limit() {
     };
     match compress.zlib_decompress(compressed, 8) {
         .Ok(out) => panic(f"expected the output limit to be enforced, got {out.len()} bytes"),
-        .Err(reason) => assert(reason == "output exceeded 8 byte limit"),
+        .Err(error) => assert(error == compress.CompressError.Decompress("output exceeded 8 byte limit")),
     }
 }
 
@@ -214,6 +216,7 @@ fn test_codec_failure_does_not_leak_into_the_next_call() {
 fn test_gzip_decompress_returns_err_for_a_malformed_stream() {
     match compress.gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(_) => panic("malformed gzip unexpectedly succeeded"),
-        .Err(reason) => assert(reason.len() > 0),
+        .Err(.Decompress(reason)) => assert(reason.len() > 0),
+        .Err(other) => panic(f"expected a decompression failure, got {other}"),
     }
 }

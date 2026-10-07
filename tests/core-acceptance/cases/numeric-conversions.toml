@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "-4200\ntrue\n3.5\ntrue\n250\nstring.to_int: invalid integer literal\nstring.to_float: invalid float literal\n"
+stdout = "-4200\ntrue\n3.5\ntrue\n250\nInvalid: not-a-number\nInvalid: not-a-number\n"
 exit = 0

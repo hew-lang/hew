@@ -81,7 +81,8 @@ fn test_parse_file_missing_path_returns_err() {
     let _ = fs.delete(path);
     match csv.parse_file(path) {
         .Ok(_) => panic("expected missing CSV path to return Err"),
-        .Err(reason) => assert(reason.contains("NotFound")),
+        .Err(.Io(error)) => assert(f"{error}".contains("NotFound")),
+        .Err(other) => panic(f"expected an I/O failure, got {other}"),
     }
 }
 
@@ -330,7 +331,8 @@ fn test_parse_trailing_crlf_yields_correct_row_count() {
 fn test_parse_rejects_an_unterminated_quoted_field() {
     match csv.parse("name,note\nAlice,\"never closed") {
         .Ok(tbl) => panic(f"expected an unterminated quote to be rejected, got {tbl.rows()} rows"),
-        .Err(reason) => assert(reason == "csv: unterminated quoted field"),
+        .Err(.UnterminatedQuote) => {}
+        .Err(other) => panic(f"expected UnterminatedQuote, got {other}"),
     }
 }
 
@@ -338,7 +340,8 @@ fn test_parse_rejects_an_unterminated_quoted_field() {
 fn test_parse_rejects_text_after_a_closing_quote() {
     match csv.parse("a,b\n\"x\"junk,y") {
         .Ok(tbl) => panic(f"expected junk after a closing quote to be rejected, got {tbl.get(0, 0)}"),
-        .Err(reason) => assert(reason == "csv: unexpected text after a closing quote"),
+        .Err(.TextAfterQuote) => {}
+        .Err(other) => panic(f"expected TextAfterQuote, got {other}"),
     }
 }
 
@@ -346,7 +349,8 @@ fn test_parse_rejects_text_after_a_closing_quote() {
 fn test_parse_rejects_a_quote_inside_an_unquoted_field() {
     match csv.parse("a,b\nx\"y,z") {
         .Ok(tbl) => panic(f"expected a bare quote to be rejected, got {tbl.get(0, 0)}"),
-        .Err(reason) => assert(reason == "csv: unescaped quote inside an unquoted field"),
+        .Err(.UnescapedQuote) => {}
+        .Err(other) => panic(f"expected UnescapedQuote, got {other}"),
     }
 }
 
@@ -400,6 +404,7 @@ fn test_parse_accepts_an_empty_document_as_an_empty_table() {
 fn test_parse_returns_err_for_an_unterminated_quote() {
     match csv.parse("a,b\n\"never closed") {
         .Ok(tbl) => panic(f"unterminated quote unexpectedly parsed as {tbl.rows()} rows"),
-        .Err(reason) => assert(reason == "csv: unterminated quoted field"),
+        .Err(.UnterminatedQuote) => {}
+        .Err(other) => panic(f"expected UnterminatedQuote, got {other}"),
     }
 }

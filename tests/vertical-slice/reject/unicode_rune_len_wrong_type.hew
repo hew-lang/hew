@@ -1,5 +1,5 @@
 import std.text.unicode;
 
-fn bad() -> i64 {
-    unicode.rune_len("A")
+fn bad() -> i64 fails unicode.UnicodeError {
+    unicode.rune_len("A")?
 }

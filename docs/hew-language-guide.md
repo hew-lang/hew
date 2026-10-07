@@ -3877,7 +3877,7 @@ fn main() {
 }
 ```
 
-Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` returns `Result<i64, string>` — use `handle` or `match` to recover from a parse failure.
+Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` fails with `string.NumberError` (`Invalid` or `OutOfRange`, carrying the text) — use `?`, `handle` or `match` to deal with a parse failure.
 
 ### std.math helpers
 

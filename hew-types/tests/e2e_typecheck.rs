@@ -2670,7 +2670,7 @@ fn builtin_string_to_int_typechecks_as_int() {
         import std.string;
 
         fn parse() -> i64 {
-            let value: Result<i64, string> = string.to_int("9223372036854775807");
+            let value: Result<i64, string.NumberError> = string.to_int("9223372036854775807");
             match value {
                 .Ok(n) => n,
                 .Err(_) => 0,

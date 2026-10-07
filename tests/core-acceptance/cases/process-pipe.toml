@@ -1,0 +1,11 @@
+[[case]]
+id = "process-pipe"
+intent = "Child stdio pipes are a Sink and a select-observable Stream taken once; a send to an exited child is Closed; wait suspends, names a signal apart from an exit code and keeps the reaped status."
+source = "cases/process-pipe.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stdin is taken once\nechoed true\ncat Exited(0)\ntrue Exited(0)\nsend to an exited child is Closed\nsilent at the deadline\nthen 4 bytes\nsh Exited(0)\nsleep Signalled(15)\nagain Signalled(15)\n<>|<a b>|<雪> Exited(0)\nlaunch refused\n"
+stderr = ""
+exit = 0

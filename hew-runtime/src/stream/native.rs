@@ -74,8 +74,8 @@ pub(crate) unsafe fn read_content(stream: *mut HewStream) -> Result<Option<Vec<u
     let _ = super::take_last_error();
     // SAFETY: the producer owns the exclusive heap-handle loan.
     let item = unsafe { (*stream).inner.next() };
-    match super::take_last_error() {
-        Some(message) => Err(IoFailure::invalid(&message)),
+    match IoFailure::take_recorded() {
+        Some(failure) => Err(failure),
         None => Ok(item),
     }
 }
@@ -87,8 +87,8 @@ pub(crate) unsafe fn write_content(sink: *mut HewSink, data: &[u8]) -> Result<()
     let _ = super::take_last_error();
     // SAFETY: the producer owns the exclusive heap-handle loan.
     unsafe { (*sink).write_item(data) };
-    match super::take_last_error() {
-        Some(message) => Err(IoFailure::invalid(&message)),
+    match IoFailure::take_recorded() {
+        Some(failure) => Err(failure),
         None => Ok(()),
     }
 }

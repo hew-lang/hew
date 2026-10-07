@@ -1995,15 +1995,6 @@ mod tests {
         let mut reg = registry();
         reg.load("std.process").unwrap();
 
-        // The loader retains qualified imported-signature metadata for normal
-        // named-type/trait method resolution.
-        let sig = reg
-            .resolve_handle_method_sig("process.Child", "wait")
-            .expect("qualified process.Child.wait imported signature should resolve");
-        assert_eq!(sig.0, "hew_process_wait");
-        assert_eq!(sig.1, Vec::<crate::ty::Ty>::new());
-        assert_eq!(sig.2, crate::ty::Ty::I64);
-
         assert_eq!(
             reg.resolve_handle_method_sig("Child", "kill"),
             None,

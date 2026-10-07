@@ -110,8 +110,9 @@ pub(crate) enum SelectReadiness {
     /// The next read never waits indefinitely: a regular file or an in-memory
     /// stream.
     Ready,
-    /// Ready once this transport connection is readable.
-    Socket(i32),
+    /// Ready once this reactor handle (a connection or a child process pipe)
+    /// is readable.
+    Reactor(i32),
     /// This stream cannot report readiness without taking an item; the reason
     /// a selection over it refuses.
     Unsupported(&'static str),
@@ -123,8 +124,8 @@ pub(crate) enum SelectReadiness {
 #[cfg(not(target_arch = "wasm32"))]
 fn adapter_select_readiness(upstream: SelectReadiness) -> SelectReadiness {
     match upstream {
-        SelectReadiness::Socket(_) => SelectReadiness::Unsupported(
-            "select cannot observe a line, chunk or take adapter over a socket stream yet",
+        SelectReadiness::Reactor(_) => SelectReadiness::Unsupported(
+            "select cannot observe a line, chunk or take adapter over a socket or pipe stream yet",
         ),
         other => other,
     }
@@ -395,7 +396,7 @@ impl StreamBacking for TcpStreamBacking {
     }
 
     fn select_readiness(&self) -> SelectReadiness {
-        SelectReadiness::Socket(self.connection)
+        SelectReadiness::Reactor(self.connection)
     }
 
     fn next(&mut self) -> Option<Item> {
@@ -850,6 +851,344 @@ fn tcp_sink_close(backing: &mut TcpStreamBacking) {
         if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
             set_last_error(format!("TCP sink shutdown failed: {error}"));
         }
+    }
+}
+
+// ── Child process pipes ──────────────────────────────────────────────────────
+//
+// The parent's end of a child's stdin, stdout or stderr pipe. On Unix it is a
+// reactor slot like a socket: reads and writes wait on readiness, and a read
+// end is a select source. On Windows an anonymous pipe has no readiness
+// report, so its operations run on the blocking pool and it is not a select
+// source.
+
+/// A pipe end or child exit watch registered on the reactor. Dropping it
+/// closes the descriptor once no operation still holds the slot.
+#[cfg(unix)]
+#[derive(Debug)]
+struct ReactorPipe {
+    handle: c_int,
+}
+
+#[cfg(unix)]
+impl ReactorPipe {
+    fn new(object: crate::reactor::IoObject) -> Self {
+        Self {
+            handle: crate::reactor::register(object),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ReactorPipe {
+    fn drop(&mut self) {
+        drop(crate::reactor::unregister(self.handle));
+    }
+}
+
+/// Child pipes are created by a running Hew program; their synchronous
+/// entries wait on the reactor through the runtime.
+#[cfg(unix)]
+fn pipe_without_runtime() -> bool {
+    if crate::runtime::rt_current_opt().is_some() {
+        return false;
+    }
+    set_last_error("child process pipe I/O requires a running Hew runtime".into());
+    true
+}
+
+#[cfg(unix)]
+impl StreamBacking for ReactorPipe {
+    fn native_connection(&self) -> Option<i32> {
+        Some(self.handle)
+    }
+
+    fn select_readiness(&self) -> SelectReadiness {
+        SelectReadiness::Reactor(self.handle)
+    }
+
+    fn next(&mut self) -> Option<Item> {
+        if pipe_without_runtime() {
+            return None;
+        }
+        native::blocking_tcp_read(self.handle)
+    }
+
+    fn close(&mut self) {}
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn reactor_pipe_write(pipe: &mut ReactorPipe, data: &[u8]) {
+    if !pipe_without_runtime() {
+        native::blocking_tcp_write(pipe.handle, data);
+    }
+}
+
+#[cfg(unix)]
+fn reactor_pipe_flush(_pipe: &mut ReactorPipe) {}
+
+/// Finishing the sink closes the descriptor so the child reads end of input,
+/// even while an abandoned operation still holds the slot.
+#[cfg(unix)]
+fn reactor_pipe_close(pipe: &mut ReactorPipe) {
+    drop(crate::reactor::unregister(pipe.handle));
+}
+
+/// A pipe end read or written by blocking calls on the blocking pool.
+#[cfg(windows)]
+#[derive(Debug)]
+struct BlockingPipe {
+    pipe: Option<fs::File>,
+}
+
+/// Bytes one blocking pipe read takes.
+#[cfg(windows)]
+const PIPE_READ_CHUNK: usize = 64 * 1024;
+
+#[cfg(windows)]
+fn record_pipe_error(operation: &str, error: &std::io::Error) {
+    set_last_error_with_errno_and_kind(
+        format!("{operation}: {error}"),
+        error.raw_os_error().unwrap_or(libc::EIO),
+        io_error_kind_tag(error.kind()),
+    );
+}
+
+#[cfg(windows)]
+impl StreamBacking for BlockingPipe {
+    fn select_readiness(&self) -> SelectReadiness {
+        SelectReadiness::Unsupported("select cannot observe a child process pipe on Windows yet")
+    }
+
+    fn next(&mut self) -> Option<Item> {
+        let pipe = self.pipe.as_mut()?;
+        let mut buffer = vec![0u8; PIPE_READ_CHUNK];
+        loop {
+            match pipe.read(&mut buffer) {
+                Ok(0) => return None,
+                Ok(count) => {
+                    buffer.truncate(count);
+                    return Some(buffer);
+                }
+                // The child closed its end: end of stream.
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return None,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    record_pipe_error("read child process pipe", &error);
+                    return None;
+                }
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        self.pipe = None;
+    }
+
+    fn is_closed(&self) -> bool {
+        self.pipe.is_none()
+    }
+}
+
+#[cfg(windows)]
+fn blocking_pipe_write(pipe: &mut BlockingPipe, data: &[u8]) {
+    let Some(file) = pipe.pipe.as_mut() else {
+        record_pipe_error(
+            "write child process pipe",
+            &std::io::Error::from(std::io::ErrorKind::BrokenPipe),
+        );
+        return;
+    };
+    if let Err(error) = file.write_all(data) {
+        record_pipe_error("write child process pipe", &error);
+    }
+}
+
+#[cfg(windows)]
+fn blocking_pipe_flush(_pipe: &mut BlockingPipe) {}
+
+#[cfg(windows)]
+fn blocking_pipe_close(pipe: &mut BlockingPipe) {
+    pipe.pipe = None;
+}
+
+/// Give the parent's read end of a child pipe a `Stream<bytes>` owner.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn child_pipe_stream(pipe: fs::File) -> *mut HewStreamPair {
+    #[cfg(unix)]
+    let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe)));
+    #[cfg(windows)]
+    let stream = into_stream_ptr(BlockingPipe { pipe: Some(pipe) });
+    Box::into_raw(Box::new(HewStreamPair {
+        // ALLOCATOR-PAIRING: GlobalAlloc
+        sink: ptr::null_mut(),
+        stream,
+    }))
+}
+
+/// Give the parent's write end of a child pipe a `Sink<bytes>` owner.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn child_pipe_sink(pipe: fs::File) -> *mut HewStreamPair {
+    #[cfg(unix)]
+    let sink = {
+        let backing = ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe));
+        let handle = backing.handle;
+        let sink = into_sink_ptr(
+            backing,
+            reactor_pipe_write,
+            reactor_pipe_flush,
+            reactor_pipe_close,
+        );
+        // SAFETY: the new sink backing owns this handle until close or drop.
+        unsafe { (*sink).set_native_connection(handle) };
+        sink
+    };
+    #[cfg(windows)]
+    let sink = into_sink_ptr(
+        BlockingPipe { pipe: Some(pipe) },
+        blocking_pipe_write,
+        blocking_pipe_flush,
+        blocking_pipe_close,
+    );
+    Box::into_raw(Box::new(HewStreamPair {
+        // ALLOCATOR-PAIRING: GlobalAlloc
+        sink,
+        stream: ptr::null_mut(),
+    }))
+}
+
+/// A stream with no items that ends once a child process exits: reading it
+/// is how `Child.wait` parks. On Unix it waits on the reactor like a pipe.
+#[cfg(unix)]
+pub(crate) fn child_exit_stream(watch: crate::process::ExitWatch) -> *mut HewStreamPair {
+    stream_only(into_stream_ptr(ReactorPipe::new(
+        crate::reactor::IoObject::ChildExit(watch),
+    )))
+}
+
+/// A stream with no items that ends once the process behind `process` exits.
+/// The system thread pool's wait reports the exit by finishing the stream's
+/// queue, so a reader parks on the queue and holds no thread.
+#[cfg(windows)]
+pub(crate) fn child_exit_stream(
+    process: std::os::windows::io::OwnedHandle,
+) -> std::io::Result<*mut HewStreamPair> {
+    let backing = ExitWait::register(process)?;
+    let core = Arc::clone(&backing.core);
+    let stream = into_stream_ptr(backing);
+    // SAFETY: stream was just allocated by into_stream_ptr.
+    unsafe { (*stream).channel = Some(core) };
+    Ok(stream_only(stream))
+}
+
+/// A stream that has already ended: the child was reaped before the wait.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn ended_stream() -> *mut HewStreamPair {
+    stream_only(into_stream_ptr(VecStream {
+        items: VecDeque::new(),
+    }))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stream_only(stream: *mut HewStream) -> *mut HewStreamPair {
+    Box::into_raw(Box::new(HewStreamPair {
+        // ALLOCATOR-PAIRING: GlobalAlloc
+        sink: ptr::null_mut(),
+        stream,
+    }))
+}
+
+/// A registered wait for one process handle. Its callback finishes the
+/// stream's queue; dropping it withdraws the wait, waiting out a callback
+/// already running, before the handle closes.
+#[cfg(windows)]
+#[derive(Debug)]
+struct ExitWait {
+    core: Arc<crate::channel_core::ChannelCore>,
+    /// The registration; the callback's context is one `core` reference.
+    wait: windows_sys::Win32::Foundation::HANDLE,
+    _process: std::os::windows::io::OwnedHandle,
+}
+
+// SAFETY: the wait handle is used only to unregister it, from any thread.
+#[cfg(windows)]
+unsafe impl Send for ExitWait {}
+
+#[cfg(windows)]
+unsafe extern "system" fn exit_wait_fired(context: *mut c_void, _timed_out: bool) {
+    // SAFETY: the registration holds this core reference until unregistered.
+    unsafe { &*context.cast::<crate::channel_core::ChannelCore>() }.close_sink();
+}
+
+#[cfg(windows)]
+impl ExitWait {
+    fn register(process: std::os::windows::io::OwnedHandle) -> std::io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Threading::{
+            RegisterWaitForSingleObject, INFINITE, WT_EXECUTEONLYONCE,
+        };
+        let core = Arc::new(crate::channel_core::ChannelCore::new(1));
+        let context = Arc::into_raw(Arc::clone(&core));
+        let mut wait = ptr::null_mut();
+        // SAFETY: the process handle and the context outlive the
+        // registration, which `Drop` withdraws before releasing either.
+        let registered = unsafe {
+            RegisterWaitForSingleObject(
+                &raw mut wait,
+                process.as_raw_handle(),
+                Some(exit_wait_fired),
+                context.cast(),
+                INFINITE,
+                WT_EXECUTEONLYONCE,
+            )
+        };
+        if registered == 0 {
+            let error = std::io::Error::last_os_error();
+            // SAFETY: the failed registration did not take the context.
+            drop(unsafe { Arc::from_raw(context) });
+            return Err(error);
+        }
+        Ok(Self {
+            core,
+            wait,
+            _process: process,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ExitWait {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Threading::UnregisterWaitEx;
+        // SAFETY: the registration is live; INVALID_HANDLE_VALUE waits for a
+        // running callback, so none can touch the context afterwards.
+        unsafe { UnregisterWaitEx(self.wait, INVALID_HANDLE_VALUE) };
+        // SAFETY: the registration's context reference, now unused.
+        drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.core)) });
+    }
+}
+
+#[cfg(windows)]
+impl StreamBacking for ExitWait {
+    fn next(&mut self) -> Option<Item> {
+        self.core.blocking_recv()
+    }
+
+    fn try_next(&mut self) -> Option<Item> {
+        self.core.try_recv()
+    }
+
+    fn close(&mut self) {
+        self.core.close_stream();
+    }
+
+    fn is_closed(&self) -> bool {
+        false
     }
 }
 

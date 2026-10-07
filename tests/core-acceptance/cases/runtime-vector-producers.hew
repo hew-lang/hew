@@ -41,7 +41,7 @@ fn main() {
     // and spaced arguments must remain individual strings on every platform.
     let child_arguments = "child|hello world|".split("|");
     let output = process.run_argv(arguments[0], child_arguments).expect("run this executable");
-    assert(output.exit_code == 0);
+    assert(output.status == process.ExitStatus.Exited(0));
     assert(output.stdout == "child arguments\n");
     assert(child_arguments[1] == "hello world");
     println("runtime vector producers compose");

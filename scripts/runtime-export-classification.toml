@@ -467,21 +467,25 @@ stable = [
   "hew_pool_size",
   "hew_print_value",
   "hew_process_drop",
-  "hew_process_free",
+  "hew_process_exit_stream",
+  "hew_process_id",
   "hew_process_is_valid",
-  "hew_process_kill",
   "hew_process_last_error",
-  "hew_process_result_exit_code",
+  "hew_process_poll",
   "hew_process_result_free",
   "hew_process_result_is_valid",
+  "hew_process_result_signalled",
+  "hew_process_result_status",
   "hew_process_result_stderr",
   "hew_process_result_stdout",
   "hew_process_run",
-  "hew_process_run_args",
   "hew_process_run_argv",
-  "hew_process_spawn",
-  "hew_process_spawn_argv",
-  "hew_process_wait",
+  "hew_process_signal",
+  "hew_process_signalled",
+  "hew_process_start",
+  "hew_process_status",
+  "hew_process_take_pipe",
+  "hew_process_wait_error",
   "hew_random_choices_vec",
   "hew_random_gauss",
   "hew_random_randint",
@@ -3538,9 +3542,9 @@ discharge-depth = "none"
 
 # process — hew-runtime/src/process.rs. run/run_argv return a Box'd
 # HewProcessResult whose free also releases the malloc'd stdout/stderr fields
-# (deep). spawn returns a Box'd HewProcess reaped by hew_process_drop.
-# result_stdout/result_stderr clone the stored strings (fresh). wait/kill
-# borrow; hew_process_run_argv borrows its Vec<String> argv.
+# (deep). start returns a Box'd HewProcess reaped by hew_process_drop.
+# result_stdout/result_stderr clone the stored strings (fresh). The child
+# accessors borrow; start and run_argv borrow their Vec<String> argv.
 [[ownership.contracts]]
 symbol = "hew_process_drop"
 result = "none"
@@ -3550,13 +3554,6 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_process_is_valid"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_process_kill"
 result = "none"
 params = ["borrow"]
 release-symbol = ""
@@ -3587,7 +3584,29 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_process_result_exit_code"
+symbol = "hew_process_id"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_poll"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_signalled"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.process.ProcessResultHandle"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_status"
 result = "none"
 params = ["borrow"]
 resource-param-types = ["std.process.ProcessResultHandle"]
@@ -3649,21 +3668,55 @@ result-retention = "resource-transfer"
 result-retention-basis = "after argv is copied into Command, output_to_result returns one fresh Box::into_raw(HewProcessResult)"
 
 [[ownership.contracts]]
-symbol = "hew_process_spawn"
-result = "fresh"
+symbol = "hew_process_signal"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_signalled"
+result = "none"
 params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_start"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = "hew_process_drop"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
-symbol = "hew_process_spawn_argv"
+symbol = "hew_process_status"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_take_pipe"
 result = "fresh"
 params = ["borrow", "borrow"]
-release-symbol = "hew_process_drop"
-discharge-depth = "shallow"
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "takes the child's pipe end out of its Option and returns one fresh Box::into_raw(HewStreamPair) holding the only owner of that end"
 
 [[ownership.contracts]]
-symbol = "hew_process_wait"
+symbol = "hew_process_exit_stream"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one fresh Box::into_raw(HewStreamPair) holding the only owner of a new exit-watch stream; the child keeps no reference to it"
+
+[[ownership.contracts]]
+symbol = "hew_process_wait_error"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

@@ -182,7 +182,7 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
         if stream.pipe_core().is_none() {
             match stream.select_readiness() {
                 SelectReadiness::Ready => {}
-                SelectReadiness::Socket(connection) => {
+                SelectReadiness::Reactor(connection) => {
                     // SAFETY: the stream keeps its connection live through the
                     // selection; the waker descriptor is the selection's own.
                     readable = unsafe { start_tcp_readable(connection, selection.waker) };

@@ -40,13 +40,13 @@ fn main() -> i64 {
     };
     println(output.stdout.trim());
     println(output.stderr.trim());
-    println(output.exit_code);
+    println(output.status);
     {
-        let child = match process.start_argv(arguments[0], ["silent"]) {
+        let child = match process.start(process.command(arguments[0], ["silent"])) {
             .Ok(child) => child,
             .Err(_) => panic("child launch failed"),
         };
-        println(child.wait());
+        println(child.wait().expect("wait"));
     };
     match process.run_argv("hew-missing-opaque-resource-command", Vec.new()) {
         .Ok(_) => panic("missing command unexpectedly ran"),

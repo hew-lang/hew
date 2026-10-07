@@ -82,6 +82,19 @@ impl IoFailure {
         }
     }
 
+    /// The failure a blocking stream backing left in the stream error slot,
+    /// keeping its kind so a sink can classify it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_recorded() -> Option<Self> {
+        let kind = crate::stream_error::take_last_error_kind();
+        let errno = crate::stream_error::take_last_errno();
+        crate::stream_error::take_last_error().map(|message| Self {
+            kind,
+            errno: if errno == 0 { libc::EIO } else { errno },
+            message,
+        })
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn invalid(message: &str) -> Self {
         Self {

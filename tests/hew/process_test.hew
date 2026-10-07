@@ -19,7 +19,10 @@ fn kill_zero_exit_code(pid: string) -> i64 {
     args.push("-0");
     args.push(pid);
     match process.run_argv("kill", args) {
-        .Ok(output) => output.exit_code,
+        .Ok(output) => match output.status {
+            process.ExitStatus.Exited(code) => code,
+            process.ExitStatus.Signalled(_) => panic("kill -0 was signalled"),
+        }
         .Err(error) => panic(to_string(error)),
     }
 }
@@ -43,7 +46,7 @@ fn read_pid_with_retry(pid_path: string) -> string {
 fn spawn_child_for_implicit_drop(pid_path: string) -> string {
     // Replace the shell with the sleeper so the tested PID owns its output
     // descriptors; dropping a Child reaps that process, not shell descendants.
-    let child = match process.start(f"echo $$ > {pid_path}; exec sleep 60") {
+    let child = match process.start(process.command("sh", ["-c", f"echo $$ > {pid_path}; exec sleep 60"])) {
         .Ok(child) => child,
         .Err(error) => panic(to_string(error)),
     };
@@ -62,43 +65,12 @@ fn test_run_argv_preserves_spaced_and_empty_arguments() {
     args.push("tail");
     match process.run_argv("printf", args) {
         .Ok(output) => {
-            assert(output.exit_code == 0);
+            assert(output.status == process.ExitStatus.Exited(0));
             assert(output.stdout == "<hello world>|<>|<tail>");
             assert(output.stderr == "");
         }
         .Err(_) => panic("expected try_run_argv to succeed"),
     }
-}
-
-#[test]
-#[real_time]
-fn test_run_args_rejects_mismatched_arg_count_with_guidance() {
-    match process.run_args("printf", "one two", 1) {
-        .Ok(_) => panic("expected arg_count mismatch"),
-        .Err(err) => match err {
-            ProcessError.InvalidArguments(message) => {
-                assert(message.contains("arg_count"));
-                assert(message.contains("process.run_argv"));
-            }
-            _ => panic("expected ProcessError::InvalidArguments"),
-        }
-    }
-}
-
-#[test]
-#[real_time]
-fn test_run_argv_replaces_legacy_run_args_usage() {
-    var args: Vec<string> = Vec.new();
-    args.push("<%s>|<%s>");
-    args.push("alpha");
-    args.push("beta");
-    let output = match process.run_argv("printf", args) {
-        .Ok(output) => output,
-        .Err(error) => panic(to_string(error)),
-    };
-    assert(output.exit_code == 0);
-    assert(output.stdout == "<alpha>|<beta>");
-    assert(output.stderr == "");
 }
 
 #[test]
@@ -172,18 +144,13 @@ fn test_child_drop_reaps_running_process() {
 
 // ── launch failure truth ────────────────────────────────────────────────
 //
-// #16: `process.start` handed back the raw spawn handle, so a failed launch
-// became a `Child` that was never backed by a process. Waiting on it or
-// killing it reported -1 forever with no way to tell that apart from a real
-// child that failed.
+// #16: a failed launch must never become a `Child` that no process backs.
 #[test]
 #[real_time]
-fn test_start_argv_reports_a_missing_executable_as_launch_failed() {
-    var args: Vec<string> = Vec.new();
-    args.push("--version");
-    match process.start_argv("hew-process-executable-that-does-not-exist", args) {
+fn test_start_reports_a_missing_executable_as_launch_failed() {
+    match process.start(process.command("hew-process-executable-that-does-not-exist", ["--version"])) {
         .Ok(child) => {
-            child.kill();
+            let _ = child.kill();
             panic("expected a missing executable to fail to launch");
         }
         .Err(err) => match err {
@@ -198,22 +165,63 @@ fn test_start_argv_reports_a_missing_executable_as_launch_failed() {
 
 #[test]
 #[real_time]
-fn test_start_argv_returns_a_live_child_for_a_real_executable() {
-    var args: Vec<string> = Vec.new();
-    args.push("hew-process-start-argv-live");
-    match process.start_argv("echo", args) {
-        .Ok(child) => assert(child.wait() == 0),
-        .Err(_) => panic("expected echo to launch"),
+fn test_start_passes_arguments_without_a_shell() {
+    var command = process.command("printf", ["<%s>|<%s>|<%s>", "", "a b", "$HOME;雪"]);
+    command.stdout = process.Stdio.Piped;
+    let child = process.start(command).expect("printf starts");
+    let output = child.stdout().expect("stdout is piped");
+    var text = bytes.new();
+    for chunk in output {
+        text.append(chunk);
     }
+    assert(text == "<>|<a b>|<$HOME;雪>".to_bytes());
+    assert(child.wait().expect("wait") == process.ExitStatus.Exited(0));
 }
 
 #[test]
 #[real_time]
-fn test_start_returns_a_live_child_for_a_shell_command() {
-    match process.start("exit 7") {
-        .Ok(child) => assert(child.wait() == 7),
-        .Err(_) => panic("expected the shell command to launch"),
-    }
+fn test_wait_reports_the_exit_code_and_keeps_it() {
+    let child = process.start(process.command("sh", ["-c", "exit 7"])).expect("sh starts");
+    assert(child.wait().expect("wait") == process.ExitStatus.Exited(7));
+    assert(child.wait().expect("wait") == process.ExitStatus.Exited(7));
+    assert(child.try_wait().expect("poll").expect("reaped") == process.ExitStatus.Exited(7));
+    // A reaped child is never signalled.
+    child.kill().expect("a reaped child is not signalled");
+}
+
+#[test]
+#[real_time]
+fn test_terminate_and_kill_report_their_signals() {
+    let polite = process.start(process.command("sleep", ["60"])).expect("sleep starts");
+    assert(polite.try_wait().expect("poll").is_none());
+    polite.terminate().expect("TERM is delivered");
+    assert(polite.wait().expect("wait") == process.ExitStatus.Signalled(15));
+    let stubborn = process.start(process.command("sh", ["-c", "trap '' TERM; exec sleep 60"])).expect("sh starts");
+    stubborn.kill().expect("KILL is delivered");
+    assert(stubborn.wait().expect("wait") == process.ExitStatus.Signalled(9));
+}
+
+#[test]
+#[real_time]
+fn test_stdio_is_taken_once_and_only_when_piped() {
+    var command = process.command("cat", []);
+    command.stdin = process.Stdio.Piped;
+    let child = process.start(command).expect("cat starts");
+    let input = child.stdin().expect("stdin is piped");
+    assert(child.stdin().is_err());
+    assert(child.stdout().is_err());
+    assert(child.stderr().is_err());
+    input.finish();
+    assert(child.wait().expect("wait") == process.ExitStatus.Exited(0));
+}
+
+#[test]
+#[real_time]
+fn test_run_reports_a_signal_apart_from_an_exit_code() {
+    let exited = process.run("exit 3").expect("sh runs");
+    assert(exited.status == process.ExitStatus.Exited(3));
+    let signalled = process.run("kill -9 $$").expect("sh runs");
+    assert(signalled.status == process.ExitStatus.Signalled(9));
 }
 
 // ── Display ────────────────────────────────────────────────────────────────
@@ -223,4 +231,6 @@ fn test_process_error_display_prints_the_carried_detail() {
     assert(to_string(invalid_arguments) == "boom");
     let launch_failed = ProcessError.LaunchFailed("could not exec");
     assert(to_string(launch_failed) == "could not exec");
+    assert(to_string(ProcessError.NotPiped) == "NotPiped: the stream was not piped or was already taken");
+    assert(to_string(process.ExitStatus.Signalled(15)) == "Signalled(15)");
 }

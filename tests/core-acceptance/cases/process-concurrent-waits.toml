@@ -1,0 +1,14 @@
+[[case]]
+id = "process-concurrent-waits"
+intent = "160 concurrent child waits on a two-worker runtime hold no scheduler or blocking-pool thread: a sibling actor answers and an fs write the children wait for completes."
+source = "cases/process-concurrent-waits.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "ping while waiting: true\nflag written\nexited cleanly: 160\n"
+stderr = ""
+exit = 0

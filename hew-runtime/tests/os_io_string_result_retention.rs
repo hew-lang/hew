@@ -185,7 +185,7 @@ fn glob_get_result_is_transferred() {
 fn process_result_stdout_and_stderr_are_retained() {
     for release_result_first in [false, true] {
         let result = Box::into_raw(Box::new(HewProcessResult {
-            exit_code: 0,
+            status: std::process::ExitStatus::default(),
             stdout: string_from_str("stdout\0é中🙂"),
             stderr: string_from_str("stderr\0é中🙂"),
         }));

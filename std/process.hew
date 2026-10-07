@@ -1,36 +1,48 @@
 //! Process execution.
 //!
-//! Run external commands and manage child processes.
+//! `run` and `run_argv` execute a command to completion and capture its
+//! output. `start` launches a `Command` (never through a shell) and returns a
+//! `Child` whose piped stdio are ordinary `Stream<bytes>` and `Sink<bytes>`
+//! values.
 //!
-//! `process.Child` is an owned handle. Dropping a `Child` reaps the OS
-//! process handle: if the child has already exited, drop performs the final
-//! wait; if it is still running, drop kills it and waits for it to exit.
+//! A `Child` owns its process until it is reaped. `wait` suspends the calling
+//! task and holds no thread while the child runs: it parks on the I/O reactor
+//! (a pidfd on Linux, a kqueue process filter on FreeBSD and macOS) or, on
+//! Windows, on the system thread pool's wait for the process handle. Any
+//! number of tasks may wait on children at once. The reaped status is kept,
+//! so a second `wait` returns it again and a later `terminate` or `kill` does
+//! nothing. Dropping a `Child` that is still running kills and reaps it.
+//!
+//! On Unix a child's stdout and stderr streams are `select` sources. On
+//! Windows they are read on the blocking pool and are not `select` sources in
+//! edition 2026.
 //!
 //! # Examples
 //!
 //! ```hew,no_run
+//! import std.encoding.utf8;
 //! import std.process;
 //!
 //! fn main() {
-//!     let shell_output = process.run("echo hello").expect("run succeeds");
-//!     println(shell_output.stdout);
-//!
-//!     var args: Vec<string> = Vec.new();
-//!     args.push("<%s>|<%s>");
-//!     args.push("hello world");
-//!     args.push("hew");
-//!     let output = process.run_argv("printf", args).expect("run_argv succeeds");
+//!     let output = process.run_argv("printf", ["<%s>", "hello world"]).expect("printf runs");
 //!     println(output.stdout);
 //!
-//!     let child = match process.start("sleep 10") {
-//!         .Ok(child) => child,
-//!         .Err(error) => panic(to_string(error)),
-//!     };
-//!     println(child.wait());
+//!     var command = process.command("cat", []);
+//!     command.stdin = process.Stdio.Piped;
+//!     command.stdout = process.Stdio.Piped;
+//!     let child = process.start(command).expect("cat starts");
+//!     let input = child.stdin().expect("stdin is piped");
+//!     let echoed = child.stdout().expect("stdout is piped");
+//!     input.send("ping".to_bytes()).expect("cat reads");
+//!     input.finish();
+//!     for chunk in echoed {
+//!         println(utf8.decode_lossy(chunk));
+//!     }
+//!     println(f"{child.wait():?}");
 //! }
 //! ```
 
-import std.string;
+import std.stream;
 
 /// A handle to a completed command invocation inside the runtime.
 #[resource]
@@ -51,68 +63,171 @@ impl ProcessResultHandle {
 type ChildHandle {
 }
 
-/// A handle to a running child process.
-///
-/// Created by `process.start(cmd)`. Use `wait()` to block until
-/// the process exits, or `kill()` to terminate it. Dropping the
-/// handle reaps it automatically; a still-running child is killed
-/// and waited on at scope exit.
+/// Where a child's standard stream goes.
+pub enum Stdio {
+    /// Share this program's stream.
+    Inherit;
+    /// Connect the stream to the null device.
+    Null;
+    /// Connect the stream to a pipe the parent takes once from the `Child`.
+    Piped;
+}
+
+/// A program, its arguments and its stdio. The arguments reach the program
+/// exactly as given; no shell interprets them.
+pub type Command {
+    program: string;
+    args: Vec<string>;
+    stdin: Stdio;
+    stdout: Stdio;
+    stderr: Stdio;
+}
+
+/// How a process ended.
+pub enum ExitStatus {
+    /// The process exited with this code.
+    Exited(i64);
+    /// A signal with this number ended the process (Unix only).
+    Signalled(i64);
+}
+
+/// Captured output from a completed command.
+pub type CommandOutput {
+    status: ExitStatus;
+    stdout: string;
+    stderr: string;
+}
+
+/// Structured process failures.
+pub enum ProcessError {
+    InvalidArguments(string);
+    LaunchFailed(string);
+    /// The stream was not `Stdio.Piped` or was already taken.
+    NotPiped;
+    /// The operating system refused a wait or signal with this error code.
+    System(i64);
+}
+
+/// A running or finished child process.
 #[resource]
 pub type Child {
     handle: ChildHandle;
 }
 
-/// Captured output from a completed command.
-pub type CommandOutput {
-    exit_code: i64;
-    stdout: string;
-    stderr: string;
-}
-
-/// Structured execution errors for process launch and argument validation.
-pub enum ProcessError {
-    InvalidArguments(string);
-    LaunchFailed(string);
-}
-
-/// Methods available on a `Child` process.
-trait ChildMethods {
-    /// Block until the child process exits and return its exit code.
-    ///
-    /// Returns 0 for success, non-zero for failure.
-    fn wait(self) -> i64;
-
-    /// Terminate the child process.
-    ///
-    /// Returns 0 on success, non-zero on error.
-    fn kill(self) -> i64;
-}
-
-impl ChildMethods for Child {
-    /// Block until the child process exits and return its exit code.
-    fn wait(self) -> i64 {
-        unsafe {
-            hew_process_wait(self.handle) as i64
-        }
-    }
-    /// Terminate the child process.
-    fn kill(self) -> i64 {
-        unsafe {
-            hew_process_kill(self.handle) as i64
-        }
-    }
-}
-
 impl Child {
-    /// Reap the child handle at scope exit.
-    ///
-    /// Resource close performs a non-blocking check first. If the child is
-    /// still running, close kills it and waits for it to exit so leaked
-    /// `Child` values do not leave OS processes or zombie handles behind.
+    /// The child's operating-system process ID.
+    fn id(self) -> i64 {
+        unsafe {
+            hew_process_id(self.handle)
+        }
+    }
+
+    /// Take the write end of the child's stdin pipe. Finishing the sink
+    /// closes the pipe, so the child reads end of input.
+    fn stdin(self) -> Result<stream.Sink<bytes>, ProcessError> {
+        unsafe {
+            let pair = hew_process_take_pipe(self.handle, 0);
+            if !hew_stream_pair_is_valid(pair) {
+                return .Err(ProcessError.NotPiped);
+            }
+            let sink: stream.Sink<bytes> = stream.pair_sink(pair);
+            pair.close();
+            .Ok(sink)
+        }
+    }
+
+    /// Take the read end of the child's stdout pipe.
+    fn stdout(self) -> Result<stream.Stream<bytes>, ProcessError> {
+        take_output(self.handle, 1)
+    }
+
+    /// Take the read end of the child's stderr pipe.
+    fn stderr(self) -> Result<stream.Stream<bytes>, ProcessError> {
+        take_output(self.handle, 2)
+    }
+
+    /// Wait for the child to exit and reap it. The task suspends and holds
+    /// no thread; a wait cancelled by `scope within` releases its watch and
+    /// leaves the child running and unreaped.
+    fn wait(self) -> Result<ExitStatus, ProcessError> {
+        loop {
+            match self.try_wait()? {
+                .Some(status) => return .Ok(status),
+                .None => {}
+            }
+            let watch = unsafe {
+                hew_process_exit_stream(self.handle)
+            };
+            if !unsafe {
+                hew_stream_pair_is_valid(watch)
+            } {
+                let failure = unsafe {
+                    hew_process_wait_error(self.handle)
+                };
+                return .Err(ProcessError.System(failure as i64));
+            }
+            // The stream carries no items; it ends once the child exits.
+            let exited: stream.Stream<bytes> = stream.pair_stream(watch);
+            watch.close();
+            let _ = exited.recv();
+        }
+    }
+
+    /// Reap the child if it has exited, without waiting.
+    fn try_wait(self) -> Result<Option<ExitStatus>, ProcessError> {
+        let state = unsafe {
+            hew_process_poll(self.handle)
+        };
+        if state < 0 {
+            return .Err(ProcessError.System(0 - state as i64));
+        }
+        if state == 0 {
+            return .Ok(.None);
+        }
+        let number = unsafe {
+            hew_process_status(self.handle)
+        };
+        if unsafe {
+            hew_process_signalled(self.handle)
+        } {
+            .Ok(.Some(ExitStatus.Signalled(number)))
+        } else {
+            .Ok(.Some(ExitStatus.Exited(number)))
+        }
+    }
+
+    /// Ask the child to stop: SIGTERM on Unix. Windows has no request to
+    /// stop, so this terminates the child like `kill`. A reaped child is not
+    /// signalled.
+    fn terminate(self) -> Result<(), ProcessError> {
+        signal_result(unsafe {
+            hew_process_signal(self.handle, false)
+        })
+    }
+
+    /// Stop the child at once: SIGKILL on Unix, `TerminateProcess` on
+    /// Windows. A reaped child is not signalled.
+    fn kill(self) -> Result<(), ProcessError> {
+        signal_result(unsafe {
+            hew_process_signal(self.handle, true)
+        })
+    }
+
+    /// Release the child at scope exit, killing and reaping it first if it
+    /// is still running.
     fn close(consume self) {
         unsafe {
             hew_process_drop(self.handle)
         };
+    }
+}
+
+impl Display for ExitStatus {
+    fn fmt(self) -> string {
+        match self {
+            ExitStatus.Exited(code) => f"Exited({code})",
+            ExitStatus.Signalled(signal) => f"Signalled({signal})",
+        }
     }
 }
 
@@ -121,7 +236,37 @@ impl Display for ProcessError {
         match self {
             ProcessError.InvalidArguments(message) => message,
             ProcessError.LaunchFailed(message) => message,
+            ProcessError.NotPiped => "NotPiped: the stream was not piped or was already taken",
+            ProcessError.System(code) => f"System({code}): the operating system refused the operation",
         }
+    }
+}
+
+fn take_output(handle: ChildHandle, which: i32) -> Result<stream.Stream<bytes>, ProcessError> {
+    unsafe {
+        let pair = hew_process_take_pipe(handle, which);
+        if !hew_stream_pair_is_valid(pair) {
+            return .Err(ProcessError.NotPiped);
+        }
+        let output: stream.Stream<bytes> = stream.pair_stream(pair);
+        pair.close();
+        .Ok(output)
+    }
+}
+
+fn signal_result(failure: i32) -> Result<(), ProcessError> {
+    if failure == 0 {
+        .Ok(())
+    } else {
+        .Err(ProcessError.System(failure as i64))
+    }
+}
+
+fn stdio_mode(stdio: Stdio) -> i32 {
+    match stdio {
+        Stdio.Inherit => 0,
+        Stdio.Null => 1,
+        Stdio.Piped => 2,
     }
 }
 
@@ -132,8 +277,7 @@ fn last_process_error(default_message: string) -> ProcessError {
         if message == "" {
             ProcessError.LaunchFailed(default_message)
         } else {
-            // Public argument-shape validation happens before FFI. A runtime
-            // execution failure is therefore always a launch failure; never
+            // A runtime execution failure is always a launch failure; never
             // classify it by searching attacker-controlled command text.
             ProcessError.LaunchFailed(message)
         }
@@ -142,30 +286,20 @@ fn last_process_error(default_message: string) -> ProcessError {
 
 fn take_command_output(consume result: ProcessResultHandle) -> CommandOutput {
     unsafe {
-        let output = CommandOutput { exit_code: hew_process_result_exit_code(result) as i64, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
+        let number = hew_process_result_status(result);
+        let status = if hew_process_result_signalled(result) {
+            ExitStatus.Signalled(number)
+        } else {
+            ExitStatus.Exited(number)
+        };
+        let output = CommandOutput { status: status, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
         hew_process_result_free(result);
         output
     }
 }
 
-fn legacy_packed_args_note() -> string {
-    "legacy packed-string API; prefer process.run_argv(command, Vec<string>)"
-}
-
-fn split_legacy_packed_args(args: string) -> Vec<string> {
-    let raw_parts = string.split(args, " ");
-    var filtered: Vec<string> = Vec.new();
-    for i in 0..raw_parts.len() {
-        let part = raw_parts[i];
-        if part != "" {
-            filtered.push(part);
-        }
-    }
-    filtered
-}
-
 // ── Module-level functions ────────────────────────────────────────────
-/// Run a shell command synchronously and capture its exit code and output.
+/// Run a shell command synchronously and capture its status and output.
 pub fn run(command: string) -> Result<CommandOutput, ProcessError> {
     unsafe {
         hew_clear_error();
@@ -180,7 +314,7 @@ pub fn run(command: string) -> Result<CommandOutput, ProcessError> {
     }
 }
 
-/// Run a command without the shell using a `Vec<string>` argv surface.
+/// Run a program without the shell and capture its status and output.
 pub fn run_argv(command: string, args: Vec<string>) -> Result<CommandOutput, ProcessError> {
     unsafe {
         hew_clear_error();
@@ -195,53 +329,21 @@ pub fn run_argv(command: string, args: Vec<string>) -> Result<CommandOutput, Pro
     }
 }
 
-/// Legacy compatibility wrapper for a space-delimited argument string.
-///
-/// This packed-string surface cannot represent empty arguments, quoted
-/// segments, or arguments containing spaces. Prefer
-/// `run_argv(command, Vec<string>)`.
-pub fn run_args(command: string, args: string, arg_count: i64) -> Result<CommandOutput, ProcessError> {
-    if arg_count < 0 {
-        return .Err(ProcessError.InvalidArguments(f"process.run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
-    }
-    let argv = split_legacy_packed_args(args);
-    if argv.len() != arg_count {
-        return .Err(ProcessError.InvalidArguments(f"process.run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
-    }
-    run_argv(command, argv)
+/// A `Command` for `program` with `args` and every stream inherited.
+pub fn command(program: string, args: Vec<string>) -> Command {
+    Command { program: program, args: args, stdin: Stdio.Inherit, stdout: Stdio.Inherit, stderr: Stdio.Inherit }
 }
 
-/// Start a child process through the system shell without blocking.
-///
-/// Returns `Err(ProcessError.LaunchFailed)` when the child could not be
-/// launched, rather than a handle that is not backed by a running process.
-pub fn start(command: string) -> Result<Child, ProcessError> {
+/// Launch `command` without waiting. A program that cannot be launched is
+/// `Err(ProcessError.LaunchFailed)`.
+pub fn start(command: Command) -> Result<Child, ProcessError> {
     unsafe {
         hew_clear_error();
-        let handle = hew_process_spawn(command);
+        let handle = hew_process_start(command.program, command.args, stdio_mode(command.stdin), stdio_mode(command.stdout), stdio_mode(command.stderr));
         if hew_process_is_valid(handle) {
             .Ok(Child { handle: handle })
         } else {
-            let error = last_process_error("process.start: command launch failed");
-            hew_process_drop(handle);
-            .Err(error)
-        }
-    }
-}
-
-/// Start a child process without the shell using a `Vec<string>` argv surface.
-///
-/// Returns `Err(ProcessError.LaunchFailed)` when the executable cannot be
-/// launched — a missing command is reported here rather than surfacing as a
-/// handle that never referred to a process.
-pub fn start_argv(command: string, args: Vec<string>) -> Result<Child, ProcessError> {
-    unsafe {
-        hew_clear_error();
-        let handle = hew_process_spawn_argv(command, args);
-        if hew_process_is_valid(handle) {
-            .Ok(Child { handle: handle })
-        } else {
-            let error = last_process_error("process.start_argv: command launch failed");
+            let error = last_process_error(f"process.start: could not launch {command.program}");
             hew_process_drop(handle);
             .Err(error)
         }
@@ -253,16 +355,23 @@ extern "C" {
     fn hew_process_run(command: string) -> ProcessResultHandle;
     fn hew_process_run_argv(command: string, args: Vec<string>) -> ProcessResultHandle;
     fn hew_process_result_is_valid(result: ProcessResultHandle) -> bool;
-    fn hew_process_result_exit_code(result: ProcessResultHandle) -> i32;
+    fn hew_process_result_signalled(result: ProcessResultHandle) -> bool;
+    fn hew_process_result_status(result: ProcessResultHandle) -> i64;
     fn hew_process_result_stdout(result: ProcessResultHandle) -> string;
     fn hew_process_result_stderr(result: ProcessResultHandle) -> string;
     fn hew_process_result_free(consume result: ProcessResultHandle);
-    fn hew_process_spawn(command: string) -> ChildHandle;
-    fn hew_process_spawn_argv(command: string, args: Vec<string>) -> ChildHandle;
+    fn hew_process_start(program: string, args: Vec<string>, stdin: i32, stdout: i32, stderr: i32) -> ChildHandle;
     fn hew_process_is_valid(child: ChildHandle) -> bool;
-    fn hew_process_wait(handle: ChildHandle) -> i32;
-    fn hew_process_kill(handle: ChildHandle) -> i32;
+    fn hew_process_id(child: ChildHandle) -> i64;
+    fn hew_process_take_pipe(child: ChildHandle, which: i32) -> stream.StreamPair;
+    fn hew_process_exit_stream(child: ChildHandle) -> stream.StreamPair;
+    fn hew_process_wait_error(child: ChildHandle) -> i32;
+    fn hew_process_poll(child: ChildHandle) -> i32;
+    fn hew_process_signalled(child: ChildHandle) -> bool;
+    fn hew_process_status(child: ChildHandle) -> i64;
+    fn hew_process_signal(child: ChildHandle, force: bool) -> i32;
     fn hew_process_drop(handle: ChildHandle);
     fn hew_process_last_error() -> string;
     fn hew_clear_error();
+    fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
 }

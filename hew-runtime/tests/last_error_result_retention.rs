@@ -11,13 +11,13 @@ use hew_runtime::process::hew_process_last_error;
 use hew_runtime::stream_error::hew_stream_last_error;
 
 /// Record an error in the runtime's thread-local process-error slot without
-/// touching the filesystem or spawning anything: a negative `argc` is rejected
-/// before any argument is read.
+/// touching the filesystem or spawning anything: an unknown stdio mode is
+/// rejected before launch.
 fn induce_process_error() {
-    // SAFETY: `argc` is negative, so the export returns before dereferencing
-    // `cmd` or `args`; the pointers are valid regardless.
+    // SAFETY: null program and argv are accepted as empty; the unknown stdin
+    // mode refuses the launch.
     unsafe {
-        hew_runtime::process::hew_process_run_args(std::ptr::null(), std::ptr::null(), -1);
+        hew_runtime::process::hew_process_start(std::ptr::null(), std::ptr::null_mut(), 9, 0, 0);
     }
 }
 
@@ -149,7 +149,7 @@ fn hew_last_error_is_a_borrow_not_a_transfer() {
     // SAFETY: `first` is a live NUL-terminated C string owned by the runtime.
     let borrowed = unsafe { CStr::from_ptr(first) }.to_owned();
     assert!(
-        borrowed.to_bytes().starts_with(b"hew_process_run_args"),
+        borrowed.to_bytes().starts_with(b"hew_process_start"),
         "the borrow must read back the message the runtime stored"
     );
 }

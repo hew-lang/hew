@@ -1,0 +1,89 @@
+// A failure edge wraps an error in the one variant of the target enum that
+// carries it alone, so composing module errors needs no `From` impls. A
+// declared `From` still takes precedence.
+
+enum ParseError {
+    Empty;
+    NotANumber(string);
+}
+
+impl Error for ParseError {}
+
+enum StoreError {
+    Missing(string);
+    Locked;
+}
+
+impl Error for StoreError {}
+
+enum AppError {
+    Parse(ParseError);
+    Store(StoreError);
+    Code(i64);
+    Note(string);
+}
+
+impl Error for AppError {}
+
+impl From<string> for AppError {
+    fn from(value: string) -> AppError {
+        .Note(f"noted: {value}")
+    }
+}
+
+fn parse_number(text: string) -> i64 fails ParseError {
+    if text == "" {
+        return error .Empty;
+    }
+    if text == "8080" {
+        return 8080;
+    }
+    return error .NotANumber(text);
+}
+
+fn lookup(key: string) -> string fails StoreError {
+    if key == "port" {
+        return "8080";
+    }
+    if key == "host" {
+        return "localhost";
+    }
+    if key == "lock" {
+        return error .Locked;
+    }
+    return error .Missing(key);
+}
+
+fn setting(key: string) -> i64 fails AppError {
+    let text = lookup(key)?;
+    parse_number(text)?
+}
+
+fn exit_code(code: i64) -> i64 fails AppError {
+    if code < 0 {
+        return error code;
+    }
+    code
+}
+
+fn refuse(reason: string) -> i64 fails AppError {
+    return error reason;
+}
+
+fn describe(key: string) {
+    match setting(key) {
+        .Ok(value) => println(f"{key}: {value}"),
+        .Err(.Parse(.NotANumber(text))) => println(f"{key}: not a number: {text}"),
+        .Err(.Store(.Missing(name))) => println(f"{key}: no setting named {name}"),
+        .Err(other) => println(f"{key}: {other}"),
+    }
+}
+
+fn main() {
+    describe("port");
+    describe("host");
+    describe("user");
+    describe("lock");
+    println(f"{exit_code(-2):?} {exit_code(3):?}");
+    println(f"{refuse("busy"):?}");
+}

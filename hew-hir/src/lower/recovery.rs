@@ -33,6 +33,25 @@ impl LowerCtx {
             Some(hew_types::ErrorConversion::From { method }) => {
                 self.lower_from_conversion(method, value, target, edge_span)
             }
+            Some(hew_types::ErrorConversion::Variant { index }) => {
+                let ResolvedTy::Named { head, .. } = target else {
+                    return self.error_conversion_boundary(value, edge_span, "variant target");
+                };
+                // The edge's error type is a declared enum: its constructor
+                // owner is the declaration's rendered path.
+                let Some(declaration) = head.declaration(&self.defs) else {
+                    return self.error_conversion_boundary(value, edge_span, "variant target");
+                };
+                let owner = self.defs.path(declaration.declaration()).to_string();
+                self.try_register_enum_instantiation_ty(target, edge_span);
+                self.synthetic_variant_ctor(
+                    &owner,
+                    index as usize,
+                    Some(vec![("0".to_string(), value)]),
+                    target.clone(),
+                    edge_span,
+                )
+            }
             Some(hew_types::ErrorConversion::Binder(call)) => {
                 let args = LoweredCallArgs {
                     args: vec![value],
@@ -48,18 +67,25 @@ impl LowerCtx {
                     span: edge_span.clone(),
                 }
             }
-            None => {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "failure edge".to_string(),
-                        reason: "no checked error conversion at this edge".to_string(),
-                    },
-                    edge_span.clone(),
-                    "the checker must select the conversion at every failure edge",
-                ));
-                value
-            }
+            None => self.error_conversion_boundary(value, edge_span, "no checked conversion"),
         }
+    }
+
+    fn error_conversion_boundary(
+        &mut self,
+        value: HirExpr,
+        edge_span: &Span,
+        reason: &str,
+    ) -> HirExpr {
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "failure edge".to_string(),
+                reason: format!("{reason} at this edge"),
+            },
+            edge_span.clone(),
+            "the checker must select the conversion at every failure edge",
+        ));
+        value
     }
 
     /// A static call to the selected `From.from` impl method.

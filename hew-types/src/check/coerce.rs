@@ -849,6 +849,24 @@ impl Checker {
                     })
             }
         };
+        // An enum with exactly one variant carrying the error alone wraps it;
+        // two such variants have no single meaning and refuse.
+        let conversion = match conversion {
+            Some(conversion) => Some(conversion),
+            None => match self.single_payload_variant(&target, &source) {
+                Ok(index) => index.map(|index| ErrorConversion::Variant { index }),
+                Err(candidates) => {
+                    self.report_ambiguous_variant_conversion(
+                        edge,
+                        &source,
+                        &target,
+                        &candidates,
+                        span,
+                    );
+                    return false;
+                }
+            },
+        };
         // A binder bounded `F: From<E>` converts through the bound; each
         // instantiation of `F` supplies the impl.
         let conversion = conversion.or_else(|| {
@@ -865,6 +883,94 @@ impl Checker {
         }
         self.report_error_no_conversion(edge, &source, &target, span);
         false
+    }
+
+    /// The declaration index of the one variant of enum `target` whose sole
+    /// payload is exactly `source`, or every candidate when more than one
+    /// variant carries it. A payload that is one of the enum's own type
+    /// parameters never matches: the conversion is read from the declaration.
+    fn single_payload_variant(&self, target: &Ty, source: &Ty) -> Result<Option<u32>, Vec<String>> {
+        let Ty::Named { head, args } = target else {
+            return Ok(None);
+        };
+        let Some(nominal) = head.nominal() else {
+            return Ok(None);
+        };
+        let Some(definition) = self.head_type_def(*head) else {
+            return Ok(None);
+        };
+        if definition.kind != TypeDefKind::Enum {
+            return Ok(None);
+        }
+        let source = source.materialize_literal_defaults();
+        let mut candidates: Vec<&String> = definition
+            .variants
+            .iter()
+            .filter_map(|(name, variant)| match variant {
+                VariantDef::Tuple(payloads) => match payloads.as_slice() {
+                    [payload] if Self::bare_param(payload).is_none() => {
+                        let payload = Self::instantiate_type_def_member(
+                            payload,
+                            &definition.type_params,
+                            args,
+                        );
+                        (self.subst.resolve(&payload) == source).then_some(name)
+                    }
+                    _ => None,
+                },
+                VariantDef::Unit | VariantDef::Struct(_) => None,
+            })
+            .collect();
+        candidates.sort();
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [name] => Ok(self
+                .defs
+                .member_of_kind(
+                    nominal.declaration(),
+                    hew_parser::ast::Symbol::intern(name),
+                    crate::DeclarationKind::Variant,
+                )
+                .and_then(|variant| self.defs.site(variant))
+                .map(crate::DeclarationOccurrence::ordinal)),
+            _ => Err(candidates.into_iter().cloned().collect()),
+        }
+    }
+
+    fn report_ambiguous_variant_conversion(
+        &mut self,
+        edge: FailureEdge,
+        source: &Ty,
+        target: &Ty,
+        candidates: &[String],
+        span: &Span,
+    ) {
+        let edge_name = edge.spelling();
+        let source_name = source.user_facing().to_string();
+        let target_name = target.user_facing().to_string();
+        let code = TypeErrorKind::ErrorNoConversion.as_kind_str();
+        let variants = candidates
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let carry = if candidates.len() == 2 {
+            "both carry"
+        } else {
+            "all carry"
+        };
+        self.report_error_with_suggestions(
+            TypeErrorKind::ErrorNoConversion,
+            span,
+            format!(
+                "{code}: {edge_name} cannot choose a variant of `{target_name}`: \
+                 {variants} {carry} `{source_name}`"
+            ),
+            vec![format!(
+                "declare which one: `impl From<{source_name}> for {target_name} \
+                 {{ fn from(value: {source_name}) -> {target_name} {{ ... }} }}`"
+            )],
+        );
     }
 
     fn report_error_no_conversion(

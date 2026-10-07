@@ -286,8 +286,10 @@ pub enum ResultReturnKind {
 }
 
 /// How an error crosses one failure edge (`?` or `return error`), chosen by
-/// the checker in rule order (D547): the same type passes through, a trait
-/// object target erases, and a declared `impl From<E> for F` converts.
+/// the checker in rule order (D547, D577): the same type passes through, a
+/// trait object target erases, a declared `impl From<E> for F` converts, an
+/// enum with exactly one variant carrying `E` alone wraps it, and a binder
+/// bounded `F: From<E>` converts through its bound.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorConversion {
     Same,
@@ -299,6 +301,11 @@ pub enum ErrorConversion {
     /// Call `From.from` on the error payload with the binder `F` of a bound
     /// `F: From<E>` as `Self`; each instantiation of `F` supplies the impl.
     Binder(BinderTraitCall),
+    /// Construct the target enum's one variant whose sole payload is the
+    /// error, by declaration index (D577).
+    Variant {
+        index: u32,
+    },
 }
 
 /// A static call a generic binder's bound selects, with the binder as

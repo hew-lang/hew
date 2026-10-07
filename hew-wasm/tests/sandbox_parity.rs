@@ -99,6 +99,11 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/error_display.hew",
     },
     ParityCase {
+        // A failure edge wraps an error in the one variant carrying it alone.
+        test_name: "variant_edges",
+        source_rel: "examples/sandbox-graduation/variant_edges.hew",
+    },
+    ParityCase {
         // Failure edges: `?` and `return error` keep the same error, apply a
         // declared `From` and erase into `dyn Error`.
         test_name: "error_edges",
@@ -770,6 +775,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         ),
         "error_display" => Some(
             "Missing: port\nPair: retries, 3\nOutOfRange: name: port, value: 70000\nClosed\nLocation: file: app.hew, line: 12\nStore: Closed\nRefused: the store is busy\nOther: Location: file: lib.hew, line: 4\n8080\n",
+        ),
+        "variant_edges" => Some(
+            "port: 8080\nhost: not a number: localhost\nuser: no setting named user\nlock: Store: Locked\nErr(Code: -2) Ok(3)\nErr(Note: noted: busy)\n",
         ),
         "error_edges" => Some(
             "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",

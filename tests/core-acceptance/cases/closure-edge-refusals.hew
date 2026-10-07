@@ -1,0 +1,26 @@
+import std.fs;
+
+fn parse(text: string) -> i64 fails string {
+    if text == "" {
+        return error "empty";
+    }
+    1
+}
+
+fn main() {
+    // An inferred edge takes its error type from the first exit; a second
+    // exit with another error type has no conversion.
+    let mixed = |path: string| {
+        let n = parse(path)?;
+        let text = fs.read(path)?;
+        n + text.len()
+    };
+    // A closure that declares a value return has no failure edge.
+    let declared = |text: string| -> i64 {
+        if text == "" {
+            return error "empty";
+        }
+        1
+    };
+    println(f"{mixed("a"):?} {declared("b")}");
+}

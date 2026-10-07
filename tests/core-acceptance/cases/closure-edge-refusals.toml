@@ -1,0 +1,19 @@
+[[case]]
+id = "closure-edge-refusals"
+intent = "A closure's inferred failure edge keeps the error type of its first exit, and a closure declaring a value return has no edge for `return error`."
+source = "cases/closure-edge-refusals.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_ERROR_NO_CONVERSION"
+line = 15
+column = 20
+message = "`?` cannot convert `std.fs.IoError` into `string`"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 21
+column = 13
+message = "`return error` requires an enclosing function declared with `fails`"

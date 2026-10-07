@@ -1011,6 +1011,8 @@ impl Checker {
         let prev_failure_edge = self.current_failure_edge.take();
 
         let previous_inferred_returns = self.inferred_lambda_returns.take();
+        let prev_failure_edge_inferred = std::mem::replace(&mut self.failure_edge_inferred, false);
+        let exits = crate::check::callables::FailureExits::of(body);
         let ret_ty = if let Some(annotation) = return_type {
             let (expected_ret, hole_vars) = self.resolve_annotation_holes(annotation);
             // Unify the annotated return type against the contextual expected return
@@ -1025,16 +1027,32 @@ impl Checker {
             // Guard: do not pre-seed body with Ty::Error (unresolvable annotation).
             // Synthesize instead so internal body errors are still reported.
             let resolved_ret = self.subst.resolve(&expected_ret);
+            self.current_failure_edge =
+                crate::check::items::failure_edge(Some(annotation), &resolved_ret);
             if matches!(resolved_ret, Ty::Error) {
                 self.synthesize(&body.0, &body.1);
+            } else if let Some((success, _)) = self
+                .current_failure_edge
+                .as_ref()
+                .and(resolved_ret.as_result())
+            {
+                let success = success.clone();
+                self.check_failing_lambda_body(body, &success);
             } else {
                 self.check_against(&body.0, &body.1, &expected_ret);
             }
             self.subst.resolve(&expected_ret)
+        } else if let Some(result) = expected
+            .and_then(|(_, expected_ret)| self.inferred_lambda_failure_return(expected_ret, exits))
+        {
+            self.check_inferred_failing_lambda(body, &result)
         } else if let Some((_, expected_ret)) = expected {
             self.current_return_type = Some(expected_ret.clone());
             self.check_against(&body.0, &body.1, expected_ret);
             expected_ret.clone()
+        } else if exits.any() {
+            let result = Ty::result(Ty::Var(TypeVar::fresh()), Ty::Var(TypeVar::fresh()));
+            self.check_inferred_failing_lambda(body, &result)
         } else {
             self.infer_lambda_result(body)
         };
@@ -1044,6 +1062,7 @@ impl Checker {
         self.current_return_type = prev_return_type;
         self.deferred_body = previous_defer;
         self.current_failure_edge = prev_failure_edge;
+        self.failure_edge_inferred = prev_failure_edge_inferred;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.task_scope_depth = prev_task_scope_depth;
         self.in_lambda_actor_body = prev_in_lambda_actor_body;

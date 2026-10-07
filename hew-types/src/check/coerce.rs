@@ -878,7 +878,7 @@ impl Checker {
         let source_name = source.user_facing().to_string();
         let target_name = target.user_facing().to_string();
         let code = TypeErrorKind::ErrorNoConversion.as_kind_str();
-        let (message, suggestions) = if matches!(target, Ty::TraitObject { .. }) {
+        let (message, mut suggestions) = if matches!(target, Ty::TraitObject { .. }) {
             (
                 format!("{code}: {edge_name} cannot erase `{source_name}` into `{target_name}`"),
                 vec![format!(
@@ -908,6 +908,12 @@ impl Checker {
                 ],
             )
         };
+        if self.failure_edge_inferred {
+            suggestions.push(format!(
+                "the closure fails with `{target_name}`, inferred from its first failure exit; \
+                 declare `-> T fails E` on the closure to choose its error type"
+            ));
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::ErrorNoConversion,
             span,

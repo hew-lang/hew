@@ -87,6 +87,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/seeded_random.hew",
     },
     ParityCase {
+        // A closure fails through a declared or inferred edge, exactly as a
+        // function does.
+        test_name: "closure_edges",
+        source_rel: "examples/sandbox-graduation/closure_edges.hew",
+    },
+    ParityCase {
         // Failure edges: `?` and `return error` keep the same error, apply a
         // declared `From` and erase into `dyn Error`.
         test_name: "error_edges",
@@ -753,6 +759,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
         "stdin_concurrent" => Some("one line each\nrest=[three\nfour]\n"),
         "stdin_lines" => Some("first=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
+        "closure_edges" => Some(
+            "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n",
+        ),
         "error_edges" => Some(
             "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",
         ),

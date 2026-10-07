@@ -1,0 +1,53 @@
+// A closure fails through the same edge a function does: declared with
+// `-> T fails E`, or inferred from a body that uses `return error` or `?`.
+// Its body produces the success value; the caller sees a `Result`.
+
+fn parse(text: string) -> i64 fails string {
+    if text == "x" {
+        return error f"not a number: {text}";
+    }
+    3
+}
+
+fn try_map(items: Vec<string>, f: fn(string) -> i64 fails string) -> Vec<i64> fails string {
+    var out: Vec<i64> = [];
+    for item in items {
+        out.push(f(item)?);
+    }
+    out
+}
+
+fn main() {
+    let declared = |text: string| -> i64 fails string {
+        if text == "" {
+            return error "empty";
+        }
+        parse(text)? * 2
+    };
+    println(f"{declared(""):?} {declared("1"):?} {declared("x"):?}");
+    let inferred = |text: string| parse(text)? + 1;
+    println(f"{inferred("1"):?} {inferred("x"):?}");
+    let only_fails = |text: string| {
+        if text == "" {
+            return error "nothing to print";
+        }
+        println(text);
+    };
+    println(f"{only_fails(""):?} {only_fails("printed"):?}");
+    let early = |text: string| {
+        if text == "r" {
+            return 7;
+        }
+        parse(text)?
+    };
+    println(f"{early("r"):?} {early("1"):?} {early("x"):?}");
+    println(f"{try_map(["1", "2"], |text| -> i64 fails string { parse(text)? * 2 }):?}");
+    println(f"{try_map(["1", "x"], parse):?}");
+    let checked = try_map(["4", ""], |text| {
+        if text == "" {
+            return error "blank entry";
+        }
+        parse(text)?
+    });
+    println(f"{checked:?}");
+}

@@ -3508,6 +3508,9 @@ pub struct Checker {
     /// (`fails E`), or `None` in a body without one. The one authority for
     /// whether `return error` and a `Result` `?` may leave the body.
     pub(super) current_failure_edge: Option<Ty>,
+    /// Whether `current_failure_edge` was inferred from a closure's first
+    /// failure exit rather than declared.
+    pub(super) failure_edge_inferred: bool,
     pub(super) in_generator: bool,
     /// Set to `true` for the duration of synthesizing the inner expression of
     /// `Expr::Await(inner)`.  Enables `check_named_method_fallback` to
@@ -4422,6 +4425,7 @@ impl Checker {
             current_return_type: None,
             inferred_lambda_returns: None,
             current_failure_edge: None,
+            failure_edge_inferred: false,
             in_generator: false,
             suspension_operands: HashSet::new(),
             prepared_select_tasks: Vec::new(),

@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-edges"
+intent = "A closure fails through a declared or inferred edge exactly as a function does: its body produces the success value, `return error` and `?` leave through the edge, and a failing closure passes where a `fn(T) -> U fails E` is expected."
+source = "../../examples/sandbox-graduation/closure_edges.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n"
+exit = 0

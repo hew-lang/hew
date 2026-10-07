@@ -546,6 +546,11 @@ pub(super) trait NodeVisitor {
     fn visit_stmt(&mut self, _stmt: &Stmt, _span: &Span) {}
     /// An expression, visited before its sub-expressions are descended.
     fn visit_expr(&mut self, _expr: &Expr, _span: &Span) {}
+    /// Whether the walk descends into the body of a nested callable (a
+    /// closure, an actor closure or a `gen { }` block).
+    fn enters_nested_callables(&self) -> bool {
+        true
+    }
 }
 
 /// Drive `visitor` over `body` and every node nested inside it.
@@ -683,8 +688,16 @@ fn walk_call_args<V: NodeVisitor>(args: &[CallArg], visitor: &mut V) {
     clippy::match_same_arms,
     reason = "exhaustive expression visitor enumerates every Expr shape so a new node forces a decision; per-variant arms are kept even when two walks coincide"
 )]
-fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+pub(super) fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     visitor.visit_expr(expr, span);
+    if !visitor.enters_nested_callables()
+        && matches!(
+            expr,
+            Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } | Expr::GenBlock { .. }
+        )
+    {
+        return;
+    }
     match expr {
         Expr::Literal(_)
         | Expr::Ident(_)

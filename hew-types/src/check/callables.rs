@@ -904,3 +904,90 @@ impl Checker {
         }
     }
 }
+
+/// The failure exits a callable body spells outside any nested callable:
+/// `return error` and the postfix `?`. A closure without a declared return
+/// takes a failure edge from them.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct FailureExits {
+    pub return_error: bool,
+    pub try_operator: bool,
+}
+
+impl FailureExits {
+    pub(super) fn of(body: &Spanned<Expr>) -> Self {
+        let mut exits = Self::default();
+        super::lints::walk_expr(&body.0, &body.1, &mut exits);
+        exits
+    }
+
+    pub(super) fn any(self) -> bool {
+        self.return_error || self.try_operator
+    }
+}
+
+impl super::lints::NodeVisitor for FailureExits {
+    fn visit_expr(&mut self, expr: &Expr, _span: &Span) {
+        self.return_error |= matches!(expr, Expr::ReturnError(_));
+        self.try_operator |= matches!(expr, Expr::PostfixTry(_));
+    }
+
+    fn enters_nested_callables(&self) -> bool {
+        false
+    }
+}
+
+impl Checker {
+    /// The `Result` a closure without a declared return fails through, when
+    /// its body spells a failure exit and its expected return can carry one:
+    /// a `Result` supplies the edge, an open variable takes a fresh one.
+    pub(super) fn inferred_lambda_failure_return(
+        &mut self,
+        expected_ret: &Ty,
+        exits: FailureExits,
+    ) -> Option<Ty> {
+        match self.subst.resolve(expected_ret) {
+            resolved if resolved.as_result().is_some() && exits.return_error => Some(resolved),
+            Ty::Var(_) if exits.any() => {
+                let result = Ty::result(
+                    Ty::Var(crate::ty::TypeVar::fresh()),
+                    Ty::Var(crate::ty::TypeVar::fresh()),
+                );
+                // An open variable always unifies.
+                let unified = self.try_unify_with_owner_identity(expected_ret, &result);
+                debug_assert!(unified, "an open return variable takes the failing Result");
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+
+    /// Check a closure body that fails through `result`'s error type: the
+    /// body produces the success value and its exits leave through the edge.
+    pub(super) fn check_inferred_failing_lambda(
+        &mut self,
+        body: &Spanned<Expr>,
+        result: &Ty,
+    ) -> Ty {
+        let (success, error) = result
+            .as_result()
+            .map(|(success, error)| (success.clone(), error.clone()))
+            .expect("a failing closure returns a Result");
+        self.failure_edge_inferred = matches!(self.subst.resolve(&error), Ty::Var(_));
+        self.current_return_type = Some(result.clone());
+        self.current_failure_edge = Some(error);
+        self.check_failing_lambda_body(body, &success);
+        self.subst.resolve(result)
+    }
+
+    /// Check a failing closure's body against its success type. The whole
+    /// body is the closure's tail, so a value it produces is wrapped as the
+    /// success; a diverging body needs no wrap.
+    pub(super) fn check_failing_lambda_body(&mut self, body: &Spanned<Expr>, success: &Ty) {
+        let actual = self.check_against(&body.0, &body.1, success);
+        if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+            self.tail_ok_coercions
+                .insert(super::SpanKey::in_module(&body.1, self.current_module_idx));
+        }
+    }
+}

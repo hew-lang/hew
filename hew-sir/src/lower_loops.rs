@@ -18,7 +18,7 @@ impl Builder<'_, '_> {
             .map(|(value, ty)| (*value, ty.clone()))
             .collect();
         self.finish_recovery_scopes(scope.scope_floor, &preserved)?;
-        self.finish_task_scopes(scope.scope_floor, false)?;
+        self.finish_task_scopes(scope.scope_floor)?;
         let args = scope
             .carried
             .iter()

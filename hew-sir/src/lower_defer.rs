@@ -10,10 +10,13 @@ use super::{
 
 #[derive(Clone)]
 pub(super) struct PendingDefer {
-    id: crate::DeferId,
+    pub(super) id: crate::DeferId,
     scope: crate::DeferScopeId,
-    floor: usize,
+    pub(super) floor: usize,
     body: HirExpr,
+    /// The bindings in scope where the defer was registered, which are the
+    /// only ones its body can name.
+    pub(super) visible: Vec<super::BindingId>,
 }
 
 #[derive(Clone)]
@@ -56,10 +59,10 @@ impl Builder<'_, '_> {
             self.dual_return = value.as_ref().map(|result| result.operand.value);
         }
         self.finish_recovery_scopes(0, &preserved)?;
-        self.finish_task_scopes(0, false)?;
+        self.finish_task_scopes(0)?;
         self.end_loans_since(0)?;
         self.destroy_live_since(&preserved)?;
-        self.drain_scopes(0, true)?;
+        self.end_scopes(0)?;
         self.dual_return = outer_dual_return;
         if let Some(result) = &value {
             self.owned_live.remove(&result.operand.value);
@@ -85,11 +88,11 @@ impl Builder<'_, '_> {
             .filter(|body| body.floor >= floor)
             .cloned()
         {
-            self.finish_task_scopes(boundary.floor, false)?;
+            self.finish_task_scopes(boundary.floor)?;
             let mut keep = boundary.preserved;
             keep.extend(preserved.iter().map(|(value, ty)| (*value, ty.clone())));
             self.destroy_live_since(&keep)?;
-            self.drain_scopes(boundary.floor, true)?;
+            self.end_scopes(boundary.floor)?;
             self.recovery_bodies.pop();
             while self.scopes.len() > boundary.floor {
                 self.leave_scope();
@@ -109,11 +112,14 @@ impl Builder<'_, '_> {
             },
             Provenance::Site(body.site),
         )?;
+        let mut visible = self.bindings.keys().copied().collect::<Vec<_>>();
+        visible.sort_unstable();
         self.defers.push(PendingDefer {
             id,
             scope,
             floor: self.scopes.len() - 1,
             body: body.clone(),
+            visible,
         });
         Ok(())
     }
@@ -162,9 +168,14 @@ impl Builder<'_, '_> {
             .chain(self.recovery_bodies.last())
             .max_by_key(|body| body.floor)
             .cloned();
-        self.finish_task_scopes(boundary.as_ref().map_or(0, |body| body.floor), true)?;
+        let floor = boundary.as_ref().map_or(0, |body| body.floor);
         let loan_floor = boundary.as_ref().map_or(0, |body| body.loan_depth);
-        self.end_loans_since(loan_floor)?;
+        let mut steps = self.plan_task_joins(floor, true);
+        steps.extend(self.plan_argument_loans(loan_floor));
+        for step in &steps {
+            self.emit_exit_step(step)?;
+        }
+        self.argument_receiver_loans.truncate(loan_floor);
         let preserved = boundary
             .as_ref()
             .map(|b| b.preserved.clone())
@@ -174,19 +185,8 @@ impl Builder<'_, '_> {
         } else {
             None
         };
-        self.destroy_live_since(&preserved)?;
-        self.drain_scopes(boundary.as_ref().map_or(0, |b| b.floor), false)?;
-        if boundary.is_none() {
-            // The fault leaves init: release the deferred state seats this
-            // path initialized (D447). Spawn-supplied fields stay with the
-            // spawn, which destroys them when init reports failure.
-            for place in self.deferred_initialized.clone().into_iter().rev() {
-                self.emit_place_operation(
-                    SemOpKind::EndLifetime { place },
-                    Provenance::Synthesized,
-                )?;
-                self.deferred_initialized.remove(&place);
-            }
+        for step in self.plan_fault_drain(floor, &preserved, boundary.is_none()) {
+            self.emit_exit_step(&step)?;
         }
         self.set_terminator(
             boundary.map_or(SemTerminator::ResumeUnwind { handback }, |body| {
@@ -285,60 +285,7 @@ impl Builder<'_, '_> {
         self.finish_fault_exit()
     }
 
-    /// Run actions before ending their locals. A failed normal drain escalates
-    /// through the enclosing cleanup boundary instead of resuming the source exit.
-    pub(super) fn drain_scopes(&mut self, floor: usize, dispatch: bool) -> Result<(), String> {
-        let previous_draining = self.cleanup_draining;
-        self.cleanup_draining = true;
-        let mut ran = false;
-        for index in (floor..self.scopes.len()).rev() {
-            while self
-                .defers
-                .last()
-                .is_some_and(|action| action.floor == index)
-            {
-                let action = self.defers.pop().expect("pending action");
-                self.emit_deferred_body(&action)?;
-                ran = true;
-            }
-            // A loan is a dependent of what it borrows: it ends before the
-            // bindings whose storage it names.
-            self.end_scope_loans(index)?;
-            for binding in self.scopes[index].clone().into_iter().rev() {
-                self.end_binding_scope(binding)?;
-            }
-        }
-        self.cleanup_draining = previous_draining;
-        if ran || self.cleanup_may_fail {
-            self.cleanup_may_fail = false;
-            if !dispatch {
-                let next = self.new_block(Vec::new());
-                self.set_terminator(SemTerminator::CleanupDispatch {
-                    normal: edge(next),
-                    fault: edge(next),
-                })?;
-                self.current = next;
-                return Ok(());
-            }
-            let normal = self.new_block(Vec::new());
-            let fault = self.new_block(Vec::new());
-            self.set_terminator(SemTerminator::CleanupDispatch {
-                normal: edge(normal),
-                fault: edge(fault),
-            })?;
-            let saved = self.control_state();
-            self.current = fault;
-            while self.scopes.len() > floor {
-                self.leave_scope();
-            }
-            self.finish_fault_exit()?;
-            self.restore_control_state(&saved);
-            self.current = normal;
-        }
-        Ok(())
-    }
-
-    fn emit_deferred_body(&mut self, action: &PendingDefer) -> Result<(), String> {
+    pub(super) fn emit_deferred_body(&mut self, action: &PendingDefer) -> Result<(), String> {
         let saved = self.control_state();
         let park = crate::FaultParkId(action.scope.0);
         let body = self.new_block(Vec::new());

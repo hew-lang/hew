@@ -28,6 +28,9 @@ mod binding;
 #[path = "lower_defer.rs"]
 mod deferred;
 
+#[path = "lower_cleanup.rs"]
+mod cleanup;
+
 #[path = "lower_var_self.rs"]
 mod var_self;
 

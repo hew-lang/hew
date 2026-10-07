@@ -115,37 +115,14 @@ impl Builder<'_, '_> {
     /// the source exit, so a failing close leaves the frame as a fault after
     /// every remaining owner has been released (D516).
     pub(super) fn note_release_may_fault(&mut self, ty: &hew_types::ResolvedTy) {
-        if crate::resource::release_may_fault(
-            &crate::resource::authored_close_in_hir(self.service.module),
-            &self.service.aggregate_shapes,
-            &self.service.variant_shapes,
-            ty,
-        ) {
+        if self.release_may_fault(ty) {
             self.cleanup_may_fail = true;
         }
-    }
-
-    /// Emit an exit without changing the declaration context used to generate
-    /// another successor. `EndLifetime` itself determines initialized contents.
-    pub(super) fn end_scopes(&mut self, floor: usize) -> Result<(), String> {
-        self.drain_scopes(floor, true)
     }
 
     pub(super) fn open_scope(&mut self) {
         self.scopes.push(Vec::new());
         self.scope_loan_floors.push(self.scope_loans.len());
-    }
-
-    /// End every scope loan taken inside the scope at `index`.
-    pub(super) fn end_scope_loans(&mut self, index: usize) -> Result<(), String> {
-        let floor = self
-            .scope_loan_floors
-            .get(index)
-            .copied()
-            .unwrap_or(self.scope_loans.len())
-            .min(self.scope_loans.len());
-        let loans = self.scope_loans.split_off(floor);
-        self.end_call_loans(&loans)
     }
 
     pub(super) fn leave_scope(&mut self) {

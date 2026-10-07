@@ -202,8 +202,9 @@ fn scalar_named(name: &str) -> &'static str {
     }
 }
 
-/// Admit only the existing borrowed `BytesTriple` query ABI. Mutating methods
-/// require their own out-parameter, bounds or variant result contracts.
+/// Admit only the borrowed `BytesTriple` query ABI: the receiver and every
+/// other `bytes` argument travel as a pointer to the caller's triple. Mutating
+/// methods require their own out-parameter, bounds or variant result contracts.
 fn validate_borrowed_bytes(
     receiver: &str,
     params: &[&str],
@@ -225,10 +226,6 @@ fn validate_borrowed_bytes(
             params.first(),
             Some(&"Bytes"),
             "bytes receiver must be argument zero"
-        );
-        assert!(
-            !params[1..].contains(&"Bytes"),
-            "additional bytes arguments need an explicit ABI contract"
         );
         assert_ne!(
             result, "Bytes",

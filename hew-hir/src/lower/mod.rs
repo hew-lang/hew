@@ -267,12 +267,6 @@ struct SendStatusCodes {
     otherwise: &'static str,
 }
 
-/// A pipe reports `1` when its reader left and `2` when full.
-const PIPE_SEND_STATUS: SendStatusCodes = SendStatusCodes {
-    named: (1, "Closed"),
-    otherwise: "Full",
-};
-
 /// A node reports `HEW_ERR_STALE_REF` for a superseded pid; every other
 /// failure leaves the peer unreachable.
 const REMOTE_SEND_STATUS: SendStatusCodes = SendStatusCodes {
@@ -640,6 +634,25 @@ fn builtin_enum_variant_names() -> impl Iterator<Item = &'static str> {
 }
 
 pub(crate) fn builtin_enum_hir_variants(spec: &BuiltinEnumSpec) -> Vec<HirVariant> {
+    if let BuiltinEnumVariants::Monomorphic(variants) = spec.variants {
+        return variants
+            .iter()
+            .map(|variant| HirVariant {
+                name: variant.name.to_string(),
+                kind: if variant.payload.is_empty() {
+                    HirVariantKind::Unit
+                } else {
+                    HirVariantKind::Tuple(
+                        variant
+                            .payload
+                            .iter()
+                            .map(|field| field.resolved_ty())
+                            .collect(),
+                    )
+                },
+            })
+            .collect();
+    }
     spec.variant_names()
         .enumerate()
         .map(|(index, name)| {

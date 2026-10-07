@@ -244,7 +244,8 @@ pub(crate) fn terminator_successors(
             value,
             normal,
             closed,
-            full,
+            refused,
+            committed,
             cancel,
             unwind,
             ..
@@ -263,13 +264,22 @@ pub(crate) fn terminator_successors(
                     "stream send cannot replace an active fault",
                 ));
             }
+            let mut refusal = state.clone();
+            if let Some(committed) = committed {
+                define(
+                    function,
+                    borrows,
+                    &mut refusal,
+                    *committed,
+                    block,
+                    "committed byte count",
+                )?;
+            }
             let mut successors = vec![
                 apply_edge(function, borrows, normal, state.clone(), block)?,
                 apply_edge(function, borrows, closed, state.clone(), block)?,
+                apply_edge(function, borrows, refused, refusal, block)?,
             ];
-            if let Some(full) = full {
-                successors.push(apply_edge(function, borrows, full, state.clone(), block)?);
-            }
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
@@ -1131,9 +1141,11 @@ pub(crate) fn verify_terminator(
             Ok(())
         }
         PhysicalTerminator::StreamSend {
+            park,
             sink,
             value,
             element,
+            committed,
             ..
         } => {
             let (ArgumentTransfer::Borrow(sink), ArgumentTransfer::Move(value)) = (sink, value)
@@ -1142,6 +1154,15 @@ pub(crate) fn verify_terminator(
                     "stream send borrows its sink and consumes its element",
                 ));
             };
+            if *park != committed.is_some()
+                || committed.is_some_and(|committed| {
+                    slot(committed).map_or(true, |slot| slot.ty != ResolvedTy::I64)
+                })
+            {
+                return Err(PhysicalError::new(
+                    "a parking stream send stores its committed count in one i64 slot",
+                ));
+            }
             if hew_sir::sink_element(&slot(*sink)?.ty) != Some(&element.ty)
                 || slot(*value)?.ty != element.ty
             {

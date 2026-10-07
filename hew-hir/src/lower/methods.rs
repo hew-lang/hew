@@ -1105,26 +1105,13 @@ impl LowerCtx {
                     },
                     |d| ResolvedRef::Builtin(d.family()),
                 );
-                // `Sink.send` / `Sink.try_send` answer with a runtime status
-                // (0 accepted, 1 closed, 2 full) that this site folds into the
-                // checked `Result<(), SendError>`; the call itself is typed as
-                // that status.
-                let send_status = matches!(
-                    c_symbol.as_str(),
-                    "hew_stream_send_layout" | "hew_stream_try_send_layout"
-                );
-                let call_ty = if send_status {
-                    ResolvedTy::I32
-                } else {
-                    ret_ty.clone()
-                };
                 let callee = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Function {
                         capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                         params: Vec::new(),
-                        ret: Box::new(call_ty.clone()),
+                        ret: Box::new(ret_ty.clone()),
                     },
                     intent: IntentKind::Read,
                     kind: HirExprKind::BindingRef {
@@ -1139,10 +1126,6 @@ impl LowerCtx {
                     args: lowered_args,
                     evaluation_order,
                 };
-                if send_status {
-                    let call = self.make_expr(call, call_ty, IntentKind::Read, span.clone());
-                    return self.lower_send_status_result(call, ret_ty, PIPE_SEND_STATUS, &span);
-                }
                 (call, ret_ty)
             }
             Some(MethodCallRewrite::GenericMathIntrinsic { op }) => {

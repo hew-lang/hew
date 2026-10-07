@@ -974,10 +974,12 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
-    /// Transfer one element into the borrowed sink. `park` waits for
-    /// capacity; without it a full pipe resumes at once on `full`. The
-    /// element is consumed on every exit; `closed` resumes after the consumer
-    /// closed its half.
+    /// Transfer one element into the borrowed sink. The element is consumed
+    /// on every exit; `closed` resumes after the consumer closed its half.
+    /// `park` waits for capacity, and `refused` resumes when a socket write
+    /// deadline passes, with `committed` holding the bytes of the item the OS
+    /// took. Without `park` a full pipe resumes at once on `refused` and
+    /// `committed` is absent.
     StreamSend {
         park: bool,
         sink: ArgumentTransfer,
@@ -985,7 +987,8 @@ pub enum PhysicalTerminator {
         element: PhysicalValueRecipe,
         normal: PhysicalEdge,
         closed: PhysicalEdge,
-        full: Option<PhysicalEdge>,
+        refused: PhysicalEdge,
+        committed: Option<StorageId>,
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },

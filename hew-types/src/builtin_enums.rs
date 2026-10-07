@@ -18,17 +18,35 @@ pub struct BuiltinMonomorphicEnum {
     pub name: &'static str,
     /// Exact nominal identity (`owner.name`) used by HIR, MIR, and codegen.
     pub canonical_name: &'static str,
-    /// Unit variants in `.hew` declaration order.
+    /// Variants in `.hew` declaration order.
     pub variants: &'static [BuiltinMonomorphicEnumVariant],
     /// Whether sandbox bytecode should suppress an otherwise unused descriptor.
     pub suppress_from_sandbox_emit: bool,
 }
 
-/// One unit variant of a monomorphic builtin enum.
+/// One variant of a monomorphic builtin enum.
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinMonomorphicEnumVariant {
     /// Variant name.
     pub name: &'static str,
+    /// Positional payload fields; empty for a unit variant.
+    pub payload: &'static [BuiltinEnumPayload],
+}
+
+/// The payload field types a monomorphic builtin enum variant may carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinEnumPayload {
+    I64,
+}
+
+impl BuiltinEnumPayload {
+    /// The checker-boundary type of this payload field.
+    #[must_use]
+    pub fn resolved_ty(self) -> crate::ResolvedTy {
+        match self {
+            Self::I64 => crate::ResolvedTy::I64,
+        }
+    }
 }
 
 include!(concat!(env!("OUT_DIR"), "/builtin_enums.rs"));

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1593u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1595u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1593] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1595] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -6000,6 +6000,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1593] = {
      "\"wasm32-wasip1\": \"fn hew_stream_last_error_kind() -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_stream_last_write_committed",
+     "{\"native\": \"fn hew_stream_last_write_committed() -> i64\", "
+     "\"wasm32-wasip1\": \"fn hew_stream_last_write_committed() -> i64\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_stream_lines",
      "{\"native\": \"fn hew_stream_lines( *mut HewStream) -> *mut HewStream\", "
      "\"wasm32-wasip1\": \"fn hew_stream_lines( *mut HewStream) -> *mut "
@@ -6164,6 +6169,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1593] = {
      "\"wasm32-wasip1\": \"fn hew_stream_try_send_move_release( *mut HewSink, "
      "*mut c_void, *const HewValueLayout, *mut *mut HewReleaseCursor, ) -> "
      "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_stream_write_committed_native",
+     "{\"native\": \"fn hew_stream_write_committed_native( *mut "
+     "HewNativeStream) -> i64\", \"wasm32-wasip1\": \"fn "
+     "hew_stream_write_committed_native( *mut HewNativeStream) -> i64\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_stream_write_poll_native",

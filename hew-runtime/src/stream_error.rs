@@ -33,6 +33,9 @@ thread_local! {
     /// Canonical, platform-independent error-kind tag for the last error, or
     /// 0 (`IO_ERROR_KIND_UNCLASSIFIED`) when not set. See [`io_error_kind_tag`].
     static LAST_ERROR_KIND: RefCell<i32> = const { RefCell::new(0) };
+    /// Bytes of the item a timed-out write committed to the OS before its
+    /// deadline, or 0.
+    static LAST_WRITE_COMMITTED: RefCell<i64> = const { RefCell::new(0) };
 }
 
 // ── Canonical error-kind tags ─────────────────────────────────────────────────
@@ -65,6 +68,9 @@ pub const IO_ERROR_KIND_PERMISSION_DENIED: i32 = 2;
 pub const IO_ERROR_KIND_ALREADY_EXISTS: i32 = 3;
 /// Portable `std::io::ErrorKind::TimedOut`.
 pub const IO_ERROR_KIND_TIMED_OUT: i32 = 4;
+/// The peer is gone: `BrokenPipe`, `ConnectionReset`, `ConnectionAborted` or
+/// `NotConnected`. A socket send reports it as `SendError.Closed`.
+pub const IO_ERROR_KIND_CONNECTION_CLOSED: i32 = 5;
 
 /// Map a portable [`std::io::ErrorKind`] to its canonical cross-platform tag.
 ///
@@ -79,6 +85,10 @@ pub fn io_error_kind_tag(kind: std::io::ErrorKind) -> i32 {
         ErrorKind::PermissionDenied => IO_ERROR_KIND_PERMISSION_DENIED,
         ErrorKind::AlreadyExists => IO_ERROR_KIND_ALREADY_EXISTS,
         ErrorKind::TimedOut => IO_ERROR_KIND_TIMED_OUT,
+        ErrorKind::BrokenPipe
+        | ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::NotConnected => IO_ERROR_KIND_CONNECTION_CLOSED,
         _ => IO_ERROR_KIND_UNCLASSIFIED,
     }
 }
@@ -258,6 +268,18 @@ pub extern "C" fn hew_stream_last_errno() -> i32 {
 #[no_mangle]
 pub extern "C" fn hew_stream_last_error_kind() -> i32 {
     take_last_error_kind()
+}
+
+/// Record how much of an item a timed-out write committed.
+pub fn set_last_write_committed(committed: i64) {
+    LAST_WRITE_COMMITTED.with(|c| *c.borrow_mut() = committed);
+}
+
+/// Bytes of the item the last timed-out socket write committed to the OS
+/// before its deadline, or 0. Clears the count after reading.
+#[no_mangle]
+pub extern "C" fn hew_stream_last_write_committed() -> i64 {
+    LAST_WRITE_COMMITTED.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
 #[cfg(test)]

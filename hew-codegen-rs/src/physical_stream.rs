@@ -530,7 +530,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             value,
             normal,
             closed,
-            full,
+            refused,
+            committed,
             cancel,
             unwind,
             ..
@@ -548,12 +549,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let handle = self.load(*sink, "stream.sink")?;
         if !park {
-            let full = full.as_ref().ok_or_else(|| {
-                CodegenError::FailClosed("non-parking stream send lacks its full edge".into())
-            })?;
             return self
-                .emit_stream_try_send(handle, *value, witness, normal, closed, full, unwind);
+                .emit_stream_try_send(handle, *value, witness, normal, closed, refused, unwind);
         }
+        let committed = committed.ok_or_else(|| {
+            CodegenError::FailClosed("parking stream send lacks its committed slot".into())
+        })?;
         let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
@@ -590,6 +591,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let failed = self
             .ctx
             .append_basic_block(self.value, "stream.send.failed");
+        let timed_out = self
+            .ctx
+            .append_basic_block(self.value, "stream.send.timed.out");
         let cancelled = self
             .ctx
             .append_basic_block(self.value, "stream.send.cancelled");
@@ -611,6 +615,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     (self.ctx.i32_type().const_zero(), wait),
                     (self.ctx.i32_type().const_int(1, false), sent),
                     (self.ctx.i32_type().const_int(2, false), peer_closed),
+                    (self.ctx.i32_type().const_int(4, false), timed_out),
                 ],
             )
             .llvm_ctx("dispatch stream send outcome")?;
@@ -622,6 +627,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         // outcome only after it.
         const SENT: u64 = suspend::EXIT_NORMAL;
         const CLOSED: u64 = suspend::EXIT_UNWIND + 1;
+        const TIMED_OUT: u64 = suspend::EXIT_UNWIND + 2;
         let mut join = self.exit_join("stream.send.release");
         self.builder.position_at_end(sent);
         self.finish_stream(request, waker, cancelled)?;
@@ -629,6 +635,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(peer_closed);
         self.finish_stream(request, waker, cancelled)?;
         self.leave(&mut join, CLOSED)?;
+        // The deadline's committed count lives in the operation; read it
+        // before the operation is released.
+        self.builder.position_at_end(timed_out);
+        let count = suspend::call_value(
+            &self.builder,
+            coro::external(
+                self.llvm,
+                "hew_stream_write_committed_native",
+                self.ctx.i64_type().fn_type(&[pointer.into()], false),
+            )?,
+            &[request.into()],
+            "stream.send.committed",
+        )?;
+        self.store(committed, count)?;
+        self.finish_stream(request, waker, cancelled)?;
+        self.leave(&mut join, TIMED_OUT)?;
         self.builder.position_at_end(cancelled);
         self.free_handle("hew_stream_cancel_native", request)?;
         self.drain_stream(request, waker)?;
@@ -640,15 +662,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.leave(&mut join, suspend::EXIT_UNWIND)?;
         let selected = self.enter_join(&join)?;
         self.release_stream_operation(request)?;
-        let ([sent_block, closed_block, cancel_block], unwind_block) = self.dispatch_exits(
-            selected,
-            [
-                (SENT, "stream.send.accepted"),
-                (CLOSED, "stream.send.rejected"),
-                (suspend::EXIT_CANCEL, "stream.send.cancel"),
-            ],
-            "stream.send.unwind",
-        )?;
+        let ([sent_block, closed_block, timed_out_block, cancel_block], unwind_block) = self
+            .dispatch_exits(
+                selected,
+                [
+                    (SENT, "stream.send.accepted"),
+                    (CLOSED, "stream.send.rejected"),
+                    (TIMED_OUT, "stream.send.deadline"),
+                    (suspend::EXIT_CANCEL, "stream.send.cancel"),
+                ],
+                "stream.send.unwind",
+            )?;
         self.builder.position_at_end(sent_block);
         self.emit_edge(normal)?;
         self.builder.position_at_end(closed_block);
@@ -662,6 +686,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("read rejected element release outcome")?
             .into_int_value();
         self.emit_call_outcome(status, None, Some(closed), Some(unwind))?;
+        self.builder.position_at_end(timed_out_block);
+        let status = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                self.active_status,
+                "stream.deadline.status",
+            )
+            .llvm_ctx("read timed-out element release outcome")?
+            .into_int_value();
+        self.emit_call_outcome(status, None, Some(refused), Some(unwind))?;
         self.builder.position_at_end(cancel_block);
         self.emit_edge(cancel)?;
         self.builder.position_at_end(unwind_block);

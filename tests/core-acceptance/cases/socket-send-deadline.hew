@@ -1,0 +1,63 @@
+import std.net;
+import std.stream;
+
+// A socket sink whose peer never reads reports the write deadline as
+// `SendError.TimedOut(n)` with the bytes of the item the OS took, without
+// trapping its actor; a reset peer is `SendError.Closed`.
+actor Writer {
+    let output: stream.Sink<bytes>;
+    receive fn fill() -> string {
+        var data = bytes.new();
+        for _ in 0..65536 {
+            data.push(7);
+        }
+        for _ in 0..1024 {
+            match output.send(data) {
+                .Ok(()) => {}
+                .Err(SendError.TimedOut(committed)) => return f"timed out, committed in range: {committed >= 0 && committed <= 65536}",
+                .Err(SendError.Closed) => return "closed",
+                .Err(other) => return f"other {other}",
+            }
+        }
+        "peer buffer never filled"
+    }
+}
+
+actor Healthy {
+    receive fn ping() -> bool {
+        true
+    }
+}
+
+fn closed_peer(listener: net.Listener) -> string {
+    let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
+    let peer = listener.accept();
+    peer.close();
+    let (input, output) = connection.split();
+    input.close();
+    for _ in 0..200 {
+        match output.send("ping".to_bytes()) {
+            .Ok(()) => sleep(5ms),
+            .Err(SendError.Closed) => return "closed",
+            .Err(other) => return f"other {other}",
+        }
+    }
+    "never refused"
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
+    let peer = listener.accept();
+    connection.set_write_timeout(30).expect("write timeout");
+    let (input, output) = connection.split();
+    let writer = spawn Writer(output: output);
+    let healthy = spawn Healthy();
+    println(writer.fill().expect("the writer answers instead of trapping"));
+    let alive = healthy.ping().expect("sibling answers");
+    println(f"sibling alive: {alive}");
+    peer.close();
+    input.close();
+    println(closed_peer(listener));
+    listener.close();
+}

@@ -15977,6 +15977,21 @@
         "wasm32-wasip1"
       ],
       "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_last_write_committed() -> i64",
+        "wasm32-wasip1": "fn hew_stream_last_write_committed() -> i64"
+      },
+      "symbol": "hew_stream_last_write_committed"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16360,6 +16375,21 @@
         "wasm32-wasip1": "fn hew_stream_try_send_move_release( *mut HewSink, *mut c_void, *const HewValueLayout, *mut *mut HewReleaseCursor, ) -> i32"
       },
       "symbol": "hew_stream_try_send_move_release"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_write_committed_native( *mut HewNativeStream) -> i64",
+        "wasm32-wasip1": "fn hew_stream_write_committed_native( *mut HewNativeStream) -> i64"
+      },
+      "symbol": "hew_stream_write_committed_native"
     },
     {
       "availability": [

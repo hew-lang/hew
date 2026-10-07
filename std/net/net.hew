@@ -135,6 +135,11 @@ impl Display for NetError {
     }
 }
 
+// Canonical error-kind tags mirrored from `hew-runtime/src/stream_error.rs`.
+const IO_ERROR_KIND_TIMED_OUT: i32 = 4;
+
+const IO_ERROR_KIND_CONNECTION_CLOSED: i32 = 5;
+
 // ── Scalar and endpoint validation ────────────────────────────────────
 //
 // Every native networking entry point below narrows an `i64` to the `i32`
@@ -443,8 +448,10 @@ impl ConnectionMethods for Connection {
             }
         }
     }
-    /// Send raw bytes; `Closed` and `Full` are the peer's answers, anything
-    /// else traps.
+    /// Send raw bytes. `Closed` means the peer is gone; `TimedOut(n)` means
+    /// the write timeout passed after `n` bytes of `data` reached the OS, so
+    /// the stream position is unknown and the connection should be retired.
+    /// Any other failure traps.
     fn send(self, data: bytes) -> Result<(), SendError> {
         let status = unsafe {
             hew_tcp_write(self, data)
@@ -452,22 +459,23 @@ impl ConnectionMethods for Connection {
         if status >= 0 {
             return .Ok(());
         }
+        let kind = unsafe {
+            hew_stream_last_error_kind()
+        };
+        let committed = unsafe {
+            hew_stream_last_write_committed()
+        };
         let errno = unsafe {
             hew_stream_last_errno()
         } as i64;
         let detail = unsafe {
             hew_stream_last_error()
         };
-        // EAGAIN/EWOULDBLOCK: Linux=11, macOS=35. ETIMEDOUT: Linux=110,
-        // macOS=60, Windows WSAETIMEDOUT=10060. The send buffer stayed full
-        // past the deadline.
-        if errno == 11 || errno == 35 || errno == 110 || errno == 60 || errno == 10060 {
-            return .Err(SendError.Full);
-        }
-        // ECONNRESET: Linux=104, macOS=54, Windows=10054. EPIPE: 32.
-        // ENOTCONN: Linux=107, macOS=57, Windows=10057.
-        if errno == 104 || errno == 54 || errno == 10054 || errno == 32 || errno == 107 || errno == 57 || errno == 10057 {
+        if kind == IO_ERROR_KIND_CONNECTION_CLOSED {
             return .Err(SendError.Closed);
+        }
+        if kind == IO_ERROR_KIND_TIMED_OUT {
+            return .Err(SendError.TimedOut(committed));
         }
         panic(f"net.Connection.send: {to_string(net_error_from_errno(errno))}: {detail}")
     }
@@ -686,6 +694,8 @@ extern "C" {
     fn hew_connection_is_valid(conn: Connection) -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
+    fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical error-kind tag; read before the errno
+    fn hew_stream_last_write_committed() -> i64;
     // TCP-to-Stream/Sink bridge.  Consumes the connection handle on every
     // return path; returns a StreamPair whose halves are extracted with the
     // pair extractor functions below.  On clone failure the consumed

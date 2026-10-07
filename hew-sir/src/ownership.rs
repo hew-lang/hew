@@ -520,9 +520,10 @@ pub enum SuspendKind {
         park: bool,
     },
     /// A stream producer transfers one element into the sink. `park` is the
-    /// `send()` contract: a full pipe parks the coroutine. `try_send()` is
-    /// the same transfer with `park: false` — a full pipe resumes at once on
-    /// its third, `full` edge.
+    /// `send()` contract: a full pipe parks the coroutine, and a socket write
+    /// deadline resumes on the third, `timed_out` edge carrying the bytes of
+    /// the item the OS took. `try_send()` is the same transfer with
+    /// `park: false` — a full pipe resumes at once on its third, `full` edge.
     StreamSend {
         park: bool,
     },

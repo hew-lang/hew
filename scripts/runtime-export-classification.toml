@@ -561,6 +561,7 @@ stable = [
   "hew_stream_last_errno",
   "hew_stream_last_error",
   "hew_stream_last_error_kind",
+  "hew_stream_last_write_committed",
   "hew_stream_lines",
   "hew_stream_next_layout",
   "hew_stream_try_next_layout",
@@ -1397,6 +1398,7 @@ non-declarable = [
   "hew_stream_read_poll_native",
   "hew_stream_read_start_native",
   "hew_stream_read_take_native",
+  "hew_stream_write_committed_native",
   "hew_stream_write_poll_native",
   "hew_stream_write_start_native",
   "hew_stream_pipe_native",
@@ -3112,6 +3114,13 @@ params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_stream_last_write_committed"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_stream_last_error_kind"

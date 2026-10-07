@@ -116,15 +116,11 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         PhysicalTerminator::StreamSend {
             normal,
             closed,
-            full,
+            refused,
             cancel,
             unwind,
             ..
-        } => [normal, closed]
-            .into_iter()
-            .chain(full.as_ref())
-            .chain([cancel, unwind])
-            .collect(),
+        } => vec![normal, closed, refused, cancel, unwind],
         PhysicalTerminator::GeneratorYield {
             normal,
             cancel,

@@ -599,6 +599,50 @@ pub(crate) unsafe fn failure_message(operation: *const HewAsyncIo) -> Option<Str
     }
 }
 
+/// How a failed socket write ended.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteFailure {
+    /// The peer reset or closed the connection.
+    Closed,
+    /// The write deadline passed; this many bytes of the item reached the OS.
+    TimedOut(i64),
+    /// Any other failure, which traps.
+    Other,
+}
+
+/// Classify a failed write operation for its sink's typed result.
+///
+/// # Safety
+/// `operation` is a live operation reference whose status is `Error`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn write_failure(operation: *const HewAsyncIo) -> WriteFailure {
+    // SAFETY: the caller lends a live operation reference.
+    let operation = unsafe { &*operation };
+    let state = operation.state.lock_or_recover();
+    let State::Ready(Err(failure)) = &*state else {
+        return WriteFailure::Other;
+    };
+    match failure.kind {
+        crate::stream_error::IO_ERROR_KIND_CONNECTION_CLOSED => WriteFailure::Closed,
+        crate::stream_error::IO_ERROR_KIND_TIMED_OUT => {
+            WriteFailure::TimedOut(committed(operation))
+        }
+        _ => WriteFailure::Other,
+    }
+}
+
+/// Bytes of a write's item that reached the OS, or 0 for any other operation.
+#[cfg(not(target_arch = "wasm32"))]
+fn committed(operation: &HewAsyncIo) -> i64 {
+    let written = operation
+        .net
+        .as_ref()
+        .and_then(net::NetOp::written)
+        .unwrap_or(0);
+    i64::try_from(written).unwrap_or(i64::MAX)
+}
+
 /// Transfer a count from a completed write. The output is untouched on failure.
 ///
 /// # Safety
@@ -716,11 +760,21 @@ pub unsafe extern "C" fn hew_async_io_restore_error(operation: *const HewAsyncIo
     };
     let state = operation.state.lock_or_recover();
     match &*state {
-        State::Ready(Err(error)) => crate::stream_error::set_last_error_with_errno_and_kind(
-            error.message.clone(),
-            error.errno,
-            error.kind,
-        ),
+        State::Ready(Err(error)) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::stream_error::set_last_write_committed(
+                if error.kind == crate::stream_error::IO_ERROR_KIND_TIMED_OUT {
+                    committed(operation)
+                } else {
+                    0
+                },
+            );
+            crate::stream_error::set_last_error_with_errno_and_kind(
+                error.message.clone(),
+                error.errno,
+                error.kind,
+            );
+        }
         State::Ready(Ok(IoValue::Offload(env))) => env.error.restore(),
         State::Ready(Ok(_)) | State::Taken => {
             let _ = crate::stream_error::take_last_error();

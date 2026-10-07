@@ -19,8 +19,16 @@ pub struct DerivedBuiltinEnum {
     pub owner: String,
     pub name: &'static str,
     pub canonical_name: String,
-    pub variants: Vec<String>,
+    pub variants: Vec<DerivedBuiltinVariant>,
     pub suppress_from_sandbox_emit: bool,
+}
+
+/// One variant in declaration order with its payload, spelled as the
+/// generated catalog's `BuiltinEnumPayload` constructors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedBuiltinVariant {
+    pub name: String,
+    pub payload: Vec<&'static str>,
 }
 
 struct BuiltinEnumAbi {
@@ -49,8 +57,8 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "SendError",
-        variant_count: 10,
-        order_fingerprint: 0x6f31_303d_4437_3a86,
+        variant_count: 11,
+        order_fingerprint: 0x1040_ca29_1074_360c,
         suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {
@@ -109,15 +117,11 @@ pub fn derive_builtin_enums(
                 let TypeBodyItem::Variant(variant) = body_item else {
                     continue;
                 };
-                if !matches!(variant.kind, hew_parser::ast::VariantKind::Unit) {
-                    return Err(format!(
-                        "{}::{name} has payloaded variant `{}`; the builtin enum layout catalog only supports unit variants",
-                        source.module,
-                        variant.name,
-                        name = decl.name
-                    ));
-                }
-                variants.push(variant.name.to_string());
+                variants.push(derive_variant(
+                    source.module,
+                    decl.name.name.as_str(),
+                    &variant,
+                )?);
             }
             declarations.insert(
                 (source.module.to_string(), decl.name.to_string()),
@@ -136,7 +140,11 @@ pub fn derive_builtin_enums(
                     abi.module, abi.name
                 )
             })?;
-            let actual_fingerprint = enum_order_fingerprint(variants);
+            let names = variants
+                .iter()
+                .map(|variant| variant.name.clone())
+                .collect::<Vec<_>>();
+            let actual_fingerprint = enum_order_fingerprint(&names);
             if variants.len() != abi.variant_count
                 || actual_fingerprint != abi.order_fingerprint
             {
@@ -280,6 +288,51 @@ fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
 fn impl_target_name(decl: &ImplDecl) -> Option<&str> {
     match &decl.target_type.0 {
         TypeExpr::Named { path, .. } => path.as_single().map(|ident| ident.name.as_str()),
+        _ => None,
+    }
+}
+
+/// One builtin enum variant with its payload. The layout catalog describes
+/// unit variants and tuple variants of `i64` fields.
+fn derive_variant(
+    module: &str,
+    enum_name: &str,
+    variant: &hew_parser::ast::VariantDecl,
+) -> Result<DerivedBuiltinVariant, String> {
+    let payload = match &variant.kind {
+        hew_parser::ast::VariantKind::Unit => Vec::new(),
+        hew_parser::ast::VariantKind::Tuple(fields) => fields
+            .iter()
+            .map(|(field, _)| builtin_payload(field))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                format!(
+                    "{module}::{enum_name} variant `{}` carries a payload the builtin enum \
+                     layout catalog cannot describe; only `i64` fields are supported",
+                    variant.name
+                )
+            })?,
+        hew_parser::ast::VariantKind::Struct(_) => {
+            return Err(format!(
+                "{module}::{enum_name} has record variant `{}`; the builtin enum layout \
+                 catalog supports unit and `i64` tuple variants",
+                variant.name
+            ));
+        }
+    };
+    Ok(DerivedBuiltinVariant {
+        name: variant.name.to_string(),
+        payload,
+    })
+}
+
+/// The generated `BuiltinEnumPayload` constructor for one payload field.
+fn builtin_payload(field: &TypeExpr) -> Option<&'static str> {
+    match field {
+        TypeExpr::Named {
+            path,
+            type_args: None,
+        } if path.as_single().map(|ident| ident.name.as_str()) == Some("i64") => Some("I64"),
         _ => None,
     }
 }

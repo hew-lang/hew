@@ -196,6 +196,16 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
     }
 }
 
+impl NetOp {
+    /// Bytes of a write's item that reached the OS so far.
+    pub(super) fn written(&self) -> Option<usize> {
+        match &*self.action.lock_or_recover() {
+            Action::Write { written, .. } => Some(*written),
+            _ => None,
+        }
+    }
+}
+
 fn io_timed_out() -> IoFailure {
     super::deadline::timed_out("TCP I/O timeout")
 }

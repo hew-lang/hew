@@ -297,8 +297,8 @@ fn stream_producers_yield_into_the_request_sink_and_snapshot_state() {
     assert_eq!(sends.len(), 1);
     let (inputs, resumes) = &sends[0];
     assert_eq!(
-        *resumes, 2,
-        "an accepted send and a closed consumer both resume"
+        *resumes, 3,
+        "an accepted send, a closed consumer and a passed write deadline each resume"
     );
     assert_eq!(inputs[0].decision, BoundaryDecision::Borrow);
     assert_eq!(inputs[0].operand.value, body.params.last().unwrap().value);

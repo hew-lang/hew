@@ -749,8 +749,20 @@ fn concrete_builtin_variant_shape(
                     .iter()
                     .map(|variant| SemVariant {
                         name: variant.name.to_string(),
-                        kind: SemVariantKind::Unit,
-                        fields: Vec::new(),
+                        kind: if variant.payload.is_empty() {
+                            SemVariantKind::Unit
+                        } else {
+                            SemVariantKind::Tuple
+                        },
+                        fields: variant
+                            .payload
+                            .iter()
+                            .enumerate()
+                            .map(|(field, payload)| SemVariantField {
+                                name: field.to_string(),
+                                ty: payload.resolved_ty(),
+                            })
+                            .collect(),
                     })
                     .collect(),
             ));
@@ -1018,6 +1030,7 @@ pub(crate) fn runtime_variant_tags(
             (Role::SendErrorUnauthorized, "Unauthorized"),
             (Role::SendErrorBackpressure, "Backpressure"),
             (Role::SendErrorDead, "Dead"),
+            (Role::SendErrorTimedOut, "TimedOut"),
         ],
         head if *head == KnownDecl::ActorError.head() => &[
             (Role::ActorErrorRejected, "Rejected"),

@@ -153,9 +153,16 @@ fn render_builtin_enums(enums: &[authority_codegen::DerivedBuiltinEnum]) -> Stri
         )
         .unwrap();
         for variant in &enum_fact.variants {
+            let payload = variant
+                .payload
+                .iter()
+                .map(|field| format!("BuiltinEnumPayload::{field}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             writeln!(
                 output,
-                "    BuiltinMonomorphicEnumVariant {{ name: {variant:?} }},"
+                "    BuiltinMonomorphicEnumVariant {{ name: {:?}, payload: &[{payload}] }},",
+                variant.name
             )
             .unwrap();
         }

@@ -1980,7 +1980,7 @@ impl Checker {
                     }
                 }
             }
-            // Handle module-qualified actor: spawn module.ActorName(args)
+            // Handle module-qualified actor: spawn module.ActorName { args }
             Expr::FieldAccess { object, field } => {
                 if let Expr::Ident(module) = &object.0 {
                     if self.module_binding_in_current_file(module.name.as_str()) {
@@ -1993,7 +1993,7 @@ impl Checker {
                         // private actor is absent from it entirely). Resolve the
                         // qualified definition and require an actor or a
                         // supervisor, which spawn the same way; otherwise
-                        // `spawn secret.Account()` would lower to bare `Account`
+                        // `spawn secret.Account` would lower to bare `Account`
                         // and silently route to a same-named root/pub actor -- a
                         // capability-boundary hole. `resolve_module_type` already
                         // gates on `pub` export + the module-qualified `type_defs`
@@ -2143,7 +2143,13 @@ impl Checker {
             self.enforce_type_def_instantiation_bounds(&name, &resolved_type_args, span);
 
             match self.nominal_head_for_key(&name) {
-                Some(actor) => Ty::actor_handle(actor, resolved_type_args),
+                Some(actor) => {
+                    let handle = Ty::actor_handle(actor, resolved_type_args);
+                    // A key naming a state field resolves to that field, so
+                    // a field rename reaches every spawn that names it.
+                    self.record_struct_init_field_resolutions(args, labels, &handle);
+                    handle
+                }
                 None => Ty::Error,
             }
         } else {

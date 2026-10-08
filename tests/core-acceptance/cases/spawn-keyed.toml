@@ -1,0 +1,10 @@
+[[case]]
+id = "spawn-keyed"
+intent = "A spawn, a supervisor child and a transition head bind their keys by name in braces, with defaults, init parameters and supervisor parameters, while a call with the same bare names stays positional."
+source = "cases/spawn-keyed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "a=2 b=1\na=1 b=2\na=2 b=1\nplain reads=0 limit=10\nevaluate set\nset reads=0 limit=3\nevaluate loader\nloader 4 9\n0\nrelay kind=2 failed=false\na=20 b=10\nopened by sam\n"
+exit = 0

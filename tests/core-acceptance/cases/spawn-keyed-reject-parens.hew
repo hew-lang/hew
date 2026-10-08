@@ -1,0 +1,13 @@
+// The retired parenthesised spawn read like a call but bound by name, so
+// `spawn Pair(b, a)` silently meant `spawn Pair { b, a }`. It is refused with
+// the brace spelling as its fix-it.
+actor Pair {
+    let a: i64;
+    let b: i64;
+}
+
+fn main() {
+    let a = 1;
+    let b = 2;
+    let _p = spawn Pair(b, a);
+}

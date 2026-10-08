@@ -402,7 +402,13 @@ impl Checker {
                 continue;
             };
             let target = (Expr::Ident(Ident::new(&identity)), child.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
-            let handle = self.check_spawn(&target, &child.type_args, &child.args, &[], &child.span);
+            let handle = self.check_spawn(
+                &target,
+                &child.type_args,
+                &child.args,
+                &child.arg_labels,
+                &child.span,
+            );
             self.record_type(&child.span, &handle);
             if let Some(child_ty) = handle.as_actor_handle() {
                 // Keyed by the declaration identity, as registration writes it:
@@ -440,7 +446,7 @@ impl Checker {
 
     /// Validate the `count:` clause on every `pool` child declaration.
     ///
-    /// A static pool (`pool workers: Worker(..) count: N`) spawns exactly N
+    /// A static pool (`pool workers: Worker { .. } count: N`) spawns exactly N
     /// fungible members at bootstrap. The clause is REQUIRED on a pool
     /// declaration, must type as an integer, and — when a compile-time integer
     /// literal — must be positive. A non-literal expr (`count: config.workers`)
@@ -1587,7 +1593,7 @@ impl Checker {
         if let Some(site) = self.scope_site() {
             self.scopes.record_resolution(
                 site,
-                &field.span,
+                &field.name_span,
                 super::scope::Resolution::Field(identity.0, identity.1),
             );
         }

@@ -797,7 +797,7 @@ pub struct HirSupervisorChild {
     /// [`HirExprKind::Spawn`].
     pub init_slots: Vec<hew_types::check::SpawnSlot>,
     /// Reserved pool-size expression, lowered from the `count:` named arg on a
-    /// `pool name: Type(...) count: N` declaration. `None` for a static child
+    /// `pool name: Type { .. } count: N` declaration. `None` for a static child
     /// or a pool child that omitted `count:` (which the checker rejects). The
     /// expression yields the number of fungible members the bootstrap spawns
     /// into the pool slot. `count` is a reserved arg name on pool declarations,

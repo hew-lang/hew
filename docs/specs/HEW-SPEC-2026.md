@@ -118,7 +118,7 @@ to know whether a handler finished; handle its failure envelope (§2.1.1).
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-**An actor is the type of its handle (normative).** `spawn Orders(...)` has
+**An actor is the type of its handle (normative).** `spawn Orders { ... }` has
 type `Orders`. A field, parameter, return, collection element or record field
 that holds an actor is written with the actor's own name, `self` inside an
 actor body is `Self` which is that actor, and a supervisor is addressed by its
@@ -232,7 +232,7 @@ fn load(store: Store, index: i64) -> bytes fails LoadError {
 }
 
 fn main() {
-    let store = spawn Store();
+    let store = spawn Store;
     store.put(b"\x01\x02").expect("put is delivered");
     match load(store, 0) {
         .Ok(block) => println(block.len()),
@@ -315,7 +315,7 @@ actor Counter {
 **Calling named actors:**
 
 ```hew,ignore
-let counter = spawn Counter(count: 0);
+let counter = spawn Counter { count: 0 };
 
 // No return type: the call waits until the handler has finished
 counter.increment(10)?;
@@ -408,7 +408,7 @@ These limitations do not establish sandbox or cross-platform execution parity.
 
 **Actor instantiation:**
 
-Actors are instantiated using the `spawn` keyword with constructor arguments matching the actor's `init` block parameters:
+Actors are instantiated with `spawn`. Like a record literal, a spawn names its keys in braces: the actor's state fields that `init` does not initialize, then its `init` parameters.
 
 ```hew
 actor Counter {
@@ -423,10 +423,10 @@ actor WorkerActor {
 }
 
 fn main() {
-    // Spawn with named field arguments
-    let counter = spawn Counter(count: 0);
-    // Spawn with no arguments (if actor has no-arg init or no init block)
-    let worker = spawn WorkerActor();
+    // Spawn with keys, in braces like a record literal
+    let counter = spawn Counter { count: 0 };
+    // An actor with no keys to supply is spawned by its name alone
+    let worker = spawn WorkerActor;
     stop(counter);
     stopped(counter);
     stop(worker);
@@ -434,7 +434,47 @@ fn main() {
 }
 ```
 
-> **Note:** Named actor spawn always uses parenthesized arguments, even when empty. This is distinct from lambda actor syntax, which uses `actor |params| { body }`.
+**Keyed construction (normative).** Parentheses hold positional arguments and
+braces hold keyed ones, so a spawn takes its keys in braces and binds each by
+name, never by position:
+
+- The keys are the state fields that `init` does not initialize (D447) and the
+  `init` parameters, which never share a name (D458). A field with a default
+  may be omitted; every other key is required. A supervisor's keys are its
+  header parameters.
+- The values evaluate left to right as written; defaults follow. Shorthand
+  (`spawn Pair { a, b }`) means `a: a, b: b`, as in a record literal.
+- An unknown key is `E_SPAWN_ARG_UNKNOWN` and a repeated one
+  `E_SPAWN_ARG_DUPLICATE`, both reported at the key; a field `init`
+  initializes is `E_ACTOR_FIELD_DEFERRED`.
+- A spawn with no keys is written `spawn Store`. `spawn Store {}` is refused
+  (`E_EMPTY_KEY_BRACES`), and so is `..base` (`E_SPAWN_BASE`): an actor has no
+  value to spread from.
+- The retired parenthesised list `spawn Pair(a: 1, b: 2)` is refused with
+  `E_SPAWN_PAREN_ARGS` and a fix-it; `hew fmt --migrate` rewrites it.
+- Where a block follows an expression, spawn braces follow the record-literal
+  rule of the shorthand section: write `(spawn Gen { n })` there.
+
+```hew
+actor Pair {
+    let a: i64;
+    let b: i64;
+    receive fn show() -> string {
+        f"a={a} b={b}"
+    }
+}
+
+fn main() {
+    let a = 1;
+    let b = 2;
+    let same = spawn Pair { b, a }; // keyed, so order does not matter
+    let swapped = spawn Pair { a: b, b: a };
+    println(same.show().expect("show")); // a=1 b=2
+    println(swapped.show().expect("show")); // a=2 b=1
+}
+```
+
+A spawn is distinct from lambda actor syntax, which uses `actor |params| { body }`.
 
 Actor behaviours can also be defined via traits:
 
@@ -514,7 +554,7 @@ fn main() {
 
 ```ebnf
 LambdaActorExpr = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
-ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Counter(count: 0) *)
+ActorSpawn      = "spawn" Path TypeArgs? [ "{" FieldInitList "}" ] ;  (* spawn Counter { count: 0 } *)
 ```
 
 **Type system:**
@@ -555,7 +595,7 @@ actor Counter {
 
 fn main() {
     // Spawn a named actor
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     // A lambda actor expression has the type `actor(M) -> R`
     let worker: actor(i64) = actor |msg: i64| {
         println(msg);
@@ -883,7 +923,8 @@ In a named field list, a field written as a bare identifier takes the value
 of the binding with that name: `name` means `name: name`. The rule is the same
 wherever fields are named by an initializer — record literals, enum struct
 variants (`Type.Variant { … }` and contextual `.Variant { … }`), record
-update, `spawn` arguments, and machine `emit` and transition field lists — and
+update, `spawn` keys and supervisor child keys, and machine `emit` and
+transition field lists — and
 mirrors the record pattern, where `.Circle { radius }` binds the field
 `radius` to a name of the same spelling. Bare and explicit fields mix in any
 order, and a bare field is a named field: it overrides `..base` and counts
@@ -933,7 +974,8 @@ A machine transition body `{ name }` is the expression body (§3.11.3); a field
 list there needs two fields or an explicit one.
 
 Named call arguments (§12.7) take no shorthand: `f(name)` is a positional
-argument.
+argument. Keyed lists use braces and parentheses are positional, so a bare
+name binds by name only inside braces.
 
 ### 3.2 Mutability
 
@@ -1268,7 +1310,7 @@ actor Outbox {
 }
 
 fn main() {
-    let outbox = spawn Outbox(capacity: 0);
+    let outbox = spawn Outbox { capacity: 0 };
     println(outbox.is_closed().expect("outbox replies"));
 }
 ```
@@ -1337,8 +1379,8 @@ actor Forwarder {
 }
 
 fn main() {
-    let handler = spawn Handler();
-    let forwarder = spawn Forwarder();
+    let handler = spawn Handler;
+    let forwarder = spawn Forwarder;
     let _ = forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
@@ -1392,9 +1434,9 @@ actor Broadcaster {
 }
 
 fn main() {
-    let first = spawn Handler();
-    let second = spawn Handler();
-    let broadcaster = spawn Broadcaster();
+    let first = spawn Handler;
+    let second = spawn Handler;
+    let broadcaster = spawn Broadcaster;
     let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 
@@ -2081,9 +2123,9 @@ actor Broadcaster {
 }
 
 fn main() {
-    let first = spawn Receiver();
-    let second = spawn Receiver();
-    let broadcaster = spawn Broadcaster();
+    let first = spawn Receiver;
+    let second = spawn Receiver;
+    let broadcaster = spawn Broadcaster;
     let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
@@ -2789,9 +2831,9 @@ actor Broadcaster {
 }
 
 fn main() {
-    let first = spawn Receiver();
-    let second = spawn Receiver();
-    let broadcaster = spawn Broadcaster();
+    let first = spawn Receiver;
+    let second = spawn Receiver;
+    let broadcaster = spawn Broadcaster;
     let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
@@ -3172,8 +3214,8 @@ actor Latest<T> {
 }
 
 fn main() {
-    let numbers = spawn Latest<i64>();
-    let names = spawn Latest<string>();
+    let numbers = spawn Latest<i64>;
+    let names = spawn Latest<string>;
     numbers.put(41).expect("put succeeds");
     names.put("hew").expect("put succeeds");
     println(f"{numbers.get().expect("get succeeds").expect("set")} {names.get().expect("get succeeds").expect("set")}");
@@ -3184,7 +3226,7 @@ fn main() {
 }
 ```
 
-`spawn Latest<i64>()` instantiates explicitly. When the init arguments fix the
+`spawn Latest<i64>` instantiates explicitly. When the init arguments fix the
 parameters, they are inferred the way record type arguments are:
 
 ```hew
@@ -3206,7 +3248,7 @@ actor Cache<K: Hash + Eq, V: Clone> {
 fn main() {
     var seed: HashMap<string, i64> = HashMap.new();
     seed.insert("answer", 42);
-    let cache = spawn Cache(entries: seed); // K = string, V = i64
+    let cache = spawn Cache { entries: seed }; // K = string, V = i64
     let found = cache.lookup("answer") handle error {
         .None
     };
@@ -3243,11 +3285,11 @@ actor Worker<Job: Send> {
 supervisor Pool<Job: Send> {
     strategy: one_for_one;
     intensity: 3 within 10s;
-    child worker: Worker<Job>(done: 0);
+    child worker: Worker<Job> { done: 0 };
 }
 
 fn main() {
-    let workers = spawn Pool<string>();
+    let workers = spawn Pool<string>;
     let completed = workers.worker.run("parse").expect("the example worker completes");
     println(completed);
     stop(workers);
@@ -4204,7 +4246,7 @@ machine Door {
         }
     }
 
-    on Open(by): Shut => Ajar { by: by }
+    on Open { by }: Shut => Ajar { by: by }
     on Close: Ajar => Shut;
 
     default { state }
@@ -4226,7 +4268,10 @@ fn main() {
 vocabulary. A state is a unit (`state Shut,`) or carries named fields, and a
 fielded state may declare `entry` and `exit` hooks (§3.11.5). A rule head is
 `on Event: Source => Target`, optionally with a payload head binding
-(`on Open(by):`), `reenter`, and a `when` guard.
+(`on Open { by }:`), `reenter`, and a `when` guard. The head binding names
+event fields in braces, as the record pattern `.Open { by }` does, and binds
+each to a local of the same name; the retired `on Open(by):` is refused with
+`E_EVENT_HEAD_PARENS` and a fix-it.
 
 **Surface spelling** (an illustration of what `hew-parser` accepts, not a
 normative grammar — see §12):
@@ -4261,7 +4306,7 @@ CompositeState = "state" Ident "{"
                    { TransitionDecl }               (* parent-level rules *)
                  "}" ;
 
-TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
+TransitionDecl = "on" Ident [ "{" Ident { "," Ident } "}" ] ":"
                  StatePattern "=>" StatePattern
                  [ "reenter" ] [ "when" Expr ] TransitionBody ;
 TransitionBody = ";" | "{" FieldInitList "}" | Block ;
@@ -4620,7 +4665,7 @@ actor ConnectionManager {
 }
 
 fn main() {
-    let manager = spawn ConnectionManager();
+    let manager = spawn ConnectionManager;
     let _ = manager.handle(.Connect); // established on 8080
     let _ = manager.handle(.Close); // closed
 }
@@ -5010,7 +5055,7 @@ completion envelope follows §2.1.1; submission still requires a mailbox view.
 
 | Aspect | Structured task | Actor |
 | --- | --- | --- |
-| Start | `fork call(...)` or `fork { ... }` | `spawn Actor(...)` or a lambda actor |
+| Start | `fork call(...)` or `fork { ... }` | `spawn Actor { ... }` or a lambda actor |
 | Result | `await` yields the declared `T` | a completion call yields the actor envelope |
 | Application error | an ordinary Result value | declared `fails` error reaches the completion envelope |
 | Fault | propagates through the owning scope | belongs to the actor and its supervisor |
@@ -5414,9 +5459,40 @@ supervisor MyPool {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child worker1: Worker(id: 1, count: 0);
-    child worker2: Worker(id: 2, count: 0) restart: transient;
-    child logger: Logger(level: 3) restart: temporary stop: 10s;
+    child worker1: Worker { id: 1, count: 0 };
+    child worker2: Worker { id: 2, count: 0 } restart: transient;
+    child logger: Logger { level: 3 } restart: temporary stop: 10s;
+}
+```
+
+**Header parameters.** `supervisor Name(param: Type, ...)` declares the values
+a spawn of the supervisor supplies: `spawn Name { param: value, ... }`. Every
+parameter is a required key, and child keys may read the parameters. Child
+handles are reached as fields of the supervisor handle.
+
+```hew
+type Plan {
+    name: string;
+    kind: i64;
+}
+
+actor RoleWorker {
+    let plan: Plan;
+    var failed: bool = false;
+    receive fn describe() -> string {
+        f"{plan.name} kind={plan.kind} failed={failed}"
+    }
+}
+
+supervisor RoleBranch(plan: Plan) {
+    strategy: one_for_one;
+    intensity: 2 within 60s;
+    child role: RoleWorker { plan } restart: transient;
+}
+
+fn main() {
+    let branch = spawn RoleBranch { plan: Plan { name: "relay", kind: 2 } };
+    println(branch.role.describe().expect("describe")); // relay kind=2 failed=false
 }
 ```
 
@@ -5431,11 +5507,14 @@ supervisor MyPool {
 
 **Child specifications:**
 
-- `child <name>: <ActorType>(<field>: <expr>, ...)` — a static supervised child.
-  Init args are named (positional args are rejected with a migration diagnostic).
-- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>;` — a pool of `N`
-  fungible children (only under `simple_one_for_one`). The parenthesised args
-  are the per-spawn template, exactly as for `child`; `count:` is the arity.
+- `child <name>: <ActorType> { <key>: <expr>, ... }` — a static supervised
+  child. Its keys are those a `spawn` of the actor takes (§2), with the same
+  shorthand, defaults and refusals; a child with no keys is written
+  `child <name>: <ActorType>;`. The retired parenthesised list is refused with
+  `E_CHILD_PAREN_ARGS` and a fix-it.
+- `pool <name>: <ActorType> { <key>: <expr>, ... } count: <N>;` — a pool of `N`
+  fungible children (only under `simple_one_for_one`). The braces hold the
+  per-spawn template, exactly as for `child`; `count:` is the arity.
 - Per-child suffix clauses, accepted in any order:
   - `restart: permanent | transient | temporary` (optional, default
     `permanent`). This is the only restart spelling — bare `T permanent` and
@@ -5452,7 +5531,7 @@ supervisor MyPool {
 
 **Pool arity is a clause, not an init field (normative).** `count:` sits
 beside `restart:` and `stop:` in the child's clause namespace, and the
-parenthesised argument list stays the actor's own field namespace. An actor
+braces stay the actor's own key namespace. An actor
 that happens to declare a field named `count` is therefore poolable like any
 other, and its `count` field is set the same way every other field is. The
 two namespaces never collide, so no diagnostic about pool arity can land on a
@@ -5519,16 +5598,16 @@ supervisor Inner {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child w1: Worker(id: 1, count: 0);
-    child w2: Worker(id: 2, count: 0);
+    child w1: Worker { id: 1, count: 0 };
+    child w2: Worker { id: 2, count: 0 };
 }
 
 supervisor Root {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child workers: Inner();
-    child cache: CacheActor(capacity: 1000);
+    child workers: Inner;
+    child cache: CacheActor { capacity: 1000 };
 }
 ```
 
@@ -5538,7 +5617,7 @@ When a child supervisor's restart budget is exhausted, it escalates to its paren
 
 ```hew,ignore
 fn main() {
-    let pool = spawn MyPool();
+    let pool = spawn MyPool;
     sleep(50ms);
 
     // Access children by declared name
@@ -5553,7 +5632,7 @@ fn main() {
 }
 ```
 
-- `spawn SupervisorName(...)` — starts a supervisor with its declared children
+- `spawn SupervisorName { ... }` — starts a supervisor with its declared children
 - `sup.child_name` — named actor-child access via field syntax. The compiler
   resolves the child name to a static slot and returns `ChildRef<Actor>`, which
   re-resolves the current incarnation on every ask or tell. The child name must
@@ -5777,7 +5856,7 @@ actor Journal {
 
 fn main() {
     let stop = os.shutdown_signal();
-    let journal = spawn Journal();
+    let journal = spawn Journal;
     for i in 0..3 {
         let stopping = select {
             request from stop.recv() => true,
@@ -6992,7 +7071,7 @@ machine Switch {
 supervisor App {
     strategy: one_for_one;
     intensity: 5 within 60s;
-    child counter: Counter() restart: permanent;
+    child counter: Counter restart: permanent;
 }
 
 trait Reader { fn read(self) -> i64; }

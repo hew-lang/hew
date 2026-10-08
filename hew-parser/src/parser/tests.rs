@@ -106,7 +106,7 @@ extern "C" {
 /// verbatim; bare child types stay the root/local spelling.
 #[test]
 fn parse_supervisor_child_dotted_module_qualified_type() {
-    let source = "supervisor S {\n    strategy: one_for_one;\n    intensity: 1 within 60s;\n\n    child a: bank.Account(n: 1);\n    child b: Local;\n}\n";
+    let source = "supervisor S {\n    strategy: one_for_one;\n    intensity: 1 within 60s;\n\n    child a: bank.Account { n: 1 };\n    child b: Local;\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Supervisor(sd) = &result.program.items[0].0 else {
@@ -121,7 +121,7 @@ fn parse_supervisor_child_dotted_module_qualified_type() {
 /// The params carry through so child init-arg exprs can derive from runtime config.
 #[test]
 fn parse_supervisor_construction_time_config_params() {
-    let source = "supervisor App(config: AppConfig) {\n    strategy: one_for_one;\n    child cache: Cache(capacity: config.cache_size);\n}\n";
+    let source = "supervisor App(config: AppConfig) {\n    strategy: one_for_one;\n    child cache: Cache { capacity: config.cache_size };\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Supervisor(sd) = &result.program.items[0].0 else {
@@ -138,7 +138,7 @@ fn parse_supervisor_construction_time_config_params() {
 /// `stop:` and kept out of the parenthesised init-arg list.
 #[test]
 fn parse_pool_count_clause_lands_beside_the_init_args() {
-    let source = "supervisor Farm {\n    strategy: simple_one_for_one;\n    intensity: 3 within 60s;\n    pool workers: Worker(value: 7) count: 2 restart: transient;\n}\n";
+    let source = "supervisor Farm {\n    strategy: simple_one_for_one;\n    intensity: 3 within 60s;\n    pool workers: Worker { value: 7 } count: 2 restart: transient;\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Supervisor(sd) = &result.program.items[0].0 else {
@@ -160,7 +160,7 @@ fn parse_pool_count_clause_lands_beside_the_init_args() {
 fn supervisor_stop_clause_carries_a_duration_expression() {
     let result = parse(
         "actor Worker { receive fn work() {} }\n\
-         supervisor Team { child worker: Worker() stop: 50ms; }",
+         supervisor Team { child worker: Worker stop: 50ms; }",
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Supervisor(supervisor) = &result.program.items[1].0 else {
@@ -177,7 +177,7 @@ fn supervisor_child_accepts_only_the_stop_clause() {
     for old in ["shutdown: 50ms", "shutdown: brutal_kill"] {
         let source = format!(
             "actor Worker {{ receive fn work() {{}} }}\n\
-             supervisor Team {{ child worker: Worker() {old}; }}"
+             supervisor Team {{ child worker: Worker {old}; }}"
         );
         assert!(!parse(&source).errors.is_empty(), "{old} must not parse");
     }
@@ -188,7 +188,7 @@ fn supervisor_child_accepts_only_the_stop_clause() {
 /// collision the clause form removes.
 #[test]
 fn parse_pool_child_sets_an_actor_field_named_count() {
-    let source = "supervisor Farm {\n    strategy: simple_one_for_one;\n    pool tickers: Ticker(count: 9) count: 2;\n}\n";
+    let source = "supervisor Farm {\n    strategy: simple_one_for_one;\n    pool tickers: Ticker { count: 9 } count: 2;\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Supervisor(sd) = &result.program.items[0].0 else {
@@ -207,7 +207,7 @@ fn parse_pool_child_sets_an_actor_field_named_count() {
 fn parse_pool_count_as_init_arg_is_refused_with_the_clause_spelling() {
     let source = "supervisor Farm {\n\
                       \x20   strategy: simple_one_for_one;\n\
-                      \x20   pool workers: Worker(count: 2, value: 7);\n\
+                      \x20   pool workers: Worker { count: 2, value: 7 };\n\
                       }\n";
     let result = parse(source);
     assert!(
@@ -217,7 +217,7 @@ fn parse_pool_count_as_init_arg_is_refused_with_the_clause_spelling() {
             .any(|e| e.message.contains("pool arity is a child clause")
                 && e.hint
                     .as_deref()
-                    .is_some_and(|h| h.contains("Worker(..) count: N"))),
+                    .is_some_and(|h| h.contains("Worker { .. } count: N"))),
         "expected the migration fix-it, got: {:?}",
         result.errors
     );
@@ -229,7 +229,7 @@ fn parse_pool_count_as_init_arg_is_refused_with_the_clause_spelling() {
 fn parse_count_clause_on_a_static_child_is_refused() {
     let source = "supervisor Farm {\n\
                       \x20   strategy: one_for_one;\n\
-                      \x20   child worker: Worker(value: 7) count: 2;\n\
+                      \x20   child worker: Worker { value: 7 } count: 2;\n\
                       }\n";
     let result = parse(source);
     assert!(
@@ -254,7 +254,7 @@ fn parse_count_clause_on_a_static_child_is_refused() {
 #[test]
 fn parse_static_child_count_init_arg_stays_a_field() {
     let source =
-        "supervisor Farm {\n    strategy: one_for_one;\n    child ticker: Ticker(count: 9);\n}\n";
+        "supervisor Farm {\n    strategy: one_for_one;\n    child ticker: Ticker { count: 9 };\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Supervisor(sd) = &result.program.items[0].0 else {
@@ -3505,7 +3505,7 @@ fn pure_dot_record_init_and_qualified_assoc_paths_parse() {
 
 #[test]
 fn nested_dotted_spawn_and_supervisor_child_paths_parse() {
-    let spawned = parse("fn main() { let pid = spawn app.workers.Worker(); }");
+    let spawned = parse("fn main() { let pid = spawn app.workers.Worker; }");
     assert!(spawned.errors.is_empty(), "errors: {:?}", spawned.errors);
 
     let supervised = parse(

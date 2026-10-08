@@ -936,6 +936,42 @@ parameter is still required, and a closure or function value takes positional
 arguments only. An `impl` keeps its trait's parameter names, so renaming a
 parameter is a change callers can see (HEW-SPEC-2026 §12.7).
 
+A bare name in a call is always positional: `f(b, a)` passes `b` first, even
+when the parameters are called `a` and `b`. Names bind by name only inside
+braces — record literals, `spawn` and supervisor children.
+
+### Long argument lists
+
+```hew
+type Identity {
+    name: string;
+    password: string;
+    admin: string;
+}
+
+fn describe(identity: Identity, width: i64, verbose: bool, colour: bool) -> string {
+    f"{identity.name}/{identity.admin} width={width} verbose={verbose} colour={colour}"
+}
+
+fn main() {
+    let name = "relay";
+    let password = "hunter2";
+    let line = describe(
+        Identity { name, password, admin: "ops" },
+        80,
+        verbose: true,
+        colour: false,
+    );
+    println(line); // relay/ops width=80 verbose=true colour=false
+}
+```
+
+When a function takes several values of the same type, name the ones a reader
+could confuse: `verbose: true, colour: false` cannot be swapped silently the
+way two bare `bool`s can. When adjacent strings travel together, gather them
+into a record; shorthand keeps the call site short, and the record's keys make
+the order irrelevant.
+
 ### A `var` parameter is the callee's own copy
 
 ```hew
@@ -1209,7 +1245,7 @@ actor Sink {
 }
 
 fn main() {
-    let s = spawn Sink(id: 0);
+    let s = spawn Sink { id: 0 };
     let msg: string = "hello";
     let n = s.take(msg); // receiver gets a snapshot of msg
     match n {
@@ -1297,7 +1333,7 @@ fn main() {
 }
 ```
 
-A field written as a bare name takes the binding of the same name: `Endpoint { host, port }` is `Endpoint { host: host, port: port }`. Bare and explicit fields mix freely, and a bare field overrides `..base` like any named field. The same spelling works wherever fields are named: enum struct variants (`Shape.Circle { radius }`, `.Circle { radius }`), actor spawn arguments (`spawn Counter(count)`), and machine `emit` and transition field lists. It mirrors the record pattern `.Circle { radius }`, which binds the field to a name of the same name. `hew fmt` keeps each field as you wrote it.
+A field written as a bare name takes the binding of the same name: `Endpoint { host, port }` is `Endpoint { host: host, port: port }`. Bare and explicit fields mix freely, and a bare field overrides `..base` like any named field. The same spelling works wherever fields are named: enum struct variants (`Shape.Circle { radius }`, `.Circle { radius }`), actor spawn arguments (`spawn Counter { count }`), and machine `emit` and transition field lists. It mirrors the record pattern `.Circle { radius }`, which binds the field to a name of the same name. `hew fmt` keeps each field as you wrote it.
 
 Where a block follows the expression — after an `if let` or `while let` scrutinee or a `for` iterable — `{ name }` is that block, not a one-field literal; write `(Wrapper { value })` there.
 
@@ -1532,7 +1568,7 @@ actor Sink {
 }
 
 fn main() {
-    let s = spawn Sink();
+    let s = spawn Sink;
     let _ = s.put(Record { key: 1, val: 99 });
     let r = s.get();
     match r {
@@ -1591,7 +1627,7 @@ actor Bank {
 }
 
 fn main() {
-    let acct = spawn Bank(balance: 100);
+    let acct = spawn Bank { balance: 100 };
     let _ = acct.deposit(50);
     let r = acct.balance_of();
     match r {
@@ -1601,7 +1637,7 @@ fn main() {
 }
 ```
 
-Use `var` for fields a handler mutates (give a default), `let` for fields set once at spawn. `spawn` passes by name every field that has no default and is not assigned in `init`.
+Use `var` for fields a handler mutates (give a default), `let` for fields set once at spawn. A spawn is written like a record literal: its keys go in braces, by name and in any order, with the same shorthand (`spawn Bank { balance }`). Every field without a default that `init` does not assign is a required key, and so is every `init` parameter. An actor with no keys to supply is spawned by name alone: `spawn Logger`. Parentheses are for positional arguments, so `spawn Bank(balance: 100)` is refused with a fix-it, and `hew fmt --migrate` rewrites it.
 
 ### Fields initialized by init
 
@@ -1619,7 +1655,7 @@ actor Worker {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready", size: 6);
+    let worker = spawn Worker { name: "ready", size: 6 };
     println(worker.label().expect("label"));
     stop(worker);
     stopped(worker);
@@ -1655,7 +1691,7 @@ actor Greeter {
 }
 
 fn main() {
-    let g: Greeter = spawn Greeter(name: 5);
+    let g: Greeter = spawn Greeter { name: 5 };
     let r = g.greet();
     match r {
         .Ok(v) => println(f"name={v}"),
@@ -1664,7 +1700,7 @@ fn main() {
 }
 ```
 
-`spawn Greeter(...)` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
+`spawn Greeter { ... }` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
 
 `fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_RESULT_DROPPED`.
 
@@ -1683,7 +1719,7 @@ actor Logger {
 }
 
 fn main() {
-    let lg = spawn Logger(n: 0);
+    let lg = spawn Logger { n: 0 };
     let _ = lg.log(7); // waits until the handler has finished
     let _ = lg.ping();
 }
@@ -1703,7 +1739,7 @@ actor Logger {
 }
 
 fn main() {
-    let lg = spawn Logger(n: 0);
+    let lg = spawn Logger { n: 0 };
     let inbox = mailbox(lg);
     let _ = inbox.log(7); // accepted, not processed
 }
@@ -1750,7 +1786,7 @@ actor Counter {
 }
 
 fn main() {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     let _ = c.increment(10);
     let _ = c.increment(20);
     let _ = c.increment(12);
@@ -1816,7 +1852,7 @@ actor Counter {
 }
 
 fn run() -> i64 fails string {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     match c.bump() {
         .Ok(v) => match c.bump() {
             .Ok(w) => v + w,
@@ -1897,7 +1933,7 @@ fn load_pair(store: Store) -> bytes fails LoadError {
 }
 
 fn main() {
-    let store = spawn Store();
+    let store = spawn Store;
     store.put(b"\x01\x02").expect("put is delivered");
     match load_pair(store) {
         .Ok(block) => println(block.len()),
@@ -1926,7 +1962,7 @@ actor Boot {
 }
 
 fn main() {
-    let b = spawn Boot(ready: 0);
+    let b = spawn Boot { ready: 0 };
     let r = b.status();
     match r {
         .Ok(v) => println(f"ready={v}"),
@@ -1966,7 +2002,7 @@ actor FileWriter {
 }
 
 fn main() {
-    let writer = spawn FileWriter(descriptor: -1);
+    let writer = spawn FileWriter { descriptor: -1 };
     let _ = writer.write("service started");
 }
 ```
@@ -1997,7 +2033,7 @@ actor Risky {
 }
 
 fn main() {
-    let r = spawn Risky(n: 0);
+    let r = spawn Risky { n: 0 };
     let v = r.value();
     match v {
         .Ok(x) => println(f"n={x}"),
@@ -2024,7 +2060,7 @@ actor Calc {
 }
 
 fn main() {
-    let calc = spawn Calc(acc: 0);
+    let calc = spawn Calc { acc: 0 };
     let r = calc.apply(5);
     match r {
         .Ok(v) => println(f"acc={v}"),
@@ -2075,8 +2111,8 @@ actor Manager {
 }
 
 fn main() {
-    let w = spawn Worker(id: 3);
-    let m = spawn Manager(worker: w);
+    let w = spawn Worker { id: 3 };
+    let m = spawn Manager { worker: w };
     let r = m.dispatch(7);
     match r {
         .Ok(v) => println(f"result={v}"),
@@ -2220,8 +2256,8 @@ actor Sleeper {
 }
 
 fn main() {
-    let a = spawn Sleeper();
-    let b = spawn Sleeper();
+    let a = spawn Sleeper;
+    let b = spawn Sleeper;
     let start = instant.now();
     let first = fork a.nap();
     let second = fork b.nap();
@@ -2266,7 +2302,7 @@ actor Pulse {
 }
 
 fn main() {
-    let p = spawn Pulse(count: 0);
+    let p = spawn Pulse { count: 0 };
     sleep(250ms);
     let r = p.total();
     match r {
@@ -2316,7 +2352,7 @@ actor Worker {
 }
 
 fn main() {
-    let worker = spawn Worker(running: true, ticks: 0);
+    let worker = spawn Worker { running: true, ticks: 0 };
     sleep(150ms);
     let _ = worker.halt();
     sleep(150ms);
@@ -2490,7 +2526,7 @@ machine Acc {
     state Seed;
     state Total { sum: i64; }
 
-    on Add(n): Seed => Total { sum: n }
+    on Add { n }: Seed => Total { sum: n }
     on Add: Total => Total reenter { sum: state.sum + event.n }
 }
 
@@ -2509,7 +2545,7 @@ fn main() {
 }
 ```
 
-The head binding `on Add(n): ...` names the payload fields at the rule site;
+The head binding `on Add { n }: ...` names the payload fields at the rule site;
 `event.n` is the equivalent spelling without it. The compiler generates a
 companion event type `{MachineName}.Event` you can name in signatures and construct
 with `Acc.Event.Add { n: 1 }`.
@@ -2529,8 +2565,8 @@ machine Log {
     state Empty;
     state Filled { items: Vec<i64>; }
 
-    on Append(item): Empty => Filled { items: [item] }
-    on Append(item): Filled => Filled reenter {
+    on Append { item }: Empty => Filled { items: [item] }
+    on Append { item }: Filled => Filled reenter {
         var next = state.items;
         next.push(item);
         Filled { items: next }
@@ -2675,7 +2711,7 @@ actor Porter {
 
 fn main() {
     println(drive(.Shut)); // Ajar
-    let porter = spawn Porter();
+    let porter = spawn Porter;
     let _ = porter.accept(.Open); // Ajar
 }
 ```
@@ -4556,7 +4592,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    let producer = spawn Producer(out: orders);
+    let producer = spawn Producer { out: orders };
     let _ = producer.emit(1, "first");
     let _ = producer.emit(2, "second");
     let _ = producer.done();

@@ -135,6 +135,12 @@ export function resolveRuntimeShim(
         : undefined;
     case "MathIntrinsic":
       return MATH_SHIMS[detailName(entry.detail)];
+    case "FloatMethod":
+      return FLOAT_METHOD_SHIMS[detailName(entry.detail)];
+    case "IntMethod":
+      return intMethodShim(entry.detail);
+    case "IntArith":
+      return intArithShim(entry.detail);
     default:
       return UNIT_FAMILY_SHIMS[entry.family];
   }
@@ -551,6 +557,201 @@ function fma(a: number, b: number, c: number): number {
   const bVirtual = sum - product;
   const sumTail = product - (sum - bVirtual) + (c - bVirtual);
   return sum + (sumTail + tail);
+}
+
+/// `f64` classification and bit methods. Native reads the IEEE bits
+/// directly, so `IsSignNegative` tests the sign bit (true for `-0.0` and a
+/// negative NaN) rather than comparing against zero.
+const FLOAT_METHOD_SHIMS: Record<string, RuntimeShim | undefined> = {
+  ToBits: (_host, args) => int(toBits(real(args, 0))),
+  IsNan: (_host, args) => bool(Number.isNaN(real(args, 0))),
+  IsFinite: (_host, args) => bool(Number.isFinite(real(args, 0))),
+  IsInfinite: (_host, args) => {
+    const value = real(args, 0);
+    return bool(value === Infinity || value === -Infinity);
+  },
+  IsSignNegative: (_host, args) => bool(toBits(real(args, 0)) >> 63n === 1n),
+};
+
+/// The receiver width an `IntMethod`/`IntArith` detail names. The VM is a
+/// 64-bit target, so the pointer-sized widths are 64 bits wide.
+const INT_WIDTHS: Record<
+  string,
+  { bits: number; signed: boolean } | undefined
+> = {
+  I8: { bits: 8, signed: true },
+  I16: { bits: 16, signed: true },
+  I32: { bits: 32, signed: true },
+  I64: { bits: 64, signed: true },
+  Isize: { bits: 64, signed: true },
+  U8: { bits: 8, signed: false },
+  U16: { bits: 16, signed: false },
+  U32: { bits: 32, signed: false },
+  U64: { bits: 64, signed: false },
+  Usize: { bits: 64, signed: false },
+};
+
+type IntWidth = { bits: number; signed: boolean };
+
+/// `[op, width]`, as `RuntimeCallFamily` serializes a two-field variant.
+function intDetail(detail: unknown): [string, IntWidth] | undefined {
+  if (!Array.isArray(detail) || detail.length !== 2) {
+    return undefined;
+  }
+  const [op, width] = detail;
+  const shape = typeof width === "string" ? INT_WIDTHS[width] : undefined;
+  return typeof op === "string" && shape ? [op, shape] : undefined;
+}
+
+function wrapTo(width: IntWidth, value: bigint): bigint {
+  return width.signed
+    ? BigInt.asIntN(width.bits, value)
+    : BigInt.asUintN(width.bits, value);
+}
+
+function intBounds(width: IntWidth): [bigint, bigint] {
+  const bits = BigInt(width.bits);
+  return width.signed
+    ? [-(1n << (bits - 1n)), (1n << (bits - 1n)) - 1n]
+    : [0n, (1n << bits) - 1n];
+}
+
+function popcount(value: bigint): bigint {
+  let count = 0n;
+  for (let rest = value; rest !== 0n; rest >>= 1n) {
+    count += rest & 1n;
+  }
+  return count;
+}
+
+/// Integer bit methods. Native emits `ctpop`/`ctlz`/`cttz`/`bswap`/
+/// `bitreverse`/`fshl`/`fshr` at the receiver's width, so every operation
+/// works on the receiver's unsigned bit pattern and the rotate amount is taken
+/// modulo the width.
+function intMethodShim(detail: unknown): RuntimeShim | undefined {
+  const parsed = intDetail(detail);
+  if (!parsed) {
+    return undefined;
+  }
+  const [op, width] = parsed;
+  const bits = BigInt(width.bits);
+  const unsigned = (args: VmValue[]) =>
+    BigInt.asUintN(width.bits, integer(args, 0));
+  const result = (pattern: bigint) => int(wrapTo(width, pattern));
+  const rotate = (args: VmValue[], left: boolean) => {
+    const pattern = unsigned(args);
+    const amount = BigInt.asUintN(32, integer(args, 1)) % bits;
+    const shift = left ? amount : (bits - amount) % bits;
+    return result((pattern << shift) | (pattern >> ((bits - shift) % bits)));
+  };
+  switch (op) {
+    case "CountOnes":
+      return (_host, args) => int(popcount(unsigned(args)));
+    case "CountZeros":
+      return (_host, args) => int(bits - popcount(unsigned(args)));
+    case "LeadingZeros":
+      return (_host, args) => {
+        const pattern = unsigned(args);
+        return int(
+          pattern === 0n ? bits : bits - BigInt(pattern.toString(2).length),
+        );
+      };
+    case "TrailingZeros":
+      return (_host, args) => {
+        let pattern = unsigned(args);
+        if (pattern === 0n) {
+          return int(bits);
+        }
+        let count = 0n;
+        while ((pattern & 1n) === 0n) {
+          pattern >>= 1n;
+          count += 1n;
+        }
+        return int(count);
+      };
+    case "SwapBytes":
+      return (_host, args) => {
+        let pattern = unsigned(args);
+        let swapped = 0n;
+        for (let byte = 0; byte < width.bits / 8; byte += 1) {
+          swapped = (swapped << 8n) | (pattern & 0xffn);
+          pattern >>= 8n;
+        }
+        return result(swapped);
+      };
+    case "ReverseBits":
+      return (_host, args) => {
+        let pattern = unsigned(args);
+        let reversed = 0n;
+        for (let bit = 0; bit < width.bits; bit += 1) {
+          reversed = (reversed << 1n) | (pattern & 1n);
+          pattern >>= 1n;
+        }
+        return result(reversed);
+      };
+    case "RotateLeft":
+      return (_host, args) => rotate(args, true);
+    case "RotateRight":
+      return (_host, args) => rotate(args, false);
+    default:
+      return undefined;
+  }
+}
+
+/// Non-trapping integer arithmetic at the receiver's width: wrapping keeps
+/// the low bits, saturating clamps to the width's bounds and checked answers
+/// `None` where native's overflow flag is set.
+function intArithShim(detail: unknown): RuntimeShim | undefined {
+  const parsed = intDetail(detail);
+  if (!parsed) {
+    return undefined;
+  }
+  const [kind, width] = parsed;
+  const [min, max] = intBounds(width);
+  const operations: Record<
+    string,
+    ((x: bigint, y: bigint) => bigint) | undefined
+  > = {
+    Add: (x, y) => x + y,
+    Sub: (x, y) => x - y,
+    Mul: (x, y) => x * y,
+  };
+  const mode = ["Wrapping", "Saturating", "Checked"].find((prefix) =>
+    kind.startsWith(prefix),
+  );
+  const apply = mode ? operations[kind.slice(mode.length)] : undefined;
+  if (!mode || !apply) {
+    return undefined;
+  }
+  const exact = (args: VmValue[]) =>
+    apply(wrapTo(width, integer(args, 0)), wrapTo(width, integer(args, 1)));
+  switch (mode) {
+    case "Wrapping":
+      return (_host, args) => int(wrapTo(width, exact(args)));
+    case "Saturating":
+      return (_host, args) => {
+        const value = exact(args);
+        return int(value < min ? min : value > max ? max : value);
+      };
+    default:
+      return (host, args, shape) => {
+        if (!shape) {
+          throw new TypeError(
+            "checked arithmetic names no result shape to build its Option against",
+          );
+        }
+        const value = exact(args);
+        return value < min || value > max
+          ? host.enumValue(shape, "OptionNone", [])
+          : host.enumValue(shape, "OptionSome", [int(value)]);
+      };
+  }
+}
+
+function toBits(value: number): bigint {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, value);
+  return view.getBigUint64(0);
 }
 
 function fromBits(bits: bigint): number {

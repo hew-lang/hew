@@ -1,0 +1,10 @@
+[[case]]
+id = "integer-bit-methods-widths"
+intent = "Integer bit methods and wrapping, saturating and checked arithmetic work at the receiver's own width; the sandbox parity case runs the same program on the VM."
+source = "../../examples/sandbox-graduation/integer_bit_methods.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "3\n5\n0\n3\n4\n0\n13330\n19\n3\n3221225472\n57\n1\n44\n255\n56\n-128\n-128\n-2\nchecked 255\noverflow\noverflow\n"
+exit = 0

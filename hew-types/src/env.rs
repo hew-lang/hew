@@ -70,6 +70,21 @@ pub struct MovedPlace {
     pub moved_at: Span,
 }
 
+/// A place definitely re-initialised, on the current path, since the head of
+/// each of the outermost `loops` active loops.
+///
+/// A use of a place that no entry covers may observe the state the previous
+/// iteration left behind: [`TypeEnv::exit_loop`] checks those uses against
+/// the loop's back edges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreshPlace {
+    /// Projection steps from the binding root; empty for the whole binding.
+    pub path: PlacePath,
+    /// Number of enclosing loops, outermost first, whose head precedes the
+    /// re-initialisation on this path.
+    pub loops: usize,
+}
+
 /// How a use of one place collides with an already-consumed place.
 ///
 /// The relation mirrors MIR's partial-move state (`AliasedIntoAggregate` /
@@ -116,6 +131,85 @@ fn common_parameter_replacements(left: &[PlacePath], right: &[PlacePath]) -> Vec
     common
 }
 
+/// Places fresh on both paths, each for the loops both paths agree on.
+fn common_fresh_places(left: &[FreshPlace], right: &[FreshPlace]) -> Vec<FreshPlace> {
+    let mut common: Vec<FreshPlace> = Vec::new();
+    for a in left {
+        for b in right {
+            let path = if path_extends(&a.path, &b.path) {
+                &a.path
+            } else if path_extends(&b.path, &a.path) {
+                &b.path
+            } else {
+                continue;
+            };
+            let loops = a.loops.min(b.loops);
+            match common.iter_mut().find(|fresh| fresh.path == *path) {
+                Some(fresh) => fresh.loops = fresh.loops.max(loops),
+                None => common.push(FreshPlace {
+                    path: path.clone(),
+                    loops,
+                }),
+            }
+        }
+    }
+    common
+}
+
+/// Uses a later iteration makes of places an earlier iteration left consumed
+/// on some back edge, first per binding.
+fn loop_carried_moves(scope: &LoopScope) -> Vec<LoopCarriedMove> {
+    let mut carried: Vec<LoopCarriedMove> = Vec::new();
+    for exposed in &scope.exposed_uses {
+        if carried.iter().any(|known| known.binding == exposed.binding) {
+            continue;
+        }
+        let Some(entry) = scope.entry.get(exposed.binding) else {
+            continue;
+        };
+        if entry.is_moved {
+            continue;
+        }
+        let found = scope.back_edges.iter().find_map(|edge| {
+            let state = edge.get(exposed.binding)?;
+            if state.is_moved {
+                let conflict = if exposed.path.is_empty() {
+                    PlaceConflict::Exact
+                } else {
+                    PlaceConflict::UnderMoved
+                };
+                return Some((Vec::new(), state.moved_at.clone(), conflict));
+            }
+            state.moved_places.iter().find_map(|moved| {
+                if entry.moved_places.iter().any(|old| old.path == moved.path) {
+                    return None;
+                }
+                let conflict = if moved.path == exposed.path {
+                    PlaceConflict::Exact
+                } else if path_extends(&exposed.path, &moved.path) {
+                    PlaceConflict::UnderMoved
+                } else if path_extends(&moved.path, &exposed.path) && !exposed.projection_base {
+                    PlaceConflict::WholeOfPartial
+                } else {
+                    return None;
+                };
+                Some((moved.path.clone(), Some(moved.moved_at.clone()), conflict))
+            })
+        });
+        if let Some((moved_path, moved_at, conflict)) = found {
+            carried.push(LoopCarriedMove {
+                binding: exposed.binding,
+                use_path: exposed.path.clone(),
+                use_span: exposed.span.clone(),
+                moved_path,
+                moved_at,
+                conflict,
+            });
+        }
+    }
+    carried
+}
+
 /// A binding in the type environment.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -153,6 +247,8 @@ pub struct Binding {
     /// readable so non-consuming operations can report a closed-handle error;
     /// a second consuming operation is still rejected.
     pub released_at: Option<Span>,
+    /// Places re-initialised since enclosing loop heads on the current path.
+    pub loop_fresh: Vec<FreshPlace>,
     /// Count of read accesses (incremented by lookup, decremented by `unmark_used`).
     pub read_count: u32,
     /// Count of reads that observe the binding's value rather than resolve a
@@ -302,6 +398,54 @@ pub struct OwnershipState {
     pub moved_places: Vec<MovedPlace>,
     /// Where the close obligation was discharged on this path.
     pub released_at: Option<Span>,
+    /// See [`Binding::loop_fresh`].
+    pub loop_fresh: Vec<FreshPlace>,
+}
+
+/// Which way a `break` or `continue` leaves the current iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopEdge {
+    /// Leaves the loop.
+    Break,
+    /// Returns to the loop head for another iteration.
+    Continue,
+}
+
+/// A use of a binding that may run on a later iteration before anything in
+/// that iteration re-initialises it.
+#[derive(Debug, Clone)]
+struct LoopExposedUse {
+    binding: TypeBindingId,
+    path: PlacePath,
+    span: Span,
+    /// The use only projects through the place (`r` in `r.a`).
+    projection_base: bool,
+}
+
+/// A value an iteration consumes that a later iteration uses again.
+#[derive(Debug, Clone)]
+pub struct LoopCarriedMove {
+    /// The binding the earlier iteration consumed.
+    pub binding: TypeBindingId,
+    /// The used place, relative to the binding.
+    pub use_path: PlacePath,
+    /// The later iteration's use.
+    pub use_span: Span,
+    /// The consumed place; empty when the whole binding moved.
+    pub moved_path: PlacePath,
+    /// Where the earlier iteration consumed it.
+    pub moved_at: Option<Span>,
+    /// How the use collides with the consumed place.
+    pub conflict: PlaceConflict,
+}
+
+/// Ownership facts a loop's exit reports.
+#[derive(Debug, Default)]
+pub struct LoopExit {
+    /// Deferred init fields whose initialization differs between paths.
+    pub deferred_init_conflicts: Vec<TypeBindingId>,
+    /// Values an iteration consumes and the next iteration uses again.
+    pub carried_moves: Vec<LoopCarriedMove>,
 }
 
 #[derive(Debug, Clone)]
@@ -309,7 +453,13 @@ struct LoopScope {
     label: Option<String>,
     floor: usize,
     entry: OwnershipSnapshot,
+    /// `break` edges.
     exits: Vec<OwnershipSnapshot>,
+    /// `continue` edges.
+    back_edges: Vec<OwnershipSnapshot>,
+    /// Uses of entry bindings not covered by a re-initialisation since the
+    /// loop head, first per place.
+    exposed_uses: Vec<LoopExposedUse>,
     /// Each visible binding's `observing_reads` when the body opened, so
     /// [`TypeEnv::exit_loop`] can tell a body that observed the binding from
     /// one that only mutated it.
@@ -512,13 +662,58 @@ impl TypeEnv {
             floor: self.deferred_scopes.len(),
             entry: self.ownership_snapshot(),
             exits: Vec::new(),
+            back_edges: Vec::new(),
+            exposed_uses: Vec::new(),
             observing_reads,
         });
     }
 
+    /// Note a use of `name` at `path` for every enclosing loop whose head the
+    /// use may observe: the binding existed when that loop began and nothing
+    /// on this path has re-initialised the place since.
+    pub fn note_loop_use(
+        &mut self,
+        name: impl LexicalName,
+        path: &[String],
+        span: &Span,
+        projection_base: bool,
+    ) {
+        if self.loop_scope_floors.is_empty() {
+            return;
+        }
+        let Some(binding) = self.lookup_ref(name) else {
+            return;
+        };
+        let id = binding.id;
+        let fresh_loops = binding
+            .loop_fresh
+            .iter()
+            .filter(|fresh| path_extends(path, &fresh.path))
+            .map(|fresh| fresh.loops)
+            .max()
+            .unwrap_or(0);
+        for scope in self.loop_scope_floors.iter_mut().skip(fresh_loops) {
+            if scope.entry.get(id).is_none()
+                || scope.exposed_uses.iter().any(|exposed| {
+                    exposed.binding == id
+                        && exposed.path == path
+                        && exposed.projection_base == projection_base
+                })
+            {
+                continue;
+            }
+            scope.exposed_uses.push(LoopExposedUse {
+                binding: id,
+                path: path.to_vec(),
+                span: span.clone(),
+                projection_base,
+            });
+        }
+    }
+
     /// Retain the ownership state of an early loop edge before later source
     /// traversal can reinitialize places on a different path.
-    pub fn record_loop_exit(&mut self, label: Option<&str>) {
+    pub fn record_loop_exit(&mut self, label: Option<&str>, edge: LoopEdge) {
         let state = self.ownership_snapshot();
         if let Some(scope) = self
             .loop_scope_floors
@@ -526,7 +721,10 @@ impl TypeEnv {
             .rev()
             .find(|scope| label.is_none() || scope.label.as_deref() == label)
         {
-            scope.exits.push(state);
+            match edge {
+                LoopEdge::Break => scope.exits.push(state),
+                LoopEdge::Continue => scope.back_edges.push(state),
+            }
         }
     }
 
@@ -536,15 +734,24 @@ impl TypeEnv {
     ///
     /// Panics if no loop boundary is active, which indicates an unbalanced
     /// checker traversal.
-    pub fn exit_loop(&mut self) -> Vec<TypeBindingId> {
+    ///
+    /// `body_completes` says whether the end of the body is reachable; when it
+    /// is, its state is a back edge alongside every `continue`.
+    pub fn exit_loop(&mut self, body_completes: bool) -> LoopExit {
         let mut scope = self
             .loop_scope_floors
             .pop()
             .expect("cannot exit loop with no active loop boundary");
+        let completion = self.ownership_snapshot();
+        if body_completes {
+            scope.back_edges.push(completion.clone());
+        }
+        let carried_moves = loop_carried_moves(&scope);
         // Conservatively include zero iterations, normal body completion and
         // early edges. They all use the same ownership join as branch arms.
         scope.exits.push(scope.entry.clone());
-        scope.exits.push(self.ownership_snapshot());
+        scope.exits.push(completion);
+        scope.exits.append(&mut scope.back_edges);
         // A loop body that both observed and mutated the binding observes its
         // own writes on the next iteration, even when the source reads before
         // it writes. Traversal sees the body once, so credit the observation
@@ -557,7 +764,20 @@ impl TypeEnv {
                 binding.mutation = MutationState::Observed;
             }
         }
-        self.merge_ownership(&scope.entry, &scope.exits)
+        let deferred_init_conflicts = self.merge_ownership(&scope.entry, &scope.exits);
+        // A re-initialisation inside this loop's body is not one since the
+        // head of a loop that is no longer active.
+        let depth = self.loop_scope_floors.len();
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            for fresh in &mut binding.loop_fresh {
+                fresh.loops = fresh.loops.min(depth);
+            }
+            binding.loop_fresh.retain(|fresh| fresh.loops > 0);
+        }
+        LoopExit {
+            deferred_init_conflicts,
+            carried_moves,
+        }
     }
 
     /// Deferred bodies materialized by a `break` or `continue` edge.
@@ -600,6 +820,7 @@ impl TypeEnv {
                     moved_places: Vec::new(),
                     consumed_at: None,
                     released_at: None,
+                    loop_fresh: Vec::new(),
                     read_count: 1, // synthetic bindings are always "used"
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
@@ -670,6 +891,7 @@ impl TypeEnv {
                     moved_places: Vec::new(),
                     consumed_at: None,
                     released_at: None,
+                    loop_fresh: Vec::new(),
                     read_count: 0,
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
@@ -766,6 +988,7 @@ impl TypeEnv {
                     moved_places: Vec::new(),
                     consumed_at: None,
                     released_at: None,
+                    loop_fresh: Vec::new(),
                     read_count: 1, // exempt from unused-variable lint, like `define`
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
@@ -799,6 +1022,7 @@ impl TypeEnv {
                 binding.is_mutable = private.contains(&binding.id);
             }
             binding.capture_consumption = crate::ClosureCaptureConsumption::Retained;
+            binding.loop_fresh.clear();
         }
         environment
     }
@@ -820,6 +1044,14 @@ impl TypeEnv {
                 }
             }
         }
+    }
+
+    /// The visible binding with identity `id`, with the name it is bound by.
+    pub(crate) fn binding_name_by_id(&self, id: TypeBindingId) -> Option<(&Ident, &Binding)> {
+        self.scopes
+            .iter()
+            .flat_map(HashMap::iter)
+            .find(|(_, binding)| binding.id == id)
     }
 
     pub(crate) fn binding_by_id(&self, id: TypeBindingId) -> Option<&Binding> {
@@ -936,8 +1168,18 @@ impl TypeEnv {
     /// clears `is_moved`.
     pub fn reinit_place(&mut self, name: impl LexicalName, path: &[String]) {
         let name = name.lexical_key();
+        let loops = self.loop_scope_floors.len();
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
+                if loops > 0 {
+                    binding
+                        .loop_fresh
+                        .retain(|fresh| !path_extends(&fresh.path, path));
+                    binding.loop_fresh.push(FreshPlace {
+                        path: path.to_vec(),
+                        loops,
+                    });
+                }
                 if binding.is_param()
                     && binding.parameter_ownership == ParameterOwnership::Borrow
                     && !binding
@@ -957,6 +1199,8 @@ impl TypeEnv {
                     binding.collection_borrow = None;
                     binding.is_moved = false;
                     binding.moved_at = None;
+                    // A fresh value carries a fresh close obligation.
+                    binding.released_at = None;
                 }
                 return;
             }
@@ -1013,6 +1257,7 @@ impl TypeEnv {
                         deferred_init: binding.deferred_init(),
                         moved_places: binding.moved_places.clone(),
                         released_at: binding.released_at.clone(),
+                        loop_fresh: binding.loop_fresh.clone(),
                     },
                 );
             }
@@ -1114,6 +1359,7 @@ impl TypeEnv {
                 if state.released_at.is_none() {
                     state.released_at.clone_from(&exit_state.released_at);
                 }
+                state.loop_fresh = common_fresh_places(&state.loop_fresh, &exit_state.loop_fresh);
             }
             merged.insert(*id, state);
         }
@@ -1140,6 +1386,7 @@ impl TypeEnv {
                     binding.moved_at.clone_from(&state.moved_at);
                     binding.moved_places.clone_from(&state.moved_places);
                     binding.released_at.clone_from(&state.released_at);
+                    binding.loop_fresh.clone_from(&state.loop_fresh);
                 }
             }
         }

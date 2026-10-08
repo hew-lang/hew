@@ -1288,53 +1288,9 @@ impl Checker {
                     ),
                 );
             } else if is_moved && !is_write_target {
-                let is_linear = matches!(
-                    &ty,
-                    Ty::Named { head, .. } if head.nominal().is_some_and(|id| self.registry.is_linear(id))
-                );
-                let mut err = TypeError::new(
-                    if is_linear {
-                        TypeErrorKind::UseAfterConsume
-                    } else {
-                        TypeErrorKind::UseAfterMove
-                    },
-                    span.clone(),
-                    if is_linear {
-                        format!("UseAfterConsume: use of consumed linear value `{name}`")
-                    } else {
-                        format!("use of moved value `{name}`")
-                    },
-                );
-                if let Some(ref source_module) = self.current_module {
-                    err = err.with_source_module(source_module.clone());
-                }
+                let mut err = self.use_after_move_error(name, &ty, span);
                 if let Some(moved_span) = moved_at {
                     err = err.with_note(moved_span, "value was consumed here");
-                }
-                // Substrate handles (Duplex, Sink, Stream, SendHalf, RecvHalf) are
-                // affine: each consuming method (`.close()`, `.send_half()`,
-                // `.recv_half()`, etc.) moves the handle exactly once. Subsequent
-                // uses are rejected here. Name the type so the user knows why.
-                if Self::ty_is_substrate_handle(&ty) {
-                    err = err.with_suggestion(format!(
-                        "`{}` is a substrate handle — consuming methods like `.close()`, \
-                         `.send_half()`, and `.recv_half()` move the handle; \
-                         use a single consuming call per binding",
-                        ty.user_facing()
-                    ));
-                } else if is_linear {
-                    err = err.with_suggestion(
-                        "a `#[linear]` binding has exactly one ownership path; invoke its \
-                         consuming method only once"
-                            .to_string(),
-                    );
-                } else if self.registry.implements_marker(&ty, MarkerTrait::Clone) {
-                    // The value's type has a clone path, so the canonical fix is
-                    // to duplicate it before the consuming use and pass the copy.
-                    err = err.with_suggestion(format!(
-                        "duplicate `{name}` with `clone {name}` before the consuming use \
-                         to keep the original usable"
-                    ));
                 }
                 self.errors.push(err);
             }

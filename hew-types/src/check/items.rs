@@ -1794,11 +1794,14 @@ impl Checker {
         }
     }
 
-    /// Close the innermost loop boundary and report deferred fields whose
-    /// initialization differs between its entry and its exits.
-    pub(super) fn exit_loop_checked(&mut self) {
-        let conflicts = self.env.exit_loop();
-        self.report_deferred_init_conflicts(&conflicts);
+    /// Close the innermost loop boundary. Reports deferred fields whose
+    /// initialization differs between its entry and its exits, and values an
+    /// iteration consumes that the next iteration uses again. `body_ty` is
+    /// the checked body's type: a `!` body never reaches its back edge.
+    pub(super) fn exit_loop_checked(&mut self, body_ty: &Ty) {
+        let exit = self.env.exit_loop(!Self::arm_skips_join(body_ty));
+        self.report_deferred_init_conflicts(&exit.deferred_init_conflicts);
+        self.report_loop_carried_moves(&exit.carried_moves);
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when

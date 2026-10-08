@@ -1,0 +1,14 @@
+[[case]]
+id = "loop-consume-outer-resource"
+intent = "A resource declared outside a loop and closed inside it is refused at the next iteration's close, not left to SIR verification."
+source = "cases/loop-consume-outer-resource.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 17
+column = 9
+message = "use of moved value `t`"

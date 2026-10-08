@@ -1,0 +1,10 @@
+[[case]]
+id = "loop-consume-reinitialized"
+intent = "A value declared outside a loop may be consumed inside it when each iteration re-initialises it (whole or field) or leaves the loop after the consume; every ticket closes exactly once."
+source = "cases/loop-consume-reinitialized.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "closed 1\nclosed 10\nclosed 11\nclosed 20\nclosed 21\nclosed 22\nclosed 30\nclosed 31\nclosed 50\ndone\nclosed 40\nclosed 32\n"
+exit = 0

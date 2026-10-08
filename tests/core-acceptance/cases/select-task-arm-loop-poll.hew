@@ -1,0 +1,49 @@
+// A timer win leaves the task arm's handle owned, so the next iteration selects
+// the same task again; the task arm consumes it and leaves the loop. The task
+// finishes only after the loop releases it, so the timer wins at least three
+// times whatever the scheduling.
+import std.stream;
+
+fn wait_for(consume rx: stream.Stream<i64>) -> i64 {
+    let value = match rx.recv() {
+        .Some(v) => v,
+        .None => -1,
+    };
+    rx.close();
+    value
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => {
+            println(error);
+            return;
+        }
+    };
+    let total = scope {
+        let job = fork wait_for(rx);
+        var ticks = 0;
+        var released = false;
+        var result = 0;
+        loop {
+            select {
+                value from job => {
+                    result = value;
+                    break;
+                }
+                after 1ms => {
+                    ticks = ticks + 1;
+                    if ticks == 3 && !released {
+                        tx.send(42).expect("send");
+                        released = true;
+                    }
+                }
+            }
+        }
+        println(f"timer won at least three times: {ticks >= 3}");
+        result
+    };
+    tx.close();
+    println(f"task value: {total}");
+}

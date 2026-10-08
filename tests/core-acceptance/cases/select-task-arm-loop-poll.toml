@@ -1,0 +1,10 @@
+[[case]]
+id = "select-task-arm-loop-poll"
+intent = "A losing task arm leaves the task owned: a select loop polls one task through repeated timer wins, and the winning task arm consumes it and leaves the loop."
+source = "cases/select-task-arm-loop-poll.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "timer won at least three times: true\ntask value: 42\n"
+exit = 0

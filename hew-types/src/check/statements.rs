@@ -1928,8 +1928,8 @@ impl Checker {
                 }
                 self.loop_depth += 1;
                 self.env.enter_loop(label.map(|ident| ident.name.as_str()));
-                self.check_block(body, None);
-                self.exit_loop_checked();
+                let body_ty = self.check_block(body, None);
+                self.exit_loop_checked(&body_ty);
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -2221,6 +2221,9 @@ impl Checker {
                     }
                 };
                 self.env.push_scope();
+                // The pattern binds afresh on every iteration, so it opens
+                // inside the loop rather than among the values the loop carries.
+                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
                 self.in_for_binding = true;
                 // Each element of a borrowed-element loop is a loan of the slot
                 // the sequence still owns (D432).
@@ -2234,9 +2237,8 @@ impl Checker {
                     self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
-                self.check_block(body, None);
-                self.exit_loop_checked();
+                let body_ty = self.check_block(body, None);
+                self.exit_loop_checked(&body_ty);
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -2262,14 +2264,15 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
                 }
+                // The condition runs at the head of every iteration.
+                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
-                self.check_block(body, None);
-                self.exit_loop_checked();
+                let body_ty = self.check_block(body, None);
+                self.exit_loop_checked(&body_ty);
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -2280,14 +2283,15 @@ impl Checker {
                 conditions,
                 body,
             } => {
+                // The condition runs at the head of every iteration.
+                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
                 self.check_condition(conditions);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
-                self.check_block(body, None);
-                self.exit_loop_checked();
+                let body_ty = self.check_block(body, None);
+                self.exit_loop_checked(&body_ty);
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -2322,8 +2326,10 @@ impl Checker {
                 }
                 if self.loop_depth > 0 {
                     self.recheck_loop_edge_defers(label.map(|ident| ident.name.as_str()), span);
-                    self.env
-                        .record_loop_exit(label.map(|ident| ident.name.as_str()));
+                    self.env.record_loop_exit(
+                        label.map(|ident| ident.name.as_str()),
+                        crate::env::LoopEdge::Break,
+                    );
                 }
             }
             Stmt::Continue { label } => {
@@ -2351,8 +2357,10 @@ impl Checker {
                 }
                 if self.loop_depth > 0 {
                     self.recheck_loop_edge_defers(label.map(|ident| ident.name.as_str()), span);
-                    self.env
-                        .record_loop_exit(label.map(|ident| ident.name.as_str()));
+                    self.env.record_loop_exit(
+                        label.map(|ident| ident.name.as_str()),
+                        crate::env::LoopEdge::Continue,
+                    );
                 }
             }
             Stmt::Match { scrutinee, arms } => {

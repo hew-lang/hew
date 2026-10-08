@@ -1,23 +1,18 @@
 use std::path::PathBuf;
 
 use hew_parser::Severity;
-use hew_types::module_registry::{build_module_search_paths, ModuleRegistry};
+use hew_types::module_registry::{stdlib_search_paths, ModuleRegistry};
 use hew_types::Checker;
 
-pub fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("fuzz crate lives at hew-parser/fuzz")
-        .to_path_buf()
-}
-
+/// The compiler's own std root. Without it every `std.*` import fails to
+/// resolve and the checker targets reject every input before reaching the
+/// code under test, so an empty root stops the run instead.
 pub fn module_search_paths() -> Vec<PathBuf> {
-    let mut paths = stdlib_search_paths();
-    let root = repo_root();
-    if root.join("std").exists() && !paths.contains(&root) {
-        paths.push(root);
-    }
+    let paths = stdlib_search_paths();
+    assert!(
+        !paths.is_empty(),
+        "fuzz harness found no std root; set HEW_STD to a std/ directory"
+    );
     paths
 }
 

@@ -239,6 +239,10 @@ pub struct Scopes {
     source_type_params: Vec<GenericScope>,
     contexts: SyntaxContexts,
     resolutions: HashMap<SpanKey, Resolution>,
+    /// The field each shorthand initializer label (`Point { x }`) names, by
+    /// the label's token. The token is also the value's span, whose binding
+    /// `resolutions` holds, so the label's identity is published apart.
+    shorthand_labels: HashMap<SpanKey, (NominalId, u32)>,
     /// Import declarations a resolution went through.
     used_imports: std::collections::HashSet<ImportSite>,
     /// The leaf a module's own source may qualify its items with
@@ -582,6 +586,30 @@ impl Scopes {
     /// Take the resolution table for publication.
     pub fn take_resolutions(&mut self) -> HashMap<SpanKey, Resolution> {
         std::mem::take(&mut self.resolutions)
+    }
+
+    /// The field a shorthand initializer label names, by the label's token.
+    #[must_use]
+    pub fn shorthand_label(&self, key: &SpanKey) -> Option<(NominalId, u32)> {
+        self.shorthand_labels.get(key).copied()
+    }
+
+    /// Take the shorthand label table for publication.
+    pub fn take_shorthand_labels(&mut self) -> HashMap<SpanKey, (NominalId, u32)> {
+        std::mem::take(&mut self.shorthand_labels)
+    }
+
+    /// Publish the field a shorthand initializer label names.
+    pub(crate) fn record_shorthand_label(
+        &mut self,
+        site: ScopeSite,
+        span: &Span,
+        field: (NominalId, u32),
+    ) {
+        if site.publish {
+            self.shorthand_labels
+                .insert(SpanKey::in_module(span, site.span_file), field);
+        }
     }
 
     /// Publish an identity already selected by the checker for one source

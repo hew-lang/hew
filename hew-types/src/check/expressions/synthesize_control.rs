@@ -534,7 +534,9 @@ impl Checker {
         span: &Span,
         expected: &Ty,
     ) -> Ty {
+        let shorthand_mark = self.enter_field_shorthands(expr);
         let result = self.check_against_inner(expr, span, expected);
+        self.field_shorthand_values.truncate(shorthand_mark);
         self.publish_checked_expression(expr, span, result)
     }
 
@@ -606,7 +608,7 @@ impl Checker {
                     Expr::StructInit {
                         path: Path::single(Ident::new(&qualified_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
                         fields: record.fields.clone(),
-                        field_name_spans: Vec::new(),
+                        field_labels: Vec::new(),
                         type_args: None,
                         base: record.base.clone(),
                     }
@@ -1224,7 +1226,7 @@ impl Checker {
                 Expr::StructInit {
                     path: named_path,
                     fields,
-                    field_name_spans,
+                    field_labels,
                     type_args,
                     ..
                 },
@@ -1362,11 +1364,7 @@ impl Checker {
                         // the user is committing to. Route through the
                         // canonical helper; bound-free names short-circuit.
                         self.enforce_type_def_instantiation_bounds(name, &resolved_args, span);
-                        self.record_struct_init_field_resolutions(
-                            fields,
-                            field_name_spans,
-                            expected,
-                        );
+                        self.record_struct_init_field_resolutions(fields, field_labels, expected);
                         self.record_type(span, expected);
                         return expected.clone();
                     }

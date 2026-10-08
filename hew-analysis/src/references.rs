@@ -135,11 +135,14 @@ fn find_all_references_raw(
             .or_else(|| crate::definition::find_param_definition(parse_result, &name, offset));
 
     let mut spans = Vec::new();
-    collect_refs_in_parse_result(source, parse_result, &name, &mut spans);
+    let mut labels = Vec::new();
+    collect_refs_and_labels(source, parse_result, &name, &mut spans, &mut labels);
 
     // For top-level names (functions, actors, types, receive handlers, fields),
-    // return all references globally.
+    // return all references globally. Only a field is named by an initializer
+    // label or a projection; a local or parameter of the same spelling never is.
     if local_definition.is_none() && is_top_level_name(parse_result, &name) {
+        spans.append(&mut labels);
         if spans.is_empty() {
             return None;
         }
@@ -475,10 +478,27 @@ fn collect_refs_in_parse_result(
     name: &str,
     spans: &mut Vec<Span>,
 ) {
+    let mut labels = Vec::new();
+    collect_refs_and_labels(source, parse_result, name, spans, &mut labels);
+    spans.append(&mut labels);
+}
+
+/// Collect the occurrences of `name` into `spans`, except field names —
+/// written initializer labels (`name: value`) and projections (`value.name`)
+/// — which go to `labels`: those name a field, never a binding of the same
+/// spelling.
+fn collect_refs_and_labels(
+    source: &str,
+    parse_result: &ParseResult,
+    name: &str,
+    spans: &mut Vec<Span>,
+    labels: &mut Vec<Span>,
+) {
     let mut visitor = RefsVisitor {
         source,
         name,
         spans,
+        labels,
     };
     ast_visit::walk_parse_result(Some(source), parse_result, &mut visitor);
 }
@@ -487,6 +507,7 @@ struct RefsVisitor<'a> {
     source: &'a str,
     name: &'a str,
     spans: &'a mut Vec<Span>,
+    labels: &'a mut Vec<Span>,
 }
 
 impl RefsVisitor<'_> {
@@ -597,7 +618,7 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
                 self.spans.push(error.1.clone());
             }
             Expr::FieldAccess { field, .. } if field.0.name.as_str() == self.name => {
-                self.spans.push(field_access_name_span(
+                self.labels.push(field_access_name_span(
                     self.source,
                     span,
                     field.0.name.as_str(),
@@ -614,7 +635,7 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
                             field.name.as_str(),
                             &val.1,
                         ) {
-                            self.spans.push(field_span);
+                            self.labels.push(field_span);
                         }
                     }
                     search_from = val.1.end;
@@ -651,6 +672,46 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
         if name == self.name {
             self.spans.push(span.clone());
         }
+    }
+}
+
+/// Every shorthand field initializer token (`x` in `Point { x }`).
+///
+/// The token is both the field label and a use of the binding of the same
+/// spelling, so renaming that binding writes the label out: `Point { x: y }`.
+#[must_use]
+pub fn shorthand_field_spans(parse_result: &ParseResult) -> Vec<OffsetSpan> {
+    let mut visitor = ShorthandFieldVisitor { spans: Vec::new() };
+    ast_visit::walk_parse_result(None, parse_result, &mut visitor);
+    visitor.spans
+}
+
+struct ShorthandFieldVisitor {
+    spans: Vec<OffsetSpan>,
+}
+
+impl<'ast> AstVisitor<'ast> for ShorthandFieldVisitor {
+    fn visit_expr(&mut self, expr: &'ast Expr, _span: &'ast Span, _ctx: VisitContext<'ast>) {
+        let labels = match expr {
+            Expr::StructInit { field_labels, .. } | Expr::MachineEmit { field_labels, .. } => {
+                field_labels
+            }
+            Expr::Spawn { arg_labels, .. } => arg_labels,
+            Expr::ContextVariant(context) => match &context.record {
+                Some(record) => &record.field_labels,
+                None => return,
+            },
+            _ => return,
+        };
+        self.spans.extend(
+            labels
+                .iter()
+                .filter(|label| label.shorthand)
+                .map(|label| OffsetSpan {
+                    start: label.span.start,
+                    end: label.span.end,
+                }),
+        );
     }
 }
 

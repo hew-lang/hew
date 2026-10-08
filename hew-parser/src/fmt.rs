@@ -10,13 +10,13 @@ use finl_unicode::categories::CharacterCategories;
 use crate::ast::{
     sym, ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl,
-    FieldDecl, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam,
-    Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm,
-    NamingCase, NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
-    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
+    FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item,
+    LambdaParam, Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm,
+    MatchArm, NamingCase, NominalPatternPayload, OverflowPolicy, Param, Path, Pattern,
+    PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, Span,
+    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
+    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -677,19 +677,45 @@ impl<'a> Formatter<'a> {
     /// `{ ..base, name: value, ... }` — the one record-literal body spelling.
     /// The base comes first: it supplies every field the literal does not name,
     /// so reading it first reads the value in the order it is built.
+    /// Write one named field initializer, keeping the shorthand `name` when
+    /// the source wrote it that way and `name: value` otherwise.
+    fn write_field_init(&mut self, name: Ident, label: Option<&FieldLabel>, value: &Spanned<Expr>) {
+        self.write_ident(name);
+        if !label.is_some_and(|label| label.shorthand) {
+            self.write(": ");
+            self.format_expr(value);
+        }
+    }
+
+    /// Write a named field list's initializers separated by `, `.
+    fn write_field_inits(&mut self, fields: &[(Ident, Spanned<Expr>)], labels: &[FieldLabel]) {
+        for (i, (name, value)) in fields.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write_field_init(*name, labels.get(i), value);
+        }
+    }
+
     fn format_record_literal_body(
         &mut self,
         fields: &[(Ident, Spanned<Expr>)],
+        labels: &[FieldLabel],
         base: Option<&Spanned<Expr>>,
         bounds: Option<(usize, usize)>,
     ) {
-        let write_field = |f: &mut Self, (name, value): &(Ident, Spanned<Expr>)| {
-            f.write_ident(*name);
-            f.write(": ");
-            f.format_expr(value);
-        };
+        let fields: Vec<_> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, field)| (field, labels.get(i)))
+            .collect();
+        let write_field =
+            |f: &mut Self,
+             ((name, value), label): &(&(Ident, Spanned<Expr>), Option<&FieldLabel>)| {
+                f.write_field_init(*name, *label, value);
+            };
         let Some(base) = base else {
-            self.delimited_list(" { ", " }", fields, bounds, false, true, write_field);
+            self.delimited_list(" { ", " }", &fields, bounds, false, true, write_field);
             return;
         };
         self.write(" { ..");
@@ -700,7 +726,7 @@ impl<'a> Formatter<'a> {
             self.trim_trailing_spaces();
             self.write(", ");
         }
-        self.comma_sep(fields, write_field);
+        self.comma_sep(&fields, write_field);
         self.write(" }");
     }
 
@@ -2338,19 +2364,22 @@ impl<'a> Formatter<'a> {
                 // `ContextVariant` record — both name the target state.
                 let payload = match body_expr {
                     Expr::StructInit {
-                        path, fields, base, ..
+                        path,
+                        fields,
+                        field_labels,
+                        base,
+                        ..
                     } if path.as_single() == Some(transition.target_state) => {
-                        Some((fields, base.as_deref()))
+                        Some((fields, field_labels, base.as_deref()))
                     }
                     Expr::ContextVariant(context) if context.name == transition.target_state => {
-                        context
-                            .record
-                            .as_ref()
-                            .map(|record| (&record.fields, record.base.as_deref()))
+                        context.record.as_ref().map(|record| {
+                            (&record.fields, &record.field_labels, record.base.as_deref())
+                        })
                     }
                     _ => None,
                 };
-                if let Some((fields, base)) = payload {
+                if let Some((fields, labels, base)) = payload {
                     self.write(" { ");
                     // The base comes first, so the fields that override it read
                     // after the value they override (D488).
@@ -2361,14 +2390,7 @@ impl<'a> Formatter<'a> {
                             self.write(", ");
                         }
                     }
-                    for (i, (fname, fval)) in fields.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write_ident(*fname);
-                        self.write(": ");
-                        self.format_expr(fval);
-                    }
+                    self.write_field_inits(fields, labels);
                     self.write(" }");
                 } else {
                     self.write(" { ");
@@ -4233,7 +4255,12 @@ impl<'a> Formatter<'a> {
                 self.write(".");
                 self.write_ident(context.name);
                 if let Some(record) = &context.record {
-                    self.format_record_literal_body(&record.fields, record.base.as_deref(), None);
+                    self.format_record_literal_body(
+                        &record.fields,
+                        &record.field_labels,
+                        record.base.as_deref(),
+                        None,
+                    );
                 }
             }
             Expr::GenericApplySuffix { target, type_args } => {
@@ -4258,8 +4285,12 @@ impl<'a> Formatter<'a> {
                 base,
             } => {
                 self.format_receiver(target);
+                // The suffix form keeps no labels, so a shorthand field
+                // prints in its explicit spelling. The form is refused at HIR
+                // lowering (`qualified-record-init`).
                 self.format_record_literal_body(
                     fields,
+                    &[],
                     base.as_deref(),
                     self.trailing_list(&expr.1, "}"),
                 );
@@ -4439,6 +4470,7 @@ impl<'a> Formatter<'a> {
                 target,
                 type_args,
                 args,
+                arg_labels,
             } => {
                 self.write("spawn ");
                 self.format_expr(target);
@@ -4453,11 +4485,7 @@ impl<'a> Formatter<'a> {
                 // keep the empty argument list when the author wrote one.
                 if !args.is_empty() || self.span_ends_with_paren(&expr.1) {
                     self.write("(");
-                    self.comma_sep(args, |f, (name, value)| {
-                        f.write_ident(*name);
-                        f.write(": ");
-                        f.format_expr(value);
-                    });
+                    self.write_field_inits(args, arg_labels);
                     self.flush_inline_comments(expr.1.end);
                     self.write(")");
                 }
@@ -4576,9 +4604,9 @@ impl<'a> Formatter<'a> {
             Expr::StructInit {
                 path,
                 fields,
+                field_labels,
                 type_args,
                 base,
-                ..
             } => {
                 self.format_path(path);
                 if let Some(type_args) = type_args {
@@ -4588,6 +4616,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.format_record_literal_body(
                     fields,
+                    field_labels,
                     base.as_deref(),
                     self.trailing_list(&expr.1, "}"),
                 );
@@ -4780,21 +4809,18 @@ impl<'a> Formatter<'a> {
                 self.write("}");
             }
             Expr::Is { .. } => self.format_expr_prec_bare(expr, 0, false),
-            Expr::MachineEmit { event_name, fields } => {
+            Expr::MachineEmit {
+                event_name,
+                fields,
+                field_labels,
+            } => {
                 self.write("emit ");
                 self.write_ident(*event_name);
                 if fields.is_empty() {
                     self.write(" {}");
                 } else {
                     self.write(" { ");
-                    for (i, (name, val)) in fields.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write_ident(*name);
-                        self.write(": ");
-                        self.format_expr(val);
-                    }
+                    self.write_field_inits(fields, field_labels);
                     self.write(" }");
                 }
             }

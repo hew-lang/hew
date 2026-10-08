@@ -2938,7 +2938,7 @@ fn struct_init_explicit_type_arg_arity_mismatch_errors() {
         Expr::StructInit {
             path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
             fields: vec![(Ident::new("value"), make_int_literal(1, 20..21))],
-            field_name_spans: Vec::new(),
+            field_labels: Vec::new(),
             type_args,
             base: None,
         },
@@ -3066,7 +3066,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
     let init = Expr::StructInit {
         path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Holding"), 0..0),
         fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
-        field_name_spans: Vec::new(),
+        field_labels: Vec::new(),
         type_args,
         base: None,
     };
@@ -3121,7 +3121,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
     let init = Expr::StructInit {
         path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Keeper::Holding"), 0..0),
         fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
-        field_name_spans: Vec::new(),
+        field_labels: Vec::new(),
         type_args,
         base: None,
     };

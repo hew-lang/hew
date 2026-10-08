@@ -271,3 +271,32 @@ fn normalize_walks_a_shared_import_dag_once() {
         "the root module carries the program's normalized items"
     );
 }
+
+/// After a transition head a lone `{ n }` is the block yielding `n`; the
+/// refusal sits on that body and shows the payload spelling. Writing the
+/// payload is accepted.
+#[test]
+fn lone_shorthand_transition_body_names_the_payload_spelling() {
+    let source = "machine Counter {\n    events {\n        Go;\n    }\n    state Idle { n: i64; }\n    state Busy { n: i64; }\n    on Go: Idle => Busy { n }\n    on Go: Busy => Idle { n: 0 }\n}\n";
+    let check = |source: &str| {
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program)
+    };
+    let output = check(source);
+    let refusal = output
+        .errors
+        .iter()
+        .find(|error| error.message.contains("must produce that state"))
+        .expect("the block body produces no state");
+    assert_eq!(refusal.span.start, source.find("{ n }").unwrap());
+    assert_eq!(
+        refusal.suggestions,
+        vec![
+            "the braces were read as a block yielding `n`; to set the field, write `{ n: n }`"
+                .to_string()
+        ]
+    );
+    let output = check(&source.replace("Busy { n }", "Busy { n: state.n }"));
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

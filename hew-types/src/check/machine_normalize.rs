@@ -15,10 +15,11 @@ use std::sync::Arc;
 
 use hew_parser::ast::{
     Block, CallArg, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
-    DeclarationOrigin, Expr, FnDecl, Ident, IntRadix, Item, Literal, MachineDecl, MachineEvent,
-    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NominalPatternPayload,
-    Path, Pattern, PatternField, Program, ResourceMarker, Span, Spanned, Stmt, StringPart,
-    TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantDecl, VariantKind, Visibility,
+    DeclarationOrigin, Expr, FieldLabel, FnDecl, Ident, IntRadix, Item, Literal, MachineDecl,
+    MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm,
+    NominalPatternPayload, Path, Pattern, PatternField, Program, ResourceMarker, Span, Spanned,
+    Stmt, StringPart, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantDecl, VariantKind,
+    Visibility,
 };
 
 use crate::error::{TypeError, TypeErrorKind};
@@ -79,7 +80,7 @@ pub(super) fn normalize(
         .as_ref()
         .map(|graph| item_sources(graph, &graph.root))
         .unwrap_or_default();
-    normalized.items = builder.items(&program.items, &root_sources, "(root)")?;
+    normalized.items = builder.items(&program.items, &root_sources, "(root)", None)?;
     if let Some(graph) = &mut normalized.module_graph {
         for (id, module) in &mut graph.modules {
             let old_items = &program
@@ -103,7 +104,8 @@ pub(super) fn normalize(
             module.items = if *id == graph.root && same_item_list(old_items, &program.items) {
                 normalized.items.clone()
             } else {
-                builder.items(old_items, &sources, &id.dotted())?
+                let source_module = (*id != graph.root).then(|| id.dotted());
+                builder.items(old_items, &sources, &id.dotted(), source_module.as_deref())?
             };
             if let Some(sources) = graph.item_sources.get_mut(&id.dotted()) {
                 // Each expansion appends its companions after all authored
@@ -229,11 +231,19 @@ impl Builder {
             else_block: None,
         })
     }
-    fn variant(&mut self, name: Ident, fields: Vec<(Ident, Spanned<Expr>)>) -> Spanned<Expr> {
+    fn variant(
+        &mut self,
+        name: Ident,
+        fields: Vec<(Ident, Spanned<Expr>)>,
+        field_labels: Vec<FieldLabel>,
+    ) -> Spanned<Expr> {
         self.expr(Expr::ContextVariant(ContextVariantExpr {
             name,
-            record: (!fields.is_empty())
-                .then_some(Box::new(ContextVariantRecord { fields, base: None })),
+            record: (!fields.is_empty()).then_some(Box::new(ContextVariantRecord {
+                fields,
+                field_labels,
+                base: None,
+            })),
         }))
     }
     fn pattern(
@@ -297,7 +307,7 @@ impl Builder {
         self.expr(Expr::StructInit {
             path,
             fields,
-            field_name_spans: Vec::new(),
+            field_labels: Vec::new(),
             type_args: None,
             base: None,
         })
@@ -382,6 +392,7 @@ impl Builder {
         items: &[Spanned<Item>],
         sources: &[PathBuf],
         module: &str,
+        source_module: Option<&str>,
     ) -> Result<Vec<Spanned<Item>>, Vec<TypeError>> {
         let mut result = items.to_vec();
         let mut companions = Vec::new();
@@ -434,7 +445,12 @@ impl Builder {
                     result[ordinal] = (generated.remove(0).0, span.clone());
                     companions.extend(generated);
                 }
-                Err(error) => errors.push(error),
+                // A refusal in an imported module reports against that
+                // module's source, not the root's.
+                Err(error) => errors.push(match source_module {
+                    Some(module) => error.with_source_module(module),
+                    None => error,
+                }),
             }
         }
         result.extend(companions);
@@ -734,10 +750,7 @@ impl Builder {
                     machine.name,
                 )
             {
-                return Err(self.error(format!(
-                    "transition to `{}` must produce that state on every normal path",
-                    transition.target_state
-                )));
+                return Err(missing_target_refusal(transition, machine));
             }
             if let Some(refusal) = redundant_target_refusal(transition, machine) {
                 return Err(refusal);
@@ -777,7 +790,7 @@ impl Builder {
         let empty = self.expr(Expr::Array(Vec::new()));
         let outputs = self.var(OUTPUTS, Some(outputs_ty), empty);
         let disposition_ty = self.ty(format!("{}StepDisposition", machine.name));
-        let taken = self.variant(Ident::new("Taken"), Vec::new());
+        let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
         let disposition = self.var(DISPOSITION, Some(disposition_ty), taken);
         let mut state_arms = Vec::new();
         for state in &machine.states {
@@ -788,7 +801,7 @@ impl Builder {
                 let event_pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
                 let rules = rules_for(machine, state, event);
                 let current = self.state_value(machine, state);
-                let ignored = self.variant(Ident::new("Ignored"), Vec::new());
+                let ignored = self.variant(Ident::new("Ignored"), Vec::new(), Vec::new());
                 let target = self.ident(DISPOSITION);
                 let set_ignored = self.stmt(Stmt::Assign {
                     target,
@@ -845,7 +858,7 @@ impl Builder {
                 (Ident::new("outputs"), output_value),
                 (Ident::new("disposition"), disposition_value),
             ],
-            field_name_spans: Vec::new(),
+            field_labels: Vec::new(),
             type_args: None,
             base: None,
         });
@@ -1067,6 +1080,59 @@ impl Builder {
         }
     }
 
+    /// `State { ..base, field: value }` reads the fields the literal does not
+    /// name off `base`. Expanding before the rewrite keeps one authority for that
+    /// read: each carried field becomes the field access the programmer would
+    /// otherwise write, so `..state` resolves through the same state-field
+    /// rule as `state.field`, and an unreadable base is refused by ordinary
+    /// field-access checking.
+    fn expand_state_base(
+        &mut self,
+        machine: &MachineDecl,
+        state_name: Option<Ident>,
+        fields: &mut Vec<(Ident, Spanned<Expr>)>,
+        field_labels: &mut Vec<FieldLabel>,
+        base: &mut Option<Box<Spanned<Expr>>>,
+    ) {
+        let Some(declared) = machine
+            .states
+            .iter()
+            .find(|state| Some(state.name) == state_name)
+        else {
+            return;
+        };
+        let Some(base_expr) = base.take() else {
+            return;
+        };
+        let named: Vec<Ident> = fields.iter().map(|(field, _)| *field).collect();
+        for (field, _) in &declared.fields {
+            if named.contains(field) {
+                continue;
+            }
+            let field_span = self.span();
+            let read = self.expr(Expr::FieldAccess {
+                object: base_expr.clone(),
+                field: (*field, field_span),
+            });
+            fields.push((*field, read));
+            field_labels.push(FieldLabel::explicit(self.span()));
+        }
+    }
+
+    /// Rewrite a named field list's values.
+    fn rewrite_field_inits(
+        &mut self,
+        fields: &mut [(Ident, Spanned<Expr>)],
+        machine: &MachineDecl,
+        state: &MachineState,
+        event: &MachineEvent,
+    ) -> Result<(), TypeError> {
+        for (_, value) in fields.iter_mut() {
+            *value = self.rewrite(value, machine, state, event)?;
+        }
+        Ok(())
+    }
+
     fn rewrite(
         &mut self,
         source: &Spanned<Expr>,
@@ -1124,7 +1190,11 @@ impl Builder {
                 }
                 *expr = Expr::Ident(Ident::new(&format!("_$machine_event_{field}")));
             }
-            Expr::MachineEmit { event_name, fields } => {
+            Expr::MachineEmit {
+                event_name,
+                fields,
+                field_labels,
+            } => {
                 if !machine
                     .emits
                     .iter()
@@ -1134,10 +1204,8 @@ impl Builder {
                         "`{event_name}` is not declared in the machine's typed output vocabulary"
                     )));
                 }
-                for (_, value) in fields.iter_mut() {
-                    *value = self.rewrite(value, machine, state, event)?;
-                }
-                let value = self.variant(*event_name, fields.clone());
+                self.rewrite_field_inits(fields, machine, state, event)?;
+                let value = self.variant(*event_name, fields.clone(), field_labels.clone());
                 let receiver = self.ident(OUTPUTS);
                 let method = (Ident::new("push"), self.span());
                 *expr = Expr::MethodCall {
@@ -1217,9 +1285,7 @@ impl Builder {
             }
             Expr::ContextVariant(context) => {
                 if let Some(record) = &mut context.record {
-                    for (_, value) in &mut record.fields {
-                        *value = self.rewrite(value, machine, state, event)?;
-                    }
+                    self.rewrite_field_inits(&mut record.fields, machine, state, event)?;
                     if let Some(base) = &mut record.base {
                         **base = self.rewrite(base, machine, state, event)?;
                     }
@@ -1228,47 +1294,17 @@ impl Builder {
             Expr::StructInit {
                 path,
                 fields,
-                field_name_spans,
+                field_labels,
                 base,
                 type_args,
             } => {
-                // `State { ..base, field: value }` reads the fields the
-                // literal does not name off `base`. Expanding before the
-                // rewrite keeps one authority for that read: each carried
-                // field becomes the field access the programmer would
-                // otherwise write, so `..state` resolves through the same
-                // state-field rule as `state.field`, and an unreadable base
-                // is refused by ordinary field-access checking.
                 let state_name = match path.segments.as_slice() {
                     [(owner, _), (leaf, _)] if *owner == machine.name => Some(*leaf),
                     [(leaf, _)] => Some(*leaf),
                     _ => None,
                 };
-                let declared = machine
-                    .states
-                    .iter()
-                    .find(|state| Some(state.name) == state_name)
-                    .map(|state| state.fields.clone());
-                if let (Some(declared), Some(base_expr)) = (declared.as_ref(), base.clone()) {
-                    let named: Vec<String> =
-                        fields.iter().map(|(field, _)| field.to_string()).collect();
-                    for (field, _) in declared {
-                        if named.iter().any(|seen| seen == field.name.as_str()) {
-                            continue;
-                        }
-                        let field_span = self.span();
-                        let read = self.expr(Expr::FieldAccess {
-                            object: base_expr.clone(),
-                            field: (*field, field_span),
-                        });
-                        fields.push((*field, read));
-                        field_name_spans.push(self.span());
-                    }
-                    *base = None;
-                }
-                for (_, value) in fields.iter_mut() {
-                    *value = self.rewrite(value, machine, state, event)?;
-                }
+                self.expand_state_base(machine, state_name, fields, field_labels, base);
+                self.rewrite_field_inits(fields, machine, state, event)?;
                 if let Some(base) = base {
                     **base = self.rewrite(base, machine, state, event)?;
                 }
@@ -1279,7 +1315,7 @@ impl Builder {
                 }
                 if let Some(name) = path.as_single() {
                     if machine.states.iter().any(|state| state.name == name) {
-                        *expr = self.variant(name, fields.clone()).0;
+                        *expr = self.variant(name, fields.clone(), field_labels.clone()).0;
                     }
                 }
             }
@@ -1669,6 +1705,43 @@ fn redundant_target_refusal(
         )
         .with_suggestion(hint),
     )
+}
+
+/// A transition body that does not produce its target state, anchored on the
+/// body. A block whose value is one field of the target (`=> B { n }`) was
+/// meant as the payload `{ n: n }`: a lone shorthand field reads as a block
+/// there, since `{ name }` is also the block that yields `name`.
+fn missing_target_refusal(transition: &MachineTransition, machine: &MachineDecl) -> TypeError {
+    let target = transition.target_state;
+    let error = TypeError::new(
+        TypeErrorKind::MachineExhaustivenessError,
+        transition.body.1.clone(),
+        format!("transition to `{target}` must produce that state on every normal path"),
+    );
+    let lone_field = match &transition.body.0 {
+        Expr::Block(block)
+            if transition.body_form == MachineTransitionBodyForm::Block
+                && block.stmts.len() == transition.event_bindings.len() =>
+        {
+            match block.trailing_expr.as_deref() {
+                Some((Expr::Ident(name), _)) => Some(*name),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let names_target_field = |name: Ident| {
+        machine
+            .states
+            .iter()
+            .any(|state| state.name == target && state.fields.iter().any(|(f, _)| *f == name))
+    };
+    match lone_field {
+        Some(name) if names_target_field(name) => error.with_suggestion(format!(
+            "the braces were read as a block yielding `{name}`; to set the field, write `{{ {name}: {name} }}`"
+        )),
+        _ => error,
+    }
 }
 
 /// Does `expr` name `target` directly, in any of its spellings?

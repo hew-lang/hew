@@ -114,12 +114,16 @@ impl Parser<'_> {
     fn parse_record_init_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let expr_start = lhs.1.start;
         self.advance();
-        let (fields, field_name_spans, base) =
+        let (fields, field_labels, base) =
             self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
         let end = self.peek_span().start;
         Some(match lhs {
             (Expr::ContextVariant(mut context), _) => {
-                context.record = Some(Box::new(ContextVariantRecord { fields, base }));
+                context.record = Some(Box::new(ContextVariantRecord {
+                    fields,
+                    field_labels,
+                    base,
+                }));
                 (Expr::ContextVariant(context), expr_start..end)
             }
             (Expr::GenericApplySuffix { target, type_args }, _) => {
@@ -128,7 +132,7 @@ impl Parser<'_> {
                         Expr::StructInit {
                             path,
                             fields,
-                            field_name_spans,
+                            field_labels,
                             type_args: Some(type_args),
                             base,
                         },
@@ -204,17 +208,25 @@ impl Parser<'_> {
     /// identifier (block opener) rather than a struct literal — i.e. inside an
     /// `if`/`while` condition or `match` scrutinee at the top level.
     pub(crate) fn no_struct_literal(&self) -> bool {
-        self.no_struct_literal.get()
+        self.struct_literal_rule.get() == StructLiteralRule::Forbidden
     }
 
-    /// Set `no_struct_literal` to `value` and return a guard that restores the
-    /// previous value on drop. Survives every early `return`/`?` path.
+    /// Set the struct-literal rule to `Forbidden` (`true`) or `Allowed`
+    /// (`false`) and return a guard that restores the previous rule on drop.
     pub(crate) fn set_no_struct_literal(&self, value: bool) -> NoStructLiteralGuard {
-        let prev = self.no_struct_literal.get();
-        self.no_struct_literal.set(value);
+        self.set_struct_literal_rule(if value {
+            StructLiteralRule::Forbidden
+        } else {
+            StructLiteralRule::Allowed
+        })
+    }
+
+    /// Set the struct-literal rule and return a guard that restores the
+    /// previous rule on drop. Survives every early `return`/`?` path.
+    pub(crate) fn set_struct_literal_rule(&self, rule: StructLiteralRule) -> NoStructLiteralGuard {
         NoStructLiteralGuard {
-            cell: Rc::clone(&self.no_struct_literal),
-            prev,
+            cell: Rc::clone(&self.struct_literal_rule),
+            prev: self.struct_literal_rule.replace(rule),
         }
     }
 
@@ -858,13 +870,13 @@ impl Parser<'_> {
             {
                 self.advance();
                 let event_name = self.expect_ident()?;
+                let mut field_labels = Vec::new();
                 let fields = if self.eat(&Token::LeftBrace) {
                     let mut fields = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let field_val = self.parse_expr()?;
+                        let (field_name, field_label, field_val) = self.parse_field_init()?;
                         fields.push((field_name, field_val));
+                        field_labels.push(field_label);
                         if !self.eat(&Token::Comma) {
                             break;
                         }
@@ -874,7 +886,11 @@ impl Parser<'_> {
                 } else {
                     Vec::new()
                 };
-                Expr::MachineEmit { event_name, fields }
+                Expr::MachineEmit {
+                    event_name,
+                    fields,
+                    field_labels,
+                }
             }
             Token::Identifier(name) => {
                 let name = Ident::new(name);
@@ -920,12 +936,12 @@ impl Parser<'_> {
                         self.advance(); // consume {
                                         // Inside the struct body the `{` is consumed, so any
                                         // nested bare-ident struct literal is unambiguous again.
-                        let (fields, field_name_spans, base) =
+                        let (fields, field_labels, base) =
                             self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                         Expr::StructInit {
                             path: Path::single(name, name_span),
                             fields,
-                            field_name_spans,
+                            field_labels,
                             type_args: explicit_type_args,
                             base,
                         }
@@ -1298,13 +1314,13 @@ impl Parser<'_> {
                     vec![]
                 };
 
+                let mut arg_labels = Vec::new();
                 let args = if self.eat(&Token::LeftParen) {
                     let mut args = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let value = self.parse_expr()?;
+                        let (field_name, field_label, value) = self.parse_field_init()?;
                         args.push((field_name, value));
+                        arg_labels.push(field_label);
                         if !self.eat(&Token::Comma) {
                             break;
                         }
@@ -1319,6 +1335,7 @@ impl Parser<'_> {
                     target,
                     type_args,
                     args,
+                    arg_labels,
                 }
             }
             Token::Move => {
@@ -1797,14 +1814,14 @@ impl Parser<'_> {
             if let Some(mut path) = Path::from_chain(&lhs) {
                 path.segments.push(method);
                 self.advance();
-                let (fields, field_name_spans, base) =
+                let (fields, field_labels, base) =
                     self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                 let end = self.peek_span().start;
                 return Some((
                     Expr::StructInit {
                         path,
                         fields,
-                        field_name_spans,
+                        field_labels,
                         type_args: None,
                         base,
                     },
@@ -1853,9 +1870,27 @@ impl Parser<'_> {
         Some(ArrayElement::Value(self.parse_expr()?))
     }
 
+    /// Parse one named field initializer: `name: expr`, or the shorthand
+    /// `name`, which stands for `name: name`.
+    ///
+    /// The shorthand desugars here, so every later stage sees the explicit
+    /// form; the returned label records the spelling.
+    pub(crate) fn parse_field_init(&mut self) -> Option<(Ident, FieldLabel, Spanned<Expr>)> {
+        let (field_name, span) = self.expect_ident_spanned()?;
+        if self.eat(&Token::Colon) {
+            let value = self.parse_expr()?;
+            return Some((field_name, FieldLabel::explicit(span), value));
+        }
+        let label = FieldLabel {
+            span: span.clone(),
+            shorthand: true,
+        };
+        Some((field_name, label, (Expr::Ident(field_name), span)))
+    }
+
     pub(crate) fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
         let mut fields = Vec::new();
-        let mut field_name_spans = Vec::new();
+        let mut field_labels = Vec::new();
         let mut base: Option<Box<Spanned<Expr>>> = None;
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::DotDot) {
@@ -1879,11 +1914,9 @@ impl Parser<'_> {
                 }
                 continue;
             }
-            let (field_name, field_name_span) = self.expect_ident_spanned()?;
-            self.expect(&Token::Colon)?;
-            let value = self.parse_expr()?;
+            let (field_name, field_label, value) = self.parse_field_init()?;
             fields.push((field_name, value));
-            field_name_spans.push(field_name_span);
+            field_labels.push(field_label);
 
             if self.peek() == Some(&Token::Semicolon) {
                 let span = self.peek_span();
@@ -1900,7 +1933,7 @@ impl Parser<'_> {
             }
         }
         self.expect(&Token::RightBrace)?;
-        Some((fields, field_name_spans, base))
+        Some((fields, field_labels, base))
     }
 
     /// Parse a comma-separated list of call arguments, supporting both

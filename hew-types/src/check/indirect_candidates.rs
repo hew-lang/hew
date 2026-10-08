@@ -304,21 +304,29 @@ impl Checker {
     pub(super) fn record_aggregate_field_sources(&mut self, expr: &Expr, span: &Span) {
         let Expr::StructInit {
             fields,
-            field_name_spans,
+            field_labels,
             ..
         } = expr
         else {
             return;
         };
         let mut writes = Vec::new();
-        for ((_, value), label_span) in fields.iter().zip(field_name_spans) {
-            let key = SpanKey::in_module(label_span, self.current_module_idx);
-            let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) else {
+        for ((_, value), label) in fields.iter().zip(field_labels) {
+            let key = SpanKey::in_module(&label.span, self.current_module_idx);
+            let field = if label.shorthand {
+                self.scopes.shorthand_label(&key)
+            } else {
+                match self.scopes.resolutions().get(&key) {
+                    Some(Resolution::Field(owner, index)) => Some((*owner, *index)),
+                    _ => None,
+                }
+            };
+            let Some((owner, index)) = field else {
                 continue;
             };
             writes.push(CallableFieldFlow {
-                owner: *owner,
-                index: *index,
+                owner,
+                index,
                 candidates: self.callable_candidates_for_expr(&value.0, &value.1),
             });
         }

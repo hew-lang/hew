@@ -152,7 +152,12 @@ pub(super) fn identity_reference_locations(
     let local_spelling = matches!(resolution, hew_types::check::scope::Resolution::Local(_))
         .then(|| doc.source.get(selected_span.start..selected_span.end))
         .flatten();
-    for (module_idx, span) in hew_analysis::identity::all_reference_spans(output, resolution) {
+    let occurrences = hew_analysis::identity::all_reference_spans(output, resolution)
+        .into_iter()
+        .chain(hew_analysis::identity::all_shorthand_label_spans(
+            output, resolution,
+        ));
+    for (module_idx, span) in occurrences {
         let Some(source_uri) = source_uri_for_module_idx(uri, doc, module_idx) else {
             continue;
         };
@@ -1260,6 +1265,14 @@ pub(super) fn plan_workspace_rename(
         Ok(_edits) => {}
         Err(err) => return Err(err),
     }
+    if let Some(edits) = checked_local_rename_edits(doc, offset, new_name) {
+        return workspace_edit_from_changes(
+            uri,
+            doc,
+            documents,
+            HashMap::from([(uri.clone(), edits)]),
+        );
+    }
 
     let mut cross_file_conflicts: Vec<hew_analysis::RenameConflict> = Vec::new();
     let Some((name, _)) = hew_analysis::util::simple_word_at_offset(&doc.source, offset) else {
@@ -1301,6 +1314,41 @@ pub(super) fn plan_workspace_rename(
     }
 
     build_workspace_edit(uri, doc, offset, new_name, documents)
+}
+
+/// Rename a checked local binding through the occurrences the checker
+/// resolved to it. Name-shadowing conflicts are refused by
+/// [`hew_analysis::rename::plan_rename`] before this runs. A shorthand field
+/// token also labels its field, so it is written out: `Point { x }` becomes
+/// `Point { x: y }`.
+fn checked_local_rename_edits(
+    doc: &DocumentState,
+    offset: usize,
+    new_name: &str,
+) -> Option<Vec<hew_analysis::RenameEdit>> {
+    let output = doc.type_output.as_ref()?;
+    let (selected, resolution @ hew_types::check::scope::Resolution::Local(_)) =
+        checked_resolution_at(doc, offset)?
+    else {
+        return None;
+    };
+    let old_name = doc.source.get(selected.start..selected.end)?;
+    if old_name == new_name {
+        return Some(Vec::new());
+    }
+    let edits = hew_analysis::identity::reference_spans(output, 0, resolution)
+        .into_iter()
+        .filter(|span| doc.source.get(span.start..span.end) == Some(old_name))
+        .map(|span| hew_analysis::RenameEdit {
+            new_text: if hew_analysis::identity::is_shorthand_label(output, 0, span) {
+                format!("{old_name}: {new_name}")
+            } else {
+                new_name.to_string()
+            },
+            span,
+        })
+        .collect();
+    Some(edits)
 }
 
 fn checked_field_index(index: usize, uri: &Url) -> Result<u32, hew_analysis::RenameError> {
@@ -1354,6 +1402,7 @@ fn plan_checked_field_rename(
                     message: "checked field has no source declaration".to_string(),
                 }
             })?;
+        let shorthand = hew_analysis::identity::all_shorthand_label_spans(output, resolution);
         if target
             .source
             .as_deref()
@@ -1361,6 +1410,7 @@ fn plan_checked_field_rename(
             .is_some_and(|source_uri| source_uri != *uri)
             || hew_analysis::identity::all_reference_spans(output, resolution)
                 .iter()
+                .chain(&shorthand)
                 .any(|(module_idx, _)| *module_idx != 0)
         {
             return Err(hew_analysis::RenameError::Io {
@@ -1403,23 +1453,47 @@ fn plan_checked_field_rename(
         spans.push(declaration);
         spans.sort_by_key(|span| (span.start, span.end));
         spans.dedup();
-        for span in &spans {
-            if doc.source.get(span.start..span.end) != Some(old_name.as_str()) {
-                return Err(hew_analysis::RenameError::Io {
-                    path: uri.as_str().to_string(),
-                    message: "checked field source span does not match its declaration".to_string(),
-                });
-            }
-        }
-        let edits = spans
-            .into_iter()
-            .map(|span| hew_analysis::RenameEdit {
-                span,
-                new_text: new_name.to_string(),
-            })
-            .collect();
+        let shorthand: Vec<_> = shorthand.into_iter().map(|(_, span)| span).collect();
+        let edits = checked_field_rename_edits(uri, doc, spans, shorthand, old_name, new_name)?;
         workspace_edit_from_changes(uri, doc, documents, HashMap::from([(uri.clone(), edits)]))
     })())
+}
+
+/// The edits renaming a checked field at its declaration, written labels and
+/// projections (`spans`), and shorthand initializer labels (`shorthand`).
+fn checked_field_rename_edits(
+    uri: &Url,
+    doc: &DocumentState,
+    spans: Vec<hew_analysis::OffsetSpan>,
+    shorthand: Vec<hew_analysis::OffsetSpan>,
+    old_name: &str,
+    new_name: &str,
+) -> Result<Vec<hew_analysis::RenameEdit>, hew_analysis::RenameError> {
+    for span in spans.iter().chain(&shorthand) {
+        if doc.source.get(span.start..span.end) != Some(old_name) {
+            return Err(hew_analysis::RenameError::Io {
+                path: uri.as_str().to_string(),
+                message: "checked field source span does not match its declaration".to_string(),
+            });
+        }
+    }
+    // A shorthand label is also a use of the binding it names, so the label
+    // is written out and the token keeps reading the binding: `Point { x }`
+    // becomes `Point { y: x }`.
+    Ok(spans
+        .into_iter()
+        .map(|span| hew_analysis::RenameEdit {
+            span,
+            new_text: new_name.to_string(),
+        })
+        .chain(shorthand.into_iter().map(|span| hew_analysis::RenameEdit {
+            span: hew_analysis::OffsetSpan {
+                start: span.start,
+                end: span.start,
+            },
+            new_text: format!("{new_name}: "),
+        }))
+        .collect())
 }
 
 /// Inspect another file's document for a pre-existing top-level item,

@@ -304,16 +304,11 @@ fn imported_generic_aggregate_publishes_selected_callback_field() {
         let Item::Function(function) = item else {
             return None;
         };
-        let (
-            Expr::StructInit {
-                field_name_spans, ..
-            },
-            _,
-        ) = &**function.body.trailing_expr.as_ref()?
+        let (Expr::StructInit { field_labels, .. }, _) = &**function.body.trailing_expr.as_ref()?
         else {
             return None;
         };
-        Some(field_name_spans.clone())
+        Some(field_labels.clone())
     });
     assert!(
         parsed_field_spans

@@ -440,22 +440,26 @@ pub fn plan_rename(
         .map(|(_, spans)| spans)
         .unwrap_or_default();
 
-    if let Some(def_span) = find_definition(source, parse_result, &name) {
-        if !spans
-            .iter()
-            .any(|s| s.start == def_span.start && s.end == def_span.end)
-        {
-            spans.push(def_span);
+    // Classify the rename target to scope conflict detection correctly.
+    let is_local = find_local_binding_definition(source, parse_result, &name, offset).is_some()
+        || find_param_definition(parse_result, &name, offset).is_some();
+
+    // A local's own binding site is among its references; the module-scope
+    // declaration of the same spelling is a different name.
+    if !is_local {
+        if let Some(def_span) = find_definition(source, parse_result, &name) {
+            if !spans
+                .iter()
+                .any(|s| s.start == def_span.start && s.end == def_span.end)
+            {
+                spans.push(def_span);
+            }
         }
     }
 
     if spans.is_empty() {
         return Ok(Vec::new());
     }
-
-    // Classify the rename target to scope conflict detection correctly.
-    let is_local = find_local_binding_definition(source, parse_result, &name, offset).is_some()
-        || find_param_definition(parse_result, &name, offset).is_some();
 
     let mut conflicts = detect_conflicts(source, parse_result, &spans, new_name, is_local);
     // If the cursor is on a reference-only site with no corresponding
@@ -475,6 +479,9 @@ pub fn plan_rename(
         return Err(RenameError::Conflicts { conflicts });
     }
 
+    // A shorthand field token also labels the field, so the label is
+    // written out: `Point { x }` becomes `Point { x: y }`.
+    let shorthand = crate::references::shorthand_field_spans(parse_result);
     let mut edits: Vec<RenameEdit> = spans
         .into_iter()
         .map(|span| {
@@ -486,8 +493,12 @@ pub fn plan_rename(
                 })
                 .map_or(span, |(_, token)| token);
             RenameEdit {
+                new_text: if shorthand.contains(&span) {
+                    format!("{name}: {new_name}")
+                } else {
+                    new_name.to_string()
+                },
                 span,
-                new_text: new_name.to_string(),
             }
         })
         .collect();

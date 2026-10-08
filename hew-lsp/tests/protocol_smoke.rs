@@ -1660,3 +1660,103 @@ fn lsp_cancelled_project_rename_and_queued_snapshot_cannot_deliver_stale_edits()
     assert_clean(&verification.open(&util, expected, 8));
     assert_clean(&verification.open(&consumers[0], &session.source(&consumers[0]), 1));
 }
+
+/// A field rename over the wire writes a shorthand initializer's label out, so
+/// the renamed program still reads the same binding.
+#[test]
+fn lsp_field_rename_writes_shorthand_label_out() {
+    const SOURCE: &str = "type Endpoint { host: string; port: i64; }\nfn main() {\n    let port = 5432;\n    let host = \"h\";\n    let e = Endpoint { host, port };\n    println(e.port);\n}\n";
+    let mut server = ServerProcess {
+        child: Command::new(server_binary())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn hew-lsp"),
+    };
+    let mut stdin = server.child.stdin.take().expect("child stdin");
+    let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));
+    let deadline = Instant::now() + SESSION_BUDGET;
+    let uri = "file:///lsp/shorthand_rename.hew";
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+                "params":{"processId":null,"capabilities":{},"rootUri":null}}),
+    );
+    recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(1)));
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didOpen",
+                "params":{"textDocument":{"uri":uri,"languageId":"hew","version":1,"text":SOURCE}}}),
+    );
+    // Analysis publishes diagnostics once the document is checked.
+    recv_until(&rx, deadline, |m| {
+        m.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && m["params"]["uri"] == json!(uri)
+    });
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":2,"method":"textDocument/rename",
+                "params":{"textDocument":{"uri":uri},
+                          "position":{"line":0,"character":30},"newName":"p2"}}),
+    );
+    let rename = recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(2)));
+    let mut edits = rename["result"]["changes"][uri]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("rename must edit the document, got: {rename}"));
+    edits.sort_by_key(|edit| {
+        (
+            edit["range"]["start"]["line"].as_u64(),
+            edit["range"]["start"]["character"].as_u64(),
+        )
+    });
+    let spans: Vec<_> = edits
+        .iter()
+        .map(|edit| {
+            (
+                edit["range"]["start"]["line"].as_u64().unwrap(),
+                edit["range"]["start"]["character"].as_u64().unwrap(),
+                edit["range"]["end"]["character"].as_u64().unwrap(),
+                edit["newText"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        spans,
+        vec![
+            (0, 30, 34, "p2".to_string()),
+            (4, 29, 29, "p2: ".to_string()),
+            (5, 14, 18, "p2".to_string()),
+        ]
+    );
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":3,"method":"textDocument/references",
+                "params":{"textDocument":{"uri":uri},
+                          "position":{"line":5,"character":15},
+                          "context":{"includeDeclaration":true}}}),
+    );
+    let references = recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(3)));
+    let mut starts: Vec<_> = references["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("references must answer, got: {references}"))
+        .iter()
+        .map(|site| {
+            (
+                site["range"]["start"]["line"].as_u64().unwrap(),
+                site["range"]["start"]["character"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    starts.sort_unstable();
+    assert_eq!(starts, vec![(0, 30), (4, 29), (5, 14)]);
+
+    shutdown(&mut stdin);
+}

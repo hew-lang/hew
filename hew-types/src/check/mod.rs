@@ -2609,6 +2609,7 @@ impl Checker {
             tail_ok_coercions: self.tail_ok_coercions.clone(),
             result_return_coercions: self.result_return_coercions.clone(),
             tail_ok_armed: self.tail_ok_armed.clone(),
+            field_shorthand_values: self.field_shorthand_values.clone(),
             assign_target_kinds: self.assign_target_kinds.clone(),
             assign_target_shapes: self.assign_target_shapes.clone(),
             indexed_place_operations: self.indexed_place_operations.clone(),
@@ -3653,6 +3654,7 @@ impl Checker {
         // The checker keeps its table: post-check queries resolve through it.
         let defs = std::sync::Arc::new(self.defs.clone());
         let resolutions = self.scopes.take_resolutions();
+        let shorthand_field_labels = self.scopes.take_shorthand_labels();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
@@ -3722,6 +3724,7 @@ impl Checker {
             internal_builtin_enum_names,
             defs,
             resolutions,
+            shorthand_field_labels,
             contexts,
             entry_exit_plan,
             test_entry_plans,

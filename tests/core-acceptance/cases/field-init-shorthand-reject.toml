@@ -1,0 +1,42 @@
+[[case]]
+id = "field-init-shorthand-reject"
+intent = "A shorthand field whose name has no binding reports the missing binding as a shorthand, not a parse cascade; naming a field twice and naming a non-field are refused exactly as in the explicit form."
+source = "cases/field-init-shorthand-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedVariable"
+line = 18
+column = 36
+message = "cannot find `port` in scope (field shorthand for `port`)"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 21
+column = 46
+message = "record literal names field `port` more than once"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedField"
+line = 24
+column = 17
+message = "no field `retries` on type `Endpoint`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedVariable"
+line = 26
+column = 34
+message = "cannot find `greeting` in scope (field shorthand for `greeting`)"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "UnusedVariable"
+line = 23
+column = 9
+message = "unused variable `retries`"

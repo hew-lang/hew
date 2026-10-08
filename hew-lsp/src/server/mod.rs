@@ -1982,6 +1982,151 @@ impl Worker {
         );
     }
 
+    /// Apply a rename's edits to the one document it changes.
+    fn renamed_source(source: &str, uri: &Url, offset: usize, new_name: &str) -> String {
+        let doc = make_typed_doc(source);
+        let edit =
+            super::navigation::plan_workspace_rename(uri, &doc, offset, new_name, &DashMap::new())
+                .expect("rename should be safe")
+                .expect("rename should produce edits");
+        let mut edits = edit.changes.unwrap().remove(uri).unwrap();
+        edits.sort_by_key(|edit| {
+            std::cmp::Reverse((edit.range.start.line, edit.range.start.character))
+        });
+        let mut lines: Vec<String> = source.split('\n').map(str::to_string).collect();
+        for edit in edits {
+            assert_eq!(edit.range.start.line, edit.range.end.line, "{edit:?}");
+            let line = &mut lines[edit.range.start.line as usize];
+            line.replace_range(
+                edit.range.start.character as usize..edit.range.end.character as usize,
+                &edit.new_text,
+            );
+        }
+        lines.join("\n")
+    }
+
+    /// Source text of each checked reference to the symbol at `offset`.
+    fn reference_columns(source: &str, uri: &Url, offset: usize) -> Vec<(u32, u32, u32)> {
+        let doc = make_typed_doc(source);
+        let mut refs = super::navigation::identity_reference_locations(
+            uri,
+            &doc,
+            offset,
+            true,
+            &DashMap::new(),
+        )
+        .expect("checked references");
+        refs.sort_by_key(|site| (site.range.start.line, site.range.start.character));
+        refs.iter()
+            .map(|site| {
+                (
+                    site.range.start.line,
+                    site.range.start.character,
+                    site.range.end.character,
+                )
+            })
+            .collect()
+    }
+
+    const SHORTHAND_ENDPOINT: &str = "type Endpoint { host: string; port: i64; }\nfn main() {\n    let port = 5432;\n    let host = \"h\";\n    let e = Endpoint { host, port };\n    println(e.port);\n}\n";
+    const EXPLICIT_ENDPOINT: &str = "type Endpoint { host: string; port: i64; }\nfn main() {\n    let port = 5432;\n    let host = \"h\";\n    let e = Endpoint { host: host, port: port };\n    println(e.port);\n}\n";
+
+    #[test]
+    fn field_rename_writes_a_shorthand_label_out() {
+        let uri = make_test_uri("/shorthand-field-rename.hew");
+        let expected = "type Endpoint { host: string; p2: i64; }\nfn main() {\n    let port = 5432;\n    let host = \"h\";\n    let e = Endpoint { host, p2: port };\n    println(e.p2);\n}\n";
+        let declaration = SHORTHAND_ENDPOINT.find("port: i64").unwrap();
+        let projection = SHORTHAND_ENDPOINT.find("e.port").unwrap() + 2;
+        for offset in [declaration, projection] {
+            assert_eq!(
+                renamed_source(SHORTHAND_ENDPOINT, &uri, offset, "p2"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn field_rename_keeps_an_explicit_value() {
+        let uri = make_test_uri("/explicit-field-rename.hew");
+        let expected = "type Endpoint { host: string; p2: i64; }\nfn main() {\n    let port = 5432;\n    let host = \"h\";\n    let e = Endpoint { host: host, p2: port };\n    println(e.p2);\n}\n";
+        let declaration = EXPLICIT_ENDPOINT.find("port: i64").unwrap();
+        let label = EXPLICIT_ENDPOINT.find("port: port").unwrap();
+        let projection = EXPLICIT_ENDPOINT.find("e.port").unwrap() + 2;
+        for offset in [declaration, label, projection] {
+            assert_eq!(
+                renamed_source(EXPLICIT_ENDPOINT, &uri, offset, "p2"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn local_rename_keeps_the_field_a_shorthand_labels() {
+        let uri = make_test_uri("/shorthand-local-rename.hew");
+        let expected = "type Endpoint { host: string; port: i64; }\nfn main() {\n    let pp = 5432;\n    let host = \"h\";\n    let e = Endpoint { host, port: pp };\n    println(e.port);\n}\n";
+        let binding = SHORTHAND_ENDPOINT.find("port = ").unwrap();
+        let shorthand = SHORTHAND_ENDPOINT.find("port }").unwrap();
+        for offset in [binding, shorthand] {
+            assert_eq!(
+                renamed_source(SHORTHAND_ENDPOINT, &uri, offset, "pp"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn local_rename_keeps_an_explicit_label() {
+        let uri = make_test_uri("/explicit-local-rename.hew");
+        let expected = "type Endpoint { host: string; port: i64; }\nfn main() {\n    let pp = 5432;\n    let host = \"h\";\n    let e = Endpoint { host: host, port: pp };\n    println(e.port);\n}\n";
+        let binding = EXPLICIT_ENDPOINT.find("port = ").unwrap();
+        let value = EXPLICIT_ENDPOINT.find("port }").unwrap();
+        for offset in [binding, value] {
+            assert_eq!(
+                renamed_source(EXPLICIT_ENDPOINT, &uri, offset, "pp"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn parameter_rename_writes_a_shorthand_label_out() {
+        let uri = make_test_uri("/shorthand-param-rename.hew");
+        let source = "type Win { lo: i64; hi: i64; }\nfn widen(w: Win, lo: i64) -> Win {\n    Win { ..w, lo }\n}\nfn main() { println(widen(Win { lo: 1, hi: 5 }, 3).lo); }\n";
+        let expected = "type Win { lo: i64; hi: i64; }\nfn widen(w: Win, low: i64) -> Win {\n    Win { ..w, lo: low }\n}\nfn main() { println(widen(Win { lo: 1, hi: 5 }, 3).lo); }\n";
+        let parameter = source.find("lo: i64)").unwrap();
+        assert_eq!(renamed_source(source, &uri, parameter, "low"), expected);
+    }
+
+    #[test]
+    fn references_include_shorthand_tokens_for_field_and_binding() {
+        let uri = make_test_uri("/shorthand-references.hew");
+        // `port: i64` (line 0), `let port` (line 2), the initializer (line 4)
+        // and `e.port` (line 5).
+        let declaration = (0, 30, 34);
+        let binding = (2, 8, 12);
+        let projection = (5, 14, 18);
+        for (source, initializer) in [
+            (SHORTHAND_ENDPOINT, (4, 29, 33)),
+            (EXPLICIT_ENDPOINT, (4, 35, 39)),
+        ] {
+            let field_use = source.find("e.port").unwrap() + 2;
+            assert_eq!(
+                reference_columns(source, &uri, field_use),
+                vec![declaration, initializer, projection],
+                "{source}"
+            );
+        }
+        let value = |source: &str| source.find("port }").unwrap();
+        assert_eq!(
+            reference_columns(SHORTHAND_ENDPOINT, &uri, value(SHORTHAND_ENDPOINT)),
+            vec![binding, (4, 29, 33)]
+        );
+        assert_eq!(
+            reference_columns(EXPLICIT_ENDPOINT, &uri, value(EXPLICIT_ENDPOINT)),
+            vec![binding, (4, 41, 45)]
+        );
+    }
+
     #[test]
     fn checked_method_navigation_selects_second_impl() {
         let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\ntype B {\n    x: i64;\n}\n\nimpl B {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\nfn main() {\n    let b = B { x: 2 };\n    println(b.get());\n}\n";

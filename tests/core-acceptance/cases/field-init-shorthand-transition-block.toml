@@ -1,0 +1,14 @@
+[[case]]
+id = "field-init-shorthand-transition-block"
+intent = "A lone `{ name }` after a transition head is the block yielding `name`; the refusal sits on that body rather than the whole machine."
+source = "cases/field-init-shorthand-transition-block.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "MachineExhaustivenessError"
+line = 10
+column = 25
+message = "transition to `Busy` must produce that state on every normal path"

@@ -677,10 +677,15 @@ else needs `impl Display for {rendered}`)"
                         .copied()
                         .chain(self.sigs().entries().map(|(key, _)| key)),
                 );
+                let message = if self.field_shorthand_values.contains(span) {
+                    format!("cannot find `{name}` in scope (field shorthand for `{name}`)")
+                } else {
+                    format!("undefined variable `{name}`")
+                };
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedVariable,
                     span,
-                    format!("undefined variable `{name}`"),
+                    message,
                     similar,
                 );
             }

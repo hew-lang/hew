@@ -544,7 +544,7 @@ fn module_graph_body_private_local_type_is_available() {
                                 0..0,
                             ),
                             fields: vec![(Ident::new("x"), make_int_literal(1, 0..1))],
-                            field_name_spans: Vec::new(),
+                            field_labels: Vec::new(),
                             type_args: None,
                             base: None,
                         },

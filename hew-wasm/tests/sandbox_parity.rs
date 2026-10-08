@@ -444,6 +444,11 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/bitwise_binary_operators.hew",
     },
     ParityCase {
+        // `&`, `|` and `^` on bool evaluate both operands on both engines.
+        test_name: "bool_bitwise",
+        source_rel: "examples/sandbox-graduation/bool_bitwise.hew",
+    },
+    ParityCase {
         test_name: "compound_bitwise_assign",
         source_rel: "examples/sandbox-graduation/compound_bitwise_assign.hew",
     },

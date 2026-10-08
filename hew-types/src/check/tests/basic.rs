@@ -2707,7 +2707,7 @@ fn member_declarations_record_their_owner() {
 
 #[test]
 fn binary_operand_diagnostics_identify_the_operator_site() {
-    for expression in ["true + false", "true & false", "1.0 &+ 2.0"] {
+    for expression in ["true + false", "true & 1", "1.0 &+ 2.0"] {
         let source = format!("fn main() {{ let value = {expression}; }}");
         let output = check_source(&source);
         let diagnostic = output

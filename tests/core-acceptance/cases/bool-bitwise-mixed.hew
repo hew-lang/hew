@@ -1,0 +1,6 @@
+fn main() {
+    let a = true & 1;
+    let b = 1 | false;
+    let c = true ^ 0;
+    println(f"{a} {b} {c}");
+}

@@ -283,6 +283,10 @@ impl Checker {
                 if !is_copy
                     && !self.reject_borrowed_consumption(&Expr::Ident(Ident::new(&fact.name)), span)
                 {
+                    // The move into the closure is this capture's use in the
+                    // enclosing body; the body's own reads ran in the closure's
+                    // environment, outside the enclosing loops.
+                    self.env.note_loop_use(&fact.name, &[], span, false);
                     self.env.mark_moved(&fact.name, span.clone());
                 }
             } else if !self.capture_is_cloneable(&fact.ty)

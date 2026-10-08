@@ -556,3 +556,406 @@ fn a_write_inside_a_branch_arm_still_counts_as_a_mutation() {
         output.warnings
     );
 }
+
+// --- Loop back edges: an iteration starts where the last one ended --------
+//
+// The checker walks a loop body once. A consume of a value declared outside
+// the loop reaches the next iteration through the body's end and every
+// `continue`; a use the next iteration makes before re-initialising the value
+// is a use of a moved value.
+
+/// The loop-carried diagnostics, with the span they point at.
+fn loop_carried_errors(output: &TypeCheckOutput) -> Vec<(String, std::ops::Range<usize>)> {
+    output
+        .errors
+        .iter()
+        .filter(|error| {
+            error
+                .notes
+                .iter()
+                .any(|(_, note, _)| note.contains("in an earlier iteration of the loop"))
+        })
+        .map(|error| (error.message.clone(), error.span.clone()))
+        .collect()
+}
+
+fn assert_loop_rejects(label: &str, body: &str, message: &str) {
+    let source = format!("{SOCKET}{body}");
+    let output = check_source(&source);
+    let carried = loop_carried_errors(&output);
+    assert_eq!(
+        carried.len(),
+        1,
+        "{label}: expected one loop-carried diagnostic, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        carried[0].0.contains(message),
+        "{label}: expected `{message}`, got: {carried:#?}"
+    );
+}
+
+#[test]
+fn a_consume_on_every_iteration_is_rejected() {
+    assert_loop_rejects(
+        "close in a counted loop",
+        r"
+        fn probe() {
+            let held = Socket { fd: 1 };
+            for i in 0..2 {
+                held.close();
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}
+
+#[test]
+fn a_consume_before_continue_is_rejected() {
+    assert_loop_rejects(
+        "continue returns the consumed value to the head",
+        r"
+        fn probe() {
+            let held = Socket { fd: 1 };
+            var n = 0;
+            while n < 3 {
+                n = n + 1;
+                if n == 2 {
+                    held.close();
+                    continue;
+                }
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}
+
+#[test]
+fn a_consume_in_a_while_condition_is_rejected() {
+    assert_loop_rejects(
+        "the condition runs at every head",
+        r"
+        fn take(consume s: Socket) -> bool {
+            s.close();
+            true
+        }
+
+        fn probe() {
+            let held = Socket { fd: 1 };
+            while take(held) {
+                println(1);
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}
+
+#[test]
+fn a_consume_in_a_nested_loop_reports_once() {
+    assert_loop_rejects(
+        "inner and outer back edges share the use",
+        r"
+        fn probe() {
+            let held = Socket { fd: 1 };
+            for i in 0..2 {
+                for j in 0..2 {
+                    held.close();
+                }
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}
+
+#[test]
+fn a_consume_before_an_outer_continue_is_rejected() {
+    assert_loop_rejects(
+        "a labelled continue is the outer loop's back edge",
+        r"
+        fn probe() {
+            let held = Socket { fd: 1 };
+            @outer: for i in 0..2 {
+                for j in 0..2 {
+                    if j == 1 {
+                        held.close();
+                        continue @outer;
+                    }
+                }
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}
+
+#[test]
+fn a_reinitialization_on_one_path_does_not_cover_the_next_iteration() {
+    assert_loop_rejects(
+        "a conditional reinit leaves the other path consumed",
+        r"
+        fn probe(flag: bool) {
+            var held = Socket { fd: 1 };
+            for i in 0..2 {
+                if flag {
+                    held = Socket { fd: i };
+                }
+                held.close();
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}
+
+#[test]
+fn a_field_consume_on_every_iteration_is_rejected() {
+    assert_loop_rejects(
+        "a moved field is a moved place on the next iteration",
+        r"
+        type Pair {
+            left: Socket;
+            right: Socket;
+        }
+
+        fn probe() {
+            let pair = Pair { left: Socket { fd: 1 }, right: Socket { fd: 2 } };
+            for i in 0..2 {
+                pair.left.close();
+            }
+            pair.right.close();
+        }
+        ",
+        "use of moved place `pair.left`",
+    );
+}
+
+#[test]
+fn a_reinitialization_before_the_consume_is_accepted() {
+    assert_accepts(
+        "each iteration consumes its own value",
+        r"
+        fn probe() {
+            var held = Socket { fd: 1 };
+            for i in 0..3 {
+                held = Socket { fd: i };
+                held.close();
+            }
+        }
+        ",
+    );
+}
+
+#[test]
+fn a_reinitialization_after_the_consume_is_accepted() {
+    assert_accepts(
+        "the back edge carries a fresh value",
+        r"
+        fn probe() {
+            var held = Socket { fd: 1 };
+            for i in 0..3 {
+                held.close();
+                held = Socket { fd: i };
+            }
+            held.close();
+        }
+        ",
+    );
+}
+
+#[test]
+fn a_field_reinitialization_after_the_consume_is_accepted() {
+    let output = check_with_socket(
+        r"
+        type Pair {
+            left: Socket;
+            right: Socket;
+        }
+
+        fn probe() {
+            var pair = Pair { left: Socket { fd: 1 }, right: Socket { fd: 2 } };
+            for i in 0..2 {
+                pair.left.close();
+                pair.left = Socket { fd: 10 + i };
+            }
+            for i in 0..2 {
+                pair.left = Socket { fd: 20 + i };
+                pair.left.close();
+            }
+            pair.right.close();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a field re-initialised on every iteration must be accepted, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn a_consume_followed_by_break_is_accepted() {
+    assert_accepts(
+        "the consuming iteration leaves the loop",
+        r"
+        fn probe(n: i64) {
+            let held = Socket { fd: 1 };
+            for i in 0..3 {
+                if i == n {
+                    held.close();
+                    break;
+                }
+            }
+        }
+        ",
+    );
+}
+
+#[test]
+fn a_value_declared_in_the_body_is_not_carried() {
+    assert_accepts(
+        "each iteration owns its own binding",
+        r"
+        fn probe() {
+            for i in 0..3 {
+                let held = Socket { fd: i };
+                held.close();
+            }
+        }
+        ",
+    );
+}
+
+const SLOW_TASK: &str = r"
+fn slow() -> i64 {
+    sleep(30ms);
+    42
+}
+";
+
+#[test]
+fn awaiting_an_outer_task_on_every_iteration_is_rejected() {
+    let output = check_source(&format!(
+        "{SLOW_TASK}
+        fn probe() {{
+            scope {{
+                let job = fork slow();
+                for i in 0..2 {{
+                    println(await job);
+                }}
+            }}
+        }}
+        "
+    ));
+    let carried = loop_carried_errors(&output);
+    assert!(
+        carried.len() == 1 && carried[0].0.contains("use of moved value `job`"),
+        "a second `await` of one task must be rejected, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn a_task_arm_that_wins_without_leaving_the_loop_is_rejected() {
+    let output = check_source(&format!(
+        "{SLOW_TASK}
+        fn probe() {{
+            scope {{
+                let job = fork slow();
+                for i in 0..3 {{
+                    select {{
+                        v from job => println(v),
+                        after 5ms => println(0),
+                    }}
+                }}
+            }}
+        }}
+        "
+    ));
+    let carried = loop_carried_errors(&output);
+    assert!(
+        carried.len() == 1 && carried[0].0.contains("use of moved value `job`"),
+        "a won task arm consumes the task, so the next iteration cannot select it, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn a_losing_task_arm_keeps_the_task_for_the_next_iteration() {
+    // Only the winning arm consumes the task. The timer arm continues the
+    // loop with the task still owned; the task arm leaves the loop.
+    let output = check_source(&format!(
+        "{SLOW_TASK}
+        fn probe() -> i64 {{
+            scope {{
+                let job = fork slow();
+                var ticks = 0;
+                loop {{
+                    select {{
+                        v from job => {{
+                            return v + ticks;
+                        }}
+                        after 5ms => {{
+                            ticks = ticks + 1;
+                        }}
+                    }}
+                }}
+            }}
+        }}
+        "
+    ));
+    assert!(
+        output.errors.is_empty(),
+        "re-selecting a task after a timer win must be accepted, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn a_won_task_arm_that_forks_a_replacement_is_accepted() {
+    let output = check_source(&format!(
+        "{SLOW_TASK}
+        fn probe() -> i64 {{
+            scope {{
+                var job = fork slow();
+                var total = 0;
+                for i in 0..3 {{
+                    select {{
+                        v from job => {{
+                            total = total + v;
+                            job = fork slow();
+                        }}
+                        after 5ms => println(0),
+                    }}
+                }}
+                total
+            }}
+        }}
+        "
+    ));
+    assert!(
+        output.errors.is_empty(),
+        "a won arm that forks the next task leaves the loop a live task, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn a_move_capture_on_every_iteration_is_rejected() {
+    assert_loop_rejects(
+        "a move closure takes the value each iteration",
+        r"
+        fn probe() {
+            let held = Socket { fd: 1 };
+            for i in 0..2 {
+                let release = move || held.close();
+                release();
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}

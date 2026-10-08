@@ -79,8 +79,9 @@ fn scalar_double_consume(n: i64) -> i64 {
     s.take()
 }
 
-// `continue` rejoins at the loop head rather than after the loop, and still
-// reaches the code below once the loop runs out.
+// `continue` rejoins at the loop head rather than after the loop: a later
+// iteration may consume the value again, and the code below the loop is
+// reached once the loop runs out.
 fn continue_escape(n: i64) -> i64 {
     let s = Scalars { a: 9 };
     for i in 0..3 {

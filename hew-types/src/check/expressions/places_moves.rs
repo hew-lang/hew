@@ -19,7 +19,7 @@ use crate::check::types::{
     DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
     PendingInstantiation,
 };
-use crate::env::{PlaceConflict, PlacePath};
+use crate::env::{LoopCarriedMove, PlaceConflict, PlacePath};
 use crate::BuiltinType;
 use std::collections::VecDeque;
 
@@ -447,14 +447,75 @@ impl Checker {
             .join(".")
     }
 
+    /// The error for a use of `name`, of type `ty`, after the whole value
+    /// moved. Callers attach the note naming where it moved.
+    pub(in crate::check) fn use_after_move_error(
+        &self,
+        name: &str,
+        ty: &Ty,
+        span: &Span,
+    ) -> TypeError {
+        let is_linear = matches!(
+            ty,
+            Ty::Named { head, .. } if head.nominal().is_some_and(|id| self.registry.is_linear(id))
+        );
+        let mut err = TypeError::new(
+            if is_linear {
+                TypeErrorKind::UseAfterConsume
+            } else {
+                TypeErrorKind::UseAfterMove
+            },
+            span.clone(),
+            if is_linear {
+                format!("UseAfterConsume: use of consumed linear value `{name}`")
+            } else {
+                format!("use of moved value `{name}`")
+            },
+        );
+        if let Some(ref source_module) = self.current_module {
+            err = err.with_source_module(source_module.clone());
+        }
+        // Substrate handles (Duplex, Sink, Stream, SendHalf, RecvHalf) are
+        // affine: each consuming method (`.close()`, `.send_half()`,
+        // `.recv_half()`, etc.) moves the handle exactly once. Subsequent
+        // uses are rejected here. Name the type so the user knows why.
+        if Self::ty_is_substrate_handle(ty) {
+            err = err.with_suggestion(format!(
+                "`{}` is a substrate handle — consuming methods like `.close()`, \
+                 `.send_half()`, and `.recv_half()` move the handle; \
+                 use a single consuming call per binding",
+                ty.user_facing()
+            ));
+        } else if is_linear {
+            err = err.with_suggestion(
+                "a `#[linear]` binding has exactly one ownership path; invoke its \
+                 consuming method only once"
+                    .to_string(),
+            );
+        } else if self.registry.implements_marker(ty, MarkerTrait::Clone) {
+            // The value's type has a clone path, so the canonical fix is
+            // to duplicate it before the consuming use and pass the copy.
+            err = err.with_suggestion(format!(
+                "duplicate `{name}` with `clone {name}` before the consuming use \
+                 to keep the original usable"
+            ));
+        }
+        err
+    }
+
     /// Report a use of `root`'s place at `path` that collides with a place
     /// already consumed on this path, if it does.
+    ///
+    /// Every place use passes through here, so this is also where a use is
+    /// noted for the enclosing loops' back-edge check.
     pub(in crate::check) fn report_place_use_after_move(
         &mut self,
         root: &str,
         path: &[String],
         span: &Span,
     ) {
+        self.env
+            .note_loop_use(root, path, span, self.place_base_depth > 0);
         let Some((conflict, moved_path, moved_at)) = self.env.place_move_conflict(root, path)
         else {
             return;
@@ -467,8 +528,25 @@ impl Checker {
         if conflict == PlaceConflict::WholeOfPartial && self.place_base_depth > 0 {
             return;
         }
+        let error = self
+            .place_use_after_move_error(root, path, conflict, &moved_path, span)
+            .with_note(moved_at, "value was consumed here");
+        self.errors.push(error);
+    }
+
+    /// The error for a use of `root`'s place at `path` that collides with the
+    /// consumed place at `moved_path`. Callers attach the note naming where it
+    /// moved.
+    fn place_use_after_move_error(
+        &self,
+        root: &str,
+        path: &[String],
+        conflict: PlaceConflict,
+        moved_path: &[String],
+        span: &Span,
+    ) -> TypeError {
         let place = Self::render_place(root, path);
-        let moved_place = Self::render_place(root, &moved_path);
+        let moved_place = Self::render_place(root, moved_path);
         let (message, suggestion) = match conflict {
             PlaceConflict::Exact => (
                 format!("use of moved place `{place}`"),
@@ -493,12 +571,60 @@ impl Checker {
             ),
         };
         let mut error = TypeError::new(TypeErrorKind::UseAfterMove, span.clone(), message)
-            .with_note(moved_at, "value was consumed here")
             .with_suggestion(suggestion);
         if let Some(source_module) = &self.current_module {
             error = error.with_source_module(source_module.clone());
         }
-        self.errors.push(error);
+        error
+    }
+
+    /// Report each value a loop iteration consumes that a later iteration
+    /// uses again. The single-pass walk sees each use once, on the first
+    /// iteration; the back edges say what the next iteration starts from.
+    pub(in crate::check) fn report_loop_carried_moves(&mut self, moves: &[LoopCarriedMove]) {
+        for carried in moves {
+            let already_reported = self.errors.iter().any(|error| {
+                error.span == carried.use_span
+                    && matches!(
+                        error.kind,
+                        TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
+                    )
+            });
+            if already_reported {
+                continue;
+            }
+            let Some((name, ty)) = self
+                .env
+                .binding_name_by_id(carried.binding)
+                .map(|(name, binding)| (name.to_string(), binding.ty.clone()))
+            else {
+                continue;
+            };
+            let mut error = if carried.moved_path.is_empty() {
+                self.use_after_move_error(&name, &ty, &carried.use_span)
+            } else {
+                self.place_use_after_move_error(
+                    &name,
+                    &carried.use_path,
+                    carried.conflict,
+                    &carried.moved_path,
+                    &carried.use_span,
+                )
+            };
+            if let Some(moved_at) = &carried.moved_at {
+                error = error.with_note(
+                    moved_at.clone(),
+                    "value was consumed here, in an earlier iteration of the loop",
+                );
+            }
+            let consumed = Self::render_place(&name, &carried.moved_path);
+            error = error.with_suggestion(format!(
+                "the loop runs again after consuming `{consumed}`; leave the loop after \
+                 the consuming use (`break` or `return`), or re-initialise it \
+                 (`{consumed} = ...`) before the next iteration"
+            ));
+            self.errors.push(error);
+        }
     }
 
     /// Whether `ty` carries a value whose SOLE ownership crosses an actor

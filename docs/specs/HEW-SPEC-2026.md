@@ -1911,6 +1911,50 @@ is refused with "requires a mutable binding receiver" and the `let`→`var`
 fix-it (§3.2). A `consume self` method takes the value: any later use of the
 binding is a use-after-consume diagnostic.
 
+**Consumption is per path, and the next iteration is a path (normative).** A
+consume ends the owner on the path that runs it. Branches that each consume
+once are accepted; a use after a join that any reaching path consumed is
+refused. A loop body runs again from the state its end and every `continue`
+leave, so a value declared outside the loop that the body consumes is refused
+with `use of moved value` at the use the next iteration makes. The iteration
+that consumes the value must leave the loop (`break` or `return`), or the
+value must be re-initialised (`t = ...`) before that use. The rule is the same
+for every consuming use: `close`, a `consume` parameter, a `fork` argument,
+`await` and a winning `select` task arm (§4.11.1).
+
+```hew
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+fn main() {
+    // Refused: the second iteration closes the ticket the first one closed.
+    //     let t = Ticket { id: 1 };
+    //     for i in 0..2 {
+    //         t.close();
+    //     }
+    let first = Ticket { id: 1 };
+    for i in 0..3 {
+        if i == 1 {
+            first.close(); // leaves the loop, so no later iteration sees it
+            break;
+        }
+    }
+    var current = Ticket { id: 10 };
+    for i in 0..2 {
+        current.close();
+        current = Ticket { id: 11 + i }; // the next iteration owns a new ticket
+    }
+}
+```
+
 A `var self` method that fails leaves the receiver, as last written, in the
 caller's binding, field, capture or actor state field, whatever its type; the
 place is never left empty.
@@ -5054,6 +5098,45 @@ cleanup columns; the difference is which side initiates the teardown.
 | `<id> from <rx>.recv()`    | `id: Option<T>` for `Stream<T>` | `None` is a normal winning value indicating end of data; `Some(value)` carries the received item. A faulted pipe traps the winner exactly as a plain `recv` would (§6.4.4).                              | Pending receive is withdrawn from the pipe core; the stream binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, stream binding remains usable for the cancellation handler.                                             |
 | `<id> from <task>`         | `id: T` for `Task<T>`             | The task's own outcome, exactly as `await` would deliver it.                                                                                                                                                | The handle is not consumed: the losing task keeps running and its handle stays owned by the enclosing scope, which must still join it. Its registration is disarmed, never cancelled.                     | The registration is disarmed; the task takes the enclosing scope's ordinary cancellation.                                                                  |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | Timer expiry selects this arm; evaluating its duration follows ordinary expression rules.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
+
+**Only the winning task arm consumes the task (normative).** A task arm takes
+the task's result only when it wins, so only the winning arm's body sees the
+handle consumed. In every other arm's body the handle is still owned and may
+be selected again, awaited or left to the scope. A `select` in a loop can
+therefore poll a slow task: a timer win continues the loop with the task
+intact, and the task arm leaves the loop or forks a replacement, since a later
+iteration may not select a consumed task (§3.6).
+
+```hew
+fn slow() -> i64 {
+    sleep(30ms);
+    42
+}
+
+fn main() {
+    scope {
+        let job = fork slow();
+        var ticks = 0;
+        loop {
+            select {
+                value from job => {
+                    println(f"{value} after {ticks} ticks");
+                    break;
+                }
+                after 5ms => {
+                    ticks = ticks + 1;
+                }
+            }
+        }
+    }
+}
+```
+
+The same handle is never given to two arms of one `select`: every source is
+prepared before a winner exists. A task's result is delivered once; `await`
+and a winning arm both consume the handle, and there is no re-await. A task
+result may own a resource, and delivering it twice would need a copy the type
+may not have.
 
 **A task arm does not bound the task.** A timer that beats a task arm leaves
 the task running, and the scope that forked it still waits for it at exit, so

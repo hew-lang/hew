@@ -438,6 +438,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/resource_field_collections.hew",
     },
     ParityCase {
+        // Resources declared outside a loop and consumed inside it: whole and
+        // field re-initialisation each iteration, and a consume that breaks.
+        test_name: "loop_consume_reinitialized",
+        source_rel: "examples/sandbox-graduation/loop_consume_reinitialized.hew",
+    },
+    ParityCase {
         // Map and set inserts and removes on a closure's mutable capture
         // update the closure's own collection across calls on both engines.
         test_name: "capture_collections",

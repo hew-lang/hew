@@ -1,0 +1,52 @@
+// Values declared outside a loop and consumed inside it: each accepted shape
+// either re-initialises the value before the next iteration uses it or leaves
+// the loop after the consume.
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+type Pair {
+    left: Ticket;
+    right: Ticket;
+}
+
+fn main() {
+    // Re-initialised before the consume.
+    var fresh = Ticket { id: 1 };
+    fresh.close();
+    for i in 0..2 {
+        fresh = Ticket { id: 10 + i };
+        fresh.close();
+    }
+    // Re-initialised after the consume, then closed once more after the loop.
+    var carried = Ticket { id: 20 };
+    for i in 0..2 {
+        carried.close();
+        carried = Ticket { id: 21 + i };
+    }
+    carried.close();
+    // A field consumed and refilled on every iteration.
+    var pair = Pair { left: Ticket { id: 30 }, right: Ticket { id: 40 } };
+    var n = 0;
+    while n < 2 {
+        n = n + 1;
+        pair.left.close();
+        pair.left = Ticket { id: 30 + n };
+    }
+    // Consumed on the iteration that leaves the loop.
+    let once = Ticket { id: 50 };
+    for i in 0..3 {
+        if i == 1 {
+            once.close();
+            break;
+        }
+    }
+    println("done");
+}

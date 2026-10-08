@@ -1,0 +1,3 @@
+[package]
+name = "file_import_inner_module_import"
+version = "0.1.0"

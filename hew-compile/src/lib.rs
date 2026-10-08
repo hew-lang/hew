@@ -1219,7 +1219,13 @@ fn undeclared_imports(
             continue;
         }
         let segments = import_segments(&decl.path);
-        if is_builtin_module(&segments.join("::"))
+        // The package's own name is local: a module it does not have is
+        // reported as not found, not as an undeclared dependency.
+        let names_own_package = matches!(&anchor,
+            hew_types::module_registry::ModuleAnchor::Package { name: Some(package), .. }
+                if package_relative(&decl.path, package).is_some());
+        if names_own_package
+            || is_builtin_module(&segments.join("::"))
             || declares_dependency(Some(manifest_deps), &segments)
         {
             continue;

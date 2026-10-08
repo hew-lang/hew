@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "LinearNoConsumingMethods"
-file = "resolved-declarations-linear-identity/src/unfinished.hew"
+file = "resolved-declarations-linear-identity/unfinished.hew"
 line = 1
 column = 1

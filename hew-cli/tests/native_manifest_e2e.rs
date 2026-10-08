@@ -221,11 +221,20 @@ fn pkg_config_flags_reach_the_compile_and_the_link() {
 
     require_codegen();
     let dir = workspace();
+    // The libraries repeat a two-token flag: each token must reach the link
+    // in place, or the second half of the pair is read as an input file.
+    let pair = if cfg!(target_os = "macos") {
+        "-framework CoreFoundation -lm -framework Security"
+    } else {
+        "-Wl,-z -Wl,now -lm -Wl,-z -Wl,relro"
+    };
     let script = dir.path().join("fake-pkg-config");
     write(
         &script,
-        "#!/bin/sh\ncase \"$1\" in\n  --cflags) echo '-DFROM_PKG_CONFIG=41' ;;\n  \
-         --libs) echo '-lm' ;;\nesac\n",
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --cflags) echo '-DFROM_PKG_CONFIG=41' ;;\n  \
+             --libs) echo '{pair}' ;;\nesac\n"
+        ),
     );
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
         .expect("make the script executable");

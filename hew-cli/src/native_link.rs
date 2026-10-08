@@ -248,11 +248,9 @@ pub fn link(
                     .to_string(),
             );
         }
-        for arg in build.link_args {
-            if !out.link_args.contains(&arg) {
-                out.link_args.push(arg);
-            }
-        }
+        // Kept verbatim: pkg-config pairs tokens (`-framework Cocoa`), so
+        // dropping a repeated one would split a pair.
+        out.link_args.extend(build.link_args);
         compiles_cxx |= build.compiles_cxx;
         out.dependencies.extend(build.dependencies);
     }

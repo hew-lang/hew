@@ -448,6 +448,7 @@ export type TermV1 =
         structural?: number | null;
         callbacks?: number[];
         releases_contents?: boolean;
+        keeps_inputs_on_failure?: boolean;
         result_member_shapes?: Array<number | null>;
         result_shape: number | null;
       })

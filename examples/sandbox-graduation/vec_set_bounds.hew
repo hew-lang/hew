@@ -1,0 +1,19 @@
+// An in-range store replaces the element; a store past the end faults with
+// IndexOutOfBounds on both engines, and the cleanup it unwinds through still
+// releases the untouched vector.
+fn store(v: Vec<string>, at: i64) -> string {
+    var copy = v;
+    defer println(f"released {copy.len()} strings");
+    copy.set(at, "z");
+    copy[at]
+}
+
+fn main() {
+    var v: Vec<string> = ["a", "b"];
+    v.set(0, "x");
+    v[1] = "y";
+    println(f"{v[0]} {v[1]}");
+    println(store(v, 1));
+    println(store(v, 2));
+    println("unreachable");
+}

@@ -149,7 +149,9 @@ the callee's `self` parameter under it.
 One entry per declared C-ABI symbol an `extern.call` names, with the declared
 signature's per-operand ownership already applied to the instruction's
 `boundary` args. `symbol` is the declared identity from the `extern`
-declaration, not a name the emitter invented.
+declaration, not a name the emitter invented. `native_capability`, present
+only for a runtime endpoint the capability manifest marks native-only, is that
+row's label; a refusal names it, and admission still keys on `symbol`.
 
 ## Functions
 

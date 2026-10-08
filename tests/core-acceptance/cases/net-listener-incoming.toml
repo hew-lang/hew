@@ -1,0 +1,10 @@
+[[case]]
+id = "net-listener-incoming"
+intent = "`Listener.incoming()` is a select source that accepts nothing for a losing arm, yields one owned connection per receive, takes only a waiting client through `try_recv`, and drains through a `for` loop."
+source = "cases/net-listener-incoming.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "idle: true\naccepted: true\nclient read 2 bytes\ntry_recv with no client waiting: true\ntry_recv took the waiting client: true\nserved by the loop: 1\n"
+exit = 0

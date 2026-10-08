@@ -3044,6 +3044,18 @@ pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
     -1
 }
 
+/// Turn a listener into the stream of the connections it accepts. The stream
+/// takes the listener on every path and closes it when the stream closes;
+/// null, after closing whatever the handle named, for a non-listener handle.
+#[no_mangle]
+pub extern "C" fn hew_tcp_incoming(listener: c_int) -> *mut crate::stream::HewStreamPair {
+    if tcp_slot(listener).is_none_or(|slot| slot.listener().is_none()) {
+        let _ = hew_tcp_close(listener);
+        return std::ptr::null_mut();
+    }
+    crate::stream::incoming_stream(listener)
+}
+
 /// Close a TCP listener handle.
 ///
 /// This listener-typed shim keeps the stdlib surface method type-safe while

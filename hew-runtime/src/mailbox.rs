@@ -1996,6 +1996,16 @@ pub(crate) enum SendOutcome {
     Coalesced,
     /// Memory allocation failed.
     Oom,
+    /// The runtime is shutting down and refused root or external work before
+    /// the message reached the mailbox. The message was not sent.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "wasm32 has no shutdown admission gate; only native submissions are refused"
+        )
+    )]
+    ShuttingDown,
 }
 
 /// Core overflow-policy-aware enqueue into the user message queue.
@@ -2661,7 +2671,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
-        SendOutcome::Closed => HewError::ErrActorStopped as i32,
+        SendOutcome::Closed | SendOutcome::ShuttingDown => HewError::ErrActorStopped as i32,
         SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
         SendOutcome::Oom => HewError::ErrOom as i32,
     }
@@ -2945,7 +2955,7 @@ pub unsafe extern "C" fn hew_mailbox_send_with_reply(
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
-        SendOutcome::Closed => HewError::ErrActorStopped as i32,
+        SendOutcome::Closed | SendOutcome::ShuttingDown => HewError::ErrActorStopped as i32,
         SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
         SendOutcome::Oom => HewError::ErrOom as i32,
     }
@@ -2981,7 +2991,7 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
-        SendOutcome::Closed => HewError::ErrClosed as i32,
+        SendOutcome::Closed | SendOutcome::ShuttingDown => HewError::ErrClosed as i32,
         SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
         SendOutcome::Oom => HewError::ErrOom as i32,
     }
@@ -3216,7 +3226,10 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
         SendOutcome::Dropped => 1,
         SendOutcome::DroppedOld => 2,
         SendOutcome::Coalesced => 3,
-        SendOutcome::Closed | SendOutcome::Failed | SendOutcome::Oom => -1,
+        SendOutcome::Closed
+        | SendOutcome::ShuttingDown
+        | SendOutcome::Failed
+        | SendOutcome::Oom => -1,
     }
 }
 

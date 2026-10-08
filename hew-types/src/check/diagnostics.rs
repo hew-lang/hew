@@ -592,6 +592,22 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
                 }
+                ScopeWarningKind::TaskOutlivesTimedSelect => {
+                    let module = self.current_module.clone();
+                    self.emit_main_pass_lint(
+                        LintId::ForkOutlivesTimedSelect,
+                        &w.span,
+                        module.as_deref(),
+                        format!(
+                            "this timed `select` is the only wait on task `{}`: when the timer \
+                             wins, the task keeps running and its scope waits for it to finish",
+                            w.name
+                        ),
+                        "put the deadline on the work itself: `scope within <duration> { ... } \
+                         handle failure { ... }` cancels it when the time is up"
+                            .to_string(),
+                    );
+                }
                 ScopeWarningKind::VarParamMutationLost => {
                     // A parameter the callee cannot copy is not mutable
                     // storage of its own: mutating it either writes through a

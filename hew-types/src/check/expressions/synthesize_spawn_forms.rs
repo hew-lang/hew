@@ -707,9 +707,14 @@ impl Checker {
                         self.prepared_select_tasks
                             .push(super::types::PreparedSelectTask {
                                 binding: binding.id,
-                                path,
+                                path: path.clone(),
                                 span: arm.source.1.clone(),
                             });
+                    }
+                    // A timer win leaves a whole-task arm's task running; the
+                    // scope-exit lint reports it if nothing else joins it.
+                    if timeout.is_some() && path.is_empty() {
+                        self.env.note_timed_select_task(&root, &arm.source.1);
                     }
                 }
             }

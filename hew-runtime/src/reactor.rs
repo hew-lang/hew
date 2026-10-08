@@ -52,6 +52,13 @@ pub(crate) enum IoObject {
     /// exited.
     #[cfg(unix)]
     ChildExit(crate::process::ExitWatch),
+    /// The slot's own duplicate of a descriptor the program opened outside
+    /// the runtime, watched for readability only. The slot never reads,
+    /// writes or reconfigures it and closes only the duplicate, so the
+    /// program's descriptor and any other watch of it keep their own
+    /// registrations.
+    #[cfg(unix)]
+    Foreign(std::os::fd::OwnedFd),
     /// Standard input: descriptor 0 on Unix, which the slot never owns or
     /// closes. Its one slot lives outside the table; see [`stdin_slot`].
     Stdin,
@@ -106,34 +113,54 @@ impl ByteChannel<'_> {
         }
     }
 
-    /// Whether the next read will not wait: data, end of stream or an error
-    /// is pending. Reads nothing.
-    pub(crate) fn readable(self) -> bool {
-        match self {
-            Self::Tcp(stream) => !matches!(
-                stream.peek(&mut [0; 1]),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock
-            ),
-            #[cfg(unix)]
-            Self::Pipe(pipe) => {
-                use std::os::fd::AsRawFd;
-                let mut poll = libc::pollfd {
-                    fd: pipe.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: one live descriptor in a local array, no wait.
-                let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
-                ready != 0
-            }
-            #[cfg(unix)]
-            Self::Exit(watch) => watch.exited(),
-        }
-    }
-
     pub(crate) fn is_tcp(self) -> bool {
         matches!(self, Self::Tcp(_))
     }
+}
+
+/// Whether a read on `fd` would not wait. Reads nothing.
+#[cfg(unix)]
+fn fd_readable(fd: std::os::fd::RawFd) -> bool {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one live descriptor in a local array, no wait.
+    let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
+    ready != 0
+}
+
+/// Whether an accept on `listener` would not wait. Accepts nothing.
+#[cfg(unix)]
+fn listener_readable(listener: &TcpListener) -> bool {
+    use std::os::fd::AsRawFd;
+    fd_readable(listener.as_raw_fd())
+}
+
+#[cfg(windows)]
+fn listener_readable(listener: &TcpListener) -> bool {
+    use std::os::windows::io::AsRawSocket;
+    #[repr(C)]
+    struct WsaPollFd {
+        fd: usize,
+        events: i16,
+        revents: i16,
+    }
+    #[link(name = "ws2_32")]
+    unsafe extern "system" {
+        fn WSAPoll(fds: *mut WsaPollFd, count: u32, timeout: i32) -> i32;
+    }
+    /// `POLLRDNORM`: a connection is pending.
+    const POLL_READ_NORMAL: i16 = 0x0100;
+    let mut poll = WsaPollFd {
+        fd: listener.as_raw_socket() as usize,
+        events: POLL_READ_NORMAL,
+        revents: 0,
+    };
+    // SAFETY: one live socket in a local array, no wait.
+    let ready = unsafe { WSAPoll(&raw mut poll, 1, 0) };
+    ready != 0
 }
 
 /// Switch a pipe end to non-blocking mode. The parent's end is its own open
@@ -247,7 +274,7 @@ fn waiters_removed(count: usize) {
 
 fn busy() -> IoFailure {
     IoFailure::from_io(
-        "TCP handle already has pending I/O",
+        "I/O handle already has pending I/O",
         &io::Error::from_raw_os_error(libc::EBUSY),
     )
 }
@@ -284,7 +311,35 @@ impl Slot {
             IoObject::Pipe(pipe) => Some(ByteChannel::Pipe(pipe)),
             #[cfg(unix)]
             IoObject::ChildExit(watch) => Some(ByteChannel::Exit(watch)),
+            #[cfg(unix)]
+            IoObject::Foreign(_) => None,
             IoObject::TcpListener(_) | IoObject::Stdin => None,
+        }
+    }
+
+    /// Whether a read, or an accept on a listener, would not wait: data, end
+    /// of stream, an error or a pending connection. Takes nothing. Standard
+    /// input is never watched this way.
+    pub(crate) fn readable(&self) -> bool {
+        match &self.object {
+            IoObject::TcpStream(stream) => !matches!(
+                stream.peek(&mut [0; 1]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock
+            ),
+            IoObject::TcpListener(listener) => listener_readable(listener),
+            #[cfg(unix)]
+            IoObject::Pipe(pipe) => {
+                use std::os::fd::AsRawFd;
+                fd_readable(pipe.as_raw_fd())
+            }
+            #[cfg(unix)]
+            IoObject::ChildExit(watch) => watch.exited(),
+            #[cfg(unix)]
+            IoObject::Foreign(fd) => {
+                use std::os::fd::AsRawFd;
+                fd_readable(fd.as_raw_fd())
+            }
+            IoObject::Stdin => true,
         }
     }
 
@@ -328,6 +383,9 @@ impl Slot {
                 IoObject::Stdin => {}
                 #[cfg(unix)]
                 IoObject::ChildExit(_) => {}
+                // Another owner's descriptor keeps its mode; it is only watched.
+                #[cfg(unix)]
+                IoObject::Foreign(_) => {}
             }
             state.nonblocking = true;
         }
@@ -342,6 +400,7 @@ impl Slot {
             IoObject::TcpListener(listener) => listener.as_raw_fd(),
             IoObject::Pipe(pipe) => pipe.as_raw_fd(),
             IoObject::ChildExit(watch) => watch.fd(),
+            IoObject::Foreign(fd) => fd.as_raw_fd(),
             IoObject::Stdin => libc::STDIN_FILENO,
         }
     }
@@ -363,7 +422,7 @@ impl Slot {
         }
         let mut state = self.state.lock_or_recover();
         if state.closed {
-            return Err(cancelled_failure("wait on closed TCP handle"));
+            return Err(cancelled_failure("wait on closed I/O handle"));
         }
         if self.is_stdin() {
             // Only the turn holder waits here; it keeps its place at the front.
@@ -389,7 +448,7 @@ impl Slot {
             if state.waiter(direction).take().is_some() {
                 waiters_removed(1);
             }
-            return Err(IoFailure::from_io("arm TCP readiness", &error));
+            return Err(IoFailure::from_io("arm I/O readiness", &error));
         }
         Ok(())
     }
@@ -574,7 +633,7 @@ impl Slot {
             [state.reader.take(), state.writer.take()]
         };
         for operation in waiters.into_iter().flatten() {
-            operation.complete(Err(cancelled_failure("TCP handle closed while waiting")));
+            operation.complete(Err(cancelled_failure("I/O handle closed while waiting")));
             waiters_removed(1);
         }
     }
@@ -888,7 +947,7 @@ fn fail_reactor(error: &io::Error) {
     crate::set_last_error(format!("hew I/O reactor poll failed: {error}"));
     for slot in slots() {
         for operation in slot.take_waiters() {
-            operation.complete(Err(IoFailure::from_io("wait for TCP readiness", error)));
+            operation.complete(Err(IoFailure::from_io("wait for I/O readiness", error)));
             waiters_removed(1);
         }
     }

@@ -947,7 +947,8 @@ unsafe fn submit_native_request(
     } else {
         match crate::shutdown::admit_external_work() {
             Ok(permit) => Some(permit),
-            Err(()) => return mailbox::SendOutcome::Closed,
+            // The destination is alive; the runtime refuses new root work.
+            Err(()) => return mailbox::SendOutcome::ShuttingDown,
         }
     };
     let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {

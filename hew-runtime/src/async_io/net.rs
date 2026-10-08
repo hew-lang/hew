@@ -6,6 +6,7 @@
 //! again, so a spurious report costs one attempt and a re-arm.
 
 use std::cell::RefCell;
+use std::ffi::c_int;
 use std::io;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -102,7 +103,7 @@ fn failed(tcp: bool, operation: &str, error: &io::Error) -> Attempt {
 fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
     if slot.is_closed() {
         return Attempt::Done(Err(crate::reactor::cancelled_failure(
-            "TCP handle closed while waiting",
+            "I/O handle closed while waiting",
         )));
     }
     match action {
@@ -128,12 +129,9 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
             })
         }
         Action::Readable => {
-            let Some(channel) = slot.bytes() else {
-                return closed("watch TCP connection");
-            };
-            // Data, end of stream or an error: the reader's next read will not
-            // wait.
-            if channel.readable() {
+            // Data, end of stream, an error or a pending connection: the next
+            // read or accept will not wait.
+            if slot.readable() {
                 Attempt::Done(Ok(IoValue::Count(0)))
             } else {
                 Attempt::Blocked { progressed: false }
@@ -148,21 +146,12 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
             let Some(listener) = slot.listener() else {
                 return closed("accept TCP connection");
             };
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        let _ = stream.set_nodelay(true);
-                        crate::transport::count_accept();
-                        return Attempt::Done(Ok(IoValue::Connection(AcceptedConnection(
-                            crate::reactor::register(crate::reactor::IoObject::TcpStream(stream)),
-                        ))));
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        return Attempt::Blocked { progressed: false };
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return failed(true, "accept TCP connection", &error),
+            match accept_ready(listener) {
+                Ok(Some(handle)) => {
+                    Attempt::Done(Ok(IoValue::Connection(AcceptedConnection(handle))))
                 }
+                Ok(None) => Attempt::Blocked { progressed: false },
+                Err(error) => failed(true, "accept TCP connection", &error),
             }
         }
         Action::StdinLine => unreachable!("standard input advances under its buffer lock"),
@@ -200,6 +189,41 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
             )))
         }
     }
+}
+
+/// Accept a connection already pending on a non-blocking listener and give
+/// it a slot; `None` when none is pending.
+fn accept_ready(listener: &std::net::TcpListener) -> io::Result<Option<c_int>> {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let _ = stream.set_nodelay(true);
+                crate::transport::count_accept();
+                return Ok(Some(crate::reactor::register(
+                    crate::reactor::IoObject::TcpStream(stream),
+                )));
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Accept a connection already pending on `slot`'s listener without waiting:
+/// a listener stream's `try_recv`. `None` when none is pending or shutdown
+/// has closed listener admission.
+pub(crate) fn accept_now(slot: &Slot) -> io::Result<Option<c_int>> {
+    if crate::reactor::listener_admission_closed() {
+        return Ok(None);
+    }
+    let Some(listener) = slot.listener() else {
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
+    };
+    slot.ensure_nonblocking()?;
+    accept_ready(listener).inspect_err(|error| {
+        crate::transport::record_tcp_error_kind(error.kind());
+    })
 }
 
 impl NetOp {
@@ -257,6 +281,7 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     let kind_matches = match action {
         Action::Accept => slot.listener().is_some(),
         Action::StdinLine => slot.is_stdin(),
+        Action::Readable => !slot.is_stdin(),
         _ => slot.bytes().is_some(),
     };
     if !kind_matches {
@@ -268,7 +293,7 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     // Standard input queues concurrent readers; a socket takes one per direction.
     if !slot.is_stdin() && slot.has_waiter(direction) {
         return Err(IoFailure::from_io(
-            "TCP handle already has pending I/O",
+            "I/O handle already has pending I/O",
             &io::Error::from_raw_os_error(libc::EBUSY),
         ));
     }

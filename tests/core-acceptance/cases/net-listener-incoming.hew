@@ -1,0 +1,71 @@
+import std.net;
+
+// A listener's incoming stream accepts one connection per receive. A select
+// whose timer wins accepts nothing, so the client that connects afterwards is
+// the next receive's connection. `try_recv` accepts only a client already
+// waiting, and a `for` loop drains the same stream.
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let port = listener.local_port();
+    let incoming = listener.incoming();
+    let idle = select {
+        next from incoming.recv() => match next {
+            .Some(conn) => {
+                conn.close();
+                false
+            }
+            .None => false,
+        }
+        after 50ms => true,
+    };
+    println(f"idle: {idle}");
+    let client = net.connect(f"127.0.0.1:{port}").expect("connect");
+    let accepted = select {
+        next from incoming.recv() => match next {
+            .Some(conn) => {
+                conn.send("hi".to_bytes()).expect("reply");
+                conn.close();
+                true
+            }
+            .None => false,
+        }
+        after 5s => false,
+    };
+    println(f"accepted: {accepted}");
+    match client.recv() {
+        .Some(data) => println(f"client read {data.len()} bytes"),
+        .None => println("client read end of stream"),
+    }
+    client.close();
+    let empty = match incoming.try_recv() {
+        .Some(conn) => {
+            conn.close();
+            false
+        }
+        .None => true,
+    };
+    println(f"try_recv with no client waiting: {empty}");
+    let waiting = net.connect(f"127.0.0.1:{port}").expect("connect for try_recv");
+    var taken = false;
+    for attempt in 0..500 {
+        match incoming.try_recv() {
+            .Some(conn) => {
+                conn.close();
+                taken = true;
+                break;
+            }
+            .None => sleep(10ms),
+        }
+    }
+    waiting.close();
+    println(f"try_recv took the waiting client: {taken}");
+    let second = net.connect(f"127.0.0.1:{port}").expect("connect again");
+    var served = 0;
+    for conn in incoming {
+        served += 1;
+        conn.close();
+        break;
+    }
+    second.close();
+    println(f"served by the loop: {served}");
+}

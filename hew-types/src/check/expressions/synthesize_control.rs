@@ -341,7 +341,9 @@ impl Checker {
             Expr::ScopeDeadline { duration, body } => {
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
                 self.task_scope_depth += 1;
+                self.env.enter_deadline_scope();
                 let ty = self.check_block(body, None);
+                self.env.exit_deadline_scope();
                 self.task_scope_depth -= 1;
                 ty
             }

@@ -434,3 +434,230 @@ fn main() {
         );
     }
 }
+
+/// After SIGTERM starts runtime shutdown, the destination actor is alive but
+/// the runtime refuses new root calls. A bare call reports `NodeNotRunning`,
+/// never `Dead`; the rejecting views report `LocalShutdown` and keep the
+/// request.
+#[test]
+fn signal_shutdown_refuses_root_calls_as_local_shutdown() {
+    require_codegen();
+    let source = r#"
+actor Saver {
+    var n: i64 = 0;
+    receive fn tick() {
+        n = n + 1;
+    }
+}
+
+fn main() {
+    let saver = spawn Saver();
+    saver.tick().expect("a running runtime admits root calls");
+    println("READY");
+    for i in 0..1000 {
+        match saver.tick() {
+            .Ok(_) => sleep(10ms),
+            .Err(error) => {
+                println(f"BARE:{error}");
+                match policy(saver, on_full: .Reject).tick() {
+                    .Err(ActorError.Rejected(failure)) => println(f"REJECT:{failure.reason}"),
+                    _ => println("REJECT:other"),
+                }
+                match mailbox(saver).tick() {
+                    .Err(failure) => println(f"MAILBOX:{failure.reason}"),
+                    .Ok(_) => println("MAILBOX:accepted"),
+                }
+                return;
+            }
+        }
+    }
+}
+"#;
+    for opt_level in [0, 2] {
+        let dir = tempfile::tempdir().expect("create shutdown refusal fixture directory");
+        let binary = compile_fixture(source, dir.path(), opt_level);
+        let fixture = spawn_fixture(&binary);
+        wait_for_line(&fixture.lines, "READY");
+        let pid = i32::try_from(fixture.child.0.id()).expect("child PID fits pid_t");
+        // SAFETY: this live child belongs to the test; SIGTERM invokes its
+        // runtime shutdown handler while main keeps calling the actor.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        let (status, stdout, stderr) = finish_fixture(fixture);
+        assert!(status.success(), "shutdown exited {status}: {stderr}");
+        assert_eq!(
+            stdout,
+            [
+                "READY",
+                "BARE:NodeNotRunning: the local node is not running or is shutting down",
+                "REJECT:LocalShutdown: the local node is shutting down before the send could complete",
+                "MAILBOX:LocalShutdown: the local node is shutting down before the send could complete",
+            ],
+            "O{opt_level} stderr={stderr}"
+        );
+    }
+}
+
+/// Signal `fixture`'s process once it prints READY and collect its run.
+fn run_until_signalled(source: &str, opt_level: u8) -> (ExitStatus, Vec<String>, String) {
+    let dir = tempfile::tempdir().expect("create signal fixture directory");
+    let binary = compile_fixture(source, dir.path(), opt_level);
+    let fixture = spawn_fixture(&binary);
+    wait_for_line(&fixture.lines, "READY");
+    let pid = i32::try_from(fixture.child.0.id()).expect("child PID fits pid_t");
+    // SAFETY: this live child belongs to the test.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    finish_fixture(fixture)
+}
+
+/// A `shutdown_signal()` subscriber receives SIGTERM as a request and keeps
+/// the runtime admitting its calls: the program finishes its own work and
+/// stops by returning from `main`.
+#[test]
+fn shutdown_signal_subscriber_owns_the_stop_decision() {
+    require_codegen();
+    let source = r#"
+import std.os;
+
+actor Journal {
+    var entries: i64 = 0;
+    receive fn record() {
+        entries += 1;
+    }
+    receive fn flush() -> i64 {
+        entries
+    }
+}
+
+fn main() {
+    let stop = os.shutdown_signal();
+    let journal = spawn Journal();
+    journal.record().expect("record before the request");
+    println("READY");
+    for i in 0..1000 {
+        let stopping = select {
+            request from stop.recv() => true,
+            after 10ms => false,
+        };
+        if stopping {
+            println("REQUESTED");
+            break;
+        }
+        journal.record().expect("record while running");
+    }
+    journal.record().expect("the runtime still admits calls after the request");
+    let saved = journal.flush().expect("flush after the request");
+    println(f"FLUSHED:{saved > 1}");
+}
+"#;
+    for opt_level in [0, 2] {
+        let (status, stdout, stderr) = run_until_signalled(source, opt_level);
+        assert!(status.success(), "O{opt_level} exited {status}: {stderr}");
+        assert_eq!(
+            stdout,
+            ["READY", "REQUESTED", "FLUSHED:true"],
+            "O{opt_level} {stderr}"
+        );
+    }
+}
+
+/// A subscription works without any actor runtime, and closing it restores
+/// the default: the next request starts shutdown, refusing root calls.
+#[test]
+fn shutdown_signal_without_actors_and_after_close() {
+    require_codegen();
+    let no_actors = r#"
+import std.os;
+
+fn main() {
+    let stop = os.shutdown_signal();
+    defer {
+        println("CLEANUP");
+    }
+    println("READY");
+    match stop.recv() {
+        .Some(request) => println("REQUESTED"),
+        .None => println("ENDED"),
+    }
+}
+"#;
+    let closed = r#"
+import std.os;
+
+actor Saver {
+    receive fn tick() {}
+}
+
+fn main() {
+    let stop = os.shutdown_signal();
+    stop.close();
+    let saver = spawn Saver();
+    saver.tick().expect("tick before the request");
+    println("READY");
+    for i in 0..1000 {
+        match saver.tick() {
+            .Ok(_) => sleep(10ms),
+            .Err(error) => {
+                println(f"DEFAULT:{error}");
+                return;
+            }
+        }
+    }
+}
+"#;
+    for opt_level in [0, 2] {
+        let (status, stdout, stderr) = run_until_signalled(no_actors, opt_level);
+        assert!(status.success(), "O{opt_level} exited {status}: {stderr}");
+        assert_eq!(
+            stdout,
+            ["READY", "REQUESTED", "CLEANUP"],
+            "O{opt_level} {stderr}"
+        );
+
+        let (status, stdout, stderr) = run_until_signalled(closed, opt_level);
+        assert!(status.success(), "O{opt_level} exited {status}: {stderr}");
+        assert_eq!(
+            stdout,
+            [
+                "READY",
+                "DEFAULT:NodeNotRunning: the local node is not running or is shutting down"
+            ],
+            "O{opt_level} {stderr}"
+        );
+    }
+}
+
+/// A `for` loop over a listener's incoming stream ends when shutdown closes
+/// listener admission; it never traps or fabricates a connection.
+#[test]
+fn signal_shutdown_ends_a_listener_incoming_loop() {
+    require_codegen();
+    let source = r#"
+import std.net;
+
+actor Server {
+    receive fn serve() -> i64 {
+        let listener = net.listen("127.0.0.1:0").expect("listen");
+        var served = 0;
+        println("READY");
+        for conn in listener.incoming() {
+            served += 1;
+            conn.close();
+        }
+        served
+    }
+}
+
+fn main() {
+    let server = spawn Server();
+    match server.serve() {
+        .Ok(served) => println(f"ENDED:{served}"),
+        .Err(error) => println(f"ERROR:{error}"),
+    }
+}
+"#;
+    for opt_level in [0, 2] {
+        let (status, stdout, stderr) = run_until_signalled(source, opt_level);
+        assert!(status.success(), "O{opt_level} exited {status}: {stderr}");
+        assert_eq!(stdout, ["READY", "ENDED:0"], "O{opt_level} {stderr}");
+    }
+}

@@ -106,6 +106,10 @@ pub enum LintId {
     /// parameter is the callee's own copy, so the write reaches neither the
     /// caller nor the rest of the body.
     VarParamMutationLost,
+    /// A forked task whose only consumer is a `select` with an `after` arm:
+    /// when the timer wins, the task keeps running and its scope waits for
+    /// it (§4.11.1). A `scope within` deadline cancels the work instead.
+    ForkOutlivesTimedSelect,
 }
 
 impl LintId {
@@ -127,6 +131,7 @@ impl LintId {
         LintId::TextDirectionCodepointInComment,
         LintId::InvisibleCodepointInComment,
         LintId::VarParamMutationLost,
+        LintId::ForkOutlivesTimedSelect,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -150,6 +155,7 @@ impl LintId {
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
             LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
             LintId::VarParamMutationLost => "var_param_mutation_lost",
+            LintId::ForkOutlivesTimedSelect => "fork_outlives_timed_select",
         }
     }
 
@@ -178,7 +184,8 @@ impl LintId {
             | LintId::SleepLoopBlocksMailbox
             | LintId::ActorHandleBuiltinShadow
             | LintId::InvisibleCodepointInComment
-            | LintId::VarParamMutationLost => LintLevel::Warn,
+            | LintId::VarParamMutationLost
+            | LintId::ForkOutlivesTimedSelect => LintLevel::Warn,
             LintId::TextDirectionCodepointInComment => LintLevel::Deny,
         }
     }

@@ -131,10 +131,28 @@ fn adapter_select_readiness(upstream: SelectReadiness) -> SelectReadiness {
     }
 }
 
+/// How a native receive on a reactor-backed stream produces its next item.
+/// The backing owns the handle; native operations only borrow it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeRead {
+    /// Read the bytes available on this connection or pipe.
+    Content(i32),
+    /// Accept one connection on this listener.
+    Accept(i32),
+    /// Wait until this handle is readable, taking nothing: the item is `()`.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "descriptor readiness streams are Unix-only")
+    )]
+    Readiness(i32),
+}
+
 trait StreamBacking: Send + std::fmt::Debug {
-    /// The backing owns this transport handle; native operations only borrow it.
+    /// How a native receive reaches this backing's reactor handle, if it has
+    /// one; see [`NativeRead`].
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_connection(&self) -> Option<i32> {
+    fn native_read(&self) -> Option<NativeRead> {
         None
     }
 
@@ -147,10 +165,10 @@ trait StreamBacking: Send + std::fmt::Debug {
     /// Return the next item, or `None` on EOF. Blocks until an item is available.
     fn next(&mut self) -> Option<Item>;
     /// Non-blocking item poll. Returns `Some(item)` if one is immediately
-    /// available, or `None` if the stream is empty or closed. The default
-    /// falls back to `next()` (blocking); override for genuine non-blocking
-    /// behaviour.
-    fn try_next(&mut self) -> Option<Item> {
+    /// available, or `None` if the stream is empty or closed. `layout` is the
+    /// receiver's element witness. The default falls back to `next()`
+    /// (blocking); override for genuine non-blocking behaviour.
+    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
         // Deliberately blocking default — callers that need non-blocking
         // semantics must be created with a backing that overrides this method
         // (e.g. ChannelStream). Other backings (file, TCP) do not support
@@ -183,6 +201,12 @@ pub struct HewStream {
 }
 
 impl HewStream {
+    /// How a native receive reaches this stream's reactor handle, if any.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_read(&self) -> Option<NativeRead> {
+        self.inner.native_read()
+    }
+
     /// The shared pipe core when this stream is the read half of an
     /// in-memory pipe; `None` for a content stream (socket, file, adapter).
     #[must_use]
@@ -255,7 +279,7 @@ impl StreamBacking for ChannelStream {
         self.core.blocking_recv()
     }
 
-    fn try_next(&mut self) -> Option<Item> {
+    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
         self.core.try_recv()
     }
 
@@ -280,7 +304,7 @@ impl StreamBacking for VecStream {
         self.items.pop_front()
     }
 
-    fn try_next(&mut self) -> Option<Item> {
+    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
         // VecStream is in-memory and never blocks; try_next is identical to next.
         self.items.pop_front()
     }
@@ -391,8 +415,8 @@ const TCP_BACKING_BUF_SIZE: usize = 8192;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl StreamBacking for TcpStreamBacking {
-    fn native_connection(&self) -> Option<i32> {
-        Some(self.connection)
+    fn native_read(&self) -> Option<NativeRead> {
+        Some(NativeRead::Content(self.connection))
     }
 
     fn select_readiness(&self) -> SelectReadiness {
@@ -899,8 +923,8 @@ fn pipe_without_runtime() -> bool {
 
 #[cfg(unix)]
 impl StreamBacking for ReactorPipe {
-    fn native_connection(&self) -> Option<i32> {
-        Some(self.handle)
+    fn native_read(&self) -> Option<NativeRead> {
+        Some(NativeRead::Content(self.handle))
     }
 
     fn select_readiness(&self) -> SelectReadiness {
@@ -1085,6 +1109,171 @@ pub(crate) fn child_exit_stream(
     Ok(stream_only(stream))
 }
 
+/// A listener's accepted connections, one per receive. The stream owns the
+/// listener and closes it when the stream closes. A receive after shutdown
+/// closes listener admission is the end of the stream.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct IncomingConnections {
+    listener: i32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for IncomingConnections {
+    fn drop(&mut self) {
+        let _ = crate::transport::hew_tcp_listener_close(self.listener);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StreamBacking for IncomingConnections {
+    fn native_read(&self) -> Option<NativeRead> {
+        Some(NativeRead::Accept(self.listener))
+    }
+
+    fn select_readiness(&self) -> SelectReadiness {
+        SelectReadiness::Reactor(self.listener)
+    }
+
+    fn next(&mut self) -> Option<Item> {
+        set_last_error("a listener's incoming stream is received natively".into());
+        None
+    }
+
+    /// Accept a connection already waiting, without waiting for one.
+    fn try_next(&mut self, layout: &crate::vec::HewValueLayout) -> Option<Item> {
+        let slot = crate::reactor::lookup(self.listener)?;
+        match crate::async_io::accept_now(&slot) {
+            Ok(Some(connection)) => Some(crate::async_io::connection_item(connection, layout.size)),
+            Ok(None) => None,
+            Err(error) => {
+                set_last_error(format!("accept TCP connection: {error}"));
+                None
+            }
+        }
+    }
+
+    fn close(&mut self) {}
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+/// Give a listener's accepted connections a `Stream<Connection>` owner.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn incoming_stream(listener: i32) -> *mut HewStreamPair {
+    stream_only(into_stream_ptr(IncomingConnections { listener }))
+}
+
+/// Readiness of a descriptor the program owns: each receive waits until a
+/// read on it would not wait and yields `()`. The stream watches its own
+/// duplicate of the descriptor and closes only that, so the program's
+/// descriptor may close first and other watches of it stay independent.
+#[cfg(unix)]
+#[derive(Debug)]
+struct DescriptorReadiness {
+    handle: c_int,
+}
+
+#[cfg(unix)]
+impl Drop for DescriptorReadiness {
+    fn drop(&mut self) {
+        drop(crate::reactor::unregister(self.handle));
+    }
+}
+
+#[cfg(unix)]
+impl StreamBacking for DescriptorReadiness {
+    fn native_read(&self) -> Option<NativeRead> {
+        Some(NativeRead::Readiness(self.handle))
+    }
+
+    fn select_readiness(&self) -> SelectReadiness {
+        SelectReadiness::Reactor(self.handle)
+    }
+
+    fn next(&mut self) -> Option<Item> {
+        set_last_error("a descriptor readiness stream is received natively".into());
+        None
+    }
+
+    /// `()` when a read on the descriptor would not wait now.
+    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
+        crate::reactor::lookup(self.handle)
+            .is_some_and(|slot| slot.readable())
+            .then(Vec::new)
+    }
+
+    fn close(&mut self) {}
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+/// Watch `fd` for readability through a close-on-exec duplicate; `fd` stays
+/// with its owner. Null when the descriptor cannot be duplicated.
+#[cfg(unix)]
+pub(crate) fn readiness_stream(fd: std::os::fd::RawFd) -> *mut HewStreamPair {
+    use std::os::fd::FromRawFd;
+    // SAFETY: F_DUPFD_CLOEXEC reads no memory; a failure returns -1.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        set_last_error(format!(
+            "watch descriptor {fd}: {}",
+            std::io::Error::last_os_error()
+        ));
+        return ptr::null_mut();
+    }
+    // SAFETY: the duplicate was just opened and nothing else owns it.
+    let duplicate = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+    stream_only(into_stream_ptr(DescriptorReadiness {
+        handle: crate::reactor::register(crate::reactor::IoObject::Foreign(duplicate)),
+    }))
+}
+
+/// One `os.shutdown_signal()` subscription: a queue the signal dispatcher
+/// feeds with `()` requests. Closing it withdraws the subscription.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct ShutdownSignal {
+    core: Arc<crate::channel_core::ChannelCore>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StreamBacking for ShutdownSignal {
+    fn next(&mut self) -> Option<Item> {
+        self.core.blocking_recv()
+    }
+
+    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
+        self.core.try_recv()
+    }
+
+    fn close(&mut self) {
+        crate::shutdown_signal::unsubscribe(&self.core);
+        self.core.close_stream();
+    }
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+/// Give a shutdown-signal subscription its `Stream<()>` owner.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn shutdown_signal_stream(
+    core: Arc<crate::channel_core::ChannelCore>,
+) -> *mut HewStreamPair {
+    let stream = into_stream_ptr(ShutdownSignal {
+        core: Arc::clone(&core),
+    });
+    // SAFETY: stream was just allocated by into_stream_ptr.
+    unsafe { (*stream).channel = Some(core) };
+    stream_only(stream)
+}
+
 /// A stream that has already ended: the child was reaped before the wait.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ended_stream() -> *mut HewStreamPair {
@@ -1179,7 +1368,7 @@ impl StreamBacking for ExitWait {
         self.core.blocking_recv()
     }
 
-    fn try_next(&mut self) -> Option<Item> {
+    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
         self.core.try_recv()
     }
 
@@ -2394,10 +2583,13 @@ pub unsafe extern "C" fn hew_stream_try_next_layout(
 ) -> i32 {
     cabi_guard!(stream.is_null() || out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
-    let layout =
-        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_try_next_layout") };
+    // A received item moves to the receiver, so a move-only element (an
+    // accepted connection) needs only its destructor.
+    let layout = unsafe {
+        crate::channel_common::move_elem_layout_witness(layout, "hew_stream_try_next_layout")
+    };
     // SAFETY: stream is valid and exclusively borrowed per caller contract.
-    let item = unsafe { (*stream).inner.try_next() };
+    let item = unsafe { (*stream).inner.try_next(layout) };
     // SAFETY: out points to one writable element slot per caller contract.
     unsafe {
         crate::channel_common::decode_elem_envelope(item, out, layout, "hew_stream_try_next_layout")

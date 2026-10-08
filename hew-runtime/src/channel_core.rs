@@ -799,6 +799,7 @@ impl ChannelCore {
     /// rejected envelope and must consume it using the stamped descriptor.
     pub(crate) fn try_send_owned(&self, item: Vec<u8>) -> (TrySendResult, Option<Vec<u8>>) {
         let consumer_wake;
+        let native_consumer;
         {
             let mut inner = self.locked();
             if inner.stream_closed || inner.sink_closed || inner.sink_fault {
@@ -809,10 +810,17 @@ impl ChannelCore {
             }
             inner.queue.push_back(item);
             consumer_wake = inner.consumer.take();
+            native_consumer = inner
+                .native_consumer
+                .take()
+                .and_then(NativeRegistration::into_waker);
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
         }
         self.cv.notify_all();
         (TrySendResult::Accepted, None)

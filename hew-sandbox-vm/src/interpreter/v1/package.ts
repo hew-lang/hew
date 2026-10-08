@@ -127,6 +127,8 @@ export interface RuntimeFamilyEntry {
 export interface ExternEntry {
   id: number;
   symbol: string;
+  /// The manifest label of a native-only runtime endpoint.
+  native_capability?: string;
 }
 
 /// A semantic storage location. Only a `local` is a cell of its own, created by

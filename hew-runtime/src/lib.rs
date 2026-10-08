@@ -645,6 +645,10 @@ pub mod runtime_id;
 pub mod scheduler;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown;
+/// SIGTERM/SIGINT and console control events: runtime shutdown or delivery to
+/// `os.shutdown_signal()` subscribers.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod shutdown_signal;
 mod test_report;
 // One authority for "what exit status must this program report": read on every
 // native shutdown path, not just the implicit actor-drain one.

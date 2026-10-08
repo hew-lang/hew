@@ -1,0 +1,55 @@
+// A task whose only wait is a timed `select` keeps running when the timer
+// wins, and its scope waits for it anyway; a `scope within` deadline cancels
+// the work instead.
+fn slow() -> i64 {
+    sleep(30ms);
+    1
+}
+
+fn stranded() -> bool {
+    scope {
+        let job = fork slow();
+        select {
+            value from job => false,
+            after 1ms => true,
+        }
+    }
+}
+
+fn bounded() -> bool {
+    scope within 1ms {
+        let _ = slow();
+        false
+    } handle failure {
+        true
+    }
+}
+
+fn within_deadline() -> i64 {
+    scope within 50ms {
+        let job = fork slow();
+        select {
+            value from job => value,
+            after 1ms => 0,
+        }
+    } handle failure {
+        -1
+    }
+}
+
+fn joined() -> i64 {
+    scope {
+        let job = fork slow();
+        select {
+            value from job => value,
+            after 1ms => await job,
+        }
+    }
+}
+
+fn main() {
+    println(f"stranded timer won: {stranded()}");
+    println(f"bounded deadline hit: {bounded()}");
+    println(f"deadline bounds the task: {within_deadline()}");
+    println(f"joined after the timer: {joined()}");
+}

@@ -52,7 +52,9 @@ unsafe fn element_layout<'a>(layout: *const HewValueLayout, context: &str) -> &'
     }
     // SAFETY: null was rejected above; caller guarantees the pointee lives.
     let l = unsafe { &*layout };
-    if l.size == 0 {
+    // A zero-sized plain element (`()`) is an empty envelope; every other
+    // representation occupies storage.
+    if l.size == 0 && l.ownership_kind != HewTypeOwnershipKind::Plain {
         abort_elem_witness(context, "element layout size must be non-zero");
     }
     if l.align == 0 || !l.align.is_power_of_two() {
@@ -105,6 +107,15 @@ pub(crate) unsafe fn move_elem_layout_witness<'a>(
     layout
 }
 
+/// The slot image of a plain element; a zero-sized element reads nothing.
+fn plain_envelope(data: *const c_void, size: usize) -> Vec<u8> {
+    if size == 0 {
+        return Vec::new();
+    }
+    // SAFETY: the callers' contracts give `size` readable bytes at `data`.
+    unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec()
+}
+
 /// Move a value into its descriptor-selected queue envelope. Content-backed
 /// strings and bytes release their source only after encoding succeeds;
 /// layout-managed values transfer their slot image without cloning.
@@ -121,8 +132,7 @@ pub(crate) unsafe fn move_elem_envelope(
         layout.ownership_kind,
         HewTypeOwnershipKind::Plain | HewTypeOwnershipKind::LayoutManaged
     ) {
-        // SAFETY: data contains the live element described by the witness.
-        return unsafe { std::slice::from_raw_parts(data.cast::<u8>(), layout.size) }.to_vec();
+        return plain_envelope(data, layout.size);
     }
     // SAFETY: content encoding reads the source without changing ownership.
     let envelope = unsafe { encode_elem_envelope(data, layout, context) };
@@ -183,10 +193,7 @@ pub(crate) unsafe fn encode_elem_envelope(
     context: &str,
 ) -> Vec<u8> {
     match layout.ownership_kind {
-        HewTypeOwnershipKind::Plain => {
-            // SAFETY: caller guarantees `size` readable bytes at `data`.
-            unsafe { std::slice::from_raw_parts(data.cast::<u8>(), layout.size) }.to_vec()
-        }
+        HewTypeOwnershipKind::Plain => plain_envelope(data, layout.size),
         HewTypeOwnershipKind::String => {
             // SAFETY: caller guarantees `data` is a string slot.
             let sptr = unsafe { *data.cast::<*const HewString>() };
@@ -300,9 +307,11 @@ pub(crate) unsafe fn decode_elem_envelope(
                 ));
                 return 0;
             }
-            // SAFETY: lengths checked above; caller guarantees `size` writable
-            // bytes at `out`.
-            unsafe { ptr::copy_nonoverlapping(item.as_ptr(), out.cast::<u8>(), layout.size) };
+            if layout.size != 0 {
+                // SAFETY: lengths checked above; caller guarantees `size`
+                // writable bytes at `out`.
+                unsafe { ptr::copy_nonoverlapping(item.as_ptr(), out.cast::<u8>(), layout.size) };
+            }
             1
         }
         HewTypeOwnershipKind::LayoutManaged => {

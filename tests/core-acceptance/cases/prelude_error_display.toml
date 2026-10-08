@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "Closed: the sink or connection is closed\nNotFound: no actor is registered under the requested name\nNodeNotRunning: the local node is not running\nNoContext: the operation requires an actor context\n"
+stdout = "Closed: the sink or connection is closed\nNotFound: no actor is registered under the requested name\nNodeNotRunning: the local node is not running or is shutting down\nNoContext: the operation requires an actor context\n"
 exit = 0

@@ -297,6 +297,36 @@ tracking_label = "WASM-TODO(filesystem-streams):"
 native_only_functions = ["std.fs.read", "std.stream.open"]
 
 [[feature]]
+id = "termination-signals"
+deterministic = "refuse"
+deterministic_functions = ["std.os.shutdown_signal"]
+deterministic_endpoints = ["hew_shutdown_signal_stream"]
+enum_variant = "TerminationSignals"
+label = "Termination signal subscriptions"
+prose_label = "`std.os.shutdown_signal`"
+reason = "termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only signal dispatcher"
+categories = ["stdlib", "os"]
+native_only_functions = ["std.os.shutdown_signal"]
+
+[[feature]]
+id = "descriptor-readiness"
+deterministic = "refuse"
+deterministic_functions = ["std.io.watch_readable"]
+deterministic_endpoints = ["hew_io_watch_readable"]
+enum_variant = "DescriptorReadiness"
+label = "Descriptor readiness watches"
+prose_label = "`std.io.watch_readable`"
+reason = "a readiness watch waits on the native I/O reactor, which is not compiled for wasm32"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only reactor watch"
+categories = ["stdlib", "io"]
+native_only_functions = ["std.io.watch_readable"]
+
+[[feature]]
 id = "http-client"
 deterministic = "refuse"
 deterministic_endpoints = ["hew_http_request_hew"]
@@ -401,6 +431,7 @@ deterministic_functions = [
   "std.net.connect",
   "std.net.connect_timeout",
   "std.net.Listener.accept",
+  "std.net.Listener.incoming",
   "std.net.Connection.read",
   "std.net.Connection.write",
   "std.net.broadcast_except",
@@ -408,6 +439,7 @@ deterministic_functions = [
 deterministic_endpoints = [
   "hew_tcp_listen",
   "hew_tcp_accept",
+  "hew_tcp_incoming",
   "hew_tcp_connect",
   "hew_tcp_connect_timeout",
   "hew_tcp_read",

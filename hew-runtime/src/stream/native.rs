@@ -8,6 +8,8 @@ use std::sync::Arc;
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_cabi::vec::HewValueLayout;
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::NativeRead;
 use super::{HewSink, HewStream};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::async_io::{self, HewAsyncIo, IoFailure};
@@ -36,7 +38,22 @@ pub struct HewNativeStream {
     layout: HewValueLayout,
     waker: Arc<OwnedWaker>,
     backing: Backing,
+    /// What a completed reactor read yields; writes and pipes ignore it.
+    #[cfg(not(target_arch = "wasm32"))]
+    yields: ReadYield,
     envelope: Option<Vec<u8>>,
+}
+
+/// The item a reactor read produces, fixed when the read starts.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+enum ReadYield {
+    /// String or bytes content.
+    Content,
+    /// An accepted connection handle.
+    Connection,
+    /// `()`: the handle turned readable.
+    Readiness,
 }
 
 impl Drop for HewNativeStream {
@@ -51,6 +68,28 @@ impl Drop for HewNativeStream {
             // handles.
             unsafe { async_io::hew_async_io_free(io) };
         }
+    }
+}
+
+/// A connection item is its handle's slot image.
+#[cfg(not(target_arch = "wasm32"))]
+fn connection_layout(layout: &HewValueLayout) {
+    if !matches!(layout.size, 4 | 8) {
+        crate::channel_common::abort_elem_witness(
+            "native incoming stream",
+            "an accepted connection needs a handle-sized witness",
+        );
+    }
+}
+
+/// A readiness item is `()`.
+#[cfg(not(target_arch = "wasm32"))]
+fn unit_layout(layout: &HewValueLayout) {
+    if layout.size != 0 || layout.ownership_kind != HewTypeOwnershipKind::Plain {
+        crate::channel_common::abort_elem_witness(
+            "native readiness stream",
+            "a readiness item is `()`",
+        );
     }
 }
 
@@ -106,22 +145,36 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
 ) -> *mut HewNativeStream {
     // SAFETY: compiler-provided live operands satisfy the start contract.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream read") };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut yields = ReadYield::Content;
     // SAFETY: stream is a live exclusive loan.
     let backing = match unsafe { (*stream).channel.clone() } {
         Some(core) => Backing::Pipe(core),
         #[cfg(not(target_arch = "wasm32"))]
-        None => {
-            content_layout(&layout);
-            // SAFETY: the exclusive stream loan remains live during inspection.
-            let io = if let Some(connection) = unsafe { (*stream).inner.native_connection() } {
-                // SAFETY: generated cleanup retains the transport loan through quiescence.
-                unsafe { async_io::hew_async_tcp_read(connection, waker) }
-            } else {
-                // SAFETY: generated cleanup retains stream through producer quiescence.
-                unsafe { async_io::start_stream_read(stream, waker) }
-            };
-            Backing::Io(io)
-        }
+        None => Backing::Io(unsafe {
+            // SAFETY: the exclusive stream loan remains live during inspection;
+            // generated cleanup retains it through producer quiescence.
+            match (*stream).native_read() {
+                Some(NativeRead::Content(handle)) => {
+                    content_layout(&layout);
+                    async_io::hew_async_tcp_read(handle, waker)
+                }
+                Some(NativeRead::Accept(listener)) => {
+                    connection_layout(&layout);
+                    yields = ReadYield::Connection;
+                    async_io::hew_async_tcp_accept(listener, waker)
+                }
+                Some(NativeRead::Readiness(handle)) => {
+                    unit_layout(&layout);
+                    yields = ReadYield::Readiness;
+                    async_io::start_tcp_readable(handle, waker)
+                }
+                None => {
+                    content_layout(&layout);
+                    async_io::start_stream_read(stream, waker)
+                }
+            }
+        }),
         #[cfg(target_arch = "wasm32")]
         None => reactor_backing_unreachable("read"),
     };
@@ -130,6 +183,8 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
         // SAFETY: waker is borrowed during this call.
         waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
         backing,
+        #[cfg(not(target_arch = "wasm32"))]
+        yields,
         envelope: None,
     }))
 }
@@ -160,6 +215,8 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
             // SAFETY: waker is borrowed during this call.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
             backing: Backing::Finished,
+            #[cfg(not(target_arch = "wasm32"))]
+            yields: ReadYield::Content,
             envelope: Some(envelope),
         }));
     }
@@ -199,6 +256,8 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
         // SAFETY: waker is borrowed during this call.
         waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
         backing,
+        #[cfg(not(target_arch = "wasm32"))]
+        yields: ReadYield::Content,
         envelope,
     }))
 }
@@ -214,10 +273,14 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
     let (status, item) = match &operation.backing {
         Backing::Pipe(core) => core.poll_recv_observed(&operation.waker),
         #[cfg(not(target_arch = "wasm32"))]
-        Backing::Io(io) => {
+        Backing::Io(io) => unsafe {
             // SAFETY: the operation owns this live async request.
-            unsafe { async_io::take_stream_item(*io) }
-        }
+            match operation.yields {
+                ReadYield::Content => async_io::take_stream_item(*io),
+                ReadYield::Connection => async_io::take_accepted_item(*io, operation.layout.size),
+                ReadYield::Readiness => async_io::take_readiness_item(*io),
+            }
+        },
         // A read never begins on a finished backing; report end of data.
         Backing::Finished => (2, None),
     };

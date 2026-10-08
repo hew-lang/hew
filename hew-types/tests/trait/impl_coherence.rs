@@ -137,7 +137,15 @@ fn canonical_io_lazy_registration_completes_impl_identities() {
         .module_for_path("std.io")
         .expect("canonical io identity");
     let embedded = common::parse_program(include_str!("../../../std/io.hew"));
-    let spans = impl_spans(&embedded);
+    // The receiver impls (`impl bytes`) register lazily; io's own types and
+    // their trait impls register when a program imports the module.
+    let receiver_impls = |(item, _): &&(Item, Span)| matches!(item, Item::Impl(block) if block.trait_bound.is_none());
+    let spans: Vec<Span> = embedded
+        .items
+        .iter()
+        .filter(receiver_impls)
+        .map(|(_, span)| span.clone())
+        .collect();
     assert!(!spans.is_empty(), "io supplies embedded receiver impls");
     for span in spans {
         let occurrence =
@@ -147,7 +155,7 @@ fn canonical_io_lazy_registration_completes_impl_identities() {
             "lazy io registration must inventory its actual source impl"
         );
     }
-    for (item, _) in &embedded.items {
+    for (item, _) in embedded.items.iter().filter(receiver_impls) {
         let Item::Impl(block) = item else { continue };
         for method in &block.methods {
             let occurrence = DeclarationOccurrence::new(

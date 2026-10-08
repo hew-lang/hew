@@ -389,6 +389,48 @@ impl Listener {
             hew_tcp_listener_close(self)
         };
     }
+
+    /// The connections this listener accepts, one per receive, as a stream
+    /// that owns the listener and closes it when the stream closes.
+    ///
+    /// The stream is a `select` source: a losing arm accepts nothing, so a
+    /// pending client waits for the next receive. It ends once runtime
+    /// shutdown closes listener admission, so `for conn in incoming` stops
+    /// cleanly; an accept failure traps like any socket read failure. Read
+    /// `local_port` before calling this.
+    ///
+    /// # Examples
+    ///
+    /// ```hew,no_run
+    /// import std.net;
+    ///
+    /// fn main() {
+    ///     let listener = net.listen("127.0.0.1:0").expect("listen");
+    ///     let incoming = listener.incoming();
+    ///     let accepted = select {
+    ///         next from incoming.recv() => match next {
+    ///             .Some(conn) => {
+    ///                 conn.close();
+    ///                 true
+    ///             }
+    ///             .None => false,
+    ///         }
+    ///         after 50ms => false,
+    ///     };
+    ///     println(accepted);
+    /// }
+    /// ```
+    fn incoming(consume self) -> Stream<Connection> {
+        unsafe {
+            let pair = hew_tcp_incoming(self);
+            if !hew_stream_pair_is_valid(pair) {
+                panic("incoming: the handle is not a listener");
+            }
+            let connections: Stream<Connection> = stream.pair_stream(pair);
+            pair.close();
+            connections
+        }
+    }
 }
 
 // ── Connection methods ────────────────────────────────────────────────
@@ -704,4 +746,8 @@ extern "C" {
     // handle, otherwise the real dup(2) errno.  Not available on wasm32;
     // WASM-TODO(tcp-networking): add the TCP-to-stream bridge to the WASM transport.
     fn hew_tcp_stream_from_conn(consume conn: Connection) -> stream.StreamPair;
+    // Consumes the listener on every path: the stream owns it and closes it
+    // when the stream closes. Not available on wasm32.
+    fn hew_tcp_incoming(consume listener: Listener) -> stream.StreamPair;
+    fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
 }

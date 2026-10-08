@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1599u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1603u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -3359,6 +3359,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
      "\"wasm32-wasip1\": \"fn hew_int_to_string( i32) -> *mut HewString\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_io_watch_check",
+     "{\"native\": \"fn hew_io_watch_check( i32) -> i32\"}", "native", "stable",
+     "not-applicable", "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_io_watch_readable",
+     "{\"native\": \"fn hew_io_watch_readable( i32) -> *mut HewStreamPair\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_io_write",
      "{\"native\": \"fn hew_io_write( *const HewString)\", \"wasm32-wasip1\": "
      "\"fn hew_io_write( *const HewString)\"}",
@@ -5758,6 +5765,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
      ")\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_shutdown_signal_stream",
+     "{\"native\": \"fn hew_shutdown_signal_stream() -> *mut HewStreamPair\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_shutdown_unregister_supervisor",
      "{\"native\": \"fn hew_shutdown_unregister_supervisor( *mut "
      "HewSupervisor, )\"}",
@@ -6786,6 +6797,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
      "{\"native\": \"fn hew_tcp_connect_timeout( *const c_char, c_int, c_int, "
      ") -> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_tcp_incoming",
+     "{\"native\": \"fn hew_tcp_incoming( c_int) -> *mut HewStreamPair\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_tcp_listen",
      "{\"native\": \"fn hew_tcp_listen( *const c_char) -> c_int\"}", "native",

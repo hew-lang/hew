@@ -235,12 +235,15 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
 
   for (const entry of pkg.externs) {
     if (!resolveExternShim(entry.symbol)) {
+      const native = entry.native_capability;
       return {
-        category: "not_implemented",
+        category: native === undefined ? "not_implemented" : "native_only",
         code: UNSUPPORTED,
         capability: entry.symbol,
         message:
-          "This external-library operation is not available in the browser runtime yet.",
+          native === undefined
+            ? "This external-library operation is not available in the browser runtime yet."
+            : `${native} require native execution.`,
         span: null,
       };
     }

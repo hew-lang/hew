@@ -1227,9 +1227,10 @@ fn undeclared_imports(
         let resolves_locally = module_candidates(&decl.path, source_file, &anchor, ctx, &std_roots)
             .candidates
             .iter()
-            .any(|(candidate, _, root)| {
-                *root != CandidateRoot::Dependency
-                    && resolve_candidate(ctx.documents, candidate).is_some()
+            .any(|entry| {
+                entry.2 != CandidateRoot::Dependency
+                    && resolve_module_candidate(ctx, &std_roots, entry)
+                        .is_ok_and(|found| found.is_some())
             });
         if !resolves_locally {
             let source_module = segments.join(".");
@@ -1987,9 +1988,14 @@ fn stdlib_roots(module_search_paths: Option<&[PathBuf]>) -> Vec<PathBuf> {
 }
 
 /// The module path a `[package] name` spells. A package name is a dotted
-/// module path; the manifest is the one place it is read as text.
+/// module path (older manifests separate segments with `::`); the manifest is
+/// the one place it is read as text.
 fn package_module_path(name: &str) -> ModulePath {
-    ModulePath::new(name.split('.').filter(|segment| !segment.is_empty()))
+    ModulePath::new(
+        name.split("::")
+            .flat_map(|part| part.split('.'))
+            .filter(|segment| !segment.is_empty()),
+    )
 }
 
 /// The anchor of `file` (spec 3.5.1): the std root for a file under
@@ -2118,7 +2124,11 @@ pub fn resolve_module_import(
     let mut resolved = module_candidates(path, &importer, &anchor, &ctx, &std_roots)
         .candidates
         .iter()
-        .filter_map(|(candidate, _, _)| resolve_candidate(ctx.documents, candidate))
+        .filter_map(|entry| {
+            resolve_module_candidate(&ctx, &std_roots, entry)
+                .ok()
+                .flatten()
+        })
         .collect::<Vec<_>>();
     resolved.sort();
     resolved.dedup();
@@ -2933,7 +2943,6 @@ fn module_candidates(
     use hew_types::module_registry::ModuleAnchor;
     let segments = import_segments(path);
     let module_str = segments.join("::");
-    let source_module = segments.join(".");
     let mut out = ModuleCandidates {
         candidates: Vec::new(),
         locked_project_candidates: Vec::new(),
@@ -2995,10 +3004,23 @@ fn module_candidates(
         &mut out.candidates,
         module_forms(importer_dir, &segments),
         CandidateRoot::Relative,
-        !matches!(anchor, ModuleAnchor::Loose),
+        true,
     );
 
-    let [(dir_rel, _), (flat_rel, _)] = module_forms(Path::new(""), &segments);
+    dependency_candidates(&mut out, &segments, ctx);
+    out
+}
+
+/// Step 4 of [`module_candidates`]: the project's installed and locked
+/// packages, then the `--pkg-path`, `hew.` and `ecosystem.` roots.
+fn dependency_candidates(
+    out: &mut ModuleCandidates,
+    segments: &[&str],
+    ctx: &ImportResolutionContext<'_>,
+) {
+    let module_str = segments.join("::");
+    let source_module = segments.join(".");
+    let [(dir_rel, _), (flat_rel, _)] = module_forms(Path::new(""), segments);
     let module_dir = segments.iter().collect::<PathBuf>();
     let packages = ctx.project_dir.join(".hew/packages");
     let locked_version = ctx
@@ -3033,7 +3055,7 @@ fn module_candidates(
         CandidateRoot::Dependency,
     ));
     let project_package_dir = packages.join(&module_dir);
-    if declares_dependency(ctx.manifest_deps, &segments) {
+    if declares_dependency(ctx.manifest_deps, segments) {
         out.installed_package_dir = Some(project_package_dir.clone());
     }
     let project_package_entry = packages.join(&dir_rel);
@@ -3054,30 +3076,51 @@ fn module_candidates(
     ));
 
     if let Some(pkg) = ctx.extra_pkg_path {
-        push(
-            &mut out.candidates,
-            module_forms(pkg, &segments),
-            CandidateRoot::Dependency,
-            true,
+        out.candidates.extend(
+            module_forms(pkg, segments)
+                .into_iter()
+                .map(|(candidate, form)| (candidate, form, CandidateRoot::Dependency)),
         );
         // The `--pkg-path` root holds `hew.` and `ecosystem.` packages below
         // their namespace, and others below their first segment.
         if segments.len() > 1 {
-            push(
-                &mut out.candidates,
-                module_forms(pkg, &segments[1..]),
-                CandidateRoot::Dependency,
-                true,
+            out.candidates.extend(
+                module_forms(pkg, &segments[1..])
+                    .into_iter()
+                    .map(|(candidate, form)| (candidate, form, CandidateRoot::Dependency)),
             );
         }
     }
-    out
 }
 
 /// Whether a module path repeats its last segment, the spelling that names a
 /// directory module's entry file (`pkg.dir.dir` for `pkg/dir/dir.hew`).
 fn repeats_last_segment(segments: &[&str]) -> bool {
     matches!(segments, [.., parent, last] if parent == last)
+}
+
+/// The file a module-import candidate names, if it exists and the spelling
+/// may reach it. Beside the importer, the directory form `a/b/b.hew` names a
+/// module only when that file roots one: a directory module's entry, or a
+/// package directory's own `b.hew`. A loose `b/b.hew` is a file in a namespace
+/// directory, never a directory module (spec 3.5.1).
+fn resolve_module_candidate(
+    ctx: &ImportResolutionContext<'_>,
+    std_roots: &[PathBuf],
+    (candidate, form, root): &(PathBuf, CandidateForm, CandidateRoot),
+) -> Result<Option<PathBuf>, FrontendFailure> {
+    use hew_types::module_registry::{MembershipRole, ModuleAnchor};
+    let Some(canonical) = resolve_candidate(ctx.documents, candidate) else {
+        return Ok(None);
+    };
+    if *form == CandidateForm::Flat || *root != CandidateRoot::Relative {
+        return Ok(Some(canonical));
+    }
+    let membership = membership_of(&canonical, std_roots, ctx.documents)?;
+    let roots_a_module = membership.role == MembershipRole::Entry
+        || matches!(&membership.anchor, ModuleAnchor::Package { dir, .. }
+            if canonical.parent() == Some(dir.as_path()));
+    Ok(roots_a_module.then_some(canonical))
 }
 
 /// A positioned resolver diagnostic on the import at `span`, or a plain one
@@ -3226,8 +3269,9 @@ fn resolve_file_imports_internal(
                 // If two or more distinct canonical paths resolve, the import is ambiguous —
                 // fail-closed rather than silently picking the first match.
                 let mut resolved: Vec<(PathBuf, CandidateForm)> = Vec::new();
-                for (candidate, form, _) in &candidates {
-                    if let Some(canonical) = resolve_candidate(ctx.documents, candidate) {
+                for entry in &candidates {
+                    let (candidate, form, _) = entry;
+                    if let Some(canonical) = resolve_module_candidate(ctx, &std_roots, entry)? {
                         if let Some((_, check)) = locked_project_candidates
                             .iter()
                             .find(|(locked_candidate, _)| locked_candidate == candidate)
@@ -3537,10 +3581,7 @@ fn check_duplicate_pub_names(
                 )
             };
             let entry = shown(&membership.entry);
-            let directory = membership
-                .entry
-                .parent()
-                .map_or_else(String::new, |dir| shown(dir));
+            let directory = membership.entry.parent().map_or_else(String::new, &shown);
             return Err(format!(
                 "Error: duplicate pub name `{name}` in module `{}`: declared in `{}` and in `{}`\n  \
                  note: `{directory}/` is a directory module because `{entry}` exists, so its files share one namespace",

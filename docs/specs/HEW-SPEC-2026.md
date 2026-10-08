@@ -1733,7 +1733,10 @@ order:
    `acme.http`. Tests and examples in a package import it this way, whatever
    directory they sit in.
 3. Paths relative to `F`'s directory: the flat form `a/b/c.hew`, and the
-   directory form `a/b/c/c.hew` when `F` belongs to a package.
+   directory form `a/b/c/c.hew` when that file roots a module — a directory
+   module's entry, or the `c.hew` of a package whose `hew.toml` sits in
+   `a/b/c/`. A loose `a/b/c/c.hew` is reached only by its flat spelling
+   `a.b.c.c`.
 4. Dependencies: the packages installed under the project's
    `.hew/packages/`, then the `--pkg-path`, `hew.` and `ecosystem.` roots.
 

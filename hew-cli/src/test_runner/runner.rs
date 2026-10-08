@@ -1566,6 +1566,9 @@ fn selected_test() {
             return;
         }
         let dir = tempfile::tempdir().expect("create module fixture directory");
+        // A directory module belongs to a package (HEW-SPEC-2026 §3.5.1).
+        std::fs::write(dir.path().join("hew.toml"), "[package]\nname = \"app\"\n")
+            .expect("write manifest");
         let module = dir.path().join("greeting");
         std::fs::create_dir(&module).expect("create module directory");
         std::fs::write(

@@ -1944,6 +1944,7 @@ pub(super) mod tests {
         let lib = "pub fn val() -> i64 { 1 }\n";
         let main_src = "import a.b;\n\nfn main() -> i64 { 0 }\n";
         let root = make_temp_workspace_dir(&[
+            ("hew.toml", "[package]\nname = \"app\"\n"),
             ("a/b/b.hew", lib),
             ("a/b.hew", lib),
             ("main.hew", main_src),

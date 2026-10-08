@@ -211,7 +211,7 @@ fn colliding_peers_name_both_files_and_why_they_share_a_module() {
 /// declare `pub fn location`, which only collide if `client.hew` is merged
 /// into the root module.
 fn write_http_package(root: &Path) {
-    fs::write(root.join("hew.toml"), manifest("acme.http")).expect("write manifest");
+    write(root, "hew.toml", &manifest("acme.http"));
     write(
         root,
         "http.hew",

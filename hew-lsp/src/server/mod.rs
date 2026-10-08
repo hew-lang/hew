@@ -5456,8 +5456,12 @@ fn label(colour: Colour) -> string {
         let main_source = "import shapes.circle;\nfn area_check() -> f64 { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
-        let main_url = make_test_uri("/fake/project/main.hew");
-        let circle_url = make_test_uri("/fake/project/shapes/circle/circle.hew");
+        // A directory module belongs to a package: the manifest is on disk,
+        // the sources only in the editor.
+        let root = make_temp_workspace_dir(&[("hew.toml", "[package]\nname = \"app\"\n")]);
+        let main_url = Url::from_checked_file_path(root.join("main.hew")).expect("absolute path");
+        let circle_url = Url::from_checked_file_path(root.join("shapes/circle/circle.hew"))
+            .expect("absolute path");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
@@ -5490,8 +5494,12 @@ fn label(colour: Colour) -> string {
         let invalid_circle_source = "pub fn area(";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
-        let main_url = make_test_uri("/fake/project/main.hew");
-        let circle_url = make_test_uri("/fake/project/shapes/circle/circle.hew");
+        // A directory module belongs to a package: the manifest is on disk,
+        // the sources only in the editor.
+        let root = make_temp_workspace_dir(&[("hew.toml", "[package]\nname = \"app\"\n")]);
+        let main_url = Url::from_checked_file_path(root.join("main.hew")).expect("absolute path");
+        let circle_url = Url::from_checked_file_path(root.join("shapes/circle/circle.hew"))
+            .expect("absolute path");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 

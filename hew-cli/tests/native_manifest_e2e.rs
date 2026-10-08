@@ -140,7 +140,7 @@ fn imported_packages_link_their_native_code_at_any_depth() {
     write(
         &dir.path().join("outer/outer.hew"),
         "import inner;\n\nextern \"C\" {\n    fn outer_value() -> i32;\n}\n\n\
-         pub fn value() -> i32 {\n    unsafe { outer_value() } + inner.value()\n}\n",
+         pub fn value() -> i32 {\n    let own = unsafe { outer_value() };\n    own + inner.value()\n}\n",
     );
     write(
         &dir.path().join("app.hew"),
@@ -379,17 +379,16 @@ fn emit_deps_names_modules_manifests_sources_and_headers() {
     let mut words = rule.split_whitespace();
     assert_eq!(words.next(), Some("out/app:"), "{deps}");
     let prerequisites: Vec<&str> = words.collect();
+    // Hew sources and manifests come first; the C driver's own dependency
+    // list follows, which on macOS also names the SDK's settings file.
     assert_eq!(
-        prerequisites,
-        [
-            "main.hew",
-            "util.hew",
-            "hew.toml",
-            "native/calc.c",
-            "native/include/calc.h"
-        ],
+        prerequisites[..3],
+        ["main.hew", "util.hew", "hew.toml"],
         "{deps}"
     );
+    for native in ["native/calc.c", "native/include/calc.h"] {
+        assert!(prerequisites.contains(&native), "{deps}");
+    }
     for prerequisite in &prerequisites {
         assert!(phony.contains(&format!("{prerequisite}:\n")), "{deps}");
     }

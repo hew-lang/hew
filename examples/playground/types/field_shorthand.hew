@@ -1,0 +1,41 @@
+//! @name Field Shorthand
+//! @description Initialize record and variant fields from bindings of the same name
+
+type Order {
+    id: i64;
+    customer: string;
+    total: i64;
+    rush: bool;
+}
+
+enum Event {
+    Placed { id: i64; total: i64; }
+    Cancelled { id: i64; reason: string; }
+}
+
+fn place(id: i64, customer: string, total: i64) -> Order {
+    // `id` stands for `id: id`; bare and explicit fields mix.
+    Order { id, customer, total, rush: total > 100 }
+}
+
+fn describe(event: Event) -> string {
+    match event {
+        .Placed { id, total } => f"order {id} placed for {total}",
+        .Cancelled { id, reason } => f"order {id} cancelled: {reason}",
+    }
+}
+
+fn main() {
+    let order = place(7, "Ada", 140);
+    println(f"{order.customer} #{order.id} rush={order.rush}");
+
+    // Record update: the shorthand field overrides the base.
+    let total = 90;
+    let revised = Order { ..order, total, rush: false };
+    println(f"revised total {revised.total} rush={revised.rush}");
+    let id = revised.id;
+    println(describe(Event.Placed { id, total }));
+    let reason = "out of stock";
+    let cancelled: Event = .Cancelled { id, reason };
+    println(describe(cancelled));
+}

@@ -392,6 +392,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `types/collections` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/pattern_matching` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/record_types` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/field_shorthand` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/wire_types` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/structural_bounds` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/record_equality` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |

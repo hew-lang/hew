@@ -101,11 +101,11 @@ fn curated_playground_examples_run_under_wasi() {
     // entry silently fall into the wrong bucket. A dynamic count derived
     // from the manifest itself would be tautological against `manifest.len()`
     // and lose that review trigger, so the literal is intentional; bump it
-    // alongside manifest.json (currently 44, +1 for types/method_clone).
+    // alongside manifest.json (currently 45, +1 for types/field_shorthand).
     assert_eq!(
         manifest.len(),
-        44,
-        "expected the curated 44-snippet manifest"
+        45,
+        "expected the curated 45-snippet manifest"
     );
 
     // The unsupported set is generated from the typed WASM authority. Do not

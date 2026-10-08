@@ -817,6 +817,64 @@ pattern side they stand for the fields the pattern does not name, as on the
 expression side they stand for the fields or elements the literal does not
 write.
 
+#### Field-init shorthand (normative)
+
+In a named field list, a field written as a bare identifier takes the value
+of the binding with that name: `name` means `name: name`. The rule is the same
+wherever fields are named by an initializer — record literals, enum struct
+variants (`Type.Variant { … }` and contextual `.Variant { … }`), record
+update, `spawn` arguments, and machine `emit` and transition field lists — and
+mirrors the record pattern, where `.Circle { radius }` binds the field
+`radius` to a name of the same spelling. Bare and explicit fields mix in any
+order, and a bare field is a named field: it overrides `..base` and counts
+toward "names a field more than once".
+
+```hew
+type Endpoint {
+    host: string;
+    port: i64;
+    secure: bool;
+}
+
+fn endpoint(host: string, port: i64) -> Endpoint {
+    Endpoint { host, port, secure: port == 443 }
+}
+
+fn main() {
+    let site = endpoint("hew.sh", 443);
+    let port = 8443;
+    let staging = Endpoint { ..site, port };
+    println(f"{staging.host}:{staging.port}"); // hew.sh:8443
+}
+```
+
+```ebnf
+FieldInitList = FieldInit { "," FieldInit } [ "," ] ;
+FieldInit     = Ident [ ":" Expr ] ;
+RecordLit     = Path TypeArgs? "{" [ RecordItem { "," RecordItem } [ "," ] ] "}" ;
+RecordItem    = FieldInit | ".." Expr ;
+```
+
+The shorthand is a spelling of the explicit form, not a separate construct:
+the value is an ordinary read of the binding, so it moves, copies or borrows
+exactly as `name: name` would, and the name resolves like any identifier
+expression. A shorthand whose name has no binding is reported as
+``cannot find `name` in scope (field shorthand for `name`)``; one that names no
+field of the type is refused as any unknown field is. `hew fmt` keeps each
+field as written.
+
+Where an expression is followed by a block, a lone shorthand field does not
+open a literal. In an `if`/`while` condition or a `match` scrutinee no bare
+record literal opens at all. After an `if let` or `while let` scrutinee or a
+`for` iterable, `{ name }` is the body block; a literal there with two or more
+fields, or any explicit field, still reads as a literal, and a one-field
+shorthand literal is written in parentheses: `for x in (Window { end }) { … }`.
+A machine transition body `{ name }` is the expression body (§3.11.3); a field
+list there needs two fields or an explicit one.
+
+Named call arguments (§12.7) take no shorthand: `f(name)` is a positional
+argument.
+
 ### 3.2 Mutability
 
 - Bindings are immutable by default: `let`.

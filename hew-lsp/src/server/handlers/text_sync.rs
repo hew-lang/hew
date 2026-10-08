@@ -10,7 +10,7 @@ use tower_lsp_server::ls_types::{
 use super::super::uri::FileUriExt;
 use super::super::{
     build_server_capabilities, close_document_and_dependents, normalize_workspace_root,
-    HewLanguageServer,
+    HewLanguageServer, OpenDocument,
 };
 
 fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
@@ -87,6 +87,15 @@ pub(crate) fn initialize(
     if let Ok(mut roots) = server.workspace_roots.write() {
         *roots = extract_workspace_roots(params);
     }
+    if let Ok(mut supported) = server.rename_document_changes.write() {
+        *supported = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.workspace_edit.as_ref())
+            .and_then(|edit| edit.document_changes)
+            .unwrap_or(false);
+    }
     let capabilities = build_server_capabilities();
     build_initialize_result(&capabilities)
 }
@@ -107,6 +116,15 @@ pub(crate) fn shutdown(_: &HewLanguageServer) {}
 pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocumentParams) {
     let uri = params.text_document.uri;
     let source = params.text_document.text;
+    if let Ok(mut open) = server.open_documents.write() {
+        open.insert(
+            uri.clone(),
+            OpenDocument {
+                source: source.clone(),
+                version: params.text_document.version,
+            },
+        );
+    }
     server.reanalyze(&uri, &source);
 }
 
@@ -117,11 +135,23 @@ pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocu
 pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeTextDocumentParams) {
     let uri = params.text_document.uri;
     if let Some(change) = params.content_changes.into_iter().last() {
+        if let Ok(mut open) = server.open_documents.write() {
+            open.insert(
+                uri.clone(),
+                OpenDocument {
+                    source: change.text.clone(),
+                    version: params.text_document.version,
+                },
+            );
+        }
         server.reanalyze(&uri, &change.text);
     }
 }
 
 pub(crate) async fn did_close(server: &HewLanguageServer, params: DidCloseTextDocumentParams) {
+    if let Ok(mut open) = server.open_documents.write() {
+        open.remove(&params.text_document.uri);
+    }
     server.test_diagnostics.remove(&params.text_document.uri);
     let published = close_document_and_dependents(
         &params.text_document.uri,

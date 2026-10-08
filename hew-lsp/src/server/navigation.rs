@@ -306,11 +306,34 @@ pub(super) fn find_named_import_spans(
         return None;
     }
 
-    let names_range = item_span.start + open_brace + 1..item_span.start + close_brace;
-    let import_name_span =
-        find_identifier_span_in_range(source, names_range.clone(), import_name.name.name.as_str())?;
+    let names_start = item_span.start + open_brace + 1;
+    let tokens: Vec<_> = hew_lexer::lex(source.get(names_start..item_span.start + close_brace)?)
+        .into_iter()
+        .filter(|(token, _)| !matches!(token, hew_lexer::Token::DocComment(_)))
+        .collect();
+    let (index, (_, imported)) = tokens.iter().enumerate().find(|(index, (token, _))| {
+        matches!(token, hew_lexer::Token::Identifier(name) if *name == import_name.name.name.as_str())
+            && (*index == 0 || matches!(tokens[*index - 1].0, hew_lexer::Token::Comma))
+    })?;
+    let import_name_span = hew_analysis::OffsetSpan {
+        start: names_start + imported.start,
+        end: names_start + imported.end,
+    };
     let visible_name_span = match &import_name.alias {
-        Some(alias) => find_identifier_span_in_range(source, names_range, alias.name.as_str())?,
+        Some(alias) => {
+            if !matches!(tokens.get(index + 1)?.0, hew_lexer::Token::As) {
+                return None;
+            }
+            let (token, span) = tokens.get(index + 2)?;
+            if !matches!(token, hew_lexer::Token::Identifier(name) if *name == alias.name.as_str())
+            {
+                return None;
+            }
+            hew_analysis::OffsetSpan {
+                start: names_start + span.start,
+                end: names_start + span.end,
+            }
+        }
         None => import_name_span,
     };
 
@@ -328,11 +351,12 @@ pub(super) struct NamedImportMatch {
     visible_name: String,
     import_name_span: hew_analysis::OffsetSpan,
     visible_name_span: hew_analysis::OffsetSpan,
+    has_alias: bool,
 }
 
 impl NamedImportMatch {
     fn is_aliased(&self) -> bool {
-        self.visible_name != self.imported_name
+        self.has_alias
     }
 }
 
@@ -376,6 +400,7 @@ fn build_named_importer_index(documents: &DashMap<Url, DocumentState>) -> NamedI
                         visible_name,
                         import_name_span,
                         visible_name_span,
+                        has_alias: import_name.alias.is_some(),
                     });
             }
         }
@@ -484,6 +509,7 @@ pub(super) fn find_named_import_match(
                 visible_name: visible_name.to_string(),
                 import_name_span,
                 visible_name_span,
+                has_alias: import_name.alias.is_some(),
             });
         }
     }
@@ -1633,6 +1659,7 @@ fn collect_unopened_sibling_importers_for_edits(
                     visible_name: visible_name.to_string(),
                     import_name_span,
                     visible_name_span,
+                    has_alias: import_name.alias.is_some(),
                 });
             }
         }
@@ -2025,6 +2052,7 @@ mod tests {
                 .to_string(),
             import_name_span,
             visible_name_span,
+            has_alias: import_name.alias.is_some(),
         }
     }
 

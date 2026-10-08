@@ -33,7 +33,9 @@ mod calls;
 mod closure_inference;
 mod coerce;
 pub mod const_eval;
+mod dependency_analysis;
 mod diagnostics;
+pub use dependency_analysis::DependencyAnalysisCache;
 pub mod dispatch;
 pub mod dispatch_table;
 pub use dyn_layout::{DynReceiver, DynSlot, SlotEffect, TraitObjectLayout};
@@ -604,7 +606,7 @@ impl Checker {
         Vec<TypeError>,
     ) {
         let fact_context = self.type_fact_context();
-        let mut service = TypeFactService::new(fact_context.clone(), BTreeMap::new());
+        let mut service = TypeFactService::new(fact_context, BTreeMap::new());
         // Visited is tracked separately from the table: a type §1.1 refuses
         // gets no row, and keying the walk on the table alone would revisit it
         // for ever through a recursive declaration.
@@ -674,11 +676,8 @@ impl Checker {
                     .map(|component| (component, span.clone())),
             );
         }
-        (
-            fact_context,
-            service.into_rows(),
-            refusals.into_values().collect(),
-        )
+        let (fact_context, facts) = service.into_parts();
+        (fact_context, facts, refusals.into_values().collect())
     }
 
     /// Snapshot the declaration authority used to classify accepted types.
@@ -2492,14 +2491,7 @@ impl Checker {
         output
     }
 
-    /// Pass 3: Check all bodies
-    #[expect(
-        clippy::too_many_lines,
-        reason = "orchestrates the full check pipeline: non-root body pass, root pass, \
-                  type resolution, warning emission, and deferred-hole drain; \
-                  each phase is a distinct step and extracting further helpers \
-                  would only obscure the pipeline order"
-    )]
+    /// Check all declarations and bodies, then publish the finalized output.
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         if self.has_checked_program {
             self.reset_for_program();
@@ -2516,6 +2508,307 @@ impl Checker {
         let program = normalized_machines
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
+        self.prepare_program(program, false);
+        self.check_dependency_bodies(program);
+        self.check_root_bodies(program);
+        self.finish_program(program, normalized_machines.as_ref())
+    }
+
+    /// Deep-copy a sealed dependency-only checkpoint. Callers never copy a
+    /// checker that has registered or checked a real request root. Mutable
+    /// inference, scope, effect and diagnostic tables remain branch-owned;
+    /// shared declaration IDs refer to the identical immutable prefix.
+    #[allow(
+        clippy::clone_on_copy,
+        reason = "the complete sealed checkpoint forks every field explicitly"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one explicit deep fork prevents omitted mutable checker tables"
+    )]
+    fn fork_dependency_state(&self) -> Self {
+        Self {
+            must_use_types: self.must_use_types.clone(),
+            env: self.env.clone(),
+            subst: self.subst.clone(),
+            registry: self.registry.clone(),
+            module_registry: self.module_registry.clone(),
+            errors: self.errors.clone(),
+            warnings: self.warnings.clone(),
+            user_clone_record_seeds: self.user_clone_record_seeds.clone(),
+            expr_types: self.expr_types.clone(),
+            annotation_types: self.annotation_types.clone(),
+            interpolation_display_types: self.interpolation_display_types.clone(),
+            unrendered_assertion_operands: self.unrendered_assertion_operands.clone(),
+            user_comparison_dispatch: self.user_comparison_dispatch.clone(),
+            numeric_operand_coercions: self.numeric_operand_coercions.clone(),
+            extern_method_origins: self.extern_method_origins.clone(),
+            extern_method_signatures: self.extern_method_signatures.clone(),
+            registration_origin_module: self.registration_origin_module.clone(),
+            canonical_std_module_sources: self.canonical_std_module_sources.clone(),
+            module_source_paths: self.module_source_paths.clone(),
+            module_item_sources: self.module_item_sources.clone(),
+            source_file_span_indices: self.source_file_span_indices.clone(),
+            current_item_source: self.current_item_source.clone(),
+            current_item_ordinal: self.current_item_ordinal.clone(),
+            entry_selection: self.entry_selection.clone(),
+            test_entry_selections: self.test_entry_selections.clone(),
+            test_entry_module: self.test_entry_module.clone(),
+            file_type_decls: self.file_type_decls.clone(),
+            canonical_std_root_sources: self.canonical_std_root_sources.clone(),
+            protected_prelude_declaration_collisions: self
+                .protected_prelude_declaration_collisions
+                .clone(),
+            registration_is_flat_file_import: self.registration_is_flat_file_import.clone(),
+            flat_file_import_module_names: self.flat_file_import_module_names.clone(),
+            actor_self_state_fields: self.actor_self_state_fields.clone(),
+            actor_deferred_field_decls: self.actor_deferred_field_decls.clone(),
+            actor_init_first_stores: self.actor_init_first_stores.clone(),
+            actor_deferred_fields: self.actor_deferred_fields.clone(),
+            checking_actor_init: self.checking_actor_init.clone(),
+            borrowed_element_for_loops: self.borrowed_element_for_loops.clone(),
+            borrowed_element_index_reads: self.borrowed_element_index_reads.clone(),
+            owning_take_vec_cursors: self.owning_take_vec_cursors.clone(),
+            borrowed_element_option_reads: self.borrowed_element_option_reads.clone(),
+            is_type_patterns: self.is_type_patterns.clone(),
+            expr_type_source_modules: self.expr_type_source_modules.clone(),
+            method_call_receiver_kinds: self.method_call_receiver_kinds.clone(),
+            method_call_consumes_receiver: self.method_call_consumes_receiver.clone(),
+            method_call_discharges_receiver: self.method_call_discharges_receiver.clone(),
+            method_call_preserves_receiver_identity: self
+                .method_call_preserves_receiver_identity
+                .clone(),
+            source_extern_declarations: self.source_extern_declarations.clone(),
+            pending_offloads: self.pending_offloads.clone(),
+            current_module_direct_imports: self.current_module_direct_imports.clone(),
+            current_module_direct_import_bindings: self
+                .current_module_direct_import_bindings
+                .clone(),
+            actor_handler_state_guards: self.actor_handler_state_guards.clone(),
+            actor_max_heap: self.actor_max_heap.clone(),
+            consume_receiver_methods: self.consume_receiver_methods.clone(),
+            pending_lowering_facts: self.pending_lowering_facts.clone(),
+            deferred_hashmap_admission: self.deferred_hashmap_admission.clone(),
+            deferred_collection_value_copy: self.deferred_collection_value_copy.clone(),
+            deferred_hashset_admission: self.deferred_hashset_admission.clone(),
+            deferred_vec_admission: self.deferred_vec_admission.clone(),
+            deferred_builtin_clone_admission: self.deferred_builtin_clone_admission.clone(),
+            shadowed_method_type_param_reports: self.shadowed_method_type_param_reports.clone(),
+            eq_requirements: self.eq_requirements.clone(),
+            generic_fn_instantiation_sites: self.generic_fn_instantiation_sites.clone(),
+            method_call_rewrites: self.method_call_rewrites.clone(),
+            serial_layouts: self.serial_layouts.clone(),
+            resolved_calls: self.resolved_calls.clone(),
+            width_cast_lowerings: self.width_cast_lowerings.clone(),
+            try_width_cast_lowerings: self.try_width_cast_lowerings.clone(),
+            actor_method_dispatch: self.actor_method_dispatch.clone(),
+            actor_delivery_calls: self.actor_delivery_calls.clone(),
+            actor_coalesce_keys: self.actor_coalesce_keys.clone(),
+            actor_overflow_policies: self.actor_overflow_policies.clone(),
+            machine_method_dispatch: self.machine_method_dispatch.clone(),
+            tail_ok_coercions: self.tail_ok_coercions.clone(),
+            result_return_coercions: self.result_return_coercions.clone(),
+            tail_ok_armed: self.tail_ok_armed.clone(),
+            assign_target_kinds: self.assign_target_kinds.clone(),
+            assign_target_shapes: self.assign_target_shapes.clone(),
+            indexed_place_operations: self.indexed_place_operations.clone(),
+            stack_hints: self.stack_hints.clone(),
+            type_defs: self.type_defs.clone(),
+            fn_sigs: self.fn_sigs.clone(),
+            fn_sig_keys: self.fn_sig_keys.clone(),
+            builtin_fn_sigs: self.builtin_fn_sigs.clone(),
+            builtin_call_targets: self.builtin_call_targets.clone(),
+            import_fn_name_aliases: self.import_fn_name_aliases.clone(),
+            published_bare_function_owners: self.published_bare_function_owners.clone(),
+            published_bare_const_owners: self.published_bare_const_owners.clone(),
+            file_import_const_exports: self.file_import_const_exports.clone(),
+            recovery_kinds: self.recovery_kinds.clone(),
+            call_argument_slots: self.call_argument_slots.clone(),
+            named_argument_calls: self.named_argument_calls.clone(),
+            effect_graph: self.effect_graph.clone(),
+            direct_call_targets: self.direct_call_targets.clone(),
+            indirect_call_candidates: self.indirect_call_candidates.clone(),
+            callable_binding_candidates: self.callable_binding_candidates.clone(),
+            callable_formals: self.callable_formals.clone(),
+            generic_trait_call_arguments: self.generic_trait_call_arguments.clone(),
+            pending_callable_arguments: self.pending_callable_arguments.clone(),
+            aggregate_field_candidates: self.aggregate_field_candidates.clone(),
+            callable_return_candidates: self.callable_return_candidates.clone(),
+            trait_method_ids: self.trait_method_ids.clone(),
+            trait_bindings: self.trait_bindings.clone(),
+            trait_method_ids_by_binding: self.trait_method_ids_by_binding.clone(),
+            impl_method_declaration_ids: self.impl_method_declaration_ids.clone(),
+            consuming_inherent_methods: self.consuming_inherent_methods.clone(),
+            root_value_bindings: self.root_value_bindings.clone(),
+            handle_bearing_structs: self.handle_bearing_structs.clone(),
+            opaque_type_ids: self.opaque_type_ids.clone(),
+            handle_bearing_dirty: self.handle_bearing_dirty.clone(),
+            refresh_call_count: self.refresh_call_count.clone(),
+            receive_generator_methods: self.receive_generator_methods.clone(),
+            receive_fails_methods: self.receive_fails_methods.clone(),
+            view_submitted_fails_methods: self.view_submitted_fails_methods.clone(),
+            completion_call_edges: self.completion_call_edges.clone(),
+            actor_receive_methods: self.actor_receive_methods.clone(),
+            type_def_inference_holes: self.type_def_inference_holes.clone(),
+            fn_sig_inference_holes: self.fn_sig_inference_holes.clone(),
+            deferred_inference_holes: self.deferred_inference_holes.clone(),
+            deferred_cast_checks: self.deferred_cast_checks.clone(),
+            deferred_is_checks: self.deferred_is_checks.clone(),
+            deferred_monomorphic_sites: self.deferred_monomorphic_sites.clone(),
+            fn_def_spans: self.fn_def_spans.clone(),
+            fn_visibility: self.fn_visibility.clone(),
+            test_fn_names: self.test_fn_names.clone(),
+            type_def_spans: self.type_def_spans.clone(),
+            type_visibility: self.type_visibility.clone(),
+            type_namespace_owners: self.type_namespace_owners.clone(),
+            flat_file_import_pub_spans: self.flat_file_import_pub_spans.clone(),
+            registered_flat_file_import_sources: self.registered_flat_file_import_sources.clone(),
+            registered_stdlib_hew_sources: self.registered_stdlib_hew_sources.clone(),
+            generic_ctx: self.generic_ctx.clone(),
+            current_type_param_bounds: self.current_type_param_bounds.clone(),
+            machine_const_params: self.machine_const_params.clone(),
+            reported_type_def_bound_violations: self.reported_type_def_bound_violations.clone(),
+            reported_actor_handle_type_spans: self.reported_actor_handle_type_spans.clone(),
+            reported_unknown_dyn_traits: self.reported_unknown_dyn_traits.clone(),
+            current_return_type: self.current_return_type.clone(),
+            inferred_lambda_returns: self.inferred_lambda_returns.clone(),
+            current_fails: self.current_fails.clone(),
+            in_generator: self.in_generator.clone(),
+            suspension_operands: self.suspension_operands.clone(),
+            prepared_select_tasks: self.prepared_select_tasks.clone(),
+            loop_depth: self.loop_depth.clone(),
+            deferred_body: self.deferred_body.clone(),
+            loop_labels: self.loop_labels.clone(),
+            modules: self.modules.clone(),
+            known_types: self.known_types.clone(),
+            type_aliases: self.type_aliases.clone(),
+            dispatch: self.dispatch.clone(),
+            checking_declaration: self.checking_declaration.clone(),
+            trait_defs: self.trait_defs.clone(),
+            trait_super: self.trait_super.clone(),
+            trait_impls: self.trait_impls.clone(),
+            source_impl_declarations: self.source_impl_declarations.clone(),
+            rejected_impl_declarations: self.rejected_impl_declarations.clone(),
+            reported_unknown_bounds: self.reported_unknown_bounds.clone(),
+            conflicting_trait_impl_reported: self.conflicting_trait_impl_reported.clone(),
+            trait_impl_method_names: self.trait_impl_method_names.clone(),
+            trait_impl_method_declaration_ids: self.trait_impl_method_declaration_ids.clone(),
+            trait_impl_method_binders: self.trait_impl_method_binders.clone(),
+            primitive_trait_impls: self.primitive_trait_impls.clone(),
+            primitive_trait_impl_self_args: self.primitive_trait_impl_self_args.clone(),
+            supervisor_children: self.supervisor_children.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            pool_accessor_sites: self.pool_accessor_sites.clone(),
+            dyn_trait_coercions: self.dyn_trait_coercions.clone(),
+            structural_witnesses: self.structural_witnesses.clone(),
+            trait_object_layouts: self.trait_object_layouts.clone(),
+            error_conversions: self.error_conversions.clone(),
+            from_impls: self.from_impls.clone(),
+            dyn_trait_method_calls: self.dyn_trait_method_calls.clone(),
+            closure_capture_facts: self.closure_capture_facts.clone(),
+            select_sources: self.select_sources.clone(),
+            closure_escape_facts: self.closure_escape_facts.clone(),
+            actor_init_params: self.actor_init_params.clone(),
+            actor_spawn_args: self.actor_spawn_args.clone(),
+            lambda_capture_depth: self.lambda_capture_depth.clone(),
+            var_self_receiver: self.var_self_receiver.clone(),
+            machine_body_owner: self.machine_body_owner.clone(),
+            var_self_hole_reports: self.var_self_hole_reports.clone(),
+            lambda_captures: self.lambda_captures.clone(),
+            lambda_capture_facts: self.lambda_capture_facts.clone(),
+            reportable_imports: self.reportable_imports.clone(),
+            protected_prelude_bindings: self.protected_prelude_bindings.clone(),
+            import_binding_spans: self.import_binding_spans.clone(),
+            user_modules: self.user_modules.clone(),
+            module_fn_exports: self.module_fn_exports.clone(),
+            module_type_exports: self.module_type_exports.clone(),
+            module_import_bindings: self.module_import_bindings.clone(),
+            canonical_lifecycle_import_authority: self.canonical_lifecycle_import_authority.clone(),
+            reported_type_visibility_violations: self.reported_type_visibility_violations.clone(),
+            reported_undefined_named_types: self.reported_undefined_named_types.clone(),
+            reported_borrow_types_outside_extern: self.reported_borrow_types_outside_extern.clone(),
+            reported_gen_return_spellings: self.reported_gen_return_spellings.clone(),
+            type_decls_registered: self.type_decls_registered.clone(),
+            suppress_undefined_type_report: self.suppress_undefined_type_report.clone(),
+            declared_type_param_names: self.declared_type_param_names.clone(),
+            scope_local_type_params_only: self.scope_local_type_params_only.clone(),
+            declared_nominal_type_names: self.declared_nominal_type_names.clone(),
+            unqualified_to_module: self.unqualified_to_module.clone(),
+            published_bare_type_owners: self.published_bare_type_owners.clone(),
+            call_graph: self.call_graph.clone(),
+            current_function: self.current_function.clone(),
+            in_for_binding: self.in_for_binding.clone(),
+            pattern_bound_names: self.pattern_bound_names.clone(),
+            bind_pattern_recording: self.bind_pattern_recording.clone(),
+            pending_pattern_plans: self.pending_pattern_plans.clone(),
+            invalid_pattern_plan_spans: self.invalid_pattern_plan_spans.clone(),
+            in_receive_fn: self.in_receive_fn.clone(),
+            in_actor_handler_context: self.in_actor_handler_context.clone(),
+            in_lambda_actor_body: self.in_lambda_actor_body.clone(),
+            in_unsafe: self.in_unsafe.clone(),
+            task_scope_depth: self.task_scope_depth.clone(),
+            current_module: self.current_module.clone(),
+            defs: self.defs.clone(),
+            scopes: self.scopes.clone(),
+            registering_embedded_source: self.registering_embedded_source.clone(),
+            seed_defs: self.seed_defs.clone(),
+            extern_table: self.extern_table.clone(),
+            contractless_extern_occurrences: self.contractless_extern_occurrences.clone(),
+            reported_declaration_collisions: self.reported_declaration_collisions.clone(),
+            nominal_namespace_claims: self.nominal_namespace_claims.clone(),
+            cross_module_colliding_record_names: self.cross_module_colliding_record_names.clone(),
+            current_module_idx: self.current_module_idx.clone(),
+            local_type_defs: self.local_type_defs.clone(),
+            source_type_defs: self.source_type_defs.clone(),
+            local_trait_defs: self.local_trait_defs.clone(),
+            current_self_type: self.current_self_type.clone(),
+            current_impl_surface_target: self.current_impl_surface_target.clone(),
+            current_actor_type: self.current_actor_type.clone(),
+            actor_field_binding_ids: self.actor_field_binding_ids.clone(),
+            current_actor_fields: self.current_actor_fields.clone(),
+            actor_consumed_state: self.actor_consumed_state.clone(),
+            crash_hook_consumed_fields: self.crash_hook_consumed_fields.clone(),
+            place_base_depth: self.place_base_depth.clone(),
+            place_write_depth: self.place_write_depth.clone(),
+            pattern_place: self.pattern_place.clone(),
+            actor_protocol_descriptors: self.actor_protocol_descriptors.clone(),
+            lambda_actor_declarations: self.lambda_actor_declarations.clone(),
+            impl_alias_scopes: self.impl_alias_scopes.clone(),
+            current_trait_for_self_projection: self.current_trait_for_self_projection.clone(),
+            impl_assoc_type_bindings: self.impl_assoc_type_bindings.clone(),
+            wasm_target: self.wasm_target.clone(),
+            repl_fragment: self.repl_fragment.clone(),
+            is_stdlib_source: self.is_stdlib_source.clone(),
+            in_stdlib_registration: self.in_stdlib_registration.clone(),
+            checking_embedded_builtins: self.checking_embedded_builtins.clone(),
+            has_checked_program: self.has_checked_program.clone(),
+            wasm_warning_spans: self.wasm_warning_spans.clone(),
+            wasm_reject_spans: self.wasm_reject_spans.clone(),
+            const_values: self.const_values.clone(),
+            declared_const_bindings: self.declared_const_bindings.clone(),
+            call_type_args: self.call_type_args.clone(),
+            record_init_type_args: self.record_init_type_args.clone(),
+            builtin_result_output_type_args: self.builtin_result_output_type_args.clone(),
+            deferred_bound_checks: self.deferred_bound_checks.clone(),
+            deferred_wire_codecs: self.deferred_wire_codecs.clone(),
+            lambda_poly_sig_map: self.lambda_poly_sig_map.clone(),
+            last_lambda_generic_sig: self.last_lambda_generic_sig.clone(),
+            deferred_range_bounds: self.deferred_range_bounds.clone(),
+            literal_binding_value_spans: self.literal_binding_value_spans.clone(),
+            intrinsic_declarations: self.intrinsic_declarations.clone(),
+            pending_pattern_resolutions: self.pending_pattern_resolutions.clone(),
+            lang_items: self.lang_items.clone(),
+            lang_item_spans: self.lang_item_spans.clone(),
+            pending_let_closure_name: self.pending_let_closure_name.clone(),
+            builtin_result_option_method_sigs: self.builtin_result_option_method_sigs.clone(),
+            builtin_vec_method_sigs: self.builtin_vec_method_sigs.clone(),
+            lint_levels: self.lint_levels.clone(),
+            lint_sources: self.lint_sources.clone(),
+            import_type_name_aliases: self.import_type_name_aliases.clone(),
+        }
+    }
+
+    fn prepare_program(&mut self, program: &Program, dependency_bootstrap: bool) {
         // Mint the compile's module identities FIRST (rc1-F1 stage A): every
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
@@ -2545,10 +2838,11 @@ impl Checker {
             // canonical `std.foo` identity. In a normal user program the root
             // always owns source paths, so this distinguishes direct shipped
             // compilation from merely importing a stdlib module.
-            let directly_checked_stdlib = module_graph
-                .modules
-                .get(&module_graph.root)
-                .is_some_and(|root| root.source_paths.is_empty());
+            let directly_checked_stdlib = !dependency_bootstrap
+                && module_graph
+                    .modules
+                    .get(&module_graph.root)
+                    .is_some_and(|root| root.source_paths.is_empty());
             for (module_id, module) in &module_graph.modules {
                 let module_full_path = module_id.dotted();
                 if !module.source_paths.is_empty() {
@@ -2677,7 +2971,9 @@ impl Checker {
             &mut self.errors,
         );
         self.fn_sigs = fn_sigs_for_descriptors;
+    }
 
+    fn check_dependency_bodies(&mut self, program: &Program) {
         // Check non-root module_graph bodies first (dependencies before dependents).
         // Mirrors the traversal order in collect_functions so every registered
         // signature has its body validated, not just the root module.
@@ -2824,7 +3120,9 @@ impl Checker {
             // still use module_idx = 0 for their span keys.
             self.current_module_idx = 0;
         }
+    }
 
+    fn check_root_bodies(&mut self, program: &Program) {
         // Resolve declared child types before any function projects a child
         // role, including a child whose type arguments come from config.
         for (item, span) in program
@@ -2841,7 +3139,17 @@ impl Checker {
         {
             self.check_item(item, span);
         }
+    }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered finalization phase resolves and drains all deferred checker facts"
+    )]
+    fn finish_program(
+        &mut self,
+        program: &Program,
+        normalized_machines: Option<&std::sync::Arc<machine_normalize::NormalizedMachines>>,
+    ) -> TypeCheckOutput {
         // Closure escape classification — runs after all bodies have
         // been type-checked. Walks each fn body (root + modules) looking
         // for closure literal sites and computes per-closure
@@ -3349,7 +3657,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             resolved_annotation_types,
-            normalized_machines: normalized_machines.clone(),
+            normalized_machines: normalized_machines.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),

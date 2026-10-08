@@ -344,7 +344,7 @@ pub enum CheckedSelectSource {
 }
 
 /// A task place borrowed while later selection sources are evaluated.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct PreparedSelectTask {
     pub binding: TypeBindingId,
     pub path: Vec<String>,
@@ -2648,7 +2648,7 @@ pub(super) struct TraitAssociatedTypeInfo {
     pub(super) span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ImplAliasScope {
     pub(super) span: Span,
     pub(super) entries: HashMap<String, ImplAliasEntry>,
@@ -2656,7 +2656,7 @@ pub(super) struct ImplAliasScope {
     pub(super) report_missing: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ImplAliasEntry {
     pub(super) expr: Spanned<TypeExpr>,
     pub(super) resolved: Option<Ty>,

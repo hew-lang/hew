@@ -671,21 +671,20 @@ impl Checker {
         }
         let module_path = decl.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
 
-        // Try to load from the registry first, keeping any error detail owned so the
-        // `self.module_registry` borrow ends before we mutate `self.errors`.
-        let load_error_detail: Option<String> = match self.module_registry.load(&module_path) {
+        // Retain immutable loader metadata independently of the registry borrow
+        // before registering mutable checker declarations and diagnostics.
+        let load_error_detail: Option<String> = match self.module_registry.load_shared(&module_path)
+        {
             Ok(info) => {
                 if info.unsupported_type_signatures.is_empty() {
-                    // Clone all data from ModuleInfo before mutating self, because
-                    // info borrows from self.module_registry.
-                    let functions = info.functions.clone();
-                    let wrapper_fns = info.wrapper_fns.clone();
-                    let clean_names = info.clean_names.clone();
-                    let handle_types = info.handle_types.clone();
-                    let resource_wrapper_types = info.resource_wrapper_types.clone();
-                    let drop_types = info.drop_types.clone();
+                    let functions = &info.functions;
+                    let wrapper_fns = &info.wrapper_fns;
+                    let clean_names = &info.clean_names;
+                    let handle_types = &info.handle_types;
+                    let resource_wrapper_types = &info.resource_wrapper_types;
+                    let drop_types = &info.drop_types;
                     let resolved_source_path = info.source_path.clone();
-                    let registry_source_items = info.source_items.clone();
+                    let registry_source_items = &info.source_items;
 
                     let requested_owner = module_path.clone();
                     // The resolved import is the authority for which module
@@ -829,7 +828,7 @@ impl Checker {
                     if let Some(span) = import_span {
                         self.record_reportable_import(&short.to_string(), span);
                     }
-                    for (method, c_symbol) in &clean_names {
+                    for (method, c_symbol) in clean_names {
                         // Prefer the wrapper function's own signature (registered under
                         // the method name) over the extern C function's signature.
                         // E.g. `log.setup()` should have 0 params (the wrapper's sig),
@@ -884,7 +883,7 @@ impl Checker {
                     // reads that as an ambiguity and leaves the name as written.
                     let canonical_known_types = handle_types
                         .iter()
-                        .chain(&resource_wrapper_types)
+                        .chain(resource_wrapper_types.iter())
                         .map(|type_name| {
                             self.resolve_nominal_declaration(
                                 NominalOrigin::RegistrySignature {
@@ -909,7 +908,7 @@ impl Checker {
                     // `publish_imported_hew_bindings`, so a plain module import
                     // still publishes only the `net.` namespace.
                     let resolved_items = decl.resolved_items.as_deref().or_else(|| {
-                        (!registry_source_items.is_empty()).then_some(&registry_source_items)
+                        (!registry_source_items.is_empty()).then_some(registry_source_items)
                     });
                     if let Some(resolved_items) = resolved_items.filter(|items| !items.is_empty()) {
                         let module_full_path = canonical_owner.clone();
@@ -924,7 +923,7 @@ impl Checker {
                     }
                     // Registry signatures are lexical input. Publish their
                     // metadata against the declarations just registered.
-                    for (names, is_drop) in [(&handle_types, false), (&drop_types, true)] {
+                    for (names, is_drop) in [(handle_types, false), (drop_types, true)] {
                         for name in names {
                             let canonical = self
                                 .resolve_nominal_declaration(

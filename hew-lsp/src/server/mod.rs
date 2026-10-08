@@ -5,6 +5,7 @@ mod convert;
 mod handlers;
 mod hierarchy;
 mod navigation;
+mod project_rename;
 mod testing;
 mod uri;
 mod workspace;
@@ -30,12 +31,13 @@ use self::hierarchy::{
     collect_subtypes, collect_supertypes, find_callable_at, find_incoming_calls,
     find_outgoing_calls, find_type_hierarchy_item,
 };
-#[cfg(test)]
-use self::navigation::build_workspace_edit;
 use self::navigation::{
-    build_document_links, build_prepare_rename_response, build_reference_locations,
-    collect_import_items, find_cross_file_definition, find_definition_in_ast,
-    find_stdlib_definition, plan_workspace_rename,
+    build_document_links, build_reference_locations, collect_import_items,
+    find_cross_file_definition, find_definition_in_ast, find_stdlib_definition,
+};
+#[cfg(test)]
+use self::navigation::{
+    build_prepare_rename_response, build_workspace_edit, plan_workspace_rename,
 };
 use self::testing::failure_from_event;
 use self::uri::FileUriExt;
@@ -165,6 +167,14 @@ struct DocumentState {
 }
 
 type DiagnosticMap = HashMap<Url, Vec<Diagnostic>>;
+
+/// Authored text arrives before debounced analysis. Rename snapshots this map
+/// so pending edits and their client versions are never replaced by old facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenDocument {
+    source: String,
+    version: i32,
+}
 
 /// Keep the test parsing entry point over `Uri`'s `FromStr` implementation.
 #[cfg(test)]
@@ -417,7 +427,12 @@ pub struct HewLanguageServer {
     client: Client,
     /// Document states shared with spawned analysis tasks via `Arc`.
     documents: Arc<DashMap<Url, DocumentState>>,
+    open_documents: RwLock<HashMap<Url, OpenDocument>>,
+    rename_document_changes: RwLock<bool>,
     workspace_roots: RwLock<Vec<PathBuf>>,
+    /// One CPU-heavy rename job per server, including cancelled requests whose
+    /// blocking computation is still running.
+    rename_jobs: Arc<tokio::sync::Semaphore>,
     /// Per-URI generation counters used by the debounced analysis path.
     analysis_versions: AnalysisVersions,
     /// Failures from the CLI test stream, kept separate from source diagnostics.
@@ -443,7 +458,10 @@ impl HewLanguageServer {
         Self {
             client,
             documents: Arc::new(DashMap::new()),
+            open_documents: RwLock::new(HashMap::new()),
+            rename_document_changes: RwLock::new(false),
             workspace_roots: RwLock::new(Vec::new()),
+            rename_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
             analysis_versions: Arc::new(DashMap::new()),
             test_diagnostics: Arc::new(DashMap::new()),
             test_seeds: Arc::new(DashMap::new()),
@@ -816,7 +834,7 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        handlers::navigation::rename(self, &params)
+        handlers::navigation::rename(self, &params).await
     }
 
     async fn prepare_call_hierarchy(

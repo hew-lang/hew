@@ -109,7 +109,7 @@ impl CallableOrigin {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PendingForkTransfer {
     key: SpanKey,
     ty: Ty,
@@ -120,7 +120,7 @@ struct PendingForkTransfer {
 
 /// A closure or named function flowing into a written callable type that
 /// never suspends.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SuspensionObligation {
     body: EffectBody,
     key: SpanKey,
@@ -129,7 +129,7 @@ struct SuspensionObligation {
 }
 
 /// The written boundary a body is supplied to.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ObligationSlot {
     /// A callable type that never suspends, as the user wrote it.
     Callable(String),
@@ -139,7 +139,7 @@ enum ObligationSlot {
 }
 
 /// An `#[on(crash)]` hook body, which must not suspend (D529).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CrashHook {
     body: EffectBody,
     name: String,
@@ -147,7 +147,7 @@ struct CrashHook {
     source_module: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct EffectGraph {
     pub builtin_suspensions: HashSet<CallTarget>,
     pub current_body: Option<EffectBody>,

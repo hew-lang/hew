@@ -5657,6 +5657,20 @@ starts runtime shutdown; `main` keeps running and observes it only through
 refused calls and cancelled waits. A program with no actors keeps the platform
 default and ends without cleanup.
 
+During that shutdown `main` keeps the handles it already holds. A wait on one
+of them (a socket `recv` or `send`, `io.read_line`, `Child.wait`, a pipe)
+starts and completes as before the request, and a wait of `main` never holds
+the drain open. New root work is refused with a typed error:
+`process.start`, `process.run` and `process.run_argv` report
+`ProcessError.LaunchFailed`, and `net.connect`, `net.connect_timeout` and
+`net.listen` report `NetError.Cancelled`. Listeners stop admitting connections
+everywhere, so an `incoming` stream ends. The request cancels every socket,
+pipe and standard-input wait already parked when it arrives, in `main` and in
+actors alike: such a `main` ends with a `Cancelled` failure. A parked
+`Child.wait` is not cancelled; it returns when the child exits. Accepted actor
+turns keep starting the connections, processes and waits they need to finish
+within the drain window.
+
 `os.shutdown_signal()` hands the decision to the program. It returns a
 `Stream<()>` that receives one `()` per request; requests that arrive before
 the next receive coalesce into one. While any such stream is open, a request
@@ -5883,7 +5897,7 @@ A sink released by a normal return, a stop or `close` publishes a clean
 end of data. A `send` never traps for a missing reader; it reports
 `SendError.Closed`. A socket `send` whose peer reset or closed the
 connection also reports `SendError.Closed`, and one whose write timeout
-passes reports `SendError.TimedOut(n)`, where `n` is how many bytes of the
+passes reports `SendError.WriteTimedOut(n)`, where `n` is how many bytes of the
 item reached the operating system first; the peer's view of the stream is
 then unknown, so the caller retires the stream rather than resending. Any
 other socket write failure traps.
@@ -5991,7 +6005,7 @@ a user codec are decided but not lowered in edition 2026 (§2.1.1).
 `std.net.Connection` speaks the same contract: `recv() -> Option<bytes>`,
 `send(bytes) -> Result<(), SendError>`, `finish()`, `close()` and
 `split()`. A transport failure on `recv` traps; a peer that has gone away
-is `SendError.Closed` and a passed write timeout is `SendError.TimedOut(n)`
+is `SendError.Closed` and a passed write timeout is `SendError.WriteTimedOut(n)`
 on `send`, on the connection and on its split sink alike (§6.4.4). The
 write timeout is `set_write_timeout` on the connection before `split()`.
 A socket send cancelled by `scope within` also leaves the stream position
@@ -7114,6 +7128,8 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 12. Logical OR: `||`
 13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered). `..` cannot begin an expression, so `..expr` at the start of a literal item is the spread of §3.1 and no range spelling is shadowed
 14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
+
+> **Bool bitwise operators:** `&`, `^` and `|` take two integers of one type, or two `bool`s. On `bool` they are logical operators that always evaluate both operands and yield `bool`; `&&` and `||` are the short-circuiting forms. A `bool` mixed with an integer is refused.
 
 > **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.
 

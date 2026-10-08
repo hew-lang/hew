@@ -3827,7 +3827,7 @@
     "Unauthorized: the peer rejected the send because the caller lacks authority",
     "Backpressure: the destination or route is applying flow control",
     "Dead: the destination actor accepts no more messages",
-    "TimedOut: the write deadline passed after ",
+    "WriteTimedOut: the write deadline passed after ",
     " bytes of the item"
   ],
   "structural_render": [],
@@ -3907,7 +3907,7 @@
           "fields": [
             "0"
           ],
-          "name": "TimedOut"
+          "name": "WriteTimedOut"
         }
       ],
       "id": 1,
@@ -3921,9 +3921,9 @@
         "SendErrorLocalShutdown": 4,
         "SendErrorPartition": 2,
         "SendErrorStaleRef": 3,
-        "SendErrorTimedOut": 10,
         "SendErrorUnauthorized": 7,
-        "SendErrorVersionMismatch": 6
+        "SendErrorVersionMismatch": 6,
+        "SendErrorWriteTimedOut": 10
       }
     },
     {

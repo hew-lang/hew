@@ -257,19 +257,23 @@ impl std::fmt::Debug for Slot {
 }
 
 /// Operations stored as a reader or writer, including those the reactor has
-/// taken but not yet woken. Shutdown's idle probe reads this.
+/// taken but not yet woken, that hold shutdown's drain open. Shutdown's idle
+/// probe reads this. A process root's waits are not counted: the root resumes
+/// on its own thread, needs no worker and is not drained work.
 static WAITERS: AtomicUsize = AtomicUsize::new(0);
 
-fn waiter_added() {
-    WAITERS.fetch_add(1, Ordering::SeqCst);
+fn waiter_added(operation: &HewAsyncIo) {
+    if operation.holds_drain() {
+        WAITERS.fetch_add(1, Ordering::SeqCst);
+    }
     crate::observe::record_reactor_registration();
 }
 
-fn waiters_removed(count: usize) {
-    if count != 0 {
-        WAITERS.fetch_sub(count, Ordering::SeqCst);
-        crate::observe::record_reactor_unregistration(count as u64);
+fn waiter_removed(operation: &HewAsyncIo) {
+    if operation.holds_drain() {
+        WAITERS.fetch_sub(1, Ordering::SeqCst);
     }
+    crate::observe::record_reactor_unregistration(1);
 }
 
 fn busy() -> IoFailure {
@@ -345,6 +349,28 @@ impl Slot {
 
     pub(crate) fn is_stdin(&self) -> bool {
         matches!(self.object, IoObject::Stdin)
+    }
+
+    fn is_child_exit(&self) -> bool {
+        #[cfg(unix)]
+        return matches!(self.object, IoObject::ChildExit(_));
+        #[cfg(not(unix))]
+        false
+    }
+
+    /// What the slot holds, as its failures name it.
+    pub(crate) fn describe(&self) -> &'static str {
+        match self.object {
+            IoObject::TcpStream(_) => "TCP connection",
+            IoObject::TcpListener(_) => "TCP listener",
+            #[cfg(unix)]
+            IoObject::Pipe(_) => "process pipe",
+            #[cfg(unix)]
+            IoObject::ChildExit(_) => "process exit watch",
+            #[cfg(unix)]
+            IoObject::Foreign(_) => "descriptor watch",
+            IoObject::Stdin => "standard input",
+        }
     }
 
     /// Whether another operation already waits in `direction`.
@@ -428,7 +454,7 @@ impl Slot {
             // Only the turn holder waits here; it keeps its place at the front.
             if state.readers.queue.is_empty() {
                 state.readers.queue.push_back(Arc::clone(operation));
-                waiter_added();
+                waiter_added(operation);
             }
             state.readers.front_woken = false;
             // An arm failure completes the reader, and `forget` passes its turn.
@@ -441,12 +467,12 @@ impl Slot {
             Some(_) => {}
             slot @ None => {
                 *slot = Some(Arc::clone(operation));
-                waiter_added();
+                waiter_added(operation);
             }
         }
         if let Err(error) = self.arm(poller, &mut state) {
-            if state.waiter(direction).take().is_some() {
-                waiters_removed(1);
+            if let Some(waiter) = state.waiter(direction).take() {
+                waiter_removed(&waiter);
             }
             return Err(IoFailure::from_io("arm I/O readiness", &error));
         }
@@ -522,7 +548,7 @@ impl Slot {
                     .any(|queued| Arc::ptr_eq(queued, operation))
                 {
                     state.readers.queue.push_back(Arc::clone(operation));
-                    waiter_added();
+                    waiter_added(operation);
                 }
                 false
             }
@@ -561,7 +587,9 @@ impl Slot {
             }
             removed
         };
-        waiters_removed(removed.len());
+        for waiter in removed.iter().flatten() {
+            waiter_removed(waiter);
+        }
         drop(removed);
         if let Some(next) = next {
             next.signal_ready();
@@ -607,7 +635,9 @@ impl Slot {
             crate::observe::record_reactor_ready_event();
             operation.signal_ready();
         }
-        waiters_removed(ready.len());
+        for operation in &ready {
+            waiter_removed(operation);
+        }
     }
 
     /// Mark the slot closed and complete its waiters with `ECANCELED`. The OS
@@ -634,7 +664,7 @@ impl Slot {
         };
         for operation in waiters.into_iter().flatten() {
             operation.complete(Err(cancelled_failure("I/O handle closed while waiting")));
-            waiters_removed(1);
+            waiter_removed(&operation);
         }
     }
 
@@ -948,28 +978,35 @@ fn fail_reactor(error: &io::Error) {
     for slot in slots() {
         for operation in slot.take_waiters() {
             operation.complete(Err(IoFailure::from_io("wait for I/O readiness", error)));
-            waiters_removed(1);
+            waiter_removed(&operation);
         }
     }
     REACTOR_RUNNING.store(false, Ordering::Release);
 }
 
-/// Cancel and wake every waiting operation. Shutdown uses this so parked
-/// tasks take their cancellation edge before workers are joined.
-pub(crate) fn cancel_all() -> usize {
+/// Cancel and wake every waiting operation on the slots `swept` selects, so
+/// parked tasks take their cancellation edge before workers are joined.
+fn cancel_waiters(swept: impl Fn(&Slot) -> bool) -> usize {
     let mut cancelled = 0;
-    for slot in slots() {
+    for slot in slots().into_iter().filter(|slot| swept(slot)) {
         for operation in slot.take_waiters() {
             cancelled += usize::from(operation.cancel_and_wake());
-            waiters_removed(1);
+            waiter_removed(&operation);
         }
     }
     cancelled
 }
 
-/// Resolve every wait that was parked when shutdown began.
+/// Cancel and wake every waiting operation. Reactor teardown uses this.
+pub(crate) fn cancel_all() -> usize {
+    cancel_waiters(|_| true)
+}
+
+/// Resolve every wait that was parked when shutdown began. A process-exit
+/// watch is left waiting: the child's exit ends it, on every platform, so
+/// `Child.wait` is never interrupted by a termination request.
 pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
-    cancel_all()
+    cancel_waiters(|slot| !slot.is_child_exit())
 }
 
 /// Stop and join the reactor thread, then cancel what still waits. Runtime

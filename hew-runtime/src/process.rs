@@ -99,6 +99,16 @@ unsafe fn process_input(value: *const HewString, context: &str) -> Option<String
     Some(foreign.into_string().expect("managed input is UTF-8"))
 }
 
+/// Refuse a new process once a termination request closed root admission,
+/// leaving the reason in the last-error slot.
+fn refused_for_shutdown(context: &str) -> bool {
+    let refused = crate::shutdown::refuses_new_root_work();
+    if refused {
+        crate::set_last_error(crate::shutdown::refusal_message(context));
+    }
+    refused
+}
+
 /// Build a [`HewProcessResult`] from an [`std::process::Output`].
 #[expect(
     clippy::needless_pass_by_value,
@@ -154,6 +164,9 @@ fn command_output_to_result(
     context: &str,
     command_name: &str,
 ) -> *mut HewProcessResult {
+    if refused_for_shutdown(context) {
+        return std::ptr::null_mut();
+    }
     match command.output() {
         Ok(output) => {
             crate::hew_clear_error();
@@ -313,6 +326,9 @@ pub unsafe extern "C" fn hew_process_start(
     stderr: i32,
 ) -> *mut HewProcess {
     const CONTEXT: &str = "hew_process_start";
+    if refused_for_shutdown(CONTEXT) {
+        return std::ptr::null_mut();
+    }
     // SAFETY: program is a borrowed managed handle at this ABI boundary.
     let Some(program) = (unsafe { process_input(program, CONTEXT) }) else {
         return std::ptr::null_mut();

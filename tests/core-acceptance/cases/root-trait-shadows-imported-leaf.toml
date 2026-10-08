@@ -1,0 +1,14 @@
+[[case]]
+id = "root-trait-shadows-imported-leaf"
+intent = "A module implementing an imported trait for a foreign type is an orphan impl even when the root declares a trait with the same leaf."
+source = "fixtures/root-trait-shadows-imported-leaf/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "OrphanImpl"
+line = 5
+column = 1
+message = "impl `Show` for `i64`: neither the trait nor the type is defined in this module"

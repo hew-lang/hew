@@ -257,6 +257,6 @@ fn test_send_error_display_names_the_refusal() {
     // `Connection.send` answers with the one `SendError` the whole pipe family
     // uses; a send buffer still full at its deadline is `TimedOut` with the
     // committed prefix, a gone peer is `Closed`, and anything else traps.
-    assert(to_string(SendError.TimedOut(3)) == "TimedOut: the write deadline passed after 3 bytes of the item");
+    assert(to_string(SendError.WriteTimedOut(3)) == "WriteTimedOut: the write deadline passed after 3 bytes of the item");
     assert(to_string(SendError.Closed) == "Closed: the sink or connection is closed");
 }

@@ -1,6 +1,6 @@
 [[case]]
 id = "socket-send-deadline"
-intent = "A socket sink whose peer never reads reports its write deadline as SendError.TimedOut with the committed byte count, leaving the writer and a sibling actor running; a reset peer is SendError.Closed."
+intent = "A socket sink whose peer never reads reports its write deadline as SendError.WriteTimedOut with the committed byte count, leaving the writer and a sibling actor running; a reset peer is SendError.Closed."
 source = "cases/socket-send-deadline.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 60

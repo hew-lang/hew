@@ -1,0 +1,9 @@
+import m;
+
+trait Show {
+    fn show(self) -> string;
+}
+
+fn main() {
+    println(m.go());
+}

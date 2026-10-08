@@ -1,0 +1,33 @@
+// `&`, `|` and `^` on bool are non-short-circuiting: both operands are always
+// evaluated, unlike `&&` and `||`.
+fn probe(tag: string, v: bool) -> bool {
+    println(f"eval {tag}");
+    v
+}
+
+fn main() {
+    let vals = [false, true];
+    for a in vals {
+        for b in vals {
+            println(f"{a} {b}: and={a & b} or={a | b} xor={a ^ b}");
+        }
+    }
+    let x = probe("l1", false) & probe("r1", true);
+    let y = probe("l2", true) | probe("r2", false);
+    let z = probe("l3", true) ^ probe("r3", true);
+    println(f"{x} {y} {z}");
+
+    // Short-circuit forms skip the right operand.
+    let s = probe("l4", false) && probe("r4", true);
+    let t = probe("l5", true) || probe("r5", true);
+    println(f"{s} {t}");
+    var c = true;
+    c &= false;
+    println(f"and_assign {c}");
+    c |= true;
+    println(f"or_assign {c}");
+    c ^= true;
+    println(f"xor_assign {c}");
+    c |= probe("rc", false);
+    println(f"{c}");
+}

@@ -1,0 +1,44 @@
+// Root declarations that share a leaf with the builtin `SendError` and with
+// `std.net`'s `NetError`. The std bodies keep naming their own types; the
+// root names its own.
+import std.net;
+import std.net.tls;
+import std.stream;
+
+enum SendError {
+    Mine;
+}
+
+enum NetError {
+    Local(i64);
+}
+
+fn describe(e: SendError) -> string {
+    match e {
+        SendError.Mine => "root SendError",
+    }
+}
+
+fn main() {
+    println(describe(SendError.Mine));
+    match NetError.Local(4) {
+        NetError.Local(n) => println(f"root NetError {n}"),
+    }
+
+    // The builtin SendError still reaches the program through std.stream.
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    rx.close();
+    match tx.send(1) {
+        .Ok(_) => println("sent"),
+        .Err(e) => println(f"stream {e}"),
+    }
+
+    match net.listen("127.0.0.1:0") {
+        .Ok(listener) => println(f"listening {listener.local_port() > 0}"),
+        .Err(_) => println("no listener"),
+    }
+    match tls.connect("127.0.0.1", 1, tls.options()) {
+        .Ok(_) => println("tls connected"),
+        .Err(_) => println("tls refused"),
+    }
+}

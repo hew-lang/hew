@@ -94,7 +94,7 @@ export type RuntimeVariantRole =
   | "SendErrorUnauthorized"
   | "SendErrorBackpressure"
   | "SendErrorDead"
-  | "SendErrorTimedOut"
+  | "SendErrorWriteTimedOut"
   | "DeliveryAccepted"
   | "DeliveryDiscarded"
   | "LinkErrorNoContext";

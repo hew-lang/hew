@@ -1,0 +1,40 @@
+// Integer bit methods and non-trapping arithmetic work at the receiver's own
+// width, so narrow and unsigned receivers wrap, clamp and overflow where
+// native's LLVM intrinsics do.
+fn main() {
+    let small: u8 = 200;
+    let signed: i8 = -100;
+    let word: u16 = 0x1234;
+    let wide: i64 = 9223372036854775807;
+    let mask: u32 = 0x80000001;
+    println(small.count_ones());
+    println(small.count_zeros());
+    println(small.leading_zeros());
+    println(small.trailing_zeros());
+    println(signed.count_ones());
+    println(signed.leading_zeros());
+    println(word.swap_bytes());
+    println(small.reverse_bits());
+    println(mask.rotate_left(1));
+    println(mask.rotate_right(1));
+    println(signed.rotate_left(9));
+    println(wide.leading_zeros());
+    println(small.wrapping_add(100));
+    println(small.saturating_add(100));
+    println(signed.wrapping_sub(100));
+    println(signed.saturating_sub(100));
+    println(signed.saturating_mul(2));
+    println(wide.wrapping_mul(2));
+    match small.checked_add(55) {
+        .Some(sum) => println(f"checked {sum}"),
+        .None => println("overflow"),
+    }
+    match small.checked_add(56) {
+        .Some(sum) => println(f"checked {sum}"),
+        .None => println("overflow"),
+    }
+    match wide.checked_sub(-1) {
+        .Some(diff) => println(f"checked {diff}"),
+        .None => println("overflow"),
+    }
+}

@@ -7149,7 +7149,9 @@ fn free_current_actor_from_terminate_is_deferred() {
         // for it here could never return. A deferred free hands the actor to
         // a background teardown thread and returns. That thread may untrack
         // the actor at once, so liveness says nothing about deferral; the
-        // registered handle does, and only a drain removes it.
+        // registered handle does, and only a drain removes it. The handles
+        // live on the runtime the guard installed for this test, under the
+        // scheduler test lock, so no other test's teardown can move the count.
         let pending_before = live_actors::deferred_teardown_thread_count();
         let rc = hew_actor_free(actor);
         let pending_after = live_actors::deferred_teardown_thread_count();

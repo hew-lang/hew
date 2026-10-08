@@ -96,6 +96,9 @@ unsafe fn submit(
     let operation = unsafe { HewAsyncIo::new(waker) };
     match (pool, address) {
         (_, Err(error)) => operation.complete(Err(error)),
+        _ if crate::shutdown::refuses_new_root_work() => {
+            operation.complete(Err(IoFailure::shutting_down("connect TCP")));
+        }
         (None, Ok(_)) => operation.complete(Err(IoFailure::invalid(
             "asynchronous TCP connect requires an installed runtime",
         ))),

@@ -1,0 +1,31 @@
+// f64 classification and bit methods read the IEEE representation, and
+// std.encoding.binary's f32 codecs refuse non-finite input through them.
+import std.encoding.binary;
+
+fn classify(x: f64) -> string {
+    f"nan={x.is_nan()} finite={x.is_finite()} infinite={x.is_infinite()}"
+}
+
+fn main() {
+    let zero = 0.0;
+    let inf = 1.0 / zero;
+    let nan = zero / zero;
+    println(classify(1.5));
+    println(classify(inf));
+    println(classify(0.0 - inf));
+    println(classify(nan));
+    println(1.5.to_bits());
+    println((0.0 - 2.0).to_bits());
+    println(0.0.is_sign_negative());
+    println((0.0 - 0.0).is_sign_negative());
+    println((zero * -1.0).is_sign_negative());
+    println((0.0 - inf).is_sign_negative());
+    let encoded = binary.put_f32_le(1.5).expect("finite f32");
+    println(binary.read_f32_le(encoded, 0).expect("read f32"));
+    let big = binary.put_f32_be(-0.25).expect("finite f32");
+    println(binary.read_f32_be(big, 0).expect("read f32"));
+    match binary.put_f32_le(inf) {
+        .Ok(_) => println("encoded infinity"),
+        .Err(e) => println(f"refused infinity: {e}"),
+    }
+}

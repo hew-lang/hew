@@ -4026,6 +4026,22 @@ function applyBinary(
       return { kind: "bool", value: truth(lhs) && truth(rhs) };
     case "Or":
       return { kind: "bool", value: truth(lhs) || truth(rhs) };
+    case "BitAnd":
+    case "BitOr":
+    case "BitXor":
+      // Both operands were already evaluated; bool operands stay bool.
+      if (lhs.kind === "bool" && rhs.kind === "bool") {
+        return {
+          kind: "bool",
+          value:
+            op === "BitAnd"
+              ? lhs.value && rhs.value
+              : op === "BitOr"
+                ? lhs.value || rhs.value
+                : lhs.value !== rhs.value,
+        };
+      }
+      break;
     default:
       break;
   }

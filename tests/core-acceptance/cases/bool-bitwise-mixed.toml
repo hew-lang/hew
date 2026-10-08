@@ -1,0 +1,28 @@
+[[case]]
+id = "bool-bitwise-mixed"
+intent = "`&`, `|` and `^` refuse a bool mixed with an integer, naming the accepted operand pairs."
+source = "cases/bool-bitwise-mixed.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_BINARY_OPERAND_TYPES"
+line = 2
+column = 13
+message = "requires two integers or two `bool`s, found `bool` and `i64`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_BINARY_OPERAND_TYPES"
+line = 3
+column = 13
+message = "requires two integers or two `bool`s, found `i64` and `bool`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_BINARY_OPERAND_TYPES"
+line = 4
+column = 13
+message = "requires two integers or two `bool`s, found `bool` and `i64`"

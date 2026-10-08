@@ -58,7 +58,7 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
         module: "std.builtins",
         name: "SendError",
         variant_count: 11,
-        order_fingerprint: 0x1040_ca29_1074_360c,
+        order_fingerprint: 0x6bb1_0898_daed_4845,
         suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {

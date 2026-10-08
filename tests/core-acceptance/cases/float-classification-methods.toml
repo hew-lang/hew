@@ -1,0 +1,10 @@
+[[case]]
+id = "float-classification-methods"
+intent = "The f64 classification and bit methods read the IEEE representation, and the std.encoding.binary f32 codecs refuse non-finite input through them; the sandbox parity case runs the same program on the VM."
+source = "../../examples/sandbox-graduation/float_classification.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "nan=false finite=true infinite=false\nnan=false finite=false infinite=true\nnan=false finite=false infinite=true\nnan=true finite=false infinite=false\n4609434218613702656\n13835058055282163712\nfalse\nfalse\ntrue\ntrue\n1.5\n-0.25\nrefused infinity: NonFinite\n"
+exit = 0

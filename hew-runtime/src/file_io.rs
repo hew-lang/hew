@@ -17,12 +17,17 @@ use crate::stream_error::{
 use hew_cabi::string::{string_as_str, string_from_str, string_to_cstring, HewString};
 use std::io::Write;
 
-fn clear_file_io_error() {
+pub(crate) fn clear_file_io_error() {
     crate::hew_clear_error();
     let _ = take_last_error();
 }
 
-fn set_file_io_error(operation: &str, error: &std::io::Error) {
+pub(crate) fn set_file_io_error(operation: &str, error: &std::io::Error) {
+    set_file_io_error_or(operation, error, libc::EIO);
+}
+
+/// Record `error` with `missing_code` as its code when it carries no OS code.
+pub(crate) fn set_file_io_error_or(operation: &str, error: &std::io::Error, missing_code: i32) {
     let message = format!("{operation}: {error}");
     crate::set_last_error(&message);
     // Carry both the raw OS errno (for the payload) and the portable, canonical
@@ -31,12 +36,12 @@ fn set_file_io_error(operation: &str, error: &std::io::Error) {
     // consumer classifies on the kind and keeps the raw code for inspection.
     set_last_error_with_errno_and_kind(
         message,
-        error.raw_os_error().unwrap_or(libc::EIO),
+        error.raw_os_error().unwrap_or(missing_code),
         io_error_kind_tag(error.kind()),
     );
 }
 
-fn set_file_io_errno(operation: &str, message: impl std::fmt::Display, errno: i32) {
+pub(crate) fn set_file_io_errno(operation: &str, message: impl std::fmt::Display, errno: i32) {
     let message = format!("{operation}: {message}");
     crate::set_last_error(&message);
     set_last_error_with_errno(message, errno);
@@ -45,7 +50,7 @@ fn set_file_io_errno(operation: &str, message: impl std::fmt::Display, errno: i3
 // Convert explicitly at the OS boundary. CString rejects interior NUL; its
 // Rust allocation becomes the owned String used by std::fs and is dropped
 // normally, never through a managed-string or libc release function.
-unsafe fn file_path(path: *const HewString, operation: &str) -> Option<String> {
+pub(crate) unsafe fn file_path(path: *const HewString, operation: &str) -> Option<String> {
     // SAFETY: the caller supplies a borrowed managed handle.
     let foreign = match unsafe { string_to_cstring(path) } {
         Ok(path) if !path.as_bytes().is_empty() => path,

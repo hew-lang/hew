@@ -56,6 +56,9 @@ pub enum IoError {
     /// Distinct from `TimedOut`: `TimedOut` means the deadline expired; `Cancelled`
     /// means the operation was abandoned for another reason.
     Cancelled(i64);
+    /// The platform cannot perform the operation as asked, such as a Unix
+    /// permission mode on Windows. The code is 0: there is no OS error.
+    Unsupported(i64);
     /// Any other I/O failure. The raw code is 0 when there is no OS error,
     /// including invalid UTF-8 file contents.
     Other(i64);
@@ -123,6 +126,8 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
         IoError.AlreadyExists(errno)
     } else if kind == 4 {
         IoError.TimedOut(errno)
+    } else if kind == 6 {
+        IoError.Unsupported(errno)
     } else {
         io_error_from_errno(errno)
     }
@@ -151,6 +156,7 @@ impl Display for IoError {
             IoError.AlreadyExists(code) => f"AlreadyExists({code})",
             IoError.TimedOut(code) => f"TimedOut({code})",
             IoError.Cancelled(code) => f"Cancelled({code})",
+            IoError.Unsupported(code) => f"Unsupported({code})",
             IoError.Other(code) => f"Other({code})",
         }
     }
@@ -369,6 +375,273 @@ pub fn write_atomic(path: string, data: bytes) -> Result<(), CommitError> {
     }
 }
 
+// ── Owners, permissions and locks ────────────────────────────────────
+//
+// These read and create files the way a service guarding secrets needs:
+// exact Unix permission modes, no following of a final symbolic link, owner
+// checks on the file that was actually opened, and a file lock released
+// when its owner goes out of scope. Windows has no Unix mode or numeric
+// owner, so every operation that sets or checks one returns
+// `IoError.Unsupported` there; the others work on every platform.
+
+/// What a path names.
+pub enum FileKind {
+    File;
+    Directory;
+    Symlink;
+    Other;
+}
+
+/// What `metadata` and `symlink_metadata` report about a path.
+pub type Metadata {
+    kind: FileKind;
+    /// Length in bytes.
+    size: i64;
+    /// The permission bits, at most `0o7777`. `None` on Windows.
+    mode: Option<i64>;
+    /// The owning user ID. `None` on Windows.
+    owner: Option<i64>;
+}
+
+impl Metadata {
+    /// Whether the path is owned by this process's user and grants nothing
+    /// to group or other. Always false on Windows.
+    fn is_private(self) -> bool {
+        match (self.mode, self.owner, current_owner()) {
+            (.Some(mode), .Some(owner), .Some(me)) => owner == me && mode & 0o077 == 0,
+            _ => false,
+        }
+    }
+}
+
+type RawMetadata {
+    status: i64;
+    kind: i64;
+    size: i64;
+    mode: i64;
+    owner: i64;
+}
+
+fn present(value: i64) -> Option<i64> {
+    if value < 0 {
+        .None
+    } else {
+        .Some(value)
+    }
+}
+
+fn metadata_from(raw: RawMetadata) -> Metadata fails IoError {
+    if raw.status != 0 {
+        return error last_io_error();
+    }
+    let kind = if raw.kind == 0 {
+        FileKind.File
+    } else if raw.kind == 1 {
+        FileKind.Directory
+    } else if raw.kind == 2 {
+        FileKind.Symlink
+    } else {
+        FileKind.Other
+    };
+    Metadata { kind: kind, size: raw.size, mode: present(raw.mode), owner: present(raw.owner) }
+}
+
+/// Describe the file `path` names, following symbolic links.
+pub fn metadata(path: string) -> Metadata fails IoError {
+    metadata_from(unsafe {
+        hew_fs_metadata(path)
+    })?
+}
+
+/// Describe `path` itself: for a symbolic link, the link rather than its
+/// target, so `kind` is `FileKind.Symlink`.
+///
+/// ```hew,no_run
+/// import std.fs;
+///
+/// fn main() {
+///     match fs.symlink_metadata("/etc/hew/key") {
+///         .Ok(found) => match found.kind {
+///             fs.FileKind.Symlink => println("refusing a linked key"),
+///             _ => println(f"private: {found.is_private()}"),
+///         }
+///         .Err(error) => println(f"cannot inspect: {error}"),
+///     }
+/// }
+/// ```
+pub fn symlink_metadata(path: string) -> Metadata fails IoError {
+    metadata_from(unsafe {
+        hew_fs_symlink_metadata(path)
+    })?
+}
+
+/// The user ID that owns files this process creates, the effective user on
+/// Unix. `None` on Windows.
+pub fn current_owner() -> Option<i64> {
+    present(unsafe {
+        hew_fs_current_owner()
+    })
+}
+
+/// Create `path`, which must not already exist, write `data`, set exactly the
+/// permission bits `mode` whatever the umask (set-user-ID and set-group-ID
+/// included) and flush it to stable storage. A final symbolic link is
+/// refused, and a failure after creation removes the file. An existing path
+/// is `IoError.AlreadyExists`; a mode bit the system declines (set-group-ID
+/// for a group the user is not in) is `IoError.PermissionDenied`.
+/// `IoError.Unsupported` on Windows.
+pub fn create_new(path: string, data: bytes, mode: i64) fails IoError {
+    if unsafe {
+        hew_fs_create_new(path, data, mode)
+    } != 0 {
+        return error last_io_error();
+    }
+}
+
+/// Create `path` readable and writable by its owner alone (mode `0o600`);
+/// see `create_new`.
+///
+/// ```hew,no_run
+/// import std.fs;
+///
+/// fn main() {
+///     match fs.create_private("identity.key", b"\x01\x02") {
+///         .Ok(()) => println("saved"),
+///         .Err(fs.IoError.AlreadyExists(_)) => println("a key is already there"),
+///         .Err(error) => println(f"cannot save: {error}"),
+///     }
+/// }
+/// ```
+pub fn create_private(path: string, data: bytes) fails IoError {
+    create_new(path, data, 0o600)?
+}
+
+/// Create the directory `path`, whose parent must exist, with exactly the
+/// permission bits `mode` whatever the umask. `IoError.Unsupported` on
+/// Windows.
+pub fn mkdir_mode(path: string, mode: i64) fails IoError {
+    if unsafe {
+        hew_fs_mkdir_mode(path, mode)
+    } != 0 {
+        return error last_io_error();
+    }
+}
+
+/// Create the directory `path` usable by its owner alone (mode `0o700`); see
+/// `mkdir_mode`.
+pub fn mkdir_private(path: string) fails IoError {
+    mkdir_mode(path, 0o700)?
+}
+
+fn read_checked(data: bytes) -> bytes fails IoError {
+    if unsafe {
+        hew_stream_has_error()
+    } {
+        return error last_io_error();
+    }
+    data
+}
+
+/// Read a regular file of at most `limit` bytes without following a final
+/// symbolic link. A link, a directory or a device fails, and a larger file
+/// fails rather than being truncated.
+pub fn read_nofollow(path: string, limit: i64) -> bytes fails IoError {
+    read_checked(unsafe {
+        hew_fs_read_nofollow(path, limit)
+    })?
+}
+
+/// As `read_nofollow`, and the opened file must be owned by this process's
+/// user with no group or other permission bits, or the read fails with
+/// `IoError.PermissionDenied`. The checks read the file that was opened, so a
+/// file swapped in after them is never read. `IoError.Unsupported` on
+/// Windows.
+pub fn read_private(path: string, limit: i64) -> bytes fails IoError {
+    read_checked(unsafe {
+        hew_fs_read_private(path, limit)
+    })?
+}
+
+/// An exclusive lock on a file, held until this value is closed or goes out
+/// of scope. It excludes other `try_lock` holders, in this process or
+/// another. On Unix the lock is advisory: plain reads and writes of the file
+/// still succeed. On Windows it is mandatory: while it is held, other handles
+/// cannot read or write the file.
+#[resource]
+#[opaque]
+pub type FileLock {
+}
+
+impl FileLock {
+    fn close(consume self) {
+        unsafe {
+            hew_fs_unlock(self)
+        };
+    }
+}
+
+/// Take the exclusive lock on `path` without waiting, creating the file if
+/// absent (mode `0o600` on Unix, never through a final symbolic link).
+/// `None` means another holder has it.
+///
+/// ```hew,no_run
+/// import std.fs;
+///
+/// fn main() {
+///     match fs.try_lock("state.lock") {
+///         .Ok(.Some(lock)) => {
+///             println("this process owns the state");
+///             lock.close();
+///         }
+///         .Ok(.None) => println("another process owns the state"),
+///         .Err(error) => println(f"cannot lock: {error}"),
+///     }
+/// }
+/// ```
+pub fn try_lock(path: string) -> Option<FileLock> fails IoError {
+    let lock = unsafe {
+        hew_fs_try_lock(path)
+    };
+    if unsafe {
+        hew_fs_lock_is_valid(lock)
+    } {
+        return .Some(lock);
+    }
+    lock.close();
+    if unsafe {
+        hew_stream_has_error()
+    } {
+        return error last_io_error();
+    }
+    .None
+}
+
+/// The capacity of a file system, in bytes. `available` is what this process
+/// may still use, which can be less than `free`.
+pub type Space {
+    total: i64;
+    free: i64;
+    available: i64;
+}
+
+type RawSpace {
+    status: i64;
+    total: i64;
+    free: i64;
+    available: i64;
+}
+
+/// The capacity of the file system holding `path`.
+pub fn space(path: string) -> Space fails IoError {
+    let raw = unsafe {
+        hew_fs_space(path)
+    };
+    if raw.status != 0 {
+        return error last_io_error();
+    }
+    Space { total: raw.total, free: raw.free, available: raw.available }
+}
+
 // ── Directory operations ──────────────────────────────────────────────
 /// Create a directory.
 ///
@@ -499,6 +772,26 @@ extern "C" {
     fn hew_fs_copy(from: string, to: string) -> i32;
     #[offload]
     fn hew_fs_is_dir(path: string) -> bool;
+    #[offload]
+    fn hew_fs_metadata(path: string) -> RawMetadata;
+    #[offload]
+    fn hew_fs_symlink_metadata(path: string) -> RawMetadata;
+    fn hew_fs_current_owner() -> i64;
+    #[offload]
+    fn hew_fs_create_new(path: string, data: bytes, mode: i64) -> i32;
+    #[offload]
+    fn hew_fs_mkdir_mode(path: string, mode: i64) -> i32;
+    #[offload]
+    fn hew_fs_read_nofollow(path: string, limit: i64) -> bytes;
+    #[offload]
+    fn hew_fs_read_private(path: string, limit: i64) -> bytes;
+    // Not offloaded: a cancelled pool job would drop the returned lock
+    // handle without releasing it.
+    fn hew_fs_try_lock(path: string) -> FileLock;
+    fn hew_fs_lock_is_valid(lock: FileLock) -> bool;
+    fn hew_fs_unlock(consume lock: FileLock);
+    #[offload]
+    fn hew_fs_space(path: string) -> RawSpace;
     fn hew_file_read_stream_open(path: string) -> FileReadStream;
     fn hew_file_read_stream_is_valid(stream: FileReadStream) -> bool;
     fn hew_stream_has_error() -> bool;

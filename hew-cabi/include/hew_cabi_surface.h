@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1605u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1616u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1605] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1616] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -2597,12 +2597,28 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1605] = {
      "i32\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_create_new",
+     "{\"native\": \"fn hew_fs_create_new( *const HewString, *const "
+     "BytesTriple, i64, ) -> i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_current_owner",
+     "{\"native\": \"fn hew_fs_current_owner() -> i64\"}", "native", "stable",
+     "not-applicable", "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_is_dir",
      "{\"native\": \"fn hew_fs_is_dir( *const HewString) -> i32\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_list_dir",
      "{\"native\": \"fn hew_fs_list_dir( *const HewString) -> *mut HewVec\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_lock_is_valid",
+     "{\"native\": \"fn hew_fs_lock_is_valid( *const HewFileLock) -> bool\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_metadata",
+     "{\"native\": \"fn hew_fs_metadata( *const HewString) -> HewFsMetadata\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_mkdir",
@@ -2613,9 +2629,40 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1605] = {
      "{\"native\": \"fn hew_fs_mkdir_all( *const HewString) -> i32\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_mkdir_mode",
+     "{\"native\": \"fn hew_fs_mkdir_mode( *const HewString, i64) -> i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_read_nofollow",
+     "{\"native\": \"fn hew_fs_read_nofollow( *const HewString, i64) -> "
+     "BytesTriple\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_read_private",
+     "{\"native\": \"fn hew_fs_read_private( *const HewString, i64) -> "
+     "BytesTriple\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_rename",
      "{\"native\": \"fn hew_fs_rename( *const HewString, *const HewString) -> "
      "i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_space",
+     "{\"native\": \"fn hew_fs_space( *const HewString) -> HewFsSpace\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_symlink_metadata",
+     "{\"native\": \"fn hew_fs_symlink_metadata( *const HewString) -> "
+     "HewFsMetadata\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_try_lock",
+     "{\"native\": \"fn hew_fs_try_lock( *const HewString) -> *mut "
+     "HewFileLock\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fs_unlock", "{\"native\": \"fn hew_fs_unlock( *mut HewFileLock)\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_gen_coro_destroy",

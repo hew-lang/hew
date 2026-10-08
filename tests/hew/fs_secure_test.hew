@@ -1,0 +1,184 @@
+//! Tests for the std.fs owner, permission, lock and capacity primitives.
+//! Windows has no Unix mode or numeric owner: there the operations that set or
+//! check one must return `IoError.Unsupported`, and the rest must still work.
+
+import std.fs;
+
+import std.os;
+
+fn scratch(name: string) -> string {
+    let dir = f"{os.temp_dir()}/hew-fs-secure-{name}-{os.pid()}";
+    fs.mkdir_all(dir).expect("scratch directory");
+    dir
+}
+
+fn unix() -> bool {
+    fs.current_owner().is_some()
+}
+
+fn is_unsupported<T>(result: Result<T, fs.IoError>) -> bool {
+    match result {
+        .Err(fs.IoError.Unsupported(code)) => code == 0,
+        _ => false,
+    }
+}
+
+#[test]
+fn create_private_is_exclusive_and_private() {
+    let key = f"{scratch("create")}/key";
+    let _ = fs.delete(key);
+    if !unix() {
+        assert(is_unsupported(fs.create_private(key, b"\x01")));
+        return;
+    }
+    fs.create_private(key, b"\x01\x02\x03").expect("first create");
+    match fs.create_private(key, b"\x09") {
+        .Err(fs.IoError.AlreadyExists(_)) => {}
+        _ => panic("a second create must refuse the existing file"),
+    }
+    let found = fs.symlink_metadata(key).expect("metadata");
+    assert(found.size == 3);
+    assert((found.mode ?? -1) == 0o600);
+    assert(found.owner == fs.current_owner());
+    assert(found.is_private());
+    assert(fs.read_private(key, 16).expect("read") == b"\x01\x02\x03");
+    let _ = fs.delete(key);
+}
+
+#[test]
+fn create_new_applies_the_exact_mode() {
+    let shared = f"{scratch("mode")}/shared";
+    let _ = fs.delete(shared);
+    if !unix() {
+        assert(is_unsupported(fs.create_new(shared, b"s", 0o644)));
+        return;
+    }
+    fs.create_new(shared, b"s", 0o644).expect("create");
+    let found = fs.metadata(shared).expect("metadata");
+    assert((found.mode ?? -1) == 0o644);
+    assert(!found.is_private());
+    match fs.read_private(shared, 16) {
+        .Err(fs.IoError.PermissionDenied(_)) => {}
+        _ => panic("a group-readable file is not private"),
+    }
+    assert(fs.read_nofollow(shared, 16).expect("read") == b"s");
+    let _ = fs.delete(shared);
+}
+
+#[test]
+fn mkdir_private_overrides_the_umask() {
+    let dir = f"{scratch("mkdir")}/private";
+    if !unix() {
+        assert(is_unsupported(fs.mkdir_private(dir)));
+        return;
+    }
+    fs.mkdir_private(dir).expect("mkdir");
+    let found = fs.metadata(dir).expect("metadata");
+    match found.kind {
+        fs.FileKind.Directory => {}
+        _ => panic("a directory reports Directory"),
+    }
+    assert((found.mode ?? -1) == 0o700);
+    assert(found.is_private());
+    match fs.mkdir_private(dir) {
+        .Err(fs.IoError.AlreadyExists(_)) => {}
+        _ => panic("a second mkdir must refuse the existing directory"),
+    }
+}
+
+#[test]
+fn read_nofollow_refuses_a_directory_and_an_oversized_file() {
+    let root = scratch("read");
+    let file = f"{root}/data";
+    fs.write_bytes(file, b"0123456789").expect("write");
+    assert(fs.read_nofollow(file, 10).expect("read at the limit").len() == 10);
+    assert(fs.read_nofollow(file, 9).is_err());
+    assert(fs.read_nofollow(root, 16).is_err());
+    match fs.read_nofollow(f"{root}/absent", 16) {
+        .Err(fs.IoError.NotFound(_)) => {}
+        _ => panic("an absent file is NotFound"),
+    }
+    // A refusal the runtime makes itself carries the OS code it stands for
+    // on Unix (EISDIR, EINVAL) and 0 on Windows, never a borrowed EIO.
+    let invalid = if unix() {
+        22
+    } else {
+        0
+    };
+    match fs.read_nofollow(file, -1) {
+        .Err(fs.IoError.Other(code)) => assert(code == invalid),
+        _ => panic("a negative limit is refused"),
+    }
+    if unix() {
+        match fs.read_nofollow(root, 16) {
+            .Err(fs.IoError.Other(code)) => assert(code == 21),
+            _ => panic("a directory is EISDIR"),
+        }
+        match fs.read_nofollow("/dev/null", 16) {
+            .Err(fs.IoError.Other(code)) => assert(code == 22),
+            _ => panic("a device is EINVAL"),
+        }
+    }
+}
+
+#[test]
+fn create_new_keeps_set_user_id_after_writing() {
+    if !unix() {
+        return;
+    }
+    let tool = f"{scratch("suid")}/tool";
+    let _ = fs.delete(tool);
+    fs.create_new(tool, b"#!/bin/sh\n", 0o4750).expect("create");
+    assert((fs.metadata(tool).expect("metadata").mode ?? -1) == 0o4750);
+    let _ = fs.delete(tool);
+}
+
+#[test]
+fn metadata_reports_kind_and_platform_fields() {
+    let root = scratch("meta");
+    let file = f"{root}/data";
+    fs.write_bytes(file, b"abc").expect("write");
+    let found = fs.metadata(file).expect("metadata");
+    match found.kind {
+        fs.FileKind.File => {}
+        _ => panic("a regular file reports File"),
+    }
+    assert(found.size == 3);
+    assert(found.mode.is_some() == unix());
+    assert(found.owner.is_some() == unix());
+    match fs.symlink_metadata(f"{root}/absent") {
+        .Err(fs.IoError.NotFound(_)) => {}
+        _ => panic("an absent path is NotFound"),
+    }
+}
+
+#[test]
+fn try_lock_excludes_until_the_lock_is_released() {
+    let path = f"{scratch("lock")}/state.lock";
+    match fs.try_lock(path).expect("first lock") {
+        .Some(lock) => {
+            assert(fs.try_lock(path).expect("second lock").is_none());
+            lock.close();
+        }
+        .None => panic("an unheld lock is taken"),
+    }
+    {
+        let scoped = fs.try_lock(path).expect("scoped lock");
+        assert(scoped.is_some());
+        assert(fs.try_lock(path).expect("while scoped").is_none());
+    };
+    assert(fs.try_lock(path).expect("after scope").is_some());
+}
+
+#[test]
+fn space_reports_consistent_capacity() {
+    let root = scratch("space");
+    let space = fs.space(root).expect("space");
+    assert(space.total > 0);
+    assert(space.free <= space.total);
+    assert(space.available <= space.free);
+    assert(fs.space(f"{root}/absent").is_err());
+    let file = f"{root}/data";
+    fs.write_bytes(file, b"x").expect("write");
+    assert(fs.space(file).expect("space of a file").total == space.total);
+}

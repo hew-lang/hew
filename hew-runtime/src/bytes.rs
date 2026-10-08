@@ -716,7 +716,7 @@ pub unsafe extern "C" fn hew_bytes_append(
 ///
 /// `triple` must be a valid `BytesTriple`: when `len > 0`, `ptr + offset`
 /// is readable for `len` bytes and stays live for the returned borrow.
-unsafe fn active<'a>(triple: &BytesTriple) -> &'a [u8] {
+pub(crate) unsafe fn active<'a>(triple: &BytesTriple) -> &'a [u8] {
     if triple.len == 0 || triple.ptr.is_null() {
         return &[];
     }

@@ -73,16 +73,20 @@ cloneable elements. Iterator adapters consume the iterator they wrap.
 
 ## Common tasks
 
-| Task                                            | Call                                                | Module                                    |
-| ----------------------------------------------- | --------------------------------------------------- | ----------------------------------------- |
-| Hash a file                                     | `crypto.sha256(fs.read_bytes(path)?)`               | `std.crypto.crypto`, `std.fs`             |
-| Authenticate a message                          | `crypto.hmac_sha256(key, data)`                     | `std.crypto.crypto`                       |
-| Compare a secret, token or MAC                  | `crypto.constant_time_eq(a, b)`                     | `std.crypto.crypto`                       |
-| Generate secret bytes                           | `crypto.random_bytes(n)`                            | `std.crypto.crypto`                       |
-| Test an address for loopback or a private range | `ipnet.is_loopback(addr)`, `ipnet.is_private(addr)` | `std.net.ipnet`                           |
-| Replace a file so readers never see half of it  | `fs.write_atomic(path, data)`                       | `std.fs`                                  |
-| Join or extend byte buffers                     | `a + b`, `buf.append(more)`                         | built-in `bytes`                          |
-| Encode bytes as text                            | `hex.encode(data)`, `base64.encode(data)`           | `std.encoding.hex`, `std.encoding.base64` |
+| Task                                            | Call                                                                                      | Module                                    |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Hash a file                                     | `crypto.sha256(fs.read_bytes(path)?)`                                                     | `std.crypto.crypto`, `std.fs`             |
+| Authenticate a message                          | `crypto.hmac_sha256(key, data)`                                                           | `std.crypto.crypto`                       |
+| Compare a secret, token or MAC                  | `crypto.constant_time_eq(a, b)`                                                           | `std.crypto.crypto`                       |
+| Generate secret bytes                           | `crypto.random_bytes(n)`                                                                  | `std.crypto.crypto`                       |
+| Test an address for loopback or a private range | `ipnet.is_loopback(addr)`, `ipnet.is_private(addr)`                                       | `std.net.ipnet`                           |
+| Replace a file so readers never see half of it  | `fs.write_atomic(path, data)`                                                             | `std.fs`                                  |
+| Keep a secret file private                      | `fs.create_private(path, data)`, `fs.read_private(path, limit)`, `fs.mkdir_private(path)` | `std.fs`                                  |
+| Check a path's owner, mode or link              | `fs.symlink_metadata(path)`, `fs.current_owner()`                                         | `std.fs`                                  |
+| Let one process own some state                  | `fs.try_lock(path)`                                                                       | `std.fs`                                  |
+| Free space on a volume                          | `fs.space(path)`                                                                          | `std.fs`                                  |
+| Join or extend byte buffers                     | `a + b`, `buf.append(more)`                                                               | built-in `bytes`                          |
+| Encode bytes as text                            | `hex.encode(data)`, `base64.encode(data)`                                                 | `std.encoding.hex`, `std.encoding.base64` |
 
 `ipnet` reads literal addresses: `ipnet.is_loopback("::1")` is true, while a
 host name such as `localhost` is false until resolved with `std.net.dns`.

@@ -304,11 +304,22 @@ stable = [
   "hew_file_write_bytes",
   "hew_float_to_string",
   "hew_fs_copy",
+  "hew_fs_create_new",
+  "hew_fs_current_owner",
   "hew_fs_is_dir",
   "hew_fs_list_dir",
+  "hew_fs_lock_is_valid",
+  "hew_fs_metadata",
   "hew_fs_mkdir",
   "hew_fs_mkdir_all",
+  "hew_fs_mkdir_mode",
+  "hew_fs_read_nofollow",
+  "hew_fs_read_private",
   "hew_fs_rename",
+  "hew_fs_space",
+  "hew_fs_symlink_metadata",
+  "hew_fs_try_lock",
+  "hew_fs_unlock",
   "hew_hashmap_clear_layout",
   "hew_hashmap_clone_layout",
   "hew_hashmap_contains_key_layout",
@@ -3805,6 +3816,88 @@ discharge-depth = "none"
 symbol = "hew_file_write"
 result = "none"
 params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_current_owner"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_unlock"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.fs.FileLock"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_create_new"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_metadata"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_symlink_metadata"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_mkdir_mode"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_read_nofollow"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_fs_read_private"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_fs_space"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_try_lock"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.fs.FileLock"
+release-symbol = "hew_fs_unlock"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "a held lock is one fresh Box::into_raw(HewFileLock) consumed by hew_fs_unlock; contention and failure return null"
+
+[[ownership.contracts]]
+symbol = "hew_fs_lock_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.fs.FileLock"]
 release-symbol = ""
 discharge-depth = "none"
 

@@ -1,0 +1,214 @@
+//! Behavioural tests for the `std.stream` byte codecs: `LengthPrefixed`
+//! and `Slip`.
+
+import std.encoding.binary;
+import std.stream;
+
+fn of(values: Vec<i64>) -> bytes {
+    var b = bytes.new();
+    for v in values {
+        b.push(v as u8);
+    }
+    b
+}
+
+/// Feed `wire` one byte at a time and collect every frame `decode` returns.
+fn feed_bytewise(codec: stream.LengthPrefixed, wire: bytes) -> Vec<bytes> {
+    var frames: Vec<bytes> = Vec.new();
+    var buffer = bytes.new();
+    for byte in wire {
+        buffer.push(byte);
+        var more = true;
+        while more {
+            match codec.decode(buffer) {
+                .Ok(stream.Decoded.Frame(frame, rest)) => {
+                    frames.push(frame);
+                    buffer = rest;
+                }
+                .Ok(stream.Decoded.Incomplete(kept)) => {
+                    buffer = kept;
+                    more = false;
+                }
+                .Err(error) => panic(f"unexpected codec error: {error}"),
+            }
+        }
+    }
+    frames
+}
+
+fn slip_frames(codec: stream.Slip, wire: bytes, step: i64) -> Vec<bytes> {
+    var frames: Vec<bytes> = Vec.new();
+    var buffer = bytes.new();
+    var at = 0;
+    while at < wire.len() {
+        let end = if at + step < wire.len() { at + step } else { wire.len() };
+        buffer.append(wire[at..end]);
+        at = end;
+        var more = true;
+        while more {
+            match codec.decode(buffer) {
+                .Ok(stream.Decoded.Frame(frame, rest)) => {
+                    frames.push(frame);
+                    buffer = rest;
+                }
+                .Ok(stream.Decoded.Incomplete(kept)) => {
+                    buffer = kept;
+                    more = false;
+                }
+                .Err(error) => panic(f"Slip never errors: {error}"),
+            }
+        }
+    }
+    frames
+}
+
+// ── LengthPrefixed ───────────────────────────────────────────────────
+#[test]
+fn test_length_prefixed_round_trips_split_at_every_byte() {
+    for width in [1, 2, 4] {
+        for order in [binary.ByteOrder.Big, binary.ByteOrder.Little] {
+            let codec = stream.LengthPrefixed { width: width, order: order, max: 300 };
+            var wire = codec.encode(of([1, 2, 3]));
+            wire.append(codec.encode(bytes.new()));
+            wire.append(codec.encode(of([0xC0, 0xDB])));
+            let frames = feed_bytewise(codec, wire);
+            assert(frames.len() == 3);
+            assert(frames[0] == of([1, 2, 3]));
+            assert(frames[1].len() == 0);
+            assert(frames[2] == of([0xC0, 0xDB]));
+        }
+    }
+}
+
+#[test]
+fn test_length_prefixed_byte_order() {
+    let big = stream.LengthPrefixed { width: 2, order: binary.ByteOrder.Big, max: 1000 };
+    let little = stream.LengthPrefixed { width: 2, order: binary.ByteOrder.Little, max: 1000 };
+    var payload = bytes.new();
+    for _ in 0..258 {
+        payload.push(7);
+    }
+    assert(big.encode(payload)[0..2] == of([1, 2]));
+    assert(little.encode(payload)[0..2] == of([2, 1]));
+}
+
+#[test]
+fn test_length_prefixed_rejects_length_above_max() {
+    let codec = stream.LengthPrefixed { width: 2, order: binary.ByteOrder.Big, max: 4 };
+    match codec.decode(of([0, 5, 1, 2, 3, 4, 5])) {
+        .Err(stream.CodecError.Malformed(detail)) => assert(detail.contains("exceeds the maximum 4")),
+        _ => panic("a declared length of max + 1 must be Malformed"),
+    }
+    // The prefix alone is enough to refuse it: the stream cannot resync.
+    assert(codec.decode(of([0, 5])).is_err());
+    match codec.decode(of([0, 4, 1, 2, 3, 4])) {
+        .Ok(stream.Decoded.Frame(frame, rest)) => assert(frame.len() == 4 && rest.len() == 0),
+        _ => panic("a declared length of max is a frame"),
+    }
+}
+
+#[test]
+fn test_length_prefixed_zero_length_and_short_prefix() {
+    let codec = stream.LengthPrefixed { width: 4, order: binary.ByteOrder.Little, max: 16 };
+    match codec.decode(of([0, 0, 0, 0, 9])) {
+        .Ok(stream.Decoded.Frame(frame, rest)) => assert(frame.len() == 0 && rest == of([9])),
+        _ => panic("zero length is an empty frame"),
+    }
+    match codec.decode(of([3, 0, 0])) {
+        .Ok(stream.Decoded.Incomplete(kept)) => assert(kept == of([3, 0, 0])),
+        _ => panic("a short prefix is Incomplete with the buffer unchanged"),
+    }
+}
+
+#[test]
+fn test_length_prefixed_rejects_bad_width() {
+    let codec = stream.LengthPrefixed { width: 3, order: binary.ByteOrder.Big, max: 16 };
+    assert(codec.decode(of([0, 0, 1, 7])).is_err());
+}
+
+// ── Slip ─────────────────────────────────────────────────────────────
+#[test]
+fn test_slip_escapes_round_trip() {
+    let codec = stream.Slip { max: 64 };
+    let payload = of([0xC0, 1, 0xDB, 0xDC, 0xDD, 0xC0, 0xDB]);
+    let wire = codec.encode(payload);
+    assert(wire == of([0xC0, 0xDB, 0xDC, 1, 0xDB, 0xDD, 0xDC, 0xDD, 0xDB, 0xDC, 0xDB, 0xDD, 0xC0]));
+    let frames = slip_frames(codec, wire, 64);
+    assert(frames.len() == 1);
+    assert(frames[0] == payload);
+}
+
+#[test]
+fn test_slip_split_at_every_byte() {
+    let codec = stream.Slip { max: 64 };
+    var wire = codec.encode(of([1, 0xC0, 2]));
+    wire.append(codec.encode(of([0xDB])));
+    wire.append(codec.encode(of([3, 4, 5])));
+    let frames = slip_frames(codec, wire, 1);
+    assert(frames.len() == 3);
+    assert(frames[0] == of([1, 0xC0, 2]));
+    assert(frames[1] == of([0xDB]));
+    assert(frames[2] == of([3, 4, 5]));
+}
+
+#[test]
+fn test_slip_skips_bad_escape_and_keeps_next_frame() {
+    let codec = stream.Slip { max: 64 };
+    // A complete packet, a record with ESC followed by an ordinary byte, then
+    // a good packet: the first and last survive.
+    var wire = codec.encode(of([9]));
+    wire.append(of([1, 0xDB, 0x41, 2, 0xC0]));
+    wire.append(codec.encode(of([7, 8])));
+    for step in [1, 3, 64] {
+        let frames = slip_frames(codec, wire, step);
+        assert(frames.len() == 2);
+        assert(frames[0] == of([9]));
+        assert(frames[1] == of([7, 8]));
+    }
+}
+
+#[test]
+fn test_slip_skips_oversized_record() {
+    let codec = stream.Slip { max: 4 };
+    var wire = of([1, 2, 3, 4, 5, 0xC0]);
+    wire.append(codec.encode(of([6, 7, 8, 9])));
+    for step in [1, 2, 64] {
+        let frames = slip_frames(codec, wire, step);
+        assert(frames.len() == 1);
+        assert(frames[0] == of([6, 7, 8, 9]));
+    }
+}
+
+#[test]
+fn test_slip_caps_an_unterminated_record() {
+    let codec = stream.Slip { max: 8 };
+    var noise = bytes.new();
+    for _ in 0..100 {
+        noise.push(0x55);
+    }
+    match codec.decode(noise) {
+        .Ok(stream.Decoded.Incomplete(kept)) => assert(kept.len() <= 2 * 8 + 2),
+        _ => panic("an unterminated record is Incomplete"),
+    }
+    var wire = noise;
+    wire.append(of([0x55, 0x55, 0xC0]));
+    wire.append(codec.encode(of([1, 2])));
+    for step in [1, 7, 200] {
+        let frames = slip_frames(codec, wire, step);
+        assert(frames.len() == 1);
+        assert(frames[0] == of([1, 2]));
+    }
+}
+
+#[test]
+fn test_slip_ignores_empty_records_and_waits_on_trailing_escape() {
+    let codec = stream.Slip { max: 8 };
+    match codec.decode(of([0xC0, 0xC0, 0xC0, 5, 0xDB])) {
+        .Ok(stream.Decoded.Incomplete(kept)) => assert(kept == of([5, 0xDB])),
+        _ => panic("empty records are skipped and a trailing ESC waits"),
+    }
+    match codec.decode(of([5, 0xDB, 0xDD, 0xC0])) {
+        .Ok(stream.Decoded.Frame(frame, rest)) => assert(frame == of([5, 0xDB]) && rest.len() == 0),
+        _ => panic("the escape completes once its byte arrives"),
+    }
+}

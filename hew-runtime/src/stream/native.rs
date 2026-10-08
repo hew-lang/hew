@@ -74,8 +74,8 @@ pub(crate) unsafe fn read_content(stream: *mut HewStream) -> Result<Option<Vec<u
     let _ = super::take_last_error();
     // SAFETY: the producer owns the exclusive heap-handle loan.
     let item = unsafe { (*stream).inner.next() };
-    match super::take_last_error() {
-        Some(message) => Err(IoFailure::invalid(&message)),
+    match IoFailure::take_recorded() {
+        Some(failure) => Err(failure),
         None => Ok(item),
     }
 }
@@ -87,8 +87,8 @@ pub(crate) unsafe fn write_content(sink: *mut HewSink, data: &[u8]) -> Result<()
     let _ = super::take_last_error();
     // SAFETY: the producer owns the exclusive heap-handle loan.
     unsafe { (*sink).write_item(data) };
-    match super::take_last_error() {
-        Some(message) => Err(IoFailure::invalid(&message)),
+    match IoFailure::take_recorded() {
+        Some(failure) => Err(failure),
         None => Ok(()),
     }
 }
@@ -269,7 +269,9 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
     unsafe { decode_elem_envelope(item, out, &operation.layout, "native stream read") }
 }
 
-/// Poll a write: 0 pending, 1 transferred, 2 closed, 3 failure.
+/// Poll a write: 0 pending, 1 transferred, 2 closed, 3 failure, 4 timed out
+/// (a socket write deadline passed; [`hew_stream_write_committed_native`]
+/// reports how much of the item reached the OS).
 ///
 /// # Safety
 /// Operation is a live exclusive write operation.
@@ -292,10 +294,34 @@ pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeS
             match unsafe { async_io::hew_async_io_status(*io) } {
                 0 => 0,
                 1 => 1,
-                _ => 3,
+                // SAFETY: the status answered Error for this live request.
+                _ => match unsafe { async_io::write_failure(*io) } {
+                    async_io::WriteFailure::Closed => 2,
+                    async_io::WriteFailure::TimedOut(_) => 4,
+                    async_io::WriteFailure::Other => 3,
+                },
             }
         }
         Backing::Finished => 2,
+    }
+}
+
+/// Bytes of the item a timed-out socket write committed to the OS before its
+/// deadline; `0` for any other operation. The peer's view of them is unknown.
+///
+/// # Safety
+/// Operation is a live write operation whose last poll answered 4.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_write_committed_native(operation: *mut HewNativeStream) -> i64 {
+    // SAFETY: the caller lends the live operation.
+    match unsafe { &(*operation).backing } {
+        #[cfg(not(target_arch = "wasm32"))]
+        // SAFETY: the operation owns this live async request.
+        Backing::Io(io) => match unsafe { async_io::write_failure(*io) } {
+            async_io::WriteFailure::TimedOut(committed) => committed,
+            _ => 0,
+        },
+        _ => 0,
     }
 }
 

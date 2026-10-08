@@ -1,0 +1,11 @@
+[[case]]
+id = "stream-codec-oversize-encode"
+intent = "A codec encode past its bound panics and names the codec: `Slip` and `LengthPrefixed` frame items within bounds, and a 256-byte item cannot be declared in a one-byte prefix."
+source = "cases/stream-codec-oversize-encode.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "6\n5\n"
+stderr = "hew: failure: UserPanic (212): stream.LengthPrefixed: cannot declare 256 bytes in width 1: Overflow\n"
+exit = 1

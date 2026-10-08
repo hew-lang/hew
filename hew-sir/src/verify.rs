@@ -164,8 +164,9 @@ pub enum SirDiagnosticKind {
         block: BlockId,
         reason: &'static str,
     },
-    /// Call results must be forwarded through that call's normal edge; the
-    /// continuation uses its block argument, never the edge-local definition.
+    /// Call results must be forwarded through that call's normal edge (any
+    /// resume edge of a suspension); the continuation uses its block
+    /// argument, never the edge-local definition.
     InvalidCallResultUse {
         value: ValueId,
         definition: BlockId,
@@ -5678,8 +5679,15 @@ fn verify_terminator_shape(
                                     && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))))
                 }
                 crate::SuspendKind::StreamSend { park } => {
-                    resumes.len() == if *park { 2 } else { 3 }
-                        && matches!(result, crate::CallResult::Unit)
+                    // Accepted, closed, then timed out (parking, carrying the
+                    // committed byte count) or full (nonparking).
+                    resumes.len() == 3
+                        && if *park {
+                            matches!(result, crate::CallResult::Value(value)
+                                if value.ty == ResolvedTy::I64 && value.own == OwnKind::None)
+                        } else {
+                            matches!(result, crate::CallResult::Unit)
+                        }
                         && matches!(inputs.as_slice(), [sink, value]
                             if sink.decision == crate::BoundaryDecision::Borrow
                             && value.decision == crate::BoundaryDecision::Move
@@ -5915,9 +5923,11 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
         }
         SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),
         SemTerminator::RecoverFault { normal, .. } => 0..normal.args.len(),
+        // A suspension's result is defined on every resume: a stream send's
+        // committed count reaches its timed-out resume, not the first.
         SemTerminator::Suspend {
             inputs, resumes, ..
-        } => inputs.len()..inputs.len() + resumes.first().map_or(0, |edge| edge.args.len()),
+        } => inputs.len()..inputs.len() + resumes.iter().map(|edge| edge.args.len()).sum::<usize>(),
         SemTerminator::SwitchVariant { arms, .. } => {
             let end = 1 + arms.iter().map(|arm| arm.target.args.len()).sum::<usize>();
             1..end

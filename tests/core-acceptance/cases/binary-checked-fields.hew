@@ -1,0 +1,46 @@
+// Checked byte-field reads and writes, including binary32 through the f64
+// bit pattern, at O0 and O2.
+import std.encoding.binary;
+
+fn parse(record: bytes) -> Result<(i64, f64), binary.BinaryError> {
+    .Ok((binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?))
+}
+
+fn pattern(bits: i64) -> bytes {
+    binary.put_uint_be(bits, 4).expect("32-bit pattern")
+}
+
+fn show(result: Result<bytes, binary.BinaryError>) -> string {
+    match result {
+        .Ok(data) => {
+            var out = "[";
+            for i in 0..data.len() {
+                if i > 0 {
+                    out = out + " ";
+                }
+                out = out + f"{data[i]}";
+            }
+            out + "]"
+        }
+        .Err(e) => f"{e}",
+    }
+}
+
+fn main() {
+    var record = binary.put_uint_le(7, 2).expect("width 2");
+    record.append(binary.put_f32_le(21.5).expect("finite"));
+    println(f"{parse(record):?}");
+    println(f"{parse(record[0..3]):?}");
+    for width in 0..9 {
+        let field = show(binary.put_uint_be(width * 31, width));
+        println(f"{width}: {field} {binary.read_int_le(pattern(0xFFFF8001), 0, width):?}");
+    }
+    for bits in [0x00000001, 0x007FFFFF, 0x7F7FFFFF, 0x80000000, 0x3EAAAAAB, 0x7F800000, 0x7FC00001] {
+        match binary.read_f32_be(pattern(bits), 0) {
+            .Ok(v) => println(f"{bits}: {v} {show(binary.put_f32_be(v)) == show(.Ok(pattern(bits)))}"),
+            .Err(e) => println(f"{bits}: {e}"),
+        }
+    }
+    println(f"{show(binary.put_f32_le(3.5e38))} {show(binary.put_f32_le(1.0 / 3.0))}");
+    println(f"{show(binary.slice(record, 1, 9))} {binary.read_uint_le(record, 0, 9):?}");
+}

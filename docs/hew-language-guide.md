@@ -4845,36 +4845,33 @@ The complete protocol and identity rules are normative in
 messaging, and link/monitor propagation are native-only; wasm32 rejects these
 surfaces.
 
-### TLS client — free-function surface
+### TLS client
 
 ```hew,no_run
+import std.fs;
 import std.net.tls;
 
 fn main() {
-    let stream = tls.connect("example.com", 443);
-    let req = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
-    let payload = req.to_bytes();
-    let sent = tls.write(stream, payload).expect("write succeeds");
-    println(f"sent {sent}/{payload.len()} bytes");
-    // match tls.read(stream, 256) { .Ok(data) => ..., .Err(_) => ... }
-    tls.close(stream);
+    var options = tls.options();          // bundled roots, 10s handshake, no I/O timeout
+    options.trust = tls.Trust.Pem(fs.read_bytes("ca.pem").expect("ca bundle"));
+    options.handshake_timeout = 3s;
+    let stream = tls.connect("broker.internal", 8883, options).expect("connect");
+    let req = "PING\r\n".to_bytes();
+    let sent = stream.write(req).expect("write");
+    let reply = stream.read(256).expect("read");
+    println(f"sent {sent}, read {reply.len()} bytes");
 }
 ```
 
-Use the FREE-FUNCTION surface — `tls.connect(host, port)` (system-root verified),
-`tls.write`, `tls.read`, `tls.close` — each returning a `Result`. Request/response bodies
-are `bytes`: build a payload with the public `string.to_bytes()` surface and decode
-with `bytes.to_string()`. There is also a method form (`stream.read(n)` /
-`stream.write(payload)`, from `trait TlsStreamMethods`) — it type-checks and
-compiles, and carries the same runtime caveat as the free functions below.
-
-> **Known gap:** `tls.connect` does not record a failed handshake in
-> `last_error()` — a failed connect returns a zero-value `TlsStream` with no
-> way to retrieve why. `tls.write` sends correctly against a real endpoint,
-> but `tls.read` currently crashes the process with a memory-safety panic
-> (`ptr::copy_nonoverlapping` alignment violation) on a real connection —
-> do not call it yet; the commented-out line above shows the intended shape
-> once the data-plane FFI bridge is fixed.
+`tls.connect(host, port, options)` opens the TCP connection and completes a
+verified handshake before it returns, all within `handshake_timeout`; then
+`io_timeout` bounds each read and write (`0s` is none). Failures are typed
+`NetError`s: `TimedOut` past the deadline, `InvalidArgument` for a bad host,
+port, duration or trust PEM, and `Other` for a certificate the trust does not
+accept, with the alert in `tls.last_error()`. `Trust.Bundled` is the Mozilla
+root programme compiled into Hew, not the operating system's store;
+`Trust.Pem(bytes)` trusts only the CAs given. Each call blocks its worker
+until it finishes.
 
 Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 

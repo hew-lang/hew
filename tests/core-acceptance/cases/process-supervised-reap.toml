@@ -1,0 +1,11 @@
+[[case]]
+id = "process-supervised-reap"
+intent = "A panicking supervised owner kills and reaps its child process, leaving no zombie, and the restarted owner launches a replacement that stop also reaps."
+source = "cases/process-supervised-reap.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "first alive: true\nfirst reaped: true\nreplacement alive: true\nreplacement reaped: true\n"
+stderr = "hew: failure: UserPanic (212): owner fails\nhew: actor crash in Owner.fail (actor 1): UserPanic\n"
+exit = 0

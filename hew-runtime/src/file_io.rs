@@ -332,6 +332,190 @@ pub unsafe extern "C" fn hew_file_write_bytes(
 }
 
 // ---------------------------------------------------------------------------
+// Durable replacement
+// ---------------------------------------------------------------------------
+
+/// `hew_file_write_atomic` outcomes, mirrored by `std/fs.hew`.
+const COMMITTED: i32 = 0;
+/// The target is untouched and no staging file remains.
+const NOT_COMMITTED: i32 = 1;
+/// The new content is visible but its durability is unproven.
+const UNCERTAIN: i32 = 2;
+
+#[cfg(test)]
+std::thread_local! {
+    /// Deterministic one-shot failure of the directory sync, the only step
+    /// after the rename can no longer be undone.
+    static FAIL_NEXT_DIRECTORY_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Why an atomic write stopped: before the rename or after it.
+enum CommitFailure {
+    NotCommitted(std::io::Error),
+    Uncertain(std::io::Error),
+}
+
+/// A staging name beside the target: the process ID, then a random number
+/// so a file left by another writer is passed over rather than reused.
+fn staging_path(target: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    use std::hash::{BuildHasher, RandomState};
+    let name = target.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path names no file")
+    })?;
+    let mut staged = std::ffi::OsString::from(".");
+    staged.push(name);
+    staged.push(format!(
+        ".{}-{:016x}.hew-tmp",
+        std::process::id(),
+        RandomState::new().hash_one(std::time::Instant::now())
+    ));
+    Ok(target.with_file_name(staged))
+}
+
+/// Staging names tried before giving up on finding a free one.
+const STAGING_ATTEMPTS: usize = 16;
+
+/// Write `data` to a staging file this call creates, flush it to stable
+/// storage and rename it over `target`, then sync the directory on Unix. A
+/// failure removes the staging file only when this call created it.
+fn write_atomic(target: &std::path::Path, data: &[u8]) -> Result<(), CommitFailure> {
+    let (staging, file) = create_staging(target).map_err(CommitFailure::NotCommitted)?;
+    if let Err(error) = stage(file, data).and_then(|()| replace(&staging, target)) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(CommitFailure::NotCommitted(error));
+    }
+    sync_directory(target).map_err(CommitFailure::Uncertain)
+}
+
+/// Create a fresh staging file beside `target`, skipping names that exist.
+fn create_staging(
+    target: &std::path::Path,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut last = None;
+    for _ in 0..STAGING_ATTEMPTS {
+        let staging = staging_path(target)?;
+        match options.open(&staging) {
+            Ok(file) => return Ok((staging, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.expect("at least one staging attempt"))
+}
+
+fn stage(mut file: std::fs::File, data: &[u8]) -> std::io::Result<()> {
+    file.write_all(data)?;
+    // macOS: std issues F_FULLFSYNC here. Windows: FlushFileBuffers.
+    file.sync_all()
+}
+
+#[cfg(not(windows))]
+fn replace(staging: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(staging, target)
+}
+
+#[cfg(windows)]
+fn replace(staging: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let wide = |path: &std::path::Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let (from, to) = (wide(staging), wide(target));
+    // SAFETY: both buffers are NUL-terminated wide paths that outlive the call.
+    let moved = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Make the rename durable. Windows has no directory handle to sync;
+/// `MOVEFILE_WRITE_THROUGH` returns only once the move is on disk.
+#[cfg(unix)]
+fn sync_directory(target: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_NEXT_DIRECTORY_SYNC.with(std::cell::Cell::take) {
+        return Err(std::io::Error::other("injected directory sync failure"));
+    }
+    let directory = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => std::path::Path::new("."),
+    };
+    std::fs::File::open(directory)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_target: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Replace `path` with `data` atomically and durably.
+///
+/// Returns `0` when the new content is committed, `1` when the target is
+/// untouched and the staging file removed, and `2` when the new content is
+/// visible but the directory sync failed, so durability is unproven. The
+/// error rides the stream error slot.
+///
+/// # Safety
+///
+/// `path` must be a live managed string handle (null spells empty).
+/// `data` must be a valid, non-null pointer to a `BytesTriple`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_write_atomic(
+    path: *const HewString,
+    data: *const crate::bytes::BytesTriple,
+) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write_atomic") }) else {
+        return NOT_COMMITTED;
+    };
+    if data.is_null() {
+        set_file_io_errno("hew_file_write_atomic", "null bytes pointer", libc::EINVAL);
+        return NOT_COMMITTED;
+    }
+    // SAFETY: caller guarantees `data` is a valid BytesTriple pointer.
+    let triple = unsafe { &*data };
+    let slice = if triple.len == 0 || triple.ptr.is_null() {
+        &[] as &[u8]
+    } else {
+        // SAFETY: triple.ptr + triple.offset is valid for triple.len bytes per BytesTriple invariant.
+        unsafe {
+            std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+        }
+    };
+    match write_atomic(std::path::Path::new(&rust_path), slice) {
+        Ok(()) => {
+            clear_file_io_error();
+            COMMITTED
+        }
+        Err(CommitFailure::NotCommitted(error)) => {
+            set_file_io_error("hew_file_write_atomic", &error);
+            NOT_COMMITTED
+        }
+        Err(CommitFailure::Uncertain(error)) => {
+            set_file_io_error("hew_file_write_atomic: directory sync", &error);
+            UNCERTAIN
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Directory operations
 // ---------------------------------------------------------------------------
 
@@ -1555,5 +1739,97 @@ mod tests {
             assert_eq!(hew_file_exists(p.as_ptr()), 0);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // hew_file_write_atomic
+    // -----------------------------------------------------------------------
+
+    fn triple(data: &[u8]) -> crate::bytes::BytesTriple {
+        crate::bytes::BytesTriple {
+            ptr: data.as_ptr().cast_mut(),
+            offset: 0,
+            len: u32::try_from(data.len()).unwrap(),
+        }
+    }
+
+    fn leftovers(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".hew-tmp"))
+            .collect()
+    }
+
+    #[test]
+    fn write_atomic_replaces_and_leaves_no_staging() {
+        let dir = test_dir("atomic_replace");
+        let target = dir.join("identity.key");
+        std::fs::write(&target, b"old").unwrap();
+        let data = b"new\0content";
+        let path = cpath(&target);
+        let bytes = triple(data);
+        // SAFETY: the path and triple outlive the call.
+        let status = unsafe { hew_file_write_atomic(path.as_ptr(), &raw const bytes) };
+        assert_eq!(status, COMMITTED);
+        assert_eq!(std::fs::read(&target).unwrap(), data);
+        assert!(leftovers(&dir).is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_atomic_into_missing_directory_is_not_committed() {
+        let dir = test_dir("atomic_missing");
+        let target = dir.join("absent").join("file");
+        let path = cpath(&target);
+        let bytes = triple(b"x");
+        // SAFETY: the path and triple outlive the call.
+        let status = unsafe { hew_file_write_atomic(path.as_ptr(), &raw const bytes) };
+        assert_eq!(status, NOT_COMMITTED);
+        assert!(!target.exists());
+        assert_ne!(crate::stream_error::take_last_errno(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_atomic_failure_removes_only_its_own_staging_file() {
+        let dir = test_dir("atomic_foreign");
+        // The target is a directory, so the rename fails after staging.
+        let target = dir.join("state");
+        std::fs::create_dir(&target).unwrap();
+        let foreign = dir.join(format!(".state.{}-0.hew-tmp", std::process::id()));
+        std::fs::write(&foreign, b"another writer").unwrap();
+        let path = cpath(&target);
+        let bytes = triple(b"new");
+        // SAFETY: the path and triple outlive the call.
+        let status = unsafe { hew_file_write_atomic(path.as_ptr(), &raw const bytes) };
+        assert_eq!(status, NOT_COMMITTED);
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"another writer");
+        assert_eq!(leftovers(&dir).len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_directory_sync_failure_is_uncertain() {
+        let dir = test_dir("atomic_uncertain");
+        let target = dir.join("state");
+        std::fs::write(&target, b"old").unwrap();
+        FAIL_NEXT_DIRECTORY_SYNC.with(|fail| fail.set(true));
+        let path = cpath(&target);
+        let bytes = triple(b"new");
+        // SAFETY: the path and triple outlive the call.
+        let status = unsafe { hew_file_write_atomic(path.as_ptr(), &raw const bytes) };
+        assert_eq!(status, UNCERTAIN);
+        // The rename already happened: the new content is visible.
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(leftovers(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

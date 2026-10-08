@@ -1,14 +1,13 @@
 //! Status: complete — connects, sends a GET request, and reads the response
 //!         status line over a real TLS round-trip.
-//! Description: TLS client — connect over TLS with system-root verification, then GET a page.
+//! Description: TLS client — connect with the bundled roots and a handshake
+//! deadline, then GET a page.
 //!
-//! This is the idiomatic `std.net.tls` client shape using the FREE-FUNCTION
-//! surface (`tls.connect` / `tls.write` / `tls.read` / `tls.close`). The method
-//! form (`stream.read(n)`) is intentionally NOT used — it is not supported yet.
-//! Request/response bodies are `bytes`; build a request payload with the public
-//! `string.to_bytes()` surface and decode a response with `utf8.decode()`.
-//! The short write is detected with a fail-closed guard so the program
-//! terminates cleanly instead of blocking on a read that will never arrive.
+//! `tls.connect` returns once the handshake has completed, or a typed
+//! `NetError` (`TimedOut` past the deadline, `Other` with the alert in
+//! `tls.last_error()` when verification fails). Request and response bodies
+//! are `bytes`: build a request with `string.to_bytes()` and decode a
+//! response with `utf8.decode()`.
 
 import std.encoding.utf8;
 
@@ -16,36 +15,33 @@ import std.net.tls;
 
 fn main() {
     let host = "example.com";
-    let stream = tls.connect(host, 443);
+    var options = tls.options();
+    options.handshake_timeout = 5s;
+    options.io_timeout = 5s;
+    let stream = match tls.connect(host, 443, options) {
+        .Ok(stream) => stream,
+        .Err(error) => {
+            println(f"connect failed: {error} {tls.last_error()}");
+            return;
+        }
+    };
     let nl = "\r\n";
     let request = f"GET / HTTP/1.1{nl}Host: {host}{nl}Connection: close{nl}{nl}";
-    let payload = request.to_bytes();
-    let want = payload.len();
-    let sent = tls.write(stream, payload).expect("write succeeds");
-    println(f"sent {sent}/{want} request bytes to {host}");
-
-    // Fail closed on a short write rather than block on a read that will not
-    // arrive. Once the data-plane ABI is fixed, `sent == want` and the read
-    // below runs.
-    if sent == want {
-        match tls.read(stream, 256) {
-            .Ok(data) => {
-                let text = utf8.decode(data) handle error {
-                    println(f"invalid UTF-8: {error}");
-                    tls.close(stream);
-                    return;
-                };
-                let crlf = "\r\n";
-                let status_line = match text.find(crlf) {
-                    .Some(cut) => text.slice(0, cut),
-                    .None => text,
-                };
-                println(f"response: {status_line}");
-            }
-            .Err(_) => println(f"read error: {tls.last_error()}"),
+    let sent = stream.write(request.to_bytes()).expect("write succeeds");
+    println(f"sent {sent} request bytes to {host}");
+    match stream.read(256) {
+        .Ok(data) => {
+            let text = utf8.decode(data) handle error {
+                println(f"invalid UTF-8: {error}");
+                return;
+            };
+            let crlf = "\r\n";
+            let status_line = match text.find(crlf) {
+                .Some(cut) => text.slice(0, cut),
+                .None => text,
+            };
+            println(f"response: {status_line}");
         }
-    } else {
-        println("short write — skipping read (TLS data-plane ABI gap)");
+        .Err(_) => println(f"read error: {tls.last_error()}"),
     }
-    tls.close(stream);
 }

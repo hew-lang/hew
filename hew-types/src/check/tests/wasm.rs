@@ -666,7 +666,7 @@ mod wasm_rejects {
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
             "import std.net.tls;\n",
-            "fn main() { tls.connect(\"host\", 443); }\n",
+            "fn main() { let _ = tls.connect(\"host\", 443, tls.options()); }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
@@ -705,7 +705,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.net.websocket;\n",
             "fn main() {\n",
-            "    websocket.connect(\"ws://127.0.0.1:9001/\");\n",
+            "    let _ = websocket.connect(\"ws://127.0.0.1:9001/\", websocket.options());\n",
             "    websocket.listen(\"127.0.0.1:9002\");\n",
             "    let _connect = websocket.connect;\n",
             "    let _listen = websocket.listen;\n",
@@ -725,12 +725,11 @@ mod wasm_rejects {
         let source = concat!(
             "import std.net.websocket as ws;\n",
             "fn main() {\n",
-            "    ws.connect(\"ws://127.0.0.1:9001/\");\n",
+            "    let _ = ws.connect(\"ws://127.0.0.1:9001/\", ws.options());\n",
             "    let _connect = ws.connect;\n",
             "}\n",
-            "fn use_conn(conn: ws.Conn) { conn.send_text(\"payload\"); }\n",
+            "fn use_conn(conn: ws.Conn) { let _ = conn.send_text(\"payload\"); }\n",
             "fn use_server(server: ws.Server) { server.port(); }\n",
-            "fn use_message(message: ws.Message) { message.msg_type(); }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
@@ -770,9 +769,8 @@ mod wasm_rejects {
     fn wasm_rejects_websocket_handle_methods() {
         let source = concat!(
             "import std.net.websocket;\n",
-            "fn use_conn(conn: websocket.Conn) { conn.send_text(\"payload\"); }\n",
+            "fn use_conn(conn: websocket.Conn) { let _ = conn.send_text(\"payload\"); }\n",
             "fn use_server(server: websocket.Server) { server.port(); }\n",
-            "fn use_message(message: websocket.Message) { message.msg_type(); }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
@@ -1028,7 +1026,7 @@ fn main() {
     fn native_tls_no_platform_error() {
         let source = concat!(
             "import std.net.tls;\n",
-            "fn main() { tls.connect(\"host\", 443); }\n",
+            "fn main() { let _ = tls.connect(\"host\", 443, tls.options()); }\n",
         );
         let result = hew_parser::parse(source);
         assert!(

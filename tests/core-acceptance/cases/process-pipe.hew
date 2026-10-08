@@ -1,0 +1,88 @@
+import std.process;
+
+// A child's piped stdio are ordinary pipes: stdin is a Sink that finishes into
+// the child's end of input, stdout is a Stream that a select can watch without
+// taking, and the child's status names a signal apart from an exit code.
+fn echo_through_cat() {
+    var command = process.command("cat", []);
+    command.stdin = process.Stdio.Piped;
+    command.stdout = process.Stdio.Piped;
+    let child = process.start(command).expect("cat starts");
+    let input = child.stdin().expect("stdin is piped");
+    match child.stdin() {
+        .Err(process.ProcessError.NotPiped) => println("stdin is taken once"),
+        _ => panic("a second stdin take must be NotPiped"),
+    }
+    let output = child.stdout().expect("stdout is piped");
+    input.send("ping".to_bytes()).expect("cat reads");
+    input.finish();
+    var echoed = bytes.new();
+    for chunk in output {
+        echoed.append(chunk);
+    }
+    println(f"echoed {echoed == "ping".to_bytes()}");
+    println(f"cat {child.wait().expect("wait")}");
+}
+
+fn select_on_silent_stdout() {
+    var command = process.command("sh", ["-c", "sleep 0.3; printf late"]);
+    command.stdout = process.Stdio.Piped;
+    let child = process.start(command).expect("sh starts");
+    let output = child.stdout().expect("stdout is piped");
+    let first = select {
+        chunk from output.recv() => f"early {chunk.is_some()}",
+        after 50ms => "silent at the deadline",
+    };
+    println(first);
+    match output.recv() {
+        .Some(chunk) => println(f"then {chunk.len()} bytes"),
+        .None => panic("the late write must still arrive"),
+    }
+    println(f"sh {child.wait().expect("wait")}");
+}
+
+fn signals_and_cached_status() {
+    let child = process.start(process.command("sleep", ["60"])).expect("sleep starts");
+    child.terminate().expect("TERM is delivered");
+    println(f"sleep {child.wait().expect("wait")}");
+    println(f"again {child.wait().expect("wait again")}");
+    child.kill().expect("a reaped child is not signalled");
+    let output = process.run_argv("printf", ["<%s>|<%s>|<%s>", "", "a b", "雪"]).expect("printf runs");
+    println(f"{output.stdout} {output.status}");
+}
+
+// A child that exits without reading leaves its stdin pipe with no reader, so
+// a send reports `SendError.Closed` instead of trapping the sender.
+fn send_to_exited_child() {
+    var command = process.command("true", []);
+    command.stdin = process.Stdio.Piped;
+    let child = process.start(command).expect("true starts");
+    let input = child.stdin().expect("stdin is piped");
+    println(f"true {child.wait().expect("wait")}");
+    var outcome = "never refused";
+    for _ in 0..64 {
+        match input.send("unread".to_bytes()) {
+            .Ok(()) => {}
+            .Err(SendError.Closed) => {
+                outcome = "send to an exited child is Closed";
+                break;
+            }
+            .Err(other) => {
+                outcome = f"unexpected {other}";
+                break;
+            }
+        }
+    }
+    println(outcome);
+}
+
+fn main() {
+    echo_through_cat();
+    send_to_exited_child();
+    select_on_silent_stdout();
+    signals_and_cached_status();
+    match process.start(process.command("hew-missing-process-pipe-command", [])) {
+        .Err(process.ProcessError.LaunchFailed(_)) => println("launch refused"),
+        _ => panic("a missing program must fail to launch"),
+    }
+}

@@ -1,0 +1,37 @@
+import std.fs;
+import std.os;
+
+// `fs.write_atomic` replaces a file in one step and leaves no staging file of
+// its own; a staging-named file it did not create is neither reused nor
+// removed. A target in a missing directory is NotCommitted and nothing
+// appears.
+fn main() {
+    let dir = os.temp_dir();
+    let name = f"hew-write-atomic-{os.pid()}.key";
+    let path = f"{dir}/{name}";
+    fs.write_bytes(path, "old".to_bytes()).expect("seed");
+    let foreign = f"{dir}/.{name}.{os.pid()}-0.hew-tmp";
+    fs.write(foreign, "another writer's staging file").expect("foreign");
+    match fs.write_atomic(path, "new\0seed".to_bytes()) {
+        .Ok(()) => println("committed"),
+        .Err(e) => println(f"failed: {e}"),
+    }
+    println(fs.read_bytes(path).expect("read back").len());
+    var staging = 0;
+    for entry in fs.list_dir(dir).expect("list") {
+        if entry.starts_with(f".{name}.") && f"{dir}/{entry}" != foreign {
+            staging = staging + 1;
+        }
+    }
+    println(f"staging files left: {staging}");
+    let missing = f"{dir}/hew-write-atomic-absent-{os.pid()}/file";
+    match fs.write_atomic(missing, "x".to_bytes()) {
+        .Ok(()) => println("unexpected commit"),
+        .Err(fs.CommitError.NotCommitted(IoError.NotFound(_))) => println("not committed: not found"),
+        .Err(e) => println(f"other: {e}"),
+    }
+    println(f"missing target exists: {fs.exists(missing)}");
+    println(f"foreign staging file kept: {fs.read(foreign).expect("foreign") == "another writer's staging file"}");
+    fs.delete(foreign).expect("clean up");
+    fs.delete(path).expect("clean up");
+}

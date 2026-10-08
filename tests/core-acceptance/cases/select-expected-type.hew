@@ -1,0 +1,31 @@
+// A select with an expected type checks every body against it, so a
+// contextual `.None` or an integer literal in any arm takes that type.
+import std.stream;
+
+fn pick(input: stream.Stream<bytes>) -> Result<bool, string> {
+    select {
+        packet from input.recv() => .Ok(packet.is_some()),
+        after 20ms => .Err("deadline"),
+    }
+}
+
+fn main() {
+    let (output, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("pipe");
+    let data: Option<bytes> = select {
+        packet from input.recv() => packet,
+        after 20ms => .None,
+    };
+    println(f"{data.is_none()}");
+    let d: i32 = select {
+        _p from input.recv() => 1,
+        after 10ms => 2,
+    };
+    println(d);
+    let first: Option<i64> = select {
+        _p from input.recv() => .None,
+        after 10ms => .Some(7),
+    };
+    println(f"{first:?}");
+    output.send("hey".to_bytes()).expect("send");
+    println(f"{pick(input):?}");
+}

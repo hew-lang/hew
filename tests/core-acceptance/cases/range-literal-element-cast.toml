@@ -1,0 +1,10 @@
+[[case]]
+id = "range-literal-element-cast"
+intent = "A range-literal element is an integer before inference narrows it: `v as u8` compiles, `Vec<i32>.push(i)` and an `i32` parameter narrow the element, and an unconstrained element stays i64."
+source = "cases/range-literal-element-cast.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "0\n0.5\n1\n256 255 4 3 6 55 5000000002\n"
+exit = 0

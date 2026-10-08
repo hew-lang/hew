@@ -1611,31 +1611,42 @@ pub unsafe extern "C" fn hew_tcp_write(
     // BytesTriple contract; we only read (no mutation, no free).
     let payload =
         unsafe { std::slice::from_raw_parts(data.ptr.add(data.offset as usize), len as usize) };
-    if let Err(e) = stream.write_all(payload) {
-        record_tcp_error_kind(e.kind());
-        // Surface the OS errno so the Hew side can classify the failure as
-        // backpressure (EAGAIN/EWOULDBLOCK or a write-timeout ETIMEDOUT —
-        // the send buffer is full and not draining within the deadline),
-        // disconnect (ECONNRESET/EPIPE/ENOTCONN), or other.
-        //
-        // PARTIAL-WRITE CAUTION: with SO_SNDTIMEO set, `write_all` may have
-        // committed a prefix of the payload to the kernel before the timeout
-        // fired and returned BackpressureExceeded. A whole-payload retry is
-        // therefore UNSAFE — it would duplicate the already-sent prefix. The
-        // correct recovery for BackpressureExceeded is to drop or close the
-        // connection and rely on application-level message framing; retrying
-        // the same payload bytes is only safe if the application knows the
-        // stream position is at a frame boundary (e.g., the error occurred
-        // before any bytes were sent).
-        //
-        // `record_tcp_error_kind` deliberately does NOT count WouldBlock /
-        // Interrupted / TimedOut as transport errors — backpressure is an
-        // expected flow-control outcome, not a fault.
-        hew_cabi::sink::set_last_error_with_errno(
-            format!("hew_tcp_write: {e}"),
-            e.raw_os_error().unwrap_or(0),
-        );
-        return -1;
+    let mut committed = 0usize;
+    while committed < payload.len() {
+        match stream.write(&payload[committed..]) {
+            Ok(0) => {
+                crate::stream_error::set_last_error_with_errno_and_kind(
+                    "hew_tcp_write: socket accepted no bytes".into(),
+                    libc::EIO,
+                    crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
+                );
+                return -1;
+            }
+            Ok(count) => committed += count,
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => {
+                record_tcp_error_kind(e.kind());
+                // A write timeout (`SO_SNDTIMEO`) surfaces as WouldBlock or
+                // TimedOut once a prefix may already have reached the kernel:
+                // the caller learns how much, and the stream position is
+                // unknown to the peer, so the connection is retired rather
+                // than retried.
+                let kind = if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                    crate::stream_error::IO_ERROR_KIND_TIMED_OUT
+                } else {
+                    crate::stream_error::io_error_kind_tag(e.kind())
+                };
+                crate::stream_error::set_last_write_committed(
+                    i64::try_from(committed).unwrap_or(i64::MAX),
+                );
+                crate::stream_error::set_last_error_with_errno_and_kind(
+                    format!("hew_tcp_write: {e}"),
+                    e.raw_os_error().unwrap_or(0),
+                    kind,
+                );
+                return -1;
+            }
+        }
     }
     tcp_counters()
         .bytes_written

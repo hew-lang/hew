@@ -1,0 +1,11 @@
+[[case]]
+id = "process-wait-cancel"
+intent = "A child wait cancelled by `scope within` releases its exit watch and holds no thread: after a hundred cancelled waits a blocking-pool file write still runs and the child is still waitable."
+source = "cases/process-wait-cancel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "deadlines: 100\nthreads kept: 0\nwrite after cancelled waits: written\nstill running: true\nSignalled(9)\n"
+stderr = ""
+exit = 0

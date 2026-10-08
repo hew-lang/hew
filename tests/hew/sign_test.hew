@@ -1,58 +1,126 @@
-//! Behavioural tests for std::crypto::sign.
+//! Behavioural tests for std::crypto::sign: RFC 8032 vectors, the three key
+//! constructors and verification.
 
 import std.crypto.sign;
+import std.encoding.hex;
 
-#[test]
-fn test_sign_verify_roundtrip_succeeds() {
-    let kp = sign.keypair();
-    let msg = bytes [0x68, 0x65, 0x77]; // "hew"
-    let sig = sign.sign(msg, kp.private_key);
-    assert(sign.verify(msg, sig, kp.public_key));
+fn h(text: string) -> bytes {
+    hex.decode(text)
+}
+
+// RFC 8032 §7.1, TEST 2.
+fn rfc_seed() -> bytes {
+    h("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb")
+}
+
+fn rfc_public() -> bytes {
+    h("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
+}
+
+fn rfc_signature() -> bytes {
+    h("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")
 }
 
 #[test]
-fn test_verify_rejects_tampered_message() {
-    let kp = sign.keypair();
-    let msg = bytes [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-    let tampered = bytes [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09]; // last byte flipped
-    let sig = sign.sign(msg, kp.private_key);
-    assert(!sign.verify(tampered, sig, kp.public_key));
+fn test_rfc8032_vector_from_seed() {
+    let key = sign.from_seed(rfc_seed()).expect("seed");
+    assert(key.public_key() == rfc_public());
+    assert(key.expanded().len() == 64);
+    let signature = key.sign(h("72"));
+    assert(signature == rfc_signature());
+    assert(sign.verify(h("72"), signature, rfc_public()));
 }
 
 #[test]
-fn test_verify_rejects_wrong_public_key() {
-    let kp1 = sign.keypair();
-    let kp2 = sign.keypair();
-    let msg = bytes [0x2a, 0x2b, 0x2c];
-    let sig = sign.sign(msg, kp1.private_key);
-    assert(!sign.verify(msg, sig, kp2.public_key));
+fn test_seed_and_its_expanded_form_sign_identically() {
+    let from_seed = sign.from_seed(rfc_seed()).expect("seed");
+    let from_expanded = sign.from_expanded(from_seed.expanded()).expect("expanded");
+    assert(from_expanded.public_key() == from_seed.public_key());
+    let message = "same key, same signature".to_bytes();
+    assert(from_expanded.sign(message) == from_seed.sign(message));
 }
 
 #[test]
-fn test_verify_rejects_malformed_signature() {
-    let kp = sign.keypair();
-    let msg = bytes [0x0a, 0x14, 0x1e];
-    // A 64-byte all-zero buffer is not a valid signature.
-    let bad_sig = bytes [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-    assert(!sign.verify(msg, bad_sig, kp.public_key));
+fn test_lengths_and_clamping_are_checked() {
+    match sign.from_seed(h("00112233")) {
+        .Err(sign.KeyError.InvalidLength(n)) => assert(n == 4),
+        _ => panic("a 4-byte seed is InvalidLength(4)"),
+    }
+    var seed31 = bytes.new();
+    for _ in 0..31 {
+        seed31.push(1);
+    }
+    match sign.from_seed(seed31) {
+        .Err(error) => assert(f"{error}" == "InvalidLength(31)"),
+        .Ok(_) => panic("a 31-byte seed is refused"),
+    }
+    let good = sign.from_seed(rfc_seed()).expect("seed").expanded();
+    var unclamped = bytes.new();
+    unclamped.push(good[0] | 1);
+    unclamped.append(good[1..64]);
+    match sign.from_expanded(unclamped) {
+        .Err(sign.KeyError.NotClamped) => {}
+        _ => panic("a scalar with a low bit set is NotClamped"),
+    }
+    match sign.from_expanded(good[0..63]) {
+        .Err(sign.KeyError.InvalidLength(n)) => assert(n == 63),
+        _ => panic("63 bytes is InvalidLength(63)"),
+    }
 }
 
 #[test]
-fn test_keypair_public_key_is_32_bytes() {
-    let kp = sign.keypair();
-    assert(kp.public_key.len() == 32);
+fn test_seed_followed_by_its_public_key_is_refused() {
+    // The 64-byte private key Go and libsodium store: seed, then public key.
+    // This seed is also a clamped scalar, so only the seed check refuses it.
+    var seed = bytes.new();
+    for _ in 0..32 {
+        seed.push(64);
+    }
+    var stored = seed;
+    stored.append(sign.from_seed(seed).expect("seed").public_key());
+    match sign.from_expanded(stored) {
+        .Err(sign.KeyError.SeedAndPublic) => {}
+        _ => panic("seed and public key is SeedAndPublic"),
+    }
+    let loaded = sign.from_seed(stored[0..32]).expect("the seed half");
+    assert(loaded.public_key() == stored[32..64]);
 }
 
 #[test]
-fn test_keypair_private_key_is_83_bytes() {
-    let kp = sign.keypair();
-    assert(kp.private_key.len() == 83);
+fn test_pkcs8_documents() {
+    // RFC 8410 §10.3: the PKCS#8 v1 encoding of the RFC 8032 TEST 1 seed.
+    let document = h("302e020100300506032b657004220420d4ee72dbf913584ad5b6d8f1f769f8ad3afe7c28cbf1d4fbe097a88f44755842");
+    let key = sign.from_pkcs8(document).expect("pkcs8 v1");
+    let again = sign.from_seed(h("d4ee72dbf913584ad5b6d8f1f769f8ad3afe7c28cbf1d4fbe097a88f44755842")).expect("seed");
+    assert(key.public_key() == again.public_key());
+    match sign.from_pkcs8("not a document".to_bytes()) {
+        .Err(sign.KeyError.InvalidEncoding) => {}
+        _ => panic("garbage is InvalidEncoding"),
+    }
 }
 
 #[test]
-fn test_signature_is_64_bytes() {
-    let kp = sign.keypair();
-    let msg = bytes [0x01, 0x02, 0x03];
-    let sig = sign.sign(msg, kp.private_key);
-    assert(sig.len() == 64);
+fn test_generated_seed_round_trips() {
+    let seed = sign.generate_seed();
+    assert(seed.len() == 32);
+    let key = sign.from_seed(seed).expect("fresh seed");
+    let message = "hew end-to-end sign roundtrip".to_bytes();
+    let signature = key.sign(message);
+    assert(signature.len() == 64);
+    assert(sign.verify(message, signature, key.public_key()));
+    assert(!sign.verify("hew end-to-end sign roundtriX".to_bytes(), signature, key.public_key()));
+    let other = sign.from_seed(sign.generate_seed()).expect("fresh seed");
+    assert(!sign.verify(message, signature, other.public_key()));
+}
+
+#[test]
+fn test_verify_rejects_malformed_input() {
+    let message = h("72");
+    assert(!sign.verify(message, rfc_signature()[0..63], rfc_public()));
+    assert(!sign.verify(message, rfc_signature(), rfc_public()[0..31]));
+    var zero = bytes.new();
+    for _ in 0..64 {
+        zero.push(0);
+    }
+    assert(!sign.verify(message, zero, rfc_public()));
 }

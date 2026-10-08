@@ -1,0 +1,43 @@
+import std.process;
+
+// A supervised actor owns a child process. When the actor panics, releasing
+// its state kills and reaps the child, so no zombie outlives the incarnation,
+// and the restarted actor launches a replacement.
+actor Owner {
+    var child: Option<process.Child> = .None;
+    receive fn launch() -> i64 {
+        let started = process.start(process.command("sleep", ["60"])).expect("sleep starts");
+        let pid = started.id();
+        child = .Some(started);
+        pid
+    }
+    receive fn fail() {
+        panic("owner fails");
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s;
+    child owner: Owner;
+}
+
+// `kill -0` succeeds for a running child and for an unreaped zombie alike, so
+// a refusal proves the process was reaped.
+fn alive(pid: i64) -> bool {
+    process.run_argv("kill", ["-0", f"{pid}"]).expect("kill runs").status == process.ExitStatus.Exited(0)
+}
+
+fn main() {
+    let group = spawn Group;
+    let first = group.owner.launch().expect("launch");
+    println(f"first alive: {alive(first)}");
+    let _ = group.owner.fail();
+    let owner = group.owner;
+    restarted(owner);
+    println(f"first reaped: {!alive(first)}");
+    let second = group.owner.launch().expect("relaunch");
+    println(f"replacement alive: {second != first && alive(second)}");
+    stop(group);
+    stopped(group);
+    println(f"replacement reaped: {!alive(second)}");
+}

@@ -1,0 +1,52 @@
+import std.net.websocket;
+
+// Binary and text messages round-trip over a loopback WebSocket in order,
+// an empty and a 1 MiB binary message included; `recv` reports the peer's
+// close as `.None` and a silent connection times out.
+fn peer(url: string) {
+    let conn = websocket.connect(url, websocket.options()).expect("connect");
+    for _ in 0..4 {
+        match conn.recv() {
+            .Ok(.Some(websocket.Message.Binary(data))) => conn.send_binary(data).expect("echo binary"),
+            .Ok(.Some(websocket.Message.Text(text))) => conn.send_text(text).expect("echo text"),
+            _ => panic("peer expected a message"),
+        }
+    }
+    conn.close();
+}
+
+fn main() {
+    let server = websocket.listen("127.0.0.1:0").expect("listen");
+    var big = bytes.new();
+    for i in 0..1048576 {
+        big.push((i % 251) as u8);
+    }
+    scope {
+        let _client = fork peer(f"ws://127.0.0.1:{server.port()}/");
+        let conn = server.accept();
+        println(f"subprotocol: {conn.subprotocol():?}");
+        match conn.recv_timeout(50ms) {
+            .Err(e) => println(f"silent: {e}"),
+            .Ok(_) => println("silent: unexpected message"),
+        }
+        conn.send_binary(bytes.new()).expect("send empty");
+        conn.send_binary(big).expect("send 1 MiB");
+        conn.send_text("hello\0text").expect("send text");
+        conn.send_binary("tail".to_bytes()).expect("send tail");
+        for _ in 0..4 {
+            match conn.recv_timeout(5s) {
+                .Ok(.Some(websocket.Message.Binary(data))) => {
+                    println(f"binary {data.len()} {data == big || data.len() < 1048576}");
+                }
+                .Ok(.Some(websocket.Message.Text(text))) => println(f"text {text.len()}"),
+                .Ok(.None) => println("closed early"),
+                .Err(e) => println(f"error {e}"),
+            }
+        }
+        match conn.recv_timeout(5s) {
+            .Ok(.None) => println("peer closed"),
+            _ => println("expected the peer's close"),
+        }
+    };
+    server.close();
+}

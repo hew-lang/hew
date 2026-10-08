@@ -6,7 +6,7 @@ use super::{
     HirExpr, HirExprKind, IntentKind, Operand, OwnKind, OwnedBindingUse, Provenance, ResolvedTy,
     SemOpKind, SemTerminator, ValueDef, ValueId,
 };
-use crate::{BoundaryDecision, BoundaryOperand, SuspendKind};
+use crate::{BoundaryDecision, BoundaryOperand, RuntimeVariantRole, SuspendKind, VariantShapeId};
 
 use crate::generator_parts as parts;
 
@@ -114,7 +114,7 @@ impl Builder<'_, '_> {
             }
             let value = self.lower_yield_value(expression, value)?;
             return self
-                .lower_stream_send(sink, value, &[], true, true)
+                .lower_stream_send(sink, value, &[], true, None)
                 .map(|_| ());
         }
         let CallableInstance::Closure(closure) = self.callable.instance else {
@@ -187,10 +187,7 @@ impl Builder<'_, '_> {
         value: &HirExpr,
         park: bool,
     ) -> Result<ValueId, String> {
-        let status_ty = self.ty(&expression.ty);
-        if status_ty != ResolvedTy::I32 {
-            return Err("a pipe send answers with its i32 runtime status".into());
-        }
+        let result_ty = self.ty(&expression.ty);
         let mut loans = Vec::new();
         let sink = self.lower_borrowed_read(sink, &mut loans)?;
         let loan_depth = self.argument_receiver_loans.len();
@@ -207,35 +204,43 @@ impl Builder<'_, '_> {
         if !self.is_open() {
             return Ok(self.fresh_value());
         }
-        let status = self
-            .lower_stream_send(sink.value, value, &loans, false, park)?
-            .ok_or("a pipe send answers with its status")?;
-        Ok(status)
+        self.lower_stream_send(sink.value, value, &loans, park, Some(&result_ty))?
+            .ok_or_else(|| "a pipe send answers with its Result".into())
     }
 
-    /// Emit one stream send suspension. A producer turn (`receive gen fn`
-    /// pump) ends on the `closed` edge through the ordinary return path and
-    /// yields no status; a user send joins every resume on one `i32` status
-    /// value (`0` accepted, `1` closed, `2` full) that the caller folds.
+    /// Emit one stream send suspension. A parking send resumes on accepted,
+    /// closed or timed out (a socket write deadline, carrying the bytes of
+    /// the item the OS took); a nonparking send resumes on accepted, closed or
+    /// full. A producer turn (`receive gen fn` pump, `result: None`) ends on
+    /// any refusal through the ordinary return path and yields nothing; a
+    /// user send joins every resume on its `Result<(), SendError>`.
     fn lower_stream_send(
         &mut self,
         sink: ValueId,
         value: ValueId,
         loans: &[ValueId],
-        producer: bool,
         park: bool,
+        result: Option<&ResolvedTy>,
     ) -> Result<Option<ValueId>, String> {
         self.owned_live.remove(&value);
         let live = self.owned_live.clone();
         let normal = self.new_block(Vec::new());
         let closed = self.new_block(Vec::new());
-        let full = (!park).then(|| self.new_block(Vec::new()));
+        let committed = park.then(|| self.fresh_value());
+        let refused = self.new_block(committed.map_or_else(Vec::new, |value| {
+            vec![BlockArg {
+                value,
+                ty: ResolvedTy::I64,
+                own: OwnKind::None,
+            }]
+        }));
         let cancel = self.new_block(Vec::new());
         let unwind = self.new_block(Vec::new());
-        let mut resumes = vec![edge(normal), edge(closed)];
-        if let Some(full) = full {
-            resumes.push(edge(full));
-        }
+        let raw = committed.map(|_| self.fresh_value());
+        let refused_edge = Edge {
+            target: refused,
+            args: raw.map(|value| vec![Operand { value }]).unwrap_or_default(),
+        };
         self.set_terminator(SemTerminator::Suspend {
             kind: SuspendKind::StreamSend { park },
             inputs: vec![
@@ -248,8 +253,14 @@ impl Builder<'_, '_> {
                     decision: BoundaryDecision::Move,
                 },
             ],
-            result: CallResult::Unit,
-            resumes,
+            result: raw.map_or(CallResult::Unit, |id| {
+                CallResult::Value(ValueDef {
+                    id,
+                    ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                })
+            }),
+            resumes: vec![edge(normal), edge(closed), refused_edge],
             cancel: edge(cancel),
             unwind: edge(unwind),
         })?;
@@ -259,42 +270,119 @@ impl Builder<'_, '_> {
             self.end_call_loans(loans)?;
             self.finish_fault_exit()?;
         }
-        if producer {
-            self.current = closed;
-            self.owned_live = live.clone();
-            self.end_call_loans(loans)?;
-            self.finish_return_value(None)?;
+        let Some(result_ty) = result else {
+            for refusal in [closed, refused] {
+                self.current = refusal;
+                self.owned_live = live.clone();
+                self.end_call_loans(loans)?;
+                self.finish_return_value(None)?;
+            }
             self.current = normal;
             self.owned_live = live;
             self.end_call_loans(loans)?;
             return Ok(None);
-        }
-        let status = self.fresh_value();
+        };
+        let shapes = self.send_result_shapes(result_ty)?;
+        let outcome = self.fresh_value();
         let join = self.new_block(vec![BlockArg {
-            value: status,
-            ty: ResolvedTy::I32,
-            own: OwnKind::None,
+            value: outcome,
+            ty: result_ty.clone(),
+            own: OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?,
         }]);
-        for (block, code) in [(normal, 0), (closed, 1)]
-            .into_iter()
-            .chain(full.map(|full| (full, 2)))
-        {
+        for (block, role) in [
+            (normal, None),
+            (closed, Some(RuntimeVariantRole::SendErrorClosed)),
+            (
+                refused,
+                Some(if park {
+                    RuntimeVariantRole::SendErrorTimedOut
+                } else {
+                    RuntimeVariantRole::SendErrorFull
+                }),
+            ),
+        ] {
             self.current = block;
             self.owned_live = live.clone();
             self.end_call_loans(loans)?;
-            let literal = self.emit_typed(
-                Provenance::Synthesized,
-                &ResolvedTy::I32,
-                SemOpKind::ConstInteger(code),
-            )?;
+            let fields = if role == Some(RuntimeVariantRole::SendErrorTimedOut) {
+                committed
+                    .map(|value| vec![Operand { value }])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let value = self.send_result_value(&shapes, result_ty, role, fields)?;
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join,
-                args: vec![Operand { value: literal }],
+                args: vec![Operand { value }],
             }))?;
         }
         self.current = join;
         self.owned_live = live;
-        Ok(Some(status))
+        Ok(Some(outcome))
+    }
+
+    /// The `Result<(), SendError>` and `SendError` shapes a send builds.
+    fn send_result_shapes(
+        &mut self,
+        result_ty: &ResolvedTy,
+    ) -> Result<(VariantShapeId, VariantShapeId, ResolvedTy), String> {
+        let ResolvedTy::Named { args, .. } = result_ty else {
+            return Err("a pipe send answers with Result<(), SendError>".into());
+        };
+        let [ResolvedTy::Unit, error_ty] = args.as_slice() else {
+            return Err("a pipe send answers with Result<(), SendError>".into());
+        };
+        let error_ty = error_ty.clone();
+        let result = self.service.require_variant_shape(result_ty)?;
+        let error = self.service.require_variant_shape(&error_ty)?;
+        Ok((result, error, error_ty))
+    }
+
+    /// `Ok(())`, or `Err` of the `SendError` variant `role` with `fields`.
+    fn send_result_value(
+        &mut self,
+        (result, error, error_ty): &(VariantShapeId, VariantShapeId, ResolvedTy),
+        result_ty: &ResolvedTy,
+        role: Option<RuntimeVariantRole>,
+        fields: Vec<Operand>,
+    ) -> Result<ValueId, String> {
+        let tag = |this: &Self, shape: VariantShapeId, role| {
+            this.service.variant_shapes[shape.0 as usize]
+                .runtime_tag(role)
+                .ok_or_else(|| format!("send result shape lacks its {role:?} variant"))
+        };
+        let (variant, payload) = match role {
+            None => {
+                let unit = self.emit_typed(
+                    Provenance::Synthesized,
+                    &ResolvedTy::Unit,
+                    SemOpKind::ConstUnit,
+                )?;
+                (tag(self, *result, RuntimeVariantRole::ResultOk)?, unit)
+            }
+            Some(role) => {
+                let reason = self.emit_typed(
+                    Provenance::Synthesized,
+                    error_ty,
+                    SemOpKind::VariantMake {
+                        shape: *error,
+                        variant: tag(self, *error, role)?,
+                        fields,
+                    },
+                )?;
+                (tag(self, *result, RuntimeVariantRole::ResultErr)?, reason)
+            }
+        };
+        self.emit_typed(
+            Provenance::Synthesized,
+            result_ty,
+            SemOpKind::VariantMake {
+                shape: *result,
+                variant,
+                fields: vec![Operand { value: payload }],
+            },
+        )
     }
 
     /// A stream consumer takes the next element. `park` is `recv()`: an

@@ -1061,20 +1061,23 @@ impl FunctionLowerer<'_> {
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::StreamSend { park },
                 inputs,
+                result,
                 resumes,
                 cancel,
                 unwind,
-                ..
             } => {
                 let transfers = self.argument_transfers(inputs)?;
-                let (normal, closed, full) = match resumes.as_slice() {
-                    [normal, closed] if *park => (normal, closed, None),
-                    [normal, closed, full] if !*park => (normal, closed, Some(full)),
-                    _ => {
-                        return Err(PhysicalError::new(
-                            "stream send lacks its accepted, closed and full resumes",
-                        ))
-                    }
+                let [normal, closed, refused] = resumes.as_slice() else {
+                    return Err(PhysicalError::new(
+                        "stream send lacks its accepted, closed and refused resumes",
+                    ));
+                };
+                let committed = match (park, result) {
+                    (true, CallResult::Value(committed)) => Some(self.value(committed.id)?),
+                    (false, CallResult::Unit) => None,
+                    _ => return Err(PhysicalError::new(
+                        "a parking stream send yields its committed count; try_send yields none",
+                    )),
                 };
                 let element = &self.storage[self.value(inputs[1].operand.value)?.0 as usize].ty;
                 Ok(PhysicalTerminator::StreamSend {
@@ -1084,7 +1087,8 @@ impl FunctionLowerer<'_> {
                     element: physical_value_recipe(self.module, self.glue_ids, element)?,
                     normal: self.lower_edge(normal)?,
                     closed: self.lower_edge(closed)?,
-                    full: full.map(|full| self.lower_edge(full)).transpose()?,
+                    refused: self.lower_edge(refused)?,
+                    committed,
                     cancel: self.lower_edge(cancel)?,
                     unwind: self.lower_edge(unwind)?,
                 })

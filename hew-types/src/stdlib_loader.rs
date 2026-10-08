@@ -1683,7 +1683,7 @@ mod tests {
         assert!(info.is_some(), "should load process module");
         let info = info.unwrap();
 
-        for name in ["run", "run_argv", "run_args", "start", "start_argv"] {
+        for name in ["run", "run_argv", "command", "start"] {
             assert!(
                 info.wrapper_fns.iter().any(|f| f.name == name),
                 "process module should expose `{name}`"
@@ -1705,37 +1705,6 @@ mod tests {
             None,
             "fielded process.Child must dispatch drop through its source-level \
              close method rather than a direct opaque-handle drop function"
-        );
-    }
-
-    #[test]
-    fn load_process_child_handle_methods_include_signatures() {
-        let info = load_module("std::process", &test_root()).expect("should load process module");
-
-        let wait = info
-            .handle_methods
-            .iter()
-            .find(|m| m.type_name == "process.Child" && m.method_name == "wait")
-            .expect("process.Child.wait should be extracted");
-        assert_eq!(wait.c_symbol, "hew_process_wait");
-        assert_eq!(wait.params, Vec::<Ty>::new());
-        assert_eq!(wait.return_type, Ty::I64);
-        assert!(
-            wait.dispatch_through_impl,
-            "fielded process.Child.wait must execute its source-level impl body"
-        );
-
-        let kill = info
-            .handle_methods
-            .iter()
-            .find(|m| m.type_name == "process.Child" && m.method_name == "kill")
-            .expect("process.Child.kill should be extracted");
-        assert_eq!(kill.c_symbol, "hew_process_kill");
-        assert_eq!(kill.params, Vec::<Ty>::new());
-        assert_eq!(kill.return_type, Ty::I64);
-        assert!(
-            kill.dispatch_through_impl,
-            "fielded process.Child.kill must execute its source-level impl body"
         );
     }
 

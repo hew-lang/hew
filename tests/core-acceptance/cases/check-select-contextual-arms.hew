@@ -1,0 +1,13 @@
+import std.stream;
+
+// Every select body is contextual and nothing gives them a type: each body
+// reports once, and the select's value raises no further diagnostic.
+fn main() {
+    let (output, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("pipe");
+    let reading = select {
+        _chunk from input.recv() => .None,
+        after 10ms => .None,
+    };
+    println(f"{reading:?}");
+    output.finish();
+}

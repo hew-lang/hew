@@ -1,8 +1,10 @@
 //! WebSocket client and server for bidirectional communication.
 //!
-//! Provides blocking WebSocket connections that can send and receive
-//! text messages. Both client and server connections use the same `Conn`
-//! type, so the send/receive API is identical in both directions.
+//! Client and server connections share the `Conn` type: `send_text`,
+//! `send_binary`, `recv` and `recv_timeout` behave the same in both
+//! directions. A received `Message` is `Text` or `Binary`; `recv` returns
+//! `.None` once the peer closes. `wss://` verifies the server with the same
+//! `tls.Trust` and deadline as `std.net.tls`.
 //!
 //! # Client example
 //!
@@ -10,16 +12,15 @@
 //! import std.net.websocket;
 //!
 //! fn main() {
-//!     match websocket.connect("ws://localhost:8080/ws") {
-//!         .Ok(ws) => {
-//!             ws.send_text("hello");
-//!             let msg = ws.recv();
-//!             msg.close();
-//!             ws.close();
-//!         }
-//!         .Err(_err) => {
-//!             println(websocket.last_error());
-//!         }
+//!     var options = websocket.options();
+//!     options.subprotocols = ["chat"];
+//!     let ws = websocket.connect("ws://localhost:8080/ws", options).expect("connect");
+//!     ws.send_text("hello").expect("send");
+//!     match ws.recv_timeout(3s) {
+//!         .Ok(.Some(websocket.Message.Text(text))) => println(text),
+//!         .Ok(.Some(websocket.Message.Binary(data))) => println(f"{data.len()} bytes"),
+//!         .Ok(.None) => println("closed"),
+//!         .Err(e) => println(f"ws: {e}"),
 //!     }
 //! }
 //! ```
@@ -30,16 +31,12 @@
 //! import std.net.websocket;
 //!
 //! fn main() {
-//!     match websocket.listen("0.0.0.0:8080") {
-//!         .Ok(server) => {
-//!             let conn = server.accept();
-//!             let msg = conn.recv();
-//!             conn.send_text("got it");
-//!             conn.close();
-//!             server.close();
-//!         }
-//!         .Err(_err) => {
-//!             println(websocket.last_error());
+//!     let server = websocket.listen("0.0.0.0:8080").expect("listen");
+//!     let conn = server.accept();
+//!     if let .Ok(.Some(message)) = conn.recv() {
+//!         match message {
+//!             websocket.Message.Text(text) => conn.send_text(f"got {text}").expect("send"),
+//!             websocket.Message.Binary(data) => conn.send_binary(data).expect("send"),
 //!         }
 //!     }
 //! }
@@ -47,58 +44,91 @@
 
 import std.net;
 
-fn checked_recv_deadline(deadline_ms: i64) -> Result<i64, net.NetError> {
-    if deadline_ms <= 0 {
-        .Ok(0)
+import std.net.tls;
+
+/// One received WebSocket data message.
+pub enum Message {
+    Text(string);
+    Binary(bytes);
+}
+
+/// How `connect` negotiates and verifies a client connection.
+pub type ConnectOptions {
+    /// Subprotocols offered in preference order; when non-empty the server
+    /// must select one or the connect fails.
+    subprotocols: Vec<string>;
+    /// Trust and deadlines for `wss://` (and the deadlines for `ws://`).
+    tls: tls.TlsOptions;
+}
+
+/// No subprotocols and `tls.options()`.
+pub fn options() -> ConnectOptions {
+    ConnectOptions { subprotocols: [], tls: tls.options() }
+}
+
+// Error-slot errno sentinels mirrored from `hew-std/src/websocket.rs`.
+const WS_INVALID_ARGUMENT: i64 = -1;
+
+const WS_TIMED_OUT: i64 = -2;
+
+// `hew_ws_recv_next` statuses mirrored from `hew-std/src/websocket.rs`.
+const RECV_TEXT: i32 = 0;
+
+const RECV_BINARY: i32 = 1;
+
+const RECV_CLOSED: i32 = 2;
+
+const RECV_TIMED_OUT: i32 = 3;
+
+/// The `NetError` for this actor's last WebSocket failure.
+fn last_net_error() -> net.NetError {
+    let errno = unsafe {
+        hew_ws_last_errno()
+    };
+    if errno == WS_INVALID_ARGUMENT {
+        net.NetError.InvalidArgument(last_error())
+    } else if errno == WS_TIMED_OUT {
+        net.NetError.TimedOut(0)
     } else {
-        net.duration_ms("websocket.Conn.recv_timeout", deadline_ms)
+        net.net_error_from_errno(errno)
     }
 }
 
 /// An open WebSocket connection handle.
 ///
-/// Created by calling `websocket.connect(url)`, which returns `Err` when the
-/// connection or handshake fails. Use `send_text()` to
-/// send messages and `recv()` to receive them.
+/// Created by `websocket.connect(url, options)` or `server.accept()`.
+/// Released at scope exit or by `close()`.
 #[resource]
 #[opaque]
 pub type Conn {
 }
 
-/// An incoming WebSocket message handle.
-///
-/// Obtained from `conn.recv()`. Messages close automatically at scope exit;
-/// call `close()` to release one early.
-#[resource]
-#[opaque]
-pub type Message {
-}
-
 // ── Conn methods ──────────────────────────────────────────────────────
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
-    /// Send a text message over the connection. Return 0 on success.
-    fn send_text(self, msg: string) -> i64;
+    /// The subprotocol the server selected, or `.None` when none was offered
+    /// or the connection was accepted by a server.
+    fn subprotocol(self) -> Option<string>;
 
-    /// Send a text message over the connection.
-    fn try_send_text(self, msg: string) -> Result<(), net.NetError>;
+    /// Send a text message. After an error the connection is unusable.
+    fn send_text(self, text: string) -> Result<(), net.NetError>;
 
-    /// Block until a message is received and return it.
-    fn recv(self) -> Message;
+    /// Send a binary message. After an error the connection is unusable.
+    fn send_binary(self, data: bytes) -> Result<(), net.NetError>;
 
-    /// Receive a message with a per-call deadline.
-    ///
-    /// `deadline_ms <= 0` disables the deadline and behaves like `recv`.
-    /// Returns `Err(NetError.TimedOut(0))` on deadline expiry. On other
-    /// failures returns `Err(NetError.Other(0))` (WebSocket errors carry
-    /// no OS errno channel).
-    fn recv_timeout(self, deadline_ms: i64) -> Result<Message, net.NetError>;
+    /// Wait for the next message; `.None` once the peer has closed.
+    fn recv(self) -> Result<Option<Message>, net.NetError>;
+
+    /// Wait at most `timeout` for the next message: `Err(TimedOut(0))` when
+    /// it passes, `.None` once the peer has closed.
+    fn recv_timeout(self, timeout: duration) -> Result<Option<Message>, net.NetError>;
 
     /// Attach this connection to an actor (Erlang-style active mode).
-    /// The runtime reads frames in a background thread and delivers
-    /// them as actor messages. The connection remains the caller's resource;
-    /// attach transfers read authority only. Outbound sends and close remain
-    /// valid while the reader retains the transport's shared inner state.
+    /// The runtime reads frames in a background thread and delivers each
+    /// text message as an `on_message` actor message; binary messages are
+    /// not delivered in active mode. The connection remains the caller's
+    /// resource; attach transfers read authority only. Outbound sends and
+    /// close remain valid.
     ///
     /// `handler` is the actor that will receive `on_message` and `on_close`.
     /// The compiler synthesises both protocol message IDs from the concrete
@@ -107,44 +137,40 @@ trait ConnMethods {
 }
 
 impl ConnMethods for Conn {
-    fn send_text(self, msg: string) -> i64 {
-        unsafe {
-            hew_ws_send_text(self, msg) as i64
+    fn subprotocol(self) -> Option<string> {
+        let selected = unsafe {
+            hew_ws_subprotocol(self)
+        };
+        if selected.is_empty() {
+            .None
+        } else {
+            .Some(selected)
         }
     }
-    fn try_send_text(self, msg: string) -> Result<(), net.NetError> {
-        let n: i64 = unsafe {
-            hew_ws_send_text(self, msg) as i64
-        };
-        if n < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
+    fn send_text(self, text: string) -> Result<(), net.NetError> {
+        if unsafe {
+            hew_ws_send_text(self, text)
+        } == 0 {
             .Ok(())
-        } // WebSocket errors carry no OS errno
-    }
-    fn recv(self) -> Message {
-        unsafe {
-            hew_ws_recv(self)
-        }
-    }
-    fn recv_timeout(self, deadline_ms: i64) -> Result<Message, net.NetError> {
-        let deadline = checked_recv_deadline(deadline_ms)?;
-        let msg = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI, range-checked above
-            hew_ws_recv_timeout(self, deadline as i32)
-        };
-        let valid: bool = unsafe {
-            hew_ws_message_is_valid(msg)
-        };
-        let timed_out: i32 = unsafe { // INTERNAL-ABI: thread-local sentinel; 1=timeout, 0=ok-or-error
-            hew_ws_recv_last_timed_out()
-        };
-        if valid {
-            .Ok(msg)
-        } else if timed_out == 1 {
-            .Err(net.net_error_timed_out())
         } else {
-            .Err(net.net_error_from_errno(0))
+            .Err(last_net_error())
         }
+    }
+    fn send_binary(self, data: bytes) -> Result<(), net.NetError> {
+        if unsafe {
+            hew_ws_send_binary(self, data)
+        } == 0 {
+            .Ok(())
+        } else {
+            .Err(last_net_error())
+        }
+    }
+    fn recv(self) -> Result<Option<Message>, net.NetError> {
+        next_message(self, -1)
+    }
+    fn recv_timeout(self, timeout: duration) -> Result<Option<Message>, net.NetError> {
+        let ms = net.duration_ms("websocket.Conn.recv_timeout", timeout.millis())?;
+        next_message(self, ms)
     }
     /// Compiler-lowered active-mode attach.
     ///
@@ -153,50 +179,33 @@ impl ConnMethods for Conn {
     fn attach(self, handler: WebSocketHandler) {}
 }
 
+/// Receive one message, waiting at most `deadline_ms` (negative: no limit).
+fn next_message(conn: Conn, deadline_ms: i64) -> Result<Option<Message>, net.NetError> {
+    let status = unsafe {
+        hew_ws_recv_next(conn, deadline_ms)
+    };
+    if status == RECV_TEXT {
+        .Ok(.Some(Message.Text(unsafe {
+            hew_ws_take_text(conn)
+        })))
+    } else if status == RECV_BINARY {
+        .Ok(.Some(Message.Binary(unsafe {
+            hew_ws_take_binary(conn)
+        })))
+    } else if status == RECV_CLOSED {
+        .Ok(.None)
+    } else if status == RECV_TIMED_OUT {
+        .Err(net.NetError.TimedOut(0))
+    } else {
+        .Err(last_net_error())
+    }
+}
+
 impl Conn {
     /// Release this connection early. Scope exit performs the same release.
     fn close(consume self) {
         unsafe {
             hew_ws_close(self)
-        };
-    }
-}
-
-#[test]
-fn websocket_nonpositive_deadlines_disable_but_positive_overflow_is_rejected() {
-    assert((checked_recv_deadline(-9223372036854775807) handle _ { -1 }) == 0);
-    assert((checked_recv_deadline(0) handle _ { -1 }) == 0);
-    assert(checked_recv_deadline(2147483647).is_ok());
-    assert(checked_recv_deadline(2147483648).is_err());
-}
-
-// ── Message methods ───────────────────────────────────────────────────
-/// Methods available on a WebSocket `Message`.
-trait MessageMethods {
-    /// Get the message type (0=text, 1=binary, 2=ping, 3=pong, 4=close, -1=error).
-    fn msg_type(self) -> i32; // INTERNAL-ABI: opaque frame-type enum; planned enum migration
-    /// Extract the text content of a text message.
-    fn text(self) -> string;
-}
-
-impl MessageMethods for Message {
-    fn msg_type(self) -> i32 { // INTERNAL-ABI: opaque frame-type enum; planned enum migration
-        unsafe {
-            hew_ws_message_type(self)
-        }
-    }
-    fn text(self) -> string {
-        unsafe {
-            hew_ws_message_text(self)
-        }
-    }
-}
-
-impl Message {
-    /// Release this message early.
-    fn close(consume self) {
-        unsafe {
-            hew_ws_message_free(self)
         };
     }
 }
@@ -259,7 +268,7 @@ impl Server {
 /// actor Echo {
 ///     let conn: websocket.Conn;
 ///     receive fn on_message(text: string) {
-///         conn.send_text("echo: " + text);
+///         let _ = conn.send_text("echo: " + text);
 ///     }
 ///     receive fn on_close() {
 ///         println("disconnected");
@@ -267,7 +276,8 @@ impl Server {
 /// }
 /// ```
 pub trait WebSocketHandler {
-    /// Called when a text frame arrives from the client.
+    /// Called when a text message arrives; binary messages are not
+    /// delivered in active mode.
     fn on_message(text: string);
 
     /// Called when the connection closes or errors.
@@ -285,44 +295,52 @@ pub fn last_error() -> string {
     }
 }
 
-/// Open a WebSocket connection to the given URL (client).
+/// Open a WebSocket connection to `url` (client).
 ///
-/// Returns `Err(net.NetError)` when the connection or the WebSocket handshake
-/// fails. Use `websocket.last_error()` for the precise detail.
+/// `ws://` and `wss://` are supported; `wss://` verifies the server with
+/// `options.tls.trust`. Up to three redirects are followed, but never from
+/// `wss://` to `ws://` or back (`InvalidArgument`).
+/// `options.tls.handshake_timeout` bounds the TCP connect, the TLS handshake
+/// and the upgrade together (`TimedOut`); resolving the host name is not
+/// bounded by it. `options.tls.io_timeout` bounds each send. A non-empty
+/// `options.subprotocols` must have one selected by the server. A bad URL or
+/// subprotocol name is `InvalidArgument`; `websocket.last_error()` has the
+/// precise detail of any failure.
 ///
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net;
 /// import std.net.websocket;
 ///
 /// fn main() {
-///     match websocket.connect("ws://127.0.0.1:9001/") {
+///     match websocket.connect("ws://127.0.0.1:9001/", websocket.options()) {
 ///         .Ok(conn) => conn.close(),
-///         .Err(_) => println(f"connect failed"),
+///         .Err(e) => println(f"connect failed: {e}"),
 ///     }
 /// }
 /// ```
-pub fn connect(url: string) -> Result<Conn, net.NetError> {
+pub fn connect(url: string, options: ConnectOptions) -> Result<Conn, net.NetError> {
+    for protocol in options.subprotocols {
+        if protocol.is_empty() || protocol.contains(",") || protocol.contains(" ") {
+            return .Err(net.NetError.InvalidArgument(f"websocket.connect: subprotocol {protocol:?} is not a token"));
+        }
+    }
+    let handshake_ms = net.duration_ms("websocket.connect handshake_timeout", options.tls.handshake_timeout.millis())?;
+    let io_ms = net.duration_ms("websocket.connect io_timeout", options.tls.io_timeout.millis())?;
+    let (trust, pem): (i32, bytes) = match options.tls.trust {
+        tls.Trust.Bundled => (0, bytes.new()),
+        tls.Trust.Pem(document) => (1, document),
+    };
+    let protocols = options.subprotocols.join(",");
     let conn = unsafe {
-        hew_ws_connect(url)
+        hew_ws_connect(url, protocols, trust, pem, handshake_ms, io_ms)
     };
-    let ok = unsafe {
+    if unsafe {
         hew_ws_conn_is_valid(conn)
-    };
-    if ok {
+    } {
         return .Ok(conn);
     }
-    let errno = unsafe {
-        hew_ws_last_errno()
-    };
-    if errno == -1 {
-        let detail = unsafe {
-            hew_ws_last_error()
-        };
-        return .Err(net.NetError.InvalidArgument(detail));
-    }
-    .Err(net.net_error_from_errno(errno))
+    .Err(last_net_error())
 }
 
 /// Start a WebSocket server listening on the given address.
@@ -353,34 +371,23 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
     if ok {
         return .Ok(server);
     }
-    let errno = unsafe {
-        hew_ws_last_errno()
-    };
-    if errno == -1 {
-        let detail = unsafe {
-            hew_ws_last_error()
-        };
-        return .Err(net.NetError.InvalidArgument(detail));
-    }
-    .Err(net.net_error_from_errno(errno))
+    .Err(last_net_error())
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_ws_connect(url: string) -> Conn;
+    fn hew_ws_connect(url: string, protocols: string, trust: i32, pem: bytes, handshake_ms: i64, io_ms: i64) -> Conn;
     fn hew_ws_conn_is_valid(ws: Conn) -> bool;
     fn hew_ws_server_is_valid(server: Server) -> bool;
     fn hew_ws_last_errno() -> i64;
     fn hew_ws_last_error() -> string;
-    fn hew_ws_send_text(ws: Conn, msg: string) -> i32;
-    fn hew_ws_recv(ws: Conn) -> Message;
-    fn hew_ws_recv_timeout(ws: Conn, deadline_ms: i32) -> Message;
-    fn hew_ws_recv_last_timed_out() -> i32; // INTERNAL-ABI: thread-local timeout sentinel; 1=timeout, 0=ok-or-error
-    fn hew_ws_message_is_valid(msg: Message) -> bool;
+    fn hew_ws_subprotocol(ws: Conn) -> string;
+    fn hew_ws_send_text(ws: Conn, text: string) -> i32;
+    fn hew_ws_send_binary(ws: Conn, data: bytes) -> i32;
+    fn hew_ws_recv_next(ws: Conn, deadline_ms: i64) -> i32;
+    fn hew_ws_take_text(ws: Conn) -> string;
+    fn hew_ws_take_binary(ws: Conn) -> bytes;
     fn hew_ws_close(consume ws: Conn);
-    fn hew_ws_message_type(msg: Message) -> i32;
-    fn hew_ws_message_text(msg: Message) -> string;
-    fn hew_ws_message_free(consume msg: Message);
     fn hew_ws_server_new(addr: string) -> Server;
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;

@@ -45,6 +45,13 @@ use crate::util::MutexExt;
 pub(crate) enum IoObject {
     TcpStream(TcpStream),
     TcpListener(TcpListener),
+    /// The parent's end of a child process pipe.
+    #[cfg(unix)]
+    Pipe(std::fs::File),
+    /// A child process's exit: readable, then at end of stream, once it has
+    /// exited.
+    #[cfg(unix)]
+    ChildExit(crate::process::ExitWatch),
     /// Standard input: descriptor 0 on Unix, which the slot never owns or
     /// closes. Its one slot lives outside the table; see [`stdin_slot`].
     Stdin,
@@ -57,6 +64,94 @@ pub(crate) enum IoObject {
 pub(crate) enum Direction {
     Read,
     Write,
+}
+
+/// A slot's byte channel, borrowed for one attempt.
+#[derive(Clone, Copy)]
+pub(crate) enum ByteChannel<'a> {
+    Tcp(&'a TcpStream),
+    #[cfg(unix)]
+    Pipe(&'a std::fs::File),
+    /// A child's exit: no bytes, only end of stream once it has exited.
+    #[cfg(unix)]
+    Exit(&'a crate::process::ExitWatch),
+}
+
+impl ByteChannel<'_> {
+    pub(crate) fn read(self, buffer: &mut [u8]) -> io::Result<usize> {
+        use std::io::Read;
+        match self {
+            Self::Tcp(mut stream) => stream.read(buffer),
+            #[cfg(unix)]
+            Self::Pipe(mut pipe) => pipe.read(buffer),
+            #[cfg(unix)]
+            Self::Exit(watch) => {
+                if watch.exited() {
+                    Ok(0)
+                } else {
+                    Err(io::ErrorKind::WouldBlock.into())
+                }
+            }
+        }
+    }
+
+    pub(crate) fn write(self, data: &[u8]) -> io::Result<usize> {
+        use std::io::Write;
+        match self {
+            Self::Tcp(mut stream) => stream.write(data),
+            #[cfg(unix)]
+            Self::Pipe(mut pipe) => pipe.write(data),
+            #[cfg(unix)]
+            Self::Exit(_) => Err(io::Error::from_raw_os_error(libc::EBADF)),
+        }
+    }
+
+    /// Whether the next read will not wait: data, end of stream or an error
+    /// is pending. Reads nothing.
+    pub(crate) fn readable(self) -> bool {
+        match self {
+            Self::Tcp(stream) => !matches!(
+                stream.peek(&mut [0; 1]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock
+            ),
+            #[cfg(unix)]
+            Self::Pipe(pipe) => {
+                use std::os::fd::AsRawFd;
+                let mut poll = libc::pollfd {
+                    fd: pipe.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: one live descriptor in a local array, no wait.
+                let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
+                ready != 0
+            }
+            #[cfg(unix)]
+            Self::Exit(watch) => watch.exited(),
+        }
+    }
+
+    pub(crate) fn is_tcp(self) -> bool {
+        matches!(self, Self::Tcp(_))
+    }
+}
+
+/// Switch a pipe end to non-blocking mode. The parent's end is its own open
+/// file description, so the child's end keeps its mode.
+#[cfg(unix)]
+fn set_fd_nonblocking(pipe: &std::fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = pipe.as_raw_fd();
+    // SAFETY: fcntl on a live descriptor the slot owns.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -169,14 +264,27 @@ impl Slot {
     pub(crate) fn stream(&self) -> Option<&TcpStream> {
         match &self.object {
             IoObject::TcpStream(stream) => Some(stream),
-            IoObject::TcpListener(_) | IoObject::Stdin => None,
+            _ => None,
         }
     }
 
     pub(crate) fn listener(&self) -> Option<&TcpListener> {
         match &self.object {
             IoObject::TcpListener(listener) => Some(listener),
-            IoObject::TcpStream(_) | IoObject::Stdin => None,
+            _ => None,
+        }
+    }
+
+    /// The byte channel a read or write operation moves data through: a
+    /// connection or a child process pipe.
+    pub(crate) fn bytes(&self) -> Option<ByteChannel<'_>> {
+        match &self.object {
+            IoObject::TcpStream(stream) => Some(ByteChannel::Tcp(stream)),
+            #[cfg(unix)]
+            IoObject::Pipe(pipe) => Some(ByteChannel::Pipe(pipe)),
+            #[cfg(unix)]
+            IoObject::ChildExit(watch) => Some(ByteChannel::Exit(watch)),
+            IoObject::TcpListener(_) | IoObject::Stdin => None,
         }
     }
 
@@ -212,9 +320,14 @@ impl Slot {
             match &self.object {
                 IoObject::TcpStream(stream) => stream.set_nonblocking(true)?,
                 IoObject::TcpListener(listener) => listener.set_nonblocking(true)?,
+                #[cfg(unix)]
+                IoObject::Pipe(pipe) => set_fd_nonblocking(pipe)?,
                 // Descriptor 0's open file description is shared with the
                 // terminal and parent shell; its reads are gated on `poll`.
+                // An exit watch is never read.
                 IoObject::Stdin => {}
+                #[cfg(unix)]
+                IoObject::ChildExit(_) => {}
             }
             state.nonblocking = true;
         }
@@ -227,6 +340,8 @@ impl Slot {
         match &self.object {
             IoObject::TcpStream(stream) => stream.as_raw_fd(),
             IoObject::TcpListener(listener) => listener.as_raw_fd(),
+            IoObject::Pipe(pipe) => pipe.as_raw_fd(),
+            IoObject::ChildExit(watch) => watch.fd(),
             IoObject::Stdin => libc::STDIN_FILENO,
         }
     }

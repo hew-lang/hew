@@ -1,0 +1,10 @@
+[[case]]
+id = "pipe-send-deadline-scope"
+intent = "A send on a full pipe bounded by `scope within` takes the deadline handler, and the item already queued is still received intact afterwards."
+source = "cases/pipe-send-deadline-scope.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "deadline\n5\n5\n"
+exit = 0

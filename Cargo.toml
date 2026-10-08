@@ -3,7 +3,6 @@ members = [
   "hew-cabi",
   "hew-codec",
   "hew-std",
-  "std/encoding/binary",
   "std/text/template",
   "hew-cli",
   "hew-pkg",

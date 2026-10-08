@@ -1,0 +1,51 @@
+import std.fs;
+import std.os;
+import std.process;
+
+// A health loop bounds each wait on a long-lived child with a deadline. A
+// cancelled wait releases its watch and keeps no thread, so after a hundred
+// of them an ordinary blocking-pool call (the file write) still runs, and
+// the child is still there to stop and reap. Where the OS lists this
+// process's threads (Linux), the cancelled waits leave none behind.
+fn threads() -> i64 {
+    match fs.list_dir("/proc/self/task") {
+        .Ok(tasks) => tasks.len(),
+        .Err(_) => 0,
+    }
+}
+
+fn main() {
+    let child = process.start(process.command("sleep", ["30"])).expect("sleep starts");
+    var deadlines = 0;
+    var before = 0;
+    for round in 0..101 {
+        // The first wait starts the runtime's own I/O thread.
+        if round == 1 {
+            before = threads();
+        }
+        let outcome = scope within 2ms {
+            match child.wait() {
+                .Ok(status) => f"{status}",
+                .Err(error) => f"{error}",
+            }
+        } handle failure {
+            match failure {
+                .Deadline { message } => "deadline",
+                .Fault { message } => "fault",
+            }
+        };
+        if round > 0 && outcome == "deadline" {
+            deadlines = deadlines + 1;
+        }
+    }
+    let kept = threads() - before;
+    println(f"deadlines: {deadlines}");
+    println(f"threads kept: {kept}");
+    let path = f"{os.temp_dir()}/hew-wait-cancel-{os.pid()}.txt";
+    fs.write(path, "written").expect("write");
+    println(f"write after cancelled waits: {fs.read(path).expect("read")}");
+    fs.delete(path).expect("clean up");
+    println(f"still running: {child.try_wait().expect("poll").is_none()}");
+    child.kill().expect("kill");
+    println(f"{child.wait().expect("wait")}");
+}

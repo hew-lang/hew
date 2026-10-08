@@ -1,0 +1,10 @@
+[[case]]
+id = "tls-connect-failures"
+intent = "`tls.connect` reports each failure as a typed NetError: a loopback listener that never speaks TLS is TimedOut inside a 300 ms handshake deadline, a closed port is refused, and bad trust PEM, port or duration are InvalidArgument before any socket opens."
+source = "cases/tls-connect-failures.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "timed out\nwithin deadline: true\nrefused\ninvalid: tls.connect: trust PEM holds no certificate\ninvalid: tls.connect: invalid port 70000 (must be 0..=65535)\ninvalid: tls.connect io_timeout: invalid duration -1000 ms (must be >= 0)\n"
+exit = 0

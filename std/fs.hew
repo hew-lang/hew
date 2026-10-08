@@ -317,6 +317,58 @@ pub fn write_bytes(file_path: string, data: bytes) -> Result<(), IoError> {
     }
 }
 
+/// Why `write_atomic` did not prove a durable replacement.
+pub enum CommitError {
+    /// The target is untouched and the staging file is removed.
+    NotCommitted(IoError);
+    /// The new content is visible but its durability is unproven: the
+    /// directory sync after the rename failed (Unix only).
+    Uncertain(IoError);
+}
+
+/// Print a `CommitError` with its I/O error.
+impl Display for CommitError {
+    fn fmt(self) -> string {
+        match self {
+            CommitError.NotCommitted(error) => f"NotCommitted({error})",
+            CommitError.Uncertain(error) => f"Uncertain({error})",
+        }
+    }
+}
+
+impl Error for CommitError {}
+
+/// Replace `path` with `data` so readers see the old content or the new,
+/// never a mix, and the new content survives a crash once this returns `Ok`.
+///
+/// The data is written to a new staging file beside the target (mode 0600
+/// on Unix, a name no existing file has), flushed to stable storage (`F_FULLFSYNC` on macOS) and renamed
+/// over the target; on Unix the directory is then synced. The target ends
+/// with the staging file's permissions.
+///
+/// # Examples
+///
+/// ```hew,no_run
+/// import std.fs;
+///
+/// fn main() {
+///     match fs.write_atomic("state.json", "{}".to_bytes()) {
+///         .Ok(()) => println("saved"),
+///         .Err(fs.CommitError.NotCommitted(e)) => println(f"kept the old state: {e}"),
+///         .Err(fs.CommitError.Uncertain(e)) => println(f"saved, durability unknown: {e}"),
+///     }
+/// }
+/// ```
+pub fn write_atomic(path: string, data: bytes) -> Result<(), CommitError> {
+    match unsafe {
+        hew_file_write_atomic(path, data)
+    } {
+        0 => .Ok(()),
+        1 => .Err(CommitError.NotCommitted(last_io_error())),
+        _ => .Err(CommitError.Uncertain(last_io_error())),
+    }
+}
+
 // ── Directory operations ──────────────────────────────────────────────
 /// Create a directory.
 ///
@@ -433,6 +485,8 @@ extern "C" {
     fn hew_file_read_bytes(path: string) -> bytes;
     #[offload]
     fn hew_file_write_bytes(path: string, data: bytes) -> i32;
+    #[offload]
+    fn hew_file_write_atomic(path: string, data: bytes) -> i32;
     #[offload]
     fn hew_fs_mkdir(path: string) -> i32;
     #[offload]

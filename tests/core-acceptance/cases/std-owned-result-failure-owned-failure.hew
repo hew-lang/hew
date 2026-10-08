@@ -12,13 +12,9 @@ fn main() {
         .Ok(output) => println(output.stdout),
         .Err(_) => (),
     }
-    match process.start("true") {
-        .Ok(child) => println(child.wait()),
-        .Err(_) => (),
-    }
-    let spawn_args: Vec<string> = Vec.new();
-    match process.start_argv("true", spawn_args) {
-        .Ok(child) => println(child.wait()),
+    let start_args: Vec<string> = Vec.new();
+    match process.start(process.command("true", start_args)) {
+        .Ok(child) => println(child.wait().expect("wait")),
         .Err(_) => (),
     }
     let parsed = cron.parse("* * * * *");

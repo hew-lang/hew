@@ -522,33 +522,6 @@ impl Checker {
             return result;
         }
 
-        // If the receiver is still an unresolved inference variable that was
-        // created from a coercible integer-literal / const-integer range (both
-        // bounds were literals or let-/const-bound integer literals), eagerly
-        // bind it to i64 before method dispatch.  Coercible-bounds ranges
-        // produce a fresh TypeVar so that function-call use-sites can still
-        // narrow the element type via unification (e.g. `fib(i: i32)` narrows
-        // to i32 without going through a method call), but method dispatch
-        // cannot drive unification from the receiver type alone.  The i64
-        // default matches what `default_unconstrained_range_types` would apply
-        // at the end of the inference pass, moved forward so receiver-only
-        // numeric methods resolve correctly inside the loop body.
-        let resolved = if let Ty::Var(v) = resolved {
-            let is_int_range_var = self
-                .deferred_range_bounds
-                .iter()
-                .any(|(_, dv, ..)| *dv == v);
-            if is_int_range_var {
-                self.subst
-                    .insert(v, &Ty::I64)
-                    .expect("binding integer range element var to i64 must stay acyclic");
-                Ty::I64
-            } else {
-                Ty::Var(v)
-            }
-        } else {
-            resolved
-        };
         let resolved = match &resolved {
             Ty::Named {
                 head,
@@ -1752,7 +1725,7 @@ impl Checker {
             // compose (`(0..=10).rev().step_by(3)`) and feed the for-loop's
             // `Range<T>` element-type extraction unchanged.  Crucially the
             // returned type reuses the receiver's element `T` (not a fresh var),
-            // so the #1857 `deferred_range_bounds` i64-defaulting still resolves
+            // so integer-literal defaulting still resolves
             // an unconstrained `(0..n).rev()` exactly as a bare range would.
             (
                 Ty::Named {

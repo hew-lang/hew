@@ -212,6 +212,10 @@ pub enum SendError {
     Backpressure;
     /// The destination actor accepts no more messages.
     Dead;
+    /// A socket write passed its deadline after this many bytes of the item
+    /// reached the operating system. The peer's view of the stream is
+    /// unknown, so the caller retires the stream.
+    TimedOut(i64);
 }
 
 impl Display for SendError {
@@ -227,6 +231,7 @@ impl Display for SendError {
             SendError.Unauthorized => "Unauthorized: the peer rejected the send because the caller lacks authority",
             SendError.Backpressure => "Backpressure: the destination or route is applying flow control",
             SendError.Dead => "Dead: the destination actor accepts no more messages",
+            SendError.TimedOut(committed) => f"TimedOut: the write deadline passed after {committed} bytes of the item",
         }
     }
 }

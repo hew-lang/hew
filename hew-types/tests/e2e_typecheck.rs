@@ -2645,13 +2645,13 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
         r#"
         import std.process;
 
-        fn await_child(child: process.Child) -> i64 {
+        fn await_child(child: process.Child) -> Result<process.ExitStatus, process.ProcessError> {
             child.wait()
         }
 
         fn main() {
             let _ = process.run("echo hi");
-            let _ = process.start("sleep 1");
+            let _ = process.start(process.command("sleep", ["1"]));
         }
         "#,
     );
@@ -2686,14 +2686,15 @@ fn builtin_string_to_int_typechecks_as_int() {
 }
 
 #[test]
-fn process_child_methods_resolve_as_fielded_resource_trait_methods() {
+fn process_child_methods_resolve_as_fielded_resource_methods() {
     let output = typecheck_inline(
         r"
         import std.process;
 
-        fn manage(child: process.Child) -> i64 {
-            let waited: i64 = child.wait();
-            waited + child.kill()
+        fn manage(child: process.Child) -> Result<process.ExitStatus, process.ProcessError> {
+            child.terminate()?;
+            child.kill()?;
+            child.wait()
         }
         ",
     );
@@ -2706,9 +2707,9 @@ fn process_child_methods_resolve_as_fielded_resource_trait_methods() {
         !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_process_wait" || c_symbol == "hew_process_kill"
+                if c_symbol == "hew_process_exit_stream" || c_symbol == "hew_process_signal"
         )),
-        "fielded process.Child methods must execute their source-level trait \
+        "fielded process.Child methods must execute their source-level \
          bodies (which unwrap ChildHandle) rather than bypass them through \
          opaque-handle C-symbol rewrites: {:?}",
         output.method_call_rewrites
@@ -5639,9 +5640,9 @@ fn wasm_rejects_crypto_sign_module_calls() {
         import std.crypto.sign;
 
         fn main() {
-            let kp = sign.keypair();
+            let key = sign.from_seed(sign.generate_seed());
             let msg = bytes [0x01, 0x02, 0x03];
-            let _ = sign.sign(msg, kp.private_key);
+            let _ = sign.verify(msg, msg, msg);
         }
         ",
     );
@@ -5696,9 +5697,9 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
         import std.crypto.sign;
 
         fn main() {
-            let kp = sign.keypair();
+            let key = sign.from_seed(sign.generate_seed());
             let msg = bytes [0x01, 0x02, 0x03];
-            let _ = sign.sign(msg, kp.private_key);
+            let _ = sign.verify(msg, msg, msg);
         }
         ",
     );

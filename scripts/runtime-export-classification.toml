@@ -301,6 +301,7 @@ stable = [
   "hew_file_read_stream_open",
   "hew_file_size",
   "hew_file_write",
+  "hew_file_write_atomic",
   "hew_file_write_bytes",
   "hew_float_to_string",
   "hew_fs_copy",
@@ -466,21 +467,25 @@ stable = [
   "hew_pool_size",
   "hew_print_value",
   "hew_process_drop",
-  "hew_process_free",
+  "hew_process_exit_stream",
+  "hew_process_id",
   "hew_process_is_valid",
-  "hew_process_kill",
   "hew_process_last_error",
-  "hew_process_result_exit_code",
+  "hew_process_poll",
   "hew_process_result_free",
   "hew_process_result_is_valid",
+  "hew_process_result_signalled",
+  "hew_process_result_status",
   "hew_process_result_stderr",
   "hew_process_result_stdout",
   "hew_process_run",
-  "hew_process_run_args",
   "hew_process_run_argv",
-  "hew_process_spawn",
-  "hew_process_spawn_argv",
-  "hew_process_wait",
+  "hew_process_signal",
+  "hew_process_signalled",
+  "hew_process_start",
+  "hew_process_status",
+  "hew_process_take_pipe",
+  "hew_process_wait_error",
   "hew_random_choices_vec",
   "hew_random_gauss",
   "hew_random_randint",
@@ -560,6 +565,7 @@ stable = [
   "hew_stream_last_errno",
   "hew_stream_last_error",
   "hew_stream_last_error_kind",
+  "hew_stream_last_write_committed",
   "hew_stream_lines",
   "hew_stream_next_layout",
   "hew_stream_try_next_layout",
@@ -885,9 +891,15 @@ stable-stdlib = [
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
   "hew_dns_resolve",
-  "hew_ed25519_generate_pkcs8_hew",
-  "hew_ed25519_public_key_from_pkcs8_hew",
-  "hew_ed25519_sign_hew",
+  "hew_ed25519_expanded_check",
+  "hew_ed25519_key_expanded",
+  "hew_ed25519_key_free",
+  "hew_ed25519_key_from_expanded",
+  "hew_ed25519_key_from_pkcs8",
+  "hew_ed25519_key_from_seed",
+  "hew_ed25519_key_is_valid",
+  "hew_ed25519_key_public",
+  "hew_ed25519_key_sign",
   "hew_ed25519_verify_hew",
   "hew_encrypt_last_open_error_code",
   "hew_compress_last_error",
@@ -1060,6 +1072,9 @@ stable-stdlib = [
   "hew_sort_floats",
   "hew_tls_close",
   "hew_tls_connect",
+  "hew_tls_connect_errno",
+  "hew_tls_connect_failure",
+  "hew_tls_is_valid",
   "hew_tls_last_error",
   "hew_tls_read_result",
   "hew_tls_write_result",
@@ -1109,21 +1124,19 @@ stable-stdlib = [
   "hew_ws_close",
   "hew_ws_conn_is_valid",
   "hew_ws_connect",
-  "hew_ws_message_free",
   "hew_ws_last_errno",
   "hew_ws_last_error",
-  "hew_ws_message_is_valid",
-  "hew_ws_message_text",
-  "hew_ws_message_type",
-  "hew_ws_recv",
-  "hew_ws_recv_last_timed_out",
-  "hew_ws_recv_timeout",
+  "hew_ws_recv_next",
+  "hew_ws_send_binary",
   "hew_ws_send_text",
   "hew_ws_server_accept",
   "hew_ws_server_close",
   "hew_ws_server_new",
   "hew_ws_server_is_valid",
   "hew_ws_server_port",
+  "hew_ws_subprotocol",
+  "hew_ws_take_binary",
+  "hew_ws_take_text",
   "hew_xml_children_count",
   "hew_xml_free",
   "hew_xml_get_attribute",
@@ -1389,6 +1402,7 @@ non-declarable = [
   "hew_stream_read_poll_native",
   "hew_stream_read_start_native",
   "hew_stream_read_take_native",
+  "hew_stream_write_committed_native",
   "hew_stream_write_poll_native",
   "hew_stream_write_start_native",
   "hew_stream_pipe_native",
@@ -3106,6 +3120,13 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
+symbol = "hew_stream_last_write_committed"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_stream_last_error_kind"
 result = "none"
 params = []
@@ -3521,9 +3542,9 @@ discharge-depth = "none"
 
 # process — hew-runtime/src/process.rs. run/run_argv return a Box'd
 # HewProcessResult whose free also releases the malloc'd stdout/stderr fields
-# (deep). spawn returns a Box'd HewProcess reaped by hew_process_drop.
-# result_stdout/result_stderr clone the stored strings (fresh). wait/kill
-# borrow; hew_process_run_argv borrows its Vec<String> argv.
+# (deep). start returns a Box'd HewProcess reaped by hew_process_drop.
+# result_stdout/result_stderr clone the stored strings (fresh). The child
+# accessors borrow; start and run_argv borrow their Vec<String> argv.
 [[ownership.contracts]]
 symbol = "hew_process_drop"
 result = "none"
@@ -3533,13 +3554,6 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_process_is_valid"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_process_kill"
 result = "none"
 params = ["borrow"]
 release-symbol = ""
@@ -3570,7 +3584,29 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_process_result_exit_code"
+symbol = "hew_process_id"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_poll"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_signalled"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.process.ProcessResultHandle"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_status"
 result = "none"
 params = ["borrow"]
 resource-param-types = ["std.process.ProcessResultHandle"]
@@ -3632,21 +3668,55 @@ result-retention = "resource-transfer"
 result-retention-basis = "after argv is copied into Command, output_to_result returns one fresh Box::into_raw(HewProcessResult)"
 
 [[ownership.contracts]]
-symbol = "hew_process_spawn"
-result = "fresh"
+symbol = "hew_process_signal"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_signalled"
+result = "none"
 params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_start"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = "hew_process_drop"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
-symbol = "hew_process_spawn_argv"
+symbol = "hew_process_status"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_take_pipe"
 result = "fresh"
 params = ["borrow", "borrow"]
-release-symbol = "hew_process_drop"
-discharge-depth = "shallow"
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "takes the child's pipe end out of its Option and returns one fresh Box::into_raw(HewStreamPair) holding the only owner of that end"
 
 [[ownership.contracts]]
-symbol = "hew_process_wait"
+symbol = "hew_process_exit_stream"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one fresh Box::into_raw(HewStreamPair) holding the only owner of a new exit-watch stream; the child keeps no reference to it"
+
+[[ownership.contracts]]
+symbol = "hew_process_wait_error"
 result = "none"
 params = ["borrow"]
 release-symbol = ""
@@ -3702,6 +3772,13 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_file_write"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_write_atomic"
 result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""
@@ -4223,18 +4300,54 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# ed25519 signing — hew-std/src/sign.rs. Borrowed BytesTriple params; fresh
-# bytes results (key material / signatures).
+# ed25519 signing — hew-std/src/sign.rs. Key material is a runtime-owned
+# handle released by hew_ed25519_key_free; bytes params are borrowed and bytes
+# results (public keys, expanded material, signatures) are fresh.
 [[ownership.contracts]]
-symbol = "hew_ed25519_generate_pkcs8_hew"
+symbol = "hew_ed25519_key_from_seed"
 result = "fresh"
-params = []
+params = ["borrow"]
+release-symbol = "hew_ed25519_key_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_expanded_check"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_from_expanded"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ed25519_key_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_from_pkcs8"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ed25519_key_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_sign"
+result = "fresh"
+params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_ed25519_public_key_from_pkcs8_hew"
+symbol = "hew_ed25519_key_public"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
@@ -4242,11 +4355,19 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_ed25519_sign_hew"
+symbol = "hew_ed25519_key_expanded"
 result = "fresh"
-params = ["borrow", "borrow"]
+params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_key_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_ed25519_verify_hew"
@@ -4862,9 +4983,10 @@ release-symbol = ""
 discharge-depth = "none"
 
 # WebSocket — hew-std/src/websocket.rs. connect/server_accept return Box'd
-# HewWsConn handles (Box::from_raw in hew_ws_close); recv(_timeout) return
-# Box'd HewWsMessage handles; message_text returns a fresh alloc_cstring
-# string. Active-mode registration is declaration-owned.
+# HewWsConn handles (Box::from_raw in hew_ws_close). recv_next holds the
+# received payload inside the connection; take_text/take_binary hand it out as
+# a fresh managed string or bytes. Active-mode registration is
+# declaration-owned.
 [[ownership.contracts]]
 symbol = "hew_ws_close"
 result = "none"
@@ -4876,7 +4998,7 @@ discharge-depth = "none"
 [[ownership.contracts]]
 symbol = "hew_ws_connect"
 result = "fresh"
-params = ["borrow"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "borrow"]
 resource-result-type = "std.net.websocket.Conn"
 release-symbol = "hew_ws_close"
 discharge-depth = "shallow"
@@ -4884,66 +5006,20 @@ result-retention = "resource-transfer"
 result-retention-basis = "successful handshake returns one fresh Box::into_raw(HewWsConn), reclaimed by hew_ws_close"
 
 [[ownership.contracts]]
-symbol = "hew_ws_message_free"
+symbol = "hew_ws_recv_next"
 result = "none"
-params = ["consume"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_message_is_valid"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_message_text"
-result = "fresh"
-params = ["borrow"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_ws_message_type"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.net.websocket.Message"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_recv"
-result = "fresh"
-params = ["borrow"]
-resource-result-type = "std.net.websocket.Message"
-resource-param-types = ["std.net.websocket.Conn"]
-release-symbol = "hew_ws_message_free"
-discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "build_message returns one Box::into_raw(HewWsMessage) owning its raw payload; text access copies a managed string and hew_ws_message_free reclaims both allocations"
-
-[[ownership.contracts]]
-symbol = "hew_ws_recv_last_timed_out"
-result = "none"
-params = []
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ws_recv_timeout"
-result = "fresh"
 params = ["borrow", "borrow"]
-resource-result-type = "std.net.websocket.Message"
 resource-param-types = ["std.net.websocket.Conn", ""]
-release-symbol = "hew_ws_message_free"
-discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "successful receive returns the same fresh build_message allocation as hew_ws_recv; timeout returns null and hew_ws_message_free reclaims any published message and payload"
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_send_binary"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.websocket.Conn", ""]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_ws_send_text"
@@ -4952,6 +5028,33 @@ params = ["borrow", "borrow"]
 resource-param-types = ["std.net.websocket.Conn", ""]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_subprotocol"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_ws_take_binary"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_ws_take_text"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ws_server_accept"
@@ -5006,12 +5109,34 @@ discharge-depth = "none"
 [[ownership.contracts]]
 symbol = "hew_tls_connect"
 result = "fresh"
-params = ["borrow", "borrow"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "borrow"]
 resource-result-type = "std.net.tls.TlsStream"
 release-symbol = "hew_tls_close"
 discharge-depth = "shallow"
 result-retention = "resource-transfer"
 result-retention-basis = "successful TLS setup returns one fresh Box::into_raw(HewTlsStream), reclaimed by hew_tls_close"
+
+[[ownership.contracts]]
+symbol = "hew_tls_connect_errno"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tls_connect_failure"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tls_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.tls.TlsStream"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_tls_last_error"

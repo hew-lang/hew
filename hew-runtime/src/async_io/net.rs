@@ -6,7 +6,7 @@
 //! again, so a spurious report costs one attempt and a re-arm.
 
 use std::cell::RefCell;
-use std::io::{self, Read, Write};
+use std::io;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -91,8 +91,11 @@ fn closed(operation: &str) -> Attempt {
     )))
 }
 
-fn failed(operation: &str, error: &io::Error) -> Attempt {
-    crate::transport::record_tcp_error_kind(error.kind());
+/// A failed syscall; only socket errors count toward the TCP counters.
+fn failed(tcp: bool, operation: &str, error: &io::Error) -> Attempt {
+    if tcp {
+        crate::transport::record_tcp_error_kind(error.kind());
+    }
     Attempt::Done(Err(IoFailure::from_io(operation, error)))
 }
 
@@ -104,13 +107,15 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
     }
     match action {
         Action::Read => {
-            let Some(mut stream) = slot.stream() else {
+            let Some(channel) = slot.bytes() else {
                 return closed("read TCP connection");
             };
             READ_BUFFER.with_borrow_mut(|buffer| loop {
-                match stream.read(buffer) {
+                match channel.read(buffer) {
                     Ok(count) => {
-                        crate::transport::count_read(count);
+                        if channel.is_tcp() {
+                            crate::transport::count_read(count);
+                        }
                         // An empty read is end of stream.
                         return Attempt::Done(Ok(IoValue::Bytes(buffer[..count].to_vec())));
                     }
@@ -118,21 +123,20 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                         return Attempt::Blocked { progressed: false };
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return failed("read TCP connection", &error),
+                    Err(error) => return failed(channel.is_tcp(), "read TCP connection", &error),
                 }
             })
         }
         Action::Readable => {
-            let Some(stream) = slot.stream() else {
+            let Some(channel) = slot.bytes() else {
                 return closed("watch TCP connection");
             };
             // Data, end of stream or an error: the reader's next read will not
             // wait.
-            match stream.peek(&mut [0; 1]) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    Attempt::Blocked { progressed: false }
-                }
-                _ => Attempt::Done(Ok(IoValue::Count(0))),
+            if channel.readable() {
+                Attempt::Done(Ok(IoValue::Count(0)))
+            } else {
+                Attempt::Blocked { progressed: false }
             }
         }
         Action::Accept => {
@@ -157,20 +161,20 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                         return Attempt::Blocked { progressed: false };
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return failed("accept TCP connection", &error),
+                    Err(error) => return failed(true, "accept TCP connection", &error),
                 }
             }
         }
         Action::StdinLine => unreachable!("standard input advances under its buffer lock"),
         Action::Write { data, written } => {
-            let Some(mut stream) = slot.stream() else {
+            let Some(channel) = slot.bytes() else {
                 return closed("write TCP connection");
             };
             let bytes = data.bytes();
             let mut progressed = false;
             while *written < bytes.len() {
                 let end = bytes.len().min(*written + WRITE_CHUNK);
-                match stream.write(&bytes[*written..end]) {
+                match channel.write(&bytes[*written..end]) {
                     Ok(0) => {
                         return Attempt::Done(Err(IoFailure::from_io(
                             "write TCP connection",
@@ -178,7 +182,9 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                         )))
                     }
                     Ok(count) => {
-                        crate::transport::count_written(count);
+                        if channel.is_tcp() {
+                            crate::transport::count_written(count);
+                        }
                         *written += count;
                         progressed = true;
                     }
@@ -186,12 +192,22 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                         return Attempt::Blocked { progressed };
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return failed("write TCP connection", &error),
+                    Err(error) => return failed(channel.is_tcp(), "write TCP connection", &error),
                 }
             }
             Attempt::Done(Ok(IoValue::Count(
                 i64::try_from(*written).expect("native write count fits i64"),
             )))
+        }
+    }
+}
+
+impl NetOp {
+    /// Bytes of a write's item that reached the OS so far.
+    pub(super) fn written(&self) -> Option<usize> {
+        match &*self.action.lock_or_recover() {
+            Action::Write { written, .. } => Some(*written),
+            _ => None,
         }
     }
 }
@@ -241,7 +257,7 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     let kind_matches = match action {
         Action::Accept => slot.listener().is_some(),
         Action::StdinLine => slot.is_stdin(),
-        _ => slot.stream().is_some(),
+        _ => slot.bytes().is_some(),
     };
     if !kind_matches {
         return Err(IoFailure::from_io(

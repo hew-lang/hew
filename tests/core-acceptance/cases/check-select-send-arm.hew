@@ -1,0 +1,11 @@
+import std.stream;
+
+// Sending is not a select source; a send deadline is `scope within`.
+fn main() {
+    let (output, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("pipe");
+    select {
+        result from output.send("hello".to_bytes()) => println("sent"),
+        after 20ms => println("deadline"),
+    };
+    input.close();
+}

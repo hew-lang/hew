@@ -1,2 +1,2 @@
-sent 0/56 request bytes to example.com
-short write — skipping read (TLS data-plane ABI gap)
+sent 56 request bytes to example.com
+response: HTTP/1.1 200 OK

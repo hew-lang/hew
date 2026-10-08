@@ -6,15 +6,16 @@
 //! retain their pointer-and-length storage, released with the message handle.
 
 use crate::bind_addr::normalize_bind_addr;
-use hew_cabi::cabi::malloc_bytes;
-use hew_cabi::string::{string_as_str, string_from_str, string_from_utf8, HewString};
+use crate::tls::{self, ConnectFailure, Trust};
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
+use hew_runtime::bytes::BytesTriple;
 use hew_runtime::transport::{AttachCallback, NativeActorToken, NativeAttachment};
 #[cfg(test)]
 use std::ffi::c_void;
 use std::io;
 #[cfg(test)]
 use std::io::Write;
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -90,6 +91,10 @@ struct HewWsConnInner {
     reader: Mutex<Option<ReaderControl>>,
     closed: AtomicBool,
     active_recvs: AtomicUsize,
+    /// The subprotocol the server selected from the client's offer.
+    subprotocol: Option<String>,
+    /// The payload of the last `hew_ws_recv_next` message, until taken.
+    pending: Mutex<Vec<u8>>,
 }
 
 type HewWs = WebSocket<MaybeTlsStream<TcpStream>>;
@@ -122,13 +127,6 @@ impl Drop for ActiveCallGuard<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HewWsRecvResult {
-    Message,
-    Cancelled,
-    Error,
-}
-
 #[derive(Debug)]
 enum HewWsAcceptResult {
     Accepted(Box<WebSocket<MaybeTlsStream<TcpStream>>>),
@@ -136,19 +134,29 @@ enum HewWsAcceptResult {
     Error,
 }
 
-/// Message received from a WebSocket connection.
-///
-/// Must be freed with [`hew_ws_message_free`].
-#[repr(C)]
+/// One `receive` outcome. Control frames are answered by tungstenite and
+/// never surface.
 #[derive(Debug)]
-pub struct HewWsMessage {
-    /// Message type: 0 = text, 1 = binary, 2 = ping, 3 = pong, 4 = close, −1 = error.
-    pub msg_type: i32,
-    /// Payload data allocated with `malloc`. Caller frees via [`hew_ws_message_free`].
-    pub data: *mut u8,
-    /// Length of `data` in bytes.
-    pub data_len: usize,
+enum Received {
+    Text(String),
+    Binary(Vec<u8>),
+    /// The peer closed the connection, or this side did.
+    Closed,
+    TimedOut,
+    Failed(tungstenite::Error),
 }
+
+/// `hew_ws_recv_next` statuses, mirrored by `websocket.hew`.
+const RECV_TEXT: i32 = 0;
+const RECV_BINARY: i32 = 1;
+const RECV_CLOSED: i32 = 2;
+const RECV_TIMED_OUT: i32 = 3;
+const RECV_FAILED: i32 = 4;
+
+/// Error-slot errno sentinels for failures without an OS errno, mirrored by
+/// `websocket.hew`: an argument refused before any I/O, and a deadline.
+const WS_INVALID_ARGUMENT: i64 = -1;
+const WS_TIMED_OUT: i64 = -2;
 
 const READER_READ_TIMEOUT: Duration = Duration::from_millis(250);
 const READER_JOIN_WAIT: Duration = Duration::from_millis(500);
@@ -248,7 +256,11 @@ impl ActorDelivery {
 }
 
 impl HewWsConn {
-    fn new(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> Self {
+    fn new(
+        ws: WebSocket<MaybeTlsStream<TcpStream>>,
+        role: Role,
+        subprotocol: Option<String>,
+    ) -> Self {
         let shutdown_stream = clone_shutdown_stream(&ws);
         let (ws, write_ws, write_operation_gate) = prepare_websockets(ws, role);
         let write_ws = write_ws.map(|w| PlMutex::new(Some(w)));
@@ -261,6 +273,8 @@ impl HewWsConn {
                 reader: Mutex::new(None),
                 closed: AtomicBool::new(false),
                 active_recvs: AtomicUsize::new(0),
+                subprotocol,
+                pending: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -310,21 +324,10 @@ impl Drop for HewWsConn {
     }
 }
 
-#[allow(
-    unexpected_cfgs,
-    reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
-)]
 fn clone_shutdown_stream(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<TcpStream> {
     match ws.get_ref() {
         MaybeTlsStream::Plain(stream) => stream.try_clone().ok(),
-        #[cfg(feature = "native-tls")]
-        MaybeTlsStream::NativeTls(stream) => stream.get_ref().try_clone().ok(),
-        #[cfg(feature = "__rustls-tls")]
         MaybeTlsStream::Rustls(stream) => stream.sock.try_clone().ok(),
-        #[allow(
-            unreachable_patterns,
-            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
-        )]
         _ => None,
     }
 }
@@ -346,24 +349,13 @@ fn prepare_websockets(ws: HewWs, role: Role) -> PreparedWebsockets {
     (ws, write_ws, gate)
 }
 
-#[allow(
-    unexpected_cfgs,
-    reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
-)]
 fn with_tcp_stream<R>(
     ws: &mut HewWs,
     f: impl FnOnce(&mut TcpStream) -> io::Result<R>,
 ) -> io::Result<R> {
     match ws.get_mut() {
         MaybeTlsStream::Plain(stream) => f(stream),
-        #[cfg(feature = "native-tls")]
-        MaybeTlsStream::NativeTls(stream) => f(stream.get_mut()),
-        #[cfg(feature = "__rustls-tls")]
         MaybeTlsStream::Rustls(stream) => f(&mut stream.sock),
-        #[allow(
-            unreachable_patterns,
-            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
-        )]
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "unsupported websocket stream kind",
@@ -636,186 +628,283 @@ fn spawn_attach_reader(
     Ok(())
 }
 
-/// Build a heap-allocated [`HewWsMessage`] from a type tag and byte slice.
+/// Read the next data message, answering control frames, until `deadline`.
 ///
-/// For empty payloads, `data` will be a non-null 1-byte sentinel (canonical
-/// `malloc_bytes` empty behaviour); callers check `data_len` to distinguish
-/// empty from non-empty content.
-fn build_message(msg_type: i32, payload: &[u8]) -> *mut HewWsMessage {
-    let data = malloc_bytes(payload);
-    Box::into_raw(Box::new(HewWsMessage {
-        msg_type,
-        data,
-        data_len: payload.len(),
-    }))
-}
-
-fn build_recv_message(msg: Message) -> *mut HewWsMessage {
-    match msg {
-        Message::Text(text) => build_message(0, text.as_bytes()),
-        Message::Binary(bytes) => build_message(1, &bytes),
-        Message::Ping(bytes) => build_message(2, &bytes),
-        Message::Pong(bytes) => build_message(3, &bytes),
-        Message::Close(_) => build_message(4, &[]),
-        Message::Frame(_) => build_message(1, &[]),
-    }
-}
-
-fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMessage) {
+/// The lock and each socket read are bounded by the reader pacing interval
+/// so a concurrent close or an attached reader holding the framer cannot
+/// stall the caller past its deadline.
+fn receive(inner: &Arc<HewWsConnInner>, deadline: Option<Instant>) -> Received {
     loop {
         if inner.closed.load(Ordering::Acquire) {
-            return (HewWsRecvResult::Cancelled, std::ptr::null_mut());
+            return Received::Closed;
         }
-
-        let read_result = {
-            let mut guard = pl_lock(&inner.ws);
-            let Some(ws) = guard.as_mut() else {
-                let kind = if inner.closed.load(Ordering::Acquire) {
-                    HewWsRecvResult::Cancelled
-                } else {
-                    HewWsRecvResult::Error
-                };
-                return (kind, std::ptr::null_mut());
-            };
-            if let Err(err) = set_read_timeout(ws, Some(READER_READ_TIMEOUT)) {
-                eprintln!("[recv] failed to set read timeout: {err}");
-                return (HewWsRecvResult::Error, std::ptr::null_mut());
+        let slice = match deadline {
+            None => READER_READ_TIMEOUT,
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Received::TimedOut;
+                }
+                left.min(READER_READ_TIMEOUT)
             }
-            read_ws_with_operation_gate(inner, ws)
         };
-
-        match read_result {
-            Ok(msg) => return (HewWsRecvResult::Message, build_recv_message(msg)),
-            Err(err) if is_timeout_error(&err) => {}
-            Err(_) if inner.closed.load(Ordering::Acquire) => {
-                return (HewWsRecvResult::Cancelled, std::ptr::null_mut());
+        let Some(mut guard) = inner.ws.try_lock_for(slice) else {
+            continue;
+        };
+        let Some(ws) = guard.as_mut() else {
+            return Received::Closed;
+        };
+        if let Err(err) = set_read_timeout(ws, Some(slice)) {
+            return Received::Failed(tungstenite::Error::Io(err));
+        }
+        let read = read_ws_with_operation_gate(inner, ws);
+        drop(guard);
+        match read {
+            Ok(Message::Text(text)) => return Received::Text(text.as_str().to_owned()),
+            Ok(Message::Binary(data)) => return Received::Binary(data.to_vec()),
+            Ok(Message::Close(_))
+            | Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                return Received::Closed;
             }
-            Err(_) => return (HewWsRecvResult::Error, std::ptr::null_mut()),
+            Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
+            Err(err) if is_timeout_error(&err) => {}
+            Err(_) if inner.closed.load(Ordering::Acquire) => return Received::Closed,
+            Err(err) => return Received::Failed(err),
         }
     }
+}
+
+/// How a client connect verifies and bounds itself.
+struct ConnectOptions<'a> {
+    subprotocols: Vec<&'a str>,
+    trust: Trust<'a>,
+    handshake: Option<Duration>,
+    io: Option<Duration>,
+}
+
+/// A failed client connect: the error-slot errno and its detail.
+type ConnectError = (i64, String);
+
+fn connect_failure(failure: &ConnectFailure) -> ConnectError {
+    let errno = match failure.class {
+        tls::TLS_CONNECT_INVALID_ARGUMENT => WS_INVALID_ARGUMENT,
+        tls::TLS_CONNECT_TIMED_OUT => WS_TIMED_OUT,
+        _ => failure.errno,
+    };
+    (errno, failure.message.clone())
+}
+
+fn tungstenite_failure(err: &tungstenite::Error) -> ConnectError {
+    (ws_errno_of(err), err.to_string())
 }
 
 /// Connect to a WebSocket server.
 ///
-/// Supports both `ws://` and `wss://` URLs. Returns a heap-allocated
-/// [`HewWsConn`] on success, or null on error.
+/// `protocols` is the comma-separated subprotocol offer, in preference
+/// order, or empty. `wss://` verifies the server with `trust` (`0` bundled
+/// roots, `1` only the CAs in `pem`). `handshake_ms` bounds the TCP connect,
+/// the TLS handshake and the upgrade together; `io_ms` then bounds each
+/// write. Zero means no bound. Returns null on failure with the errno (`-1`
+/// invalid argument, `-2` timed out) and detail in the error slot.
 ///
 /// # Safety
 ///
-/// `url` must be a live managed string handle (null means empty).
+/// `url` and `protocols` must be live managed string handles (null means
+/// empty); `pem` must be null or a live `BytesTriple`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_ws_connect(url: *const HewString) -> *mut HewWsConn {
-    if url.is_null() {
-        set_ws_last_error(-1, "websocket.connect: url is null".to_owned());
-        return std::ptr::null_mut();
-    }
-    // SAFETY: the caller borrows a live managed string.
-    let url_str = unsafe { string_as_str(url) };
-    if url_str.contains('\0') {
-        set_ws_last_error(-1, "websocket.connect: url contains NUL".to_owned());
-        return std::ptr::null_mut();
-    }
-
-    let config = match websocket_config_from_env() {
-        Ok(config) => config,
-        Err(err) => {
-            set_ws_last_error(-1, format!("websocket.connect: invalid config: {err}"));
-            return std::ptr::null_mut();
-        }
+pub unsafe extern "C" fn hew_ws_connect(
+    url: *const HewString,
+    protocols: *const HewString,
+    trust: i32,
+    pem: *const BytesTriple,
+    handshake_ms: i64,
+    io_ms: i64,
+) -> *mut HewWsConn {
+    // SAFETY: the caller borrows live managed strings and bytes.
+    let (url_str, protocols, pem) = unsafe {
+        (
+            string_as_str(url),
+            string_as_str(protocols),
+            tls::bytes_view(pem),
+        )
     };
-
-    match connect_preserving_errno(url_str, config, 3) {
-        Ok(ws) => {
+    let options = ConnectOptions {
+        subprotocols: protocols.split(',').filter(|p| !p.is_empty()).collect(),
+        trust: if trust == 1 {
+            Trust::Pem(pem)
+        } else {
+            Trust::Bundled
+        },
+        handshake: tls::io_timeout(handshake_ms),
+        io: tls::io_timeout(io_ms),
+    };
+    let attempt = websocket_config_from_env()
+        .map_err(|err| (WS_INVALID_ARGUMENT, format!("invalid config: {err}")))
+        .and_then(|config| connect_client(url_str, config, 3, &options));
+    match attempt {
+        Ok((ws, subprotocol)) => {
             clear_ws_last_error();
-            Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client)))
+            Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client, subprotocol)))
         }
-        Err(err) => {
-            set_ws_last_error(ws_errno_of(&err), format!("websocket.connect: {err}"));
+        Err((errno, detail)) => {
+            set_ws_last_error(errno, format!("websocket.connect: {detail}"));
             std::ptr::null_mut()
         }
     }
 }
 
-/// Connect once per resolved address while retaining the final socket errno.
+/// Connect, following up to `max_redirects` redirects that keep the first
+/// request's transport (a `wss://` connection never continues as `ws://`),
+/// and return the socket with the subprotocol the server selected.
 ///
-/// `tungstenite::connect_with_config` discards every `TcpStream::connect`
-/// error and returns only `UrlError::UnableToConnect`. Reconnecting merely to
-/// recover an errno creates a TOCTOU race and can establish an unwanted second
-/// transport. This mirrors tungstenite's blocking client flow, but carries the
-/// actual error from the one authoritative connect attempt into Hew's typed
-/// error channel.
-fn connect_preserving_errno(
+/// The TCP connect is made here rather than by `tungstenite::connect` so the
+/// one authoritative attempt's errno survives, `wss://` uses the TLS module's
+/// trust and deadline, and every step shares one deadline.
+fn connect_client(
     url_str: &str,
     config: WebSocketConfig,
     max_redirects: u8,
-) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, tungstenite::Error> {
+    options: &ConnectOptions<'_>,
+) -> Result<(HewWs, Option<String>), ConnectError> {
+    let deadline = options.handshake.map(|limit| Instant::now() + limit);
     let mut current = url_str.to_owned();
-
+    // Whether the first request asked for TLS; a redirect never changes it.
+    let mut first_tls = None;
     for attempt in 0..=max_redirects {
-        let request = current.as_str().into_client_request()?;
-        let uri = request.uri();
-        let mode = uri_mode(uri)?;
-        if matches!(mode, Mode::Tls) {
-            // hew-std currently builds tungstenite without a TLS connector,
-            // matching connect_with_config's existing fail-closed behaviour.
-            return Err(tungstenite::Error::Url(
-                tungstenite::error::UrlError::TlsFeatureNotEnabled,
-            ));
+        let mut request = current
+            .as_str()
+            .into_client_request()
+            .map_err(|err| tungstenite_failure(&err))?;
+        if !options.subprotocols.is_empty() {
+            let offer = options.subprotocols.join(", ");
+            let value = offer
+                .parse()
+                .map_err(|_| (WS_INVALID_ARGUMENT, format!("subprotocol offer {offer:?}")))?;
+            request
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", value);
         }
+        let uri = request.uri();
+        let mode = uri_mode(uri).map_err(|err| tungstenite_failure(&err))?;
+        keep_transport(&mut first_tls, mode)?;
         let host = uri
             .host()
-            .ok_or(tungstenite::Error::Url(
-                tungstenite::error::UrlError::NoHostName,
-            ))?
+            .ok_or_else(|| {
+                tungstenite_failure(&tungstenite::Error::Url(
+                    tungstenite::error::UrlError::NoHostName,
+                ))
+            })?
             .trim_start_matches('[')
-            .trim_end_matches(']');
-        let port = uri.port_u16().unwrap_or(80);
-
-        let mut last_connect_error = None;
-        let mut connected = None;
-        for addr in (host, port).to_socket_addrs()? {
-            match TcpStream::connect(addr) {
-                Ok(stream) => {
-                    connected = Some(stream);
-                    break;
-                }
-                Err(err) => last_connect_error = Some(err),
+            .trim_end_matches(']')
+            .to_owned();
+        let port = uri.port_u16().unwrap_or(match mode {
+            Mode::Plain => 80,
+            Mode::Tls => 443,
+        });
+        let mut tcp =
+            tls::connect_tcp(&host, port, deadline).map_err(|failure| connect_failure(&failure))?;
+        tcp.set_nodelay(true)
+            .map_err(|err| connect_failure(&ConnectFailure::from_io("connect", &err)))?;
+        let stream = match mode {
+            Mode::Plain => MaybeTlsStream::Plain(tcp),
+            Mode::Tls => {
+                let config = tls::client_config(options.trust)
+                    .map_err(|failure| connect_failure(&failure))?;
+                let name = rustls::pki_types::ServerName::try_from(host.clone())
+                    .map_err(|err| (WS_INVALID_ARGUMENT, format!("server name {host:?}: {err}")))?;
+                let mut connection = rustls::ClientConnection::new(config, name)
+                    .map_err(|err| (WS_INVALID_ARGUMENT, format!("tls client: {err}")))?;
+                tls::complete_handshake(&mut connection, &mut tcp, deadline)
+                    .map_err(|failure| connect_failure(&failure))?;
+                MaybeTlsStream::Rustls(rustls::StreamOwned::new(connection, tcp))
             }
-        }
-        let Some(stream) = connected else {
-            return Err(match last_connect_error {
-                Some(err) => tungstenite::Error::Io(err),
-                None => {
-                    tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(current))
-                }
-            });
         };
-        stream.set_nodelay(true)?;
-
-        let handshake = client_with_config(request, MaybeTlsStream::Plain(stream), Some(config))
-            .map_err(|err| match err {
-                tungstenite::HandshakeError::Failure(failure) => failure,
-                tungstenite::HandshakeError::Interrupted(_) => {
-                    panic!("blocking WebSocket handshake unexpectedly interrupted")
-                }
-            });
-
-        match handshake {
-            Ok((ws, _response)) => return Ok(ws),
-            Err(tungstenite::Error::Http(response))
+        let stream = bound_upgrade(stream, deadline)?;
+        let (mut ws, response) = match client_with_config(request, stream, Some(config)) {
+            Ok(upgraded) => upgraded,
+            Err(tungstenite::HandshakeError::Interrupted(_)) => {
+                return Err((WS_TIMED_OUT, "upgrade timed out".to_owned()));
+            }
+            // Windows reports a passed socket timeout as `TimedOut` where Unix
+            // reports `WouldBlock`, which tungstenite turns into `Interrupted`.
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Io(error)))
+                if error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                return Err((WS_TIMED_OUT, "upgrade timed out".to_owned()));
+            }
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)))
                 if response.status().is_redirection() && attempt < max_redirects =>
             {
-                if let Some(location) = response.headers().get("Location") {
-                    location.to_str()?.clone_into(&mut current);
-                    continue;
-                }
-                return Err(tungstenite::Error::Http(response));
+                let location = response
+                    .headers()
+                    .get("Location")
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| {
+                        (
+                            0,
+                            format!("redirect {} without Location", response.status()),
+                        )
+                    })?;
+                location.clone_into(&mut current);
+                continue;
             }
-            Err(err) => return Err(err),
-        }
+            Err(tungstenite::HandshakeError::Failure(failure)) => {
+                return Err(tungstenite_failure(&failure));
+            }
+        };
+        let selected = response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        // tungstenite refuses a response that selects none of the offer.
+        with_tcp_stream(&mut ws, |tcp| {
+            tcp.set_read_timeout(None)?;
+            tcp.set_write_timeout(options.io)
+        })
+        .map_err(|err| connect_failure(&ConnectFailure::from_io("socket timeout", &err)))?;
+        return Ok((ws, selected));
     }
-
     unreachable!("WebSocket redirect loop always returns or continues")
+}
+
+/// Refuse a redirect whose transport differs from the first request's.
+fn keep_transport(first_tls: &mut Option<bool>, mode: Mode) -> Result<(), ConnectError> {
+    let tls = matches!(mode, Mode::Tls);
+    if *first_tls.get_or_insert(tls) == tls {
+        Ok(())
+    } else {
+        Err((
+            WS_INVALID_ARGUMENT,
+            "redirect between ws:// and wss:// refused".to_owned(),
+        ))
+    }
+}
+
+/// Bound the upgrade's socket reads and writes by the time left.
+fn bound_upgrade(
+    mut stream: MaybeTlsStream<TcpStream>,
+    deadline: Option<Instant>,
+) -> Result<MaybeTlsStream<TcpStream>, ConnectError> {
+    let left = match deadline {
+        None => None,
+        Some(deadline) => {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err((WS_TIMED_OUT, "upgrade timed out".to_owned()));
+            }
+            Some(left)
+        }
+    };
+    let tcp = match &mut stream {
+        MaybeTlsStream::Plain(tcp) => tcp,
+        MaybeTlsStream::Rustls(tls) => &mut tls.sock,
+        _ => return Ok(stream),
+    };
+    tcp.set_read_timeout(left)
+        .and_then(|()| tcp.set_write_timeout(left))
+        .map_err(|err| connect_failure(&ConnectFailure::from_io("upgrade", &err)))?;
+    Ok(stream)
 }
 
 /// Recover the OS errno a tungstenite error carries, or 0 when it is a
@@ -874,102 +963,146 @@ fn send_ws_message(
     send_ws_with_operation_gate(inner, ws, message)
 }
 
-/// Send a text message over a WebSocket connection.
-///
-/// Returns 0 on success, −1 on error.
+/// Send one message, recording a failure in the error slot.
+fn send_reporting(ws: *mut HewWsConn, message: Message, operation: &str) -> i32 {
+    // SAFETY: the caller passes a live connection or null.
+    let Some(conn) = (unsafe { ws.as_ref() }) else {
+        set_ws_last_error(WS_INVALID_ARGUMENT, format!("{operation}: null connection"));
+        return -1;
+    };
+    let inner = Arc::clone(&conn.inner);
+    let sent = if inner.closed.load(Ordering::Acquire) {
+        Err(tungstenite::Error::AlreadyClosed)
+    } else {
+        send_ws_message(&inner, message)
+    };
+    match sent {
+        Ok(()) => {
+            clear_ws_last_error();
+            0
+        }
+        Err(err) => {
+            set_ws_last_error(ws_errno_of(&err), format!("{operation}: {err}"));
+            -1
+        }
+    }
+}
+
+/// Send a text message. Returns 0, or -1 with the error slot set.
 ///
 /// # Safety
 ///
-/// * `ws` must be a valid pointer returned by [`hew_ws_connect`].
+/// * `ws` must be a valid pointer returned by [`hew_ws_connect`] or
+///   `hew_ws_server_accept`, or null.
 /// * `msg` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_send_text(ws: *mut HewWsConn, msg: *const HewString) -> i32 {
-    if ws.is_null() {
-        return -1;
-    }
-    // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
-    let inner = Arc::clone(&unsafe { &*ws }.inner);
     // SAFETY: the caller borrows a live managed string; null spells empty.
     let text = unsafe { string_as_str(msg) };
-
-    if inner.closed.load(Ordering::Acquire) {
-        return -1;
-    }
-    match send_ws_message(&inner, Message::text(text)) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
+    send_reporting(ws, Message::text(text), "websocket.send_text")
 }
 
-/// Send a binary message over a WebSocket connection.
-///
-/// Returns 0 on success, −1 on error.
+/// Send a binary message. Returns 0, or -1 with the error slot set.
 ///
 /// # Safety
 ///
-/// * `ws` must be a valid pointer returned by [`hew_ws_connect`].
-/// * `data` must point to at least `len` readable bytes, or be null if `len` is 0.
+/// * `ws` must be a valid connection pointer, or null.
+/// * `data` must be null or a live `BytesTriple`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_ws_send_binary(
-    ws: *mut HewWsConn,
-    data: *const u8,
-    len: usize,
-) -> i32 {
-    if ws.is_null() {
-        return -1;
-    }
-    // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
-    let inner = Arc::clone(&unsafe { &*ws }.inner);
-    if inner.closed.load(Ordering::Acquire) {
-        return -1;
-    }
+pub unsafe extern "C" fn hew_ws_send_binary(ws: *mut HewWsConn, data: *const BytesTriple) -> i32 {
+    // SAFETY: the caller passes null or a live triple.
+    let data = unsafe { tls::bytes_view(data) };
+    send_reporting(ws, Message::binary(data.to_vec()), "websocket.send_binary")
+}
 
-    let slice = if len == 0 {
-        &[]
-    } else {
-        if data.is_null() {
-            return -1;
-        }
-        // SAFETY: `data` is valid for `len` bytes per caller contract.
-        unsafe { std::slice::from_raw_parts(data, len) }
+/// Receive the next text or binary message, waiting at most `deadline_ms`
+/// (negative waits indefinitely, zero only checks what has arrived).
+///
+/// Returns `0` text or `1` binary, with the payload held for
+/// [`hew_ws_take_text`] or [`hew_ws_take_binary`]; `2` when the connection
+/// closed; `3` when the deadline passed; `4` on failure, with the errno and
+/// detail in the error slot.
+///
+/// # Safety
+///
+/// `ws` must be a valid connection pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_recv_next(ws: *mut HewWsConn, deadline_ms: i64) -> i32 {
+    // SAFETY: the caller passes a live connection or null.
+    let Some(conn) = (unsafe { ws.as_ref() }) else {
+        set_ws_last_error(
+            WS_INVALID_ARGUMENT,
+            "websocket.recv: null connection".to_owned(),
+        );
+        return RECV_FAILED;
     };
-
-    match send_ws_message(&inner, Message::binary(slice.to_vec())) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
+    let inner = Arc::clone(&conn.inner);
+    let _recv_guard = ActiveCallGuard::new(&inner.active_recvs);
+    let deadline = u64::try_from(deadline_ms)
+        .ok()
+        .map(|ms| Instant::now() + Duration::from_millis(ms));
+    let (status, payload) = match receive(&inner, deadline) {
+        Received::Text(text) => (RECV_TEXT, text.into_bytes()),
+        Received::Binary(data) => (RECV_BINARY, data),
+        Received::Closed => (RECV_CLOSED, Vec::new()),
+        Received::TimedOut => (RECV_TIMED_OUT, Vec::new()),
+        Received::Failed(err) => {
+            set_ws_last_error(ws_errno_of(&err), format!("websocket.recv: {err}"));
+            (RECV_FAILED, Vec::new())
+        }
+    };
+    *lock_or_recover(&inner.pending) = payload;
+    status
 }
 
-/// Receive the next message from a WebSocket connection (blocking).
-///
-/// Returns a heap-allocated [`HewWsMessage`], or null on error.
-/// The caller must free the result with [`hew_ws_message_free`].
+/// Take the held text payload as a managed string.
 ///
 /// # Safety
 ///
-/// `ws` must be a valid pointer returned by [`hew_ws_connect`].
+/// `ws` must be a valid connection pointer, or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_ws_recv(ws: *mut HewWsConn) -> *mut HewWsMessage {
-    if ws.is_null() {
+pub unsafe extern "C" fn hew_ws_take_text(ws: *mut HewWsConn) -> *mut HewString {
+    // SAFETY: the caller passes a live connection or null.
+    let Some(conn) = (unsafe { ws.as_ref() }) else {
         return std::ptr::null_mut();
-    }
-    // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
-    let inner = Arc::clone(&unsafe { &*ws }.inner);
-    if inner.closed.load(Ordering::Acquire) {
-        return std::ptr::null_mut();
-    }
-
-    let _recv_guard = ActiveCallGuard::new(&inner.active_recvs);
-    match recv_message(&inner) {
-        (HewWsRecvResult::Message, msg) => msg,
-        (HewWsRecvResult::Cancelled | HewWsRecvResult::Error, _) => std::ptr::null_mut(),
-    }
+    };
+    let payload = std::mem::take(&mut *lock_or_recover(&conn.inner.pending));
+    // tungstenite validated a Text frame's UTF-8 before returning it.
+    string_from_str(std::str::from_utf8(&payload).unwrap_or_default())
 }
 
-// Status sentinel for hew_ws_recv_timeout: communicated via a thread-local
-// because the FFI returns a single pointer. Cleared at every call.
-std::thread_local! {
-    static LAST_WS_RECV_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// Take the held binary payload as `bytes`.
+///
+/// # Safety
+///
+/// `ws` must be a valid connection pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_take_binary(ws: *mut HewWsConn) -> BytesTriple {
+    // SAFETY: the caller passes a live connection or null.
+    let payload = unsafe { ws.as_ref() }
+        .map(|conn| std::mem::take(&mut *lock_or_recover(&conn.inner.pending)))
+        .unwrap_or_default();
+    let Ok(len) = u32::try_from(payload.len()) else {
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    };
+    // SAFETY: `payload` is valid for `len` bytes; the copy is a fresh owner.
+    unsafe { hew_runtime::bytes::hew_bytes_from_static(payload.as_ptr(), len) }
+}
+
+/// The subprotocol the server selected, or the empty string.
+///
+/// # Safety
+///
+/// `ws` must be a valid connection pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_subprotocol(ws: *const HewWsConn) -> *mut HewString {
+    // SAFETY: the caller passes a live connection or null.
+    let selected = unsafe { ws.as_ref() }.and_then(|conn| conn.inner.subprotocol.as_deref());
+    string_from_str(selected.unwrap_or_default())
 }
 
 fn set_ws_last_error(errno: i64, detail: String) {
@@ -1029,138 +1162,6 @@ pub unsafe extern "C" fn hew_ws_server_is_valid(server: *const HewWsServer) -> b
     !server.is_null()
 }
 
-fn set_last_ws_recv_timed_out(v: bool) {
-    LAST_WS_RECV_TIMED_OUT.with(|c| c.set(v));
-}
-
-/// Receive the next message from a WebSocket connection with a per-call
-/// deadline. Returns a heap-allocated [`HewWsMessage`] on success, or null
-/// on deadline expiry, error, cancellation, or null input.
-///
-/// Callers query [`hew_ws_recv_last_timed_out`] to distinguish timeout
-/// from other null returns. The sentinel is cleared at the start of every
-/// call to this function.
-///
-/// `deadline_ms <= 0` disables the deadline (matches `hew_ws_recv`).
-///
-/// # Concurrency
-///
-/// The reader thread (when attached) holds `inner.ws` for up to
-/// `READER_READ_TIMEOUT` (250 ms) per cycle. This call uses
-/// `parking_lot::Mutex::try_lock_for` so the worst-case wait for the
-/// lock is bounded by the user's deadline. After acquiring the lock, the
-/// residual deadline is applied to the underlying TCP read via
-/// `set_read_timeout` so the inner `ws.read()` call cannot exceed the
-/// deadline either.
-///
-/// Cleanup-all-exits: the `parking_lot::MutexGuard` is dropped via RAII
-/// before every return path; explicit `drop(guard)` annotations make
-/// release order visible.
-///
-/// # Safety
-///
-/// `ws` must be a valid pointer returned by [`hew_ws_connect`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_ws_recv_timeout(
-    ws: *mut HewWsConn,
-    deadline_ms: i32,
-) -> *mut HewWsMessage {
-    set_last_ws_recv_timed_out(false);
-    if ws.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
-    let inner = Arc::clone(&unsafe { &*ws }.inner);
-    if inner.closed.load(Ordering::Acquire) {
-        return std::ptr::null_mut();
-    }
-
-    let _recv_guard = ActiveCallGuard::new(&inner.active_recvs);
-
-    if deadline_ms <= 0 {
-        // No deadline — match the existing recv path exactly.
-        return match recv_message(&inner) {
-            (HewWsRecvResult::Message, msg) => msg,
-            (HewWsRecvResult::Cancelled | HewWsRecvResult::Error, _) => std::ptr::null_mut(),
-        };
-    }
-
-    #[expect(clippy::cast_sign_loss, reason = "deadline_ms > 0 checked above")]
-    let total = Duration::from_millis(deadline_ms as u64);
-    let start = Instant::now();
-
-    // Acquire `inner.ws` with a timed try_lock. If the reader thread is
-    // mid-cycle the wait is bounded by `total`.
-    let Some(mut guard) = inner.ws.try_lock_for(total) else {
-        set_last_ws_recv_timed_out(true);
-        return std::ptr::null_mut();
-    };
-
-    let Some(ws_ref) = guard.as_mut() else {
-        // Connection closed under us. Cleanup-all-exits: guard drops on return.
-        return std::ptr::null_mut();
-    };
-
-    let remaining = total.saturating_sub(start.elapsed());
-    if remaining.is_zero() {
-        // Lock acquire consumed the entire budget. Cleanup-all-exits:
-        // explicit drop before return makes the release order visible.
-        drop(guard);
-        set_last_ws_recv_timed_out(true);
-        return std::ptr::null_mut();
-    }
-
-    if let Err(err) = set_read_timeout(ws_ref, Some(remaining)) {
-        eprintln!("[recv_timeout] failed to set read timeout: {err}");
-        drop(guard);
-        return std::ptr::null_mut();
-    }
-
-    let read_result = read_ws_with_operation_gate(&inner, ws_ref);
-    // Restore the timeout to the reader's pacing value so subsequent
-    // attached-reader cycles continue with their normal cadence.
-    let _ = set_read_timeout(ws_ref, Some(READER_READ_TIMEOUT));
-
-    match read_result {
-        Ok(msg) => {
-            // Cleanup-all-exits: guard drops at end of scope.
-            drop(guard);
-            build_recv_message(msg)
-        }
-        Err(err) if is_timeout_error(&err) => {
-            drop(guard);
-            set_last_ws_recv_timed_out(true);
-            std::ptr::null_mut()
-        }
-        Err(_) => {
-            drop(guard);
-            std::ptr::null_mut()
-        }
-    }
-}
-
-#[no_mangle]
-/// Returns 1 if the most recent `hew_ws_recv_timeout` on this thread
-/// observed a deadline expiry; 0 otherwise. Cleared at the start of
-/// every `hew_ws_recv_timeout` call.
-pub extern "C" fn hew_ws_recv_last_timed_out() -> i32 {
-    LAST_WS_RECV_TIMED_OUT.with(|c| i32::from(c.get()))
-}
-
-#[no_mangle]
-/// Returns true if `msg` is a non-null pointer (a successful recv result).
-/// Used by Hew callers to distinguish a valid message from a null return
-/// (timeout or error) without raw-pointer arithmetic.
-///
-/// # Safety
-///
-/// `msg` must be null or a valid pointer returned by [`hew_ws_recv`] /
-/// [`hew_ws_recv_timeout`]. Pointer reads are not performed; only the
-/// null check.
-pub unsafe extern "C" fn hew_ws_message_is_valid(msg: *const HewWsMessage) -> bool {
-    !msg.is_null()
-}
-
 /// Close a WebSocket connection and free its resources.
 ///
 /// # Safety
@@ -1181,73 +1182,6 @@ pub unsafe extern "C" fn hew_ws_close(ws: *mut HewWsConn) {
     // previous code omitted `Box::from_raw` on the attached branch, leaking the
     // outer `HewWsConn` struct (~16 bytes) on every attached close. Fixes #1324.
     drop(unsafe { Box::from_raw(ws) });
-}
-
-/// Get the message type tag from a [`HewWsMessage`].
-///
-/// Returns 0=text, 1=binary, 2=ping, 3=pong, 4=close, -1=error/null.
-///
-/// # Safety
-///
-/// `msg` must be a valid pointer returned by [`hew_ws_recv`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_ws_message_type(msg: *const HewWsMessage) -> i32 {
-    if msg.is_null() {
-        return -1;
-    }
-    // SAFETY: Caller guarantees `msg` is a valid pointer returned by hew_ws_recv.
-    (unsafe { &*msg }).msg_type
-}
-
-/// Copy the UTF-8 text content from a [`HewWsMessage`] into a managed string.
-///
-/// The caller owns the result and releases it with `string_release`. Invalid
-/// UTF-8 returns the empty string and records a WebSocket error.
-///
-/// # Safety
-///
-/// `msg` must be a valid pointer returned by [`hew_ws_recv`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_ws_message_text(msg: *const HewWsMessage) -> *mut HewString {
-    if msg.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees `msg` is a valid pointer returned by hew_ws_recv.
-    let m = unsafe { &*msg };
-    if m.data.is_null() || m.data_len == 0 {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: the message owns data_len readable bytes until it is released.
-    let bytes = unsafe { std::slice::from_raw_parts(m.data, m.data_len) };
-    if let Ok(text) = string_from_utf8(bytes) {
-        text
-    } else {
-        set_ws_last_error(
-            -1,
-            "websocket.message.text: payload is not valid UTF-8".to_owned(),
-        );
-        std::ptr::null_mut()
-    }
-}
-
-/// Free a [`HewWsMessage`] previously returned by [`hew_ws_recv`].
-///
-/// # Safety
-///
-/// `msg` must be a pointer previously returned by [`hew_ws_recv`], and must
-/// not have been freed already. Passing null is a no-op.
-#[no_mangle]
-pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
-    if msg.is_null() {
-        return;
-    }
-    // SAFETY: `msg` was allocated with Box::into_raw in build_message.
-    let message = unsafe { Box::from_raw(msg) };
-    if !message.data.is_null() {
-        // SAFETY: `data` came from malloc_bytes's sized-block allocation.
-        unsafe { hew_cabi::mem::buf_free(message.data.cast()) }; // CSTRING-FREE: sized-block (message.data = malloc_bytes payload)
-    }
-    // Box is dropped here, freeing the HewWsMessage struct.
 }
 
 // ── WebSocket Attach (Erlang-style active mode) ────────────────────
@@ -1513,21 +1447,10 @@ fn accept_cancellable_handshake(
     }
 }
 
-#[allow(
-    unexpected_cfgs,
-    reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
-)]
 fn set_server_websocket_blocking(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> io::Result<()> {
     match ws.get_mut() {
         MaybeTlsStream::Plain(stream) => stream.set_nonblocking(false),
-        #[cfg(feature = "native-tls")]
-        MaybeTlsStream::NativeTls(stream) => stream.get_mut().set_nonblocking(false),
-        #[cfg(feature = "__rustls-tls")]
         MaybeTlsStream::Rustls(stream) => stream.sock.set_nonblocking(false),
-        #[allow(
-            unreachable_patterns,
-            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
-        )]
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "unsupported websocket server stream kind",
@@ -1622,7 +1545,7 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
         HewWsAcceptResult::Accepted(ws) => inner
             .active_accepts
             .publish_if_open(&inner.cancel, || {
-                Box::into_raw(Box::new(HewWsConn::new(*ws, Role::Server)))
+                Box::into_raw(Box::new(HewWsConn::new(*ws, Role::Server, None)))
             })
             .unwrap_or(std::ptr::null_mut()),
         HewWsAcceptResult::Cancelled | HewWsAcceptResult::Error => std::ptr::null_mut(),
@@ -1717,18 +1640,33 @@ mod tests {
 
             with_actor_context(actor, || {
                 // SAFETY: null is the documented invalid-URL path.
-                let conn = unsafe { hew_ws_connect(std::ptr::null()) };
+                let conn = unsafe {
+                    hew_ws_connect(
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
+                        0,
+                        0,
+                    )
+                };
                 assert!(conn.is_null());
             });
             barrier.wait();
             assert_eq!(
                 worker.join().expect("worker should read actor error"),
-                (-1, "websocket.connect: url is null".to_owned())
+                (
+                    -1,
+                    "websocket.connect: HTTP format error: empty string".to_owned()
+                )
             );
 
             with_actor_context(actor, || {
                 assert_eq!(hew_ws_last_errno(), -1);
-                assert_eq!(ws_last_error_text(), "websocket.connect: url is null");
+                assert_eq!(
+                    ws_last_error_text(),
+                    "websocket.connect: HTTP format error: empty string"
+                );
             });
 
             // SAFETY: actor is live and owned by this test.
@@ -2002,10 +1940,6 @@ mod tests {
         (server, conn, client)
     }
 
-    #[allow(
-        unexpected_cfgs,
-        reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
-    )]
     fn set_peer_read_timeout(
         ws: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
         timeout: Duration,
@@ -2014,20 +1948,10 @@ mod tests {
             MaybeTlsStream::Plain(stream) => stream
                 .set_read_timeout(Some(timeout))
                 .expect("set peer read timeout"),
-            #[cfg(feature = "native-tls")]
-            MaybeTlsStream::NativeTls(stream) => stream
-                .get_mut()
-                .set_read_timeout(Some(timeout))
-                .expect("set peer read timeout"),
-            #[cfg(feature = "__rustls-tls")]
             MaybeTlsStream::Rustls(stream) => stream
                 .sock
                 .set_read_timeout(Some(timeout))
                 .expect("set peer read timeout"),
-            #[allow(
-                unreachable_patterns,
-                reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
-            )]
             _ => panic!("unsupported peer stream kind"),
         }
     }
@@ -2157,7 +2081,8 @@ mod tests {
         drop(listener);
         let url = ManagedString::new(format!("ws://127.0.0.1:{port}/"));
         // SAFETY: url is a live managed string.
-        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        let conn =
+            unsafe { hew_ws_connect(url.as_ptr(), std::ptr::null(), 0, std::ptr::null(), 0, 0) };
         assert!(conn.is_null(), "expected null for unreachable address");
         let errno = hew_ws_last_errno();
         assert!(
@@ -2180,45 +2105,17 @@ mod tests {
     #[test]
     fn connect_returns_null_for_null_url() {
         // SAFETY: Passing null is explicitly handled.
-        let conn = unsafe { hew_ws_connect(std::ptr::null()) };
-        assert!(conn.is_null());
-    }
-
-    #[test]
-    fn message_struct_layout() {
-        let msg = HewWsMessage {
-            msg_type: 0,
-            data: std::ptr::null_mut(),
-            data_len: 42,
+        let conn = unsafe {
+            hew_ws_connect(
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                0,
+            )
         };
-        assert_eq!(msg.msg_type, 0);
-        assert!(msg.data.is_null());
-        assert_eq!(msg.data_len, 42);
-
-        // Verify C-repr field ordering via pointer offsets.
-        let base = &raw const msg as usize;
-        let type_offset = &raw const msg.msg_type as usize - base;
-        let data_offset = &raw const msg.data as usize - base;
-        let len_offset = &raw const msg.data_len as usize - base;
-        assert_eq!(type_offset, 0, "msg_type must be at offset 0");
-        assert!(data_offset > type_offset, "data must come after msg_type");
-        assert!(len_offset > data_offset, "data_len must come after data");
-    }
-
-    #[test]
-    fn build_message_roundtrip() {
-        let payload = b"hello websocket";
-        let msg = build_message(0, payload);
-        assert!(!msg.is_null());
-        // SAFETY: msg was just allocated by build_message.
-        let msg_ref = unsafe { &*msg };
-        assert_eq!(msg_ref.msg_type, 0);
-        assert_eq!(msg_ref.data_len, payload.len());
-        // SAFETY: data was allocated with malloc_bytes from payload.
-        let data_slice = unsafe { std::slice::from_raw_parts(msg_ref.data, msg_ref.data_len) };
-        assert_eq!(data_slice, payload);
-        // SAFETY: msg was allocated by build_message.
-        unsafe { hew_ws_message_free(msg) };
+        assert!(conn.is_null());
     }
 
     #[test]
@@ -2294,12 +2191,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn message_free_null_is_noop() {
-        // SAFETY: Passing null is explicitly handled.
-        unsafe { hew_ws_message_free(std::ptr::null_mut()) };
-    }
-
     /// `hew_ws_send_text` with null ws returns -1.
     #[test]
     fn send_text_null_ws_returns_error() {
@@ -2326,19 +2217,26 @@ mod tests {
     /// `hew_ws_send_binary` with null ws returns -1.
     #[test]
     fn send_binary_null_ws_returns_error() {
-        let data = [1u8, 2, 3];
+        let data = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
         assert_eq!(
             // SAFETY: null ws is explicitly handled.
-            unsafe { hew_ws_send_binary(std::ptr::null_mut(), data.as_ptr(), data.len()) },
+            unsafe { hew_ws_send_binary(std::ptr::null_mut(), &raw const data) },
             -1
         );
     }
 
-    /// `hew_ws_recv` with null ws returns null.
+    /// `hew_ws_recv_next` with null ws fails without touching memory.
     #[test]
-    fn recv_null_ws_returns_null() {
+    fn recv_null_ws_fails() {
         // SAFETY: null ws is explicitly handled.
-        assert!(unsafe { hew_ws_recv(std::ptr::null_mut()) }.is_null());
+        assert_eq!(
+            unsafe { hew_ws_recv_next(std::ptr::null_mut(), 0) },
+            RECV_FAILED
+        );
     }
 
     /// `hew_ws_close` with null ws is a no-op.
@@ -2348,57 +2246,22 @@ mod tests {
         unsafe { hew_ws_close(std::ptr::null_mut()) };
     }
 
-    /// `hew_ws_recv_timeout` returns null and sets the timeout sentinel
-    /// when the peer accepts the WebSocket but never sends anything.
-    ///
-    /// The 200 ms deadline must fire well within 2 s. The previous reader
-    /// architecture used `std::sync::Mutex` which has no timed acquire,
-    /// so a stalled peer pinned the calling thread until the read returned.
+    /// `hew_ws_recv_next` reports the deadline when the peer accepts the
+    /// WebSocket but never sends anything, and a second call times out
+    /// again rather than blocking on a lock the first left held.
     #[test]
     fn ws_recv_timeout_fires_on_silent_peer() {
         let (server, conn, _client) = attach_test_conn();
-        // Note: `_client` is the peer-side WebSocket. We deliberately do
-        // not send anything from it — the server-side recv must time out.
-
         // SAFETY: conn is a valid HewWsConn pointer.
-        let msg = unsafe { hew_ws_recv_timeout(conn, 200) };
-        let timed_out = hew_ws_recv_last_timed_out();
-
-        assert!(msg.is_null(), "deadline expiry must return null message");
-        assert_eq!(timed_out, 1, "timeout sentinel must be set");
-
-        // Cleanup-all-exits regression: a follow-up call with deadline
-        // must also time out rather than block (the lock was released),
-        // proving we didn't leak the parking_lot guard on the timeout exit
-        // path.
+        assert_eq!(unsafe { hew_ws_recv_next(conn, 200) }, RECV_TIMED_OUT);
         // SAFETY: conn is a valid HewWsConn pointer.
-        let msg2 = unsafe { hew_ws_recv_timeout(conn, 100) };
-        let timed_out2 = hew_ws_recv_last_timed_out();
-        assert!(msg2.is_null());
-        assert_eq!(timed_out2, 1);
+        assert_eq!(unsafe { hew_ws_recv_next(conn, 100) }, RECV_TIMED_OUT);
+        // SAFETY: conn is a valid HewWsConn pointer.
+        assert_eq!(unsafe { hew_ws_recv_next(conn, 0) }, RECV_TIMED_OUT);
 
         // SAFETY: conn and server are valid; close is idempotent.
         unsafe { hew_ws_close(conn) };
         unsafe { hew_ws_server_close(server) };
-    }
-
-    /// `build_message` with empty payload creates a valid message with a non-null
-    /// sentinel data pointer (canonical `malloc_bytes` empty behaviour).
-    #[test]
-    fn build_message_empty_payload() {
-        let msg = build_message(4, &[]);
-        assert!(!msg.is_null());
-        // SAFETY: msg was just allocated by build_message.
-        let msg_ref = unsafe { &*msg };
-        assert_eq!(msg_ref.msg_type, 4);
-        assert_eq!(msg_ref.data_len, 0);
-        // malloc_bytes returns a non-null 1-byte sentinel for empty input.
-        assert!(
-            !msg_ref.data.is_null(),
-            "empty payload should have a non-null sentinel"
-        );
-        // SAFETY: msg was allocated by build_message.
-        unsafe { hew_ws_message_free(msg) };
     }
 
     /// connect with an HTTP URL (not ws://) returns null.
@@ -2406,7 +2269,8 @@ mod tests {
     fn connect_http_url_returns_null() {
         let url = ManagedString::new("http://127.0.0.1:1/path");
         // SAFETY: url is a live managed string.
-        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        let conn =
+            unsafe { hew_ws_connect(url.as_ptr(), std::ptr::null(), 0, std::ptr::null(), 0, 0) };
         assert!(conn.is_null(), "non-WebSocket URL should fail");
         assert_eq!(hew_ws_last_errno(), -1);
         assert!(
@@ -2420,7 +2284,8 @@ mod tests {
     fn connect_malformed_url_is_invalid_argument_not_other_zero() {
         let url = ManagedString::new("not a url");
         // SAFETY: url is a live managed string.
-        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        let conn =
+            unsafe { hew_ws_connect(url.as_ptr(), std::ptr::null(), 0, std::ptr::null(), 0, 0) };
         assert!(conn.is_null(), "malformed URL should fail");
         assert_eq!(hew_ws_last_errno(), -1);
         assert_eq!(
@@ -2430,12 +2295,59 @@ mod tests {
         assert_eq!(hew_ws_last_errno(), -1);
     }
 
+    /// A redirect that changes the transport is refused before it is
+    /// followed, in either direction; the `wss://` to `ws://` case would hand
+    /// the upgrade (and anything sent after it) to a plaintext peer.
+    #[test]
+    fn redirect_changing_transport_is_refused() {
+        use std::io::{Read, Write};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = peer.read(&mut chunk).unwrap();
+                assert_ne!(count, 0, "client closed before its request ended");
+                request.extend_from_slice(&chunk[..count]);
+            }
+            let reply = format!(
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: wss://127.0.0.1:{port}/\r\nContent-Length: 0\r\n\r\n"
+            );
+            peer.write_all(reply.as_bytes()).unwrap();
+            // A followed redirect would connect again; none may arrive.
+            listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(listener.accept().is_err(), "the redirect was followed");
+        });
+        let options = ConnectOptions {
+            subprotocols: Vec::new(),
+            trust: Trust::Bundled,
+            handshake: Some(Duration::from_secs(5)),
+            io: None,
+        };
+        let result = connect_client(
+            &format!("ws://127.0.0.1:{port}/"),
+            WebSocketConfig::default(),
+            3,
+            &options,
+        );
+        let Err((errno, detail)) = result else {
+            panic!("a ws:// to wss:// redirect must be refused");
+        };
+        assert_eq!(errno, WS_INVALID_ARGUMENT);
+        assert_eq!(detail, "redirect between ws:// and wss:// refused");
+        server.join().unwrap();
+    }
+
     /// connect with an empty string returns null.
     #[test]
     fn connect_empty_url_returns_null() {
         let url = ManagedString::new("");
         // SAFETY: url is a live managed string.
-        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        let conn =
+            unsafe { hew_ws_connect(url.as_ptr(), std::ptr::null(), 0, std::ptr::null(), 0, 0) };
         assert!(conn.is_null(), "empty URL should fail");
         assert_eq!(hew_ws_last_errno(), -1);
         assert!(!ws_last_error_text().is_empty());
@@ -2481,12 +2393,9 @@ mod tests {
 
         for expected in ["", "café\0雪"] {
             // SAFETY: conn is a valid pointer returned by hew_ws_server_accept.
-            let msg = unsafe { hew_ws_recv(conn) };
-            assert!(!msg.is_null(), "recv should succeed");
-            // SAFETY: msg is live; the returned text owns a separate managed string.
-            let text_value = unsafe { hew_ws_message_text(msg) };
-            // SAFETY: the message is no longer needed; text_value survives its release.
-            unsafe { hew_ws_message_free(msg) };
+            assert_eq!(unsafe { hew_ws_recv_next(conn, -1) }, RECV_TEXT);
+            // SAFETY: conn holds the received text until taken.
+            let text_value = unsafe { hew_ws_take_text(conn) };
             // SAFETY: text_value remains owned until released after sending the echo.
             let text = unsafe { string_as_str(text_value) };
             assert_eq!(text, expected);
@@ -2969,7 +2878,7 @@ mod tests {
         let inner = unsafe { &*conn }.inner.clone();
         let recv_thread = std::thread::spawn(move || {
             let _recv_guard = ActiveCallGuard::new(&inner.active_recvs);
-            recv_message(&inner).0
+            matches!(receive(&inner, None), Received::Closed)
         });
 
         // Recv loop should become active before cancellation.
@@ -2982,10 +2891,9 @@ mod tests {
 
         // join() is the exact synchronization for the recv thread's exit; a
         // stuck cancel fails via the harness's per-test timeout.
-        assert_eq!(
+        assert!(
             recv_thread.join().expect("recv thread should join"),
-            HewWsRecvResult::Cancelled,
-            "recv helper should report cancellation distinctly"
+            "a receive cancelled by close reports the connection closed"
         );
 
         drop(client);
@@ -3091,13 +2999,12 @@ mod tests {
                 let (started_tx, started_rx) = mpsc::channel();
                 let send_thread = std::thread::spawn(move || {
                     started_tx.send(()).expect("signal send start");
-                    unsafe {
-                        hew_ws_send_binary(
-                            conn_addr as *mut HewWsConn,
-                            payload.as_ptr(),
-                            payload.len(),
-                        )
-                    }
+                    let data = BytesTriple {
+                        ptr: payload.as_ptr().cast_mut(),
+                        offset: 0,
+                        len: u32::try_from(payload.len()).expect("payload fits u32"),
+                    };
+                    unsafe { hew_ws_send_binary(conn_addr as *mut HewWsConn, &raw const data) }
                 });
                 started_rx.recv().expect("send thread should start");
                 std::thread::sleep(Duration::from_millis(25));
@@ -3498,5 +3405,172 @@ mod tests {
     fn server_close_null_is_noop() {
         // SAFETY: Passing null is explicitly handled by hew_ws_server_close.
         unsafe { hew_ws_server_close(std::ptr::null_mut()) };
+    }
+
+    // ── Client options: WSS, subprotocols, deadlines ─────────────────
+
+    /// Serve one WebSocket upgrade over TLS, selecting `select` from the
+    /// client's offer, and echo one message.
+    fn serve_wss_once(
+        config: Arc<rustls::ServerConfig>,
+        select: Option<&'static str>,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            let (tcp, _) = listener.accept().expect("accept");
+            tcp.set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("timeout");
+            let tls = rustls::StreamOwned::new(
+                rustls::ServerConnection::new(config).expect("server connection"),
+                tcp,
+            );
+            #[expect(
+                clippy::result_large_err,
+                reason = "tungstenite fixes the handshake callback's error type"
+            )]
+            let callback =
+                |request: &tungstenite::handshake::server::Request,
+                 mut response: tungstenite::handshake::server::Response| {
+                    let offered = request
+                        .headers()
+                        .get("Sec-WebSocket-Protocol")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    if let Some(chosen) = select.filter(|chosen| offered.contains(chosen)) {
+                        response
+                            .headers_mut()
+                            .insert("Sec-WebSocket-Protocol", chosen.parse().expect("header"));
+                    }
+                    Ok(response)
+                };
+            let Ok(mut ws) = tungstenite::accept_hdr(tls, callback) else {
+                return;
+            };
+            if let Ok(message) = ws.read() {
+                let _ = ws.send(message);
+            }
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        });
+        (port, server)
+    }
+
+    fn connect_options(
+        url: &str,
+        protocols: &str,
+        pem: &[u8],
+        handshake_ms: i64,
+    ) -> *mut HewWsConn {
+        let url = ManagedString::new(url);
+        let protocols = ManagedString::new(protocols);
+        let pem = BytesTriple {
+            ptr: pem.as_ptr().cast_mut(),
+            offset: 0,
+            len: u32::try_from(pem.len()).expect("pem fits u32"),
+        };
+        // SAFETY: every argument outlives the call.
+        unsafe {
+            hew_ws_connect(
+                url.as_ptr(),
+                protocols.as_ptr(),
+                1,
+                &raw const pem,
+                handshake_ms,
+                0,
+            )
+        }
+    }
+
+    #[test]
+    fn wss_with_pem_trust_negotiates_a_subprotocol_and_echoes_binary() {
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        let (ca_pem, config) = crate::tls::tests::ca_and_server();
+        let (port, server) = serve_wss_once(config, Some("mqtt"));
+        let conn = connect_options(
+            &format!("wss://localhost:{port}/mqtt"),
+            "mqttv5,mqtt",
+            ca_pem.as_bytes(),
+            5_000,
+        );
+        assert!(!conn.is_null(), "connect failed: {}", ws_last_error_text());
+        // SAFETY: conn is live until closed below.
+        let selected = unsafe { hew_ws_subprotocol(conn) };
+        // SAFETY: selected is a fresh managed string released below.
+        assert_eq!(unsafe { string_as_str(selected) }, "mqtt");
+        unsafe { hew_cabi::string::string_release(selected) };
+        let payload = [0xC0u8, 0x00];
+        let data = BytesTriple {
+            ptr: payload.as_ptr().cast_mut(),
+            offset: 0,
+            len: 2,
+        };
+        // SAFETY: conn and data are live.
+        assert_eq!(unsafe { hew_ws_send_binary(conn, &raw const data) }, 0);
+        // SAFETY: conn is live.
+        assert_eq!(unsafe { hew_ws_recv_next(conn, 5_000) }, RECV_BINARY);
+        // SAFETY: conn holds the binary payload.
+        let echoed = unsafe { hew_ws_take_binary(conn) };
+        assert_eq!(echoed.len, 2);
+        unsafe { hew_runtime::bytes::hew_bytes_drop(echoed.ptr) };
+        // SAFETY: conn is live.
+        assert_eq!(unsafe { hew_ws_recv_next(conn, 5_000) }, RECV_CLOSED);
+        unsafe { hew_ws_close(conn) };
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn unselected_subprotocol_and_untrusted_server_fail_the_connect() {
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        let (ca_pem, config) = crate::tls::tests::ca_and_server();
+        let (port, server) = serve_wss_once(Arc::clone(&config), None);
+        let conn = connect_options(
+            &format!("wss://localhost:{port}/"),
+            "mqtt",
+            ca_pem.as_bytes(),
+            5_000,
+        );
+        assert!(conn.is_null());
+        assert!(
+            ws_last_error_text().contains("SubProtocol error"),
+            "{}",
+            ws_last_error_text()
+        );
+        server.join().expect("server thread");
+
+        let (port, server) = serve_wss_once(config, None);
+        let url = ManagedString::new(format!("wss://localhost:{port}/"));
+        // SAFETY: url is live; bundled trust does not know the test CA.
+        let conn = unsafe {
+            hew_ws_connect(
+                url.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                5_000,
+                0,
+            )
+        };
+        assert!(conn.is_null());
+        assert!(
+            ws_last_error_text().contains("invalid peer certificate"),
+            "{}",
+            ws_last_error_text()
+        );
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn handshake_deadline_bounds_a_silent_server() {
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let started = Instant::now();
+        let conn = connect_options(&format!("ws://127.0.0.1:{port}/"), "", &[], 300);
+        assert!(conn.is_null());
+        assert_eq!(hew_ws_last_errno(), WS_TIMED_OUT);
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        drop(listener);
     }
 }

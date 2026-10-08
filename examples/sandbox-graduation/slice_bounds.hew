@@ -1,0 +1,9 @@
+// A range slice inside the vector succeeds, an empty slice at the end is
+// empty, and a slice past the end faults with IndexOutOfBounds on both
+// engines rather than clamping.
+fn main() {
+    let v: Vec<i64> = [1, 2, 3, 4];
+    println(f"{v[1..3].len()} {v[4..].len()} {v[4..4].len()}");
+    println(v[1..9].len());
+    println("unreachable");
+}

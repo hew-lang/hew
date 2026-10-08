@@ -1358,7 +1358,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std.net`          | `net.listen`, `net.connect`, `net.connect_timeout`, `net.parse_endpoint`; `Connection.recv/send/finish/split/close` (§6.4.7)                               |
 | `std.text.regex`   | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                |
 | `std.net.mime`     | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                           |
-| `std.process`      | `process.run`, `process.run_argv`, `process.start`, `process.start_argv`                                                                                     |
+| `std.process`      | `process.run`, `process.run_argv`, `process.command`, `process.start`                                                                                        |
 
 Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
@@ -3765,7 +3765,7 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
 | `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(ms)`, `.set_write_timeout(ms)`, `.close()` |
-| `process.Child`  | `process.start(cmd) -> Result<Child, ProcessError>`, `process.start_argv(cmd, argv) -> Result<Child, ProcessError>` | `.wait()`, `.kill()`                     |
+| `process.Child`  | `process.start(command) -> Result<Child, ProcessError>` | `.id()`, `.stdin()` → `Result<Sink<bytes>, ProcessError>`, `.stdout()`/`.stderr()` → `Result<Stream<bytes>, ProcessError>`, `.wait()` → `Result<ExitStatus, ProcessError>`, `.try_wait()` → `Result<Option<ExitStatus>, ProcessError>`, `.terminate()`, `.kill()` → `Result<(), ProcessError>`, `.close()` (§6.4.7) |
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and
@@ -5473,7 +5473,12 @@ loop. A sink released because its owning actor crashed marks the pipe
 faulted: the consumer's next `recv` traps instead of reading a clean end.
 A sink released by a normal return, a stop or `close` publishes a clean
 end of data. A `send` never traps for a missing reader; it reports
-`SendError.Closed`.
+`SendError.Closed`. A socket `send` whose peer reset or closed the
+connection also reports `SendError.Closed`, and one whose write timeout
+passes reports `SendError.TimedOut(n)`, where `n` is how many bytes of the
+item reached the operating system first; the peer's view of the stream is
+then unknown, so the caller retires the stream rather than resending. Any
+other socket write failure traps.
 
 #### 6.4.5 Selection
 
@@ -5481,9 +5486,14 @@ end of data. A `send` never traps for a missing reader; it reports
 `Option<T>` and `None` is a normal winning value (§4.11.1). Observing a
 stream takes nothing: a losing arm leaves every element, and every byte
 of a socket, for the next receive. A regular file stream is ready at
-once, since its next read never waits. A line, chunk or take adapter over
-a socket stream, and a file stream over a pipe, device or terminal, whose
-next read can wait, are not select sources in edition 2026 (§2.1.1).
+once, since its next read never waits. A child process's stdout or stderr
+stream (§6.4.7) is a select source on Unix, observed through the same
+readiness as a socket; on Windows it is read on the blocking pool and is
+not one yet. A line, chunk or take adapter over a socket or child pipe
+stream, and a file stream over a pipe, device or terminal, whose next read
+can wait, are not select sources in edition 2026 (§2.1.1). The set of
+select sources only grows: admitting another stream kind refuses no
+program that compiles today and changes the meaning of none.
 
 #### 6.4.6 Codecs
 
@@ -5502,13 +5512,19 @@ trait Codec<T> {
 ```
 
 `decode` returns the first complete frame with the bytes that follow it,
-or `Incomplete` with the buffer unchanged when more bytes are needed;
-`encode` returns one item's frame. The shape follows value semantics: a
-`var` parameter is the callee's own copy, so a codec hands the remaining
-bytes back instead of advancing the caller's buffer in place. `std.stream`
-ships `Lines` (`Codec<string>`) and
-`LengthPrefixed { width }` (`Codec<bytes>`); `lines()` is the `Lines`
-case as a method. Generic `frames(codec)` / `framed(codec)` adapters over
+or `Incomplete` with the bytes to keep when more bytes are needed (the
+buffer unchanged unless the codec discarded a malformed record); `encode`
+returns one item's frame. The shape follows value semantics: a `var`
+parameter is the callee's own copy, so a codec hands the remaining bytes
+back instead of advancing the caller's buffer in place. `std.stream` ships
+`Lines` (`Codec<string>`) and two `Codec<bytes>` framings:
+`LengthPrefixed { width, order, max }`, a 1-, 2- or 4-byte length in
+either byte order whose declared length above `max` is `Malformed` (a
+length-prefixed stream cannot resynchronize), and `Slip { max }` (RFC
+1055), which skips an empty, malformed or oversized record to the next
+END and never errors. Because `encode` returns `bytes`, an item past a
+codec's bound panics and names the codec. `lines()` is the `Lines` case
+as a method. Generic `frames(codec)` / `framed(codec)` adapters over
 a user codec are decided but not lowered in edition 2026 (§2.1.1).
 
 #### 6.4.7 Sockets
@@ -5516,7 +5532,29 @@ a user codec are decided but not lowered in edition 2026 (§2.1.1).
 `std.net.Connection` speaks the same contract: `recv() -> Option<bytes>`,
 `send(bytes) -> Result<(), SendError>`, `finish()`, `close()` and
 `split()`. A transport failure on `recv` traps; a peer that has gone away
-is `SendError.Closed` on `send`. See `std/net/net.hew` for the full API.
+is `SendError.Closed` and a passed write timeout is `SendError.TimedOut(n)`
+on `send`, on the connection and on its split sink alike (§6.4.4). The
+write timeout is `set_write_timeout` on the connection before `split()`.
+A socket send cancelled by `scope within` also leaves the stream position
+unknown. See `std/net/net.hew` for the full API.
+
+A child process started by `std.process.start` with `Stdio.Piped` hands its
+pipes out once each: `child.stdin()` is a `Sink<bytes>` whose `finish()`
+gives the child end of input, and `child.stdout()` and `child.stderr()` are
+`Stream<bytes>` values; a second take, or a take of a stream that was not
+piped, is `Err(ProcessError.NotPiped)`. A child that closed its stdin makes
+`send` report `SendError.Closed`. `child.wait()` suspends the calling task
+and yields `ExitStatus.Exited(code)` or `ExitStatus.Signalled(signal)`.
+While the child runs, a wait holds no thread: neither a scheduler worker
+nor a blocking-pool thread. It holds one exit watch registered for that
+wait alone, which the I/O reactor observes like a pipe (a pidfd on Linux,
+a kqueue `EVFILT_PROC` filter on FreeBSD and macOS), and on Windows a
+registration with the system thread pool's wait on the process handle. The
+`Child` owns the process until it is reaped and keeps the status, so a
+second `wait` returns it again and a later `terminate()` or `kill()`
+signals nothing. A wait cancelled by `scope within` releases its watch and
+leaves the child running and unreaped. Releasing a `Child` that is still
+running kills and reaps it.
 
 #### 6.4.8 Actor streams
 

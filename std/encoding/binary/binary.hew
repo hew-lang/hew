@@ -1,288 +1,431 @@
-//! Fixed-width integer encoding and decoding in little-endian and big-endian
-//! byte order.
+//! Fixed-width integer and IEEE 754 binary32 encoding in little-endian and
+//! big-endian byte order.
 //!
-//! Mirrors the semantics of Go's `encoding/binary` package.  All integers are
-//! represented as `i64` at the Hew API boundary: unsigned widths (u16/u32/u64)
-//! carry the bit-pattern without sign extension; signed widths (i16/i32/i64)
-//! use two's-complement representation.
+//! All integers are `i64` at the Hew API boundary: unsigned widths carry the
+//! bit pattern without sign extension; signed widths use two's complement.
 //!
-//! The `put_*` functions return a new `bytes` buffer containing the encoded
-//! integer.  Callers that need to concatenate multiple values build each
-//! buffer separately; a future `bytes.append` primitive will enable
-//! zero-copy assembly once it is available.
-//!
-//! The `get_*` functions read from offset 0 of the supplied buffer; the
-//! buffer must contain at least the required number of bytes or the runtime
-//! aborts with an out-of-bounds diagnostic.
-//!
-//! # Examples
+//! The checked functions (`slice`, `read_*`, `put_uint_*`, `put_f32_*`)
+//! return `Result<_, BinaryError>` and never abort, so a parser written with
+//! `?` turns short or malformed input into an error value:
 //!
 //! ```
 //! import std.encoding.binary;
 //!
+//! fn parse(record: bytes) -> Result<(i64, f64), binary.BinaryError> {
+//!     .Ok((binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?))
+//! }
+//!
 //! fn main() {
-//!     let buf = binary.put_u32_le(0x01020304);
-//!     // buf contains [0x04, 0x03, 0x02, 0x01]
-//!     let v = binary.get_u32_le(buf);
-//!     println(v);   // 16909060 (= 0x01020304)
+//!     var record = binary.put_uint_le(7, 2).expect("width 2");
+//!     record.append(binary.put_f32_le(21.5).expect("finite"));
+//!     println(f"{parse(record):?}");          // Ok((7, 21.5))
+//!     println(f"{parse(record[0..3]):?}");    // Err(OutOfRange(2, 4, 3))
 //! }
 //! ```
+//!
+//! The fixed-width `get_*` functions read from offset 0 and abort when the
+//! buffer is too short; the `put_*` functions keep only the low bits of their
+//! argument. Use them where the length is already established.
 
-// ── Internal: extract the low 8 bits of an i64 as u8 ─────────────────
-//
-// INTERNAL-ABI: explicit `let masked: i64` annotation is required — `0xFF`
-// is an i32 literal; without the annotation, `v & 0xFF` resolves to i32
-// storage, causing a NumericCast storage-type mismatch when casting to u8.
+import std.math;
+
+/// Byte order of a multi-byte field.
+pub enum ByteOrder {
+    /// Most significant byte first (network order).
+    Big;
+    /// Least significant byte first.
+    Little;
+}
+
+/// Why a checked read or write was refused.
+pub enum BinaryError {
+    /// `OutOfRange(offset, width, available)`: the field at `offset` spanning
+    /// `width` bytes does not lie within the `available` bytes.
+    OutOfRange(i64, i64, i64);
+    /// The requested integer width lies outside `0..=8` bytes.
+    InvalidWidth(i64);
+    /// The value is an infinity or NaN, which binary32 fields here never carry.
+    NonFinite;
+    /// The value does not fit the field: an unsigned integer outside its
+    /// width, or a float beyond the largest finite binary32.
+    Overflow;
+}
+
+/// Print a `BinaryError`'s variant and its fields.
+impl Display for BinaryError {
+    fn fmt(self) -> string {
+        match self {
+            BinaryError.OutOfRange(offset, width, available) => f"OutOfRange({offset}, {width}, {available})",
+            BinaryError.InvalidWidth(width) => f"InvalidWidth({width})",
+            BinaryError.NonFinite => "NonFinite",
+            BinaryError.Overflow => "Overflow",
+        }
+    }
+}
+
+// ── Internal width helpers ─────────────────────────────────────────────
+
+// INTERNAL-ABI: explicit `let masked: i64` annotation keeps the mask in i64
+// storage before the u8 narrowing `bytes.push` takes.
 fn lo_byte(v: i64) -> u8 { // INTERNAL-ABI: masks to low 8 bits; u8 matches bytes.push contract
     let masked: i64 = v & 0xFF;
     masked as u8
 }
 
-// ── Little-endian put helpers ─────────────────────────────────────────
-/// Encode a 16-bit value `v` as 2 little-endian bytes.
+/// The low `width` bytes of `v`, least significant first or last.
+fn encode(v: i64, width: i64, order: ByteOrder) -> bytes {
+    var b: bytes = bytes.new();
+    for k in 0..width {
+        let shift = match order {
+            ByteOrder.Little => 8 * k,
+            ByteOrder.Big => 8 * (width - 1 - k),
+        };
+        b.push(lo_byte(v >> shift));
+    }
+    b
+}
+
+/// The unsigned value of `width` bytes at `at`; the caller checked the range.
+fn decode(data: bytes, at: i64, width: i64, order: ByteOrder) -> i64 {
+    var v: i64 = 0;
+    for k in 0..width {
+        let byte = data[at + k] as i64;
+        let shift = match order {
+            ByteOrder.Little => 8 * k,
+            ByteOrder.Big => 8 * (width - 1 - k),
+        };
+        v = v | byte << shift;
+    }
+    v
+}
+
+fn check_width(width: i64) -> Result<(), BinaryError> {
+    if width < 0 || width > 8 {
+        return .Err(BinaryError.InvalidWidth(width));
+    }
+    .Ok(())
+}
+
+fn check_range(data: bytes, at: i64, width: i64) -> Result<(), BinaryError> {
+    let available = data.len();
+    if at < 0 || at > available || width > available - at {
+        return .Err(BinaryError.OutOfRange(at, width, available));
+    }
+    .Ok(())
+}
+
+/// Sign-extend the low `width` bytes of `u`.
+fn sign_extend(u: i64, width: i64) -> i64 {
+    if width == 0 || width == 8 {
+        return u;
+    }
+    let half: i64 = 1 << (8 * width - 1);
+    if u >= half {
+        u - (half << 1)
+    } else {
+        u
+    }
+}
+
+// ── Checked slices ─────────────────────────────────────────────────────
+
+/// The bytes `start..end` of `data`, sharing its allocation.
 ///
-/// Only the low 16 bits of `v` are written; the upper bits are ignored.
+/// Returns `OutOfRange(start, end - start, data.len())` unless
+/// `0 <= start <= end <= data.len()`.
+pub fn slice(data: bytes, start: i64, end: i64) -> Result<bytes, BinaryError> {
+    if start < 0 || end < start || end > data.len() {
+        return .Err(BinaryError.OutOfRange(start, end - start, data.len()));
+    }
+    .Ok(data[start..end])
+}
+
+// ── Checked integer reads and writes ───────────────────────────────────
+
+fn read_uint(data: bytes, at: i64, width: i64, order: ByteOrder) -> Result<i64, BinaryError> {
+    check_width(width)?;
+    check_range(data, at, width)?;
+    .Ok(decode(data, at, width, order))
+}
+
+/// Read an unsigned little-endian integer of `width` bytes (0 to 8) at `at`.
+///
+/// Width 8 returns the 64-bit pattern, so values past `i64` max are negative.
+pub fn read_uint_le(data: bytes, at: i64, width: i64) -> Result<i64, BinaryError> {
+    read_uint(data, at, width, ByteOrder.Little)
+}
+
+/// Read an unsigned big-endian integer of `width` bytes (0 to 8) at `at`.
+///
+/// Width 8 returns the 64-bit pattern, so values past `i64` max are negative.
+pub fn read_uint_be(data: bytes, at: i64, width: i64) -> Result<i64, BinaryError> {
+    read_uint(data, at, width, ByteOrder.Big)
+}
+
+/// Read a two's-complement little-endian integer of `width` bytes at `at`,
+/// sign-extended to `i64`.
+pub fn read_int_le(data: bytes, at: i64, width: i64) -> Result<i64, BinaryError> {
+    .Ok(sign_extend(read_uint(data, at, width, ByteOrder.Little)?, width))
+}
+
+/// Read a two's-complement big-endian integer of `width` bytes at `at`,
+/// sign-extended to `i64`.
+pub fn read_int_be(data: bytes, at: i64, width: i64) -> Result<i64, BinaryError> {
+    .Ok(sign_extend(read_uint(data, at, width, ByteOrder.Big)?, width))
+}
+
+fn put_uint(value: i64, width: i64, order: ByteOrder) -> Result<bytes, BinaryError> {
+    check_width(width)?;
+    if width < 8 && (value < 0 || value >= 1 << (8 * width)) {
+        return .Err(BinaryError.Overflow);
+    }
+    .Ok(encode(value, width, order))
+}
+
+/// Encode `value` as an unsigned little-endian integer of `width` bytes.
+///
+/// `Overflow` unless `0 <= value < 2^(8 * width)`; width 8 writes the 64-bit
+/// pattern of any `i64`.
+pub fn put_uint_le(value: i64, width: i64) -> Result<bytes, BinaryError> {
+    put_uint(value, width, ByteOrder.Little)
+}
+
+/// Encode `value` as an unsigned big-endian integer of `width` bytes.
+///
+/// `Overflow` unless `0 <= value < 2^(8 * width)`; width 8 writes the 64-bit
+/// pattern of any `i64`.
+pub fn put_uint_be(value: i64, width: i64) -> Result<bytes, BinaryError> {
+    put_uint(value, width, ByteOrder.Big)
+}
+
+// ── Checked IEEE 754 binary32 ──────────────────────────────────────────
+//
+// Hew has no f32 bit cast yet, so a binary32 field is converted through the
+// f64 bit pattern: every finite binary32 value, including -0.0 and the
+// subnormals, is exactly representable as an f64.
+
+/// The f64 holding the binary32 value with bit pattern `bits`.
+fn f32_bits_to_f64(bits: i64) -> Result<f64, BinaryError> {
+    let sign = (bits >> 31) & 1;
+    let exponent = (bits >> 23) & 0xFF;
+    let mantissa = bits & 0x7FFFFF;
+    if exponent == 0xFF {
+        return .Err(BinaryError.NonFinite);
+    }
+    var pattern: i64 = sign << 63;
+    if exponent != 0 {
+        pattern = pattern | (exponent - 127 + 1023) << 52 | mantissa << 29;
+    } else if mantissa != 0 {
+        // Subnormal: mantissa * 2^-149, normalized around its leading bit.
+        var top = 22;
+        while (mantissa >> top) & 1 == 0 {
+            top = top - 1;
+        }
+        let fraction = mantissa - (1 << top);
+        pattern = pattern | (top - 149 + 1023) << 52 | fraction << (52 - top);
+    }
+    .Ok(math.from_bits(pattern as u64))
+}
+
+/// The binary32 bit pattern nearest to `value`.
+fn f64_to_f32_bits(value: f64) -> Result<i64, BinaryError> {
+    if !value.is_finite() {
+        return .Err(BinaryError.NonFinite);
+    }
+    let rounded = (value as f32) as f64;
+    if !rounded.is_finite() {
+        return .Err(BinaryError.Overflow);
+    }
+    let pattern = rounded.to_bits() as i64;
+    let sign = (pattern >> 63) & 1;
+    let exponent = ((pattern >> 52) & 0x7FF) - 1023;
+    let fraction = pattern & 0xFFFFFFFFFFFFF;
+    var bits: i64 = sign << 31;
+    if (pattern & 0x7FFFFFFFFFFFFFFF) == 0 {
+        return .Ok(bits);
+    }
+    if exponent >= -126 {
+        bits = bits | (exponent + 127) << 23 | fraction >> 29;
+    } else {
+        // Subnormal binary32: the full significand scaled to 2^-149 units.
+        let significand = fraction | 1 << 52;
+        bits = bits | significand >> (-97 - exponent);
+    }
+    .Ok(bits)
+}
+
+/// Read a little-endian binary32 at `at` as an `f64`.
+///
+/// `NonFinite` for an infinity or NaN pattern.
+pub fn read_f32_le(data: bytes, at: i64) -> Result<f64, BinaryError> {
+    f32_bits_to_f64(read_uint(data, at, 4, ByteOrder.Little)?)
+}
+
+/// Read a big-endian binary32 at `at` as an `f64`.
+///
+/// `NonFinite` for an infinity or NaN pattern.
+pub fn read_f32_be(data: bytes, at: i64) -> Result<f64, BinaryError> {
+    f32_bits_to_f64(read_uint(data, at, 4, ByteOrder.Big)?)
+}
+
+/// Encode `value`, rounded to the nearest binary32, as 4 little-endian bytes.
+///
+/// `NonFinite` for an infinity or NaN; `Overflow` when the value rounds past
+/// the largest finite binary32.
+pub fn put_f32_le(value: f64) -> Result<bytes, BinaryError> {
+    .Ok(encode(f64_to_f32_bits(value)?, 4, ByteOrder.Little))
+}
+
+/// Encode `value`, rounded to the nearest binary32, as 4 big-endian bytes.
+///
+/// `NonFinite` for an infinity or NaN; `Overflow` when the value rounds past
+/// the largest finite binary32.
+pub fn put_f32_be(value: f64) -> Result<bytes, BinaryError> {
+    .Ok(encode(f64_to_f32_bits(value)?, 4, ByteOrder.Big))
+}
+
+// ── Fixed-width writes (keep the low bits) ─────────────────────────────
+
+/// Encode the low 16 bits of `v` as 2 little-endian bytes.
 pub fn put_u16_le(v: i64) -> bytes {
-    var b: bytes = bytes.new();
-    b.push(lo_byte(v));
-    b.push(lo_byte(v >> 8));
-    b
+    encode(v, 2, ByteOrder.Little)
 }
 
-/// Encode a 32-bit value `v` as 4 little-endian bytes.
-///
-/// Only the low 32 bits of `v` are written; the upper bits are ignored.
+/// Encode the low 32 bits of `v` as 4 little-endian bytes.
 pub fn put_u32_le(v: i64) -> bytes {
-    var b: bytes = bytes.new();
-    b.push(lo_byte(v));
-    b.push(lo_byte(v >> 8));
-    b.push(lo_byte(v >> 16));
-    b.push(lo_byte(v >> 24));
-    b
+    encode(v, 4, ByteOrder.Little)
 }
 
-/// Encode a 64-bit value `v` as 8 little-endian bytes.
+/// Encode `v` as 8 little-endian bytes.
 pub fn put_u64_le(v: i64) -> bytes {
-    var b: bytes = bytes.new();
-    b.push(lo_byte(v));
-    b.push(lo_byte(v >> 8));
-    b.push(lo_byte(v >> 16));
-    b.push(lo_byte(v >> 24));
-    b.push(lo_byte(v >> 32));
-    b.push(lo_byte(v >> 40));
-    b.push(lo_byte(v >> 48));
-    b.push(lo_byte(v >> 56));
-    b
+    encode(v, 8, ByteOrder.Little)
 }
 
-// ── Big-endian put helpers ────────────────────────────────────────────
-/// Encode a 16-bit value `v` as 2 big-endian bytes.
-///
-/// Only the low 16 bits of `v` are written; the upper bits are ignored.
+/// Encode the low 16 bits of `v` as 2 big-endian bytes.
 pub fn put_u16_be(v: i64) -> bytes {
-    var b: bytes = bytes.new();
-    b.push(lo_byte(v >> 8));
-    b.push(lo_byte(v));
-    b
+    encode(v, 2, ByteOrder.Big)
 }
 
-/// Encode a 32-bit value `v` as 4 big-endian bytes.
-///
-/// Only the low 32 bits of `v` are written; the upper bits are ignored.
+/// Encode the low 32 bits of `v` as 4 big-endian bytes.
 pub fn put_u32_be(v: i64) -> bytes {
-    var b: bytes = bytes.new();
-    b.push(lo_byte(v >> 24));
-    b.push(lo_byte(v >> 16));
-    b.push(lo_byte(v >> 8));
-    b.push(lo_byte(v));
-    b
+    encode(v, 4, ByteOrder.Big)
 }
 
-/// Encode a 64-bit value `v` as 8 big-endian bytes.
+/// Encode `v` as 8 big-endian bytes.
 pub fn put_u64_be(v: i64) -> bytes {
-    var b: bytes = bytes.new();
-    b.push(lo_byte(v >> 56));
-    b.push(lo_byte(v >> 48));
-    b.push(lo_byte(v >> 40));
-    b.push(lo_byte(v >> 32));
-    b.push(lo_byte(v >> 24));
-    b.push(lo_byte(v >> 16));
-    b.push(lo_byte(v >> 8));
-    b.push(lo_byte(v));
-    b
+    encode(v, 8, ByteOrder.Big)
 }
 
-// ── Signed put (same bit pattern as unsigned) ─────────────────────────
 /// Encode a signed 16-bit value as 2 little-endian bytes.
 pub fn put_i16_le(v: i64) -> bytes {
-    put_u16_le(v)
+    encode(v, 2, ByteOrder.Little)
 }
 
 /// Encode a signed 32-bit value as 4 little-endian bytes.
 pub fn put_i32_le(v: i64) -> bytes {
-    put_u32_le(v)
+    encode(v, 4, ByteOrder.Little)
 }
 
 /// Encode a signed 64-bit value as 8 little-endian bytes.
 pub fn put_i64_le(v: i64) -> bytes {
-    put_u64_le(v)
+    encode(v, 8, ByteOrder.Little)
 }
 
 /// Encode a signed 16-bit value as 2 big-endian bytes.
 pub fn put_i16_be(v: i64) -> bytes {
-    put_u16_be(v)
+    encode(v, 2, ByteOrder.Big)
 }
 
 /// Encode a signed 32-bit value as 4 big-endian bytes.
 pub fn put_i32_be(v: i64) -> bytes {
-    put_u32_be(v)
+    encode(v, 4, ByteOrder.Big)
 }
 
 /// Encode a signed 64-bit value as 8 big-endian bytes.
 pub fn put_i64_be(v: i64) -> bytes {
-    put_u64_be(v)
+    encode(v, 8, ByteOrder.Big)
 }
 
-// ── Little-endian get helpers ─────────────────────────────────────────
-/// Decode 2 bytes from offset 0 of `buf` as an unsigned 16-bit
-/// little-endian integer.  Returns a value in [0, 65535].
+// ── Fixed-width reads from offset 0 (abort when short) ─────────────────
+
+/// Decode 2 little-endian bytes as an unsigned 16-bit integer.
 ///
 /// Aborts if `buf.len() < 2`.
 pub fn get_u16_le(buf: bytes) -> i64 {
-    let b0 = buf[0] as i64;
-    let b1 = buf[1] as i64;
-    b0 | b1 << 8
+    decode(buf, 0, 2, ByteOrder.Little)
 }
 
-/// Decode 4 bytes from offset 0 of `buf` as an unsigned 32-bit
-/// little-endian integer.  Returns a value in [0, 4294967295].
+/// Decode 4 little-endian bytes as an unsigned 32-bit integer.
 ///
 /// Aborts if `buf.len() < 4`.
 pub fn get_u32_le(buf: bytes) -> i64 {
-    let b0 = buf[0] as i64;
-    let b1 = buf[1] as i64;
-    let b2 = buf[2] as i64;
-    let b3 = buf[3] as i64;
-    b0 | b1 << 8 | b2 << 16 | b3 << 24
+    decode(buf, 0, 4, ByteOrder.Little)
 }
 
-/// Decode 8 bytes from offset 0 of `buf` as a 64-bit little-endian integer.
+/// Decode 8 little-endian bytes as a 64-bit integer.
 ///
 /// Aborts if `buf.len() < 8`.
 pub fn get_u64_le(buf: bytes) -> i64 {
-    let b0 = buf[0] as i64;
-    let b1 = buf[1] as i64;
-    let b2 = buf[2] as i64;
-    let b3 = buf[3] as i64;
-    let b4 = buf[4] as i64;
-    let b5 = buf[5] as i64;
-    let b6 = buf[6] as i64;
-    let b7 = buf[7] as i64;
-    b0 | b1 << 8 | b2 << 16 | b3 << 24 | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56
+    decode(buf, 0, 8, ByteOrder.Little)
 }
 
-// ── Big-endian get helpers ────────────────────────────────────────────
-/// Decode 2 bytes from offset 0 of `buf` as an unsigned 16-bit big-endian
-/// integer.  Returns a value in [0, 65535].
+/// Decode 2 big-endian bytes as an unsigned 16-bit integer.
 ///
 /// Aborts if `buf.len() < 2`.
 pub fn get_u16_be(buf: bytes) -> i64 {
-    let b0 = buf[0] as i64;
-    let b1 = buf[1] as i64;
-    b0 << 8 | b1
+    decode(buf, 0, 2, ByteOrder.Big)
 }
 
-/// Decode 4 bytes from offset 0 of `buf` as an unsigned 32-bit big-endian
-/// integer.  Returns a value in [0, 4294967295].
+/// Decode 4 big-endian bytes as an unsigned 32-bit integer.
 ///
 /// Aborts if `buf.len() < 4`.
 pub fn get_u32_be(buf: bytes) -> i64 {
-    let b0 = buf[0] as i64;
-    let b1 = buf[1] as i64;
-    let b2 = buf[2] as i64;
-    let b3 = buf[3] as i64;
-    b0 << 24 | b1 << 16 | b2 << 8 | b3
+    decode(buf, 0, 4, ByteOrder.Big)
 }
 
-/// Decode 8 bytes from offset 0 of `buf` as a 64-bit big-endian integer.
+/// Decode 8 big-endian bytes as a 64-bit integer.
 ///
 /// Aborts if `buf.len() < 8`.
 pub fn get_u64_be(buf: bytes) -> i64 {
-    let b0 = buf[0] as i64;
-    let b1 = buf[1] as i64;
-    let b2 = buf[2] as i64;
-    let b3 = buf[3] as i64;
-    let b4 = buf[4] as i64;
-    let b5 = buf[5] as i64;
-    let b6 = buf[6] as i64;
-    let b7 = buf[7] as i64;
-    b0 << 56 | b1 << 48 | b2 << 40 | b3 << 32 | b4 << 24 | b5 << 16 | b6 << 8 | b7
+    decode(buf, 0, 8, ByteOrder.Big)
 }
 
-// ── Signed get: sign-extend the unsigned result ───────────────────────
-/// Decode 2 bytes as a signed 16-bit little-endian integer
-/// (two's complement).
+/// Decode 2 little-endian bytes as a signed 16-bit integer.
 ///
 /// Aborts if `buf.len() < 2`.
 pub fn get_i16_le(buf: bytes) -> i64 {
-    let u = get_u16_le(buf);
-    // Sign-extend from bit 15.
-    if u >= 32768 {
-        u - 65536
-    } else {
-        u
-    }
+    sign_extend(get_u16_le(buf), 2)
 }
 
-/// Decode 4 bytes as a signed 32-bit little-endian integer
-/// (two's complement).
+/// Decode 4 little-endian bytes as a signed 32-bit integer.
 ///
 /// Aborts if `buf.len() < 4`.
 pub fn get_i32_le(buf: bytes) -> i64 {
-    let u = get_u32_le(buf);
-    // Sign-extend from bit 31.
-    if u >= 2147483648 {
-        u - 4294967296
-    } else {
-        u
-    }
+    sign_extend(get_u32_le(buf), 4)
 }
 
-/// Decode 8 bytes as a signed 64-bit little-endian integer
-/// (two's complement).
-///
-/// `i64` is already signed, so no sign extension is required.
+/// Decode 8 little-endian bytes as a signed 64-bit integer.
 ///
 /// Aborts if `buf.len() < 8`.
 pub fn get_i64_le(buf: bytes) -> i64 {
     get_u64_le(buf)
 }
 
-/// Decode 2 bytes as a signed 16-bit big-endian integer (two's complement).
+/// Decode 2 big-endian bytes as a signed 16-bit integer.
 ///
 /// Aborts if `buf.len() < 2`.
 pub fn get_i16_be(buf: bytes) -> i64 {
-    let u = get_u16_be(buf);
-    if u >= 32768 {
-        u - 65536
-    } else {
-        u
-    }
+    sign_extend(get_u16_be(buf), 2)
 }
 
-/// Decode 4 bytes as a signed 32-bit big-endian integer (two's complement).
+/// Decode 4 big-endian bytes as a signed 32-bit integer.
 ///
 /// Aborts if `buf.len() < 4`.
 pub fn get_i32_be(buf: bytes) -> i64 {
-    let u = get_u32_be(buf);
-    if u >= 2147483648 {
-        u - 4294967296
-    } else {
-        u
-    }
+    sign_extend(get_u32_be(buf), 4)
 }
 
-/// Decode 8 bytes as a signed 64-bit big-endian integer (two's complement).
+/// Decode 8 big-endian bytes as a signed 64-bit integer.
 ///
 /// Aborts if `buf.len() < 8`.
 pub fn get_i64_be(buf: bytes) -> i64 {

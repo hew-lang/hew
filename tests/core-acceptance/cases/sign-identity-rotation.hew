@@ -1,0 +1,42 @@
+import std.crypto.sign;
+import std.fs;
+import std.os;
+
+// Identity keys persist as seed or expanded material; loading picks the
+// constructor by length and rotation commits the new seed atomically.
+fn load_identity(path: string) -> Result<sign.SigningKey, string> {
+    let material = fs.read_bytes(path).map_err(|e: fs.IoError| f"{e}")?;
+    let key = match material.len() {
+        32 => sign.from_seed(material),
+        64 => sign.from_expanded(material),
+        _ => sign.from_pkcs8(material),
+    };
+    key.map_err(|e: sign.KeyError| f"identity {material.len()} bytes: {e}")
+}
+
+fn rotate(path: string) -> Result<sign.SigningKey, string> {
+    let seed = sign.generate_seed();
+    match fs.write_atomic(path, seed) {
+        .Ok(()) => sign.from_seed(seed).map_err(|e: sign.KeyError| f"{e}"),
+        .Err(fs.CommitError.NotCommitted(e)) => .Err(f"kept the previous identity: {e}"),
+        .Err(fs.CommitError.Uncertain(e)) => .Err(f"new identity visible, durability unknown: {e}"),
+    }
+}
+
+fn main() {
+    let path = f"{os.temp_dir()}/hew-identity-{os.pid()}.key";
+    let rotated = rotate(path).expect("rotate");
+    let loaded = load_identity(path).expect("load seed");
+    let message = "hello".to_bytes();
+    println(f"seed identity verifies: {sign.verify(message, loaded.sign(message), rotated.public_key())}");
+    fs.write_atomic(path, loaded.expanded()).expect("store expanded");
+    let expanded = load_identity(path).expect("load expanded");
+    println(f"expanded signs identically: {expanded.sign(message) == rotated.sign(message)}");
+    fs.write_bytes(path, "garbage".to_bytes()).expect("corrupt");
+    match load_identity(path) {
+        .Ok(_) => println("garbage loaded"),
+        .Err(reason) => println(reason),
+    }
+    println(f"{rotate(f"{os.temp_dir()}/hew-identity-missing-{os.pid()}/key").is_err()}");
+    fs.delete(path).expect("clean up");
+}

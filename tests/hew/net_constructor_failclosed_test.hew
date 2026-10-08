@@ -201,7 +201,7 @@ fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
 fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
     let port = closed_loopback_port();
     let target = f"ws://127.0.0.1:{port}/";
-    match websocket.connect(target) {
+    match websocket.connect(target, websocket.options()) {
         .Ok(conn) => {
             conn.close();
             panic("expected a connect to a closed port to fail");
@@ -220,7 +220,7 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
 #[test]
 #[real_time]
 fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
-    match websocket.connect("not a url") {
+    match websocket.connect("not a url", websocket.options()) {
         .Ok(conn) => {
             conn.close();
             panic("expected an unparsable url to be rejected");
@@ -242,7 +242,7 @@ fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
 fn test_websocket_listen_clears_the_detail_slot_on_success() {
     let port = closed_loopback_port();
     let target = f"ws://127.0.0.1:{port}/";
-    match websocket.connect(target) {
+    match websocket.connect(target, websocket.options()) {
         .Ok(conn) => {
             conn.close();
             panic("expected a connect to a closed port to fail");

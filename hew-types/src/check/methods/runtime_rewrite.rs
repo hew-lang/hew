@@ -945,10 +945,8 @@ impl Checker {
             }
             "websocket.Conn"
             | "websocket.Server"
-            | "websocket.Message"
             | "std.net.websocket.Conn"
-            | "std.net.websocket.Server"
-            | "std.net.websocket.Message" => {
+            | "std.net.websocket.Server" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::WebSocket);
             }
             "process.Child" | "std.process.Child" => {

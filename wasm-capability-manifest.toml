@@ -352,14 +352,15 @@ id = "websocket"
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_ws_connect",
-  "hew_ws_recv",
-  "hew_ws_recv_timeout",
+  "hew_ws_send_text",
+  "hew_ws_send_binary",
+  "hew_ws_recv_next",
   "hew_ws_server_new",
   "hew_ws_server_accept",
 ]
 enum_variant = "WebSocket"
 label = "std.net.websocket operations"
-prose_label = "`std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*`, `websocket.Message.*`"
+prose_label = "`std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*`"
 reason = "the std.net.websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet"
 checker = "reject"
 runtime = "native-only"
@@ -431,22 +432,24 @@ deterministic = "refuse"
 deterministic_functions = [
   "std.process.run",
   "std.process.run_argv",
-  "std.process.run_args",
   "std.process.start",
-  "std.process.start_argv",
   "std.process.Child.wait",
+  "std.process.Child.try_wait",
+  "std.process.Child.terminate",
+  "std.process.Child.kill",
 ]
 deterministic_endpoints = [
   "hew_process_run",
   "hew_process_run_argv",
-  "hew_process_spawn",
-  "hew_process_spawn_argv",
-  "hew_process_wait",
+  "hew_process_start",
+  "hew_process_exit_stream",
+  "hew_process_poll",
+  "hew_process_signal",
 ]
 enum_variant = "ProcessExecution"
 label = "Process execution operations"
 prose_label = "`process.run`, `process.start`, `process.*`, `process.Child.*`"
-reason = "hew_process_run / hew_process_spawn require the native OS process model; the process runtime module is not compiled for wasm32"
+reason = "hew_process_run / hew_process_start require the native OS process model; the process runtime module is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only runtime module"

@@ -974,6 +974,12 @@
         {
           "fields": [],
           "name": "Dead"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "TimedOut"
         }
       ],
       "id": 3,
@@ -987,6 +993,7 @@
         "SendErrorLocalShutdown": 4,
         "SendErrorPartition": 2,
         "SendErrorStaleRef": 3,
+        "SendErrorTimedOut": 10,
         "SendErrorUnauthorized": 7,
         "SendErrorVersionMismatch": 6
       }

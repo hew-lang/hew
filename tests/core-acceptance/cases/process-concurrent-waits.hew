@@ -1,0 +1,47 @@
+import std.fs;
+import std.os;
+import std.process;
+
+// 160 children waited on at once by two scheduler workers. Each child runs
+// until a flag file appears, and only main's `fs.write`, an ordinary
+// blocking-pool call, creates it. A wait holds no thread of any pool, so the
+// write is never queued behind the waits; if it were, no child would ever
+// exit. An unrelated actor still answers while every child runs.
+actor Waiter {
+    receive fn run(flag: string) -> bool {
+        let script = "while [ ! -e \"$1\" ]; do sleep 0.05; done";
+        let child = process.start(process.command("sh", ["-c", script, "sh", flag])).expect("sh starts");
+        child.wait().expect("wait") == process.ExitStatus.Exited(0)
+    }
+}
+
+actor Ping {
+    receive fn ping() -> bool {
+        true
+    }
+}
+
+fn main() {
+    let flag = f"{os.temp_dir()}/hew-concurrent-waits-{os.pid()}.flag";
+    let ping = spawn Ping();
+    var waiters: Vec<Waiter> = Vec.new();
+    for _ in 0..160 {
+        waiters.push(spawn Waiter());
+    }
+    var tasks = [fork waiters[0].run(flag)];
+    for i in 1..160 {
+        tasks.push(fork waiters[i].run(flag));
+    }
+    sleep(300ms);
+    println(f"ping while waiting: {ping.ping().expect("ping answers")}");
+    fs.write(flag, "go").expect("flag written");
+    println("flag written");
+    var exited = 0;
+    for result in await tasks {
+        if result.expect("waiter answers") {
+            exited = exited + 1;
+        }
+    }
+    println(f"exited cleanly: {exited}");
+    fs.delete(flag).expect("clean up");
+}

@@ -242,7 +242,10 @@ fn chmod_dir(mode: string, dir: string) -> i64 {
     var args: Vec<string> = Vec.new();
     args.push(mode);
     args.push(dir);
-    process.run_argv("chmod", args).expect("run_argv succeeds").exit_code
+    match process.run_argv("chmod", args).expect("run_argv succeeds").status {
+        process.ExitStatus.Exited(code) => code,
+        process.ExitStatus.Signalled(_) => panic("chmod was signalled"),
+    }
 }
 
 #[test]

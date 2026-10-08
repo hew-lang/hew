@@ -40,6 +40,13 @@ chrono = { version = "0.4.45", default-features = false, features = [
   "std",
 ] }
 cron = "0.17"
+ed25519-dalek = { version = "3", default-features = false, features = [
+  "digest",
+  "fast",
+  "hazmat",
+  "pkcs8",
+  "zeroize",
+] }
 flate2 = "1"
 ipnet = "2"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = [
@@ -67,7 +74,7 @@ tokio = { version = "1", default-features = false, features = [
   "sync",
   "macros",
 ] }
-tungstenite = "0.30"
+tungstenite = { version = "0.30", features = ["__rustls-tls"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 url = "2"
 uuid = { version = "1.23.3", features = ["v4", "v7"] }

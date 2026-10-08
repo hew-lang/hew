@@ -1,0 +1,21 @@
+[[case]]
+id = "check-select-contextual-arms"
+intent = "A select whose bodies are all contextual variants reports each body once; the untyped select adds no diagnostic where its value is used."
+source = "cases/check-select-contextual-arms.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 9
+column = 23
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.None` requires an expected enum or machine type"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONTEXT_VARIANT_NO_TYPE"
+line = 8
+column = 37
+message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.None` requires an expected enum or machine type"

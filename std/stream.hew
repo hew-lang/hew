@@ -44,6 +44,8 @@
 //! }
 //! ```
 
+import std.encoding.binary;
+
 import std.encoding.utf8;
 
 /// The read half of a pipe, parameterised by element type.
@@ -158,11 +160,12 @@ pub enum Decoded<T> {
 /// Frames bytes into typed items and back.
 ///
 /// `decode` takes the buffered bytes and returns the first complete frame
-/// with the bytes that follow it, or `Incomplete` with the buffer unchanged
-/// when more bytes are needed. `encode` returns one item's frame. Values
+/// with the bytes that follow it, or `Incomplete` with the bytes to keep
+/// when more bytes are needed (the buffer unchanged, unless the codec
+/// discarded a malformed record). `encode` returns one item's frame. Values
 /// are copy-on-write, so the caller keeps what `decode` hands back: a `var`
 /// parameter is the callee's own copy and cannot advance the caller's
-/// buffer. `Lines` and `LengthPrefixed` are the shipped codecs;
+/// buffer. `Lines`, `LengthPrefixed` and `Slip` are the shipped codecs;
 /// `Stream<bytes>.lines()` is the `Lines` case as a method.
 pub trait Codec<T> {
     fn decode(self, buf: bytes) -> Result<Decoded<T>, CodecError>;
@@ -199,9 +202,17 @@ impl Codec<string> for Lines {
     }
 }
 
-/// Frames prefixed by a big-endian length of `width` bytes (1, 2 or 4).
+/// Frames prefixed by their length: an unsigned integer of `width` bytes
+/// (1, 2 or 4) in `order`, followed by that many bytes.
+///
+/// `decode` refuses a bad width or a declared length above `max` as
+/// `Malformed`; a length-prefixed stream cannot resynchronize, so the caller
+/// retires it. A zero length is a valid empty frame. `encode` panics on an
+/// item longer than `max` or than the width can declare.
 pub type LengthPrefixed {
     width: i64;
+    order: binary.ByteOrder;
+    max: i64;
 }
 
 impl Codec<bytes> for LengthPrefixed {
@@ -209,14 +220,18 @@ impl Codec<bytes> for LengthPrefixed {
         if self.width != 1 && self.width != 2 && self.width != 4 {
             return .Err(CodecError.Malformed(f"length prefix width {self.width} is not 1, 2 or 4"));
         }
-        if buf.len() < self.width {
-            return .Ok(Decoded.Incomplete(buf));
+        let declared = match self.order {
+            binary.ByteOrder.Big => binary.read_uint_be(buf, 0, self.width),
+            binary.ByteOrder.Little => binary.read_uint_le(buf, 0, self.width),
+        };
+        let length = match declared {
+            .Ok(length) => length,
+            .Err(_) => return .Ok(Decoded.Incomplete(buf)),
+        };
+        if length > self.max {
+            return .Err(CodecError.Malformed(f"declared length {length} exceeds the maximum {self.max}"));
         }
-        var length = 0;
-        for i in 0..self.width {
-            length = length * 256 + buf[i] as i64;
-        }
-        if buf.len() < self.width + length {
+        if buf.len() - self.width < length {
             return .Ok(Decoded.Incomplete(buf));
         }
         let frame = buf[self.width .. self.width + length];
@@ -224,19 +239,109 @@ impl Codec<bytes> for LengthPrefixed {
         .Ok(Decoded.Frame(frame, rest))
     }
     fn encode(self, item: bytes) -> bytes {
-        var remaining = item.len();
-        var prefix = bytes.new();
-        for _ in 0..self.width {
-            prefix.push((remaining % 256) as u8);
-            remaining = remaining / 256;
+        if item.len() > self.max {
+            panic(f"stream.LengthPrefixed: item of {item.len()} bytes exceeds the maximum {self.max}");
+        }
+        let prefix = match self.order {
+            binary.ByteOrder.Big => binary.put_uint_be(item.len(), self.width),
+            binary.ByteOrder.Little => binary.put_uint_le(item.len(), self.width),
+        };
+        match prefix {
+            .Ok(header) => {
+                var out = header;
+                out.append(item);
+                out
+            }
+            .Err(error) => panic(f"stream.LengthPrefixed: cannot declare {item.len()} bytes in width {self.width}: {error}"),
+        }
+    }
+}
+
+/// SLIP framing (RFC 1055): each frame ends with END (0xC0); END and ESC
+/// (0xDB) inside a frame are escaped as ESC 0xDC and ESC 0xDD.
+///
+/// `decode` skips an empty, malformed (bad escape) or oversized record to the
+/// next END and returns the next good frame, so it never errors and a line
+/// error costs only the damaged frame. A record without its END is buffered
+/// until it decodes past `max` bytes (at most `2 * max + 2` buffered bytes);
+/// then the partial record is dropped and the rest of it is skipped when
+/// its END arrives. Empty frames are not representable. `encode` panics on
+/// an item longer than `max`.
+pub type Slip {
+    max: i64;
+}
+
+impl Codec<bytes> for Slip {
+    fn decode(self, buf: bytes) -> Result<Decoded<bytes>, CodecError> {
+        var start = 0;
+        var frame = bytes.new();
+        var damaged = false;
+        var i = 0;
+        while i < buf.len() {
+            let byte = buf[i];
+            if byte == 0xC0 {
+                if !damaged && frame.len() > 0 {
+                    return .Ok(Decoded.Frame(frame, buf[i + 1 .. buf.len()]));
+                }
+                start = i + 1;
+                frame = bytes.new();
+                damaged = false;
+            } else if !damaged {
+                if byte == 0xDB {
+                    let next = if i + 1 < buf.len() {
+                        buf[i + 1] as i64
+                    } else {
+                        -1
+                    };
+                    if next == 0xDC {
+                        frame.push(0xC0);
+                        i = i + 1;
+                    } else if next == 0xDD {
+                        frame.push(0xDB);
+                        i = i + 1;
+                    } else if next != -1 {
+                        damaged = true;
+                    } else {
+                        // A trailing ESC waits for its escaped byte.
+                        return .Ok(Decoded.Incomplete(buf[start..buf.len()]));
+                    }
+                } else {
+                    frame.push(byte);
+                }
+                if frame.len() > self.max {
+                    damaged = true;
+                }
+            }
+            i = i + 1;
+        }
+        if damaged {
+            // Keep a bad escape so the rest of this record is discarded at
+            // its END rather than delivered as a frame of its own.
+            var marker = bytes.new();
+            marker.push(0xDB);
+            marker.push(0xDB);
+            return .Ok(Decoded.Incomplete(marker));
+        }
+        .Ok(Decoded.Incomplete(buf[start..buf.len()]))
+    }
+    fn encode(self, item: bytes) -> bytes {
+        if item.len() > self.max {
+            panic(f"stream.Slip: item of {item.len()} bytes exceeds the maximum {self.max}");
         }
         var out = bytes.new();
-        for i in 0..self.width {
-            out.push(prefix[self.width - 1 - i]);
-        }
+        out.push(0xC0);
         for byte in item {
-            out.push(byte);
+            if byte == 0xC0 {
+                out.push(0xDB);
+                out.push(0xDC);
+            } else if byte == 0xDB {
+                out.push(0xDB);
+                out.push(0xDD);
+            } else {
+                out.push(byte);
+            }
         }
+        out.push(0xC0);
         out
     }
 }

@@ -124,6 +124,7 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::SendErrorUnauthorized => "SendErrorUnauthorized",
         Role::SendErrorBackpressure => "SendErrorBackpressure",
         Role::SendErrorDead => "SendErrorDead",
+        Role::SendErrorTimedOut => "SendErrorTimedOut",
         Role::DeliveryAccepted => "DeliveryAccepted",
         Role::DeliveryDiscarded => "DeliveryDiscarded",
         Role::LinkErrorNoContext => "LinkErrorNoContext",

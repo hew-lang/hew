@@ -35,14 +35,6 @@ import std.os;
 const MAX_PACKET_BYTES: i64 = 1048576;
 
 // ── Bytes helpers ─────────────────────────────────────────────────────────────
-fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
-    var result = bytes.new();
-    for i in start..end {
-        result.push(data[i]);
-    }
-    result
-}
-
 fn has_bytes(limit: i64, offset: i64, count: i64) -> bool {
     offset >= 0 && count >= 0 && offset <= limit && count <= limit - offset
 }
@@ -352,7 +344,7 @@ actor ClientHandler {
                             }
                         }
                         if connected {
-                            let payload_bytes = bytes_slice(buf, payload_off, packet_end);
+                            let payload_bytes = buf[payload_off..packet_end];
                             println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
                             let _ = router.publish(topic, payload_bytes, qos as i32, packet_id);
                         }
@@ -455,7 +447,7 @@ actor ClientHandler {
                 }
             }
             if connected {
-                buf = bytes_slice(buf, total, buf_len);
+                buf = buf[total..buf_len];
             } else {
                 break;
             }

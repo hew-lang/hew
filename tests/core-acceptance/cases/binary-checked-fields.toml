@@ -1,0 +1,10 @@
+[[case]]
+id = "binary-checked-fields"
+intent = "Checked byte fields compose with `?`: every integer width round-trips or reports OutOfRange/InvalidWidth, and binary32 keeps subnormals, -0.0 and the largest finite value exactly while refusing NaN, infinity and overflow."
+source = "cases/binary-checked-fields.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Ok((7, 21.5))\nErr(OutOfRange(2, 4, 3))\n0: [] Ok(0)\n1: [31] Ok(-1)\n2: [0 62] Ok(-1)\n3: [0 0 93] Ok(-8323073)\n4: [0 0 0 124] Ok(25231359)\n5: [0 0 0 0 155] Err(OutOfRange(0, 5, 4))\n6: [0 0 0 0 0 186] Err(OutOfRange(0, 6, 4))\n7: [0 0 0 0 0 0 217] Err(OutOfRange(0, 7, 4))\n8: [0 0 0 0 0 0 0 248] Err(OutOfRange(0, 8, 4))\n1: 1.4013e-45 true\n8388607: 1.17549e-38 true\n2139095039: 3.40282e+38 true\n2147483648: -0 true\n1051372203: 0.333333 true\n2139095040: NonFinite\n2143289345: NonFinite\nOverflow [171 170 170 62]\nOutOfRange(1, 8, 6) Err(InvalidWidth(9))\n"
+exit = 0

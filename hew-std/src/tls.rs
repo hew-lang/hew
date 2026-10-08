@@ -10,14 +10,13 @@ use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use hew_runtime::transport::{AttachCallback, NativeActorToken, NativeAttachment};
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
-
-type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Maximum bytes read in a single [`hew_tls_read`] call.
 const READ_BUFFER_SIZE: usize = 65_536;
@@ -137,27 +136,193 @@ fn ring_provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// Build a [`rustls::ClientConfig`] that trusts the standard webpki root CAs.
-fn default_client_config() -> Result<rustls::ClientConfig, BoxError> {
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = rustls::ClientConfig::builder_with_provider(ring_provider())
-        .with_protocol_versions(rustls::DEFAULT_VERSIONS)?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(config)
+/// Which certificate authorities a client trusts.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Trust<'a> {
+    /// The Mozilla root programme bundled at build time (`webpki-roots`).
+    Bundled,
+    /// Only the PEM certificates given.
+    Pem(&'a [u8]),
 }
 
-fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
-    let server_name = ServerName::try_from(host.to_string())?;
-    let config = default_client_config()?;
-    let connector = rustls::ClientConnection::new(Arc::new(config), server_name)?;
-    let addr = format!("{host}:{port}");
-    let tcp = TcpStream::connect(addr)?;
-    let stream = rustls::StreamOwned::new(connector, tcp);
+/// Hew-side `Trust` discriminants carried across the C ABI.
+const TLS_TRUST_BUNDLED: c_int = 0;
+const TLS_TRUST_PEM: c_int = 1;
+
+/// Connect failure classes, reported with an OS errno where one exists.
+pub(crate) const TLS_CONNECT_INVALID_ARGUMENT: c_int = 1;
+pub(crate) const TLS_CONNECT_TIMED_OUT: c_int = 2;
+const TLS_CONNECT_OS: c_int = 3;
+const TLS_CONNECT_TLS: c_int = 4;
+
+/// Why a client connect failed: a class, an OS errno (0 when none) and the
+/// detail `last_error()` reports.
+#[derive(Debug)]
+pub(crate) struct ConnectFailure {
+    pub(crate) class: c_int,
+    pub(crate) errno: i64,
+    pub(crate) message: String,
+}
+
+impl ConnectFailure {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            class: TLS_CONNECT_INVALID_ARGUMENT,
+            errno: 0,
+            message: message.into(),
+        }
+    }
+
+    fn timed_out(stage: &str) -> Self {
+        Self {
+            class: TLS_CONNECT_TIMED_OUT,
+            errno: 0,
+            message: format!("{stage} timed out"),
+        }
+    }
+
+    /// Classify an I/O error from the TCP connect or the handshake: rustls
+    /// reports protocol and verification failures as `InvalidData`.
+    pub(crate) fn from_io(stage: &str, err: &io::Error) -> Self {
+        match err.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Self::timed_out(stage),
+            io::ErrorKind::InvalidData => Self {
+                class: TLS_CONNECT_TLS,
+                errno: 0,
+                message: format!("{stage}: {err}"),
+            },
+            _ => Self {
+                class: TLS_CONNECT_OS,
+                errno: err.raw_os_error().map_or(0, i64::from),
+                message: format!("{stage}: {err}"),
+            },
+        }
+    }
+}
+
+std::thread_local! {
+    /// Class and errno of this thread's last failed `hew_tls_connect`; the
+    /// detail rides the TLS error slot.
+    static LAST_CONNECT_FAILURE: std::cell::Cell<(c_int, i64)> = const {
+        std::cell::Cell::new((0, 0))
+    };
+}
+
+/// Build the one client configuration every TLS client in `hew-std` uses.
+/// Verification is always on.
+pub(crate) fn client_config(trust: Trust<'_>) -> Result<Arc<rustls::ClientConfig>, ConnectFailure> {
+    let mut roots = RootCertStore::empty();
+    match trust {
+        Trust::Bundled => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+        Trust::Pem(pem) => {
+            use rustls::pki_types::pem::PemObject;
+            let certificates = rustls::pki_types::CertificateDer::pem_slice_iter(pem)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| ConnectFailure::invalid(format!("trust PEM: {err}")))?;
+            if certificates.is_empty() {
+                return Err(ConnectFailure::invalid("trust PEM holds no certificate"));
+            }
+            for certificate in certificates {
+                roots
+                    .add(certificate)
+                    .map_err(|err| ConnectFailure::invalid(format!("trust PEM: {err}")))?;
+            }
+        }
+    }
+    let config = rustls::ClientConfig::builder_with_provider(ring_provider())
+        .with_protocol_versions(rustls::DEFAULT_VERSIONS)
+        .map_err(|err| ConnectFailure::invalid(format!("tls configuration: {err}")))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
+/// The time left before `deadline`, or `TimedOut` once it has passed.
+fn remaining(deadline: Option<Instant>, stage: &str) -> Result<Option<Duration>, ConnectFailure> {
+    let Some(deadline) = deadline else {
+        return Ok(None);
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(ConnectFailure::timed_out(stage));
+    }
+    Ok(Some(left))
+}
+
+/// Open a TCP connection to `host:port`, trying each resolved address in
+/// turn, within `deadline`.
+pub(crate) fn connect_tcp(
+    host: &str,
+    port: u16,
+    deadline: Option<Instant>,
+) -> Result<TcpStream, ConnectFailure> {
+    use std::net::ToSocketAddrs;
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| ConnectFailure::from_io("resolve", &err))?;
+    let mut last = ConnectFailure::invalid(format!("{host} resolved to no address"));
+    for address in addresses {
+        let attempt = match remaining(deadline, "connect")? {
+            Some(left) => TcpStream::connect_timeout(&address, left),
+            None => TcpStream::connect(address),
+        };
+        match attempt {
+            Ok(tcp) => return Ok(tcp),
+            Err(err) => last = ConnectFailure::from_io("connect", &err),
+        }
+    }
+    Err(last)
+}
+
+/// Drive a client handshake to completion within `deadline`, bounding each
+/// socket read and write by the time left.
+pub(crate) fn complete_handshake(
+    connection: &mut rustls::ClientConnection,
+    tcp: &mut TcpStream,
+    deadline: Option<Instant>,
+) -> Result<(), ConnectFailure> {
+    while connection.is_handshaking() {
+        let left = remaining(deadline, "handshake")?;
+        tcp.set_read_timeout(left)
+            .and_then(|()| tcp.set_write_timeout(left))
+            .map_err(|err| ConnectFailure::from_io("handshake", &err))?;
+        connection
+            .complete_io(tcp)
+            .map_err(|err| ConnectFailure::from_io("handshake", &err))?;
+    }
+    Ok(())
+}
+
+/// Per-operation socket timeout after the handshake; zero means none.
+pub(crate) fn io_timeout(ms: i64) -> Option<Duration> {
+    u64::try_from(ms)
+        .ok()
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+}
+
+fn connect_tls(
+    host: &str,
+    port: u16,
+    trust: Trust<'_>,
+    handshake_ms: i64,
+    io_ms: i64,
+) -> Result<HewTlsStream, ConnectFailure> {
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|err| ConnectFailure::invalid(format!("server name {host:?}: {err}")))?;
+    let config = client_config(trust)?;
+    let deadline = io_timeout(handshake_ms).map(|limit| Instant::now() + limit);
+    let mut tcp = connect_tcp(host, port, deadline)?;
+    let mut connection = rustls::ClientConnection::new(config, server_name)
+        .map_err(|err| ConnectFailure::invalid(format!("tls client: {err}")))?;
+    complete_handshake(&mut connection, &mut tcp, deadline)?;
+    let timeout = io_timeout(io_ms);
+    tcp.set_read_timeout(timeout)
+        .and_then(|()| tcp.set_write_timeout(timeout))
+        .map_err(|err| ConnectFailure::from_io("socket timeout", &err))?;
     Ok(HewTlsStream {
         inner: Arc::new(TlsShared {
-            stream: Mutex::new(Some(stream)),
+            stream: Mutex::new(Some(rustls::StreamOwned::new(connection, tcp))),
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
             reader_exited: AtomicBool::new(false),
@@ -305,34 +470,99 @@ fn write_tls_bytes<W: Write>(writer: &mut W, buf: &[u8]) -> HewTlsWriteResult {
 
 // ── FFI exports ───────────────────────────────────────────────────────────────
 
-/// Open a TLS connection to `host:port` using system root certificates.
+fn record_connect_failure(failure: &ConnectFailure) {
+    LAST_CONNECT_FAILURE.with(|slot| slot.set((failure.class, failure.errno)));
+    set_tls_last_error(format!("tls.connect: {}", failure.message));
+}
+
+/// Open a verified TLS connection to `host:port` and complete its handshake.
 ///
-/// Returns a heap-allocated [`HewTlsStream`] on success, or null on error.
+/// `trust` is `0` for the bundled roots or `1` for only the certificates in
+/// `pem`. `handshake_ms` bounds the TCP connect and the handshake together;
+/// `io_ms` then bounds each read and write. Zero means no bound. Returns null
+/// on failure, with the class and errno in [`hew_tls_connect_failure`] and
+/// [`hew_tls_connect_errno`] and the detail in [`hew_tls_last_error`].
 ///
 /// # Safety
 ///
-/// `host` must be null (canonical empty) or a live managed string handle.
+/// `host` must be null (canonical empty) or a live managed string handle;
+/// `pem` must be null or a live `BytesTriple`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tls_connect(host: *const HewString, port: c_int) -> *mut HewTlsStream {
+pub unsafe extern "C" fn hew_tls_connect(
+    host: *const HewString,
+    port: c_int,
+    trust: c_int,
+    pem: *const BytesTriple,
+    handshake_ms: i64,
+    io_ms: i64,
+) -> *mut HewTlsStream {
     // SAFETY: host borrows a live managed string or canonical empty.
     let host_str = unsafe { string_as_str(host) };
-    if host_str.is_empty() {
-        set_tls_last_error("hew_tls_connect: host is empty");
-        return std::ptr::null_mut();
-    }
-    let Ok(port_u16) = u16::try_from(port) else {
-        set_tls_last_error(format!("hew_tls_connect: invalid port {port}"));
-        return std::ptr::null_mut();
+    // SAFETY: the caller passes a live triple or null.
+    let pem_bytes = unsafe { bytes_view(pem) };
+    let trust = match trust {
+        TLS_TRUST_BUNDLED => Some(Trust::Bundled),
+        TLS_TRUST_PEM => Some(Trust::Pem(pem_bytes)),
+        _ => None,
     };
-    match connect_tls(host_str, port_u16) {
+    let attempt = if host_str.is_empty() {
+        Err(ConnectFailure::invalid("host is empty"))
+    } else if let (Ok(port), Some(trust)) = (u16::try_from(port), trust) {
+        connect_tls(host_str, port, trust, handshake_ms, io_ms)
+    } else {
+        Err(ConnectFailure::invalid(format!("invalid port {port}")))
+    };
+    match attempt {
         Ok(stream) => {
+            LAST_CONNECT_FAILURE.with(|slot| slot.set((0, 0)));
             clear_tls_last_error();
             Box::into_raw(Box::new(stream))
         }
-        Err(err) => {
-            set_tls_last_error(format!("hew_tls_connect: {err}"));
+        Err(failure) => {
+            record_connect_failure(&failure);
             std::ptr::null_mut()
         }
+    }
+}
+
+/// The failure class of this thread's last failed connect: `1` invalid
+/// argument, `2` timed out, `3` OS error, `4` TLS (verification or protocol).
+#[no_mangle]
+pub extern "C" fn hew_tls_connect_failure() -> c_int {
+    LAST_CONNECT_FAILURE.with(|slot| slot.get().0)
+}
+
+/// The OS errno of this thread's last failed connect, or `0`.
+#[no_mangle]
+pub extern "C" fn hew_tls_connect_errno() -> i64 {
+    LAST_CONNECT_FAILURE.with(|slot| slot.get().1)
+}
+
+/// Whether `stream` is a live connection rather than a failed connect.
+#[no_mangle]
+pub extern "C" fn hew_tls_is_valid(stream: *const HewTlsStream) -> bool {
+    !stream.is_null()
+}
+
+/// Borrow the active region of a `bytes` value passed by address.
+///
+/// # Safety
+///
+/// `data` is null or a live `BytesTriple` that outlives the returned slice.
+pub(crate) unsafe fn bytes_view<'a>(data: *const BytesTriple) -> &'a [u8] {
+    // SAFETY: the caller passes null or a live triple.
+    let Some(triple) = (unsafe { data.as_ref() }) else {
+        return &[];
+    };
+    if triple.len == 0 || triple.ptr.is_null() {
+        return &[];
+    }
+    // SAFETY: BytesTriple invariant: ptr+offset..ptr+offset+len is readable.
+    unsafe {
+        std::slice::from_raw_parts(
+            triple.ptr.add(triple.offset as usize).cast_const(),
+            triple.len as usize,
+        )
     }
 }
 
@@ -350,12 +580,8 @@ pub extern "C" fn hew_tls_last_error() -> *mut HewString {
 /// After `hew_tls_attach_native`, this function still holds the write side; it
 /// acquires the stream mutex before every write call.
 ///
-/// EDGE (lazy handshake under the reader's read timeout): once an attached
-/// reader sets `SO_RCVTIMEO` (`TLS_READER_TIMEOUT`) on the shared socket, a
-/// write that must drive a *lazy* TLS handshake read can surface a spurious
-/// `WouldBlock`/`TimedOut`, reported here as `TLS_STATUS_RETRYABLE`. In normal
-/// use the handshake completes during `hew_tls_connect`, so this is not hit;
-/// callers seeing a retryable status on the first write should retry.
+/// The handshake completed in `hew_tls_connect`, so a write only encrypts
+/// application data; the connect's `io_ms` bounds it.
 ///
 /// # Safety
 ///
@@ -480,16 +706,8 @@ pub unsafe extern "C" fn hew_tls_write_result(
         };
     }
     // SAFETY: caller guarantees `data` points to a valid BytesTriple.
-    let triple = unsafe { &*data };
-    let (data_ptr, data_len) = if triple.len == 0 || triple.ptr.is_null() {
-        (std::ptr::null(), 0usize)
-    } else {
-        // SAFETY: BytesTriple invariant — ptr+offset..ptr+offset+len is valid.
-        (
-            unsafe { triple.ptr.add(triple.offset as usize).cast_const() },
-            triple.len as usize,
-        )
-    };
+    let buffer = unsafe { bytes_view(data) };
+    let (data_ptr, data_len) = (buffer.as_ptr(), buffer.len());
     let mut status = TLS_STATUS_IO_ERROR;
     // SAFETY: data_ptr is valid for data_len bytes (or null when data_len==0).
     let written = unsafe { hew_tls_write(stream, data_ptr, data_len, &raw mut status) };
@@ -762,7 +980,7 @@ pub unsafe extern "C" fn hew_tls_attach_native(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
     use crate::test_string::ManagedString;
@@ -779,7 +997,6 @@ mod tests {
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::OnceLock;
     use std::thread;
-    use std::time::{Duration, Instant};
 
     #[derive(Debug)]
     enum MockReadAction {
@@ -961,37 +1178,59 @@ mod tests {
         (tcp, release_tx, server)
     }
 
-    #[test]
-    fn connect_null_host_returns_null() {
-        clear_tls_last_error();
-        // SAFETY: null is the canonical empty managed string.
-        let ptr = unsafe { hew_tls_connect(std::ptr::null(), 443) };
-        assert!(ptr.is_null());
-        assert_eq!(last_error_string(), "hew_tls_connect: host is empty");
+    /// Call the FFI connect with `trust` and the given deadlines.
+    fn connect_with(
+        host: &str,
+        port: c_int,
+        trust: c_int,
+        pem: &[u8],
+        handshake_ms: i64,
+    ) -> *mut HewTlsStream {
+        let host = ManagedString::new(host);
+        let triple = BytesTriple {
+            ptr: pem.as_ptr().cast_mut(),
+            offset: 0,
+            len: u32::try_from(pem.len()).expect("test PEM fits u32"),
+        };
+        // SAFETY: `host` is live and `triple` borrows `pem` for the call.
+        unsafe {
+            hew_tls_connect(
+                host.as_ptr(),
+                port,
+                trust,
+                &raw const triple,
+                handshake_ms,
+                0,
+            )
+        }
     }
 
     #[test]
-    fn connect_refused_sets_last_error() {
+    fn connect_null_host_returns_null() {
         clear_tls_last_error();
-        // Port 0 is never listening; the OS refuses the connect() attempt
-        // (or DNS resolution itself fails for a bogus host), either way
-        // exercising the `connect_tls(...) => Err(_)` failure path without
-        // needing a live network fixture.
-        let host = ManagedString::new("127.0.0.1");
-        // SAFETY: `host` is a live managed string handle.
-        let ptr = unsafe { hew_tls_connect(host.as_ptr(), 0) };
+        // SAFETY: null is the canonical empty managed string and null bytes.
+        let ptr = unsafe { hew_tls_connect(std::ptr::null(), 443, 0, std::ptr::null(), 0, 0) };
         assert!(ptr.is_null());
+        assert_eq!(last_error_string(), "tls.connect: host is empty");
+        assert_eq!(hew_tls_connect_failure(), TLS_CONNECT_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn connect_refused_reports_os_errno() {
+        clear_tls_last_error();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = c_int::from(listener.local_addr().unwrap().port());
+        drop(listener);
+        // Windows retries a refused loopback SYN for about two seconds before
+        // reporting it, so the deadline stays well clear of that.
+        let ptr = connect_with("127.0.0.1", port, TLS_TRUST_BUNDLED, &[], 10_000);
+        assert!(ptr.is_null());
+        assert_eq!(hew_tls_connect_failure(), TLS_CONNECT_OS);
         assert!(
-            last_error_string().starts_with("hew_tls_connect: "),
-            "expected a hew_tls_connect-prefixed message, got {:?}",
-            last_error_string()
+            hew_tls_connect_errno() != 0,
+            "a refused connect carries its errno"
         );
-        assert!(
-            !last_error_string().ends_with("host is empty")
-                && !last_error_string().contains("invalid port"),
-            "expected the connect_tls Err(_) path, got {:?}",
-            last_error_string()
-        );
+        assert!(last_error_string().starts_with("tls.connect: connect: "));
     }
 
     #[test]
@@ -1217,33 +1456,148 @@ mod tests {
     }
 
     #[test]
-    fn default_config_does_not_panic() {
-        let config = default_client_config();
-        assert!(config.is_ok(), "default_client_config should succeed");
-    }
-
-    #[test]
-    fn connect_empty_host_returns_null() {
-        clear_tls_last_error();
-        let host = ManagedString::new("");
-        // A managed empty string and null share the same canonical empty
-        // representation, so an explicit "" host takes the identical
-        // early-return path as a null pointer (`connect_null_host_returns_null`)
-        // rather than reaching `connect_tls`'s invalid-DNS-name error.
-        // SAFETY: `host` is a live managed string handle (empty).
-        let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
-        assert!(ptr.is_null());
-        assert_eq!(last_error_string(), "hew_tls_connect: host is empty");
+    fn bundled_config_does_not_panic() {
+        assert!(client_config(Trust::Bundled).is_ok());
     }
 
     #[test]
     fn connect_negative_port_returns_null() {
         clear_tls_last_error();
-        let host = ManagedString::new("example.com");
-        // SAFETY: passing a live managed host string with an invalid port.
-        let ptr = unsafe { hew_tls_connect(host.as_ptr(), -1) };
+        let ptr = connect_with("example.com", -1, TLS_TRUST_BUNDLED, &[], 0);
         assert!(ptr.is_null());
-        assert_eq!(last_error_string(), "hew_tls_connect: invalid port -1");
+        assert_eq!(last_error_string(), "tls.connect: invalid port -1");
+        assert_eq!(hew_tls_connect_failure(), TLS_CONNECT_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn bad_trust_pem_is_invalid_argument() {
+        for pem in [
+            &b"not a certificate"[..],
+            b"-----BEGIN CERTIFICATE-----\n!!\n-----END CERTIFICATE-----\n",
+        ] {
+            clear_tls_last_error();
+            let ptr = connect_with("localhost", 443, TLS_TRUST_PEM, pem, 0);
+            assert!(ptr.is_null());
+            assert_eq!(hew_tls_connect_failure(), TLS_CONNECT_INVALID_ARGUMENT);
+            assert!(
+                last_error_string().contains("trust PEM"),
+                "{}",
+                last_error_string()
+            );
+        }
+    }
+
+    /// A CA and a `localhost` leaf it signed, with the leaf's server config.
+    pub(crate) fn ca_and_server() -> (String, Arc<rustls::ServerConfig>) {
+        let ca_key = rcgen::KeyPair::generate().expect("CA key");
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("CA params");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_key).expect("CA cert");
+        let issuer = rcgen::Issuer::new(ca_params, ca_key);
+        let leaf_key = rcgen::KeyPair::generate().expect("leaf key");
+        let leaf = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .expect("leaf params")
+            .signed_by(&leaf_key, &issuer)
+            .expect("leaf cert");
+        let config = rustls::ServerConfig::builder_with_provider(ring_provider())
+            .with_protocol_versions(rustls::DEFAULT_VERSIONS)
+            .expect("server protocol versions")
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(leaf.der().to_vec())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der())),
+            )
+            .expect("server cert");
+        (ca_cert.pem(), Arc::new(config))
+    }
+
+    /// Serve one TLS connection that echoes one record back.
+    fn serve_once(config: Arc<rustls::ServerConfig>) -> (c_int, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = c_int::from(listener.local_addr().unwrap().port());
+        let server = thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut tls =
+                rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), tcp);
+            let mut buf = [0u8; 64];
+            if let Ok(n) = tls.read(&mut buf) {
+                let _ = tls.write_all(&buf[..n]);
+                let _ = tls.flush();
+            }
+        });
+        (port, server)
+    }
+
+    #[test]
+    fn pem_trust_accepts_its_ca_and_completes_the_handshake() {
+        let (ca_pem, config) = ca_and_server();
+        let (port, server) = serve_once(config);
+        let stream = connect_with("localhost", port, TLS_TRUST_PEM, ca_pem.as_bytes(), 3_000);
+        assert!(!stream.is_null(), "connect failed: {}", last_error_string());
+        // SAFETY: `stream` is live until the close below.
+        let shared = unsafe { &*stream };
+        let handshaking = shared
+            .inner
+            .stream
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .conn
+            .is_handshaking();
+        assert!(!handshaking, "connect returns after the handshake");
+        let mut status = -1;
+        // SAFETY: `stream` is live and the buffer is valid.
+        let written = unsafe { hew_tls_write(stream, b"ping".as_ptr(), 4, &raw mut status) };
+        assert_eq!((written, status), (4, TLS_STATUS_SUCCESS));
+        // SAFETY: as above.
+        let reply = unsafe { hew_tls_read(stream, 64, &raw mut status) };
+        assert_eq!(status, TLS_STATUS_SUCCESS);
+        assert_eq!(vec_bytes(&reply), b"ping");
+        free_vec(&reply);
+        // SAFETY: releases the only owner.
+        unsafe { hew_tls_close(stream) };
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn bundled_trust_and_hostname_mismatch_are_refused() {
+        let (ca_pem, config) = ca_and_server();
+        for (host, trust, pem) in [
+            ("localhost", TLS_TRUST_BUNDLED, &b""[..]),
+            ("127.0.0.1", TLS_TRUST_PEM, ca_pem.as_bytes()),
+        ] {
+            let (port, server) = serve_once(Arc::clone(&config));
+            let stream = connect_with(host, port, trust, pem, 3_000);
+            assert!(
+                stream.is_null(),
+                "{host} with trust {trust} must be refused"
+            );
+            assert_eq!(hew_tls_connect_failure(), TLS_CONNECT_TLS);
+            assert!(
+                last_error_string().contains("invalid peer certificate"),
+                "{}",
+                last_error_string()
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn handshake_deadline_bounds_a_silent_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = c_int::from(listener.local_addr().unwrap().port());
+        let started = Instant::now();
+        let stream = connect_with("localhost", port, TLS_TRUST_BUNDLED, &[], 300);
+        let elapsed = started.elapsed();
+        assert!(stream.is_null());
+        assert_eq!(hew_tls_connect_failure(), TLS_CONNECT_TIMED_OUT);
+        assert!(
+            elapsed >= Duration::from_millis(250) && elapsed < Duration::from_secs(2),
+            "{elapsed:?}"
+        );
+        drop(listener);
     }
 
     #[test]
@@ -1983,6 +2337,9 @@ mod tests {
             ("TLS_STATUS_RETRYABLE", TLS_STATUS_RETRYABLE),
             ("TLS_STATUS_TLS_ERROR", TLS_STATUS_TLS_ERROR),
             ("TLS_STATUS_IO_ERROR", TLS_STATUS_IO_ERROR),
+            ("TLS_CONNECT_INVALID_ARGUMENT", TLS_CONNECT_INVALID_ARGUMENT),
+            ("TLS_CONNECT_TIMED_OUT", TLS_CONNECT_TIMED_OUT),
+            ("TLS_CONNECT_OS", TLS_CONNECT_OS),
         ];
 
         for (name, expected) in pins {
@@ -2057,14 +2414,15 @@ mod tests {
             with_actor_context(test_actor, || {
                 // SAFETY: null is the canonical empty managed string; the
                 // documented failure path.
-                let ptr = unsafe { hew_tls_connect(std::ptr::null(), 443) };
+                let ptr =
+                    unsafe { hew_tls_connect(std::ptr::null(), 443, 0, std::ptr::null(), 0, 0) };
                 assert!(ptr.is_null());
             });
             barrier.wait();
 
             let result = handle.join().expect("thread B panicked");
             assert_eq!(
-                result, "hew_tls_connect: host is empty",
+                result, "tls.connect: host is empty",
                 "run {run}: TLS error recorded on thread A must be visible on thread B for the same actor"
             );
 

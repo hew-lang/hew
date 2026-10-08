@@ -100,6 +100,11 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/f32_arithmetic_precision.hew",
     },
     ParityCase {
+        // A slice past the end faults on both engines instead of clamping.
+        test_name: "slice_bounds",
+        source_rel: "examples/sandbox-graduation/slice_bounds.hew",
+    },
+    ParityCase {
         // Float division and remainder (IEEE-754, never trap-on-zero).
         test_name: "float_division",
         source_rel: "examples/playground/basics/float_division.hew",

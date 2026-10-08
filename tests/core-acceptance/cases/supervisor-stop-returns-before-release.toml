@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-stop-returns-before-release"
+intent = "A supervisor stop request returns before any child is released: each stop hook waits for main, the stopping child refuses mail, and children release in reverse order before the wait completes."
+source = "cases/supervisor-stop-returns-before-release.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stop returned\nstopping child refused mail\nsecond\nfirst\nafter stopped\n"
+exit = 0

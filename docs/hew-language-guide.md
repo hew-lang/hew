@@ -4399,6 +4399,29 @@ fn main() {
 }
 ```
 
+Text formats key a record field by its name. `#[serial(key = "..")]` on a
+field sets its exact key, and `#[serial(case = "..")]` on the type renames every
+key (`camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`);
+a field key wins over the type's case. Both directions use the renamed key, so
+a document produced elsewhere decodes into idiomatic field names:
+
+```hew
+import std.encoding.json;
+
+#[serial(case = "PascalCase")]
+type RadioStats {
+    #[serial(key = "PacketsRecv")]
+    packets_received: i64;
+    last_snr: f64;
+}
+
+fn main() {
+    let stats = json.decode<RadioStats>("{\"PacketsRecv\":12,\"LastSnr\":6.5}").expect("decode");
+    println(stats.packets_received); // 12
+    println(json.encode(stats)); // {"PacketsRecv":12,"LastSnr":6.5}
+}
+```
+
 `yaml`, `toml` and `msgpack` provide the equivalent surface. TOML has no null
 and its documents are tables, so `toml.encode` and `toml.decode` refuse a
 non-record root or a `#[wire]` record with a required `Option` field at compile

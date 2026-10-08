@@ -129,15 +129,15 @@ LLVM_PREFIX="$(brew --prefix llvm)" make release
 
 ## FreeBSD x86_64
 
-**Status:** Tier 2 — builds and tests pass on FreeBSD 15.0 x86_64.
+**Status:** Tier 2 — builds and tests pass on FreeBSD 15.1 x86_64.
 
 Tag releases build `libhew.a` on Linux with Rust 1.96.0,
 `cargo-zigbuild` 0.22.3, and Zig 0.16.0. The archive is published between
-jobs under the full `x86_64-unknown-freebsd` Rust triple. The FreeBSD 15.0
+jobs under the full `x86_64-unknown-freebsd` Rust triple. The FreeBSD 15.1
 job still builds the compiler and support binaries natively, links a real Hew
 consumer against the downloaded archive, and runs the packaged compile/run
 smoke before that cross-built library can ship. Zig currently targets the
-FreeBSD 14 ABI baseline, so the native FreeBSD 15.0 proof is required.
+FreeBSD 14 ABI baseline, so the native FreeBSD 15.1 proof is required.
 
 ### Prerequisites
 
@@ -175,7 +175,7 @@ LLVM_SYS_221_PREFIX=/usr/local/llvm22 make release
 
 ## FreeBSD aarch64
 
-**Status:** Tier 2 — the release package is proved on FreeBSD 15.0 aarch64
+**Status:** Tier 2 — the release package is proved on FreeBSD 15.1 aarch64
 under QEMU.
 
 Rust 1.96.0 does not publish a standard-library component for
@@ -185,7 +185,7 @@ Rust 1.96.0 does not publish a standard-library component for
 The producer records and checks Zig 0.16.0's FreeBSD 14.0 ABI baseline before
 uploading the full-triple-keyed archive.
 
-The FreeBSD 15.0 aarch64 job keeps the native compiler and support-binary
+The FreeBSD 15.1 aarch64 job keeps the native compiler and support-binary
 builds. It links a real Hew consumer against the downloaded `libhew.a`,
 packages that exact archive under both `lib/` and
 `lib/aarch64-unknown-freebsd/`, and executes the packaged compile/run smoke.

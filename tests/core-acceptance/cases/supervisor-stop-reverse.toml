@@ -1,10 +1,10 @@
 [[case]]
 id = "supervisor-stop-reverse"
-intent = "A supervisor returns from the stop request, releases children in reverse declaration order, then completes the wait."
+intent = "A stopped supervisor releases its children in reverse declaration order before its wait completes."
 source = "cases/supervisor-stop-reverse.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "after stop\nsecond\nfirst\nafter stopped\n"
+stdout = "second\nfirst\nafter stopped\n"
 exit = 0

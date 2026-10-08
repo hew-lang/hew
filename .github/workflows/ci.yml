@@ -8,6 +8,14 @@ on:
   # merge gate could report READY with nothing having run. A stacked branch
   # is exactly where a break is easiest to miss.
   pull_request:
+  # The main merge queue. Branch protection requires `Clippy & format` and
+  # `Build & test (Linux)`; GitHub waits for checks of exactly those names on
+  # the queue's temporary merge commit, so this workflow must run there too or
+  # every queued pull request stalls. The jobs read no pull-request context,
+  # and the queue ref (gh-readonly-queue/main/...) is unique per entry, so the
+  # concurrency group below never cancels a queued run.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 # A push to a branch makes any run still going for that same ref obsolete:

@@ -56,6 +56,18 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/math_intrinsics.hew",
     },
     ParityCase {
+        // The f64 classification and bit methods, and the std.encoding.binary
+        // f32 codecs that refuse non-finite input through them.
+        test_name: "float_classification",
+        source_rel: "examples/sandbox-graduation/float_classification.hew",
+    },
+    ParityCase {
+        // Integer bit methods and wrapping, saturating and checked arithmetic
+        // at narrow, signed and unsigned receiver widths.
+        test_name: "integer_bit_methods",
+        source_rel: "examples/sandbox-graduation/integer_bit_methods.hew",
+    },
+    ParityCase {
         // Dynamic dispatch through a trait object: the checker picks the slot
         // and the package carries the table, so neither engine resolves the
         // method by name.
@@ -721,6 +733,12 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
         ),
         "f32_arithmetic_precision" => Some("16777216\n"),
+        "integer_bit_methods" => Some(
+            "3\n5\n0\n3\n4\n0\n13330\n19\n3\n3221225472\n57\n1\n44\n255\n56\n-128\n-128\n-2\nchecked 255\noverflow\noverflow\n",
+        ),
+        "float_classification" => Some(
+            "nan=false finite=true infinite=false\nnan=false finite=false infinite=true\nnan=false finite=false infinite=true\nnan=true finite=false infinite=false\n4609434218613702656\n13835058055282163712\nfalse\nfalse\ntrue\ntrue\n1.5\n-0.25\nrefused infinity: NonFinite\n",
+        ),
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
         "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),
         "dyn_multibound_dispatch" => {

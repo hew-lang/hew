@@ -1,0 +1,13 @@
+// `Show` is the imported `n.Show`; the root's same-leaf trait does not make
+// it local to this module.
+import n.{Show};
+
+impl Show for i64 {
+    fn show(self) -> string {
+        "m"
+    }
+}
+
+pub fn go() -> string {
+    3.show()
+}

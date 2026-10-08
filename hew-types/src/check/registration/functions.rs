@@ -190,8 +190,8 @@ impl Checker {
                         .map(|import| (import.target.dotted(), import.spec.clone()))
                         .collect();
                     // Scope local declarations to the module being registered.
-                    let saved_local_type_defs = self.local_type_defs.clone();
-                    let saved_source_type_defs = self.source_type_defs.clone();
+                    let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
+                    let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {

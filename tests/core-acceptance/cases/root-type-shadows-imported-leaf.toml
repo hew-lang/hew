@@ -1,0 +1,10 @@
+[[case]]
+id = "root-type-shadows-imported-leaf"
+intent = "A module that imports a type by its leaf, by an alias or by its qualified path resolves that spelling to the imported declaration in its bodies and field types, even when the root declares a type with the same leaf."
+source = "fixtures/root-type-shadows-imported-leaf/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "root Foo.A\nroot Alias\nn.Foo.B 7\nn.Foo.A\nn.Foo.B 9\n"
+exit = 0

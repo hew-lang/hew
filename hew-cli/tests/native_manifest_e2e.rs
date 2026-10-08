@@ -436,3 +436,282 @@ fn objects_rebuild_when_a_header_changes() {
     assert_ok(&run, "hew run after a header change");
     assert_eq!(stdout(&run), "102\n");
 }
+
+/// A `hew.toml` is a package manifest only when it declares `[native]`; every
+/// other shape just marks a directory and must not stop a program from
+/// building.
+const PLAIN_MANIFESTS: &[(&str, &str)] = &[
+    ("workspace only", "[workspace]\nmembers = []\n"),
+    ("dependencies only", "[dependencies]\n"),
+    ("empty", ""),
+    ("package without a version", "[package]\nname = \"p\"\n"),
+    (
+        "package with a lib table",
+        "[package]\nname = \"p\"\nversion = \"0.1.0\"\n[lib]\nname = \"p\"\n",
+    ),
+];
+
+#[test]
+fn a_hew_toml_without_native_never_blocks_a_single_file_build() {
+    require_codegen();
+    for (shape, text) in PLAIN_MANIFESTS {
+        let dir = workspace();
+        write(&dir.path().join("hew.toml"), text);
+        write(
+            &dir.path().join("main.hew"),
+            "fn main() {\n    println(7);\n}\n",
+        );
+        let run = hew(dir.path(), &["run", "main.hew"]);
+        assert_ok(&run, &format!("hew run beside a manifest ({shape})"));
+        assert_eq!(stdout(&run), "7\n", "{shape}");
+
+        // The same manifest owning an imported module.
+        let dir = workspace();
+        write(&dir.path().join("lib/hew.toml"), text);
+        write(
+            &dir.path().join("lib/lib.hew"),
+            "pub fn value() -> i32 {\n    5\n}\n",
+        );
+        write(
+            &dir.path().join("app.hew"),
+            "import lib;\n\nfn main() {\n    println(lib.value());\n}\n",
+        );
+        let run = hew(dir.path(), &["run", "app.hew"]);
+        assert_ok(&run, &format!("hew run importing a module ({shape})"));
+        assert_eq!(stdout(&run), "5\n", "{shape}");
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create directory");
+    for entry in std::fs::read_dir(from).expect("read directory") {
+        let entry = entry.expect("directory entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy file");
+        }
+    }
+}
+
+#[test]
+fn a_copied_package_tree_rebuilds_its_objects() {
+    require_codegen();
+    let original = workspace();
+    write_c_package(original.path());
+    let run = hew(original.path(), &["run", "main.hew"]);
+    assert_ok(&run, "hew run in the original");
+    assert_eq!(stdout(&run), "42\n");
+
+    // Copy the tree with its `target/`, then change a source in the copy. The
+    // cached dependency file still names the original's sources, which have
+    // not changed.
+    let copy = workspace();
+    copy_tree(original.path(), copy.path());
+    write(
+        &copy.path().join("native/calc.c"),
+        "#include \"calc.h\"\nint32_t calc_answer(int32_t extra) { return CALC_BASE + extra + 1000; }\n",
+    );
+    let run = hew(copy.path(), &["run", "main.hew"]);
+    assert_ok(&run, "hew run in the copy");
+    assert_eq!(stdout(&run), "1042\n");
+}
+
+#[test]
+fn thread_local_and_common_symbols_in_the_runtime_prefix_are_refused() {
+    require_codegen();
+    for (kind, source, cflags, symbol) in [
+        (
+            "thread-local",
+            "__thread int hew_tls_slot = 3;\nint tls_read(void) { return hew_tls_slot; }\n",
+            "",
+            "hew_tls_slot",
+        ),
+        (
+            "common",
+            "int hew_common_slot;\nint common_read(void) { return hew_common_slot; }\n",
+            "cflags = [\"-fcommon\"]\n",
+            "hew_common_slot",
+        ),
+    ] {
+        let dir = workspace();
+        write(
+            &dir.path().join("hew.toml"),
+            &manifest(
+                "meshcore.roles",
+                &format!("sources = [\"bridge.c\"]\n{cflags}"),
+            ),
+        );
+        write(&dir.path().join("bridge.c"), source);
+        write(
+            &dir.path().join("main.hew"),
+            "fn main() {\n    println(1);\n}\n",
+        );
+        let build = hew(dir.path(), &["build", "main.hew", "-o", "refused"]);
+        assert!(
+            !build.status.success(),
+            "{kind}\n{}",
+            describe_output(&build)
+        );
+        let text = stderr(&build);
+        assert!(text.contains("E_RESERVED_NATIVE_SYMBOL"), "{kind}: {text}");
+        assert!(text.contains(&format!("`{symbol}`")), "{kind}: {text}");
+    }
+}
+
+#[test]
+fn every_malformed_native_manifest_carries_the_native_code() {
+    require_codegen();
+    for (native, expected) in [
+        ("sources = \"calc.c\"\n", "sources"),
+        ("sourcse = [\"calc.c\"]\n", "sourcse"),
+        (
+            "sources = [\"calc.c\"]\n[native.win32]\nlink-libs = [\"x\"]\n",
+            "win32",
+        ),
+        (
+            "sources = [\"calc.c\"]\n[native.linux]\nlib = \"x\"\n",
+            "lib",
+        ),
+        ("sources = [\"calc.c\", \"./calc.c\"]\n", "more than once"),
+    ] {
+        let dir = workspace();
+        write(&dir.path().join("hew.toml"), &manifest("calc", native));
+        write(
+            &dir.path().join("calc.c"),
+            "int calc_value(void) { return 1; }\n",
+        );
+        write(
+            &dir.path().join("main.hew"),
+            "fn main() {\n    println(1);\n}\n",
+        );
+        let build = hew(dir.path(), &["build", "main.hew", "-o", "never"]);
+        assert!(
+            !build.status.success(),
+            "{native}\n{}",
+            describe_output(&build)
+        );
+        let text = stderr(&build);
+        assert!(text.contains("E_INVALID_NATIVE"), "{native}: {text}");
+        assert!(text.contains(expected), "{native}: {text}");
+    }
+
+    let dir = workspace();
+    write(
+        &dir.path().join("hew.toml"),
+        "[package]\nname = \"calc\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nsources = 3\n",
+    );
+    write(
+        &dir.path().join("main.hew"),
+        "fn main() {\n    println(1);\n}\n",
+    );
+    let build = hew(dir.path(), &["build", "main.hew", "-o", "never"]);
+    assert!(
+        stderr(&build).contains("E_INVALID_NATIVE"),
+        "{}",
+        stderr(&build)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_package_directory_still_builds_its_native_code() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    require_codegen();
+    let dir = workspace();
+    write_c_package(dir.path());
+    let locked = std::fs::Permissions::from_mode(0o555);
+    let open = std::fs::Permissions::from_mode(0o755);
+    std::fs::set_permissions(dir.path(), locked).expect("lock the package");
+    if std::fs::create_dir(dir.path().join("probe")).is_ok() {
+        // Running as a user the mode does not bind (root): nothing to test.
+        std::fs::set_permissions(dir.path(), open).expect("unlock the package");
+        return;
+    }
+    let run = hew(dir.path(), &["run", "main.hew"]);
+    std::fs::set_permissions(dir.path(), open).expect("unlock the package");
+    assert_ok(&run, "hew run in a read-only package");
+    assert_eq!(stdout(&run), "42\n");
+    assert!(!dir.path().join("target").exists());
+}
+
+/// A staticlib crate exporting `hew_rust_value`.
+fn write_rust_package(root: &Path, name: &str) {
+    write(
+        &root.join("hew.toml"),
+        &manifest(name, "lib = \"rustbridge\"\ncrate = \"native\"\n"),
+    );
+    write(
+        &root.join("native/Cargo.toml"),
+        "[workspace]\n\n[package]\nname = \"rustbridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [lib]\ncrate-type = [\"staticlib\"]\n",
+    );
+    write(
+        &root.join("native/src/lib.rs"),
+        "#[no_mangle]\npub extern \"C\" fn hew_rust_value() -> i32 {\n    11\n}\n",
+    );
+    write(
+        &root.join("main.hew"),
+        "extern \"C\" {\n    fn hew_rust_value() -> i32;\n}\n\n\
+         fn main() {\n    println(unsafe { hew_rust_value() });\n}\n",
+    );
+}
+
+#[test]
+fn a_rust_crate_exporting_a_runtime_symbol_is_refused_outside_the_hew_namespace() {
+    require_codegen();
+    let dir = workspace();
+    write_rust_package(dir.path(), "acme.rustbridge");
+    let build = hew(dir.path(), &["build", "main.hew", "-o", "refused"]);
+    assert!(!build.status.success(), "{}", describe_output(&build));
+    let text = stderr(&build);
+    assert!(text.contains("E_RESERVED_NATIVE_SYMBOL"), "{text}");
+    assert!(text.contains("Rust crate `rustbridge`"), "{text}");
+    assert!(text.contains("`hew_rust_value`"), "{text}");
+    assert!(text.contains("`acme_rustbridge_rust_value`"), "{text}");
+}
+
+#[test]
+fn a_hew_namespace_package_may_export_runtime_prefixed_symbols() {
+    require_codegen();
+    let dir = workspace();
+    write_rust_package(dir.path(), "hew.rustbridge");
+    let run = hew(dir.path(), &["run", "main.hew"]);
+    assert_ok(&run, "hew run of a hew.* package");
+    assert_eq!(stdout(&run), "11\n");
+}
+
+#[test]
+fn a_path_dependency_installs_imports_and_links_its_native_code() {
+    require_codegen();
+    let dir = workspace();
+    write(
+        &dir.path().join("lib/hew.toml"),
+        &manifest("acme.local", "sources = [\"native/l.c\"]\n"),
+    );
+    write(
+        &dir.path().join("lib/native/l.c"),
+        "int acme_local_v(void) { return 9; }\n",
+    );
+    write(
+        &dir.path().join("lib/local.hew"),
+        "extern \"C\" {\n    fn acme_local_v() -> i32;\n}\n\n\
+         pub fn v() -> i32 {\n    unsafe { acme_local_v() }\n}\n",
+    );
+    write(
+        &dir.path().join("app/hew.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n\
+         [dependencies]\n\"acme.local\" = { path = \"../lib\" }\n",
+    );
+    write(
+        &dir.path().join("app/main.hew"),
+        "import acme.local;\n\nfn main() {\n    println(local.v());\n}\n",
+    );
+    let app = dir.path().join("app");
+    assert_ok(&hew(&app, &["install"]), "hew install");
+    let run = hew(&app, &["run", "main.hew"]);
+    assert_ok(&run, "hew run with a path dependency");
+    assert_eq!(stdout(&run), "9\n");
+}

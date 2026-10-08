@@ -9,6 +9,7 @@
 //! The caller supplies the C toolchain ([`NativeToolchain`]) because the driver
 //! and its target flags belong to the linker driver, not to the manifest.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -60,8 +61,9 @@ pub struct NativeBuild {
 ///
 /// Returns the diagnostic text when the Rust crate's toolchain does not match
 /// the runtime's (`E_NATIVE_TOOLCHAIN`), a build step fails
-/// (`E_NATIVE_COMPILE`, `E_NATIVE_PKG_CONFIG`), or a C or C++ source defines
-/// a symbol under the runtime's reserved prefix (`E_RESERVED_NATIVE_SYMBOL`).
+/// (`E_NATIVE_COMPILE`, `E_NATIVE_PKG_CONFIG`), or the Rust crate or a C or
+/// C++ source of a package outside the `hew.` namespace defines a symbol
+/// under the runtime's reserved prefix (`E_RESERVED_NATIVE_SYMBOL`).
 pub fn build(
     root: &Path,
     manifest: &HewManifest,
@@ -74,6 +76,7 @@ pub fn build(
     let mut out = NativeBuild::default();
     if let Some(rust) = native.rust_crate() {
         let artifact = build_rust_crate(root, &rust, &embedded_rustc_identity())?;
+        refuse_reserved_symbols(&artifact, &format!("Rust crate `{}`", rust.lib), package)?;
         out.dependencies
             .extend(cargo_dep_info(&artifact.with_extension("d")));
         out.inputs.push(artifact);
@@ -117,9 +120,8 @@ impl SourceSet<'_> {
     fn compile(&self, toolchain: &NativeToolchain, out: &mut NativeBuild) -> Result<(), String> {
         let c_args = self.args(toolchain, SourceLanguage::C);
         let cxx_args = self.args(toolchain, SourceLanguage::Cxx);
-        // Objects live under a directory named for the full command line, so
-        // a changed flag, define, target or profile never reuses an object.
-        let object_dir = self.root.join("target").join("native").join(command_key(
+        let object_dir = self.object_dir(&command_key(
+            self.root,
             &toolchain.driver,
             &c_args,
             &cxx_args,
@@ -146,12 +148,27 @@ impl SourceSet<'_> {
                 compile_one(&toolchain.driver, args, &path, &object, &depfile)
                     .map_err(|stderr| self.compile_error(source, &stderr))?;
             }
-            refuse_reserved_symbols(&object, source, self.package)?;
+            refuse_reserved_symbols(&object, &format!("`{source}`"), self.package)?;
             out.dependencies.extend(read_depfile(&depfile));
             out.compiles_cxx |= language == SourceLanguage::Cxx;
             out.inputs.push(object);
         }
         Ok(())
+    }
+
+    /// Objects live under a directory named for the package root and the full
+    /// command line, so a changed flag, define, target or profile never reuses
+    /// an object, and neither does a copy of the package tree.
+    ///
+    /// The directory is `target/native/<key>` in the package; a package whose
+    /// directory is read-only builds under the system temporary directory
+    /// instead.
+    fn object_dir(&self, key: &str) -> PathBuf {
+        let local = self.root.join("target").join("native").join(key);
+        if std::fs::create_dir_all(&local).is_ok() {
+            return local;
+        }
+        std::env::temp_dir().join("hew-native").join(key)
     }
 
     fn args(&self, toolchain: &NativeToolchain, language: SourceLanguage) -> Vec<String> {
@@ -177,8 +194,12 @@ impl SourceSet<'_> {
     }
 }
 
-fn command_key(driver: &str, c_args: &[String], cxx_args: &[String]) -> String {
+fn command_key(root: &Path, driver: &str, c_args: &[String], cxx_args: &[String]) -> String {
     let mut hasher = Sha256::new();
+    // Dependency files name sources by absolute path, so an object built in
+    // one location must not be reused from another.
+    hasher.update(root.as_os_str().as_encoded_bytes());
+    hasher.update([0]);
     for part in std::iter::once(driver)
         .chain(c_args.iter().map(String::as_str))
         .chain(std::iter::once("\0cxx"))
@@ -322,8 +343,14 @@ fn cargo_dep_info(path: &Path) -> Vec<PathBuf> {
 
 // ── Reserved runtime symbols ───────────────────────────────────────────────
 
-fn refuse_reserved_symbols(object: &Path, source: &str, package: &str) -> Result<(), String> {
-    let reserved = reserved_definitions(object)?;
+/// Refuse a `hew_` definition in `artifact`, an object file, a Rust static
+/// library or a Rust dynamic library. `origin` names what was built, such as
+/// `` `bridge.c` `` or ``Rust crate `p_native` ``.
+fn refuse_reserved_symbols(artifact: &Path, origin: &str, package: &str) -> Result<(), String> {
+    if in_runtime_namespace(package) {
+        return Ok(());
+    }
+    let reserved = reserved_definitions(artifact)?;
     if reserved.is_empty() {
         return Ok(());
     }
@@ -333,7 +360,7 @@ fn refuse_reserved_symbols(object: &Path, source: &str, package: &str) -> Result
         let renamed = format!("{prefix}{}", &symbol[RESERVED_PREFIX.len()..]);
         let _ = write!(
             message,
-            "error[E_RESERVED_NATIVE_SYMBOL]: `{source}` in package `{package}` defines \
+            "error[E_RESERVED_NATIVE_SYMBOL]: {origin} in package `{package}` defines \
              `{symbol}`, but the `{RESERVED_PREFIX}` symbol prefix is reserved for the Hew \
              runtime\n  help: rename it to `{renamed}` here and in the `extern \"C\"` block \
              that declares it\n"
@@ -342,39 +369,85 @@ fn refuse_reserved_symbols(object: &Path, source: &str, package: &str) -> Result
     Err(message.trim_end().to_string())
 }
 
-/// Global symbols `object` defines under the reserved prefix.
-fn reserved_definitions(object: &Path) -> Result<Vec<String>, String> {
-    use object::{Object as _, ObjectSymbol as _};
+/// Whether `package` belongs to the `hew.` ecosystem namespace, whose
+/// packages are the runtime's own and may define `hew_` symbols.
+fn in_runtime_namespace(package: &str) -> bool {
+    package == "hew" || package.starts_with("hew.")
+}
 
-    let data =
-        std::fs::read(object).map_err(|e| format!("cannot read {}: {e}", object.display()))?;
-    let file = object::File::parse(&*data)
-        .map_err(|e| format!("cannot read object {}: {e}", object.display()))?;
+/// Global symbols `artifact` defines under the reserved prefix: functions,
+/// data, thread-local variables and common symbols, in an object, or in every
+/// member of an archive.
+fn reserved_definitions(artifact: &Path) -> Result<Vec<String>, String> {
+    use object::read::archive::ArchiveFile;
+    use object::FileKind;
+
+    let shown = artifact.display();
+    let data = std::fs::read(artifact).map_err(|e| format!("cannot read {shown}: {e}"))?;
+    let mut reserved = BTreeSet::new();
+    if matches!(FileKind::parse(&*data), Ok(FileKind::Archive)) {
+        let archive =
+            ArchiveFile::parse(&*data).map_err(|e| format!("cannot read archive {shown}: {e}"))?;
+        for member in archive.members() {
+            let member = member.map_err(|e| format!("cannot read archive {shown}: {e}"))?;
+            let bytes = member
+                .data(&*data)
+                .map_err(|e| format!("cannot read archive {shown}: {e}"))?;
+            // Members that are not object files (bitcode, metadata) define
+            // no linkable symbols.
+            if let Ok(file) = object::File::parse(bytes) {
+                collect_reserved(&file, &mut reserved);
+            }
+        }
+    } else {
+        let file =
+            object::File::parse(&*data).map_err(|e| format!("cannot read object {shown}: {e}"))?;
+        collect_reserved(&file, &mut reserved);
+    }
+    Ok(reserved.into_iter().collect())
+}
+
+fn collect_reserved(file: &object::File<'_>, reserved: &mut BTreeSet<String>) {
+    use object::{Object as _, ObjectSymbol as _, SymbolKind};
+
     // Mach-O spells every C symbol with a leading underscore.
     let mangling = match file.format() {
         object::BinaryFormat::MachO => "_",
         _ => "",
     };
-    let mut reserved = Vec::new();
-    for symbol in file.symbols() {
-        if !symbol.is_definition() || !symbol.is_global() {
+    let mut note = |name: &[u8]| {
+        let reserved_name = std::str::from_utf8(name)
+            .ok()
+            .and_then(|name| name.strip_prefix(mangling))
+            .filter(|name| name.starts_with(RESERVED_PREFIX));
+        if let Some(name) = reserved_name {
+            reserved.insert(name.to_string());
+        }
+    };
+    // `is_definition` leaves out thread-local and common symbols, so a
+    // definition is any global symbol that is not undefined.
+    for symbol in file.symbols().chain(file.dynamic_symbols()) {
+        if symbol.is_undefined()
+            || !symbol.is_global()
+            || matches!(symbol.kind(), SymbolKind::File | SymbolKind::Section)
+        {
             continue;
         }
-        let Ok(name) = symbol.name() else { continue };
-        let Some(name) = name.strip_prefix(mangling) else {
-            continue;
-        };
-        if name.starts_with(RESERVED_PREFIX) {
-            reserved.push(name.to_string());
+        note(symbol.name_bytes().unwrap_or_default());
+    }
+    // A PE library lists its symbols only in the export table.
+    if let Ok(exports) = file.exports() {
+        for export in exports.flatten() {
+            if let object::NameOrOrdinal::Name(name) = export.name() {
+                note(name);
+            }
         }
     }
-    Ok(reserved)
 }
 
 /// The symbol prefix to suggest for `package`: its name with every
 /// non-identifier character as `_`, so `meshcore.roles` suggests
-/// `meshcore_roles_`. A name inside the runtime's own namespace suggests its
-/// last segment instead.
+/// `meshcore_roles_`.
 fn symbol_prefix(package: &str) -> String {
     let spelled: String = package
         .chars()
@@ -386,14 +459,11 @@ fn symbol_prefix(package: &str) -> String {
             }
         })
         .collect();
-    let mut prefix = spelled
+    let prefix = spelled
         .split('_')
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
-    if prefix.first() == Some(&"hew") && prefix.len() > 1 {
-        prefix.remove(0);
-    }
-    if prefix.is_empty() || prefix == ["hew"] {
+    if prefix.is_empty() {
         return "pkg_".to_string();
     }
     format!("{}_", prefix.join("_"))
@@ -758,9 +828,8 @@ mod tests {
     #[test]
     fn suggested_prefix_comes_from_the_package_name() {
         assert_eq!(symbol_prefix("meshcore.roles"), "meshcore_roles_");
-        assert_eq!(symbol_prefix("hew.db.sqlite"), "db_sqlite_");
-        assert_eq!(symbol_prefix("hew::testffi"), "testffi_");
-        assert_eq!(symbol_prefix("hew"), "pkg_");
+        assert_eq!(symbol_prefix("acme-tls"), "acme_tls_");
+        assert_eq!(symbol_prefix("..."), "pkg_");
     }
 
     #[test]

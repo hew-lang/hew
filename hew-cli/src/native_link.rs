@@ -29,7 +29,10 @@ use crate::target::TargetSpec;
 pub struct InputPackage {
     /// Directory holding the package's `hew.toml`.
     pub root: PathBuf,
-    pub manifest: HewManifest,
+    /// The package's manifest when it declares `[native]`. Any other
+    /// `hew.toml` (a workspace root, a dependency list) only marks the
+    /// directory and need not be a complete package manifest.
+    pub native: Option<HewManifest>,
 }
 
 /// Every non-std source a program reads and the packages that own them.
@@ -48,7 +51,8 @@ impl ProgramInputs {
     ///
     /// # Errors
     ///
-    /// Returns the diagnostic when an owning package's `hew.toml` is malformed.
+    /// Returns the diagnostic when an owning `hew.toml` is not TOML, or declares
+    /// `[native]` and is not a valid package manifest.
     pub fn collect(program: &Program, entry: &Path, std_roots: &[PathBuf]) -> Result<Self, String> {
         let std_dirs: Vec<PathBuf> = std_roots
             .iter()
@@ -88,10 +92,13 @@ impl ProgramInputs {
     }
 
     /// The packages that declare `[native]` code.
-    pub fn native_packages(&self) -> impl Iterator<Item = &InputPackage> {
-        self.packages
-            .iter()
-            .filter(|package| package.manifest.native.is_some())
+    pub fn native_packages(&self) -> impl Iterator<Item = (&Path, &HewManifest)> {
+        self.packages.iter().filter_map(|package| {
+            package
+                .native
+                .as_ref()
+                .map(|manifest| (package.root.as_path(), manifest))
+        })
     }
 
     /// Refuse a wasm build of a program that compiles a `[native]` package:
@@ -102,9 +109,9 @@ impl ProgramInputs {
     /// Names the first package that declares `[native]`.
     pub fn refuse_native_for_wasm(&self) -> Result<(), String> {
         match self.native_packages().next() {
-            Some(package) => Err(format!(
+            Some((_, manifest)) => Err(format!(
                 "package `{}` declares [native] code, which cannot be linked into a wasm module",
-                package.manifest.package.name
+                manifest.package.name
             )),
             None => Ok(()),
         }
@@ -154,9 +161,9 @@ impl Walk {
             return Ok(());
         }
         let manifest_path = root.join(MANIFEST_FILE);
-        let manifest = manifest::parse_manifest(&manifest_path)
+        let native = manifest::parse_native_manifest(&manifest_path)
             .map_err(|error| format!("cannot load {}: {error}", manifest_path.display()))?;
-        self.inputs.packages.push(InputPackage { root, manifest });
+        self.inputs.packages.push(InputPackage { root, native });
         Ok(())
     }
 
@@ -233,9 +240,8 @@ pub fn link(
     }
     let toolchain = crate::link::native_toolchain(target, debug, opt_level)?;
     let mut compiles_cxx = false;
-    for package in packages {
-        let Some(build) = hew_pkg::native::build(&package.root, &package.manifest, &toolchain)?
-        else {
+    for (root, manifest) in packages {
+        let Some(build) = hew_pkg::native::build(root, manifest, &toolchain)? else {
             continue;
         };
         for input in &build.inputs {

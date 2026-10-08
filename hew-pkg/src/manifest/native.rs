@@ -13,7 +13,7 @@
 //! `[native.windows]` add C inputs and system libraries for one target
 //! operating system; they extend the base table and never replace it.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -149,6 +149,24 @@ impl NativeInputs {
         }
         Ok(())
     }
+}
+
+/// Refuse a source listed twice (`a.c` and `./a.c` are the same file): both
+/// entries compile to one object path and link as duplicate definitions.
+fn refuse_duplicate_sources(table: &str, sources: &[String]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for source in sources {
+        let normal: PathBuf = Path::new(source)
+            .components()
+            .filter(|component| !matches!(component, Component::CurDir))
+            .collect();
+        if !seen.insert(normal) {
+            return Err(format!(
+                "{table} sources lists \"{source}\" more than once; list each file once"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A `link-libs` entry: a library name or a path to a library file.
@@ -411,9 +429,15 @@ impl NativeLib {
             );
         }
         base.validate("[native]")?;
+        refuse_duplicate_sources("[native]", &base.sources)?;
         for (name, table) in tables {
             if let Some(table) = table {
                 table.validate(name)?;
+                // An OS table adds to the base, so a source listed in both
+                // compiles to one object twice.
+                let mut combined = base.sources.clone();
+                combined.extend_from_slice(&table.sources);
+                refuse_duplicate_sources(name, &combined)?;
             }
         }
         Ok(())
@@ -489,6 +513,14 @@ mod tests {
             (
                 "[linux]\nsources = [\"../a.c\"]\n",
                 "[native.linux] sources",
+            ),
+            (
+                "sources = [\"a.c\", \"./a.c\"]\n",
+                "[native] sources lists \"./a.c\" more than once",
+            ),
+            (
+                "sources = [\"a.c\"]\n[linux]\nsources = [\"a.c\"]\n",
+                "[native.linux] sources lists \"a.c\" more than once",
             ),
         ] {
             let error = parse(text).expect_err(text);

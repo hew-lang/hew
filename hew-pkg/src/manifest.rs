@@ -354,8 +354,48 @@ impl HewManifest {
 /// Returns [`ManifestError`] when the file cannot be read or its TOML is
 /// malformed / missing required fields.
 pub fn parse_manifest(path: &Path) -> Result<HewManifest, ManifestError> {
+    parse_manifest_text(&std::fs::read_to_string(path)?)
+}
+
+/// Parse the `hew.toml` at `path` only when it declares `[native]`.
+///
+/// A program that compiles a module reads the nearest `hew.toml` for its
+/// native code and nothing else, so a manifest without `[native]` (a
+/// workspace root, a dependency list, a bare `[package]`) is not required to
+/// be a complete package manifest.
+///
+/// # Errors
+///
+/// Returns [`ManifestError`] when the file cannot be read or is not TOML, or
+/// when it declares `[native]` and is not a valid package manifest.
+pub fn parse_native_manifest(path: &Path) -> Result<Option<HewManifest>, ManifestError> {
     let text = std::fs::read_to_string(path)?;
-    let manifest: HewManifest = toml::from_str(&text)?;
+    let table: toml::Table = toml::from_str(&text)?;
+    if table.contains_key("native") {
+        parse_manifest_text(&text).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// The `[native]` section alone, ignoring the rest of the manifest.
+#[derive(Deserialize)]
+struct NativeProbe {
+    #[serde(rename = "native")]
+    _native: Option<NativeLib>,
+}
+
+fn parse_manifest_text(text: &str) -> Result<HewManifest, ManifestError> {
+    // Read `[native]` on its own first, so every way it can be malformed
+    // (a wrong type, an unknown field, an unknown OS table) carries
+    // `E_INVALID_NATIVE`, with the source line, instead of a bare serde
+    // message. Malformed TOML stays a plain parse error.
+    let table: toml::Table = toml::from_str(text)?;
+    if table.contains_key("native") {
+        toml::from_str::<NativeProbe>(text)
+            .map_err(|e| ManifestError::InvalidNative(e.to_string()))?;
+    }
+    let manifest: HewManifest = toml::from_str(text)?;
     if !SUPPORTED_EDITIONS.contains(&manifest.package.edition.as_str()) {
         return Err(ManifestError::UnsupportedEdition {
             edition: manifest.package.edition.clone(),

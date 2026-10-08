@@ -370,9 +370,10 @@ fn refuse_reserved_symbols(artifact: &Path, origin: &str, package: &str) -> Resu
 }
 
 /// Whether `package` belongs to the `hew.` ecosystem namespace, whose
-/// packages are the runtime's own and may define `hew_` symbols.
+/// packages are the runtime's own and may define `hew_` symbols. The older
+/// `hew::` spelling of a package name counts too.
 fn in_runtime_namespace(package: &str) -> bool {
-    package == "hew" || package.starts_with("hew.")
+    package == "hew" || package.starts_with("hew.") || package.starts_with("hew::")
 }
 
 /// Global symbols `artifact` defines under the reserved prefix: functions,
@@ -823,6 +824,16 @@ mod tests {
                 PathBuf::from("cost$.h"),
             ]
         );
+    }
+
+    #[test]
+    fn only_the_hew_namespace_may_define_runtime_symbols() {
+        for exempt in ["hew", "hew.db.sqlite", "hew::testffi"] {
+            assert!(in_runtime_namespace(exempt), "{exempt}");
+        }
+        for reserved in ["acme.hew", "hewn.x", "hewlett", "std.net"] {
+            assert!(!in_runtime_namespace(reserved), "{reserved}");
+        }
     }
 
     #[test]

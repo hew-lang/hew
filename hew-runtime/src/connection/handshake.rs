@@ -65,6 +65,22 @@ pub(super) fn local_handshake(
     }
 }
 
+/// A genuine v2 record for a raw-socket test peer, optionally without the
+/// Noise capability so the peer presents itself as plaintext.
+#[cfg(test)]
+pub(crate) fn test_handshake_record(
+    node_id: NodeId,
+    session_incarnation: u32,
+    static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
+    offers_noise: bool,
+) -> [u8; HEW_HANDSHAKE_SIZE] {
+    let mut record = local_handshake(node_id, session_incarnation, static_noise_pubkey);
+    if !offers_noise {
+        record.feature_flags &= !HEW_FEATURE_SUPPORTS_ENCRYPTION;
+    }
+    record.serialize()
+}
+
 pub(super) fn version_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
     local.protocol_version == peer.protocol_version
 }
@@ -226,7 +242,7 @@ pub(super) unsafe fn upgrade_noise(
     local: &HewHandshake,
     peer: &HewHandshake,
     local_private_key: &[u8],
-) -> Option<(snow::TransportState, [u8; NOISE_STATIC_PUBKEY_LEN])> {
+) -> Option<(snow::StatelessTransportState, [u8; NOISE_STATIC_PUBKEY_LEN])> {
     let initiator = noise_is_initiator(local, peer)?;
     // SAFETY: transport pointer validity is guaranteed by caller.
     let t = unsafe { &*transport };
@@ -304,6 +320,6 @@ pub(super) unsafe fn upgrade_noise(
     }
     let mut remote_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
     remote_pubkey.copy_from_slice(remote_static);
-    let transport = handshake.into_transport_mode().ok()?;
+    let transport = handshake.into_stateless_transport_mode().ok()?;
     Some((transport, remote_pubkey))
 }

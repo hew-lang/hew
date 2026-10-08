@@ -86,7 +86,7 @@ fn reserved_claim_other_conn_denied_without_wait() {
         unsafe {
             // A second Strict ACTIVE conn 51 for the same node id, with NO
             // claim of its own — node 7's claim is Reserved by conn 50.
-            let mut other = ConnectionActor::new(51);
+            let mut other = test_actor(51);
             other.peer_node_id = 7;
             other.posture = crate::peer_binding::Posture::Strict;
             other.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -241,7 +241,7 @@ fn remove_during_admission_wait_resolves_promptly_and_cleans_claim() {
 
             // Install the actor with the parked thread as its REAL reader
             // handle, exactly what hew_connmgr_remove must join.
-            let mut actor = ConnectionActor::new(90);
+            let mut actor = test_actor(90);
             actor.peer_node_id = 12;
             actor.peer_identity = Some(test_node_identity(12));
             actor.peer_session_incarnation = 1;

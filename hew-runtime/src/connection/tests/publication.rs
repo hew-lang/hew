@@ -72,7 +72,7 @@ fn remove_after_completed_publication_restores_nothing() {
                     panic!("same-credential reconnect must reserve: {detail}")
                 }
             };
-            let mut actor = ConnectionActor::new(96);
+            let mut actor = test_actor(96);
             actor.peer_node_id = 16;
             actor.publication_token = 1000;
             actor.posture = crate::peer_binding::Posture::Strict;

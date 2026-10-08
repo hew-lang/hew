@@ -3,7 +3,6 @@
 use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use crate::mailbox_envelope::MailboxPayloadClass;
 use crate::node_identity::{HewLocation, Location};
@@ -12,8 +11,8 @@ use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::util::MutexExt;
 
+use super::channel::ChannelProtection;
 use super::control::encode_envelope;
-use super::handshake::send_frame;
 use super::{ClaimedSendLease, HewConnMgr, CONN_STATE_ACTIVE, CONN_STATE_CLOSED};
 
 /// Legacy API: outbound queue tuning is no longer supported.
@@ -70,41 +69,33 @@ pub unsafe extern "C" fn hew_connmgr_send(
     // Verify the connection is the active authenticated owner of this exact
     // node/session pair. This prevents conn-id and route-slot reuse from
     // redirecting a carried location.
-    let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
-    {
-        let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
-        let publication_token = mgr_ref.connections.access(|conns| {
-            let active = conns.iter().find(|c| {
+    let active = mgr_ref.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| {
                 c.conn_id == conn_id
                     && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
                     && c.peer_identity == Some(target.node())
                     && c.peer_session_incarnation == target.incarnation()
-            });
-            if let Some(c) = active {
-                noise_out = Some(Arc::clone(&c.noise_transport));
-            }
-            active.map(|connection| connection.publication_token)
+            })
+            .map(|c| (c.publication_token, Arc::clone(&c.channel)))
+    });
+    let Some((publication_token, channel)) = active else {
+        return -1;
+    };
+    let owns_claim = mgr_ref
+        .claims
+        .0
+        .lock_or_recover()
+        .get(&target.node())
+        .is_some_and(|claim| {
+            claim.state == ClaimState::Published
+                && claim.conn_id == conn_id
+                && claim.publication_token == publication_token
+                && claim.session_incarnation == target.incarnation()
         });
-        let Some(publication_token) = publication_token else {
-            return -1;
-        };
-        let owns_claim = mgr_ref
-            .claims
-            .0
-            .lock_or_recover()
-            .get(&target.node())
-            .is_some_and(|claim| {
-                claim.state == ClaimState::Published
-                    && claim.conn_id == conn_id
-                    && claim.publication_token == publication_token
-                    && claim.session_incarnation == target.incarnation()
-            });
-        if !owns_claim {
-            return -1;
-        }
-        {
-            maybe_noise = noise_out;
-        }
+    if !owns_claim {
+        return -1;
     }
 
     // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
@@ -121,47 +112,32 @@ pub unsafe extern "C" fn hew_connmgr_send(
         return -1;
     };
 
-    if let Some(noise_transport) = maybe_noise {
-        let mut maybe_ciphertext = None;
-        {
-            let Ok(mut guard) = noise_transport.lock() else {
-                // Policy: per-connection state (C-ABI) — poisoned noise transport
-                // means this connection's encryption state is corrupted.
-                set_last_error(
-                    "hew_connmgr_send: noise_transport mutex poisoned (a thread panicked)",
-                );
-                return -1;
-            };
-            if let Some(noise) = guard.as_mut() {
-                let mut ciphertext = vec![0u8; encoded.len() + 16];
-                let Ok(n) = noise.write_message(&encoded, &mut ciphertext) else {
-                    return -1;
-                };
-                ciphertext.truncate(n);
-                maybe_ciphertext = Some(ciphertext);
-            }
-        }
-        if let Some(ciphertext) = maybe_ciphertext {
-            // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above.
-            if unsafe { send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
-                return 0;
-            }
-            return -1;
-        }
-    }
+    // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above.
+    unsafe { send_on_channel(mgr_ref, conn_id, &channel, &encoded) }
+}
 
-    // SAFETY: mgr_ref.transport is valid per caller contract and conn_id is active.
-    if unsafe { send_frame(mgr_ref.transport, conn_id, &encoded) } {
-        0
-    } else {
-        -1
+/// Seal one frame through the connection's channel and send it whole.
+///
+/// # Safety
+///
+/// `mgr_ref.transport` must be valid and `conn_id` must name the connection
+/// that owns `channel`.
+unsafe fn send_on_channel(
+    mgr_ref: &HewConnMgr,
+    conn_id: c_int,
+    channel: &ChannelProtection,
+    frame: &[u8],
+) -> c_int {
+    // SAFETY: forwarded caller contract.
+    match unsafe { channel.send(mgr_ref.transport, conn_id, frame) } {
+        Ok(()) => 0,
+        Err(err) => {
+            set_last_error(format!("connection send on conn {conn_id}: {err}"));
+            -1
+        }
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "keeps claimed-slot validation atomic with encrypted/plaintext transport sends"
-)]
 pub(super) unsafe fn send_preencoded_on_manager(
     mgr_ref: &HewConnMgr,
     conn_id: c_int,
@@ -169,6 +145,8 @@ pub(super) unsafe fn send_preencoded_on_manager(
     data: *const u8,
     len: usize,
 ) -> c_int {
+    // SAFETY: data is valid for `len` bytes per caller contract.
+    let frame = unsafe { std::slice::from_raw_parts(data, len) };
     if let Some(publication_token) = expected_publication_token {
         let lease = mgr_ref.connections.access(|connections| {
             let active = connections.iter().find(|connection| {
@@ -179,7 +157,7 @@ pub(super) unsafe fn send_preencoded_on_manager(
             Some(ClaimedSendLease {
                 _guard: active.claimed_send_lifecycle.register(),
                 publication_removed: Arc::clone(&active.publication_removed),
-                noise_transport: Arc::clone(&active.noise_transport),
+                channel: Arc::clone(&active.channel),
             })
         });
         let Some(lease) = lease else {
@@ -188,113 +166,31 @@ pub(super) unsafe fn send_preencoded_on_manager(
         if lease.publication_removed.load(Ordering::Acquire) {
             return -1;
         }
-
-        {
-            // SAFETY: data is valid for `len` bytes per caller contract.
-            let slice = unsafe { std::slice::from_raw_parts(data, len) };
-            let mut ciphertext = vec![0u8; len + 16];
-            let mut guard = lease.noise_transport.lock_or_recover();
-            if let Some(noise) = guard.as_mut() {
-                let Ok(n) = noise.write_message(slice, &mut ciphertext) else {
-                    return -1;
-                };
-                ciphertext.truncate(n);
-                // SAFETY: teardown closes the connection before waiting for this
-                // lease, so a blocked send is interrupted without slot reuse.
-                return if unsafe { send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
-                    0
-                } else {
-                    -1
-                };
-            }
-        }
-
-        // SAFETY: transport remains valid while the manager-owned worker is
-        // joined; the claimed lease prevents slot removal/reuse until return.
-        let transport = unsafe { &*mgr_ref.transport };
-        // SAFETY: `transport` remains valid for the manager lifetime.
-        let rc = if let Some(ops) = unsafe { transport.ops.as_ref() } {
-            if let Some(send_fn) = ops.send {
-                // SAFETY: data is valid for `len` bytes per caller contract.
-                unsafe { send_fn(transport.r#impl, conn_id, data.cast_mut().cast(), len) }
-            } else {
-                -1
-            }
-        } else {
-            -1
-        };
-        return if rc > 0 { 0 } else { -1 };
+        // SAFETY: teardown closes the connection before waiting for this
+        // lease, so a blocked send is interrupted without slot reuse; the
+        // lease prevents slot removal/reuse until return.
+        return unsafe { send_on_channel(mgr_ref, conn_id, &lease.channel, frame) };
     }
 
-    let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
-    {
-        let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
-        let ok = mgr_ref.connections.access(|conns| {
-            let active = conns.iter().find(|c| {
-                c.conn_id == conn_id
-                    && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-                    && expected_publication_token.is_none_or(|token| c.publication_token == token)
-            });
-            if let Some(c) = active {
-                noise_out = Some(Arc::clone(&c.noise_transport));
-            }
-            active.is_some()
-        });
-        if !ok {
-            return -1;
-        }
-        {
-            maybe_noise = noise_out;
-        }
-    }
-
-    if let Some(noise_arc) = maybe_noise {
-        // SAFETY: data is valid for `len` bytes per caller contract.
-        let slice = unsafe { std::slice::from_raw_parts(data, len) };
-        let mut ciphertext = vec![0u8; len + 16];
-        let mut guard = noise_arc.lock_or_recover();
-        if let Some(noise) = guard.as_mut() {
-            let Ok(n) = noise.write_message(slice, &mut ciphertext) else {
-                return -1;
-            };
-            ciphertext.truncate(n);
-            // SAFETY: transport is valid per manager contract; conn_id verified active above.
-            return if unsafe { send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
-                0
-            } else {
-                -1
-            };
-        }
-        // No noise state — fall through to plaintext send.
-    }
-
-    // Plaintext send path.
-    // SAFETY: transport is valid per manager contract.
-    let t = unsafe { &*mgr_ref.transport };
-    // SAFETY: ops pointer is part of valid transport.
-    let rc = if let Some(ops) = unsafe { t.ops.as_ref() } {
-        if let Some(send_fn) = ops.send {
-            // SAFETY: data is valid for `len` bytes per caller contract; conn_id verified active.
-            unsafe { send_fn(t.r#impl, conn_id, data.cast_mut().cast(), len) }
-        } else {
-            -1
-        }
-    } else {
-        -1
+    let channel = mgr_ref.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| c.conn_id == conn_id && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE)
+            .map(|c| Arc::clone(&c.channel))
+    });
+    let Some(channel) = channel else {
+        return -1;
     };
-    if rc > 0 {
-        0
-    } else {
-        -1
-    }
+    // SAFETY: transport is valid per manager contract; conn_id verified active above.
+    unsafe { send_on_channel(mgr_ref, conn_id, &channel, frame) }
 }
 
-/// Send a pre-encoded wire frame over a specific connection, applying noise
-/// encryption when the connection is encrypted.
+/// Send a pre-encoded wire frame over a specific connection through its
+/// channel protection.
 ///
 /// Unlike [`hew_connmgr_send`], this function takes bytes that are already
 /// encoded into the Hew wire format (e.g., a full ask/reply envelope). The
-/// only transformation applied is noise encryption (when enabled).
+/// only transformation applied is the connection's channel seal.
 ///
 /// Returns 0 on success, -1 on failure.
 ///

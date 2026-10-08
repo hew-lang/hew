@@ -38,7 +38,7 @@ fn unverified_gating_denies_control_and_ask_authority() {
 
         // Unverified (loopback-dev / opt-out) peer node 2 on conn 10:
         // ACTIVE, gossip-capable, but posture is Unverified.
-        let mut unverified = ConnectionActor::new(10);
+        let mut unverified = test_actor(10);
         unverified.peer_node_id = 2;
         unverified.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         unverified.posture = crate::peer_binding::Posture::Unverified;
@@ -131,7 +131,7 @@ fn unverified_gating_supersede_revokes_authority() {
         assert!(!mgr.is_null());
 
         // Exact-owner (Strict + published) peer node 3 on conn 20.
-        let mut strict = ConnectionActor::new(20);
+        let mut strict = test_actor(20);
         strict.peer_node_id = 3;
         strict.posture = crate::peer_binding::Posture::Strict;
         strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -148,7 +148,7 @@ fn unverified_gating_supersede_revokes_authority() {
         );
 
         // Supersede node 3's claim onto a new conn 21.
-        let mut strict2 = ConnectionActor::new(21);
+        let mut strict2 = test_actor(21);
         strict2.peer_node_id = 3;
         strict2.posture = crate::peer_binding::Posture::Strict;
         strict2.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -218,7 +218,7 @@ fn outbound_ask_gate_authorizes_only_exact_owner() {
 
         // (a) Unverified target (node 2 on conn 10): the gate rejects — an
         // outbound ask here fails closed with Unauthorized.
-        let mut unverified = ConnectionActor::new(10);
+        let mut unverified = test_actor(10);
         unverified.peer_node_id = 2;
         unverified.posture = crate::peer_binding::Posture::Unverified;
         unverified.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -230,7 +230,7 @@ fn outbound_ask_gate_authorizes_only_exact_owner() {
         );
 
         // (b) Exact owner (node 3 on conn 20): the gate authorizes.
-        let mut owner = ConnectionActor::new(20);
+        let mut owner = test_actor(20);
         owner.peer_node_id = 3;
         owner.posture = crate::peer_binding::Posture::Strict;
         owner.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -245,7 +245,7 @@ fn outbound_ask_gate_authorizes_only_exact_owner() {
         // (conn 20) loses authority the instant the claim map is overwritten,
         // so an outbound ask still routed to conn 20 fails closed — while the
         // new exact owner (conn 21) clears the gate.
-        let mut owner2 = ConnectionActor::new(21);
+        let mut owner2 = test_actor(21);
         owner2.peer_node_id = 3;
         owner2.posture = crate::peer_binding::Posture::Strict;
         owner2.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -327,7 +327,7 @@ fn link_down_from_unverified_or_superseded_peer_is_gated() {
         // Unverified peer node 2 on conn 10: ACTIVE + a published *delivery*
         // claim (Unverified peers still route fire-and-forget), but posture
         // is Unverified so it carries no control-plane authority.
-        let mut unverified = ConnectionActor::new(10);
+        let mut unverified = test_actor(10);
         unverified.peer_node_id = 2;
         unverified.posture = crate::peer_binding::Posture::Unverified;
         unverified.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -351,13 +351,13 @@ fn link_down_from_unverified_or_superseded_peer_is_gated() {
         // Superseded owner: Strict conn 20 for node 3, then supersede its
         // claim onto conn 21. Conn 20 keeps Strict posture but is no longer
         // the claim owner, so its link-DOWN is refused too.
-        let mut strict = ConnectionActor::new(20);
+        let mut strict = test_actor(20);
         strict.peer_node_id = 3;
         strict.posture = crate::peer_binding::Posture::Strict;
         strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
         (&*mgr).connections.access(|conns| conns.push(strict));
         let conn20_token = test_publish_claim(&*mgr, 3, 20);
-        let mut strict2 = ConnectionActor::new(21);
+        let mut strict2 = test_actor(21);
         strict2.peer_node_id = 3;
         strict2.posture = crate::peer_binding::Posture::Strict;
         strict2.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -419,7 +419,7 @@ fn unverified_peer_receives_no_outbound_gossip_or_swim() {
         assert!(!mgr.is_null());
 
         // Unverified gossip-capable peer node 2 on conn 10.
-        let mut unverified = ConnectionActor::new(10);
+        let mut unverified = test_actor(10);
         unverified.peer_node_id = 2;
         unverified.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         unverified.posture = crate::peer_binding::Posture::Unverified;
@@ -428,7 +428,7 @@ fn unverified_peer_receives_no_outbound_gossip_or_swim() {
         test_publish_claim(&*mgr, 2, 10);
 
         // Authenticated gossip-capable peer node 3 on conn 20.
-        let mut strict = ConnectionActor::new(20);
+        let mut strict = test_actor(20);
         strict.peer_node_id = 3;
         strict.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         strict.posture = crate::peer_binding::Posture::Strict;

@@ -4888,7 +4888,9 @@ has the older call sequence and an untyped `Node.start(addr)`
 
 On TCP, the pinned credential is the peer's 32-byte Noise public key. On
 quic-mesh, it is the peer certificate's canonical SPKI. An unbound or mismatched
-credential is rejected before the peer becomes routable.
+credential is rejected before the peer becomes routable. Every node connection
+is encrypted: TCP runs Noise and quic-mesh runs mutually pinned TLS 1.3, and a
+peer that offers a plaintext channel is refused.
 
 A client selects its local pin when connecting. The slot it names is the
 server's position in the client's own `NodeConfig.peers`, so a client that

@@ -16,13 +16,13 @@ fn peer_identity_validation_rejects_self_connections() {
 
 #[test]
 fn reconnect_plan_threads_expected_peer_identity() {
-    let mut pinned = ConnectionActor::new(30);
+    let mut pinned = test_actor(30);
     pinned.reconnect = Some(ReconnectSettings {
         target_addr: "127.0.0.1:1".into(),
         max_retries: 3,
         expected_node_id: Some(7),
     });
-    let mut bare = ConnectionActor::new(31);
+    let mut bare = test_actor(31);
     bare.reconnect = Some(ReconnectSettings {
         target_addr: "127.0.0.1:1".into(),
         max_retries: 3,
@@ -211,7 +211,9 @@ fn run_reconnect_attempt_replay_case(
 #[test]
 fn reconnect_attempt_requires_authenticated_credential_before_pin_check() {
     // A v2 reconnect cannot reach the route-slot pin check without a
-    // transport-authenticated credential.
+    // transport-authenticated credential; over a transport with no channel
+    // protection it is refused before any record is exchanged.
+    let channel_gate = ChannelRefusal::UnprotectedTransport.to_string();
     let (outcome, closed_ids, count, error_message) = run_reconnect_attempt_replay_case(Some(7));
     assert_eq!(
         outcome,
@@ -228,14 +230,14 @@ fn reconnect_attempt_requires_authenticated_credential_before_pin_check() {
         "the rejected reconnect's transport connection must be closed"
     );
     assert!(
-        error_message.contains("requires configured peer credentials"),
-        "rejection must surface the credential gate, got: {error_message}"
+        error_message.contains(&channel_gate),
+        "rejection must surface the channel gate, got: {error_message}"
     );
 
     // A bare-address reconnect is rejected at the same credential gate.
     let (_, _, _, error_message) = run_reconnect_attempt_replay_case(None);
     assert!(
-        error_message.contains("requires configured peer credentials"),
-        "an unpinned reconnect must still require authentication, got: {error_message}"
+        error_message.contains(&channel_gate),
+        "an unpinned reconnect must still require a protected channel, got: {error_message}"
     );
 }

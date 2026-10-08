@@ -50,7 +50,10 @@ use crate::routing::HewRoutingTable;
 use crate::transport::HewTransport;
 use crate::util::{CondvarExt, MutexExt};
 
+use channel::ChannelProtection;
+
 mod admission;
+mod channel;
 mod control;
 mod gossip;
 mod handshake;
@@ -63,6 +66,8 @@ mod send;
 mod swim;
 
 pub use admission::*;
+#[cfg(test)]
+pub(crate) use channel::ChannelRefusal;
 pub(crate) use gossip::*;
 pub(crate) use handshake::*;
 pub use manager::*;
@@ -86,8 +91,8 @@ pub const CONN_STATE_CLOSED: i32 = 3;
 const HEW_HANDSHAKE_SIZE: usize = 72;
 const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x02";
 const HEW_PROTOCOL_VERSION: u16 = 2;
-// Advertised only when the `encryption` feature is compiled in; both consumers
-// (`local_feature_flags` and `supports_encryption`) are encryption-gated.
+// Every node advertises Noise; a TCP peer whose record lacks this bit is a
+// plaintext peer and is refused (`ChannelRefusal::PlaintextPeer`).
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
@@ -210,8 +215,9 @@ struct ConnectionActor {
     state: AtomicI32,
     /// Monotonic timestamp (ms) of last successful send or recv.
     last_activity_ms: Arc<AtomicU64>,
-    /// Optional per-connection Noise transport state.
-    noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
+    /// The channel every frame on this connection passes through; fixed at
+    /// admission and shared with the reader and claimed senders.
+    channel: Arc<ChannelProtection>,
     /// Handle to the reader thread (if running).
     reader_handle: Option<JoinHandle<()>>,
     /// Signal to stop the reader thread.
@@ -490,7 +496,7 @@ impl TransportClose {
 struct ClaimedSendLease {
     _guard: ReaderLifecycleGuard,
     publication_removed: Arc<AtomicBool>,
-    noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
+    channel: Arc<ChannelProtection>,
 }
 
 #[derive(Clone, Debug)]
@@ -549,7 +555,7 @@ impl std::fmt::Debug for ConnectionActor {
 }
 
 impl ConnectionActor {
-    fn new(conn_id: c_int) -> Self {
+    fn new(conn_id: c_int, channel: Arc<ChannelProtection>) -> Self {
         Self {
             conn_id,
             publication_token: 0,
@@ -564,7 +570,7 @@ impl ConnectionActor {
             credential: None,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
             last_activity_ms: Arc::new(AtomicU64::new(0)),
-            noise_transport: Arc::new(Mutex::new(None)),
+            channel,
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
             superseded_claim: Mutex::new(None),

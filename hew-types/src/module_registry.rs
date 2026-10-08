@@ -158,9 +158,9 @@ fn compiler_stdlib_root_for_executable(executable: &std::path::Path) -> Option<P
 
 /// The checkout this crate was compiled from, and the build-profile
 /// directory its binaries were written to. Both are compile-time facts:
-/// `CARGO_MANIFEST_DIR` names `<checkout>/hew-types`, and `OUT_DIR` is
-/// `<profile-dir>/build/hew-types-<hash>/out` however `CARGO_TARGET_DIR`
-/// was set.
+/// `CARGO_MANIFEST_DIR` names `<checkout>/hew-types`, and `OUT_DIR` sits
+/// under `<profile-dir>/build/` however `CARGO_TARGET_DIR` was set (see
+/// [`profile_dir_of_out_dir`] for the layouts).
 struct DevelopmentAnchor {
     checkout: PathBuf,
     profile_dir: PathBuf,
@@ -171,8 +171,21 @@ fn development_anchor() -> DevelopmentAnchor {
     let out_dir = std::path::Path::new(env!("OUT_DIR"));
     DevelopmentAnchor {
         checkout: manifest_dir.parent().unwrap_or(manifest_dir).to_path_buf(),
-        profile_dir: out_dir.ancestors().nth(3).unwrap_or(out_dir).to_path_buf(),
+        profile_dir: profile_dir_of_out_dir(out_dir),
     }
+}
+
+/// The build-profile directory that holds a build script's `OUT_DIR`: the
+/// parent of its nearest `build` ancestor. Stable Cargo writes
+/// `<profile>/build/<pkg>-<hash>/out`; current nightly Cargo writes
+/// `<profile>/build/<pkg>/<hash>/out`, so the depth is not fixed.
+fn profile_dir_of_out_dir(out_dir: &std::path::Path) -> PathBuf {
+    out_dir
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
+        .and_then(std::path::Path::parent)
+        .unwrap_or(out_dir)
+        .to_path_buf()
 }
 
 fn stdlib_root_candidates(
@@ -1486,6 +1499,34 @@ mod tests {
             compiler_stdlib_root_impl(&profile_dir.join("deps/hew_types-abc123"), &anchor),
             checkout.canonicalize().ok(),
             "a test executable in deps/ resolves it too"
+        );
+    }
+
+    #[test]
+    fn profile_dir_of_out_dir_reads_both_cargo_layouts() {
+        let profile = Path::new("/scratch/targets/lane/x86_64-unknown-linux-gnu/debug");
+        assert_eq!(
+            profile_dir_of_out_dir(&profile.join("build/hew-types-0123abcd/out")),
+            profile
+        );
+        assert_eq!(
+            profile_dir_of_out_dir(&profile.join("build/hew-types/0123abcd/out")),
+            profile
+        );
+    }
+
+    #[test]
+    fn development_anchor_contains_this_test_executable() {
+        // This test binary is written to `<profile>/deps/`, so the anchor
+        // compiled into it must name a directory above it, whichever layout
+        // the running Cargo uses.
+        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let profile_dir = development_anchor().profile_dir.canonicalize().unwrap();
+        assert!(
+            exe.starts_with(&profile_dir),
+            "{} is not under the anchored profile directory {}",
+            exe.display(),
+            profile_dir.display()
         );
     }
 

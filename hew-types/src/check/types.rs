@@ -391,6 +391,12 @@ pub struct TypeCheckOutput {
     /// named arguments bind in an order other than the one written. A call
     /// absent here binds its arguments to parameters in source order.
     pub call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    /// Where each key of a checked `spawn` or supervisor child takes its
+    /// value, keyed by the spawn expression or child declaration. One slot
+    /// per key the target accepts, in declaration order: an actor's state
+    /// fields that `init` does not initialize, then its `init` parameters; a
+    /// supervisor's header parameters.
+    pub spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     pub expr_types: HashMap<SpanKey, Ty>,
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
@@ -1711,6 +1717,15 @@ impl SpanKey {
             module_idx,
         }
     }
+}
+
+/// The value one spawn key takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnSlot {
+    /// The value written at this index of the spawn's key list.
+    Written(usize),
+    /// The state field's declared default; the spawn omits the key.
+    Default,
 }
 
 /// Semantic authority for one checked `handle` or `??` expression.
@@ -3349,6 +3364,8 @@ pub struct Checker {
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    /// See [`TypeCheckOutput::spawn_argument_slots`].
+    pub(super) spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     /// Calls whose named arguments a callee rule has bound or refused. A
     /// call with named arguments outside this set reached a callee that
     /// takes positional arguments only.
@@ -4380,6 +4397,7 @@ impl Checker {
             file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
             call_argument_slots: HashMap::new(),
+            spawn_argument_slots: HashMap::new(),
             named_argument_calls: HashSet::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),

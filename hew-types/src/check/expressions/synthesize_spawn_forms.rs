@@ -17,7 +17,7 @@ use super::super::*;
 use super::*;
 use crate::check::types::{
     DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation, SpawnKey,
+    PendingInstantiation, SpawnKey, SpawnSlot,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
@@ -1761,10 +1761,11 @@ impl Checker {
         labels: &[FieldLabel],
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
     ) {
-        let actor_fields: Option<HashMap<String, Ty>> =
-            self.lookup_type_def(actor_name).map(|td| td.fields);
-        let init_params = self.actor_init_params.get(actor_name).cloned();
-        let keys = self.actor_spawn_args.get(actor_name).cloned();
+        let definition = self.lookup_type_def(actor_name);
+        let registered = self.registered_spawn_identity(actor_name);
+        let actor_fields: Option<HashMap<String, Ty>> = definition.map(|td| td.fields);
+        let init_params = self.actor_init_params.get(&registered).cloned();
+        let keys = self.actor_spawn_args.get(&registered).cloned();
         let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
         for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
             let key_span = labels
@@ -1786,7 +1787,7 @@ impl Checker {
             // replacement at another.
             if self
                 .actor_deferred_fields
-                .get(actor_name)
+                .get(&registered)
                 .is_some_and(|deferred| {
                     deferred
                         .iter()
@@ -1810,7 +1811,13 @@ impl Checker {
                 .as_ref()
                 .filter(|keys| !keys.iter().any(|key| key.name == field_name.name))
             {
-                self.report_unknown_spawn_key(actor_name, *field_name, keys, &key_span);
+                self.report_unknown_spawn_key(
+                    actor_name,
+                    &registered,
+                    *field_name,
+                    keys,
+                    &key_span,
+                );
                 let ty_raw = self.synthesize(arg, as_);
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
@@ -1855,13 +1862,24 @@ impl Checker {
         }
     }
 
-    /// What a spawn key of `actor_name` is called in a diagnostic.
-    fn spawn_key_noun(&self, actor_name: &str, key: Symbol) -> &'static str {
-        if self.supervisor_children.contains_key(actor_name) {
+    /// The identity a spawn target's declaration was registered under. A
+    /// file-imported actor answers to its bare name at the spawn site but is
+    /// registered under its file's module identity.
+    fn registered_spawn_identity(&self, actor_name: &str) -> String {
+        self.type_def_at(actor_name).map_or_else(
+            || actor_name.to_string(),
+            |definition| definition.name.clone(),
+        )
+    }
+
+    /// What a spawn key of the registered declaration is called in a
+    /// diagnostic.
+    fn spawn_key_noun(&self, registered: &str, key: Symbol) -> &'static str {
+        if self.supervisor_children.contains_key(registered) {
             "parameter"
         } else if self
             .actor_init_params
-            .get(actor_name)
+            .get(registered)
             .is_some_and(|params| params.iter().any(|param| param.name == key.as_str()))
         {
             "`init` parameter"
@@ -1873,15 +1891,16 @@ impl Checker {
     fn report_unknown_spawn_key(
         &mut self,
         actor_name: &str,
+        registered: &str,
         key: Ident,
         keys: &[SpawnKey],
         key_span: &Span,
     ) {
-        let message = if self.supervisor_children.contains_key(actor_name) {
+        let message = if self.supervisor_children.contains_key(registered) {
             format!("supervisor `{actor_name}` has no parameter `{key}`")
         } else if self
             .actor_init_params
-            .get(actor_name)
+            .get(registered)
             .is_some_and(|params| !params.is_empty())
         {
             format!("actor `{actor_name}` has no field or `init` parameter `{key}`")
@@ -2043,7 +2062,10 @@ impl Checker {
         };
 
         if let Some(name) = actor_name {
-            let owner_kind = if self.supervisor_children.contains_key(&name) {
+            let owner_kind = if self
+                .type_def_at(&name)
+                .is_some_and(|definition| definition.kind == TypeDefKind::Supervisor)
+            {
                 "supervisor"
             } else {
                 "actor"
@@ -2078,20 +2100,33 @@ impl Checker {
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
             self.check_spawn_constructor_args(&name, args, labels, Some(&type_subst));
-            if let Some(keys) = self.actor_spawn_args.get(&name).cloned() {
+            let registered = self.registered_spawn_identity(&name);
+            if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
+                // Bind each key the target accepts to its written value or
+                // its default; lowering consumes this binding.
+                let mut slots = Vec::with_capacity(keys.len());
                 for key in keys {
-                    if key.required && !args.iter().any(|(provided, _)| provided.name == key.name) {
-                        let noun = self.spawn_key_noun(&name, key.name);
-                        self.report_error(
-                            TypeErrorKind::MissingActorSpawnArgument,
-                            span,
-                            format!(
-                                "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
-                                key.name.as_str()
-                            ),
-                        );
+                    match args
+                        .iter()
+                        .position(|(provided, _)| provided.name == key.name)
+                    {
+                        Some(index) => slots.push(SpawnSlot::Written(index)),
+                        None if key.required => {
+                            let noun = self.spawn_key_noun(&registered, key.name);
+                            self.report_error(
+                                TypeErrorKind::MissingActorSpawnArgument,
+                                span,
+                                format!(
+                                    "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
+                                    key.name.as_str()
+                                ),
+                            );
+                        }
+                        None => slots.push(SpawnSlot::Default),
                     }
                 }
+                self.spawn_argument_slots
+                    .insert(SpanKey::in_module(span, self.current_module_idx), slots);
             }
             resolved_type_args = resolved_type_args
                 .iter()

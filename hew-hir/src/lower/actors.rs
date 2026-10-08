@@ -86,6 +86,7 @@ impl LowerCtx {
                     );
                     ResolvedTy::Unit
                 });
+                let init_slots = self.checked_spawn_slots(&child.span, child.name.name.as_str());
                 HirSupervisorChild {
                     name: child.name.to_string(),
                     ty: child_ty,
@@ -97,11 +98,10 @@ impl LowerCtx {
                     wired_to: child.wired_to.clone(),
                     is_pool: child.is_pool,
                     slot_index,
-                    // Lower named init args from AST `(field, expr)` pairs.
-                    // The parenthesised list is the actor's own field namespace
-                    // in full — pool arity arrives separately as the `count:`
-                    // clause, so an actor field named `count` lowers here like
-                    // any other.
+                    // Lower the keyed init values from AST `(key, expr)` pairs.
+                    // The key list is the actor's own namespace in full — pool
+                    // arity arrives separately as the `count:` clause, so an
+                    // actor field named `count` lowers here like any other.
                     init_args: child
                         .args
                         .iter()
@@ -110,6 +110,7 @@ impl LowerCtx {
                             (field_name.to_string(), hir_expr)
                         })
                         .collect(),
+                    init_slots,
                     // Pool arity comes from the `count:` clause. The parser
                     // refuses the clause on a static child, so `count` is only
                     // ever populated on a pool.

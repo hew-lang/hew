@@ -63,6 +63,7 @@ impl LowerCtx {
             result_return_coercions: tc_output.result_return_coercions.clone(),
             recovery_kinds: tc_output.recovery_kinds.clone(),
             call_argument_slots: tc_output.call_argument_slots.clone(),
+            spawn_argument_slots: tc_output.spawn_argument_slots.clone(),
             checked_call_effects: tc_output.suspension_effects.calls.clone(),
             select_sources: tc_output.select_sources.clone(),
             checked_fork_transfers: tc_output.suspension_effects.fork_transfers.clone(),
@@ -329,6 +330,10 @@ impl LowerCtx {
                 &mut self.call_argument_slots,
                 tc_output.call_argument_slots.clone(),
             ),
+            std::mem::replace(
+                &mut self.spawn_argument_slots,
+                tc_output.spawn_argument_slots.clone(),
+            ),
             std::mem::replace(&mut self.select_sources, tc_output.select_sources.clone()),
             std::mem::replace(
                 &mut self.checked_fork_transfers,
@@ -366,6 +371,7 @@ impl LowerCtx {
             self.declaration_type_parameters,
             self.recovery_kinds,
             self.call_argument_slots,
+            self.spawn_argument_slots,
             self.select_sources,
             self.checked_fork_transfers,
             self.fork_call_inputs,

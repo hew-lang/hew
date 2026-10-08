@@ -87,13 +87,35 @@ impl LowerCtx {
         {
             actor_name.clone_from(qualified);
         }
+        let slots = self.checked_spawn_slots(&span, &actor_name);
         (
             HirExprKind::Spawn {
                 actor_name,
                 args: lowered_args,
+                slots,
             },
             ty,
         )
+    }
+
+    /// The checker's binding of a spawn's (or supervisor child's) keys.
+    pub(super) fn checked_spawn_slots(
+        &mut self,
+        span: &Span,
+        actor_name: &str,
+    ) -> Vec<hew_types::check::SpawnSlot> {
+        if let Some(slots) = self.spawn_argument_slots.get(&self.mk_key(span)) {
+            return slots.clone();
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: format!("spawn {actor_name}"),
+                reason: "missing spawn_argument_slots entry".to_string(),
+            },
+            span.clone(),
+            "checker did not bind the keys of this spawn",
+        ));
+        Vec::new()
     }
 
     pub(super) fn actor_handle_identity(ty: &ResolvedTy) -> Option<&str> {
@@ -429,7 +451,7 @@ impl LowerCtx {
 
         // The spawn supplies the captured environment as the actor's state,
         // field by field, exactly as a named actor's spawn supplies its own.
-        let args = captures
+        let args: Vec<(String, HirExpr)> = captures
             .into_iter()
             .map(|capture| {
                 let value = HirExpr {
@@ -446,10 +468,15 @@ impl LowerCtx {
                 (capture.name, value)
             })
             .collect();
+        // The captures are the synthesized actor's state fields, in order.
+        let slots = (0..args.len())
+            .map(hew_types::check::SpawnSlot::Written)
+            .collect();
         (
             HirExprKind::Spawn {
                 actor_name: identity.path,
                 args,
+                slots,
             },
             handle_ty,
         )

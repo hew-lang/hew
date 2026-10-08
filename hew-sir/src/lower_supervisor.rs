@@ -260,6 +260,7 @@ impl InstanceService<'_> {
                     )
                     .to_string(),
                 args: child.init_args.clone(),
+                slots: child.init_slots.clone(),
             },
             span: child.span.clone(),
         };

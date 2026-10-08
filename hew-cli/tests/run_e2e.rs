@@ -2650,6 +2650,40 @@ fn run_file_imported_actor_spawns_and_calls() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "bumped: 1\n");
 }
 
+/// A file-imported actor answers to its bare name at the spawn site but is
+/// registered under its file's identity; its spawn keys are checked all the
+/// same.
+#[test]
+fn file_imported_actor_spawn_keys_are_checked() {
+    let dir = support::tempdir();
+    std::fs::write(
+        dir.path().join("counter.hew"),
+        "pub actor Counter {\n    let step: i64;\n    receive fn bump() -> i64 {\n        step\n    }\n}\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import \"counter.hew\";\nfn main() {\n    let _c = spawn Counter(stpe: 1);\n}\n",
+    )
+    .unwrap();
+
+    let check = Command::new(hew_binary())
+        .arg("check")
+        .arg(&main)
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert_eq!(check.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("actor `Counter` has no field `stpe`")
+            && stderr.contains("missing field `step` in spawn of actor `Counter`"),
+        "stderr: {stderr}"
+    );
+}
+
 /// A selectively-imported pub const must bind bare at root exactly like a
 /// selectively-imported pub fn from the same module. The HIR pre-pass
 /// registers imported consts only under the qualified `{module}.{CONST}` key;

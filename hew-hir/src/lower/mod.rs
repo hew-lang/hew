@@ -1061,6 +1061,8 @@ struct LowerCtx {
     /// Checker-bound parameter slot of each source argument, for calls whose
     /// named arguments bind out of source order.
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    /// Checker-bound slots of each spawn and supervisor child.
+    spawn_argument_slots: HashMap<SpanKey, Vec<hew_types::check::SpawnSlot>>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
     select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
     checked_fork_transfers: HashMap<SpanKey, hew_types::check::effects::ForkTransferFact>,

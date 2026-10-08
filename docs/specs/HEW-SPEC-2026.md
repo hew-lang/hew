@@ -4812,7 +4812,7 @@ the `select` returns early while the scope does not. When the task's only wait
 is a timed `select`, the checker warns (`fork_outlives_timed_select`). Put the
 deadline on the work instead: `scope within` cancels it when the time is up.
 
-```hew
+```hew,no_run
 import std.net;
 
 fn main() {
@@ -5416,7 +5416,7 @@ returning from `main`, which drains as usual. Closing every subscription
 restores the default. The stream never ends on its own and is a `select`
 source (§6.4.5):
 
-```hew
+```hew,no_run
 import std.os;
 
 actor Journal {

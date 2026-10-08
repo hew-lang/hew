@@ -188,7 +188,7 @@ pub fn temp_dir() -> string {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.os;
 ///
 /// fn main() {

@@ -1081,7 +1081,8 @@ impl Builder {
     }
 
     /// `State { ..base, field: value }` reads the fields the literal does not
-    /// name off `base`. Expanding before the rewrite keeps one authority for that
+    /// name off `base`, in either spelling of the state (`S { .. }` or
+    /// `.S { .. }`). Expanding before the rewrite keeps one authority for that
     /// read: each carried field becomes the field access the programmer would
     /// otherwise write, so `..state` resolves through the same state-field
     /// rule as `state.field`, and an unreadable base is refused by ordinary
@@ -1285,6 +1286,13 @@ impl Builder {
             }
             Expr::ContextVariant(context) => {
                 if let Some(record) = &mut context.record {
+                    self.expand_state_base(
+                        machine,
+                        Some(context.name),
+                        &mut record.fields,
+                        &mut record.field_labels,
+                        &mut record.base,
+                    );
                     self.rewrite_field_inits(&mut record.fields, machine, state, event)?;
                     if let Some(base) = &mut record.base {
                         **base = self.rewrite(base, machine, state, event)?;

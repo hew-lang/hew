@@ -1,0 +1,49 @@
+// stop(team) returns while the children are still stopping. Each child's stop
+// hook waits for main to release it, so a stop that waited for release could
+// never return; a stopping child refuses new mail until it is released.
+import std.net;
+
+actor Worker {
+    let name: string;
+    let port: i64;
+
+    receive fn ping() {}
+
+    #[on(stop)]
+    fn done() {
+        let gate = net.connect(f"127.0.0.1:{port}").expect("connect to main");
+        let _ = gate.recv();
+        gate.close();
+        println(name);
+    }
+}
+
+supervisor Team(port: i64) {
+    child first: Worker(name: "first", port: port) stop: 30s;
+    child second: Worker(name: "second", port: port) stop: 30s;
+}
+
+fn release(listener: net.Listener) {
+    let hook = listener.accept();
+    hook.send("go".to_bytes()).expect("release hook");
+    hook.close();
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let team = spawn Team(port: listener.local_port());
+    let second = team.second;
+    stop(team);
+    println("stop returned");
+    let hook = listener.accept();
+    match mailbox(second).ping() {
+        .Ok(_) => println("stopping child accepted mail"),
+        .Err(_) => println("stopping child refused mail"),
+    }
+    hook.send("go".to_bytes()).expect("release hook");
+    hook.close();
+    release(listener);
+    stopped(team);
+    println("after stopped");
+    listener.close();
+}

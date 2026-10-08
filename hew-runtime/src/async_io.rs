@@ -95,6 +95,19 @@ impl IoFailure {
         })
     }
 
+    /// New root work that a termination request refused.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn shutting_down(operation: &str) -> Self {
+        let errno = crate::shutdown::SHUTDOWN_REFUSAL_ERRNO;
+        Self {
+            kind: crate::stream_error::io_error_kind_tag(
+                io::Error::from_raw_os_error(errno).kind(),
+            ),
+            errno,
+            message: crate::shutdown::refusal_message(operation),
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn invalid(message: &str) -> Self {
         Self {
@@ -339,6 +352,13 @@ impl HewAsyncIo {
             drop(state);
             detach.detach();
         }
+    }
+
+    /// Whether this wait holds shutdown's drain open while it is parked: every
+    /// wait except a process root's, which resumes on its own thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn holds_drain(&self) -> bool {
+        self.net.as_ref().is_none_or(|net| net.holds_drain)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -692,6 +712,10 @@ pub(crate) unsafe fn failure_message(operation: *const HewAsyncIo) -> Option<Str
     let operation = unsafe { operation.as_ref() }?;
     match &*operation.state.lock_or_recover() {
         State::Ready(Err(failure)) => Some(failure.message.clone()),
+        State::Cancelled => Some(operation.net.as_ref().map_or_else(
+            || "I/O wait cancelled".to_string(),
+            |net| format!("wait on {} cancelled", net.slot.describe()),
+        )),
         _ => None,
     }
 }

@@ -1,6 +1,10 @@
+// The accepted job waits on a gate main opens after the stop request returns,
+// so main observes the request before the job, the hook and the terminal wait.
+import std.stream;
+
 actor Worker {
-    receive fn job() {
-        sleep(20ms);
+    receive fn job(gate: stream.Stream<i64>) {
+        let _ = gate.recv();
         println("job");
     }
 
@@ -17,9 +21,12 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let role = app.worker;
-    mailbox(role).job().expect("admit job");
+    let (open, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    mailbox(role).job(gate).expect("admit job");
     stop(role);
     println("requested");
+    open.send(1).expect("open the gate");
+    open.close();
     stopped(role);
     println("observed");
     stop(app);

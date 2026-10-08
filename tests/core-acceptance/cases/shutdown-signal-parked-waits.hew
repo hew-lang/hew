@@ -1,0 +1,24 @@
+// A termination request that arrives while main is parked on a child's exit
+// leaves that wait running.
+import std.os;
+import std.process;
+
+actor Counter {
+    receive fn bump() -> i64 {
+        1
+    }
+}
+
+fn main() {
+    let counter = spawn Counter();
+    let _ = counter.bump();
+    let signaller = process.start(process.command("sh", ["-c", f"kill -TERM {os.pid()}; exit 4"])).expect("start");
+    match signaller.wait() {
+        .Ok(status) => println(f"signaller {status}"),
+        .Err(e) => println(f"signaller wait failed {e}"),
+    }
+    while counter.bump().is_ok() {
+        sleep(1ms);
+    }
+    println("call refused");
+}

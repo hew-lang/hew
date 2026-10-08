@@ -1,6 +1,14 @@
+// stop(worker) returns at once. The first accepted turn waits on a gate that
+// main opens only after observing the return and the refusal, so accepted jobs
+// always run after main's lines and in order before the stop hook.
+import std.stream;
+
 actor Worker {
+    receive fn hold(gate: stream.Stream<i64>) {
+        let _ = gate.recv();
+    }
+
     receive fn job(n: i64) {
-        sleep(20ms);
         println(n);
     }
 
@@ -12,6 +20,8 @@ actor Worker {
 
 fn main() {
     let worker = spawn Worker();
+    let (open, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let _ = mailbox(worker).hold(gate);
     let _ = mailbox(worker).job(1);
     let _ = mailbox(worker).job(2);
     let _ = mailbox(worker).job(3);
@@ -24,6 +34,8 @@ fn main() {
         }
         .Ok(_) => panic("accepted after stop"),
     }
+    open.send(1).expect("open the gate");
+    open.close();
     stopped(worker);
     println("after stopped");
 }

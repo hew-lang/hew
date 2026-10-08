@@ -1131,3 +1131,114 @@ fn queued_offload_cancelled_before_it_starts_releases_only_its_arguments() {
     assert_eq!((counts.ran, counts.results_released), (0, 0));
     assert_eq!(*signal.notifications.lock().unwrap(), 0);
 }
+
+#[test]
+fn closed_root_admission_admits_waits_on_held_handles_and_refuses_connects() {
+    let _runtime = crate::runtime_test_guard();
+    let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    crate::shutdown::close_root_admission_for_test();
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: the operation is driven and consumed below.
+    let read = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
+    // SAFETY: the operation is live.
+    let status = unsafe { hew_async_io_status(read) };
+    assert_eq!(
+        status,
+        AsyncIoStatus::Pending as i32,
+        "a wait on a held socket stays admitted once root admission closes"
+    );
+    peer.write_all(b"late").unwrap();
+    // SAFETY: the operation is live until take_read frees it.
+    unsafe { drive(read, &signal) };
+    // SAFETY: completed above and consumed once.
+    assert_eq!(unsafe { take_read(read) }, b"late");
+
+    let refused = Arc::new(ReadySignal::default());
+    let address = string_from_str("127.0.0.1:9");
+    // SAFETY: the address is a live managed string borrowed for the call.
+    let connect = unsafe { hew_async_tcp_connect(address, &descriptor(&refused)) };
+    // SAFETY: the managed string and operation are owned here.
+    unsafe {
+        string_release(address);
+        assert_eq!(hew_async_io_status(connect), AsyncIoStatus::Error as i32);
+        assert_eq!(
+            hew_async_io_errno(connect),
+            crate::shutdown::SHUTDOWN_REFUSAL_ERRNO
+        );
+        hew_async_io_free(connect);
+    }
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+}
+
+#[test]
+fn a_process_root_wait_does_not_hold_the_drain() {
+    let _runtime = crate::runtime_test_guard();
+    let (handle, _peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: nothing is sent; the operation is freed below.
+    let drained = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
+    assert!(
+        !crate::reactor::drain_is_idle(),
+        "a task's parked wait holds the drain"
+    );
+    // SAFETY: the creator reference is consumed once.
+    unsafe { hew_async_io_free(drained) };
+    assert!(crate::reactor::drain_is_idle());
+
+    // SAFETY: nothing is sent; the operation is freed below.
+    let root = crate::coro_root::as_process_root_for_test(|| unsafe {
+        hew_async_tcp_read(handle, &descriptor(&signal))
+    });
+    // SAFETY: the operation is live.
+    let status = unsafe { hew_async_io_status(root) };
+    assert_eq!(status, AsyncIoStatus::Pending as i32);
+    assert!(
+        crate::reactor::drain_is_idle(),
+        "the process root's parked wait never holds the drain"
+    );
+    // SAFETY: the creator reference is consumed once.
+    unsafe { hew_async_io_free(root) };
+    assert!(crate::reactor::drain_is_idle());
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+}
+
+#[test]
+#[cfg(unix)]
+fn the_shutdown_sweep_cancels_socket_waits_and_leaves_exit_watches() {
+    let _runtime = crate::runtime_test_guard();
+    let mut child = std::process::Command::new("sleep")
+        .arg("0.2")
+        .spawn()
+        .unwrap();
+    let watch = crate::process::ExitWatch::open(child.id()).unwrap();
+    let exit_handle = crate::reactor::register(crate::reactor::IoObject::ChildExit(watch));
+    let (socket, _peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let exit_signal = Arc::new(ReadySignal::default());
+    let socket_signal = Arc::new(ReadySignal::default());
+    // SAFETY: both operations are driven and freed below.
+    let (exit, read) = unsafe {
+        (
+            hew_async_tcp_read(exit_handle, &descriptor(&exit_signal)),
+            hew_async_tcp_read(socket, &descriptor(&socket_signal)),
+        )
+    };
+    assert_eq!(
+        crate::reactor::reactor_cancel_parked_waits_for_shutdown(),
+        1
+    );
+    // SAFETY: both creator references are live until freed.
+    unsafe {
+        assert_eq!(hew_async_io_status(read), AsyncIoStatus::Cancelled as i32);
+        assert_eq!(hew_async_io_status(exit), AsyncIoStatus::Pending as i32);
+        drive(exit, &exit_signal);
+        assert_eq!(
+            take_read(exit),
+            b"",
+            "the exit watch ends once the child exits"
+        );
+        hew_async_io_free(read);
+    }
+    child.wait().unwrap();
+    assert_eq!(crate::transport::hew_tcp_close(socket), 0);
+    assert!(crate::reactor::unregister(exit_handle).is_some());
+}

@@ -1,26 +1,39 @@
+// The nested worker's stop hook waits for main to open a gate, so main
+// observes the stop request returning before the hook and the terminal wait.
+import std.net;
+
 actor Worker {
+    let port: i64;
+
     #[on(stop)]
     fn done() {
-        sleep(20ms);
+        let gate = net.connect(f"127.0.0.1:{port}").expect("connect to main");
+        let _ = gate.recv();
+        gate.close();
         println("nested hook");
     }
 }
 
-supervisor Branch {
-    child worker: Worker;
+supervisor Branch(port: i64) {
+    child worker: Worker(port: port);
 }
 
-supervisor Root {
-    child branch: Branch restart: temporary;
+supervisor Root(port: i64) {
+    child branch: Branch(port: port) restart: temporary;
 }
 
 fn main() {
-    let root = spawn Root;
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let root = spawn Root(port: listener.local_port());
     let role = root.branch;
     stop(role);
     println("requested");
+    let gate = listener.accept();
+    gate.send("go".to_bytes()).expect("open the gate");
+    gate.close();
     stopped(role);
     println("observed");
     stop(root);
     stopped(root);
+    listener.close();
 }

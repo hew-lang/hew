@@ -1159,6 +1159,14 @@ pub fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
     tcp_slot(handle).is_some_and(|slot| slot.stream().is_some())
 }
 
+/// Record that shutdown refused a new connection or listener.
+fn refuse_for_shutdown(operation: &str) {
+    hew_cabi::sink::set_last_error_with_errno(
+        crate::shutdown::refusal_message(operation),
+        crate::shutdown::SHUTDOWN_REFUSAL_ERRNO,
+    );
+}
+
 /// Open a TCP listener at `addr` (`host:port`).
 ///
 /// Returns a positive listener handle, or -1 on error.
@@ -1181,6 +1189,10 @@ pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
     } else {
         addr_str
     };
+    if crate::shutdown::refuses_new_root_work() {
+        refuse_for_shutdown("hew_tcp_listen");
+        return -1;
+    }
     let listener = match TcpListener::bind(bind_addr) {
         Ok(l) => l,
         Err(e) => {
@@ -1265,6 +1277,10 @@ pub unsafe extern "C" fn hew_tcp_connect_timed(addr: *const c_char, deadline_ms:
         addr_str
     };
 
+    if crate::shutdown::refuses_new_root_work() {
+        refuse_for_shutdown("hew_tcp_connect");
+        return -1;
+    }
     let start = std::time::Instant::now();
     let Some(addrs) = resolve_addr(connect_addr) else {
         hew_cabi::sink::set_last_error_with_errno(
@@ -1445,6 +1461,10 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
         return -1;
     };
 
+    if crate::shutdown::refuses_new_root_work() {
+        refuse_for_shutdown("hew_tcp_connect_timeout");
+        return -1;
+    }
     let target = format!("{host_str}:{port}");
     let start = std::time::Instant::now();
     let total = std::time::Duration::from_millis(timeout_ms_u64);

@@ -21,6 +21,10 @@ use crate::manifest::{HewManifest, LinkLib, NativeInputs, NativeOs, RustCrate, S
 /// define symbols under it.
 const RESERVED_PREFIX: &str = "hew_";
 
+/// Serial for temporary object names. In-process test compiles build on
+/// several threads, so the process id alone does not make a name unique.
+static NEXT_TEMPORARY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// How C and C++ sources compile for the current target.
 #[derive(Debug, Clone)]
 pub struct NativeToolchain {
@@ -206,10 +210,7 @@ fn compile_one(
         .ok_or_else(|| format!("object path has no parent: {}", object.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    // In-process test compiles build on several threads, so the process id
-    // alone does not make the name unique.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let serial = NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let unique = format!(".{}-{serial}.tmp", std::process::id());
     let object_tmp = append(object, &unique);
     let depfile_tmp = append(depfile, &unique);

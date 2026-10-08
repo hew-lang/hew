@@ -164,7 +164,7 @@ pub(super) fn identity_reference_locations(
         let source = if source_uri == *uri {
             doc.source.clone()
         } else {
-            let Some(path) = source_uri.to_file_path() else {
+            let Some(path) = source_uri.to_checked_file_path() else {
                 continue;
             };
             let Some(source) = super::analysis::source_for_path(&path, documents) else {

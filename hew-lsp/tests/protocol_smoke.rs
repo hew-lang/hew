@@ -1353,6 +1353,60 @@ fn lsp_unsaved_symlink_export_rename_updates_closed_importer() {
     assert_clean(&verification.open(&main, &session.source(&main), 1));
 }
 
+/// An editor that opens a workspace through a symlink (macOS's `/var`, a
+/// Windows 8.3 name) names every file through that spelling. Closed consumers
+/// found on disk must come back under it too, or the client edits a document
+/// it never opened; the physical path stays only the source's identity.
+#[cfg(unix)]
+#[test]
+fn lsp_rename_and_symbols_keep_the_workspace_root_spelling() {
+    let project = TestProject::new("rename-root-spelling");
+    let holder = TestProject::new("rename-root-spelling-alias");
+    let alias = TestProject(holder.0.join("workspace"));
+    std::os::unix::fs::symlink(&project.0, &alias.0).expect("link workspace alias");
+    let util_source = "pub fn greet() -> i32 { 1 }\n";
+    project.write("util.hew", util_source);
+    project.write(
+        "main.hew",
+        "import util;\nfn main() { println(util.greet()); }\n",
+    );
+    project.write(
+        "caller.hew",
+        "import util.{ greet };\npub fn call() -> i32 { greet() }\n",
+    );
+    let util = alias.0.join("util.hew");
+    let main = alias.0.join("main.hew");
+    let caller = alias.0.join("caller.hew");
+
+    let mut session = RenameSession::new(Some(&alias), &[]);
+    assert_clean(&session.open(&util, util_source, 1));
+    let symbols = session.request("workspace/symbol", json!({"query":"greet"}));
+    let symbol_uris: BTreeSet<String> = symbols["result"]
+        .as_array()
+        .expect("workspace symbols")
+        .iter()
+        .map(|symbol| symbol["location"]["uri"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(symbol_uris, [file_uri(&util)].into_iter().collect());
+
+    let response = session.rename(&util, util_source, "greet", "salute");
+    assert_eq!(
+        session.apply(&response),
+        [&util, &main, &caller]
+            .into_iter()
+            .map(|path| file_uri(path))
+            .collect()
+    );
+    assert_eq!(
+        session.source(&main),
+        "import util;\nfn main() { println(util.salute()); }\n"
+    );
+    assert_eq!(
+        session.source(&caller),
+        "import util.{ salute };\npub fn call() -> i32 { salute() }\n"
+    );
+}
+
 #[test]
 fn lsp_shared_dependency_rename_keeps_manifest_root_scopes_distinct() {
     let alpha = TestProject::new("rename-reuse-alpha");

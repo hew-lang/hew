@@ -14,7 +14,6 @@ supervisor Team(grace: duration) {
 fn main() {
     let team = spawn Team(grace: 100ms);
     stop(team);
-    println("after stop");
     stopped(team);
     println("after stopped");
 }

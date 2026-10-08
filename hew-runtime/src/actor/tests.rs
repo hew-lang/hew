@@ -7146,18 +7146,26 @@ fn free_current_actor_from_terminate_is_deferred() {
         });
 
         // Terminate is still running on this thread, so a free that waited
-        // for it here could never return; a deferred free returns with the
-        // actor still live.
+        // for it here could never return. A deferred free hands the actor to
+        // a background teardown thread and returns. That thread may untrack
+        // the actor at once, so liveness says nothing about deferral; the
+        // registered handle does, and only a drain removes it.
+        let pending_before = live_actors::deferred_teardown_thread_count();
         let rc = hew_actor_free(actor);
-        let live_immediately_after = is_actor_live(actor);
+        let pending_after = live_actors::deferred_teardown_thread_count();
 
         a.terminate_finished.store(true, Ordering::Release);
-        wait_until(|| !is_actor_live(actor));
+        live_actors::drain_deferred_teardown_threads();
 
         assert_eq!(rc, 0, "reentrant terminate frees should still succeed");
+        assert_eq!(
+            pending_after,
+            pending_before + 1,
+            "reentrant free should defer to a teardown thread instead of waiting in terminate"
+        );
         assert!(
-            live_immediately_after,
-            "reentrant free should defer instead of spin-waiting in terminate"
+            !is_actor_live(actor),
+            "the deferred free must retire the actor once terminate finishes"
         );
     }
 }

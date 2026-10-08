@@ -3042,9 +3042,11 @@ two modules) are accepted and resolve to the one established contract.
 
 **Reserved prefix:** C symbols beginning with `hew_` belong to the Hew runtime
 and its standard library. A program may declare and call them, as the standard
-library does, but package native code may not define them: a C or C++ source
-that defines a global `hew_` symbol is refused with `E_RESERVED_NATIVE_SYMBOL`,
-and the diagnostic proposes the name under the package's own prefix (§3.9.7).
+library does, but package native code may not define them: a C or C++ source or
+a `[native]` Rust crate that defines a global `hew_` symbol is refused with
+`E_RESERVED_NATIVE_SYMBOL`, and the diagnostic proposes the name under the
+package's own prefix (§3.9.7). Packages in the `hew.` namespace are exempt, and
+libraries named by `--link-lib` are not inspected.
 
 An `extern` callee consumes only the parameters its declaration marks
 `consume`; every other parameter is borrowed for the call, exactly as for a
@@ -3344,7 +3346,8 @@ optimization level. Native code cannot join a WebAssembly module; a wasm build
 of a program that compiles a `[native]` package is refused.
 
 Package native code defines its symbols under the package's own prefix, never
-`hew_` (§3.9.1). `docs/package-manifest.md` is the field reference.
+`hew_` (§3.9.1); only packages in the `hew.` namespace may define `hew_`
+symbols. `docs/package-manifest.md` is the field reference.
 
 ---
 

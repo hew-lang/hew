@@ -51,7 +51,10 @@ Each key is a module path; each value is a version requirement or a table:
 ```
 
 Table fields are `version`, `optional`, `features`, `default-features`,
-`registry` and `path`. `[dev-dependencies]` is used by `hew test` and never
+`registry` and `path`. A `path` dependency needs no `version`; it names the
+directory of a package whose own `hew.toml` carries the dependency's name.
+`hew install` links it into `.hew/packages/`, where the import finds it, and
+its `[native]` code builds with the program. `[dev-dependencies]` is used by `hew test` and never
 reaches a consumer of the package. `[features]` maps feature names to the
 features they enable.
 
@@ -101,8 +104,18 @@ builds, and AddressSanitizer when the runtime is built with it. Flags in
 Windows included.
 
 Objects are cached under `target/native/` in the package. An object is rebuilt
-when its source, a header it includes or any compile flag changes. A compile
-error stops the build with `E_NATIVE_COMPILE` and the compiler's own output.
+when its source, a header it includes or any compile flag changes, and a copy of
+the package tree at another path builds its own objects. When the package
+directory is read-only, objects are cached under `hew-native/` in the system
+temporary directory instead. A compile error stops the build with
+`E_NATIVE_COMPILE` and the compiler's own output.
+
+A source listed twice in `sources`, in `[native]` or together with the matching
+`[native.<os>]` table, is refused. Every other malformed `[native]` entry (a
+wrong type, an unknown field, an unknown OS table, `lib` inside
+`[native.linux]`) is refused with `E_INVALID_NATIVE` and the offending line. A
+`hew.toml` without a `[native]` table is not read for native code, so a
+workspace file or a dependency list beside a program never stops it building.
 
 A program whose packages compile any C++ links the C++ standard library:
 libstdc++ on Linux, libc++ on macOS and FreeBSD, and the MSVC STL on Windows.
@@ -156,10 +169,10 @@ include-dirs = ["third_party/openssl/include"]
 
 ### Reserved symbol prefix
 
-The `hew_` symbol prefix belongs to the Hew runtime. A C or C++ source that
-defines a global symbol starting with `hew_` is refused with
-`E_RESERVED_NATIVE_SYMBOL`, and the diagnostic suggests the same name under the
-package's own prefix:
+The `hew_` symbol prefix belongs to the Hew runtime. A package outside the
+`hew.` namespace whose native code defines a global symbol starting with `hew_`
+is refused with `E_RESERVED_NATIVE_SYMBOL`, and the diagnostic suggests the same
+name under the package's own prefix:
 
 ```text
 error[E_RESERVED_NATIVE_SYMBOL]: `native/listener.c` in package `meshcore.broker` defines
@@ -167,7 +180,13 @@ error[E_RESERVED_NATIVE_SYMBOL]: `native/listener.c` in package `meshcore.broker
   help: rename it to `meshcore_broker_listener_now` here and in the `extern "C"` block that declares it
 ```
 
-Rename the C definition and the `extern "C"` declaration together. A `static`
+The check covers the compiled objects of C and C++ `sources` (functions, data,
+thread-local variables and common symbols) and the symbols a `[native]` Rust
+crate exports (`#[no_mangle] pub extern "C" fn hew_...`). Packages in the `hew.`
+namespace are the runtime's own ecosystem and may define `hew_` symbols. A
+library named in `link-libs` or `--link-lib` is not inspected.
+
+Rename the definition and the `extern "C"` declaration together. A `static`
 helper is local to its file and may use any name.
 
 ### Link order and `--link-lib`

@@ -143,7 +143,7 @@ impl NativeInputs {
             validate_link_lib(table, lib)?;
         }
         for dir in &self.lib_dirs {
-            if !Path::new(dir).is_absolute() {
+            if !is_absolute_anywhere(dir) {
                 package_relative(table, "lib-dirs", dir)?;
             }
         }
@@ -191,11 +191,23 @@ fn validate_link_lib(table: &str, lib: &str) -> Result<(), String> {
         ));
     }
     match LinkLib::of(lib) {
-        LinkLib::Path(path) if !Path::new(path).is_absolute() => {
+        LinkLib::Path(path) if !is_absolute_anywhere(path) => {
             package_relative(table, "link-libs", path)
         }
         LinkLib::Path(_) | LinkLib::Name(_) => Ok(()),
     }
+}
+
+/// Whether `path` is absolute on the host it is meant for: a Unix root
+/// (`/usr/lib`) or a Windows drive (`C:/OpenSSL/lib`). A manifest is checked
+/// the same way on every host, so `[native.windows]` paths validate on Linux.
+fn is_absolute_anywhere(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
 }
 
 /// Refuse a path that is absolute, climbs out of the package or uses `\`: a
@@ -496,9 +508,11 @@ mod tests {
 
     #[test]
     fn link_libs_accept_names_and_library_paths() {
-        let native =
-            parse("link-libs = [\"crypto\", \"vendor/libfoo.a\", \"/usr/lib/libsodium.so.23\"]\n")
-                .unwrap();
+        let native = parse(
+            "link-libs = [\"crypto\", \"vendor/libfoo.a\", \"/usr/lib/libsodium.so.23\"]\n\
+             [windows]\nlib-dirs = [\"C:/Program Files/OpenSSL/lib\"]\n",
+        )
+        .unwrap();
         let kinds: Vec<_> = native.link_libs.iter().map(|l| LinkLib::of(l)).collect();
         assert_eq!(
             kinds,

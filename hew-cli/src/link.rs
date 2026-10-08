@@ -484,7 +484,7 @@ fn select_native_compiler(target: &TargetSpec) -> Result<NativeCompiler, String>
 /// The toolchain `[native]` C and C++ sources compile with: the same driver
 /// that links the program, aimed at the same target, with the profile's
 /// optimization and debug info and the runtime's code model (PIC on Unix, the
-/// DLL CRT on Windows, AddressSanitizer when the runtime carries it).
+/// DLL CRT on Windows, `AddressSanitizer` when the runtime carries it).
 ///
 /// # Errors
 ///

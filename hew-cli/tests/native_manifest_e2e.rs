@@ -420,7 +420,7 @@ fn objects_rebuild_when_a_header_changes() {
         "#include <stdint.h>\n#undef CALC_BASE\n#define CALC_BASE 100\n\
          int32_t calc_answer(int32_t extra);\n",
     );
-    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    let later = std::time::SystemTime::now() + std::time::Duration::from_mins(1);
     filetime::set_file_mtime(&header, filetime::FileTime::from_system_time(later))
         .expect("set header time");
     let run = hew(dir.path(), &["run", "main.hew"]);

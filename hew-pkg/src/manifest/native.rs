@@ -370,13 +370,12 @@ impl NativeLib {
             Some(lib) if lib.trim().is_empty() => {
                 return Err("[native] lib must be a non-empty library name".to_string());
             }
-            Some(_) => {}
             None if self.crate_dir.is_some() || self.kind.is_some() => {
                 return Err("[native] `crate` and `kind` describe a Rust crate; add \
                      `lib = \"<the crate's [lib] name>\"` to build it"
                     .to_string());
             }
-            None => {}
+            Some(_) | None => {}
         }
         if let Some(kind) = &self.kind {
             if !RUST_KINDS.contains(&kind.as_str()) {

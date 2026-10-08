@@ -9,6 +9,7 @@
 //! The caller supplies the C toolchain ([`NativeToolchain`]) because the driver
 //! and its target flags belong to the linker driver, not to the manifest.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -184,8 +185,10 @@ fn command_key(driver: &str, c_args: &[String], cxx_args: &[String]) -> String {
     }
     hasher.finalize()[..8]
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .fold(String::new(), |mut key, byte| {
+            let _ = write!(key, "{byte:02x}");
+            key
+        })
 }
 
 /// Compile `source` to `object`, writing its header dependencies to
@@ -323,12 +326,13 @@ fn refuse_reserved_symbols(object: &Path, source: &str, package: &str) -> Result
     let mut message = String::new();
     for symbol in &reserved {
         let renamed = format!("{prefix}{}", &symbol[RESERVED_PREFIX.len()..]);
-        message.push_str(&format!(
+        let _ = write!(
+            message,
             "error[E_RESERVED_NATIVE_SYMBOL]: `{source}` in package `{package}` defines \
              `{symbol}`, but the `{RESERVED_PREFIX}` symbol prefix is reserved for the Hew \
              runtime\n  help: rename it to `{renamed}` here and in the `extern \"C\"` block \
              that declares it\n"
-        ));
+        );
     }
     Err(message.trim_end().to_string())
 }

@@ -49,23 +49,6 @@ unsafe fn raw_call(
     }
 }
 
-pub(super) fn external<'ctx>(
-    module: &Module<'ctx>,
-    name: &str,
-    ty: FunctionType<'ctx>,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    if let Some(function) = module.get_function(name) {
-        if function.get_type() != ty {
-            return Err(CodegenError::FailClosed(format!(
-                "inconsistent coroutine ABI for {name}"
-            )));
-        }
-        Ok(function)
-    } else {
-        Ok(module.add_function(name, ty, Some(Linkage::External)))
-    }
-}
-
 pub(super) fn begin<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,
@@ -116,7 +99,7 @@ pub(super) fn begin<'ctx>(
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("coro.size has no result".into()))?;
-    let alloc = external(
+    let alloc = get_or_declare_external(
         module,
         "hew_cont_frame_alloc",
         pointer.fn_type(&[ctx.i64_type().into()], false),
@@ -196,7 +179,7 @@ pub(super) fn begin<'ctx>(
         .build_conditional_branch(absent, frame.exit, free)
         .llvm_ctx("select frame release")?;
     builder.position_at_end(free);
-    let dealloc = external(
+    let dealloc = get_or_declare_external(
         module,
         "hew_cont_frame_free",
         ctx.void_type().fn_type(&[pointer.into()], false),

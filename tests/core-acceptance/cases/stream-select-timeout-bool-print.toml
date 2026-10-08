@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-select-timeout-bool-print"
+intent = "Booleans from two timed-out stream selects reach the runtime's bool formatter widened at O2 and print exactly."
+source = "cases/stream-select-timeout-bool-print.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "false false\n"
+exit = 0

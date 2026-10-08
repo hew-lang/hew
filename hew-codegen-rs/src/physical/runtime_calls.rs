@@ -826,7 +826,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         )
                         .llvm_ctx("pack scalar print bits")?,
                 };
-                let function = get_or_declare_external(
+                // `hew_print_value(kind: u8, bits: u64, newline: bool)`.
+                let function = get_or_declare_external_widened(
                     self.llvm,
                     "hew_print_value",
                     self.ctx.void_type().fn_type(
@@ -837,6 +838,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         ],
                         false,
                     ),
+                    &[(0, Widen::Zero)],
                 )?;
                 self.runtime_call_void(
                     function,
@@ -921,12 +923,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 );
             }
             RuntimeCallFamily::BytesPush => {
-                let function = get_or_declare_external(
+                let function = get_or_declare_external_widened(
                     self.llvm,
                     "hew_bytes_push_owned",
                     self.ctx
                         .void_type()
                         .fn_type(&[ptr.into(), self.ctx.i8_type().into(), ptr.into()], false),
+                    &[(1, Widen::Zero)],
                 )?;
                 self.runtime_call_void(
                     function,

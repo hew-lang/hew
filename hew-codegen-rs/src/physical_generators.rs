@@ -1,9 +1,9 @@
 //! Native generator suspension over the shared LLVM frame and callable ABI.
 
 use super::{
-    coro, llvm_type, suspend, AddressSpace, ArgumentTransfer, BasicValueEnum, CallableId,
-    CodegenError, CodegenResult, FunctionEmitter, IntPredicate, IntValue, LlvmResultExt,
-    ModuleEmitter, PhysicalEdge, PhysicalOp, StorageId,
+    coro, get_or_declare_external, llvm_type, suspend, AddressSpace, ArgumentTransfer,
+    BasicValueEnum, CallableId, CodegenError, CodegenResult, FunctionEmitter, IntPredicate,
+    IntValue, LlvmResultExt, ModuleEmitter, PhysicalEdge, PhysicalOp, StorageId,
 };
 
 fn descriptor(callable: CallableId, storage: StorageId, part: &str) -> String {
@@ -46,7 +46,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn reject_generator_destroy(&self) -> CodegenResult<()> {
-        let abort = coro::external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
+        let abort =
+            get_or_declare_external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
         self.builder
             .build_call(abort, &[], "")
             .llvm_ctx("reject destruction before generator drain")?;
@@ -74,7 +75,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("generator return descriptor is absent".into())
             })?;
-        let make = coro::external(
+        let make = get_or_declare_external(
             self.llvm,
             "hew_checked_generator_new",
             pointer.fn_type(&[pointer.into(); 3], false),
@@ -114,7 +115,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("transfer yielded value to its consumer")?;
         self.clear_owned(*value)?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let publish = coro::external(
+        let publish = get_or_declare_external(
             self.llvm,
             "hew_coro_state_publish",
             self.ctx
@@ -173,7 +174,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         closing: IntValue<'ctx>,
     ) -> CodegenResult<IntValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let poll = coro::external(
+        let poll = get_or_declare_external(
             self.llvm,
             "hew_checked_generator_poll",
             self.ctx.i32_type().fn_type(
@@ -210,7 +211,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(child_slot, pointer.const_null())
             .llvm_ctx("initialize producer fault slot")?;
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             symbol,
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
@@ -251,7 +252,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "generator.combined.status",
             )
             .llvm_ctx("retain first cleanup failure")?;
-        let combine = coro::external(
+        let combine = get_or_declare_external(
             self.llvm,
             "hew_fault_combine",
             pointer.fn_type(&[pointer.into(); 2], false),
@@ -367,7 +368,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let value_slot = self
             .value_emitter()
             .entry_scratch(value_ty, "generator.yield.slot")?;
-        let take_fn = coro::external(
+        let take_fn = get_or_declare_external(
             self.llvm,
             "hew_checked_generator_take",
             self.ctx.void_type().fn_type(&[pointer.into(); 2], false),

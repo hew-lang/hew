@@ -1,0 +1,16 @@
+import std.stream;
+
+fn wait_one(s: Stream<i64>) -> bool {
+    select {
+        _ from s.recv() => true,
+        after 10ms => false,
+    }
+}
+
+fn main() {
+    let (_ta, a): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    let (_tb, b): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    let ga = wait_one(a);
+    let gb = wait_one(b);
+    println(f"{ga} {gb}");
+}

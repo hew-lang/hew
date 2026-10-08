@@ -62,6 +62,7 @@ mod shared;
 #[path = "../physical_structural.rs"]
 mod structural;
 
+mod c_abi;
 mod collections;
 mod control;
 mod function;
@@ -71,6 +72,7 @@ mod runtime_calls;
 mod text;
 mod value_emitter;
 
+use c_abi::{get_or_declare_external, get_or_declare_external_widened, Widen};
 use helpers::*;
 use module_emitter::*;
 use value_emitter::*;

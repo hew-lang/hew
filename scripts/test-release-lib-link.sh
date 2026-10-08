@@ -92,4 +92,14 @@ if [[ "$OUTPUT" != *"release-native-link-ok"* ]]; then
     exit 1
 fi
 
-echo "PASS: release libhew.a linked and ran a Rust native staticlib consumer"
+# The release runtime reads a narrow C argument from its whole register, so an
+# O2 caller must widen it; the debug runtime reads only the low byte and hides a miss.
+ABI_SOURCE="$(dirname -- "${BASH_SOURCE[0]}")/../tests/core-acceptance/cases/stream-select-timeout-bool-print.hew"
+"$WORK_DIR/release/bin/hew" build --opt-level 2 "$ABI_SOURCE" -o "$WORK_DIR/release-abi-probe"
+ABI_OUTPUT=$("$WORK_DIR/release-abi-probe")
+if [[ "$ABI_OUTPUT" != "false false" ]]; then
+    echo "error: O2 narrow-scalar probe output was: $ABI_OUTPUT" >&2
+    exit 1
+fi
+
+echo "PASS: release libhew.a linked and ran a Rust native staticlib consumer and an O2 narrow-scalar probe"

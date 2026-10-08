@@ -378,21 +378,3 @@ pub(super) fn c_string_literal<'ctx>(
     global.set_initializer(&data);
     global.as_pointer_value()
 }
-
-pub(super) fn get_or_declare_external<'ctx>(
-    module: &Module<'ctx>,
-    symbol: &str,
-    expected: FunctionType<'ctx>,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    if let Some(existing) = module.get_function(symbol) {
-        if existing.get_type() != expected {
-            return Err(CodegenError::FailClosed(format!(
-                "runtime declaration `{symbol}` has type {:?}, expected {:?}",
-                existing.get_type(),
-                expected
-            )));
-        }
-        return Ok(existing);
-    }
-    Ok(module.add_function(symbol, expected, Some(Linkage::External)))
-}

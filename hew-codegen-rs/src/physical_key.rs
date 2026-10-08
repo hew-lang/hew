@@ -405,7 +405,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
     fn return_status(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         if let Some(frame) = &self.frame {
             let pointer = self.parent.ctx.ptr_type(AddressSpace::default());
-            let finish = coro::external(
+            let finish = get_or_declare_external(
                 &self.parent.llvm,
                 "hew_coro_state_finish",
                 self.parent

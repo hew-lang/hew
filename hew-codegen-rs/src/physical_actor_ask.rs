@@ -159,7 +159,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.load(sources[1], "ask.sealed.request")?
                 .into_pointer_value()
         } else {
-            let allocate = coro::external(
+            let allocate = get_or_declare_external(
                 self.llvm,
                 "hew_actor_payload_try_alloc",
                 ptr.fn_type(&[size_ty.into()], false),
@@ -218,7 +218,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder.position_at_end(start);
             wrapper
         };
-        let wake = coro::external(
+        let wake = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
             ptr.fn_type(&[ptr.into()], false),
@@ -290,7 +290,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         arguments.push(
             actor_value_release(self.ctx, self.llvm, self.module, &handler.return_ty)?.into(),
         );
-        let start = coro::external(
+        let start = get_or_declare_external(
             self.llvm,
             if sealed {
                 "hew_actor_call_resume"
@@ -354,7 +354,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let request = entry
             .build_alloca(ptr, "ask.rejected.request")
             .llvm_ctx("allocate rejected request slot")?;
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             "hew_actor_call_take",
             self.ctx.i32_type().fn_type(&[ptr.into(); 3], false),
@@ -836,7 +836,8 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             .build_unconditional_branch(done)
             .llvm_ctx("finish ask error")?;
         self.builder.position_at_end(unknown);
-        let abort = coro::external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
+        let abort =
+            get_or_declare_external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
         self.builder
             .build_call(abort, &[], "")
             .llvm_ctx("refuse an undefined ask status")?;

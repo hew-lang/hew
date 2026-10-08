@@ -140,18 +140,21 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
                 ],
             )
             .llvm_ctx("select requested collection capability")?;
-        for (block, capability, output_ty, submit) in [
+        // The equality verdict is the runtime's `bool`.
+        for (block, capability, output_ty, submit, widen) in [
             (
                 hash,
                 ValueCapability::Hash,
                 self.values.ctx.i64_type(),
                 "hew_hashmap_probe_submit_hash",
+                &[][..],
             ),
             (
                 eq,
                 ValueCapability::Eq,
                 self.values.ctx.i8_type(),
                 "hew_hashmap_probe_submit_eq",
+                &[(1, Widen::Zero)][..],
             ),
         ] {
             self.values.builder.position_at_end(block);
@@ -220,13 +223,14 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
                 .builder
                 .build_load(output_ty, output, "collection.probe.value")
                 .llvm_ctx("read successful collection callback output")?;
-            let submit_fn = get_or_declare_external(
+            let submit_fn = get_or_declare_external_widened(
                 self.values.llvm,
                 submit,
                 self.values
                     .ctx
                     .void_type()
                     .fn_type(&[pointer.into(), output_ty.into()], false),
+                widen,
             )?;
             self.call_void(
                 submit_fn,

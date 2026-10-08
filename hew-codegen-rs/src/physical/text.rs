@@ -504,7 +504,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_edge(failure)?;
         self.builder.position_at_end(safe);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let function = get_or_declare_external(
+        let function = get_or_declare_external_widened(
             self.llvm,
             "hew_bytes_set",
             self.ctx.void_type().fn_type(
@@ -515,6 +515,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ],
                 false,
             ),
+            &[(2, Widen::Zero)],
         )?;
         self.runtime_call_void(
             function,

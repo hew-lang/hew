@@ -496,9 +496,8 @@ fn main() {
     // We check for the missing field's name and the failure marker — exact
     // message wording is not load-bearing for this test.
     assert!(
-        stderr.contains("`id`") || stderr.contains("requires an initialized spawn value"),
-        "compile error for missing init args should mention the missing field \
-         or the uninitialized-state cause; stderr: {stderr}"
+        stderr.contains("missing field `id` in spawn of actor `Worker`"),
+        "compile error for missing init args should name the missing field; stderr: {stderr}"
     );
 }
 
@@ -708,12 +707,8 @@ fn main() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains("`a`")
-            || stderr.contains("missing")
-            || stderr.contains("required")
-            || stderr.contains("requires an initialized spawn value"),
-        "compile error for missing required field should mention the field, \
-         'missing', 'required', or the uninitialized-state cause; stderr: {stderr}"
+        stderr.contains("missing field `a` in spawn of actor"),
+        "compile error for missing required field should name the field; stderr: {stderr}"
     );
 }
 

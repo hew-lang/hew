@@ -402,7 +402,7 @@ impl Checker {
                 continue;
             };
             let target = (Expr::Ident(Ident::new(&identity)), child.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
-            let handle = self.check_spawn(&target, &child.type_args, &child.args, &child.span);
+            let handle = self.check_spawn(&target, &child.type_args, &child.args, &[], &child.span);
             self.record_type(&child.span, &handle);
             if let Some(child_ty) = handle.as_actor_handle() {
                 // Keyed by the declaration identity, as registration writes it:

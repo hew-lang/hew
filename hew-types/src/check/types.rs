@@ -68,6 +68,15 @@ impl ExecutionContextReader {
     }
 }
 
+/// One key a `spawn` accepts: a state field or an `init` or supervisor
+/// parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SpawnKey {
+    pub(super) name: Symbol,
+    /// False for a defaulted state field, which a spawn may omit.
+    pub(super) required: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ActorInitParamInfo {
     pub(super) name: String,
@@ -3627,11 +3636,12 @@ pub struct Checker {
     ///
     /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
     pub(super) actor_init_params: HashMap<String, Vec<ActorInitParamInfo>>,
-    /// Spawn argument names and whether each one is required, keyed by the
-    /// actor declaration identity. State fields with defaults are optional;
-    /// fields initialized by `init` are absent; explicit `init` parameters
-    /// are always required.
-    pub(super) actor_spawn_args: HashMap<String, Vec<(String, bool)>>,
+    /// The keys a `spawn` of each actor or supervisor accepts, keyed by the
+    /// declaration identity, in slot order. An actor's keys are its state
+    /// fields that `init` does not initialize, then its `init` parameters; a
+    /// defaulted field is optional and every other key is required. A
+    /// supervisor's keys are its header parameters, all required.
+    pub(super) actor_spawn_args: HashMap<String, Vec<SpawnKey>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,

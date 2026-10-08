@@ -741,6 +741,11 @@ pub enum TypeErrorKind {
     TestSignature,
     /// An actor spawn omitted a required state field or `init` parameter.
     MissingActorSpawnArgument,
+    /// A spawn named a key that is neither a spawn-supplied state field nor
+    /// an `init` (or supervisor) parameter.
+    SpawnArgUnknown,
+    /// A spawn named the same key more than once.
+    SpawnArgDuplicate,
     /// An ordering operator (`<`/`<=`/`>`/`>=`) on a record, enum, tuple, or
     /// `Option`/`Result` with no user `impl Ord`/`impl PartialOrd` for the
     /// type (D26 as amended by D340). Legal Hew — a derived lexicographic
@@ -1525,6 +1530,8 @@ impl TypeErrorKind {
             Self::ActorWaitsOnSelf => "E_ACTOR_WAITS_ON_SELF",
             Self::TestSignature => "E_TEST_SIGNATURE",
             Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",
+            Self::SpawnArgUnknown => "E_SPAWN_ARG_UNKNOWN",
+            Self::SpawnArgDuplicate => "E_SPAWN_ARG_DUPLICATE",
             Self::DerivedOrdUnavailable { .. } => "E_LIMIT_DERIVED_ORD",
             Self::ConstInitializer => "E_CONST_INITIALIZER",
             Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",

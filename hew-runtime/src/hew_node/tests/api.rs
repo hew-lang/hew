@@ -61,7 +61,6 @@ fn legacy_route_slot_selection_skips_peer_pins() {
 /// `Building → Running{owner}` and `Node::shutdown` returns it to `Building`
 /// with a bumped generation. An unauthenticated default start is no longer
 /// valid.
-#[cfg(feature = "encryption")]
 #[test]
 fn public_start_default_then_shutdown_resets_state() {
     let _guard = crate::runtime_test_guard();
@@ -113,7 +112,6 @@ fn public_start_default_then_shutdown_resets_state() {
 /// (fail-closed), and the first node keeps running until its own shutdown.
 /// The first start stages a real identity because unauthenticated public
 /// startup is no longer valid under the v2 handshake.
-#[cfg(feature = "encryption")]
 #[test]
 fn public_start_rejected_when_already_active() {
     let _guard = crate::runtime_test_guard();
@@ -141,7 +139,6 @@ fn public_start_rejected_when_already_active() {
 /// source-owned decode through the public node start. Concurrent callers
 /// therefore cannot combine their staging steps: precisely one owns the
 /// public node, and the losing record is still consumed and released.
-#[cfg(feature = "encryption")]
 #[test]
 fn concurrent_start_config_keeps_transactions_atomic() {
     let _guard = crate::runtime_test_guard();
@@ -284,7 +281,6 @@ fn start_refuses_after_failed_peer_auth_setup_fail_closed() {
     );
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn concurrent_api_shutdown_claims_current_node_once() {
     let _guard = crate::runtime_test_guard();
@@ -605,7 +601,7 @@ fn set_transport_credential_typing_atomic_under_concurrent_allow_peer() {
 /// `Node::load_keys` pins the transport and stages the Noise identity, a
 /// rejected `Node::set_transport` cannot change which credential is exported,
 /// and the pinned selection `Node::start` will use stays put.
-#[cfg(all(feature = "quic", feature = "encryption"))]
+#[cfg(feature = "quic")]
 #[test]
 fn identity_key_stable_across_attempted_transport_flip() {
     use crate::peer_binding::TransportSelection as PT;

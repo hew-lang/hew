@@ -220,7 +220,7 @@ fn publication_refuses_peer_whose_route_slot_is_reserved() {
         // schedule a retry of the rejected peer.
         (&*mgr).reconnect_enabled.store(true, Ordering::Release);
 
-        let mut actor = ConnectionActor::new(CONN_ID);
+        let mut actor = test_actor(CONN_ID);
         let token =
             next_publication_token(&*mgr).expect("the publication token space is not exhausted");
         actor.publication_token = token;
@@ -381,7 +381,7 @@ fn publication_refuses_peer_the_cluster_rejects() {
 
         // The peer that legitimately owns the slot, at session 5.
         let established_identity = NodeId::from_bytes([5; 16]);
-        let mut established = ConnectionActor::new(ESTABLISHED_CONN);
+        let mut established = test_actor(ESTABLISHED_CONN);
         let established_token =
             next_publication_token(&*mgr).expect("the publication token space is not exhausted");
         established.publication_token = established_token;
@@ -434,7 +434,7 @@ fn publication_refuses_peer_the_cluster_rejects() {
         // A different NodeId lands on the same route slot with an older
         // session, so the cluster refuses the publication outright.
         let refused_identity = NodeId::from_bytes([6; 16]);
-        let mut refused = ConnectionActor::new(REFUSED_CONN);
+        let mut refused = test_actor(REFUSED_CONN);
         let refused_token =
             next_publication_token(&*mgr).expect("the publication token space is not exhausted");
         refused.publication_token = refused_token;

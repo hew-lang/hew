@@ -20,7 +20,6 @@ use super::*;
 /// first (synchronised on, not raced), then SUSPECT→DEAD — because a single
 /// sim-time advance only fires one tick and each tick applies at most one
 /// transition.  See the inline notes at the advance points.
-#[cfg(feature = "encryption")]
 #[test]
 fn dead_node_is_detected_by_survivor_via_driven_swim() {
     use crate::cluster::{hew_cluster_member_state, hew_cluster_set_partition_registry};

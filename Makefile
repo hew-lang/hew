@@ -1186,7 +1186,8 @@ perf-verify-linear: hew ## Test: physical lowering stays linear in awaits per fu
 	HEW_BIN="$(HEW_BIN)" bash tests/perf/verify-linear.sh
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
-# QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).
+# QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper). Noise (snow) is
+# unconditional, so the TCP-Noise channel is tested here too.
 # Compile time is ~3× lower than the default-features build (measured: ~32s vs ~85s per binary).
 # Profiler allocator tests in transport.rs are skipped (they require feature = "profiler").
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.

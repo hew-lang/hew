@@ -10,7 +10,33 @@ use crate::coro_state::{
 use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
 use crate::fault::HewFault;
 use crate::wake::blocking::Readiness;
+use std::cell::Cell;
 use std::ffi::c_void;
+
+thread_local! {
+    /// The context of the root task this thread is driving, or null.
+    static ROOT_CONTEXT: Cell<*mut HewExecutionContext> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// Whether the running code is a process root task's own body, which this
+/// thread resumes directly: no scheduler worker is needed to wake it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_context_is_process_root() -> bool {
+    let context = current_context();
+    !context.is_null() && ROOT_CONTEXT.with(Cell::get) == context
+}
+
+/// Run `body` as the body of a process root task on this thread.
+#[cfg(test)]
+pub(crate) fn as_process_root_for_test<R>(body: impl FnOnce() -> R) -> R {
+    let mut context = HewExecutionContext::default();
+    let previous = set_current_context(&raw mut context);
+    let enclosing_root = ROOT_CONTEXT.with(|root| root.replace(&raw mut context));
+    let result = body();
+    ROOT_CONTEXT.with(|root| root.set(enclosing_root));
+    let _ = set_current_context(previous);
+    result
+}
 
 /// A generated adapter invokes the exact typed main body. Synchronous bodies
 /// publish their checked outcome and return null; resumable bodies return the
@@ -56,6 +82,7 @@ pub unsafe extern "C" fn hew_coro_run_root(
     // SAFETY: descriptor and token are owned by this root invocation.
     let state = unsafe { hew_coro_state_new(waker.descriptor(), token) };
     let _previous = set_current_context(&raw mut context);
+    let enclosing_root = ROOT_CONTEXT.with(|root| root.replace(&raw mut context));
     // SAFETY: caller supplies the generated adapter and correctly typed slots.
     let frame = unsafe { start(arguments, result_out, fault_out, state) };
     // SAFETY: this function owns both invocation state and returned frame.
@@ -84,6 +111,7 @@ pub unsafe extern "C" fn hew_coro_run_root(
     }
     // SAFETY: completion was observed above and the state is still owned here.
     let status = unsafe { hew_coro_state_private_status(state) };
+    ROOT_CONTEXT.with(|root| root.set(enclosing_root));
     let _installed = set_current_context(previous);
     // SAFETY: no frame accesses state; drop subscription before root token.
     unsafe {

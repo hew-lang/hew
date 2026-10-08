@@ -5657,6 +5657,20 @@ starts runtime shutdown; `main` keeps running and observes it only through
 refused calls and cancelled waits. A program with no actors keeps the platform
 default and ends without cleanup.
 
+During that shutdown `main` keeps the handles it already holds. A wait on one
+of them (a socket `recv` or `send`, `io.read_line`, `Child.wait`, a pipe)
+starts and completes as before the request, and a wait of `main` never holds
+the drain open. New root work is refused with a typed error:
+`process.start`, `process.run` and `process.run_argv` report
+`ProcessError.LaunchFailed`, and `net.connect`, `net.connect_timeout` and
+`net.listen` report `NetError.Cancelled`. Listeners stop admitting connections
+everywhere, so an `incoming` stream ends. The request cancels every socket,
+pipe and standard-input wait already parked when it arrives, in `main` and in
+actors alike: such a `main` ends with a `Cancelled` failure. A parked
+`Child.wait` is not cancelled; it returns when the child exits. Accepted actor
+turns keep starting the connections, processes and waits they need to finish
+within the drain window.
+
 `os.shutdown_signal()` hands the decision to the program. It returns a
 `Stream<()>` that receives one `()` per request; requests that arrive before
 the next receive coalesce into one. While any such stream is open, a request

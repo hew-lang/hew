@@ -23,6 +23,8 @@ pub(super) struct NetOp {
     direction: Direction,
     action: Mutex<Action>,
     pub(super) ready: AtomicBool,
+    /// Started by work that shutdown drains, not by a process root.
+    pub(super) holds_drain: bool,
 }
 
 enum Action {
@@ -109,7 +111,7 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
     match action {
         Action::Read => {
             let Some(channel) = slot.bytes() else {
-                return closed("read TCP connection");
+                return closed(&format!("read {}", slot.describe()));
             };
             READ_BUFFER.with_borrow_mut(|buffer| loop {
                 match channel.read(buffer) {
@@ -124,7 +126,10 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                         return Attempt::Blocked { progressed: false };
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return failed(channel.is_tcp(), "read TCP connection", &error),
+                    Err(error) => {
+                        let operation = format!("read {}", slot.describe());
+                        return failed(channel.is_tcp(), &operation, &error);
+                    }
                 }
             })
         }
@@ -157,7 +162,7 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
         Action::StdinLine => unreachable!("standard input advances under its buffer lock"),
         Action::Write { data, written } => {
             let Some(channel) = slot.bytes() else {
-                return closed("write TCP connection");
+                return closed(&format!("write {}", slot.describe()));
             };
             let bytes = data.bytes();
             let mut progressed = false;
@@ -166,7 +171,7 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                 match channel.write(&bytes[*written..end]) {
                     Ok(0) => {
                         return Attempt::Done(Err(IoFailure::from_io(
-                            "write TCP connection",
+                            &format!("write {}", slot.describe()),
                             &io::Error::new(io::ErrorKind::WriteZero, "socket accepted no bytes"),
                         )))
                     }
@@ -181,7 +186,10 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                         return Attempt::Blocked { progressed };
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return failed(channel.is_tcp(), "write TCP connection", &error),
+                    Err(error) => {
+                        let operation = format!("write {}", slot.describe());
+                        return failed(channel.is_tcp(), &operation, &error);
+                    }
                 }
             }
             Attempt::Done(Ok(IoValue::Count(
@@ -270,14 +278,15 @@ pub(super) fn advance(operation: &Arc<HewAsyncIo>) {
     }
 }
 
+/// Admit a wait on a handle the program already holds. Shutdown does not
+/// refuse it: a termination request refuses new root work (connections,
+/// listeners, processes), never a wait on an existing handle.
 fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFailure> {
     if crate::runtime::rt_current_opt().is_none() {
         return Err(IoFailure::invalid(
-            "asynchronous TCP I/O requires an installed runtime",
+            "asynchronous I/O requires an installed runtime",
         ));
     }
-    let _ingress = crate::shutdown::admit_external_work()
-        .map_err(|()| crate::reactor::cancelled_failure("register TCP I/O"))?;
     let kind_matches = match action {
         Action::Accept => slot.listener().is_some(),
         Action::StdinLine => slot.is_stdin(),
@@ -286,7 +295,7 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     };
     if !kind_matches {
         return Err(IoFailure::from_io(
-            "register TCP I/O",
+            &format!("wait on {}", slot.describe()),
             &io::Error::from_raw_os_error(libc::EBADF),
         ));
     }
@@ -297,8 +306,9 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
             &io::Error::from_raw_os_error(libc::EBUSY),
         ));
     }
-    slot.ensure_nonblocking()
-        .map_err(|error| IoFailure::from_io("set TCP nonblocking", &error))
+    slot.ensure_nonblocking().map_err(|error| {
+        IoFailure::from_io(&format!("set {} nonblocking", slot.describe()), &error)
+    })
 }
 
 unsafe fn start(handle: i32, action: Action, waker: *const HewWaker) -> *const HewAsyncIo {
@@ -311,7 +321,7 @@ unsafe fn start(handle: i32, action: Action, waker: *const HewWaker) -> *const H
         // SAFETY: the caller borrows a valid descriptor through this call.
         let operation = unsafe { HewAsyncIo::new(waker) };
         operation.complete(Err(IoFailure::from_io(
-            "register TCP I/O",
+            "wait on I/O handle",
             &io::Error::from_raw_os_error(libc::EBADF),
         )));
         return Arc::into_raw(operation);
@@ -344,6 +354,7 @@ unsafe fn start_on(
         direction,
         action: Mutex::new(action),
         ready: AtomicBool::new(false),
+        holds_drain: !crate::coro_root::current_context_is_process_root(),
     };
     // SAFETY: the caller borrows a valid descriptor through this call.
     let operation = unsafe { HewAsyncIo::with_net(waker, Some(net)) };

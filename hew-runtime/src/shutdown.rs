@@ -104,6 +104,34 @@ pub(crate) fn admit_external_work() -> Result<IngressPermit<'static>, ()> {
     })
 }
 
+/// Whether a termination request has closed admission for new root work: a
+/// connection, listener or process the process root would start. Waits on
+/// handles the program already holds stay admitted, and accepted actor turns
+/// keep starting the work they need to finish.
+pub(crate) fn refuses_new_root_work() -> bool {
+    admit_external_work().is_err()
+}
+
+/// The platform's code for an operation refused because the runtime is shutting
+/// down. Windows sockets report cancellation as `WSAECANCELLED`.
+pub(crate) const SHUTDOWN_REFUSAL_ERRNO: i32 = if cfg!(windows) {
+    10103
+} else {
+    libc::ECANCELED
+};
+
+/// The message naming a root operation that shutdown refused.
+pub(crate) fn refusal_message(operation: &str) -> String {
+    format!("{operation}: refused because the runtime is shutting down")
+}
+
+/// Close root admission as a termination request does, without starting the
+/// drain.
+#[cfg(test)]
+pub(crate) fn close_root_admission_for_test() {
+    rt_current().shutdown_ingress.close();
+}
+
 pub(crate) fn external_work_is_idle() -> bool {
     rt_default().is_none_or(|runtime| runtime.shutdown_ingress.is_idle())
 }

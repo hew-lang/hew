@@ -1,0 +1,10 @@
+[[case]]
+id = "shutdown-signal-root-waits"
+intent = "After a default SIGTERM, main's waits on a socket, a child and standard input proceed; new processes, connections, listeners and actor calls are refused with typed errors."
+source = "cases/shutdown-signal-root-waits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "call refused\nrecv 4 bytes\nclient end\nchild Exited(3)\nstdin end\nstart refused\nrun refused\nconnect cancelled\nlisten cancelled\n"
+exit = 0

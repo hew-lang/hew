@@ -295,7 +295,7 @@ impl Builder<'_, '_> {
             (
                 refused,
                 Some(if park {
-                    RuntimeVariantRole::SendErrorTimedOut
+                    RuntimeVariantRole::SendErrorWriteTimedOut
                 } else {
                     RuntimeVariantRole::SendErrorFull
                 }),
@@ -304,7 +304,7 @@ impl Builder<'_, '_> {
             self.current = block;
             self.owned_live = live.clone();
             self.end_call_loans(loans)?;
-            let fields = if role == Some(RuntimeVariantRole::SendErrorTimedOut) {
+            let fields = if role == Some(RuntimeVariantRole::SendErrorWriteTimedOut) {
                 committed
                     .map(|value| vec![Operand { value }])
                     .unwrap_or_default()

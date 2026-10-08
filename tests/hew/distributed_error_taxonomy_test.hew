@@ -14,7 +14,7 @@ fn send_error_id(err: SendError) -> i64 {
         SendError.Unauthorized => 9,
         SendError.Backpressure => 10,
         SendError.Dead => 11,
-        SendError.TimedOut(_) => 12,
+        SendError.WriteTimedOut(_) => 12,
     }
 }
 
@@ -71,7 +71,7 @@ fn test_send_error_taxonomy_variants() {
     assert(send_error_id(SendError.Unauthorized) == 9);
     assert(send_error_id(SendError.Backpressure) == 10);
     assert(send_error_id(SendError.Dead) == 11);
-    assert(send_error_id(SendError.TimedOut(5)) == 12);
+    assert(send_error_id(SendError.WriteTimedOut(5)) == 12);
 }
 
 #[test]

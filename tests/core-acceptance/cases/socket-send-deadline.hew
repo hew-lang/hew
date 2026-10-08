@@ -2,7 +2,7 @@ import std.net;
 import std.stream;
 
 // A socket sink whose peer never reads reports the write deadline as
-// `SendError.TimedOut(n)` with the bytes of the item the OS took, without
+// `SendError.WriteTimedOut(n)` with the bytes of the item the OS took, without
 // trapping its actor; a reset peer is `SendError.Closed`.
 actor Writer {
     let output: stream.Sink<bytes>;
@@ -14,7 +14,7 @@ actor Writer {
         for _ in 0..1024 {
             match output.send(data) {
                 .Ok(()) => {}
-                .Err(SendError.TimedOut(committed)) => return f"timed out, committed in range: {committed >= 0 && committed <= 65536}",
+                .Err(SendError.WriteTimedOut(committed)) => return f"timed out, committed in range: {committed >= 0 && committed <= 65536}",
                 .Err(SendError.Closed) => return "closed",
                 .Err(other) => return f"other {other}",
             }

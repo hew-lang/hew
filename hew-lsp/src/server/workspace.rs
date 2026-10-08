@@ -9,7 +9,7 @@ use hew_parser::ast::Item;
 use hew_parser::ParseResult;
 use tower_lsp_server::ls_types::{CodeLens, Command, Location, SymbolInformation, Uri as Url};
 
-use super::analysis::source_for_path;
+use super::analysis::{open_document_uri, source_for_path};
 use super::convert::analysis_symbol_kind_to_lsp;
 use super::uri::FileUriExt;
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
@@ -147,11 +147,10 @@ pub(super) fn collect_project_workspace_symbols(
     let mut seen_paths = HashSet::new();
 
     for path in workspace_symbol_paths(documents, workspace_roots) {
-        let normalized_path = normalize_workspace_path(&path);
-        if !seen_paths.insert(normalized_path.clone()) {
+        if !seen_paths.insert(normalize_workspace_path(&path)) {
             continue;
         }
-        let Some(uri) = Url::from_checked_file_path(&normalized_path) else {
+        let Some(uri) = editor_uri(&path, documents) else {
             continue;
         };
 
@@ -167,7 +166,7 @@ pub(super) fn collect_project_workspace_symbols(
             continue;
         }
 
-        let Some(source) = source_for_path(&normalized_path, documents) else {
+        let Some(source) = source_for_path(&path, documents) else {
             continue;
         };
         let parse_result = hew_parser::parse(&source);
@@ -194,24 +193,28 @@ pub(super) fn test_inventory(
     let paths = requested.map_or_else(
         || workspace_symbol_paths(documents, workspace_roots),
         |uri| {
-            uri.to_file_path()
+            uri.to_checked_file_path()
                 .map_or_else(Vec::new, |path| vec![path.into_owned()])
         },
     );
+    let roots: Vec<_> = workspace_roots
+        .iter()
+        .map(|root| normalize_workspace_path(root))
+        .collect();
     let mut inventory = Vec::new();
     let mut seen = HashSet::new();
-    for path in paths {
-        let path = normalize_workspace_path(&path);
+    for spelled in paths {
+        let path = normalize_workspace_path(&spelled);
         if !seen.insert(path.clone()) {
             continue;
         }
-        let Some(uri) = Url::from_checked_file_path(&path) else {
+        let Some(uri) = editor_uri(&spelled, documents) else {
             continue;
         };
         if let Some(doc) = documents.get(&uri) {
             append_test_items(
                 &mut inventory,
-                workspace_roots,
+                &roots,
                 &path,
                 &uri,
                 &doc.source,
@@ -223,7 +226,7 @@ pub(super) fn test_inventory(
             let lines = compute_line_offsets(&source);
             append_test_items(
                 &mut inventory,
-                workspace_roots,
+                &roots,
                 &path,
                 &uri,
                 &source,
@@ -548,7 +551,13 @@ fn path_is_under_workspace_root(path: &Path, workspace_roots: &[PathBuf]) -> boo
     let normalized_path = normalize_workspace_path(path);
     workspace_roots
         .iter()
-        .any(|root| normalized_path.starts_with(root))
+        .any(|root| normalized_path.starts_with(normalize_workspace_path(root)))
+}
+
+/// The URI the editor uses for `path`: an open view of the same file keeps its
+/// own spelling, and a closed file keeps the spelling it was reached by.
+fn editor_uri(path: &Path, documents: &DashMap<Url, DocumentState>) -> Option<Url> {
+    Url::from_checked_file_path(path).map(|uri| open_document_uri(&uri, documents))
 }
 
 pub(super) fn normalize_workspace_path(path: &Path) -> PathBuf {

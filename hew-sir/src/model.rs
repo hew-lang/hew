@@ -607,7 +607,7 @@ pub enum RuntimeVariantRole {
     SendErrorUnauthorized,
     SendErrorBackpressure,
     SendErrorDead,
-    SendErrorTimedOut,
+    SendErrorWriteTimedOut,
     DeliveryAccepted,
     DeliveryDiscarded,
     LinkErrorNoContext,

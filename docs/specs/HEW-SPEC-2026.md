@@ -5883,7 +5883,7 @@ A sink released by a normal return, a stop or `close` publishes a clean
 end of data. A `send` never traps for a missing reader; it reports
 `SendError.Closed`. A socket `send` whose peer reset or closed the
 connection also reports `SendError.Closed`, and one whose write timeout
-passes reports `SendError.TimedOut(n)`, where `n` is how many bytes of the
+passes reports `SendError.WriteTimedOut(n)`, where `n` is how many bytes of the
 item reached the operating system first; the peer's view of the stream is
 then unknown, so the caller retires the stream rather than resending. Any
 other socket write failure traps.
@@ -5991,7 +5991,7 @@ a user codec are decided but not lowered in edition 2026 (§2.1.1).
 `std.net.Connection` speaks the same contract: `recv() -> Option<bytes>`,
 `send(bytes) -> Result<(), SendError>`, `finish()`, `close()` and
 `split()`. A transport failure on `recv` traps; a peer that has gone away
-is `SendError.Closed` and a passed write timeout is `SendError.TimedOut(n)`
+is `SendError.Closed` and a passed write timeout is `SendError.WriteTimedOut(n)`
 on `send`, on the connection and on its split sink alike (§6.4.4). The
 write timeout is `set_write_timeout` on the connection before `split()`.
 A socket send cancelled by `scope within` also leaves the stream position

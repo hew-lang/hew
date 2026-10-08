@@ -1033,7 +1033,7 @@ pub(crate) fn runtime_variant_tags(
             (Role::SendErrorUnauthorized, "Unauthorized"),
             (Role::SendErrorBackpressure, "Backpressure"),
             (Role::SendErrorDead, "Dead"),
-            (Role::SendErrorTimedOut, "TimedOut"),
+            (Role::SendErrorWriteTimedOut, "WriteTimedOut"),
         ],
         head if *head == KnownDecl::ActorError.head() => &[
             (Role::ActorErrorRejected, "Rejected"),

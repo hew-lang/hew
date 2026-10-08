@@ -490,7 +490,7 @@ impl ConnectionMethods for Connection {
             }
         }
     }
-    /// Send raw bytes. `Closed` means the peer is gone; `TimedOut(n)` means
+    /// Send raw bytes. `Closed` means the peer is gone; `WriteTimedOut(n)` means
     /// the write timeout passed after `n` bytes of `data` reached the OS, so
     /// the stream position is unknown and the connection should be retired.
     /// Any other failure traps.
@@ -517,7 +517,7 @@ impl ConnectionMethods for Connection {
             return .Err(SendError.Closed);
         }
         if kind == IO_ERROR_KIND_TIMED_OUT {
-            return .Err(SendError.TimedOut(committed));
+            return .Err(SendError.WriteTimedOut(committed));
         }
         panic(f"net.Connection.send: {to_string(net_error_from_errno(errno))}: {detail}")
     }

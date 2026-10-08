@@ -695,7 +695,7 @@ fn cmd_install(
     };
     let registry_sources = registry_sources_or_exit(cfg, registry_name);
 
-    let lock_path = cwd.join("hew.lock");
+    let lock_path = cwd.join(crate::project::LOCK_FILE);
 
     let (locked_lockfile, pinned_locked_registry) = if locked {
         // --locked: read existing lock and validate against manifest.

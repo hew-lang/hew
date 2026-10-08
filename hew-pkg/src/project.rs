@@ -13,6 +13,9 @@ use crate::manifest::{self, HewManifest, ManifestError};
 /// The manifest file name that marks a package root.
 pub const MANIFEST_FILE: &str = "hew.toml";
 
+/// The lockfile beside a package's manifest.
+pub const LOCK_FILE: &str = "hew.lock";
+
 /// A package located on disk, with its manifest parsed.
 #[derive(Debug)]
 pub struct ResolvedPackage {
@@ -45,8 +48,7 @@ impl ResolvedPackage {
             .join(format!("{}{suffix}", self.manifest.package.binary_name()))
     }
 
-    /// True when this package declares a `[native]` FFI library that must be
-    /// built before its Hew sources compile.
+    /// True when this package declares `[native]` code that its programs link.
     #[must_use]
     pub fn has_native(&self) -> bool {
         self.manifest.native.is_some()
@@ -198,23 +200,6 @@ fn absolute_normalized_path(path: &Path) -> Result<PathBuf, ResolveError> {
         }
     }
     Ok(normalized)
-}
-
-/// Build the package's own `[native]` FFI crate and return the archive the
-/// linker needs. `None` when the package declares no `[native]` section.
-///
-/// This is a prerequisite step of every package-mode build: sources that call
-/// `extern` functions cannot link until the archive exists.
-///
-/// # Errors
-///
-/// Returns the underlying cargo build failure message.
-pub fn build_native_lib(root: &Path) -> Result<Option<PathBuf>, String> {
-    let expected = crate::native::embedded_rustc_identity();
-    let Some(artifact) = crate::native::build_native(root, &expected)? else {
-        return Ok(None);
-    };
-    Ok(Some(artifact.path))
 }
 
 #[cfg(test)]

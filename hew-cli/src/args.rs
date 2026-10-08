@@ -349,6 +349,10 @@ pub struct RunArgs {
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
     #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
     pub link_libs: Vec<String>,
+    /// Write a Makefile-format dependency file naming every Hew module,
+    /// manifest and native source the program read; the file is its own target.
+    #[arg(long = "emit-deps", value_name = "FILE")]
+    pub emit_deps: Option<PathBuf>,
     /// Target triple.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
@@ -558,6 +562,10 @@ pub struct BuildArgs {
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
     #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
     pub link_libs: Vec<String>,
+    /// Write a Makefile-format dependency file naming every Hew module,
+    /// manifest and native source the build read, with the output as target.
+    #[arg(long = "emit-deps", value_name = "FILE", conflicts_with = "export_c")]
+    pub emit_deps: Option<PathBuf>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Diagnostic output format: `text` (default) or `json`.

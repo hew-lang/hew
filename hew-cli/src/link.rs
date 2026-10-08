@@ -481,6 +481,76 @@ fn select_native_compiler(target: &TargetSpec) -> Result<NativeCompiler, String>
     select_native_compiler_with(target, driver_version)
 }
 
+/// The toolchain `[native]` C and C++ sources compile with: the same driver
+/// that links the program, aimed at the same target, with the profile's
+/// optimization and debug info and the runtime's code model (PIC on Unix, the
+/// DLL CRT on Windows, AddressSanitizer when the runtime carries it).
+///
+/// # Errors
+///
+/// Returns the driver-selection diagnostic, or a refusal for a wasm target.
+pub(crate) fn native_toolchain(
+    target: &TargetSpec,
+    debug: bool,
+    opt_level: hew_codegen_rs::OptLevel,
+) -> Result<hew_pkg::native::NativeToolchain, String> {
+    use crate::target::TargetOs;
+    use hew_pkg::manifest::NativeOs;
+
+    let os = match target.os() {
+        TargetOs::Linux => NativeOs::Linux,
+        TargetOs::Darwin => NativeOs::Macos,
+        TargetOs::FreeBsd => NativeOs::FreeBsd,
+        TargetOs::Windows => NativeOs::Windows,
+        TargetOs::Wasi | TargetOs::WasmFreestanding => {
+            return Err(format!(
+                "[native] code cannot be compiled for {}",
+                target.normalized_triple()
+            ));
+        }
+    };
+    let compiler = select_native_compiler(target)?;
+    let plan = target.native_link_plan();
+    let mut flags = Vec::new();
+    if compiler.accepts_target_flag {
+        flags.extend(["-target".to_string(), target.linker_triple()]);
+    }
+    flags.push(
+        match opt_level {
+            hew_codegen_rs::OptLevel::O0 => "-O0",
+            hew_codegen_rs::OptLevel::O2 => "-O2",
+        }
+        .to_string(),
+    );
+    if debug {
+        flags.push("-g".to_string());
+    }
+    if plan.needs_windows_crt_fixup {
+        // Match the DLL CRT the link forces (`/DEFAULTLIB:msvcrt`).
+        flags.push("-fms-runtime-lib=dll".to_string());
+    } else {
+        flags.push("-fPIC".to_string());
+    }
+    if address_sanitizer_requested() {
+        flags.push("-fsanitize=address".to_string());
+    }
+    if plan.needs_darwin_sdk {
+        if let Some(sdk) = find_darwin_sdk() {
+            flags.extend(["-isysroot".to_string(), sdk]);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(gcc_toolchain) = find_linux_cross_gcc_toolchain(target) {
+        flags.push(format!("--gcc-toolchain={gcc_toolchain}"));
+    }
+    Ok(hew_pkg::native::NativeToolchain {
+        os,
+        driver: compiler.program,
+        flags,
+        object_suffix: target.object_suffix(),
+    })
+}
+
 #[cfg_attr(
     not(target_os = "windows"),
     allow(

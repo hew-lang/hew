@@ -86,6 +86,13 @@ pub struct NativeLinkPlan {
     /// System libraries required by the Hew runtime on this target.
     pub platform_libs: &'static [&'static str],
 
+    /// The C++ standard library a program links when a `[native]` package
+    /// compiles C++: the C driver Hew links with does not add it.
+    ///
+    /// Linux: libstdc++; Darwin and FreeBSD: libc++; Windows: `[]` (the MSVC
+    /// STL names its own libraries through the objects' default-lib records).
+    pub cxx_runtime_libs: &'static [&'static str],
+
     /// `true` when the Darwin SDK path should be anchored via `-isysroot`.
     ///
     /// The path is resolved at link time via `xcrun --show-sdk-path`; failure
@@ -201,6 +208,7 @@ impl TargetSpec {
                     "-framework",
                     "Security",
                 ],
+                cxx_runtime_libs: &["-lc++"],
                 needs_darwin_sdk: true,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: true,
@@ -210,6 +218,7 @@ impl TargetSpec {
                 gc_flags: &["-Wl,--gc-sections"],
                 strip_flags: &["-Wl,--strip-all"],
                 platform_libs: &["-lpthread", "-lm", "-ldl", "-lrt"],
+                cxx_runtime_libs: &["-lstdc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: false,
@@ -221,6 +230,7 @@ impl TargetSpec {
                 // FreeBSD provides dlopen and clock_gettime from libc, so the
                 // Hew runtime only needs explicit threading and math libs here.
                 platform_libs: &["-lpthread", "-lm"],
+                cxx_runtime_libs: &["-lc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: false,
@@ -246,6 +256,7 @@ impl TargetSpec {
                     // the Windows certificate store (CertOpenStore et al.).
                     "-lcrypt32",
                 ],
+                cxx_runtime_libs: &[],
                 needs_darwin_sdk: false,
                 // Clang defaults to the static CRT (libcmt) but the Rust-compiled
                 // runtime uses the DLL CRT (msvcrt).  The CRT linkage must match.
@@ -259,6 +270,7 @@ impl TargetSpec {
                 gc_flags: &[],
                 strip_flags: &[],
                 platform_libs: &[],
+                cxx_runtime_libs: &[],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: false,
@@ -312,14 +324,6 @@ impl TargetSpec {
     }
 
     /// Returns the target OS.
-    ///
-    /// Used by Linux cross-arch sysroot probing in `link.rs`; only called from
-    /// `#[cfg(target_os = "linux")]` code so the warning is suppressed on other
-    /// hosts.
-    #[allow(
-        dead_code,
-        reason = "only called from #[cfg(target_os=\"linux\")] code in link.rs; unused on non-Linux hosts"
-    )]
     pub fn os(&self) -> TargetOs {
         self.os
     }

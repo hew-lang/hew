@@ -257,7 +257,6 @@ impl TestCompilePaths {
 pub struct TestRunOptions<'a> {
     pub filter: Option<&'a str>,
     pub include_ignored: bool,
-    pub ffi_lib: Option<&'a str>,
     pub compile_paths: Option<&'a TestCompilePaths>,
     pub project_dir: &'a Path,
     pub engine: crate::args::TestEngine,
@@ -775,12 +774,6 @@ fn compile_test(
     let binary_path = compile_paths
         .target
         .executable_path(emit_dir.path(), binary_name);
-    let extra_libs = options
-        .ffi_lib
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-
     let options = crate::compile::CompileOptions {
         project_dir: Some(compile_paths.paths.project_dir.clone()),
         module_search_paths: Some(compile_paths.paths.module_search_paths.clone()),
@@ -802,7 +795,6 @@ fn compile_test(
         &binary_path,
         &options,
         Some(&compile_paths.paths),
-        &extra_libs,
     );
     let diagnostics = crate::diagnostic::finish_diagnostic_capture();
     if compile_result.is_err() {
@@ -1464,7 +1456,6 @@ mod tests {
             TestRunOptions {
                 filter: None,
                 include_ignored: false,
-                ffi_lib: None,
                 compile_paths: Some(cargo_test_compile_paths()),
                 project_dir: Path::new("/"),
                 engine: crate::args::TestEngine::Native,
@@ -1492,7 +1483,6 @@ mod tests {
             TestRunOptions {
                 filter: None,
                 include_ignored: false,
-                ffi_lib: None,
                 compile_paths: Some(cargo_test_compile_paths()),
                 project_dir: Path::new("/"),
                 engine: crate::args::TestEngine::Native,
@@ -1914,7 +1904,6 @@ fn test_timeout() {
             TestRunOptions {
                 filter: None,
                 include_ignored: false,
-                ffi_lib: None,
                 compile_paths: Some(&unused_paths),
                 project_dir: Path::new("/"),
                 engine: crate::args::TestEngine::Native,

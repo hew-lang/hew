@@ -39,6 +39,37 @@ lib-dirs = ["C:/Program Files/OpenSSL/lib"]
 | `include`, `exclude`                                                                                               | Glob patterns that select the files `hew publish` packs.                                     |
 | `hew`                                                                                                              | The minimum compiler version, such as `">=0.8.0"`.                                           |
 
+## Modules in a package
+
+The directory holding `hew.toml` is the package's anchor. Every file below it
+belongs to the module its place under the anchor names; the anchor
+directory's own name is never read, so a checkout, a registry install and a
+linked path dependency give each file the same module.
+
+- The **root module** of package `acme.http` is the single file `http.hew`
+  beside `hew.toml`, named by the last segment of `name`. `hew init --lib`
+  writes it.
+- Every other top-level file is a module of its own: `client.hew` is
+  `acme.http.client`.
+- A subdirectory `D` holding `D/D.hew` is a directory module: `D/D.hew` is its
+  entry and the other top-level `.hew` files in `D`, except `*_test.hew`, are
+  merged into it (HEW-SPEC-2026 §3.5.1).
+- Any file in the package imports the package's modules by the package's whole
+  name (`import acme.http;`, `import acme.http.client;`) or by a path relative
+  to itself. Such imports need no `[dependencies]` entry.
+
+```
+my-http/                 ← the checkout; any name
+├── hew.toml             [package] name = "acme.http"
+├── http.hew             module acme.http
+├── http_test.hew        tests acme.http
+├── client.hew           module acme.http.client
+├── router/
+│   ├── router.hew       module acme.http.router (entry)
+│   └── routes.hew       peer of acme.http.router
+└── tests/public_api.hew import acme.http;
+```
+
 ## `[dependencies]` and `[dev-dependencies]`
 
 Each key is a module path; each value is a version requirement or a table:
@@ -49,6 +80,9 @@ Each key is a module path; each value is a version requirement or a table:
 "acme.metrics" = { version = "1.4", features = ["prometheus"] }
 "acme.local" = { path = "../local" }
 ```
+
+A dependency's key also covers the modules inside it: declaring
+`"acme.http"` permits `import acme.http.client;`.
 
 Table fields are `version`, `optional`, `features`, `default-features`,
 `registry` and `path`. A `path` dependency needs no `version`; it names the

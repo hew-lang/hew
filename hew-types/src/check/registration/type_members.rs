@@ -132,8 +132,8 @@ impl Checker {
                     // Temporarily scope local_type_defs so that resolve_type_expr
                     // inside field type resolution does not inject fresh type vars
                     // on handle types from this module.
-                    let saved_local_type_defs = self.local_type_defs.clone();
-                    let saved_source_type_defs = self.source_type_defs.clone();
+                    let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
+                    let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {

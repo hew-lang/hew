@@ -1,0 +1,10 @@
+[[case]]
+id = "root-type-shadows-std-error-leaf"
+intent = "A root enum sharing a leaf with the builtin SendError or std.net's NetError stays the root's own type, while the std modules that name those types keep their own declarations."
+source = "cases/root-type-shadows-std-error-leaf.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "root SendError\nroot NetError 4\nstream Closed: the sink or connection is closed\nlistening true\ntls refused\n"
+exit = 0

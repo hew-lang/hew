@@ -630,8 +630,8 @@ impl Checker {
         }
 
         // Resolve imported declarations in the defining module's lexical scope.
-        let saved_local_type_defs = self.local_type_defs.clone();
-        let saved_source_type_defs = self.source_type_defs.clone();
+        let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
+        let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
         for (item, _) in items {
             // The program-wide type-parameter harvest in `collect_types` walks
             // `program.module_graph`, which is empty on the registry-only
@@ -1256,8 +1256,8 @@ impl Checker {
         spec: &Option<ImportSpec>,
     ) {
         // Match the defining module's lexical scope during registration.
-        let saved_local_type_defs = self.local_type_defs.clone();
-        let saved_source_type_defs = self.source_type_defs.clone();
+        let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
+        let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
         for (item, _) in items {
             if let Item::TypeDecl(td) = item {
                 self.local_type_defs.insert(td.name.to_string());

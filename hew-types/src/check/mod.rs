@@ -3000,9 +3000,9 @@ impl Checker {
                     // Temporarily scope local_type_defs / local_trait_defs to
                     // this module so orphan-rule checks see module-local
                     // definitions and locally_non_generic works correctly.
-                    let saved_local_type_defs = self.local_type_defs.clone();
-                    let saved_source_type_defs = self.source_type_defs.clone();
-                    let saved_local_trait_defs = self.local_trait_defs.clone();
+                    let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
+                    let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
+                    let saved_local_trait_defs = std::mem::take(&mut self.local_trait_defs);
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {

@@ -1,0 +1,21 @@
+import m;
+
+enum Foo {
+    A;
+}
+
+enum Alias {
+    Root;
+}
+
+fn main() {
+    match Foo.A {
+        Foo.A => println("root Foo.A"),
+    }
+    match Alias.Root {
+        Alias.Root => println("root Alias"),
+    }
+    println(m.label(m.pick()));
+    println(m.label(m.aliased()));
+    println(m.label(m.qualified()));
+}

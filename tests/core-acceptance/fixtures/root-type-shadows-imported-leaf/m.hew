@@ -1,0 +1,28 @@
+// `Foo` and `Alias` here are the imported `n.Foo`, never the root's
+// same-leaf `Foo` or `Alias`.
+import n;
+import n.{Foo};
+import n.{Foo as Alias};
+
+pub type Holder {
+    foo: Foo;
+}
+
+pub fn pick() -> Holder {
+    Holder { foo: Foo.B(7) }
+}
+
+pub fn aliased() -> Holder {
+    Holder { foo: Alias.A }
+}
+
+pub fn qualified() -> Holder {
+    Holder { foo: n.Foo.B(9) }
+}
+
+pub fn label(h: Holder) -> string {
+    match h.foo {
+        Foo.A => "n.Foo.A",
+        Alias.B(n) => f"n.Foo.B {n}",
+    }
+}

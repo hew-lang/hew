@@ -345,8 +345,8 @@ impl Checker {
                     continue;
                 };
                 self.current_module = Some(mod_id.dotted());
-                let saved_local_type_defs = self.local_type_defs.clone();
-                let saved_source_type_defs = self.source_type_defs.clone();
+                let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
+                let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
                 self.seed_member_reresolution_scope(&module.items);
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                     self.current_module_idx = span_indices

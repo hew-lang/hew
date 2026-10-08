@@ -107,10 +107,10 @@ pub fn net_error_from_errno(errno: i64) -> NetError {
     // ETIMEDOUT: Linux=110, macOS=60, Windows=10060
     } else if errno == 110 || errno == 60 || errno == 10060 {
         NetError.TimedOut(errno)
-    // ECANCELED: Linux=125, macOS=89. Windows has no WSABASEERR-offset
-    // ECANCELED; a cancelled/aborted overlapped net op surfaces as
-    // ERROR_OPERATION_ABORTED (995) or WSAECANCELLED (10103) instead.
-    } else if errno == 125 || errno == 89 || errno == 995 || errno == 10103 {
+    // ECANCELED: Linux=125, macOS=89, FreeBSD=85. Windows has no
+    // WSABASEERR-offset ECANCELED; a cancelled/aborted overlapped net op
+    // surfaces as ERROR_OPERATION_ABORTED (995) or WSAECANCELLED (10103).
+    } else if errno == 125 || errno == 89 || errno == 85 || errno == 995 || errno == 10103 {
         NetError.Cancelled(errno)
     // EADDRNOTAVAIL: Linux=99, macOS=49, Windows=10049
     } else if errno == 99 || errno == 49 || errno == 10049 {
@@ -448,11 +448,12 @@ trait ConnectionMethods {
     ///
     /// Returns `Ok(())` once the payload is handed to the OS send buffer.
     /// `Err(SendError.Closed)` means the peer reset or closed the
-    /// connection; `Err(SendError.Full)` means the send buffer stayed full
-    /// past the write deadline set by `set_write_timeout` (without a
-    /// deadline a full buffer waits until it drains). Any other failure
-    /// traps the calling actor. The connection may have committed a prefix
-    /// of the payload before `Full`, so a whole-payload retry is unsafe.
+    /// connection; `Err(SendError.WriteTimedOut(n))` means the send buffer stayed
+    /// full past the write deadline set by `set_write_timeout` after `n`
+    /// bytes of the payload reached the OS (without a deadline a full buffer
+    /// waits until it drains). Any other failure traps the calling actor.
+    /// The peer's view of the stream is then unknown, so retire the
+    /// connection rather than resending the payload.
     fn send(self, data: bytes) -> Result<(), SendError>;
 
     /// Half-close: send FIN to the peer while this side keeps reading.

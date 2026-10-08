@@ -3577,14 +3577,19 @@ fn check_duplicate_pub_names(
             _ => continue,
         };
         if let Some((_, first)) = seen.iter().find(|(seen_name, _)| *seen_name == name) {
-            let shown = |path: &Path| {
-                display_path(
-                    membership
-                        .anchor
-                        .dir()
-                        .and_then(|dir| path.strip_prefix(dir).ok())
-                        .unwrap_or(path),
-                )
+            // A file below the anchor is shown as its package-relative path,
+            // spelled with `/` on every platform like the module path it is.
+            let shown = |path: &Path| match membership
+                .anchor
+                .dir()
+                .and_then(|dir| path.strip_prefix(dir).ok())
+            {
+                Some(relative) => relative
+                    .iter()
+                    .map(|component| component.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                None => display_path(path),
             };
             let entry = shown(&membership.entry);
             let directory = membership.entry.parent().map_or_else(String::new, &shown);

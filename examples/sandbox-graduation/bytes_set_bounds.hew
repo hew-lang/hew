@@ -1,0 +1,19 @@
+// An in-range store updates the buffer; a store past the end faults with
+// IndexOutOfBounds on both engines, and the cleanup it unwinds through still
+// releases the untouched buffer.
+fn store(b: bytes, at: i64) -> i64 {
+    var copy = b;
+    defer println(f"released {copy.len()} bytes");
+    copy[at] = 9;
+    copy[at] as i64
+}
+
+fn main() {
+    var a: bytes = [1, 2, 3];
+    a.set(0, 7);
+    a[1] = 8;
+    println(f"{a[0]} {a[1]} {a[2]}");
+    println(store(a, 2));
+    println(store(a, 3));
+    println("unreachable");
+}

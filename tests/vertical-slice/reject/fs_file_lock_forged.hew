@@ -1,0 +1,13 @@
+// Reject: a `fs.FileLock` comes only from `fs.try_lock`. Outside code can
+// neither build one around a descriptor of its choosing nor read the
+// descriptor out of a held lock, so no lock closes a file it does not own.
+import std.fs;
+
+fn main() {
+    let forged = fs.FileLock { handle: 1 };
+    forged.close();
+    if let .Ok(.Some(lock)) = fs.try_lock("state.lock") {
+        let _raw = lock.handle;
+        lock.close();
+    }
+}

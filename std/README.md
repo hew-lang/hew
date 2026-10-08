@@ -71,6 +71,44 @@ cloneable elements. Iterator adapters consume the iterator they wrap.
 - **Networking** — [`std.net`](net/net.hew), [`std.net.http`](net/http/http.hew), [`std.net.dns`](net/dns/dns.hew), [`std.net.tls`](net/tls/tls.hew), [`std.net.quic`](net/quic/quic.hew), [`std.net.url`](net/url/url.hew)
 - **Perf and observability** — [`std.bench`](bench/bench.hew), [`std.observe`](observe.hew)
 
+## Common tasks
+
+| Task                                            | Call                                                                                      | Module                                    |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Hash a file                                     | `crypto.sha256(fs.read_bytes(path)?)`                                                     | `std.crypto.crypto`, `std.fs`             |
+| Authenticate a message                          | `crypto.hmac_sha256(key, data)`                                                           | `std.crypto.crypto`                       |
+| Compare a secret, token or MAC                  | `crypto.constant_time_eq(a, b)`                                                           | `std.crypto.crypto`                       |
+| Generate secret bytes                           | `crypto.random_bytes(n)`                                                                  | `std.crypto.crypto`                       |
+| Test an address for loopback or a private range | `ipnet.is_loopback(addr)`, `ipnet.is_private(addr)`                                       | `std.net.ipnet`                           |
+| Replace a file so readers never see half of it  | `fs.write_atomic(path, data)`                                                             | `std.fs`                                  |
+| Keep a secret file private                      | `fs.create_private(path, data)`, `fs.read_private(path, limit)`, `fs.mkdir_private(path)` | `std.fs`                                  |
+| Check a path's owner, mode or link              | `fs.symlink_metadata(path)`, `fs.current_owner()`                                         | `std.fs`                                  |
+| Let one process own some state                  | `fs.try_lock(path)`                                                                       | `std.fs`                                  |
+| Free space on a volume                          | `fs.space(path)`                                                                          | `std.fs`                                  |
+| Join or extend byte buffers                     | `a + b`, `buf.append(more)`                                                               | built-in `bytes`                          |
+| Encode bytes as text                            | `hex.encode(data)`, `base64.encode(data)`                                                 | `std.encoding.hex`, `std.encoding.base64` |
+
+`ipnet` reads literal addresses: `ipnet.is_loopback("::1")` is true, while a
+host name such as `localhost` is false until resolved with `std.net.dns`.
+
+```hew,no_run
+import std.crypto.crypto;
+import std.encoding.hex;
+import std.fs;
+
+fn digest(path: string) -> string fails fs.IoError {
+    hex.encode(crypto.sha256(fs.read_bytes(path)?))
+}
+
+fn main() {
+    let expected = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    match digest("release.tar.gz") {
+        .Ok(actual) => println(crypto.constant_time_eq(actual.to_bytes(), expected.to_bytes())),
+        .Err(error) => println(f"cannot read: {error}"),
+    }
+}
+```
+
 ## Shipped module index
 
 Every shipped module under `std/` should appear here.
@@ -132,13 +170,13 @@ Every shipped module under `std/` should appear here.
 
 ### Crypto
 
-| Module                                     | Import                | Use for                                           |
-| ------------------------------------------ | --------------------- | ------------------------------------------------- |
-| [`crypto`](crypto/crypto/crypto.hew)       | `std.crypto.crypto`   | Cryptographic hashing and utilities               |
-| [`encrypt`](crypto/encrypt/encrypt.hew)    | `std.crypto.encrypt`  | Symmetric encryption and decryption               |
-| [`jwt`](crypto/jwt/jwt.hew)                | `std.crypto.jwt`      | JSON Web Token encoding and validation            |
-| [`password`](crypto/password/password.hew) | `std.crypto.password` | Password hashing and verification                 |
-| [`sign`](crypto/sign/sign.hew)             | `std.crypto.sign`     | Ed25519 seeds, PKCS#8 keys, signing and verifying |
+| Module                                     | Import                | Use for                                                 |
+| ------------------------------------------ | --------------------- | ------------------------------------------------------- |
+| [`crypto`](crypto/crypto/crypto.hew)       | `std.crypto.crypto`   | SHA-2, HMAC, secure random bytes, constant-time compare |
+| [`encrypt`](crypto/encrypt/encrypt.hew)    | `std.crypto.encrypt`  | Symmetric encryption and decryption                     |
+| [`jwt`](crypto/jwt/jwt.hew)                | `std.crypto.jwt`      | JSON Web Token encoding and validation                  |
+| [`password`](crypto/password/password.hew) | `std.crypto.password` | Password hashing and verification                       |
+| [`sign`](crypto/sign/sign.hew)             | `std.crypto.sign`     | Ed25519 seeds, PKCS#8 keys, signing and verifying       |
 
 ### Networking
 
@@ -150,7 +188,7 @@ Every shipped module under `std/` should appear here.
 | [`http_async_client`](net/http/http_async_client.hew) | `std.net.http.http_async_client` | Suspending HTTP/1.1 client codec for actor handlers                        |
 | [`http_async_server`](net/http/http_async_server.hew) | `std.net.http.http_async_server` | Suspending HTTP/1.1 server codec for actor handlers                        |
 | [`http_client`](net/http/http_client.hew)             | `std.net.http.http_client`       | Outbound HTTP request helpers (`request`, `request_string`, `get`, `post`) |
-| [`ipnet`](net/ipnet/ipnet.hew)                        | `std.net.ipnet`                  | IP address and CIDR utilities                                              |
+| [`ipnet`](net/ipnet/ipnet.hew)                        | `std.net.ipnet`                  | IP address checks (loopback, private) and CIDR utilities                   |
 | [`mime`](net/mime/mime.hew)                           | `std.net.mime`                   | MIME type detection                                                        |
 | [`quic`](net/quic/quic.hew)                           | `std.net.quic`                   | QUIC transport for internode messaging                                     |
 | [`smtp`](net/smtp/smtp.hew)                           | `std.net.smtp`                   | SMTP client for sending email                                              |

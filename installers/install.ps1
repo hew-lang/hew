@@ -467,7 +467,7 @@ try {
         }
 
         # Create standard directories
-        foreach ($dir in @("bin", "lib", "std", "completions")) {
+        foreach ($dir in @("bin", "lib", "std", "include", "completions")) {
             New-Item -ItemType Directory -Path (Join-Path $InstallDir $dir) -Force | Out-Null
         }
 
@@ -493,6 +493,12 @@ try {
         $stdSrc = Join-Path $innerDir.FullName "std"
         if (Test-Path $stdSrc) {
             Copy-Item -Path (Join-Path $stdSrc "*") -Destination (Join-Path $InstallDir "std") -Recurse -Force
+        }
+
+        # C header for C code that exchanges values with Hew (absent from older releases)
+        $includeSrc = Join-Path $innerDir.FullName "include"
+        if (Test-Path $includeSrc) {
+            Copy-Item -Path (Join-Path $includeSrc "*") -Destination (Join-Path $InstallDir "include") -Recurse -Force
         }
 
         # Generate shell completions from installed binaries

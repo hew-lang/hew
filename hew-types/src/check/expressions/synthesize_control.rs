@@ -947,6 +947,45 @@ impl Checker {
                 expected.clone()
             }
 
+            // A list literal where `bytes` is expected builds a byte buffer:
+            // each element is a `u8`, so a literal out of range is refused.
+            (Expr::Array(elems), Ty::Bytes) => {
+                for element in elems {
+                    let (operand, operand_span) = element.expr();
+                    if element.is_spread() {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            operand_span,
+                            "spread `..` is not allowed in a `bytes` literal; join buffers with `+`"
+                                .to_string(),
+                        );
+                        return Ty::Error;
+                    }
+                    self.check_against(operand, operand_span, &Ty::U8);
+                }
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
+            // A join where `bytes` is expected checks both sides as `bytes`,
+            // so `[1] + [2]` is a buffer there too.
+            (
+                Expr::Binary {
+                    left,
+                    op: BinaryOp::Add,
+                    right,
+                },
+                Ty::Bytes,
+            ) => {
+                let left_ty = self.check_against(&left.0, &left.1, expected);
+                let right_ty = self.check_against(&right.0, &right.1, expected);
+                if matches!(left_ty, Ty::Error) || matches!(right_ty, Ty::Error) {
+                    return Ty::Error;
+                }
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
             // Array literals checked against [T; N] require exact arity.
             (Expr::Array(elems), Ty::Array(elem_ty, size)) => {
                 // A fixed-size array's length is part of its type, and a
@@ -1765,6 +1804,37 @@ impl Checker {
         }
     }
 
+    /// `buffer + [1, 2]` and `[1, 2] + buffer`: a list literal joined to
+    /// `bytes` is a `bytes` literal, as it is wherever `bytes` is expected.
+    /// The other operand is checked first to learn that it is `bytes`.
+    fn bytes_join_with_list_literal(
+        &mut self,
+        left: &Spanned<Expr>,
+        op: BinaryOp,
+        right: &Spanned<Expr>,
+    ) -> Option<(Ty, Ty)> {
+        if !matches!(op, BinaryOp::Add) {
+            return None;
+        }
+        let (literal, other) = match (&left.0, &right.0) {
+            (Expr::Array(_), Expr::Array(_)) => return None,
+            (_, Expr::Array(_)) => (right, left),
+            (Expr::Array(_), _) => (left, right),
+            _ => return None,
+        };
+        let other_ty = self.synthesize(&other.0, &other.1);
+        let literal_ty = if self.subst.resolve(&other_ty) == Ty::Bytes {
+            self.check_against(&literal.0, &literal.1, &Ty::Bytes)
+        } else {
+            self.synthesize(&literal.0, &literal.1)
+        };
+        Some(if std::ptr::eq(literal, right) {
+            (other_ty, literal_ty)
+        } else {
+            (literal_ty, other_ty)
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "builtin method resolution requires many cases"
@@ -1802,6 +1872,8 @@ impl Checker {
                 let rt = self.synthesize(&right.0, &right.1);
                 (lt, rt)
             }
+        } else if let Some(types) = self.bytes_join_with_list_literal(left, op, right) {
+            types
         } else {
             let lt = self.synthesize(&left.0, &left.1);
             let rt = self.synthesize(&right.0, &right.1);
@@ -1966,6 +2038,11 @@ impl Checker {
                     && right_resolved == Ty::String
                 {
                     Ty::String // string concatenation
+                } else if matches!(op, BinaryOp::Add)
+                    && left_resolved == Ty::Bytes
+                    && right_resolved == Ty::Bytes
+                {
+                    Ty::Bytes // bytes concatenation into a fresh buffer
                 } else {
                     self.report_error(
                         TypeErrorKind::BinaryOperandTypes,

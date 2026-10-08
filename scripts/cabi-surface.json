@@ -2510,15 +2510,15 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_bytes_concat( *const u8, u32, u32, *const u8, u32, u32, ) -> BytesTriple",
-        "wasm32-wasip1": "fn hew_bytes_concat( *const u8, u32, u32, *const u8, u32, u32, ) -> BytesTriple"
+        "native": "fn hew_bytes_concat_owned( *const BytesTriple, *const BytesTriple, *mut BytesTriple, )",
+        "wasm32-wasip1": "fn hew_bytes_concat_owned( *const BytesTriple, *const BytesTriple, *mut BytesTriple, )"
       },
-      "symbol": "hew_bytes_concat"
+      "symbol": "hew_bytes_concat_owned"
     },
     {
       "availability": [
@@ -2579,6 +2579,21 @@
         "wasm32-wasip1": "fn hew_bytes_drop( *mut u8)"
       },
       "symbol": "hew_bytes_drop"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bytes_ends_with( *const BytesTriple, *const BytesTriple, ) -> bool",
+        "wasm32-wasip1": "fn hew_bytes_ends_with( *const BytesTriple, *const BytesTriple, ) -> bool"
+      },
+      "symbol": "hew_bytes_ends_with"
     },
     {
       "availability": [
@@ -2789,6 +2804,21 @@
         "wasm32-wasip1": "fn hew_bytes_slice_owned( *const BytesTriple, i64, i64, *mut BytesTriple, )"
       },
       "symbol": "hew_bytes_slice_owned"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bytes_starts_with( *const BytesTriple, *const BytesTriple, ) -> bool",
+        "wasm32-wasip1": "fn hew_bytes_starts_with( *const BytesTriple, *const BytesTriple, ) -> bool"
+      },
+      "symbol": "hew_bytes_starts_with"
     },
     {
       "availability": [
@@ -6788,6 +6818,32 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fs_create_new( *const HewString, *const BytesTriple, i64, ) -> i32"
+      },
+      "symbol": "hew_fs_create_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_current_owner() -> i64"
+      },
+      "symbol": "hew_fs_current_owner"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fs_is_dir( *const HewString) -> i32"
       },
       "symbol": "hew_fs_is_dir"
@@ -6804,6 +6860,32 @@
         "native": "fn hew_fs_list_dir( *const HewString) -> *mut HewVec"
       },
       "symbol": "hew_fs_list_dir"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_lock_is_valid( *const HewFileLock) -> bool"
+      },
+      "symbol": "hew_fs_lock_is_valid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_metadata( *const HewString) -> HewFsMetadata"
+      },
+      "symbol": "hew_fs_metadata"
     },
     {
       "availability": [
@@ -6840,9 +6922,100 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fs_mkdir_mode( *const HewString, i64) -> i32"
+      },
+      "symbol": "hew_fs_mkdir_mode"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_read_nofollow( *const HewString, i64) -> BytesTriple"
+      },
+      "symbol": "hew_fs_read_nofollow"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_read_private( *const HewString, i64) -> BytesTriple"
+      },
+      "symbol": "hew_fs_read_private"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fs_rename( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_fs_rename"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_space( *const HewString) -> HewFsSpace"
+      },
+      "symbol": "hew_fs_space"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_symlink_metadata( *const HewString) -> HewFsMetadata"
+      },
+      "symbol": "hew_fs_symlink_metadata"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_try_lock( *const HewString) -> *mut HewFileLock"
+      },
+      "symbol": "hew_fs_try_lock"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fs_unlock( *mut HewFileLock)"
+      },
+      "symbol": "hew_fs_unlock"
     },
     {
       "availability": [

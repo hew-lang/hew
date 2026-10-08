@@ -184,9 +184,11 @@ impl RuntimeCallFamily {
             self,
             Self::BytesAppend
                 | Self::BytesClear
+                | Self::BytesConcat
                 | Self::BytesContains
                 | Self::BytesDecodeUtf8
                 | Self::BytesDecodeUtf8Lossy
+                | Self::BytesEndsWith
                 | Self::BytesGet
                 | Self::BytesIndex
                 | Self::BytesIsEmpty
@@ -197,6 +199,7 @@ impl RuntimeCallFamily {
                 | Self::BytesSet
                 | Self::BytesSlice
                 | Self::BytesSliceFrom
+                | Self::BytesStartsWith
         )
     }
 
@@ -731,9 +734,11 @@ impl RuntimeCallFamily {
             | F::AutoMutexUnlock
             | F::BytesAppend
             | F::BytesClear
+            | F::BytesConcat
             | F::BytesContains
             | F::BytesDecodeUtf8
             | F::BytesDecodeUtf8Lossy
+            | F::BytesEndsWith
             | F::BytesGet
             | F::BytesIndex
             | F::BytesIsEmpty
@@ -743,6 +748,7 @@ impl RuntimeCallFamily {
             | F::BytesSet
             | F::BytesSlice
             | F::BytesSliceFrom
+            | F::BytesStartsWith
             | F::BytesNew
             | F::CancelTokenIsRequested
             | F::CancelTokenRelease

@@ -3,8 +3,10 @@ non-declarable-stdlib = ["hew_tls_attach_native", "hew_ws_attach_native"]
 
 stable = [
   "hew_bytes_contains",
+  "hew_bytes_ends_with",
   "hew_bytes_is_empty",
   "hew_bytes_len",
+  "hew_bytes_starts_with",
   "hew_duration_abs",
   "hew_duration_hours",
   "hew_duration_is_zero",
@@ -26,6 +28,13 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_bytes_ends_with"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_bytes_is_empty"
 result = "none"
 params = ["borrow"]
@@ -36,6 +45,13 @@ discharge-depth = "none"
 symbol = "hew_bytes_len"
 result = "none"
 params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_starts_with"
+result = "none"
+params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

@@ -1453,6 +1453,7 @@ class ExecutorV1 {
       value = shim(this.host, args, shape);
     } catch (error) {
       if (error instanceof ShimFault) {
+        this.keepInputs(act, term, args);
         this.raiseFault(
           act,
           { kind: "trap", trap: error.trap, message: error.message },
@@ -1463,6 +1464,28 @@ class ExecutorV1 {
       throw error;
     }
     this.completeShim(act, term, value);
+  }
+
+  /// A runtime call whose contract keeps its inputs on failure fails before
+  /// taking them, so each moved argument stays with the caller, whose unwind
+  /// edge stores it back.
+  private keepsInputs(term: TermV1): boolean {
+    return term.op === "runtime.call" && term.keeps_inputs_on_failure === true;
+  }
+
+  private keepInputs(
+    act: Activation,
+    term: Extract<
+      TermV1,
+      { op: "runtime.call" | "extern.call" | "value.call" }
+    >,
+    args: VmValue[],
+  ): void {
+    if (!this.keepsInputs(term)) return;
+    term.args.forEach((operand, index) => {
+      if (operand.decision === "move")
+        this.define(act, operand.value, args[index]!);
+    });
   }
 
   private runValueProgram(
@@ -1479,15 +1502,21 @@ class ExecutorV1 {
       else this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
     };
     const fail = (fault: Fault, extra: VmValue = UNIT) => {
-      const owned = args.filter((_arg, index) =>
-        ["move", "copy", "snapshot"].includes(term.args[index]!.decision),
-      );
+      const kept = this.keepsInputs(term) ? ["move"] : [];
+      const owned = args.filter((_arg, index) => {
+        const decision = term.args[index]!.decision;
+        return (
+          ["move", "copy", "snapshot"].includes(decision) &&
+          !kept.includes(decision)
+        );
+      });
       this.closeValueAsync(
         { kind: "vector", elementType: "", items: [...owned, extra] },
         this.faultText(fault),
         (closeFault) => {
           if (fault.kind === "panic" && fault.cancelled && closeFault)
             fault = closeFault;
+          this.keepInputs(act, term, args);
           this.raiseFault(act, fault, term.unwind);
           resume();
         },

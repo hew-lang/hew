@@ -6413,3 +6413,28 @@ fn identifiers_carry_the_root_syntax_context() {
     assert_eq!(ident.name, Symbol::intern("value"));
     assert_eq!(ident.ctx, SyntaxContext::ROOT);
 }
+
+#[test]
+fn init_without_parameter_list_is_refused_with_fix_it_and_no_cascade() {
+    let source = r"
+        actor Outbox {
+            var closed: bool = false;
+            init {
+                closed = true;
+            }
+            receive fn state() -> bool { closed }
+        }
+    ";
+    let result = parse(source);
+    assert_eq!(result.errors.len(), 1, "{:#?}", result.errors);
+    assert_eq!(result.errors[0].message, "`init` takes a parameter list");
+    assert_eq!(
+        result.errors[0].hint.as_deref(),
+        Some("write `init() { .. }`")
+    );
+    let (Item::Actor(actor), _) = &result.program.items[0] else {
+        panic!("expected the actor to parse");
+    };
+    assert!(actor.init.is_some());
+    assert_eq!(actor.receive_fns.len(), 1);
+}

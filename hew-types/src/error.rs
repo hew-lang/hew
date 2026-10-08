@@ -324,7 +324,7 @@ impl TypeError {
     }
 
     /// Create a mutability error for an assignment to an immutable actor
-    /// state field outside `init { }`.
+    /// state field outside `init() { }`.
     ///
     /// `decl_span` is the field's declaration site; the note anchors the
     /// diagnostic there so the fix (declare the field with `var`) lands on

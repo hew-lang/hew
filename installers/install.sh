@@ -348,7 +348,8 @@ main() {
 
     # Install files
     mkdir -p "${INSTALL_PREFIX}/bin" "${INSTALL_PREFIX}/lib" \
-        "${INSTALL_PREFIX}/std" "${INSTALL_PREFIX}/completions"
+        "${INSTALL_PREFIX}/std" "${INSTALL_PREFIX}/include" \
+        "${INSTALL_PREFIX}/completions"
 
     for b in hew hew-lsp hew-observe; do
         if [ -f "${extracted_dir}/bin/${b}" ]; then
@@ -365,6 +366,11 @@ main() {
     # Standard library (best-effort — may not be in older releases)
     if [ -d "${extracted_dir}/std" ]; then
         cp -rf "${extracted_dir}/std/." "${INSTALL_PREFIX}/std/"
+    fi
+
+    # C header for C code that exchanges values with Hew (absent from older releases)
+    if [ -d "${extracted_dir}/include" ]; then
+        cp -rf "${extracted_dir}/include/." "${INSTALL_PREFIX}/include/"
     fi
 
     # Generate shell completions from the installed binaries

@@ -1838,11 +1838,73 @@ fn main() {
 }
 ```
 
-A completion call returns `Result<R, ActorError<E>>` in this build. Match or
-recover the envelope, or propagate it with `?` when the enclosing error type
-allows that propagation. There is one propagation spelling: `?` goes on the
-expression, so a forked call propagates as `(await task)?`. See the pending
-request-recovery contract above before writing explicit envelope types.
+A completion call returns `Result<R, ActorError<E>>`, where `E` is the
+handler's declared error. Match or recover the envelope, or propagate it with
+`?`. There is one propagation spelling: `?` goes on the expression, so a forked
+call propagates as `(await task)?`.
+
+When the enclosing function fails with its own error type, convert the
+envelope first. `.map_err(..)` converts at one call site; an
+`impl From<ActorError<E>> for MyError` lets every `?` on such a call convert.
+Match `ActorError.Failed(e)` to keep the handler's own error apart from
+delivery failures such as `Dead` or `Trapped`:
+
+```hew
+actor Store {
+    var blocks: Vec<bytes> = [];
+
+    receive fn put(block: bytes) {
+        blocks.push(block);
+    }
+
+    receive fn read(index: i64) -> bytes fails string {
+        match blocks.get(index) {
+            .Some(block) => block,
+            .None => return error f"no block {index}",
+        }
+    }
+}
+
+enum LoadError {
+    Missing(string);
+    Unavailable(string);
+}
+
+impl Display for LoadError {
+    fn fmt(self) -> string {
+        match self {
+            LoadError.Missing(why) => f"missing: {why}",
+            LoadError.Unavailable(why) => f"unavailable: {why}",
+        }
+    }
+}
+
+impl Error for LoadError {}
+
+impl From<ActorError<string>> for LoadError {
+    fn from(value: ActorError<string>) -> LoadError {
+        match value {
+            ActorError.Failed(why) => LoadError.Missing(why),
+            other => LoadError.Unavailable(f"{other}"),
+        }
+    }
+}
+
+fn load_pair(store: Store) -> bytes fails LoadError {
+    let first = store.read(0)?;
+    let second = store.read(1)?;
+    first + second
+}
+
+fn main() {
+    let store = spawn Store();
+    store.put(b"\x01\x02").expect("put is delivered");
+    match load_pair(store) {
+        .Ok(block) => println(block.len()),
+        .Err(error) => println(f"{error}"), // missing: no block 1
+    }
+}
+```
 
 ### Lifecycle hooks #[on(start)] and #[on(stop)]
 
@@ -4334,6 +4396,29 @@ fn main() {
     let bytes = cbor.encode(features);
     let decoded = cbor.decode<HashMap<string, Feature>>(bytes).expect("decode");
     println(decoded.len());
+}
+```
+
+Text formats key a record field by its name. `#[serial(key = "..")]` on a
+field sets its exact key, and `#[serial(case = "..")]` on the type renames every
+key (`camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`);
+a field key wins over the type's case. Both directions use the renamed key, so
+a document produced elsewhere decodes into idiomatic field names:
+
+```hew
+import std.encoding.json;
+
+#[serial(case = "PascalCase")]
+type RadioStats {
+    #[serial(key = "PacketsRecv")]
+    packets_received: i64;
+    last_snr: f64;
+}
+
+fn main() {
+    let stats = json.decode<RadioStats>("{\"PacketsRecv\":12,\"LastSnr\":6.5}").expect("decode");
+    println(stats.packets_received); // 12
+    println(json.encode(stats)); // {"PacketsRecv":12,"LastSnr":6.5}
 }
 ```
 

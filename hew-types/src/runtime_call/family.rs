@@ -81,9 +81,12 @@ pub enum RuntimeCallFamily {
     // --- Bytes value collection ops -----------------------------------------
     BytesAppend,
     BytesClear,
+    /// `a + b` over `bytes`: a fresh buffer holding both inputs.
+    BytesConcat,
     BytesContains,
     BytesDecodeUtf8,
     BytesDecodeUtf8Lossy,
+    BytesEndsWith,
     BytesGet,
     BytesIndex,
     BytesIsEmpty,
@@ -95,6 +98,7 @@ pub enum RuntimeCallFamily {
     /// `b[a..]` - the open-ended byte slice. The end bound is the receiver's
     /// own length, so the receiver expression is evaluated once.
     BytesSliceFrom,
+    BytesStartsWith,
     /// `bytes::new` constructor callee identity. Codegen materialises the
     /// runtime `hew_bytes_new` call from the destination type.
     BytesNew,

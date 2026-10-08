@@ -710,61 +710,92 @@ pub unsafe extern "C" fn hew_bytes_append(
     dst.len += src_len;
 }
 
-/// Concatenate two byte regions into a fresh allocation. Returns a new
-/// `BytesTriple` with offset 0.
+/// The active bytes of a triple; empty for the null/0/0 value.
 ///
 /// # Safety
 ///
-/// If `a_len > 0`, `a_ptr + a_offset` must be valid for `a_len` bytes.
-/// If `b_len > 0`, `b_ptr + b_offset` must be valid for `b_len` bytes.
+/// `triple` must be a valid `BytesTriple`: when `len > 0`, `ptr + offset`
+/// is readable for `len` bytes and stays live for the returned borrow.
+pub(crate) unsafe fn active<'a>(triple: &BytesTriple) -> &'a [u8] {
+    if triple.len == 0 || triple.ptr.is_null() {
+        return &[];
+    }
+    // SAFETY: the caller guarantees the active region is readable.
+    unsafe {
+        std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+    }
+}
+
+/// Write `a` followed by `b` into `out` as a fresh owner with offset 0. Both
+/// inputs stay borrowed and unchanged. This backs the source `a + b`.
+///
+/// # Safety
+///
+/// `a` and `b` must point to valid `BytesTriple`s (they may alias). `out`
+/// must point to distinct, aligned, writable uninitialized storage.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_concat(
-    a_ptr: *const u8,
-    a_offset: u32,
-    a_len: u32,
-    b_ptr: *const u8,
-    b_offset: u32,
-    b_len: u32,
-) -> BytesTriple {
-    let total = a_len.saturating_add(b_len);
-    if total == 0 {
-        return BytesTriple {
+pub unsafe extern "C" fn hew_bytes_concat_owned(
+    a: *const BytesTriple,
+    b: *const BytesTriple,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: both inputs are valid borrowed triples per the contract.
+    let (a, b) = unsafe { (active(&*a), active(&*b)) };
+    let Some(total) = u32::try_from(a.len() + b.len()).ok() else {
+        // SAFETY: this is the terminal length-overflow path.
+        unsafe { bytes_offset_overflow_trap("bytes concatenation") };
+    };
+    let value = if total == 0 {
+        BytesTriple {
             ptr: std::ptr::null_mut(),
             offset: 0,
             len: 0,
-        };
-    }
-
-    let cap = if total < MIN_CAPACITY {
-        MIN_CAPACITY
+        }
     } else {
-        total
+        // SAFETY: the capacity is non-zero.
+        let ptr = unsafe { alloc_buf(total.max(MIN_CAPACITY)) };
+        // SAFETY: `ptr` is a fresh allocation of at least `total` bytes, and
+        // neither input overlaps it.
+        unsafe {
+            std::ptr::copy_nonoverlapping(a.as_ptr(), ptr, a.len());
+            std::ptr::copy_nonoverlapping(b.as_ptr(), ptr.add(a.len()), b.len());
+        }
+        BytesTriple {
+            ptr,
+            offset: 0,
+            len: total,
+        }
     };
-    // SAFETY: cap > 0.
-    let ptr = unsafe { alloc_buf(cap) };
+    // SAFETY: out is distinct writable storage for the fresh owner.
+    unsafe { out.write(value) };
+}
 
-    if a_len > 0 {
-        // SAFETY: a_ptr + a_offset valid for a_len bytes; ptr is fresh.
-        unsafe {
-            std::ptr::copy_nonoverlapping(a_ptr.add(a_offset as usize), ptr, a_len as usize);
-        }
-    }
-    if b_len > 0 {
-        // SAFETY: b_ptr + b_offset valid for b_len bytes; ptr + a_len is within cap.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                b_ptr.add(b_offset as usize),
-                ptr.add(a_len as usize),
-                b_len as usize,
-            );
-        }
-    }
+/// Whether the active bytes of `triple` begin with those of `prefix`.
+///
+/// # Safety
+///
+/// Both pointers must point to valid `BytesTriple`s; they may alias.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_starts_with(
+    triple: *const BytesTriple,
+    prefix: *const BytesTriple,
+) -> bool {
+    // SAFETY: both are valid borrowed triples per the contract.
+    unsafe { active(&*triple).starts_with(active(&*prefix)) }
+}
 
-    BytesTriple {
-        ptr,
-        offset: 0,
-        len: total,
-    }
+/// Whether the active bytes of `triple` end with those of `suffix`.
+///
+/// # Safety
+///
+/// Both pointers must point to valid `BytesTriple`s; they may alias.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_ends_with(
+    triple: *const BytesTriple,
+    suffix: *const BytesTriple,
+) -> bool {
+    // SAFETY: both are valid borrowed triples per the contract.
+    unsafe { active(&*triple).ends_with(active(&*suffix)) }
 }
 
 /// Create a `BytesTriple` by copying `len` bytes from a static (or stack) pointer.
@@ -1519,33 +1550,65 @@ mod tests {
     }
 
     #[test]
-    fn concat() {
-        let a = b"foo";
-        let b_data = b"bar";
-
-        // SAFETY: Both pointers are valid for their lengths.
-        let result = unsafe {
-            hew_bytes_concat(
-                a.as_ptr(),
-                0,
-                a.len() as u32,
-                b_data.as_ptr(),
-                0,
-                b_data.len() as u32,
-            )
+    fn concat_owned_copies_both_inputs_into_a_fresh_owner() {
+        let none = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
         };
+        // SAFETY: every triple comes from the runtime constructors and stays
+        // live until its single release at the end; each `out` is distinct
+        // uninitialized storage written once by the call.
+        unsafe {
+            let a = hew_bytes_from_static(b"foo".as_ptr(), 3);
+            let b = hew_bytes_from_static(b"xbar".as_ptr(), 4);
+            let tail = hew_bytes_slice(b.ptr, b.offset, b.len, 1, 4);
+            let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+            hew_bytes_concat_owned(&raw const a, &raw const tail, out.as_mut_ptr());
+            let result = out.assume_init();
+            assert_eq!(result.offset, 0);
+            assert_eq!(active(&result), b"foobar");
+            assert_eq!(active(&a), b"foo");
+            assert_eq!(active(&tail), b"bar");
+            let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+            hew_bytes_concat_owned(&raw const none, &raw const none, out.as_mut_ptr());
+            let empty = out.assume_init();
+            assert!(empty.ptr.is_null());
+            assert_eq!(empty.len, 0);
+            hew_bytes_drop(result.ptr);
+            hew_bytes_drop(tail.ptr);
+            hew_bytes_drop(b.ptr);
+            hew_bytes_drop(a.ptr);
+        }
+    }
 
-        assert!(!result.ptr.is_null());
-        assert_eq!(result.len, 6);
-
-        // SAFETY: result.ptr + offset is valid for result.len bytes.
-        let slice = unsafe {
-            std::slice::from_raw_parts(result.ptr.add(result.offset as usize), result.len as usize)
+    #[test]
+    fn starts_and_ends_with_compare_active_runs() {
+        let none = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
         };
-        assert_eq!(slice, b"foobar");
-
-        // SAFETY: result.ptr is valid.
-        unsafe { hew_bytes_drop(result.ptr) };
+        // SAFETY: every triple comes from the runtime constructors and stays
+        // live until its single release at the end.
+        unsafe {
+            let base = hew_bytes_from_static(b"\x00abcz".as_ptr(), 5);
+            let view = hew_bytes_slice(base.ptr, base.offset, base.len, 1, 4);
+            let ab = hew_bytes_from_static(b"ab".as_ptr(), 2);
+            let bc = hew_bytes_from_static(b"bc".as_ptr(), 2);
+            assert!(hew_bytes_starts_with(&raw const view, &raw const ab));
+            assert!(!hew_bytes_starts_with(&raw const view, &raw const bc));
+            assert!(hew_bytes_ends_with(&raw const view, &raw const bc));
+            assert!(!hew_bytes_ends_with(&raw const view, &raw const ab));
+            assert!(hew_bytes_starts_with(&raw const view, &raw const none));
+            assert!(hew_bytes_ends_with(&raw const none, &raw const none));
+            assert!(!hew_bytes_starts_with(&raw const none, &raw const ab));
+            assert!(hew_bytes_starts_with(&raw const view, &raw const view));
+            hew_bytes_drop(bc.ptr);
+            hew_bytes_drop(ab.ptr);
+            hew_bytes_drop(view.ptr);
+            hew_bytes_drop(base.ptr);
+        }
     }
 
     #[test]
@@ -1614,10 +1677,6 @@ mod tests {
             assert!(!dst.ptr.is_null());
             assert_eq!(dst.len, 3);
             hew_bytes_drop(dst.ptr);
-
-            let result = hew_bytes_concat(std::ptr::null(), 0, 0, std::ptr::null(), 0, 0);
-            assert!(result.ptr.is_null());
-            assert_eq!(result.len, 0);
 
             let result = hew_bytes_from_static(std::ptr::null(), 0);
             assert!(result.ptr.is_null());

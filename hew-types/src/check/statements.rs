@@ -375,6 +375,57 @@ impl Checker {
     /// replaced. Such an update must preserve the binding's independently
     /// inferred storage width rather than adopting one operand's width as if
     /// the assignment were a fresh direct write.
+    /// `x op= v` applies to: every operator on an integer, arithmetic on a
+    /// float, `duration` and `instant`, `&= |= ^=` on `bool`, and `+=` alone
+    /// to join a `string` or `bytes`. Any other target has no compound
+    /// assignment.
+    fn check_compound_operator(
+        &mut self,
+        op: hew_parser::ast::CompoundAssignOp,
+        target_ty: &Ty,
+        span: &Span,
+    ) {
+        use hew_parser::ast::CompoundAssignOp as Op;
+        let resolved = self.subst.resolve(target_ty);
+        let arithmetic = matches!(
+            op,
+            Op::Add | Op::Subtract | Op::Multiply | Op::Divide | Op::Modulo
+        );
+        let admitted = match &resolved {
+            Ty::Var(_) | Ty::Error | Ty::IntLiteral => true,
+            Ty::Bool => matches!(op, Op::BitAnd | Op::BitOr | Op::BitXor),
+            Ty::String | Ty::Bytes => op == Op::Add,
+            ty if ty.is_integer() => true,
+            ty => {
+                arithmetic
+                    && (ty.is_numeric_literal()
+                        || ty.is_float()
+                        || ty.is_duration()
+                        || ty.is_instant())
+            }
+        };
+        if admitted {
+            return;
+        }
+        let spelling = match op {
+            Op::Add => "+=",
+            Op::Subtract => "-=",
+            Op::Multiply => "*=",
+            Op::Divide => "/=",
+            Op::Modulo => "%=",
+            Op::BitAnd => "&=",
+            Op::BitOr => "|=",
+            Op::BitXor => "^=",
+            Op::Shl => "<<=",
+            Op::Shr => ">>=",
+        };
+        self.report_error(
+            TypeErrorKind::BinaryOperandTypes,
+            span,
+            format!("cannot apply `{spelling}` to `{}`", resolved.user_facing()),
+        );
+    }
+
     fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
         match expr {
             Expr::Ident(name) => name.name.as_str() == binding,
@@ -1735,6 +1786,9 @@ impl Checker {
                         self.env.unmark_used(name);
                     }
                     self.env.mark_written(name);
+                }
+                if let Some(op) = op {
+                    self.check_compound_operator(*op, &target_ty, span);
                 }
                 let value_ty = self
                     .rebind_inferred_closure_binding(&target.0, value, &target_ty)

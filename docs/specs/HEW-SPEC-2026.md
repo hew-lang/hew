@@ -185,6 +185,66 @@ An accidentally discarded `Result` from any call is `E_RESULT_DROPPED`.
 Neither an unbounded mailbox nor a unit-returning handler removes the
 obligation to handle the outcome.
 
+**Propagating a call's error.** `?` on a call result propagates the whole
+`ActorError<E, Req>`, so a caller whose own error type is not `ActorError`
+converts it first. `.map_err(..)` converts at one call site; an
+`impl From<ActorError<E>> for MyError` converts every `?` on such a call in
+the program. Either way, match `ActorError.Failed(e)` to keep the handler's
+declared error apart from delivery failures such as `Dead` or `Trapped`.
+
+```hew
+actor Store {
+    var blocks: Vec<bytes> = [];
+
+    receive fn put(block: bytes) {
+        blocks.push(block);
+    }
+
+    receive fn read(index: i64) -> bytes fails string {
+        match blocks.get(index) {
+            .Some(block) => block,
+            .None => return error f"no block {index}",
+        }
+    }
+}
+
+enum LoadError {
+    Missing(string);
+    Unavailable(string);
+}
+
+impl Display for LoadError {
+    fn fmt(self) -> string {
+        match self {
+            LoadError.Missing(why) => f"missing: {why}",
+            LoadError.Unavailable(why) => f"unavailable: {why}",
+        }
+    }
+}
+
+impl Error for LoadError {}
+
+fn load(store: Store, index: i64) -> bytes fails LoadError {
+    store.read(index).map_err(|error| match error {
+        ActorError.Failed(why) => LoadError.Missing(why),
+        other => LoadError.Unavailable(f"{other}"),
+    })?
+}
+
+fn main() {
+    let store = spawn Store();
+    store.put(b"\x01\x02").expect("put is delivered");
+    match load(store, 0) {
+        .Ok(block) => println(block.len()),
+        .Err(error) => println(f"{error}"),
+    }
+    match load(store, 5) {
+        .Ok(block) => println(block.len()),
+        .Err(error) => println(f"{error}"),
+    }
+}
+```
+
 **Mailbox policy at the sender.** `mailbox(worker)` yields an immutable typed
 one-way view of the same actor and mailbox; a receive call through that view
 submits under the destination's declared admission. It mutates nothing and
@@ -979,39 +1039,105 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 ### 3.3.2 The `bytes` Type
 
-`bytes` is a built-in compiler type with stdlib-registered methods: a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
+`bytes` is a built-in compiler type with stdlib-registered methods: a growable,
+heap-allocated byte buffer — semantically a `Vec<u8>` — with its own type name
+and value semantics.
 
 ```hew
 fn main() {
     var buf: bytes = bytes.new();
-    buf.push(0x48);    // push a byte value (i64)
-    buf.push(72);      // same as 'H' in ASCII
-    let n = buf.len(); // i64
-    let b = buf.get(0); // Option<u8> — first byte, or None when out of range
+    buf.push(0x48);     // append one u8
+    buf.push(72);       // same as 'H' in ASCII
+    let n = buf.len();  // i64
+    let b = buf.get(0); // Option<u8>: first byte, or None when out of range
     buf.set(1, 0xFF);   // overwrite byte at index 1
-    let last = buf.pop(); // Option<u8> — removes and returns last byte, None when empty
-    println(buf.is_empty()); // bool
-    println(buf.contains(72)); // bool — linear scan
+    let last = buf.pop(); // Option<u8>: removes the last byte, None when empty
+    println(buf.is_empty());
+    println(buf.contains(72)); // linear scan for one byte
     println(n);
     println(last ?? 0);
     println(b ?? 0);
 }
 ```
 
+**Construction.** A `bytes` value comes from a byte-string literal
+`b"\x01\x02"`, from `bytes.new()`, from `s.to_bytes()` (the UTF-8 encoding of a
+`string`), or from a list literal where `bytes` is expected: an annotated
+binding, a parameter, a return, either side of a `+` whose other side is
+`bytes`, and both sides of a `+` that is itself expected to be `bytes`. Each
+element of that list is checked as a `u8`, so a literal outside `0..=255` is
+refused at compile time, and a spread is refused: join buffers with `+`.
+
+```hew
+fn checksum(frame: bytes) -> u8 {
+    var sum: u8 = 0;
+    for byte in frame {
+        sum = sum.wrapping_add(byte);
+    }
+    sum
+}
+
+fn main() {
+    let tag: u8 = 0x2a;
+    let header: bytes = [0x48, 0x45, 0x57, tag];
+    let frame = header + b"\x00\x01";
+    println(frame.len());
+    println(checksum(frame));
+}
+```
+
+**Operators.**
+
+- `a == b` and `a != b` compare contents: two values are equal when they hold
+  the same bytes in the same order, whatever buffers back them. A slice equals
+  a fresh buffer with the same contents.
+- `a + b` is a fresh buffer holding the bytes of `a` followed by those of `b`;
+  both operands are unchanged. `buf += more` replaces `buf` with that result;
+  `+=` is the only compound assignment on `bytes`.
+  `buf.append(more)` extends `buf` in place, which is the cheaper way to grow a
+  buffer one piece at a time.
+- `b[i]` is the `u8` at index `i`, and an index outside `0..b.len()` faults with
+  `IndexOutOfBounds`. `b.get(i)` is the non-faulting read.
+- `b[a..c]`, `b[a..]`, `b[..c]` and `b[..]` are the bytes in that range as a
+  `bytes` value. A range shares the buffer, so it takes constant time
+  whatever its length; it is still an independent value, because a later write
+  through either side copies the shared bytes first. A range outside
+  `0..=b.len()`, or one that starts after it ends, faults with
+  `IndexOutOfBounds`.
+
+```hew
+fn main() {
+    let packet = b"\x02\x01\x02\x03\xff";
+    let body = packet[1..4];
+    var copy = body;
+    copy.push(9);
+    println(body == b"\x01\x02\x03");
+    println(copy.len());
+    println(packet.starts_with(b"\x02") && packet.ends_with(b"\xff"));
+}
+```
+
 **Methods on `bytes`:**
 
-| Method         | Signature          | Description                     |
-| -------------- | ------------------ | ------------------------------- |
-| `bytes.new()` | `() -> bytes`      | Create an empty byte buffer     |
-| `.push(b)`     | `(i64) -> ()`      | Append a byte                   |
-| `.pop()`       | `() -> Option<u8>` | Remove and return the last byte; `None` when empty |
-| `.get(i)`      | `(i64) -> Option<u8>` | Byte at index `i`; `None` out of range |
-| `.set(i, b)`   | `(i64, i64) -> ()` | Overwrite the byte at index `i` |
-| `.len()`       | `() -> i64`        | Number of bytes                 |
-| `.is_empty()`  | `() -> bool`       | True if len is 0                |
-| `.contains(b)` | `(i64) -> bool`    | True if the buffer contains `b` |
+| Method | Signature | Description |
+| --- | --- | --- |
+| `bytes.new()` | `() -> bytes` | An empty buffer |
+| `.len()` | `() -> i64` | Number of bytes |
+| `.is_empty()` | `() -> bool` | True if `len()` is 0 |
+| `.get(i)` | `(i64) -> Option<u8>` | Byte at index `i`; `None` out of range |
+| `.contains(b)` | `(u8) -> bool` | True if the buffer holds the byte `b` |
+| `.starts_with(p)` | `(bytes) -> bool` | True if the buffer begins with the run `p` |
+| `.ends_with(s)` | `(bytes) -> bool` | True if the buffer ends with the run `s` |
+| `.push(b)` | `(u8) -> ()` | Append one byte |
+| `.pop()` | `() -> Option<u8>` | Remove and return the last byte; `None` when empty |
+| `.set(i, b)` | `(i64, u8) -> ()` | Overwrite the byte at index `i`; faults out of range |
+| `.append(other)` | `(bytes) -> ()` | Append a copy of `other` |
+| `.clear()` | `() -> ()` | Remove every byte |
 
-`bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send`. At the runtime level, owned `bytes` values are treated as **immutable-shareable**: the runtime alias-shares them by refcount retain rather than deep-copying on send. A COW write-barrier (`ensure_unique`) forks the backing buffer before any in-place mutation when the refcount is greater than one, so actor isolation is preserved even when two actors hold retained references to the same buffer.
+Decode text with `std.encoding.utf8.decode`, which returns a `Result`, or
+`decode_lossy`, which replaces invalid sequences with U+FFFD.
+
+`bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send`. At the runtime level, owned `bytes` values are treated as **immutable-shareable**: the runtime alias-shares them by refcount retain rather than deep-copying on send. A COW write-barrier (`ensure_unique`) forks the backing buffer before any in-place mutation when the refcount is greater than one, so actor isolation is preserved even when two actors hold retained references to the same buffer. The C layout of a `bytes` value at a foreign call is in §3.9.3.
 
 ### 3.4 Ownership and References
 
@@ -1119,7 +1245,33 @@ actor Counter {
 }
 ```
 
-A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init { }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
+A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init(...) { ... }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
+
+**The `init` block.** An actor's constructor is written `init(params) { body }`.
+The parameter list is required, and empty when the constructor takes none;
+`init { .. }` without it is refused with a fix-it to `init() { .. }`.
+
+```hew
+actor Outbox {
+    let capacity: i64;
+    var closed: bool = false;
+
+    init() {
+        if capacity < 1 {
+            closed = true;
+        }
+    }
+
+    receive fn is_closed() -> bool {
+        closed
+    }
+}
+
+fn main() {
+    let outbox = spawn Outbox(capacity: 0);
+    println(outbox.is_closed().expect("outbox replies"));
+}
+```
 
 **Who initializes a field (normative, D447).** Each state field has exactly one initializer, fixed at the declaration. A field with a default is initialized by that default, and `init` may replace it. A field without a default that `init` assigns is deferred to `init`: a `spawn` cannot name it, `init` must assign it on every path before it finishes (including every `return`), `init` may read it or call an actor method only after that assignment, and a branch that assigns it must do so in every arm (a loop body cannot be its first store). Every other field without a default is a required `spawn` argument. An `init` parameter follows the actor-field shadowing rule of the variables section: a parameter with a field's name is rejected, not bound over it. A fault inside `init` releases the deferred fields it has stored and the init arguments; the spawn releases the spawn-supplied fields and the unpublished state, and no handler or hook ever observes partial state.
 
@@ -3196,11 +3348,50 @@ type FileInfo {
 | `*mut T`                  | `T*`                        | Mutable raw pointer        |
 | `*const u8`               | `const char*`               | C string (null-terminated) |
 | `fn(...) -> T`            | Function pointer            | C function pointer         |
+| `bytes` parameter         | `const HewBytes *`          | Borrowed view; see below   |
+| `bytes` result            | `HewBytes` by value         | Transfers one reference    |
+| `string` parameter        | `const HewString *`         | Opaque, borrowed           |
 
 `&T` is legal only within an `extern` function's parameter or return type
 tree. It is immutable, non-owning, and represented by one pointer. Foreign code
 owns the pointee and guarantees its lifetime; Hew never retains or drops it.
 Ordinary Hew declarations use `T`, and mutable foreign access uses `*mut T`.
+
+**`bytes` and `string` at the boundary (normative).** The public header
+`hew.h`, shipped in a release's `include/` directory, declares these types.
+
+- A `bytes` value is the triple `HewBytes { uint8_t *ptr; uint32_t offset;
+  uint32_t len; }`: `len` bytes starting `offset` bytes into a
+  reference-counted buffer. The empty value is `{NULL, 0, 0}`; every other
+  value has a non-null `ptr` that `hew_bytes_new` returned, and several values
+  may view one buffer.
+- A `bytes` parameter is passed as a pointer to the caller's triple. It is
+  borrowed for the call: the callee reads through it and never writes,
+  retains or releases it. A parameter declared `consume` is passed the same
+  way and transfers its one reference; the callee releases it with
+  `hew_bytes_drop` or returns it.
+- A `bytes` result is returned by value under the target's C convention and
+  transfers one reference to Hew. `hew_bytes_new(capacity)` allocates a
+  buffer whose reference count is one; `hew_bytes_clone_ref` and
+  `hew_bytes_drop` add and release references.
+- A `string` is an opaque `HewString *` handle to immutable UTF-8 whose layout
+  is private, and `NULL` is the empty string. A `string` parameter is
+  borrowed. C code that reads or produces text exchanges `bytes`: the Hew side
+  converts with `s.to_bytes()` and `std.encoding.utf8.decode`.
+
+```c
+#include "hew.h"
+
+/* extern "C" { fn xor_checksum(frame: bytes) -> bytes; } */
+HewBytes xor_checksum(const HewBytes *frame) {
+  uint8_t out[1] = {0};
+  const uint8_t *data = hew_bytes_data(frame);
+  for (uint32_t i = 0; i < frame->len; ++i) {
+    out[0] = (uint8_t)(out[0] ^ data[i]);
+  }
+  return hew_bytes_copy(out, 1);
+}
+```
 
 #### 3.9.4 Exporting Functions to C
 
@@ -6506,7 +6697,7 @@ unrecovered and the child's role is spent.
 **Signature rules (normative):**
 
 1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, `exit`, or `down`.
-2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
+2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init(...) { ... }` and ordinary actor methods).
 3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above. A crash hook cannot suspend: it rules on the restart before cleanup, so a hook that sleeps, awaits or calls a suspending function is rejected at compile time.
 4. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 5. A hook is **not** generic and has no `where` clause.
@@ -6530,7 +6721,7 @@ unrecovered and the child's role is spent.
 11. A supervisor shutdown deadline belongs to its child specification (§5.1), not an invented hook argument. Current deadline limitations are listed in §2.1.1.
 
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
-function after any `init { ... }` block. `#[on(stop)]` hooks lower to one
+function after any `init(...) { ... }` block. `#[on(stop)]` hooks lower to one
 resumable stop sequence that terminal cleanup runs on the live state before
 releasing it, so a stop hook may suspend. `#[on(crash)]` lowers to the crash hook
 slot used by supervisor crash routing; its `CrashAction` result selects the
@@ -6922,7 +7113,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered). `..` cannot begin an expression, so `..expr` at the start of a literal item is the spread of §3.1 and no range spelling is shadowed
-14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
 
 > **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.
 

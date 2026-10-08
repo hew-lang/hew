@@ -1,0 +1,41 @@
+// Concatenation builds a fresh buffer from borrowed operands, including two
+// views of one buffer and one operand twice; run tests read only the active
+// view; a list literal typed `bytes` fills a buffer element by element, and
+// one joined to `bytes` is a `bytes` literal.
+fn frame(tag: u8, body: bytes) -> bytes {
+    let header: bytes = [0x48, 0x45, tag];
+    header + body + b"\xff"
+}
+
+fn total(b: bytes) -> i64 {
+    var sum = 0;
+    for byte in b {
+        sum += byte as i64;
+    }
+    sum
+}
+
+fn main() {
+    let base = b"\x00abcdef\x00";
+    let left = base[1..4];
+    let right = base[4..7];
+    let joined = left + right;
+    println(f"{joined.len()} {joined == base[1..7]} {left.len()} {right.len()}");
+    let twice = left + left;
+    println(f"{twice.len()} {twice.starts_with(left)} {twice.ends_with(left)}");
+    println(f"{base.starts_with(left)} {base[1..].starts_with(left)} {right.ends_with(base[6..7])}");
+    var acc: bytes = [];
+    for i in 0..4 {
+        acc += base[i .. i + 1];
+    }
+    println(f"{acc.len()} {acc == base[..4]}");
+    let packet = frame(7, joined);
+    println(f"{packet.len()} {packet[2]} {packet[packet.len() - 1]} {total(packet)}");
+    println(f"{packet.starts_with([0x48, 0x45])} {packet.ends_with(b"")} {packet.starts_with(packet + b"\x00")}");
+    let empty: bytes = [];
+    println(f"{(empty + empty).is_empty()} {(empty + left) == left}");
+    let tail = left + [0x21];
+    let head = [0x3e] + left;
+    let both: bytes = [1] + [2, 3];
+    println(f"{tail.len()} {tail[3]} {head[0]} {head.len()} {both.len()} {both[2]}");
+}

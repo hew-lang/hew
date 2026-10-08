@@ -33,6 +33,7 @@ RUN apt-get update \
 COPY --from=tarball bin/hew bin/hew-lsp bin/hew-observe /usr/local/bin/
 COPY --from=tarball lib/libhew.a /usr/local/lib/libhew.a
 COPY --from=tarball std/ /usr/local/share/hew/std/
+COPY --from=tarball include/ /usr/local/include/
 
 # ubuntu:24.04 ships uid 1000 as `ubuntu`; replace it with an unprivileged hew.
 RUN userdel -r ubuntu && useradd -m -u 1000 -U hew

@@ -7,6 +7,7 @@ extern "C" {
     fn oracle_make(seed: i32) -> bytes;
     fn oracle_relay(before: i32, consume value: bytes, after: i32, cookie: i64) -> bytes;
     fn oracle_empty() -> bytes;
+    fn oracle_reverse(value: bytes) -> bytes;
 }
 
 fn round_trip(seed: i32) {
@@ -70,4 +71,13 @@ fn main() {
         oracle_empty()
     }.len() == 0);
     codecs();
+    // A borrowed view and a fresh copy built with hew.h's helpers.
+    let frame = b"\x00\x01\x02\x03\xff";
+    let reversed = unsafe {
+        oracle_reverse(frame[1..4])
+    };
+    assert(reversed == b"\x03\x02\x01");
+    assert(unsafe {
+        oracle_reverse(b"")
+    }.is_empty());
 }

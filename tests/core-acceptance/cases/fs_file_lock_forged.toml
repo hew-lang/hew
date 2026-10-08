@@ -1,0 +1,19 @@
+[[case]]
+id = "fs_file_lock_forged"
+intent = "A `fs.FileLock` is opaque: building one and reading its handle are both refused, with no cascade."
+source = "../vertical-slice/reject/fs_file_lock_forged.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "OpaqueDirectConstruct"
+line = 7
+column = 18
+message = "cannot construct opaque type `std.fs.FileLock` directly"
+
+[[case.expected.diagnostics]]
+code = "UndefinedField"
+line = 10
+column = 20
+message = "no field `handle` on type `std.fs.FileLock`"

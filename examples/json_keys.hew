@@ -1,0 +1,16 @@
+// Decode a document keyed in another convention into idiomatic field names,
+// and encode it back with the same keys.
+import std.encoding.json;
+
+#[serial(case = "PascalCase")]
+type RadioStats {
+    #[serial(key = "PacketsRecv")]
+    packets_received: i64;
+    last_snr: f64;
+}
+
+fn main() {
+    let stats = json.decode<RadioStats>("{\"PacketsRecv\":12,\"LastSnr\":6.5}").expect("decode");
+    println(stats.packets_received); // 12
+    println(json.encode(stats)); // {"PacketsRecv":12,"LastSnr":6.5}
+}

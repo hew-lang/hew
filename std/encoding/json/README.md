@@ -57,23 +57,54 @@ has been removed; TOML currently retains its own independent resource API.
 ## Typed encode and decode
 
 `json.encode(value)` writes any data value as JSON text, and
-`json.decode<T>(document)` reads it back as `Result<T, wire.DecodeError>`. A
-failed decode names the path of the value that did not fit. `json.decode(document)`
-without a known `T` is `E_TYPE_ANNOTATION_NEEDED`.
+`json.decode<T>(document)` reads it back as `Result<T, wire.DecodeError>`.
+`json.decode(document)` without a known `T` is `E_TYPE_ANNOTATION_NEEDED`.
+
+- A record encodes as an object keyed by field name, in declaration order.
+  `#[serial(case = "camelCase")]` on the type renames every key (also
+  `PascalCase`, `snake_case`, `SCREAMING_SNAKE` and `kebab-case`), and
+  `#[serial(key = "..")]` on a field sets that one key; the field key wins.
+- An `Option<T>` field encodes `None` as `null`. Decoding accepts `null` or
+  an absent key as `None`; every other field is required.
+- A failed decode is one `wire.DecodeError`. Its text starts with the variant
+  name, then the path of the value that did not fit:
+  `Type: .tags[1]: expected string, found integer`,
+  `Missing: .temp`, `Range: .port: 70000 does not fit u16`,
+  `Syntax: line 1, column 1: expected a value`. Match the variants to act on
+  the path rather than reading the text.
 
 ```hew
 import std.encoding.json;
+import std.encoding.wire;
 
-type Config {
-    name: string;
-    retries: i64;
+#[serial(case = "camelCase")]
+type Reading {
+    battery_mv: i64;
+    noise_floor_dbm: Option<i64>;
+    #[serial(key = "temp")]
+    temperature_c: f64;
+    tags: Vec<string>;
+}
+
+fn describe(error: wire.DecodeError) -> string {
+    match error {
+        wire.DecodeError.Missing { path } => f"add {path}",
+        wire.DecodeError.Type { path, expected, .. } => f"{path} must be {expected}",
+        other => f"{other}",
+    }
 }
 
 fn main() {
-    let document = json.encode(Config { name: "api", retries: 3 });
-    match json.decode<Config>(document) {
-        .Ok(config) => println(config.name), // api
-        .Err(e) => println(e),
+    let reading = Reading { battery_mv: 4100, noise_floor_dbm: .None, temperature_c: 21.5, tags: ["roof"] };
+    let text = json.encode(reading);
+    println(text); // {"batteryMv":4100,"noiseFloorDbm":null,"temp":21.5,"tags":["roof"]}
+    match json.decode<Reading>(text) {
+        .Ok(back) => println(back.tags[0]), // roof
+        .Err(e) => println(describe(e)),
+    }
+    match json.decode<Reading>("{\"batteryMv\":1}") {
+        .Ok(_) => println("unexpected"),
+        .Err(e) => println(f"{e} / {describe(e)}"), // Missing: .temp / add .temp
     }
 }
 ```

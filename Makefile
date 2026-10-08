@@ -1629,6 +1629,7 @@ install: require-host-cargo-target
 	install -d "$(DESTDIR)$(PREFIX)/bin"
 	install -d "$(DESTDIR)$(PREFIX)/lib"
 	install -d "$(DESTDIR)$(PREFIX)/std"
+	install -d "$(DESTDIR)$(PREFIX)/include"
 	install -d "$(DESTDIR)$(PREFIX)/completions"
 	install -m 755 "$(RELEASE_DIR)/hew"                "$(DESTDIR)$(PREFIX)/bin/hew"
 	install -m 755 "$(RELEASE_DIR)/hew-lsp"            "$(DESTDIR)$(PREFIX)/bin/hew-lsp"
@@ -1657,6 +1658,7 @@ install: require-host-cargo-target
 		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a"; \
 	done
 	cp -r std/. "$(DESTDIR)$(PREFIX)/std/"
+	install -m 644 hew-cabi/include/hew.h "$(DESTDIR)$(PREFIX)/include/hew.h"
 	@set -e; for shell in bash zsh fish; do \
 		"$(RELEASE_DIR)/hew" completions "$$shell" \
 			> "$(DESTDIR)$(PREFIX)/completions/hew.$$shell"; \

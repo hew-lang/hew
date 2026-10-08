@@ -1,18 +1,11 @@
-/* Independent C return ABI and exactly-once ownership oracle. */
+/* C return ABI and exactly-once ownership oracle, written against the
+ * public hew.h so the header's layout is the one under test. */
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-typedef struct {
-  unsigned char *ptr;
-  uint32_t offset;
-  uint32_t len;
-} BytesTriple;
-
-extern unsigned char *hew_bytes_new(uint32_t capacity);
-extern void hew_bytes_clone_ref(unsigned char *data);
-extern void hew_bytes_drop(unsigned char *data);
+#include "hew.h"
 
 static unsigned char *observers[64];
 static int32_t owners;
@@ -46,7 +39,7 @@ void oracle_expect(int32_t count) {
   require(atexit(finish) == 0);
 }
 
-BytesTriple oracle_make(int32_t seed) {
+HewBytes oracle_make(int32_t seed) {
   require(owners < 64);
   unsigned char *data = hew_bytes_new(8);
   require(data != NULL);
@@ -59,10 +52,10 @@ BytesTriple oracle_make(int32_t seed) {
   }
   hew_bytes_clone_ref(data);
   observers[owners++] = data;
-  return (BytesTriple){data, 3, 5};
+  return (HewBytes){data, 3, 5};
 }
 
-BytesTriple oracle_relay(int32_t before, const BytesTriple *value,
+HewBytes oracle_relay(int32_t before, const HewBytes *value,
                          int32_t after, int64_t cookie) {
   require(before == 17 && after == 23 && cookie == INT64_C(0x123456789abcdef0));
   require(value->ptr != NULL && value->offset == 3 && value->len == 5);
@@ -72,7 +65,19 @@ BytesTriple oracle_relay(int32_t before, const BytesTriple *value,
   return *value;
 }
 
-BytesTriple oracle_empty(void) { return (BytesTriple){NULL, 0, 0}; }
+HewBytes oracle_empty(void) { return (HewBytes){NULL, 0, 0}; }
+
+/* A borrowed view in, a fresh owner out: the buffer behind `value` is
+ * neither retained nor released. */
+HewBytes oracle_reverse(const HewBytes *value) {
+  uint8_t scratch[16];
+  require(value->len <= sizeof scratch);
+  const uint8_t *data = hew_bytes_data(value);
+  for (uint32_t i = 0; i < value->len; ++i) {
+    scratch[i] = data[value->len - 1 - i];
+  }
+  return hew_bytes_copy(scratch, value->len);
+}
 
 #include "aggregates.h"
 OracleSmall oracle_small(void) { return (OracleSmall){1234, 5678}; }

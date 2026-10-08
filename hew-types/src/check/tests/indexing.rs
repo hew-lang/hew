@@ -572,3 +572,21 @@ fn main() -> i64 {
         output.errors
     );
 }
+
+#[test]
+fn range_slice_of_an_errored_receiver_reports_only_the_receiver() {
+    let output = check_source(
+        r"
+        fn main() {
+            let c = 1 + true;
+            let _s = c[1..3];
+        }
+        ",
+    );
+    assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+    assert!(
+        !output.errors[0].message.contains("range-slice"),
+        "{:#?}",
+        output.errors
+    );
+}

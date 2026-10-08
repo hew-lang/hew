@@ -87,6 +87,8 @@ for binary in hew hew-lsp hew-observe; do
 done
 [ -f "$native_lib" ] || die "missing native release library: $native_lib"
 [ -d "$source_dir/std" ] || die "missing standard library directory: $source_dir/std"
+[ -f "$source_dir/hew-cabi/include/hew.h" ] ||
+    die "missing public C header: $source_dir/hew-cabi/include/hew.h"
 [ -d "$wasi_lib_dir" ] || die "missing portable WASI library directory: $wasi_lib_dir"
 for wasi_lib in libhew_runtime.a libhew_std.a; do
     [ -f "$wasi_lib_dir/$wasi_lib" ] ||
@@ -111,7 +113,7 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$package_root/bin" "$package_root/lib/$native_triple" \
     "$package_root/lib/wasm32-wasip1" "$package_root/std" \
-    "$package_root/completions"
+    "$package_root/include" "$package_root/completions"
 
 for binary in hew hew-lsp hew-observe; do
     cp "$bin_dir/$binary$bin_suffix" "$package_root/bin/$binary$bin_suffix"
@@ -124,6 +126,7 @@ for wasi_lib in libhew_runtime.a libhew_std.a; do
     cp "$wasi_lib_dir/$wasi_lib" "$package_root/lib/wasm32-wasip1/$wasi_lib"
 done
 cp -R "$source_dir/std/." "$package_root/std/"
+cp "$source_dir/hew-cabi/include/hew.h" "$package_root/include/hew.h"
 
 completion_count=0
 for completion_shell in $completion_shells; do

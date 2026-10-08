@@ -831,9 +831,11 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
             | R::I64ToString
             | R::BytesAppend
             | R::BytesClear
+            | R::BytesConcat
             | R::BytesContains
             | R::BytesDecodeUtf8
             | R::BytesDecodeUtf8Lossy
+            | R::BytesEndsWith
             | R::BytesGet
             | R::BytesIndex
             | R::BytesIsEmpty
@@ -842,6 +844,7 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
             | R::BytesPush
             | R::BytesSet
             | R::BytesSlice
+            | R::BytesStartsWith
             | R::BytesNew
     )
 }

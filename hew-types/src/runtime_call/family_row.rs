@@ -249,7 +249,30 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::BytesConcat => RuntimeOpRow {
+                symbol: "hew_bytes_concat_owned",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Bytes),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::BytesContains => declared::BYTESCONTAINS.row,
+            Self::BytesEndsWith => declared::BYTESENDSWITH.row,
+            Self::BytesStartsWith => declared::BYTESSTARTSWITH.row,
             Self::BytesDecodeUtf8 => RuntimeOpRow {
                 symbol: "hew_bytes_decode_utf8",
                 contract: Some(RuntimeSemanticContract {

@@ -290,7 +290,29 @@ impl Checker {
                 );
                 Some(result)
             }
-            _ => None,
+            // A record variant called like a function: name the braced form.
+            DottedTypeMemberUse::Call { args, span, .. } => {
+                let VariantDef::Struct(fields) = variant else {
+                    return None;
+                };
+                let shape = fields
+                    .iter()
+                    .map(|(field, _)| format!("{field}: .."))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let message = format!(
+                    "record variant `{type_name}.{member}` is built with braces: \
+                     `{type_name}.{member} {{ {shape} }}`",
+                    type_name = head.canonical_type
+                );
+                for arg in *args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_error(TypeErrorKind::PathKindMismatch, span, message);
+                Some(Ty::Error)
+            }
+            DottedTypeMemberUse::Reference { .. } => None,
         }
     }
 

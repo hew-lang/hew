@@ -1575,6 +1575,8 @@ impl Checker {
                 // refcounted `bytes` slice. Byte-bounds, O(1), panic on
                 // invalid bounds. Endpoints are i64 (validated above).
                 Ty::Bytes => Ty::Bytes,
+                // The receiver's own error was already reported.
+                Ty::Error => Ty::Error,
                 _ => {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

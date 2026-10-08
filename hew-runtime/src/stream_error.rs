@@ -71,6 +71,9 @@ pub const IO_ERROR_KIND_TIMED_OUT: i32 = 4;
 /// The peer is gone: `BrokenPipe`, `ConnectionReset`, `ConnectionAborted` or
 /// `NotConnected`. A socket send reports it as `SendError.Closed`.
 pub const IO_ERROR_KIND_CONNECTION_CLOSED: i32 = 5;
+/// The platform cannot perform the operation as asked: a Unix permission mode
+/// on Windows, for example. Portable `std::io::ErrorKind::Unsupported`.
+pub const IO_ERROR_KIND_UNSUPPORTED: i32 = 6;
 
 /// Map a portable [`std::io::ErrorKind`] to its canonical cross-platform tag.
 ///
@@ -89,6 +92,7 @@ pub fn io_error_kind_tag(kind: std::io::ErrorKind) -> i32 {
         | ErrorKind::ConnectionReset
         | ErrorKind::ConnectionAborted
         | ErrorKind::NotConnected => IO_ERROR_KIND_CONNECTION_CLOSED,
+        ErrorKind::Unsupported => IO_ERROR_KIND_UNSUPPORTED,
         _ => IO_ERROR_KIND_UNCLASSIFIED,
     }
 }

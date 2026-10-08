@@ -806,7 +806,7 @@
               "own": "none",
               "shape": 1,
               "span": null,
-              "variant": 5
+              "variant": 6
             },
             {
               "dst": 21,
@@ -1458,7 +1458,7 @@
               "args": [
                 4
               ],
-              "to": 17
+              "to": 20
             },
             "op": "goto",
             "span": null
@@ -1522,7 +1522,7 @@
               "args": [
                 7
               ],
-              "to": 16
+              "to": 19
             },
             "op": "goto",
             "span": null
@@ -1586,7 +1586,7 @@
               "args": [
                 10
               ],
-              "to": 15
+              "to": 18
             },
             "op": "goto",
             "span": null
@@ -1650,7 +1650,7 @@
               "args": [
                 13
               ],
-              "to": 14
+              "to": 17
             },
             "op": "goto",
             "span": null
@@ -1658,6 +1658,70 @@
         },
         {
           "id": 8,
+          "ops": [
+            {
+              "dst": 14,
+              "op": "const.int",
+              "own": "none",
+              "span": null,
+              "ty": "i64",
+              "value": "6"
+            },
+            {
+              "binary_op": "Equal",
+              "dst": 15,
+              "lhs": 0,
+              "op": "binary",
+              "own": "none",
+              "rhs": 14,
+              "span": null,
+              "ty": "i64"
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 15,
+            "else": {
+              "args": [],
+              "to": 10
+            },
+            "op": "branch",
+            "span": null,
+            "then": {
+              "args": [],
+              "to": 9
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [
+            {
+              "dst": 16,
+              "fields": [
+                1
+              ],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 1,
+              "span": null,
+              "variant": 5
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                16
+              ],
+              "to": 16
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {
@@ -1670,36 +1734,49 @@
             "callee": 4,
             "normal": {
               "args": [
-                14
+                17
               ],
-              "to": 9
+              "to": 11
             },
             "op": "call",
             "result": {
               "own": "none",
-              "value": 14
+              "value": 17
             },
             "span": null,
             "unwind": {
               "args": [],
-              "to": 10
+              "to": 12
             }
           }
         },
         {
-          "id": 9,
+          "id": 11,
           "ops": [],
           "params": [
             {
               "own": "none",
-              "value": 15
+              "value": 18
             }
           ],
           "term": {
             "edge": {
               "args": [
-                15
+                18
               ],
+              "to": 16
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
               "to": 14
             },
             "op": "goto",
@@ -1707,20 +1784,7 @@
           }
         },
         {
-          "id": 10,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 12
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 11,
+          "id": 13,
           "ops": [],
           "params": [],
           "term": {
@@ -1729,7 +1793,20 @@
           }
         },
         {
-          "id": 12,
+          "id": 14,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 15
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 15,
           "ops": [],
           "params": [],
           "term": {
@@ -1742,71 +1819,18 @@
           }
         },
         {
-          "id": 13,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 11
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 14,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 16
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                16
-              ],
-              "to": 15
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 15,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 17
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                17
-              ],
-              "to": 16
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
           "id": 16,
           "ops": [],
           "params": [
             {
               "own": "none",
-              "value": 18
+              "value": 19
             }
           ],
           "term": {
             "edge": {
               "args": [
-                18
+                19
               ],
               "to": 17
             },
@@ -1820,12 +1844,14 @@
           "params": [
             {
               "own": "none",
-              "value": 19
+              "value": 20
             }
           ],
           "term": {
             "edge": {
-              "args": [],
+              "args": [
+                20
+              ],
               "to": 18
             },
             "op": "goto",
@@ -1835,13 +1861,71 @@
         {
           "id": 18,
           "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 21
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                21
+              ],
+              "to": 19
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 19,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 22
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                22
+              ],
+              "to": 20
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 20,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 23
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 21
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 21,
+          "ops": [],
           "params": [],
           "term": {
             "op": "return",
             "span": null,
             "value": {
               "decision": "move",
-              "value": 19
+              "value": 23
             }
           }
         }
@@ -2435,7 +2519,7 @@
               "own": "none",
               "shape": 1,
               "span": null,
-              "variant": 5
+              "variant": 6
             }
           ],
           "params": [],
@@ -2670,6 +2754,12 @@
             "0"
           ],
           "name": "Cancelled"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Unsupported"
         },
         {
           "fields": [

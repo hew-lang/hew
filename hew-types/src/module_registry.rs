@@ -1427,6 +1427,131 @@ mod tests {
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn listing(files: &[&str]) -> impl Fn(&Path) -> Vec<PathBuf> {
+        let files = files.iter().map(PathBuf::from).collect::<Vec<_>>();
+        move |dir: &Path| {
+            files
+                .iter()
+                .filter(|file| file.parent() == Some(dir))
+                .cloned()
+                .collect()
+        }
+    }
+
+    #[test]
+    fn std_peers_are_listed_from_the_given_sources() {
+        // A host with no filesystem names its embedded std as `./std/...`.
+        let list = listing(&[
+            "./std/net/http/http.hew",
+            "./std/net/http/http_client.hew",
+            "./std/net/http/http_test.hew",
+            "./std/net/http/server.hew",
+        ]);
+        let anchor = ModuleAnchor::Std {
+            root: PathBuf::from("."),
+        };
+        let peer = module_membership(&anchor, Path::new("./std/net/http/http_client.hew"), &list);
+        assert_eq!(peer.role, MembershipRole::Peer);
+        assert_eq!(peer.module, ModulePath::new(["std", "net", "http"]));
+        assert_eq!(peer.entry, Path::new("./std/net/http/http.hew"));
+        let entry = module_membership(&anchor, &peer.entry, &list);
+        assert_eq!(entry.role, MembershipRole::Entry);
+        assert_eq!(
+            entry.peers,
+            [
+                PathBuf::from("./std/net/http/http_client.hew"),
+                PathBuf::from("./std/net/http/server.hew"),
+            ],
+            "test files are not peers"
+        );
+    }
+
+    #[test]
+    fn a_package_root_module_is_its_leaf_file_alone() {
+        let list = listing(&[
+            "/src/my-http/http.hew",
+            "/src/my-http/client.hew",
+            "/src/my-http/greeting/greeting.hew",
+            "/src/my-http/greeting/helpers.hew",
+        ]);
+        let anchor = ModuleAnchor::Package {
+            dir: PathBuf::from("/src/my-http"),
+            name: Some(ModulePath::new(["acme", "http"])),
+        };
+        let of = |file: &str| module_membership(&anchor, Path::new(file), &list);
+        let root = of("/src/my-http/http.hew");
+        assert_eq!(
+            (root.role, root.module),
+            (MembershipRole::Single, ModulePath::new(["acme", "http"]))
+        );
+        let client = of("/src/my-http/client.hew");
+        assert_eq!(
+            (client.role, client.module),
+            (
+                MembershipRole::Single,
+                ModulePath::new(["acme", "http", "client"])
+            )
+        );
+        let entry = of("/src/my-http/greeting/greeting.hew");
+        assert_eq!(
+            (entry.role, entry.module),
+            (
+                MembershipRole::Entry,
+                ModulePath::new(["acme", "http", "greeting"])
+            )
+        );
+        assert_eq!(
+            of("/src/my-http/greeting/helpers.hew").role,
+            MembershipRole::Peer
+        );
+    }
+
+    #[test]
+    fn loose_files_never_form_directory_modules() {
+        let list = listing(&["/x/greeting/greeting.hew", "/x/greeting/helpers.hew"]);
+        for file in ["/x/greeting/greeting.hew", "/x/greeting/helpers.hew"] {
+            let membership = module_membership(&ModuleAnchor::Loose, Path::new(file), &list);
+            assert_eq!(membership.role, MembershipRole::Single, "{file}");
+            assert!(membership.peers.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_test_file_compiles_with_its_module_or_its_namesake() {
+        let list = listing(&[
+            "/p/greeting/greeting.hew",
+            "/p/greeting/greeting_test.hew",
+            "/p/math.hew",
+            "/p/math_test.hew",
+            "/p/alone_test.hew",
+        ]);
+        let package = ModuleAnchor::Package {
+            dir: PathBuf::from("/p"),
+            name: Some(ModulePath::new(["p"])),
+        };
+        for anchor in [&package, &ModuleAnchor::Loose] {
+            let math = module_membership(anchor, Path::new("/p/math_test.hew"), &list);
+            assert_eq!(math.role, MembershipRole::Test);
+            assert_eq!(
+                math.test_companion(Path::new("/p/math_test.hew")),
+                Some(Path::new("/p/math.hew"))
+            );
+            let alone = module_membership(anchor, Path::new("/p/alone_test.hew"), &list);
+            assert_eq!(alone.test_companion(Path::new("/p/alone_test.hew")), None);
+        }
+        let in_module =
+            module_membership(&package, Path::new("/p/greeting/greeting_test.hew"), &list);
+        assert_eq!(in_module.entry, Path::new("/p/greeting/greeting.hew"));
+        // A loose test file still pairs with its namesake, as a single file.
+        let loose = module_membership(
+            &ModuleAnchor::Loose,
+            Path::new("/p/greeting/greeting_test.hew"),
+            &list,
+        );
+        assert_eq!(loose.entry, Path::new("/p/greeting/greeting.hew"));
+        assert_eq!(loose.module, ModulePath::new(["greeting"]));
+    }
+
     #[test]
     fn canonical_stdlib_owner_follows_flat_package_and_peer_layouts() {
         let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");

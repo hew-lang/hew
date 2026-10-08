@@ -1211,7 +1211,7 @@ fn undeclared_imports(
         return Ok(Vec::new());
     };
     let std_roots = stdlib_roots(ctx.module_search_paths);
-    let anchor = anchor_for(source_file, &std_roots)?;
+    let anchor = importer_anchor(source_file, ctx, &std_roots)?;
     let mut errors = Vec::new();
     for (item, _) in items {
         let Item::Import(decl) = item else { continue };
@@ -2020,6 +2020,27 @@ fn anchor_for(
     })
 }
 
+/// The anchor imports written in `file` resolve against. A file outside any
+/// package compiled with an explicit project (`--project-dir`, an editor
+/// workspace) imports as a member of that project's package.
+fn importer_anchor(
+    file: &Path,
+    ctx: &ImportResolutionContext<'_>,
+    std_roots: &[PathBuf],
+) -> Result<hew_types::module_registry::ModuleAnchor, FrontendFailure> {
+    use hew_types::module_registry::ModuleAnchor;
+    match anchor_for(file, std_roots)? {
+        ModuleAnchor::Loose => Ok(match ctx.package_name {
+            Some(name) => ModuleAnchor::Package {
+                dir: ctx.project_dir.to_path_buf(),
+                name: Some(package_module_path(name)),
+            },
+            None => ModuleAnchor::Loose,
+        }),
+        anchor => Ok(anchor),
+    }
+}
+
 /// The module `file` belongs to (spec 3.5.1), with directories listed from
 /// the filesystem and the open documents together.
 fn membership_of(
@@ -2221,18 +2242,10 @@ fn canonical_direct_stdlib_module_for_source(
 /// A cycle where every module's entry file lives in the same directory is the
 /// directory-module shape described in spec 3.5.1 — the fix is to promote
 /// that directory to a directory module rather than importing between its
-/// files. Otherwise the fix is a shared module both sides import.
-///
-/// `manifest_project_dir` (a discovered `hew.toml` package root — `None` for
-/// a manifest-less standalone compile) and its `src` are excluded from that
-/// "shared directory" check even when every module happens to sit there:
-/// both are flat buckets the dotted-path resolver searches for otherwise-
-/// unrelated top-level modules (see the `candidates.push(ctx.project_dir...)`
-/// sites in `resolve_file_imports_internal`), not a private submodule
-/// directory a program ever imports as one unit — "make `src/src.hew` the
-/// entry" is not a real fix. A manifest-less compile has no such bucket: its
-/// `project_dir` fallback is just the entry file's own directory, which is a
-/// perfectly good directory-module candidate.
+/// files. That needs the directory to lie strictly below a package or std
+/// anchor: the anchor directory itself holds otherwise unrelated top-level
+/// modules, and a loose directory first needs a package. Otherwise the fix is
+/// a shared module both sides import.
 ///
 /// Falls back to the bare chain message (former behaviour) if a cycle member
 /// is missing from `graph` or its source file cannot be re-read; both should
@@ -2241,7 +2254,7 @@ fn canonical_direct_stdlib_module_for_source(
 fn cycle_error_to_frontend_failure(
     graph: &hew_parser::module::ModuleGraph,
     cycle_err: &hew_parser::module::CycleError,
-    manifest_project_dir: Option<&Path>,
+    std_roots: &[PathBuf],
     documents: &DocumentSet,
 ) -> FrontendFailure {
     let chain = cycle_err.to_string();
@@ -2285,20 +2298,27 @@ fn cycle_error_to_frontend_failure(
         && locations
             .windows(2)
             .all(|pair| pair[0].0.parent() == pair[1].0.parent());
-    let shared_dir_is_a_flat_root = manifest_project_dir.is_some_and(|project_dir| {
-        let project_src_dir = project_dir.join("src");
-        shared_dir == Some(project_dir) || shared_dir == Some(project_src_dir.as_path())
+    let anchor = anchor_for(&locations[0].0, std_roots)
+        .unwrap_or(hew_types::module_registry::ModuleAnchor::Loose);
+    let below_anchor = anchor.dir().is_some_and(|dir| {
+        shared_dir.is_some_and(|shared| shared != dir && shared.starts_with(dir))
     });
-    let help = if same_directory && !shared_dir_is_a_flat_root {
+    let is_loose = matches!(anchor, hew_types::module_registry::ModuleAnchor::Loose);
+    let help = if same_directory && (below_anchor || is_loose) {
         let dir_name = locations[0]
             .0
             .parent()
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             .unwrap_or("<dir>");
+        let package = if is_loose {
+            "; directory modules belong to a package, so run `hew init` first"
+        } else {
+            ""
+        };
         format!(
             "these modules share one directory; make `{dir_name}/{dir_name}.hew` the entry and \
-             let the others be peers (spec 3.5.1), then drop the imports between them"
+             let the others be peers (spec 3.5.1), then drop the imports between them{package}"
         )
     } else {
         "move the shared declarations into a module both sides import".to_string()
@@ -2330,7 +2350,7 @@ fn rewrite_direct_stdlib_module_root(
     module_graph: &mut hew_parser::module::ModuleGraph,
     items: &mut Vec<Spanned<Item>>,
     source_file: &Path,
-    manifest_project_dir: Option<&Path>,
+    std_roots: &[PathBuf],
     documents: &DocumentSet,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::Module;
@@ -2357,7 +2377,7 @@ fn rewrite_direct_stdlib_module_root(
         })
         .expect("synthetic floor-check root is unique");
     module_graph.compute_topo_order().map_err(|cycle_err| {
-        cycle_error_to_frontend_failure(module_graph, &cycle_err, manifest_project_dir, documents)
+        cycle_error_to_frontend_failure(module_graph, &cycle_err, std_roots, documents)
     })?;
     items.clear();
 
@@ -2409,11 +2429,10 @@ fn build_module_graph_with_diagnostics(
         .expect("root module id is unique");
 
     if let Err(cycle_err) = graph.compute_topo_order() {
-        let manifest_project_dir = ctx.package_name.is_some().then_some(ctx.project_dir);
         return Err(cycle_error_to_frontend_failure(
             &graph,
             &cycle_err,
-            manifest_project_dir,
+            &stdlib_roots(ctx.module_search_paths),
             ctx.documents,
         ));
     }
@@ -2426,7 +2445,7 @@ fn build_module_graph_with_diagnostics(
         &mut graph,
         items,
         &input_canonical,
-        ctx.package_name.is_some().then_some(ctx.project_dir),
+        &stdlib_roots(ctx.module_search_paths),
         ctx.documents,
     )?;
 
@@ -3177,7 +3196,7 @@ fn resolve_file_imports_internal(
     }
 
     let std_roots = stdlib_roots(ctx.module_search_paths);
-    let anchor = anchor_for(source_file, &std_roots)?;
+    let anchor = importer_anchor(source_file, ctx, &std_roots)?;
 
     for idx in &import_indices {
         let canonical = match &items[*idx].0 {
@@ -4318,6 +4337,11 @@ mod tests {
         assert!(state.parse_result.is_some());
     }
 
+    /// Make `dir` a package, the anchor directory modules need (spec 3.5.1).
+    fn write_package_manifest(dir: &Path) {
+        fs::write(dir.join("hew.toml"), "[package]\nname = \"app\"\n").expect("write manifest");
+    }
+
     fn write_source(dir: &Path, name: &str, content: &str) -> String {
         let path = dir.join(name);
         let mut file = File::create(&path).expect("create source file");
@@ -4763,6 +4787,7 @@ mod tests {
     #[test]
     fn checking_directory_module_peer_loads_entry_namespace() {
         let dir = tempfile::tempdir().expect("create directory-module fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("greeting");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(
@@ -4880,6 +4905,185 @@ mod tests {
                 "the error belongs to the peer, not {file}"
             );
         }
+    }
+
+    /// The std directory module a peer import loads, as source paths below
+    /// `root`, from a run that resolves the std at `root` through `documents`.
+    fn std_http_sources(root: &Path, documents: &DocumentSet) -> Vec<std::path::PathBuf> {
+        let dir = tempfile::tempdir().expect("create importer fixture");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.net.http.http_client;\n\nfn main() {}\n",
+        );
+        let source = fs::read_to_string(&input).expect("read importer fixture");
+        let mut program = parse_source(&source, &input).expect("parse importer fixture");
+        let roots = [root.to_path_buf()];
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: dir.path(),
+            module_search_paths: Some(&roots),
+            documents,
+        };
+        let graph = build_module_graph(
+            Path::new(&input),
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("the std peer import should build a module graph");
+        let client = root.join("std/net/http/http_client.hew");
+        let owners = graph
+            .modules
+            .values()
+            .filter(|module| {
+                module
+                    .source_paths
+                    .iter()
+                    .any(|path| path.ends_with("std/net/http/http_client.hew"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 1, "one graph node holds {}", client.display());
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        owners[0]
+            .source_paths
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .expect("a std source is below its root")
+                    .to_path_buf()
+            })
+            .collect()
+    }
+
+    /// A host with no filesystem (the browser) lists a std directory module's
+    /// peers from the sources it was given, so its module graph is the native
+    /// one: the same entry and peers in the same order.
+    #[test]
+    fn std_directory_module_peers_come_from_documents_without_a_filesystem() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root")
+            .to_path_buf();
+        let native = std_http_sources(&repo_root, &DocumentSet::new());
+
+        let virtual_root = std::env::temp_dir().join("hew-std-without-a-filesystem");
+        assert!(
+            !virtual_root.exists(),
+            "the virtual std root must not exist on disk"
+        );
+        let mut documents = DocumentSet::new();
+        let mut pending = vec![repo_root.join("std")];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(&dir).expect("read the std tree").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "hew") {
+                    let relative = path.strip_prefix(&repo_root).expect("below the repository");
+                    documents.insert(
+                        virtual_root.join(relative),
+                        fs::read_to_string(&path).expect("read a std source"),
+                    );
+                }
+            }
+        }
+        let in_memory = std_http_sources(&virtual_root, &documents);
+
+        assert_eq!(
+            native.len(),
+            4,
+            "std.net.http is its entry and three peers: {native:?}"
+        );
+        assert_eq!(native[0], Path::new("std/net/http/http.hew"));
+        assert_eq!(in_memory, native);
+    }
+
+    fn manifest_errors(manifest: &str, files: &[(&str, &str)], main: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("create package fixture");
+        fs::write(dir.path().join("hew.toml"), manifest).expect("write manifest");
+        for (path, source) in files {
+            let path = dir.path().join(path);
+            fs::create_dir_all(path.parent().expect("a fixture file has a parent"))
+                .expect("create fixture directory");
+            fs::write(path, source).expect("write fixture source");
+        }
+        let input = write_source(dir.path(), "main.hew", main);
+        let program = parse_source(main, &input).expect("parse package fixture");
+        let (manifest_deps, package_name) =
+            super::load_manifest_metadata(dir.path()).expect("valid manifest");
+        let documents = DocumentSet::new();
+        let ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: manifest_deps.as_deref(),
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: package_name.as_deref(),
+            project_dir: dir.path(),
+            module_search_paths: None,
+            documents: &documents,
+        };
+        let input = Path::new(&input).canonicalize().expect("main exists");
+        super::undeclared_imports(&input, &program.items, &ctx).expect("valid manifests")
+    }
+
+    #[test]
+    fn an_undeclared_dependency_is_named_with_its_fix() {
+        let errors = manifest_errors(
+            "[package]\nname = \"app\"\n",
+            &[],
+            "import mylib.utils;\nimport mylib.other;\nfn main() {}\n",
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "every undeclared import is reported: {errors:?}"
+        );
+        assert!(errors[0].contains("`mylib.utils` is not declared in hew.toml"));
+        assert!(errors[0].contains("hew add mylib.utils"));
+    }
+
+    #[test]
+    fn a_declared_dependency_covers_its_modules() {
+        let errors = manifest_errors(
+            "[package]\nname = \"app\"\n\n[dependencies]\n\"acme.http\" = \"1.0\"\n",
+            &[],
+            "import acme.http;\nimport acme.http.client;\nimport acme.other;\nfn main() {}\n",
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("`acme.other`"), "{errors:?}");
+    }
+
+    #[test]
+    fn std_file_and_package_local_imports_need_no_declaration() {
+        let errors = manifest_errors(
+            "[package]\nname = \"meshcore.broker\"\n",
+            &[
+                ("wire.hew", "pub fn w() -> i64 { 7 }\n"),
+                ("helpers.hew", "pub fn h() -> i64 { 1 }\n"),
+                ("greeting/greeting.hew", "pub fn hello() -> string { \"hi\" }\n"),
+                ("lib.hew", "pub fn l() -> i64 { 2 }\n"),
+            ],
+            "import std.fs;\nimport \"lib.hew\";\nimport meshcore.broker.wire;\nimport helpers;\nimport greeting;\nfn main() {}\n",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_dotted_package_imports_itself_but_not_a_shorter_prefix() {
+        let errors = manifest_errors(
+            "[package]\nname = \"meshcore.broker\"\n",
+            &[("wire.hew", "pub fn w() -> i64 { 7 }\n")],
+            "import meshcore.broker.wire;\nimport meshcore.wire;\nfn main() {}\n",
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("`meshcore.wire`"), "{errors:?}");
     }
 
     #[test]
@@ -5029,6 +5233,7 @@ mod tests {
     #[test]
     fn user_directory_peer_import_is_refused() {
         let dir = tempfile::tempdir().expect("create module-owner fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("greeting");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(&module_dir, "greeting.hew", "pub fn entry() -> i64 { 1 }\n");
@@ -5086,6 +5291,7 @@ mod tests {
     #[test]
     fn directory_module_peers_claiming_one_name_report_a_duplicate_definition() {
         let dir = tempfile::tempdir().expect("create directory-module fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("shapes");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(
@@ -5189,6 +5395,7 @@ mod tests {
     #[test]
     fn directory_module_peers_may_redeclare_one_extern_symbol() {
         let dir = tempfile::tempdir().expect("create directory-module fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("clock");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(
@@ -7450,6 +7657,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     #[test]
     fn extern_conflict_in_peer_file_routes_to_the_declaring_file() {
         let dir = tempfile::tempdir().expect("create temp dir");
+        write_package_manifest(dir.path());
         let pkg_dir = dir.path().join("pkg");
         fs::create_dir(&pkg_dir).expect("create pkg dir");
         let main = write_source(
@@ -7500,6 +7708,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     #[test]
     fn state_constructor_error_in_peer_routes_to_its_source_line() {
         let dir = tempfile::tempdir().expect("create temp dir");
+        write_package_manifest(dir.path());
         let workflow_dir = dir.path().join("workflow");
         fs::create_dir(&workflow_dir).expect("create workflow dir");
         let main = write_source(
@@ -8073,8 +8282,10 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         assert_eq!(inner.help.len(), 1);
         assert!(
-            inner.help[0].contains("share one directory") && inner.help[0].contains("spec 3.5.1"),
-            "same-directory cycle should recommend the directory-module form: {}",
+            inner.help[0].contains("share one directory")
+                && inner.help[0].contains("spec 3.5.1")
+                && inner.help[0].contains("hew init"),
+            "a loose same-directory cycle should recommend a package's directory-module form: {}",
             inner.help[0]
         );
     }

@@ -290,8 +290,9 @@ impl ManifestTemplate {
 /// Canonical root source for a library package.
 ///
 /// Package names are module paths: `hew.selfqualtype` materializes below
-/// `hew/selfqualtype/`, and the final segment names the directory module entry
-/// `selfqualtype.hew`. Simple names are the one-segment form of the same rule.
+/// `hew/selfqualtype/`, and the final segment names the package's root module,
+/// the single file `selfqualtype.hew` beside `hew.toml` (HEW-SPEC-2026
+/// §3.5.1). Simple names are the one-segment form of the same rule.
 #[must_use]
 pub fn package_root_source(package_name: &str) -> String {
     let leaf = package_name.rsplit('.').next().unwrap_or(package_name);

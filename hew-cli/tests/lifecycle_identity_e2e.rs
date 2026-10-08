@@ -18,7 +18,6 @@ fn root_and_imported_module_members_accept_canonical_lifecycle_payloads() {
         "[package]\nname = \"lifecyclepkg\"\n",
     )
     .expect("write hew.toml");
-    fs::create_dir(workspace.path().join("src")).expect("create src directory");
 
     let main = workspace.path().join("main.hew");
     fs::write(
@@ -47,7 +46,7 @@ fn main() -> i64 {
     )
     .expect("write root lifecycle fixture");
     fs::write(
-        workspace.path().join("src/events.hew"),
+        workspace.path().join("events.hew"),
         r"import std.failure.{CrashNotification};
 
 pub enum PeerEvent {

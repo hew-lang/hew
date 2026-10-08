@@ -2662,9 +2662,8 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     require_codegen();
 
     let dir = support::tempdir();
-    std::fs::create_dir_all(dir.path().join("src/reasons")).unwrap();
     std::fs::write(
-        dir.path().join("src/reasons/reasons.hew"),
+        dir.path().join("reasons.hew"),
         "pub const MAX_RETRIES: i64 = 5;\n\
          pub fn retries_label() -> string {\n\
          \x20   \"retries\"\n\
@@ -2674,7 +2673,7 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import src.reasons.{MAX_RETRIES, retries_label};\n\
+        "import reasons.{MAX_RETRIES, retries_label};\n\
          fn main() {\n\
          \x20   println(retries_label());\n\
          \x20   println(f\"max: {MAX_RETRIES}\");\n\

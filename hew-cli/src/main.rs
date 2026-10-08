@@ -565,7 +565,6 @@ fn refuse_native_for_wasm(inputs: &native_link::ProgramInputs) -> Result<(), Dia
 
 #[derive(Debug)]
 pub(crate) struct NativeBuildPaths {
-    pub(crate) project_dir: PathBuf,
     pub(crate) module_search_paths: Vec<PathBuf>,
     pub(crate) hew_lib: PathBuf,
 }

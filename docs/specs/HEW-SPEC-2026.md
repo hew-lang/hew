@@ -1737,15 +1737,18 @@ order:
    directory form `a/b/c/c.hew` when that file roots a module — a directory
    module's entry, or the `c.hew` of a package whose `hew.toml` sits in
    `a/b/c/`. A loose `a/b/c/c.hew` is reached only by its flat spelling
-   `a.b.c.c`.
+   `a.b.c.c`. A file below its package's root also reaches the package's
+   modules by their path from the root: `import wire;` in
+   `meshproto/radio.hew` finds the package's `wire.hew`.
 4. Dependencies: the packages installed under the project's
    `.hew/packages/`, then the `--pkg-path`, `hew.` and `ecosystem.` roots.
 
 The working directory is never searched, and neither is the
 standard-library root for a module outside `std`. When two different files
 answer one import, it is refused as ambiguous. Inside a package, an import
-that resolves from the standard library, from the package's own name or beside
-the importing file needs no `[dependencies]` entry; anything else must be a
+that resolves from the standard library, from the package's own name, from the
+package root or beside the importing file needs no `[dependencies]` entry;
+anything else must be a
 declared dependency.
 
 #### 3.5.4 Per-module type namespacing

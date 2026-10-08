@@ -47,17 +47,13 @@ pub struct FrontendOptions {
     pub no_typecheck: bool,
     pub enable_wasm_target: bool,
     pub pkg_path: Option<PathBuf>,
-    /// Anchor the in-memory compile to a specific project directory, enabling
-    /// manifest-aware import resolution (local `src/` lookup, manifest dep
-    /// validation, lockfile) identical to `compile_file`.  When `None` the
-    /// old cwd-fallback with no manifest is used.
+    /// Select a project directory for manifest and lockfile resolution.
+    /// When unset, use the nearest manifest above the input file, or the
+    /// input's directory when it belongs to no package.
     pub project_dir: Option<PathBuf>,
-    /// Exact roots used to resolve standard-library and global modules.
-    ///
-    /// When unset, the frontend discovers roots from the source path, current
-    /// directory, and installed compiler layout. Synthetic in-process callers
-    /// should set this so resolution does not depend on the host process's
-    /// working directory or executable location.
+    /// Exact roots used to resolve `std.*` modules. When unset, use `HEW_STD`
+    /// or the standard library shipped with the compiler. In-memory hosts can
+    /// set these roots to match their retained source paths.
     pub module_search_paths: Option<Vec<PathBuf>>,
     /// Treat warning-severity diagnostics as hard errors.
     ///
@@ -3012,6 +3008,16 @@ fn module_candidates(
         CandidateRoot::Relative,
         true,
     );
+    if let ModuleAnchor::Package { dir, .. } = anchor {
+        if importer_dir != dir.as_path() {
+            push(
+                &mut out.candidates,
+                module_forms(dir, &segments),
+                CandidateRoot::Package,
+                true,
+            );
+        }
+    }
 
     dependency_candidates(&mut out, &segments, ctx);
     out

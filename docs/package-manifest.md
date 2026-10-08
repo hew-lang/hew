@@ -55,8 +55,10 @@ linked path dependency give each file the same module.
   entry and the other top-level `.hew` files in `D`, except `*_test.hew`, are
   merged into it (HEW-SPEC-2026 §3.5.1).
 - Any file in the package imports the package's modules by the package's whole
-  name (`import acme.http;`, `import acme.http.client;`) or by a path relative
-  to itself. Such imports need no `[dependencies]` entry.
+  name (`import acme.http;`, `import acme.http.client;`), by a path from the
+  package root (`import client;`), or by a path relative to itself. Such imports
+  need no `[dependencies]` entry. Distinct files answering the same import
+  make it ambiguous.
 
 ```
 my-http/                 ← the checkout; any name

@@ -100,10 +100,10 @@ module, and directory modules belong to a package`: run `hew init` in the
 - Other top-level `.hew` files in that directory merge into the same module
   automatically. Subdirectories do not; import child modules explicitly, for
   example `import text_stats.words;`.
-- Imports are relative to the importing file, never to the working directory.
-  A test in `tests/` reaches its package by the package's name
-  (`import acme.http;`); the error notes a module it found in a parent
-  directory.
+- Imports use paths relative to the importing file or its package root, never
+  the working directory. A test in `tests/` can use the package's name
+  (`import acme.http;`) or a path from its root (`import client;`). When a local
+  path and a package-root path name distinct files, the import is ambiguous.
 - Standard library imports are available under the last path segment:
   `import std.fs;` gives `fs`, and `import std.encoding.json;` gives `json`.
 - Every `std.*` module resolves from one root: `HEW_STD` (the path to

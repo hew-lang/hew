@@ -463,3 +463,45 @@ fn checking_a_package_root_module_checks_it_under_the_package_name() {
     let other = hew_in(&root, &["check", "other.hew"]);
     assert!(!other.status.success(), "{}", describe_output(&other));
 }
+
+#[test]
+fn a_nested_file_reaches_package_modules_by_their_path_from_the_root() {
+    require_codegen();
+    let workspace = support::tempdir();
+    let root = workspace.path().join("roles");
+    write(&root, "wire.hew", "pub fn tag() -> i64 { 1 }\n");
+    write(&root, "hostlib/binary.hew", "pub fn width() -> i64 { 8 }\n");
+    write(
+        &root,
+        "hostlib/events.hew",
+        "import hostlib.binary;\n\npub fn size() -> i64 { binary.width() * 2 }\n",
+    );
+    write(
+        &root,
+        "meshproto/radio.hew",
+        "import wire;\nimport hostlib.events;\n\npub fn frame() -> i64 { wire.tag() + events.size() }\n",
+    );
+    write(
+        &root,
+        "main.hew",
+        "import meshproto.radio;\n\nfn main() {\n    println(radio.frame());\n}\n",
+    );
+
+    let loose = hew_in(&root, &["run", "main.hew"]);
+    assert!(!loose.status.success(), "{}", describe_output(&loose));
+
+    fs::write(root.join("hew.toml"), manifest("meshcore.roles")).expect("write manifest");
+    let run = hew_in(&root, &["run", "main.hew"]);
+    assert!(run.status.success(), "{}", describe_output(&run));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "17\n");
+
+    write(&root, "meshproto/wire.hew", "pub fn tag() -> i64 { 2 }\n");
+    let ambiguous = hew_in(&root, &["check", "main.hew"]);
+    assert!(
+        !ambiguous.status.success(),
+        "{}",
+        describe_output(&ambiguous)
+    );
+    let diagnostic = text(&ambiguous);
+    assert!(diagnostic.contains("E_IMPORT_AMBIGUOUS"), "{diagnostic}");
+}

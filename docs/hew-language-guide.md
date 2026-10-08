@@ -4053,8 +4053,9 @@ source file directly — no project layout is required. This is the fastest
 way to split a script into files.
 
 A dotted import names a module by its path: `import a.b.c;` finds
-`a/b/c.hew` beside the importing file (never in the working directory) and
-binds the module under its last segment (`c` here) — call its public items
+`a/b/c.hew` beside the importing file or from its package root (never in the
+working directory). Distinct files answering the same import make it ambiguous.
+The import binds the module under its last segment (`c` here) — call its public items
 as `c.function_name()` /
 `c.CONST_NAME`, the same dotted-access form used for `std.string`,
 `std.math`, and every other stdlib module:

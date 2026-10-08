@@ -141,6 +141,10 @@ pub(crate) enum NativeRead {
     /// Accept one connection on this listener.
     Accept(i32),
     /// Wait until this handle is readable, taking nothing: the item is `()`.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "descriptor readiness streams are Unix-only")
+    )]
     Readiness(i32),
 }
 

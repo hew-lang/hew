@@ -38,6 +38,52 @@ pub unsafe extern "C" fn hew_io_write_err(s: *const HewString) {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Whether `fd` can be watched for readability: 0 when it can, 1 when it is
+/// not an open descriptor, 2 when watching it is unsupported (a regular file,
+/// which is always readable, or a platform without descriptor readiness).
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_io_watch_check(fd: i32) -> i32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: `stat` is plain data; all-zero is a valid value.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fstat writes one local stat for any descriptor number.
+        if fd < 0 || unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
+            return 1;
+        }
+        if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
+            return 2;
+        }
+        0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fd;
+        2
+    }
+}
+
+/// Watch a descriptor the program owns for readability as a `Stream<()>`;
+/// null when [`hew_io_watch_check`] refuses it. The stream watches its own
+/// duplicate, so the descriptor stays with its owner, who may close it in
+/// either order with the stream.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_io_watch_readable(fd: i32) -> *mut crate::stream::HewStreamPair {
+    if hew_io_watch_check(fd) != 0 {
+        return std::ptr::null_mut();
+    }
+    #[cfg(unix)]
+    {
+        crate::stream::readiness_stream(fd)
+    }
+    #[cfg(not(unix))]
+    {
+        std::ptr::null_mut()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,49 +137,5 @@ mod tests {
     fn write_err_empty_string() {
         // SAFETY: null is the canonical managed empty string.
         unsafe { hew_io_write_err(std::ptr::null()) };
-    }
-}
-
-/// Whether `fd` can be watched for readability: 0 when it can, 1 when it is
-/// not an open descriptor, 2 when watching it is unsupported (a regular file,
-/// which is always readable, or a platform without descriptor readiness).
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn hew_io_watch_check(fd: i32) -> i32 {
-    #[cfg(unix)]
-    {
-        // SAFETY: fstat writes one local stat for any descriptor number.
-        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        if fd < 0 || unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
-            return 1;
-        }
-        if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
-            return 2;
-        }
-        0
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = fd;
-        2
-    }
-}
-
-/// Watch a descriptor the program owns for readability as a `Stream<()>`;
-/// null when [`hew_io_watch_check`] refuses it. The descriptor stays with its
-/// owner, who closes it only after closing the stream.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn hew_io_watch_readable(fd: i32) -> *mut crate::stream::HewStreamPair {
-    if hew_io_watch_check(fd) != 0 {
-        return std::ptr::null_mut();
-    }
-    #[cfg(unix)]
-    {
-        crate::stream::readiness_stream(fd)
-    }
-    #[cfg(not(unix))]
-    {
-        std::ptr::null_mut()
     }
 }

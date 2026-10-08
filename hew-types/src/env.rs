@@ -1288,16 +1288,15 @@ impl TypeEnv {
         let name = name.lexical_key();
         let floor = self.loop_scope_floors.last().map_or(0, |scope| scope.floor);
         let deadline = self.deadline_scope_floors.first().copied();
-        let Some((depth, scope)) = self
+        let Some((depth, binding)) = self
             .scopes
             .iter_mut()
             .enumerate()
             .rev()
-            .find(|(_, scope)| scope.contains_key(&name))
+            .find_map(|(depth, scope)| scope.get_mut(&name).map(|binding| (depth, binding)))
         else {
             return;
         };
-        let binding = scope.get_mut(&name).expect("scope found by its key");
         if depth >= floor
             && deadline.is_none_or(|deadline| depth < deadline)
             && binding.read_count == 1

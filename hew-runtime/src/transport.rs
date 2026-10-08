@@ -3049,7 +3049,7 @@ pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
 /// null, after closing whatever the handle named, for a non-listener handle.
 #[no_mangle]
 pub extern "C" fn hew_tcp_incoming(listener: c_int) -> *mut crate::stream::HewStreamPair {
-    if !tcp_slot(listener).is_some_and(|slot| slot.listener().is_some()) {
+    if tcp_slot(listener).is_none_or(|slot| slot.listener().is_none()) {
         let _ = hew_tcp_close(listener);
         return std::ptr::null_mut();
     }

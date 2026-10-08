@@ -272,10 +272,10 @@ impl LowerCtx {
             | ResolvedTy::Bool
             | ResolvedTy::Char
             | ResolvedTy::Duration
-            | ResolvedTy::Tuple(_) => None,
+            | ResolvedTy::Tuple(_)
             // An opaque resource rides its handle image, the same witness a
             // `recv` uses (a listener's accepted connections, §6.4.5).
-            ResolvedTy::Named {
+            | ResolvedTy::Named {
                 head:
                     hew_types::TypeHead::Nominal(_)
                     | hew_types::TypeHead::Param(_)

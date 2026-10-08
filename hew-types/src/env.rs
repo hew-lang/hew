@@ -186,6 +186,10 @@ pub struct Binding {
     /// Receiver parameters retain their distinct caller-visible write-back
     /// contract; ordinary mutable value parameters use private storage.
     pub origin: BindingOrigin,
+    /// The source arm of a `select` with an `after` timer that is this task's
+    /// first read, taken in the loop iteration that defined the task. When it
+    /// stays the only read, a timer win leaves the task running unjoined.
+    pub timed_select_arm: Option<Span>,
 }
 
 /// Ownership explicitly declared at a source parameter boundary.
@@ -367,6 +371,8 @@ pub enum ScopeWarningKind {
     /// A by-value `var` parameter was mutated and nothing ever read the
     /// result: the callee owns the copy, so the write reached nobody.
     VarParamMutationLost,
+    /// A forked task's only consumer is a timed `select`; `span` is its arm.
+    TaskOutlivesTimedSelect,
 }
 
 /// Lexically-scoped type environment.
@@ -380,6 +386,9 @@ pub struct TypeEnv {
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
     /// Active loop labels, lexical floors and entry ownership snapshots.
     loop_scope_floors: Vec<LoopScope>,
+    /// The lexical floor of each active `scope within` body, outermost first.
+    /// A task defined at or above a floor is cancelled by that deadline.
+    deadline_scope_floors: Vec<usize>,
     /// The binding whose mutation is currently being checked, if any. Reads
     /// taken while it is set resolve or feed that mutation (`n = n + 1`), so
     /// they do not count as observations of its result.
@@ -402,6 +411,7 @@ impl TypeEnv {
             scopes: vec![HashMap::new()],
             deferred_scopes: vec![Vec::new()],
             loop_scope_floors: Vec::new(),
+            deadline_scope_floors: Vec::new(),
             mutation_root: None,
             next_binding_id: 0,
         }
@@ -597,6 +607,7 @@ impl TypeEnv {
                     def_span: None,
                     shadow_span: None,
                     origin: BindingOrigin::Synthetic,
+                    timed_select_arm: None,
                 },
             );
         }
@@ -666,6 +677,7 @@ impl TypeEnv {
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
                     origin: BindingOrigin::Local,
+                    timed_select_arm: None,
                 },
             );
         }
@@ -761,6 +773,7 @@ impl TypeEnv {
                     def_span: None,
                     shadow_span: Some(span),
                     origin,
+                    timed_select_arm: None,
                 },
             );
         }
@@ -775,6 +788,8 @@ impl TypeEnv {
     ) -> Self {
         let mut environment = self.clone();
         environment.loop_scope_floors.clear();
+        // A closure body may run after the enclosing deadline scope has ended.
+        environment.deadline_scope_floors.clear();
         environment.mutation_root = None;
         for scope in &mut environment.deferred_scopes {
             scope.clear();
@@ -1219,6 +1234,14 @@ impl TypeEnv {
                 }
                 continue; // synthetic binding (self, params without spans, etc.)
             };
+            if let (Some(arm), 1) = (&binding.timed_select_arm, binding.read_count) {
+                warnings.push(ScopeWarning {
+                    name: name.name.to_string(),
+                    span: arm.clone(),
+                    kind: ScopeWarningKind::TaskOutlivesTimedSelect,
+                    ty: binding.ty.clone(),
+                });
+            }
             if binding.read_count == 0 {
                 warnings.push(ScopeWarning {
                     name: name.name.to_string(),
@@ -1236,6 +1259,52 @@ impl TypeEnv {
             }
         }
         warnings
+    }
+
+    /// Open a `scope within` body: tasks defined inside it are cancelled
+    /// when its deadline passes.
+    pub fn enter_deadline_scope(&mut self) {
+        self.deadline_scope_floors.push(self.scopes.len());
+    }
+
+    /// Close the innermost `scope within` body.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no deadline scope is active, which indicates an unbalanced
+    /// checker traversal.
+    pub fn exit_deadline_scope(&mut self) {
+        self.deadline_scope_floors
+            .pop()
+            .expect("cannot exit a deadline scope that was never entered");
+    }
+
+    /// Note that the task bound to `name` is the source `arm` of a `select`
+    /// with an `after` timer. Only a first read counts, and only when the
+    /// task was defined inside the innermost enclosing loop: a select that
+    /// re-waits on an outer task each iteration joins it eventually. A task
+    /// defined inside a `scope within` body is bounded by that deadline.
+    pub fn note_timed_select_task(&mut self, name: impl LexicalName, arm: &Span) {
+        let name = name.lexical_key();
+        let floor = self.loop_scope_floors.last().map_or(0, |scope| scope.floor);
+        let deadline = self.deadline_scope_floors.first().copied();
+        let Some((depth, scope)) = self
+            .scopes
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(_, scope)| scope.contains_key(&name))
+        else {
+            return;
+        };
+        let binding = scope.get_mut(&name).expect("scope found by its key");
+        if depth >= floor
+            && deadline.is_none_or(|deadline| depth < deadline)
+            && binding.read_count == 1
+            && binding.def_span.is_some()
+        {
+            binding.timed_select_arm = Some(arm.clone());
+        }
     }
 
     /// Look up a variable by name, marking it as used.

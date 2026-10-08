@@ -1,0 +1,17 @@
+[[case]]
+id = "fork-outlives-timed-select"
+intent = "A forked task whose only wait is a timed `select` is reported: the timer wins yet the scope still waits for the task. A task forked inside a `scope within` deadline, the deadline itself and an explicit join after the timer are not reported."
+source = "cases/fork-outlives-timed-select.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stranded timer won: true\nbounded deadline hit: true\ndeadline bounds the task: 0\njoined after the timer: 1\n"
+exit = 0
+
+[[case.expected.diagnostics]]
+code = "fork_outlives_timed_select"
+severity = "warning"
+line = 13
+column = 24
+message = "this timed `select` is the only wait on task `job`"

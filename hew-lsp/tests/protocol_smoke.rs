@@ -409,6 +409,7 @@ struct RenameSession {
     rx: Receiver<Value>,
     next_id: u64,
     buffers: BTreeMap<String, (String, i32)>,
+    responses: Vec<Value>,
 }
 
 fn file_uri(path: &Path) -> String {
@@ -435,6 +436,7 @@ impl RenameSession {
             rx,
             next_id: 1,
             buffers: BTreeMap::new(),
+            responses: Vec::new(),
         };
         let workspace_folders: Vec<Value> = folders
             .iter()
@@ -460,14 +462,41 @@ impl RenameSession {
     }
 
     fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.start_request(method, params);
+        self.wait_for_responses(&[id], SESSION_BUDGET)
+    }
+
+    fn start_request(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let mut request = json!({"jsonrpc":"2.0","id":id,"method":method});
         request["params"] = params;
         send(&mut self.stdin, &request);
-        recv_until(&self.rx, Instant::now() + SESSION_BUDGET, |message| {
-            message.get("id") == Some(&json!(id))
-        })
+        id
+    }
+
+    fn wait_for_responses(&mut self, ids: &[u64], budget: Duration) -> Value {
+        let matches = |message: &Value| message["id"].as_u64().is_some_and(|id| ids.contains(&id));
+        if let Some(index) = self.responses.iter().position(matches) {
+            return self.responses.remove(index);
+        }
+        let deadline = Instant::now() + budget;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            match self.rx.recv_timeout(remaining) {
+                Ok(message) if matches(&message) => return message,
+                Ok(message) if message["id"].as_u64().is_some() => self.responses.push(message),
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("timed out waiting for response IDs {ids:?}")
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("hew-lsp exited before response IDs {ids:?}")
+                }
+            }
+        }
     }
 
     fn open(&mut self, path: &Path, source: &str, version: i32) -> Value {
@@ -531,6 +560,14 @@ impl RenameSession {
 
     fn rename(&mut self, path: &Path, source: &str, needle: &str, new_name: &str) -> Value {
         self.request(
+            "textDocument/rename",
+            json!({"textDocument":{"uri":file_uri(path)},
+                "position":position_of(source, needle),"newName":new_name}),
+        )
+    }
+
+    fn start_rename(&mut self, path: &Path, source: &str, needle: &str, new_name: &str) -> u64 {
+        self.start_request(
             "textDocument/rename",
             json!({"textDocument":{"uri":file_uri(path)},
                 "position":position_of(source, needle),"newName":new_name}),
@@ -1314,4 +1351,312 @@ fn lsp_unsaved_symlink_export_rename_updates_closed_importer() {
     let mut verification = RenameSession::new(Some(&project), &[]);
     assert_clean(&verification.open(&fresh, expected, 12));
     assert_clean(&verification.open(&main, &session.source(&main), 1));
+}
+
+#[test]
+fn lsp_shared_dependency_rename_keeps_manifest_root_scopes_distinct() {
+    let alpha = TestProject::new("rename-reuse-alpha");
+    let beta = TestProject::new("rename-reuse-beta");
+    let manifest = "[package]\nname = \"app\"\nedition = \"2026\"\n";
+    alpha.write("hew.toml", manifest);
+    beta.write("hew.toml", manifest);
+    let saved_alpha = "pub fn greet() -> i32 { 1 }\n";
+    let alpha_util = alpha.write("util.hew", saved_alpha);
+    let alpha_entry = alpha.write(
+        "greeting/greeting.hew",
+        "import app.util.{ greet };\npub fn entry() -> i32 { greet() }\n",
+    );
+    let alpha_peer = alpha.write("greeting/peer.hew", "import app.util as library;\nimport app.util.{ greet as call };\npub fn peer() -> i32 { call() + library.greet() }\n");
+    let beta_source = "pub fn greet() -> string { \"beta\" }\n";
+    let beta_util = beta.write("util.hew", beta_source);
+    let beta_entry_source = "import app.util.{ greet };\npub fn entry() -> string { greet() }\n";
+    let beta_entry = beta.write("greeting/greeting.hew", beta_entry_source);
+    let beta_peer_source = "import app.util as library;\nimport app.util.{ greet as call };\npub fn peer() -> string { call() + library.greet() }\n";
+    let beta_peer = beta.write("greeting/peer.hew", beta_peer_source);
+    let fresh_alpha = "// latest shared dependency\nfn helper() -> i32 { 7 }\npub fn greet() -> i32 { helper() }\n";
+    let mut session = RenameSession::new(None, &[&alpha, &beta]);
+    assert_clean(&session.open(&alpha_util, saved_alpha, 1));
+    assert_clean(&session.open(&beta_util, beta_source, 1));
+    session.change_without_waiting(&alpha_util, fresh_alpha, 7);
+    let response = session.rename(&alpha_util, fresh_alpha, "greet", "salute");
+    assert_eq!(
+        session.apply(&response),
+        [&alpha_util, &alpha_entry, &alpha_peer]
+            .into_iter()
+            .map(|path| file_uri(path))
+            .collect()
+    );
+    let expected_alpha = "// latest shared dependency\nfn helper() -> i32 { 7 }\npub fn salute() -> i32 { helper() }\n";
+    assert_eq!(session.source(&alpha_util), expected_alpha);
+    assert_eq!(
+        session.source(&alpha_entry),
+        "import app.util.{ salute };\npub fn entry() -> i32 { salute() }\n"
+    );
+    assert_eq!(session.source(&alpha_peer), "import app.util as library;\nimport app.util.{ salute as call };\npub fn peer() -> i32 { call() + library.salute() }\n");
+    assert_eq!(session.source(&beta_util), beta_source);
+    assert_eq!(session.source(&beta_entry), beta_entry_source);
+    assert_eq!(session.source(&beta_peer), beta_peer_source);
+    assert_eq!(
+        std::fs::read_to_string(&alpha_util).unwrap(),
+        saved_alpha,
+        "shared dependency remains unsaved"
+    );
+
+    // The same package/import spelling is valid in both roots with different
+    // signatures; dependency facts from either real root cannot serve the other.
+    let mut verification = RenameSession::new(None, &[&alpha, &beta]);
+    assert_clean(&verification.open(&alpha_util, expected_alpha, 8));
+    assert_clean(&verification.open(&alpha_peer, &session.source(&alpha_peer), 1));
+    assert_clean(&verification.open(&alpha_entry, &session.source(&alpha_entry), 1));
+    assert_clean(&verification.open(&beta_peer, beta_peer_source, 1));
+    assert_clean(&verification.open(&beta_entry, beta_entry_source, 1));
+}
+
+#[test]
+fn lsp_shared_dependency_rename_rechecks_capture_errors_and_changed_consumers() {
+    let project = TestProject::new("rename-reuse-requests");
+    project.write(
+        "hew.toml",
+        "[package]\nname = \"app\"\nedition = \"2026\"\n",
+    );
+    let saved_util = "pub fn greet() -> i32 { 1 }\n";
+    let util = project.write("util.hew", saved_util);
+    let capture_source =
+        "import app.util.{ greet };\npub fn use_named(salute: fn() -> i32) -> i32 { greet() }\n";
+    let named = project.write("named.hew", capture_source);
+    let alias_source = "import app.util as library;\nimport app.util.{ greet as call };\npub fn use_alias() -> i32 { call() + library.greet() }\n";
+    let alias = project.write("alias.hew", alias_source);
+    let expected_files: BTreeSet<_> = [&util, &named, &alias]
+        .into_iter()
+        .map(|path| file_uri(path))
+        .collect();
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&util, saved_util, 1));
+
+    // This capture still type-checks: the parameter and export have the same
+    // callable type. Proposed analysis must check identity, not just errors.
+    let capture = session.rename(&util, saved_util, "greet", "salute");
+    assert_rename_refused(&capture);
+    assert!(
+        capture["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("capture")),
+        "same-typed binding capture must be diagnosed: {capture}"
+    );
+    assert_eq!(session.source(&util), saved_util);
+    assert_eq!(session.source(&named), capture_source);
+    assert_eq!(session.source(&alias), alias_source);
+
+    let repaired_named = "import app.util.{ greet as original };\npub fn use_named(salute: fn() -> i32) -> i32 { original() }\n";
+    std::fs::write(&named, repaired_named).expect("repair same-typed capture");
+    let broken_util = "// changed shared dependency\npub fn greet() -> i32 { missing }\n";
+    session.change_without_waiting(&util, broken_util, 5);
+    let broken = session.rename(&util, broken_util, "greet", "salute");
+    assert_rename_refused(&broken);
+    assert_eq!(session.source(&util), broken_util);
+    assert_eq!(session.source(&named), repaired_named);
+    assert_eq!(session.source(&alias), alias_source);
+
+    let repaired_util = "// repaired shared dependency\npub fn greet() -> i32 { 4 }\n";
+    session.change_without_waiting(&util, repaired_util, 6);
+    let recovered = session.rename(&util, repaired_util, "greet", "salute");
+    assert_eq!(session.apply(&recovered), expected_files);
+    let renamed_util = "// repaired shared dependency\npub fn salute() -> i32 { 4 }\n";
+    assert_eq!(session.source(&util), renamed_util);
+    assert_eq!(session.source(&named), "import app.util.{ salute as original };\npub fn use_named(salute: fn() -> i32) -> i32 { original() }\n");
+    assert_eq!(session.source(&alias), "import app.util as library;\nimport app.util.{ salute as call };\npub fn use_alias() -> i32 { call() + library.salute() }\n");
+    assert_clean(&session.change(&util));
+
+    // A later request sees new closed-consumer text and its different aliases,
+    // even though this server has already analysed the same dependency paths.
+    let changed_alias = "// edited unopened consumer\nimport app.util as utility;\nimport app.util.{ salute as invoke };\npub fn use_alias() -> i32 { invoke() + utility.salute() }\n";
+    std::fs::write(&alias, changed_alias).expect("change closed consumer aliases");
+    let subsequent = session.rename(&util, renamed_util, "salute", "done");
+    assert_eq!(session.apply(&subsequent), expected_files);
+    let final_util = "// repaired shared dependency\npub fn done() -> i32 { 4 }\n";
+    assert_eq!(session.source(&util), final_util);
+    assert_eq!(session.source(&named), "import app.util.{ done as original };\npub fn use_named(salute: fn() -> i32) -> i32 { original() }\n");
+    assert_eq!(session.source(&alias), "// edited unopened consumer\nimport app.util as utility;\nimport app.util.{ done as invoke };\npub fn use_alias() -> i32 { invoke() + utility.done() }\n");
+    assert_eq!(
+        std::fs::read_to_string(&util).unwrap(),
+        saved_util,
+        "successive dependency edits remain unsaved"
+    );
+    let mut verification = RenameSession::new(Some(&project), &[]);
+    assert_clean(&verification.open(&util, final_util, 8));
+    assert_clean(&verification.open(&named, &session.source(&named), 1));
+    assert_clean(&verification.open(&alias, &session.source(&alias), 1));
+}
+
+const RESPONSIVE_RENAME_BUDGET: Duration = Duration::from_mins(2);
+const RESPONSIVE_CONSUMERS: usize = 100;
+const RESPONSIVE_CONTROL: &str = "fn main() { let marker = 7; println(marker); }\n";
+const RESPONSIVE_UTIL: &str = "pub fn greet() -> i32 { 1 }\n";
+
+fn responsive_rename_fixture(label: &str) -> (TestProject, PathBuf, PathBuf, Vec<PathBuf>) {
+    let project = TestProject::new(label);
+    let util = project.write("util.hew", RESPONSIVE_UTIL);
+    let control = project.write("control.hew", RESPONSIVE_CONTROL);
+    let consumers = (0..RESPONSIVE_CONSUMERS)
+        .map(|index| {
+            project.write(
+                &format!("consumer_{index:03}.hew"),
+                &format!("import util;\npub fn read_{index}() -> i32 {{ util.greet() }}\n"),
+            )
+        })
+        .collect();
+    (project, util, control, consumers)
+}
+
+fn assert_hover_before_rename(session: &mut RenameSession, control: &Path, rename_id: u64) {
+    let hover_id = session.start_request("textDocument/hover",
+        json!({"textDocument":{"uri":file_uri(control)},"position":position_of(RESPONSIVE_CONTROL, "marker")}));
+    let response = session.wait_for_responses(&[hover_id, rename_id], RESPONSIVE_RENAME_BUDGET);
+    assert_eq!(
+        response["id"], hover_id,
+        "hover must be served while project rename is pending: {response}"
+    );
+    assert!(
+        response["error"].is_null() && !response["result"].is_null(),
+        "control hover must succeed: {response}"
+    );
+}
+
+#[test]
+fn lsp_pending_project_rename_serves_hover_and_rejects_stale_open_and_disk_sources() {
+    let (project, util, control, consumers) = responsive_rename_fixture("rename-responsive-edits");
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&control, RESPONSIVE_CONTROL, 1));
+    assert_clean(&session.open(&util, RESPONSIVE_UTIL, 1));
+    let active = session.start_rename(&util, RESPONSIVE_UTIL, "greet", "salute");
+    assert_hover_before_rename(&mut session, &control, active);
+
+    let fresh_util = "// current unsaved definition\npub fn greet() -> i32 { 2 }\n";
+    let changed_consumer =
+        "import util as library;\npub fn read_0() -> i32 { library.greet() + library.greet() }\n";
+    session.change_without_waiting(&util, fresh_util, 2);
+    std::fs::write(&consumers[0], changed_consumer).expect("edit closed consumer during rename");
+    let stale = session.wait_for_responses(&[active], RESPONSIVE_RENAME_BUDGET);
+    assert_rename_refused(&stale);
+    assert_eq!(session.source(&util), fresh_util);
+    assert_eq!(session.source(&consumers[0]), changed_consumer);
+
+    let retry = session.start_rename(&util, fresh_util, "greet", "salute");
+    let response = session.wait_for_responses(&[retry], RESPONSIVE_RENAME_BUDGET);
+    let expected_files: BTreeSet<_> = std::iter::once(&util)
+        .chain(consumers.iter())
+        .map(|path| file_uri(path))
+        .collect();
+    assert_eq!(session.apply(&response), expected_files);
+    let renamed_util = "// current unsaved definition\npub fn salute() -> i32 { 2 }\n";
+    assert_eq!(session.source(&util), renamed_util);
+    assert_eq!(
+        session.source(&consumers[0]),
+        "import util as library;\npub fn read_0() -> i32 { library.salute() + library.salute() }\n"
+    );
+    for (index, consumer) in consumers.iter().enumerate().skip(1) {
+        assert_eq!(
+            session.source(consumer),
+            format!("import util;\npub fn read_{index}() -> i32 {{ util.salute() }}\n")
+        );
+    }
+    assert_clean(&session.change(&util));
+
+    // A disk-only change can land before the worker's initial disk capture.
+    // Both outcomes are safe: refuse the stale snapshot, or return a complete
+    // edit for the newly captured source. Applying stale ranges is never safe.
+    let disk_active = session.start_rename(&util, renamed_util, "salute", "done");
+    assert_hover_before_rename(&mut session, &control, disk_active);
+    let disk_source = "// newly edited closed consumer\nimport util as current;\npub fn read_1() -> i32 { current.salute() + current.salute() }\n";
+    std::fs::write(&consumers[1], disk_source).expect("edit disk-only consumer during rename");
+    let disk_response = session.wait_for_responses(&[disk_active], RESPONSIVE_RENAME_BUDGET);
+    let current = if disk_response["error"].is_null() {
+        disk_response
+    } else {
+        assert_rename_refused(&disk_response);
+        assert_eq!(session.source(&consumers[1]), disk_source);
+        let retry = session.start_rename(&util, renamed_util, "salute", "done");
+        session.wait_for_responses(&[retry], RESPONSIVE_RENAME_BUDGET)
+    };
+    assert_eq!(session.apply(&current), expected_files);
+    let final_util = "// current unsaved definition\npub fn done() -> i32 { 2 }\n";
+    assert_eq!(session.source(&util), final_util);
+    assert_eq!(
+        session.source(&consumers[0]),
+        "import util as library;\npub fn read_0() -> i32 { library.done() + library.done() }\n"
+    );
+    assert_eq!(session.source(&consumers[1]), "// newly edited closed consumer\nimport util as current;\npub fn read_1() -> i32 { current.done() + current.done() }\n");
+    for (index, consumer) in consumers.iter().enumerate().skip(2) {
+        assert_eq!(
+            session.source(consumer),
+            format!("import util;\npub fn read_{index}() -> i32 {{ util.done() }}\n")
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&util).unwrap(),
+        RESPONSIVE_UTIL,
+        "responsive rename edits remain unsaved"
+    );
+    assert_eq!(session.source(&control), RESPONSIVE_CONTROL);
+    let mut verification = RenameSession::new(Some(&project), &[]);
+    assert_clean(&verification.open(&util, final_util, 4));
+    assert_clean(&verification.open(&consumers[0], &session.source(&consumers[0]), 1));
+    assert_clean(&verification.open(&consumers[1], &session.source(&consumers[1]), 1));
+}
+
+#[test]
+fn lsp_cancelled_project_rename_and_queued_snapshot_cannot_deliver_stale_edits() {
+    let (project, util, control, consumers) = responsive_rename_fixture("rename-responsive-cancel");
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&control, RESPONSIVE_CONTROL, 1));
+    assert_clean(&session.open(&util, RESPONSIVE_UTIL, 1));
+    let active = session.start_rename(&util, RESPONSIVE_UTIL, "greet", "discarded");
+    assert_hover_before_rename(&mut session, &control, active);
+    send(
+        &mut session.stdin,
+        &json!({"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":active}}),
+    );
+
+    // The queued request owns the original version before it waits for the
+    // cancelled request's still-running CPU work to release its permit.
+    let queued = session.start_rename(&util, RESPONSIVE_UTIL, "greet", "salute");
+    assert_hover_before_rename(&mut session, &control, queued);
+    let fresh_util = "// changed after queueing\npub fn greet() -> i32 { 9 }\n";
+    session.change_without_waiting(&util, fresh_util, 7);
+    let cancelled = session.wait_for_responses(&[active], RESPONSIVE_RENAME_BUDGET);
+    assert!(
+        !cancelled["error"].is_null() && cancelled.get("result").is_none(),
+        "cancelled request must never return a WorkspaceEdit: {cancelled}"
+    );
+    let stale_queued = session.wait_for_responses(&[queued], RESPONSIVE_RENAME_BUDGET);
+    assert_rename_refused(&stale_queued);
+    assert_eq!(session.source(&util), fresh_util);
+    for (index, consumer) in consumers.iter().enumerate() {
+        assert_eq!(
+            session.source(consumer),
+            format!("import util;\npub fn read_{index}() -> i32 {{ util.greet() }}\n")
+        );
+    }
+
+    let retry = session.start_rename(&util, fresh_util, "greet", "salute");
+    let response = session.wait_for_responses(&[retry], RESPONSIVE_RENAME_BUDGET);
+    assert_eq!(
+        session.apply(&response),
+        std::iter::once(&util)
+            .chain(consumers.iter())
+            .map(|path| file_uri(path))
+            .collect()
+    );
+    let expected = "// changed after queueing\npub fn salute() -> i32 { 9 }\n";
+    assert_eq!(session.source(&util), expected);
+    for (index, consumer) in consumers.iter().enumerate() {
+        assert_eq!(
+            session.source(consumer),
+            format!("import util;\npub fn read_{index}() -> i32 {{ util.salute() }}\n")
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&util).unwrap(), RESPONSIVE_UTIL);
+    let mut verification = RenameSession::new(Some(&project), &[]);
+    assert_clean(&verification.open(&util, expected, 8));
+    assert_clean(&verification.open(&consumers[0], &session.source(&consumers[0]), 1));
 }

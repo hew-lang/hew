@@ -1660,6 +1660,17 @@ fn typecheck_program_with_diagnostics(
     options: &FrontendOptions,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
+    typecheck_program_with_dependency_cache(program, source, input, options, entry_selection, None)
+}
+
+fn typecheck_program_with_dependency_cache(
+    program: &Program,
+    source: &str,
+    input: &str,
+    options: &FrontendOptions,
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
+    cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
+) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
     let search_paths = checker_search_paths(options);
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
@@ -1700,7 +1711,15 @@ fn typecheck_program_with_diagnostics(
         lint_sources.set_module(module.clone(), module_source.clone());
     }
     checker.set_lint_sources(lint_sources);
-    let tco = checker.check_program(program);
+    let tco = if let Some(cache) = cache {
+        let sources = module_source_map
+            .iter()
+            .map(|(module, (text, filename))| (module.clone(), text.clone(), filename.clone()))
+            .collect();
+        cache.check_program(&mut checker, program, sources)
+    } else {
+        checker.check_program(program)
+    };
     let mut diagnostics = tco
         .errors
         .iter()
@@ -3457,11 +3476,74 @@ pub fn run_source_frontend(
     run_document_frontend_from(label, Some(source), options, RootSelection::Module)
 }
 
+/// Frontend checks sharing immutable dependency analysis within one request.
+///
+/// `options.documents` is frozen when the batch is created. Each call resolves
+/// imports using its genuine source root and forks mutable semantic state from
+/// a dependency-only checkpoint when independence is proved. Uncertain root
+/// shapes use the ordinary full frontend. Use a separate batch for proposed
+/// source text; no cache or inference state survives this object's lifetime.
+#[derive(Debug)]
+pub struct SourceAnalysisBatch {
+    options: FrontendOptions,
+    dependencies: hew_types::check::DependencyAnalysisCache,
+}
+
+impl SourceAnalysisBatch {
+    #[must_use]
+    pub fn new(options: FrontendOptions) -> Self {
+        Self {
+            options,
+            dependencies: hew_types::check::DependencyAnalysisCache::default(),
+        }
+    }
+
+    /// Run the shared frontend against this batch's immutable source snapshot.
+    #[must_use]
+    pub fn run_source_frontend(&mut self, source: &str, label: &str) -> DocumentFrontendState {
+        run_document_frontend_with_dependency_cache(
+            label,
+            Some(source),
+            &self.options,
+            RootSelection::Module,
+            Some(&mut self.dependencies),
+        )
+    }
+
+    /// Dependency-only checker pipelines run in this immutable batch.
+    #[must_use]
+    pub fn dependency_bootstraps(&self) -> usize {
+        self.dependencies.bootstraps()
+    }
+
+    /// Roots using an already retained dependency checkpoint.
+    #[must_use]
+    pub fn dependency_cache_hits(&self) -> usize {
+        self.dependencies.cache_hits()
+    }
+
+    /// Number of real roots analysed from a dependency checkpoint.
+    #[must_use]
+    pub fn reused_roots(&self) -> usize {
+        self.dependencies.reused_roots()
+    }
+}
+
 fn run_document_frontend_from(
     input: &str,
     source_override: Option<&str>,
     options: &FrontendOptions,
     roots: RootSelection,
+) -> DocumentFrontendState {
+    run_document_frontend_with_dependency_cache(input, source_override, options, roots, None)
+}
+
+fn run_document_frontend_with_dependency_cache(
+    input: &str,
+    source_override: Option<&str>,
+    options: &FrontendOptions,
+    roots: RootSelection,
+    cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
     if roots == RootSelection::Module {
         if let Some(entry) = directory_module_entry(Path::new(input)) {
@@ -3518,17 +3600,42 @@ fn run_document_frontend_from(
             .insert(0, file_import(companion.display().to_string()));
     }
 
-    run_frontend_after_parse(state, &project, input, options, entry_selection)
+    run_frontend_after_parse_with_dependency_cache(
+        state,
+        &project,
+        input,
+        options,
+        entry_selection,
+        cache,
+    )
 }
 
 /// The frontend stages every host shares once a program exists: import
 /// resolution, the builtins preload, manifest validation and type-checking.
 fn run_frontend_after_parse(
+    state: DocumentFrontendState,
+    project: &ProjectContext,
+    input: &str,
+    options: &FrontendOptions,
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
+) -> DocumentFrontendState {
+    run_frontend_after_parse_with_dependency_cache(
+        state,
+        project,
+        input,
+        options,
+        entry_selection,
+        None,
+    )
+}
+
+fn run_frontend_after_parse_with_dependency_cache(
     mut state: DocumentFrontendState,
     project: &ProjectContext,
     input: &str,
     options: &FrontendOptions,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
+    cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
     if let Err(failure) = require_deterministic_typecheck(options) {
         return state.stop(failure);
@@ -3544,12 +3651,13 @@ fn run_frontend_after_parse(
         return state.stop(failure);
     }
 
-    let (typecheck_result, type_diagnostics) = typecheck_program_with_diagnostics(
+    let (typecheck_result, type_diagnostics) = typecheck_program_with_dependency_cache(
         &state.program,
         &project.source,
         input,
         options,
         entry_selection,
+        cache,
     );
     state.diagnostics.extend(type_diagnostics);
     let type_check_failed = type_check_failed(&typecheck_result);
@@ -7781,5 +7889,448 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             inner.help[0],
             "move the shared declarations into a module both sides import"
         );
+    }
+}
+
+#[cfg(test)]
+mod source_analysis_batch_tests {
+    use super::*;
+    use std::fs;
+
+    fn test_options() -> FrontendOptions {
+        FrontendOptions {
+            module_search_paths: Some(vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .to_path_buf()]),
+            ..FrontendOptions::default()
+        }
+    }
+
+    fn identity(output: &hew_types::TypeCheckOutput, id: hew_types::DefId) -> String {
+        let site = output.defs.site(id);
+        let path = output
+            .defs
+            .module(id)
+            .and_then(|module| output.defs.module_source(module));
+        format!(
+            "{path:?}:{:?}:{:?}:{:?}:{}",
+            site.map(hew_types::DeclarationOccurrence::span),
+            site.map(hew_types::DeclarationOccurrence::kind),
+            site.map(hew_types::DeclarationOccurrence::ordinal),
+            output.defs.name(id)
+        )
+    }
+
+    fn physical_declarations(output: &hew_types::TypeCheckOutput) -> Vec<String> {
+        let mut declarations = output
+            .defs
+            .declarations()
+            .filter_map(|(site, id)| {
+                output
+                    .defs
+                    .module_source(site.module()?)
+                    .map(|_| identity(output, id))
+            })
+            .collect::<Vec<_>>();
+        declarations.sort();
+        declarations
+    }
+
+    fn checked_resolutions(output: &hew_types::TypeCheckOutput) -> Vec<String> {
+        use hew_types::check::scope::Resolution;
+        let mut local_sites = HashMap::new();
+        for (span, resolution) in &output.resolutions {
+            if let Resolution::Local(binding) = resolution {
+                let span = format!("{span:?}");
+                local_sites
+                    .entry(*binding)
+                    .and_modify(|previous: &mut String| {
+                        if span < *previous {
+                            previous.clone_from(&span);
+                        }
+                    })
+                    .or_insert(span);
+            }
+        }
+        let mut resolutions = output
+            .resolutions
+            .iter()
+            .map(|(span, resolution)| {
+                let target = match resolution {
+                    Resolution::Def(id) => format!("def:{}", identity(output, *id)),
+                    Resolution::Member(id) => format!("member:{}", identity(output, *id)),
+                    Resolution::Nominal(id) => {
+                        format!("nominal:{}", identity(output, id.declaration()))
+                    }
+                    Resolution::Param(id) => {
+                        format!("param:{}:{}", identity(output, id.owner), id.index)
+                    }
+                    Resolution::Field(id, index) => {
+                        format!("field:{}:{index}", identity(output, id.declaration()))
+                    }
+                    Resolution::Variant(id, index) => {
+                        format!("variant:{}:{index}", identity(output, id.declaration()))
+                    }
+                    Resolution::Local(id) => format!("local:{}", local_sites[id]),
+                    Resolution::Module(id) => format!(
+                        "module:{:?}:{}",
+                        output.defs.module_source(*id),
+                        output.defs.module_path(*id)
+                    ),
+                    Resolution::Builtin(kind) => format!("builtin:{kind:?}"),
+                };
+                format!("{span:?}:{target}")
+            })
+            .collect::<Vec<_>>();
+        resolutions.sort();
+        resolutions
+    }
+
+    fn effect_identity(
+        output: &hew_types::TypeCheckOutput,
+        body: &hew_types::ty::EffectBody,
+    ) -> String {
+        use hew_types::ty::EffectBody;
+        match body {
+            EffectBody::Declaration(id) => format!("declaration:{}", identity(output, *id)),
+            EffectBody::Generator(id) => format!("generator:{}", identity(output, *id)),
+            EffectBody::GeneratorBlock(span) => format!("generator:{span:?}"),
+            EffectBody::Closure(span) => format!("closure:{span:?}"),
+        }
+    }
+
+    fn checked_type(output: &hew_types::TypeCheckOutput, ty: &hew_types::Ty) -> String {
+        use hew_types::ty::TypeHead;
+        use hew_types::Ty;
+        match ty {
+            Ty::Named { head, args } => {
+                let head = match head {
+                    TypeHead::Nominal(head) => {
+                        format!("nominal:{}", identity(output, head.id.declaration()))
+                    }
+                    TypeHead::Actor(head) => {
+                        format!("actor:{}", identity(output, head.id.declaration()))
+                    }
+                    TypeHead::Param(head) => format!(
+                        "param:{}:{}",
+                        identity(output, head.id.owner),
+                        head.id.index
+                    ),
+                    TypeHead::Builtin(kind) => format!("builtin:{kind:?}"),
+                    TypeHead::Unresolved(name) => format!("unresolved:{name}"),
+                };
+                format!(
+                    "{head}<{:?}>",
+                    args.iter()
+                        .map(|ty| checked_type(output, ty))
+                        .collect::<Vec<_>>()
+                )
+            }
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => format!(
+                "function:{capabilities:?}:{:?}:{}",
+                params
+                    .iter()
+                    .map(|ty| checked_type(output, ty))
+                    .collect::<Vec<_>>(),
+                checked_type(output, ret)
+            ),
+            Ty::Closure {
+                capabilities,
+                params,
+                ret,
+                captures,
+                identity: body,
+            } => format!(
+                "closure:{capabilities:?}:{:?}:{}:{:?}:{}",
+                params
+                    .iter()
+                    .map(|ty| checked_type(output, ty))
+                    .collect::<Vec<_>>(),
+                checked_type(output, ret),
+                captures
+                    .iter()
+                    .map(|ty| checked_type(output, ty))
+                    .collect::<Vec<_>>(),
+                effect_identity(output, body)
+            ),
+            Ty::Var(_) => "inference-variable".to_string(),
+            _ => ty.to_string(),
+        }
+    }
+
+    fn finalized_facts(output: &hew_types::TypeCheckOutput) -> Vec<String> {
+        let mut facts = output
+            .expr_types
+            .iter()
+            .map(|(span, ty)| format!("expr:{span:?}:{}", checked_type(output, ty)))
+            .collect::<Vec<_>>();
+        facts.extend(output.fn_sigs.iter().map(|(id, signature)| {
+            format!(
+                "signature:{}:{:?}:{:?}:{}",
+                identity(output, *id),
+                signature.param_names,
+                signature
+                    .params
+                    .iter()
+                    .map(|ty| checked_type(output, ty))
+                    .collect::<Vec<_>>(),
+                checked_type(output, &signature.return_type)
+            )
+        }));
+        facts.extend(
+            output
+                .suspension_effects
+                .bodies
+                .iter()
+                .map(|(body, effect)| {
+                    format!("body-effect:{}:{effect:?}", effect_identity(output, body))
+                }),
+        );
+        facts.extend(
+            output
+                .suspension_effects
+                .calls
+                .iter()
+                .map(|(span, effect)| format!("call-effect:{span:?}:{effect:?}")),
+        );
+        facts.extend(
+            output
+                .suspension_effects
+                .fork_transfers
+                .iter()
+                .map(|(span, transfer)| format!("fork:{span:?}:{transfer:?}")),
+        );
+        facts.extend(
+            output
+                .closure_escape_facts
+                .iter()
+                .map(|(span, escape)| format!("escape:{span:?}:{escape:?}")),
+        );
+        facts.sort();
+        facts
+    }
+
+    fn assert_equivalent(
+        source: &str,
+        label: &str,
+        options: &FrontendOptions,
+        batch: &mut SourceAnalysisBatch,
+    ) -> DocumentFrontendState {
+        let fresh = run_source_frontend(source, label, options);
+        let shared = batch.run_source_frontend(source, label);
+        assert_eq!(fresh.stopped.is_some(), shared.stopped.is_some());
+        assert_eq!(
+            format!("{:?}", fresh.diagnostics),
+            format!("{:?}", shared.diagnostics)
+        );
+        let fresh = fresh
+            .typecheck_result
+            .as_ref()
+            .and_then(|result| result.tco.as_ref())
+            .unwrap();
+        let checked = shared
+            .typecheck_result
+            .as_ref()
+            .and_then(|result| result.tco.as_ref())
+            .unwrap();
+        assert_eq!(physical_declarations(fresh), physical_declarations(checked));
+        assert_eq!(checked_resolutions(fresh), checked_resolutions(checked));
+        assert_eq!(finalized_facts(fresh), finalized_facts(checked));
+        shared
+    }
+
+    #[test]
+    fn independent_roots_reuse_dependencies_with_fresh_alias_scopes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("greeting.hew"),
+            "fn hidden<T>(value: T) -> T { value } pub fn greet() -> i32 { hidden(7) }\n",
+        )
+        .unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let sources = [
+            "import greeting; fn first() -> i32 { greeting.greet() } fn main() {}",
+            "import greeting.{ greet as hello }; fn second() -> i32 { hello() } fn main() {}",
+            "import greeting.{ greet }; fn third() -> i32 { greet() } fn main() {}",
+            "import greeting.{ greet as invoke_greeting }; fn fourth<T>(value: T) -> T { value } fn main() { let result = fourth(invoke_greeting()); }",
+        ];
+        for (index, source) in sources.iter().enumerate() {
+            let label = dir.path().join(format!("consumer_{index}.hew"));
+            assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+        }
+        assert_eq!(
+            batch.reused_roots(),
+            4,
+            "all ordinary mixed-import roots must reuse the checkpoint"
+        );
+        assert_eq!(
+            batch.dependency_bootstraps(),
+            1,
+            "distinct physical consumer names share one dependency bootstrap"
+        );
+        assert_eq!(
+            batch.dependency_cache_hits(),
+            3,
+            "first seed construction is not a cache hit"
+        );
+    }
+
+    #[test]
+    fn dependency_lookup_overlap_and_new_generic_guard_use_full_checker() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("greeting.hew"),
+            "fn helper() -> i32 { 7 } pub fn greet() -> i32 { helper() }\n",
+        )
+        .unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        for source in [
+            "import greeting; fn helper() -> i32 { 9 } fn main() { greeting.greet(); }",
+            "import greeting.{ greet as helper }; fn main() { helper(); }",
+            "import greeting; fn println() {} fn main() { greeting.greet(); }",
+            "import greeting; fn generic<BrandNew>(value: BrandNew) -> BrandNew { value } fn main() { greeting.greet(); }",
+        ] {
+            let label = dir.path().join("consumer.hew");
+            assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+        }
+        assert_eq!(batch.reused_roots(), 0);
+    }
+
+    #[test]
+    fn imported_nominal_and_generic_private_signatures_preserve_full_frontend() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("greeting.hew"), "pub type Thing { value: i32; } fn identity<T>(value: T) -> T { value } pub fn greet(value: Thing) -> i32 { identity(value.value) }\n").unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let label = dir.path().join("consumer.hew");
+        let source = "import greeting.{ Thing as Data, greet as call }; fn consume(value: Data) -> i32 { call(value) } fn main() {}";
+        let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+        assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+        assert_eq!(
+            batch.reused_roots(),
+            0,
+            "nominal registration order remains on the complete checker"
+        );
+    }
+
+    #[test]
+    fn separate_source_epochs_and_real_roots_never_share_dependency_state() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        fs::write(
+            first.path().join("greeting.hew"),
+            "pub fn greet() -> i32 { 7 }",
+        )
+        .unwrap();
+        fs::write(
+            second.path().join("greeting.hew"),
+            "pub fn greet() -> string { \"second\" }",
+        )
+        .unwrap();
+        let mut options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let first_label = first.path().join("consumer.hew");
+        assert_equivalent(
+            "import greeting; fn first() -> i32 { greeting.greet() }",
+            first_label.to_str().unwrap(),
+            &options,
+            &mut batch,
+        );
+        let second_label = second.path().join("consumer.hew");
+        assert_equivalent(
+            "import greeting; fn second() -> string { greeting.greet() }",
+            second_label.to_str().unwrap(),
+            &options,
+            &mut batch,
+        );
+        options.documents.insert(
+            first.path().join("greeting.hew"),
+            "pub fn greet() -> string { \"changed\" }".to_string(),
+        );
+        let mut proposed = SourceAnalysisBatch::new(options.clone());
+        assert_equivalent(
+            "import greeting; fn first() -> string { greeting.greet() }",
+            first_label.to_str().unwrap(),
+            &options,
+            &mut proposed,
+        );
+        // The old immutable snapshot is still valid and independently usable.
+        let original_options = test_options();
+        assert_equivalent(
+            "import greeting; fn first() -> i32 { greeting.greet() }",
+            first_label.to_str().unwrap(),
+            &original_options,
+            &mut batch,
+        );
+        assert_eq!(batch.reused_roots(), 3);
+        assert_eq!(proposed.reused_roots(), 1);
+    }
+    #[test]
+    fn inferred_import_signatures_keep_checked_constraints_on_full_frontend() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = test_options();
+        for (dependency, source) in [
+            (
+                "pub fn greet() -> _ { true }",
+                "import greeting; fn consumer() -> i32 { greeting.greet() }",
+            ),
+            (
+                "pub fn greet(value: _) -> bool { value }",
+                "import greeting; fn consumer() -> bool { greeting.greet(1) }",
+            ),
+            (
+                "pub fn greet() -> Option<_> { Some(true) }",
+                "import greeting; fn consumer() -> Option<i32> { greeting.greet() }",
+            ),
+            (
+                "fn hidden() -> _ { true } pub fn greet() -> i32 { 7 }",
+                "import greeting; fn main() {}",
+            ),
+        ] {
+            fs::write(dir.path().join("greeting.hew"), dependency).unwrap();
+            let mut batch = SourceAnalysisBatch::new(options.clone());
+            for name in ["first.hew", "second.hew"] {
+                let label = dir.path().join(name);
+                assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            }
+            assert_eq!(
+                batch.reused_roots(),
+                0,
+                "signature inference must retain full dependency/root registration order"
+            );
+            assert_eq!(batch.dependency_bootstraps(), 0);
+        }
+    }
+
+    #[test]
+    fn deferred_closure_and_effect_facts_finalize_independently_for_each_root() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("greeting.hew"),
+            "pub fn greet() -> i32 { let call: fn(i32) -> i32 = |value: _| value + 1; call(6) }",
+        )
+        .unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        for (name, source) in [
+            ("first.hew", "import greeting; fn first() -> i32 { greeting.greet() }"),
+            ("second.hew", "import greeting.{ greet as invoke_greeting }; fn second() -> i32 { let local: fn() -> i32 = || invoke_greeting(); local() }"),
+        ] {
+            let label = dir.path().join(name);
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+            let output = state.typecheck_result.as_ref().unwrap().tco.as_ref().unwrap();
+            assert!(!output.closure_escape_facts.is_empty());
+            assert!(!output.suspension_effects.calls.is_empty());
+        }
+        assert_eq!(batch.dependency_bootstraps(), 1);
+        assert_eq!(batch.dependency_cache_hits(), 1);
     }
 }

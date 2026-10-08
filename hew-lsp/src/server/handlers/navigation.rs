@@ -201,7 +201,7 @@ pub(crate) fn prepare_rename(
     super::super::project_rename::prepare(server, &params.text_document.uri, params.position)
 }
 
-pub(crate) fn rename(
+pub(crate) async fn rename(
     server: &HewLanguageServer,
     params: &RenameParams,
 ) -> Result<Option<WorkspaceEdit>> {
@@ -212,7 +212,9 @@ pub(crate) fn rename(
         uri,
         params.text_document_position.position,
         &params.new_name,
-    ) {
+    )
+    .await
+    {
         Ok(edit) => Ok(edit),
         Err(err) => Err(rename_error_to_jsonrpc(&err)),
     }

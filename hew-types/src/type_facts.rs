@@ -488,6 +488,16 @@ impl TypeFactService {
         self.rows
     }
 
+    /// Return the unchanged declaration authority and the facts derived from it.
+    ///
+    /// Fact queries mutate only `rows`; the context's metadata is supplied at
+    /// construction and stays immutable. Returning both preserves that single
+    /// owned snapshot without cloning its declarations and registries.
+    #[must_use]
+    pub fn into_parts(self) -> (TypeFactContext, BTreeMap<TypeInstanceKey, TypeFacts>) {
+        (self.context, self.rows)
+    }
+
     /// Resolve an exact source record through the checker's declaration table.
     /// Field order, parameter substitution and opacity come from that same
     /// declaration for user records and source-defined builtin records.

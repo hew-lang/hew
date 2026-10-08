@@ -6,6 +6,7 @@
 use hew_parser::ast::Ident;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use hew_parser::ast::Item;
 use hew_parser::module::ModulePath;
@@ -19,9 +20,9 @@ use crate::stdlib_loader::{load_module_checked, ModuleInfo};
 /// sources may answer one spelling across programs (a different search path, a
 /// different project root), so a spelling-keyed slot hands the second program
 /// the first program's source.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct ModuleParseCache {
-    modules: HashMap<PathBuf, ModuleInfo>,
+    modules: HashMap<PathBuf, Arc<ModuleInfo>>,
 }
 
 /// The cache identity of a parsed source: its canonical path where the
@@ -33,7 +34,9 @@ fn parse_cache_key(source: &std::path::Path) -> PathBuf {
 /// Module declarations and derived metadata visible to one checked program.
 #[derive(Debug, Clone, Default)]
 struct ProgramModuleState {
-    modules: BTreeMap<ModulePath, ModuleInfo>,
+    // Published loader metadata is immutable. Each program owns its namespace
+    // and derived sets, while registry forks retain the same parsed AST.
+    modules: BTreeMap<ModulePath, Arc<ModuleInfo>>,
     handle_types: HashSet<String>,
     drop_types: HashSet<String>,
     drop_funcs: HashMap<String, String>,
@@ -43,7 +46,7 @@ struct ProgramModuleState {
 ///
 /// Replaces the baked-in `stdlib_generated.rs` tables. Discovers modules
 /// by searching the filesystem and parsing `.hew` files at user compile time.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleRegistry {
     cache: ModuleParseCache,
     configured: ProgramModuleState,
@@ -484,6 +487,18 @@ impl std::fmt::Display for ModuleError {
 }
 
 impl ModuleRegistry {
+    /// A batch may seed only a fresh, unconfigured registry. A prior program's
+    /// path-only parse cache is not authority for a new immutable source set.
+    pub(crate) fn dependency_analysis_context(&self) -> Option<(Vec<PathBuf>, Option<PathBuf>)> {
+        let empty = |state: &ProgramModuleState| {
+            state.modules.is_empty()
+                && state.handle_types.is_empty()
+                && state.drop_types.is_empty()
+                && state.drop_funcs.is_empty()
+        };
+        (self.cache.modules.is_empty() && empty(&self.configured) && empty(&self.active))
+            .then(|| (self.search_paths.clone(), self.compiler_stdlib_root.clone()))
+    }
     fn module_info_declares_nominal(info: &ModuleInfo, leaf: &str) -> bool {
         info.source_items.iter().any(|(item, _)| match item {
             Item::TypeDecl(decl) => decl.name == Ident::new(leaf),
@@ -506,6 +521,7 @@ impl ModuleRegistry {
             .active
             .modules
             .get(&module_id)
+            .map(Arc::as_ref)
             .or_else(|| self.cached_module_for_spelling(&loader_path))
         {
             if !Self::module_info_declares_nominal(info, leaf) {
@@ -566,7 +582,7 @@ impl ModuleRegistry {
             matches.sort_unstable();
             matches.dedup();
             return match matches.as_slice() {
-                [only] => Some((stored_id, info, only.clone())),
+                [only] => Some((stored_id, info.as_ref(), only.clone())),
                 _ => None,
             };
         }
@@ -580,7 +596,7 @@ impl ModuleRegistry {
                     .into_iter()
                     .any(|spelling| spelling == name)
             })
-            .map(|(module_id, info)| (module_id, info, name.to_string()))
+            .map(|(module_id, info)| (module_id, info.as_ref(), name.to_string()))
             .collect::<Vec<_>>();
         matches.sort_unstable_by(|left, right| left.0.segments.cmp(&right.0.segments));
         match matches.as_slice() {
@@ -753,7 +769,7 @@ impl ModuleRegistry {
                 }
                 .into());
             };
-            info
+            Arc::new(info)
         };
 
         let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
@@ -761,7 +777,7 @@ impl ModuleRegistry {
         if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
             return Err(CompilerModuleError::SourceOutsideAuthority {
                 module_path: module_path.to_string(),
-                source_path: info.source_path,
+                source_path: info.source_path.clone(),
             });
         }
 
@@ -795,6 +811,20 @@ impl ModuleRegistry {
     /// or [`ModuleError::ParseError`] if the module file exists but cannot be parsed.
     ///
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
+        self.load_arc(module_path).map(Arc::as_ref)
+    }
+
+    /// Retain immutable loader metadata while registering declarations into a
+    /// checker. Owning this handle ends the registry borrow without copying
+    /// source items or making semantic checker state shared.
+    pub(crate) fn load_shared(
+        &mut self,
+        module_path: &str,
+    ) -> Result<Arc<ModuleInfo>, ModuleError> {
+        self.load_arc(module_path).map(Arc::clone)
+    }
+
+    fn load_arc(&mut self, module_path: &str) -> Result<&Arc<ModuleInfo>, ModuleError> {
         let id = module_id_from_identity(module_path);
         let loader_path = id.join("::");
 
@@ -816,6 +846,7 @@ impl ModuleRegistry {
                 let Some(info) = load_module_checked(&loader_path, search_path)? else {
                     continue;
                 };
+                let info = Arc::new(info);
                 self.cache.modules.insert(cache_key, info.clone());
                 info
             };
@@ -835,11 +866,14 @@ impl ModuleRegistry {
     fn cached_module_for_spelling(&self, loader_path: &str) -> Option<&ModuleInfo> {
         self.search_paths.iter().find_map(|search_path| {
             let source = crate::stdlib_loader::resolve_hew_path(loader_path, search_path)?;
-            self.cache.modules.get(&parse_cache_key(&source))
+            self.cache
+                .modules
+                .get(&parse_cache_key(&source))
+                .map(Arc::as_ref)
         })
     }
 
-    fn activate_module(&mut self, id: &ModulePath, info: ModuleInfo) -> &ModuleInfo {
+    fn activate_module(&mut self, id: &ModulePath, info: Arc<ModuleInfo>) -> &Arc<ModuleInfo> {
         self.active
             .handle_types
             .extend(info.handle_types.iter().cloned());
@@ -858,7 +892,7 @@ impl ModuleRegistry {
     #[must_use]
     pub fn get(&self, module_path: &str) -> Option<&ModuleInfo> {
         let id = module_id_from_identity(module_path);
-        self.active.modules.get(&id)
+        self.active.modules.get(&id).map(Arc::as_ref)
     }
 
     /// Check if a fully-qualified name is a handle type across all loaded modules.
@@ -1040,7 +1074,11 @@ impl ModuleRegistry {
         };
 
         let exact_id = module_id_from_identity(module_path);
-        self.active.modules.get(&exact_id).and_then(symbol_for)
+        self.active
+            .modules
+            .get(&exact_id)
+            .map(Arc::as_ref)
+            .and_then(symbol_for)
     }
 
     /// Resolve a handle method to its C symbol.
@@ -1108,19 +1146,24 @@ impl ModuleRegistry {
             .active
             .modules
             .entry(module_id_from_identity(owner))
-            .or_insert_with(|| ModuleInfo {
-                source_path: None,
-                source_items: Vec::new(),
-                functions: Vec::new(),
-                clean_names: Vec::new(),
-                handle_types: Vec::new(),
-                handle_methods: Vec::new(),
-                wrapper_fns: Vec::new(),
-                drop_types: Vec::new(),
-                resource_wrapper_types: Vec::new(),
-                drop_funcs: Vec::new(),
-                unsupported_type_signatures: Vec::new(),
+            .or_insert_with(|| {
+                Arc::new(ModuleInfo {
+                    source_path: None,
+                    source_items: Vec::new(),
+                    functions: Vec::new(),
+                    clean_names: Vec::new(),
+                    handle_types: Vec::new(),
+                    handle_methods: Vec::new(),
+                    wrapper_fns: Vec::new(),
+                    drop_types: Vec::new(),
+                    resource_wrapper_types: Vec::new(),
+                    drop_funcs: Vec::new(),
+                    unsupported_type_signatures: Vec::new(),
+                })
             });
+        // Explicit test configuration can diverge after a registry fork. Do
+        // not mutate the parsed/configured metadata retained by another owner.
+        let info = Arc::make_mut(info);
         if !info.handle_types.contains(&qualified_name) {
             info.handle_types.push(qualified_name);
         }
@@ -1131,7 +1174,7 @@ impl ModuleRegistry {
     pub(crate) fn insert_module_info_for_test(&mut self, canonical_owner: &str, info: ModuleInfo) {
         self.active
             .modules
-            .insert(module_id_from_identity(canonical_owner), info);
+            .insert(module_id_from_identity(canonical_owner), Arc::new(info));
         self.configured = self.active.clone();
     }
 }
@@ -1806,8 +1849,8 @@ mod tests {
 
     #[test]
     fn resolve_module_call_uses_exact_paths_and_rejects_all_short_names() {
-        fn module_info(method: &str, c_symbol: &str) -> ModuleInfo {
-            ModuleInfo {
+        fn module_info(method: &str, c_symbol: &str) -> Arc<ModuleInfo> {
+            Arc::new(ModuleInfo {
                 source_path: None,
                 source_items: Vec::new(),
                 functions: Vec::new(),
@@ -1819,7 +1862,7 @@ mod tests {
                 resource_wrapper_types: Vec::new(),
                 drop_funcs: Vec::new(),
                 unsupported_type_signatures: Vec::new(),
-            }
+            })
         }
 
         let mut reg = ModuleRegistry::new(Vec::new());
@@ -1897,10 +1940,10 @@ mod tests {
 
     #[test]
     fn same_legacy_receiver_spelling_never_cross_wires_loaded_modules() {
-        fn shared_info(c_symbol: &str, dispatch_through_impl: bool) -> ModuleInfo {
+        fn shared_info(c_symbol: &str, dispatch_through_impl: bool) -> Arc<ModuleInfo> {
             let parsed = hew_parser::parse("pub type Pattern {\n    value: i32;\n}\n");
             assert!(parsed.errors.is_empty());
-            ModuleInfo {
+            Arc::new(ModuleInfo {
                 source_path: None,
                 source_items: parsed.program.items,
                 functions: Vec::new(),
@@ -1928,7 +1971,7 @@ mod tests {
                 resource_wrapper_types: Vec::new(),
                 drop_funcs: Vec::new(),
                 unsupported_type_signatures: Vec::new(),
-            }
+            })
         }
 
         let mut reg = ModuleRegistry::new(Vec::new());
@@ -2097,6 +2140,109 @@ mod tests {
             fs::write(&path, source).expect("write test stdlib module");
             path
         }
+    }
+
+    #[test]
+    fn registry_forks_share_module_data_but_isolate_loaded_visibility() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ModuleInfo>();
+
+        let modules = TestHewTree::new("shared-module-fork");
+        let alpha_path = modules.write_std_module("alpha", "pub fn alpha() -> i64 { 1 }\n");
+        modules.write_std_module("beta", "pub fn beta() -> i64 { 2 }\n");
+        let mut original = ModuleRegistry::new(vec![modules.root().clone()]);
+        let alpha = original.load_shared("std.alpha").expect("load alpha");
+        assert!(!alpha.source_items.is_empty());
+        assert!(std::ptr::eq(
+            alpha.as_ref(),
+            original.load("std.alpha").expect("borrow alpha"),
+        ));
+        assert!(Arc::ptr_eq(
+            &alpha,
+            &original.cache.modules[&parse_cache_key(&alpha_path)],
+        ));
+
+        let mut fork = original.clone();
+        let fork_alpha = fork.load_shared("std.alpha").expect("load fork alpha");
+        assert!(Arc::ptr_eq(&alpha, &fork_alpha));
+        fork.load("std.beta").expect("load fork-only beta");
+        assert!(fork.get("std.beta").is_some());
+        assert!(original.get("std.beta").is_none());
+        assert_eq!(original.loaded_modules().len(), 1);
+        assert_eq!(fork.loaded_modules().len(), 2);
+        assert_eq!(original.cache.modules.len(), 1);
+        assert_eq!(fork.cache.modules.len(), 2);
+    }
+
+    #[test]
+    fn new_program_reactivates_shared_parse_data_without_old_visibility() {
+        let modules = TestHewTree::new("shared-module-new-program");
+        modules.write_std_module("alpha", "pub fn alpha() -> i64 { 1 }\n");
+        modules.write_std_module("beta", "pub fn beta() -> i64 { 2 }\n");
+        let mut original = ModuleRegistry::new(vec![modules.root().clone()]);
+        let alpha = original.load_shared("std.alpha").expect("load alpha");
+        original.load("std.beta").expect("load beta");
+
+        let mut next = original.for_new_program();
+        assert_eq!(next.cache.modules.len(), 2);
+        assert!(next.loaded_modules().next().is_none());
+        assert!(next.get("std.alpha").is_none());
+        assert!(next.get("std.beta").is_none());
+        let next_alpha = next.load_shared("std.alpha").expect("reactivate alpha");
+        assert!(Arc::ptr_eq(&alpha, &next_alpha));
+        assert_eq!(next.loaded_modules().len(), 1);
+        assert!(next.get("std.beta").is_none());
+    }
+
+    #[test]
+    fn configured_metadata_mutation_is_copy_on_write_across_registry_forks() {
+        let modules = TestHewTree::new("shared-module-configured-mutation");
+        let alpha_path = modules.write_std_module("alpha", "pub fn alpha() -> i64 { 1 }\n");
+        let mut original = ModuleRegistry::new(vec![modules.root().clone()]);
+        let parsed = original.load_shared("std.alpha").expect("load alpha");
+        original.insert_handle_type_for_test("std.alpha.First".to_string());
+        let configured = original.load_shared("std.alpha").expect("configured alpha");
+        assert!(!Arc::ptr_eq(&parsed, &configured));
+        assert!(parsed.handle_types.is_empty());
+        assert!(Arc::ptr_eq(
+            &parsed,
+            &original.cache.modules[&parse_cache_key(&alpha_path)],
+        ));
+
+        let mut fork = original.clone();
+        assert!(Arc::ptr_eq(
+            &configured,
+            &fork
+                .load_shared("std.alpha")
+                .expect("fork configured alpha"),
+        ));
+        fork.insert_handle_type_for_test("std.alpha.Second".to_string());
+        let fork_info = fork.load_shared("std.alpha").expect("mutated fork alpha");
+        assert!(!Arc::ptr_eq(&configured, &fork_info));
+        assert_eq!(configured.handle_types, ["std.alpha.First"]);
+        assert_eq!(
+            fork_info.handle_types,
+            ["std.alpha.First", "std.alpha.Second"]
+        );
+        assert!(!original.active.handle_types.contains("std.alpha.Second"));
+        assert!(fork.active.handle_types.contains("std.alpha.Second"));
+        assert!(parsed.handle_types.is_empty());
+
+        let next_original = original.for_new_program();
+        let next_fork = fork.for_new_program();
+        assert_eq!(
+            next_original.get("std.alpha").unwrap().handle_types,
+            ["std.alpha.First"]
+        );
+        assert_eq!(
+            next_fork.get("std.alpha").unwrap().handle_types,
+            ["std.alpha.First", "std.alpha.Second"]
+        );
+        assert!(!next_original
+            .active
+            .handle_types
+            .contains("std.alpha.Second"));
+        assert!(next_fork.active.handle_types.contains("std.alpha.Second"));
     }
 
     #[test]

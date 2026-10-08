@@ -430,6 +430,9 @@ pub struct HewLanguageServer {
     open_documents: RwLock<HashMap<Url, OpenDocument>>,
     rename_document_changes: RwLock<bool>,
     workspace_roots: RwLock<Vec<PathBuf>>,
+    /// One CPU-heavy rename job per server, including cancelled requests whose
+    /// blocking computation is still running.
+    rename_jobs: Arc<tokio::sync::Semaphore>,
     /// Per-URI generation counters used by the debounced analysis path.
     analysis_versions: AnalysisVersions,
     /// Failures from the CLI test stream, kept separate from source diagnostics.
@@ -458,6 +461,7 @@ impl HewLanguageServer {
             open_documents: RwLock::new(HashMap::new()),
             rename_document_changes: RwLock::new(false),
             workspace_roots: RwLock::new(Vec::new()),
+            rename_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
             analysis_versions: Arc::new(DashMap::new()),
             test_diagnostics: Arc::new(DashMap::new()),
             test_seeds: Arc::new(DashMap::new()),
@@ -830,7 +834,7 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        handlers::navigation::rename(self, &params)
+        handlers::navigation::rename(self, &params).await
     }
 
     async fn prepare_call_hierarchy(

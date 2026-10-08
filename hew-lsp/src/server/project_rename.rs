@@ -255,16 +255,31 @@ fn checked_imports(
 
 /// Stop at the shared frontend's checker, without HIR/SIR diagnostic lowering.
 fn check(source: &Source, overlay: &hew_compile::DocumentSet, pkg_paths: &[PathBuf]) -> Checked {
-    let options = hew_compile::FrontendOptions {
+    let state = hew_compile::run_source_frontend(
+        &source.text,
+        &source.path.display().to_string(),
+        &frontend_options(overlay, pkg_paths),
+    );
+    checked_frontend(source, state)
+}
+
+fn frontend_options(
+    overlay: &hew_compile::DocumentSet,
+    pkg_paths: &[PathBuf],
+) -> hew_compile::FrontendOptions {
+    hew_compile::FrontendOptions {
         documents: overlay.clone(),
         pkg_path: pkg_paths.first().cloned(),
         ..Default::default()
-    };
-    let mut state = hew_compile::run_source_frontend(
-        &source.text,
-        &source.path.display().to_string(),
-        &options,
-    );
+    }
+}
+
+fn check_batched(source: &Source, batch: &mut hew_compile::SourceAnalysisBatch) -> Checked {
+    let state = batch.run_source_frontend(&source.text, &source.path.display().to_string());
+    checked_frontend(source, state)
+}
+
+fn checked_frontend(source: &Source, mut state: hew_compile::DocumentFrontendState) -> Checked {
     let dependencies = state
         .program
         .module_graph
@@ -813,7 +828,7 @@ pub(super) fn prepare(
     )
 }
 
-pub(super) fn rename(
+pub(super) async fn rename(
     server: &HewLanguageServer,
     uri: &Uri,
     position: Position,
@@ -829,8 +844,182 @@ pub(super) fn rename(
             )
         })?
         .clone();
-    let (mut open, mut overlay) = source_snapshot(&snapshot)?;
-    let Some(query) = query_source(&snapshot, uri) else {
+    let roots = server
+        .workspace_roots
+        .read()
+        .map(|roots| roots.clone())
+        .ok();
+    // Keep existing local and non-function planning synchronous. Only the
+    // exported-function transaction crosses a worker handoff, with its full
+    // physical snapshot fence. The query itself is checked freshly here.
+    let project = match prepare_rename(&snapshot, uri, position, new_name, &server.extra_pkg_paths)?
+    {
+        None => return Ok(None),
+        Some(PreparedRename::Legacy(planned)) => {
+            return complete_rename(server, &snapshot, planned);
+        }
+        Some(PreparedRename::Project(project)) => project,
+    };
+    let roots =
+        roots.ok_or_else(|| refused(&project.query.path, "workspace roots are unavailable"))?;
+    // Preserve the request's authored text and position even if another job
+    // occupies the worker. A queued request must not select a new declaration
+    // at the same position after an intervening edit.
+    let permit = std::sync::Arc::clone(&server.rename_jobs)
+        .acquire_owned()
+        .await
+        .map_err(|_| refused(Path::new("workspace"), "rename analysis is unavailable"))?;
+    if *server.open_documents.read().map_err(|_| {
+        refused(
+            Path::new("workspace"),
+            "open source snapshot is unavailable",
+        )
+    })? != snapshot
+    {
+        return Err(refused(
+            Path::new("workspace"),
+            "open documents changed while rename was queued; retry the request",
+        ));
+    }
+    let pkg_paths = server.extra_pkg_paths.clone();
+    let worker_name = new_name.to_owned();
+    let planned = spawn_rename_job(permit, move || {
+        plan_project(project, &worker_name, roots, &pkg_paths)
+    })
+    .await
+    .map_err(|_| {
+        refused(
+            Path::new("workspace"),
+            "rename analysis could not finish; retry the request",
+        )
+    })??;
+    complete_rename(server, &snapshot, planned)
+}
+
+fn complete_rename(
+    server: &HewLanguageServer,
+    snapshot: &HashMap<Uri, OpenDocument>,
+    PlannedRename {
+        mut edit,
+        roots,
+        path,
+        physical_snapshot,
+    }: PlannedRename,
+) -> Result<Option<WorkspaceEdit>, RenameError> {
+    let current = server
+        .open_documents
+        .read()
+        .map_err(|_| refused(&path, "open source snapshot is unavailable"))?;
+    if &*current != snapshot {
+        return Err(refused(
+            &path,
+            "open documents changed during rename; retry the request",
+        ));
+    }
+    let current_roots = roots
+        .as_ref()
+        .map(|_| {
+            server
+                .workspace_roots
+                .read()
+                .map_err(|_| refused(&path, "workspace roots are unavailable"))
+        })
+        .transpose()?;
+    if let (Some(roots), Some(current_roots)) = (&roots, &current_roots) {
+        if **current_roots != *roots {
+            return Err(refused(
+                &path,
+                "workspace roots changed during rename; retry the request",
+            ));
+        }
+    }
+    // The worker's final check precedes an async handoff. Recheck physical
+    // sources here while the editor and root snapshots remain read-locked;
+    // a closed-file change during that handoff must never publish old ranges.
+    if let Some(physical_snapshot) = physical_snapshot {
+        if physical_snapshot
+            .root_paths
+            .iter()
+            .map(|root| physical_path(root))
+            .collect::<Vec<_>>()
+            != physical_snapshot.roots
+        {
+            return Err(refused(
+                &path,
+                "workspace root identities changed during rename; retry the request",
+            ));
+        }
+        let (open, _) = source_snapshot(snapshot)?;
+        verify_source_snapshot(
+            &path,
+            &physical_snapshot.sources,
+            &physical_snapshot.roots,
+            &open,
+        )?;
+    }
+    let document_changes = *server
+        .rename_document_changes
+        .read()
+        .map_err(|_| refused(&path, "client edit capabilities are unavailable"))?;
+    if document_changes {
+        if let Some(edit) = edit.as_mut() {
+            version_document_edits(edit, &current);
+        }
+    }
+    Ok(edit)
+}
+
+fn spawn_rename_job<R: Send + 'static>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> tokio::task::JoinHandle<R> {
+    tokio::task::spawn_blocking(move || {
+        // A cancelled request must not release the gate while its blocking
+        // computation remains active. The owned permit travels with the job.
+        let _permit = permit;
+        work()
+    })
+}
+
+struct PlannedRename {
+    edit: Option<WorkspaceEdit>,
+    roots: Option<Vec<PathBuf>>,
+    path: PathBuf,
+    physical_snapshot: Option<ProjectSnapshot>,
+}
+
+struct ProjectSnapshot {
+    sources: BTreeMap<PathBuf, Source>,
+    roots: Vec<PathBuf>,
+    root_paths: Vec<PathBuf>,
+}
+
+struct ProjectPlan {
+    edit: Option<WorkspaceEdit>,
+    snapshot: Option<ProjectSnapshot>,
+}
+
+enum PreparedRename {
+    Project(ProjectRenameInputs),
+    Legacy(PlannedRename),
+}
+
+struct ProjectRenameInputs {
+    query: Source,
+    target: Function,
+    open: BTreeMap<PathBuf, Source>,
+    overlay: hew_compile::DocumentSet,
+}
+
+fn prepare_rename(
+    snapshot: &HashMap<Uri, OpenDocument>,
+    uri: &Uri,
+    position: Position,
+    new_name: &str,
+    pkg_paths: &[PathBuf],
+) -> Result<Option<PreparedRename>, RenameError> {
+    let (mut open, mut overlay) = source_snapshot(snapshot)?;
+    let Some(query) = query_source(snapshot, uri) else {
         return Ok(None);
     };
     let path = query.path.clone();
@@ -838,7 +1027,7 @@ pub(super) fn rename(
     if uri.to_checked_file_path().is_some() {
         open.insert(path.clone(), query.clone());
     }
-    let checked = check(&query, &overlay, &server.extra_pkg_paths);
+    let checked = check(&query, &overlay, pkg_paths);
     let offset = super::position_to_offset(&query.text, &checked.doc.line_offsets, position);
     if (!checked.resolved
         || checked.doc.type_output.is_none()
@@ -855,21 +1044,13 @@ pub(super) fn rename(
             ),
         ));
     }
-    let mut edit = if let Some(target) = selected(&checked, uri, offset) {
-        let roots = server
-            .workspace_roots
-            .read()
-            .map_err(|_| refused(&path, "workspace roots are unavailable"))?
-            .clone();
-        plan(
-            &query,
-            &target,
-            new_name,
-            &open,
+    let prepared = if let Some(target) = selected(&checked, uri, offset) {
+        PreparedRename::Project(ProjectRenameInputs {
+            query,
+            target,
+            open,
             overlay,
-            &roots,
-            &server.extra_pkg_paths,
-        )?
+        })
     } else {
         if exported_declaration_at(&checked, offset) {
             return Err(refused(
@@ -877,34 +1058,61 @@ pub(super) fn rename(
                 "cannot prove exported function declaration identity",
             ));
         }
-        super::navigation::plan_workspace_rename(
+        let edit = super::navigation::plan_workspace_rename(
             uri,
             &checked.doc,
             offset,
             new_name,
-            &legacy_documents(&snapshot),
-        )?
+            &legacy_documents(snapshot),
+        )?;
+        PreparedRename::Legacy(PlannedRename {
+            edit,
+            roots: None,
+            path,
+            physical_snapshot: None,
+        })
     };
-    let current = server
-        .open_documents
-        .read()
-        .map_err(|_| refused(&path, "open source snapshot is unavailable"))?;
-    if *current != snapshot {
-        return Err(refused(
-            &path,
-            "open documents changed during rename; retry the request",
-        ));
-    }
-    let document_changes = *server
-        .rename_document_changes
-        .read()
-        .map_err(|_| refused(&path, "client edit capabilities are unavailable"))?;
-    if document_changes {
-        if let Some(edit) = edit.as_mut() {
-            version_document_edits(edit, &current);
+    Ok(Some(prepared))
+}
+
+fn plan_project(
+    ProjectRenameInputs {
+        query,
+        target,
+        open,
+        overlay,
+    }: ProjectRenameInputs,
+    new_name: &str,
+    roots: Vec<PathBuf>,
+    pkg_paths: &[PathBuf],
+) -> Result<PlannedRename, RenameError> {
+    let planned = plan(&query, &target, new_name, &open, overlay, &roots, pkg_paths)?;
+    Ok(PlannedRename {
+        edit: planned.edit,
+        roots: Some(roots),
+        path: query.path,
+        physical_snapshot: planned.snapshot,
+    })
+}
+
+#[cfg(test)]
+fn rename_snapshot(
+    snapshot: &HashMap<Uri, OpenDocument>,
+    uri: &Uri,
+    position: Position,
+    new_name: &str,
+    roots: Option<Vec<PathBuf>>,
+    pkg_paths: &[PathBuf],
+) -> Result<Option<PlannedRename>, RenameError> {
+    match prepare_rename(snapshot, uri, position, new_name, pkg_paths)? {
+        Some(PreparedRename::Project(project)) => {
+            let roots = roots
+                .ok_or_else(|| refused(&project.query.path, "workspace roots are unavailable"))?;
+            plan_project(project, new_name, roots, pkg_paths).map(Some)
         }
+        Some(PreparedRename::Legacy(planned)) => Ok(Some(planned)),
+        None => Ok(None),
     }
-    Ok(edit)
 }
 
 /// Preserve client versions while ordering the returned document edits.
@@ -940,28 +1148,32 @@ fn plan(
     mut overlay: hew_compile::DocumentSet,
     workspace_roots: &[PathBuf],
     pkg_paths: &[PathBuf],
-) -> Result<Option<WorkspaceEdit>, RenameError> {
+) -> Result<ProjectPlan, RenameError> {
     hew_analysis::rename::validate_new_name(new_name)?;
     if target.name == new_name {
-        return Ok(None);
+        return Ok(ProjectPlan {
+            edit: None,
+            snapshot: None,
+        });
     }
-    let mut roots: Vec<_> = workspace_roots
-        .iter()
-        .map(|path| physical_path(path))
-        .collect();
-    if roots.is_empty() {
+    let mut root_paths = workspace_roots.to_vec();
+    if root_paths.is_empty() {
         if let Some(root) = super::workspace::find_workspace_root_for_uri(&query.uri) {
-            roots.push(physical_path(&root));
+            root_paths.push(root);
         }
     }
+    let roots: Vec<_> = root_paths.iter().map(|root| physical_path(root)).collect();
     if !within(&query.path, &roots) || !within(&target.source, &roots) {
         return Err(refused(&target.source, "exported function rename requires its declaration and request inside configured workspace roots"));
     }
     let sources = project_sources(&roots, open, &mut overlay)?;
+    // Dependency checkpoints belong to this exact original source snapshot.
+    // Real roots still resolve independently and keep their physical facts.
+    let mut original = hew_compile::SourceAnalysisBatch::new(frontend_options(&overlay, pkg_paths));
     let mut changes: BTreeMap<PathBuf, Occurrences> = BTreeMap::new();
     let mut definition = None;
     for (path, source) in &sources {
-        let checked = check(source, &overlay, pkg_paths);
+        let checked = check_batched(source, &mut original);
         if !checked.resolved {
             return Err(refused(
                 path,
@@ -1019,6 +1231,9 @@ fn plan(
             "function declaration is outside the editable project",
         )
     })?;
+    // Only physical occurrences survive discovery. Release the original
+    // dependency checkpoints before allocating the proposed phase's state.
+    drop(original);
     let mut proposed = sources.clone();
     for (path, found) in &changes {
         let source = proposed
@@ -1032,9 +1247,13 @@ fn plan(
         }
         overlay.insert(path.clone(), source.text.clone());
     }
+    // The proposed snapshot gets a separate batch: none of the original
+    // dependency state can survive a changed declaration or import token.
+    let mut proposed_batch =
+        hew_compile::SourceAnalysisBatch::new(frontend_options(&overlay, pkg_paths));
     let new_definition = translated(definition, &changes[&target.source].edits);
     let defining_source = &proposed[&target.source];
-    let checked_definition = check(defining_source, &overlay, pkg_paths);
+    let checked_definition = check_batched(defining_source, &mut proposed_batch);
     if let Some(failure) = &checked_definition.failure {
         return Err(refused(
             &target.source,
@@ -1062,7 +1281,7 @@ fn plan(
         if path == &target.source {
             continue;
         }
-        let checked = check(&proposed[path], &overlay, pkg_paths);
+        let checked = check_batched(&proposed[path], &mut proposed_batch);
         if let Some(failure) = &checked.failure {
             return Err(refused(
                 path,
@@ -1073,19 +1292,7 @@ fn plan(
     }
     // A changed or newly created closed consumer invalidates the proof too,
     // even when the first snapshot contained no references in that file.
-    let current = project_sources(&roots, open, &mut hew_compile::DocumentSet::new())?;
-    if current.len() != sources.len()
-        || current.iter().any(|(path, source)| {
-            sources
-                .get(path)
-                .is_none_or(|original| source.text != original.text)
-        })
-    {
-        return Err(refused(
-            &query.path,
-            "project sources changed during rename; retry the request",
-        ));
-    }
+    verify_source_snapshot(&query.path, &sources, &roots, open)?;
     let mut lsp_changes = HashMap::new();
     for (path, found) in changes {
         if found.edits.is_empty() {
@@ -1103,10 +1310,52 @@ fn plan(
             .collect();
         lsp_changes.insert(source.uri.clone(), edits);
     }
-    Ok(Some(WorkspaceEdit {
-        changes: Some(lsp_changes),
-        ..Default::default()
-    }))
+    Ok(ProjectPlan {
+        edit: Some(WorkspaceEdit {
+            changes: Some(lsp_changes),
+            ..Default::default()
+        }),
+        snapshot: Some(ProjectSnapshot {
+            sources,
+            roots,
+            root_paths,
+        }),
+    })
+}
+
+fn verify_source_snapshot(
+    query: &Path,
+    sources: &BTreeMap<PathBuf, Source>,
+    roots: &[PathBuf],
+    open: &BTreeMap<PathBuf, Source>,
+) -> Result<(), RenameError> {
+    for (path, source) in sources {
+        let Some(uri_path) = source.uri.to_checked_file_path() else {
+            return Err(refused(path, "project source has no physical file URI"));
+        };
+        let current = resolved_physical_path(&uri_path)
+            .map_err(|error| RenameError::from((uri_path.into_owned(), error)))?;
+        if &current != path {
+            return Err(refused(
+                path,
+                "project source identity changed during rename; retry the request",
+            ));
+        }
+    }
+    let current = project_sources(roots, open, &mut hew_compile::DocumentSet::new())?;
+    if current.len() != sources.len()
+        || current.iter().any(|(path, source)| {
+            sources
+                .get(path)
+                .is_none_or(|original| source.text != original.text || source.uri != original.uri)
+        })
+    {
+        return Err(refused(
+            query,
+            "project sources changed during rename; retry the request",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_references(
@@ -1138,6 +1387,408 @@ fn verify_references(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn assert_pending<F: std::future::Future>(mut future: std::pin::Pin<&mut F>) {
+        std::future::poll_fn(|context| {
+            assert!(future.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_rename_retains_worker_slot_until_computation_finishes() {
+        let jobs = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = std::sync::Arc::clone(&jobs).acquire_owned().await.unwrap();
+        let (started_sender, started) = tokio::sync::oneshot::channel();
+        let (release_sender, release) = std::sync::mpsc::channel();
+        let computation = spawn_rename_job(permit, move || {
+            let _ = started_sender.send(());
+            let _ = release.recv();
+        });
+        started.await.unwrap();
+        let request = tokio::spawn(computation);
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        let mut next = Box::pin(std::sync::Arc::clone(&jobs).acquire_owned());
+        assert_pending(next.as_mut()).await;
+        assert_eq!(jobs.available_permits(), 0);
+        release_sender.send(()).unwrap();
+        let next = next.await.unwrap();
+        assert_eq!(jobs.available_permits(), 0);
+        drop(next);
+        assert_eq!(jobs.available_permits(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_rename_refuses_changed_text_and_fresh_retry_preserves_version() {
+        let original = "pub fn greet() -> i32 { 7 }\n";
+        let project = Project::new(&[
+            ("greeting.hew", original),
+            (
+                "consumer.hew",
+                "import greeting;\npub fn value() -> i32 { greeting.greet() }\n",
+            ),
+        ]);
+        let (service, _socket) = tower_lsp_server::LspService::new(HewLanguageServer::new);
+        let server = service.inner();
+        let uri = Uri::from_checked_file_path(project.0.join("greeting.hew")).unwrap();
+        server.open_documents.write().unwrap().insert(
+            uri.clone(),
+            OpenDocument {
+                source: original.into(),
+                version: 1,
+            },
+        );
+        *server.workspace_roots.write().unwrap() = vec![project.0.clone()];
+        *server.rename_document_changes.write().unwrap() = true;
+        let occupied = std::sync::Arc::clone(&server.rename_jobs)
+            .acquire_owned()
+            .await
+            .unwrap();
+        let mut queued = Box::pin(rename(server, &uri, Position::new(0, 8), "salute"));
+        assert_pending(queued.as_mut()).await;
+        server.open_documents.write().unwrap().insert(
+            uri.clone(),
+            OpenDocument {
+                source: format!("pub fn other() -> i32 {{ 9 }}\n{original}"),
+                version: 2,
+            },
+        );
+        drop(occupied);
+        let error = queued.await.unwrap_err();
+        assert!(
+            matches!(error, RenameError::Io { message, .. } if message.contains("while rename was queued"))
+        );
+        let edit = rename(server, &uri, Position::new(1, 8), "salute")
+            .await
+            .unwrap()
+            .unwrap();
+        let Some(DocumentChanges::Edits(edits)) = edit.document_changes else {
+            panic!("versioned edits required");
+        };
+        assert_eq!(edits.len(), 2);
+        let defining = edits
+            .iter()
+            .find(|edit| edit.text_document.uri == uri)
+            .unwrap();
+        assert_eq!(defining.text_document.version, Some(2));
+        assert_eq!(defining.edits.len(), 1);
+        let OneOf::Left(edit) = &defining.edits[0] else {
+            panic!("plain text edit required");
+        };
+        assert_eq!(edit.range.start.line, 1);
+        assert_eq!(edit.new_text, "salute");
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("greeting.hew")).unwrap(),
+            original
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rename_refuses_workspace_root_changes_while_waiting_for_worker() {
+        let original = "pub fn greet() -> i32 { 7 }\n";
+        let project = Project::new(&[("greeting.hew", original)]);
+        let other = Project::new(&[("unrelated.hew", "fn main() {}\n")]);
+        let (service, _socket) = tower_lsp_server::LspService::new(HewLanguageServer::new);
+        let server = service.inner();
+        let uri = Uri::from_checked_file_path(project.0.join("greeting.hew")).unwrap();
+        server.open_documents.write().unwrap().insert(
+            uri.clone(),
+            OpenDocument {
+                source: original.into(),
+                version: 1,
+            },
+        );
+        *server.workspace_roots.write().unwrap() = vec![project.0.clone()];
+        let occupied = std::sync::Arc::clone(&server.rename_jobs)
+            .acquire_owned()
+            .await
+            .unwrap();
+        let mut queued = Box::pin(rename(server, &uri, Position::new(0, 8), "salute"));
+        assert_pending(queued.as_mut()).await;
+        *server.workspace_roots.write().unwrap() = vec![other.0.clone()];
+        drop(occupied);
+        let error = queued.await.unwrap_err();
+        assert!(
+            matches!(error, RenameError::Io { message, .. } if message.contains("workspace roots changed during rename"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("greeting.hew")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn final_snapshot_refuses_changed_added_and_removed_closed_sources() {
+        let project = Project::new(&[
+            ("greeting.hew", "pub fn greet() -> i32 { 7 }\n"),
+            (
+                "consumer.hew",
+                "import greeting;\npub fn value() -> i32 { greeting.greet() }\n",
+            ),
+        ]);
+        let roots = std::slice::from_ref(&project.0);
+        let open = BTreeMap::new();
+        let capture =
+            || project_sources(roots, &open, &mut hew_compile::DocumentSet::new()).unwrap();
+        let query = project.0.join("greeting.hew");
+        let mut sources = capture();
+        assert!(verify_source_snapshot(&query, &sources, roots, &open).is_ok());
+        std::fs::write(
+            project.0.join("consumer.hew"),
+            "// 🍁 shifted bytes\nimport greeting;\npub fn value() -> i32 { greeting.greet() }\n",
+        )
+        .unwrap();
+        let error = verify_source_snapshot(&query, &sources, roots, &open).unwrap_err();
+        assert!(
+            matches!(error, RenameError::Io { message, .. } if message.contains("project sources changed during rename"))
+        );
+        sources = capture();
+        std::fs::write(
+            project.0.join("new_consumer.hew"),
+            "import greeting;\npub fn another() -> i32 { greeting.greet() }\n",
+        )
+        .unwrap();
+        let error = verify_source_snapshot(&query, &sources, roots, &open).unwrap_err();
+        assert!(
+            matches!(error, RenameError::Io { message, .. } if message.contains("project sources changed during rename"))
+        );
+        sources = capture();
+        std::fs::remove_file(project.0.join("consumer.hew")).unwrap();
+        let error = verify_source_snapshot(&query, &sources, roots, &open).unwrap_err();
+        assert!(
+            matches!(error, RenameError::Io { message, .. } if message.contains("project sources changed during rename"))
+        );
+    }
+
+    #[test]
+    fn publication_refuses_closed_source_changes_after_worker_completion() {
+        let original = "pub fn greet() -> i32 { 7 }\n";
+        for change in ["changed", "added", "removed"] {
+            let project = Project::new(&[
+                ("greeting.hew", original),
+                (
+                    "consumer.hew",
+                    "import greeting;\npub fn value() -> i32 { greeting.greet() }\n",
+                ),
+            ]);
+            let (service, _socket) = tower_lsp_server::LspService::new(HewLanguageServer::new);
+            let server = service.inner();
+            let uri = Uri::from_checked_file_path(project.0.join("greeting.hew")).unwrap();
+            server.open_documents.write().unwrap().insert(
+                uri.clone(),
+                OpenDocument {
+                    source: original.into(),
+                    version: 1,
+                },
+            );
+            *server.workspace_roots.write().unwrap() = vec![project.0.clone()];
+            let snapshot = server.open_documents.read().unwrap().clone();
+            let completed_worker = rename_snapshot(
+                &snapshot,
+                &uri,
+                Position::new(0, 8),
+                "salute",
+                Some(vec![project.0.clone()]),
+                &[],
+            )
+            .unwrap()
+            .unwrap();
+            assert!(completed_worker.edit.as_ref().is_some_and(|edit| !edit
+                .changes
+                .as_ref()
+                .unwrap()
+                .is_empty()));
+            match change {
+                "changed" => std::fs::write(
+                    project.0.join("consumer.hew"),
+                    "// 🍁 new line after proof\nimport greeting;\npub fn value() -> i32 { greeting.greet() }\n",
+                ).unwrap(),
+                "added" => std::fs::write(
+                    project.0.join("new_consumer.hew"),
+                    "import greeting;\npub fn another() -> i32 { greeting.greet() }\n",
+                ).unwrap(),
+                "removed" => std::fs::remove_file(project.0.join("consumer.hew")).unwrap(),
+                _ => unreachable!(),
+            }
+            let error = complete_rename(server, &snapshot, completed_worker).unwrap_err();
+            assert!(
+                matches!(error, RenameError::Io { message, .. } if message.contains("project sources changed during rename")),
+                "{change}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(project.0.join("greeting.hew")).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_refuses_retargeted_open_uri_with_equal_disk_text() {
+        let original = "pub fn greet() -> i32 { 7 }\n";
+        let project = Project::new(&[
+            ("greeting.hew", original),
+            (
+                "consumer.hew",
+                "import greeting;\npub fn value() -> i32 { greeting.greet() }\n",
+            ),
+        ]);
+        let outside = Project::new(&[("greeting.hew", original)]);
+        let alias = project.0.join("alias.hew");
+        std::os::unix::fs::symlink(project.0.join("greeting.hew"), &alias).unwrap();
+        let (service, _socket) = tower_lsp_server::LspService::new(HewLanguageServer::new);
+        let server = service.inner();
+        let uri = Uri::from_checked_file_path(&alias).unwrap();
+        server.open_documents.write().unwrap().insert(
+            uri.clone(),
+            OpenDocument {
+                source: original.into(),
+                version: 1,
+            },
+        );
+        *server.workspace_roots.write().unwrap() = vec![project.0.clone()];
+        let snapshot = server.open_documents.read().unwrap().clone();
+        let completed_worker = rename_snapshot(
+            &snapshot,
+            &uri,
+            Position::new(0, 8),
+            "salute",
+            Some(vec![project.0.clone()]),
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(outside.0.join("greeting.hew"), &alias).unwrap();
+        let error = complete_rename(server, &snapshot, completed_worker).unwrap_err();
+        assert!(
+            matches!(error, RenameError::Io { message, .. } if message.contains("source identity changed during rename"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("greeting.hew")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.0.join("greeting.hew")).unwrap(),
+            original
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_refuses_retargeted_root_with_equal_disk_text() {
+        let original = "pub fn greet() -> i32 { 7 }\n";
+        let project = Project::new(&[("greeting.hew", original)]);
+        let outside = Project::new(&[("greeting.hew", original)]);
+        let holder = Project::new(&[("holder.hew", "fn main() {}\n")]);
+        let root_alias = holder.0.join("root");
+        std::os::unix::fs::symlink(&project.0, &root_alias).unwrap();
+        let (service, _socket) = tower_lsp_server::LspService::new(HewLanguageServer::new);
+        let server = service.inner();
+        let uri = Uri::from_checked_file_path(project.0.join("greeting.hew")).unwrap();
+        server.open_documents.write().unwrap().insert(
+            uri.clone(),
+            OpenDocument {
+                source: original.into(),
+                version: 1,
+            },
+        );
+        *server.workspace_roots.write().unwrap() = vec![root_alias.clone()];
+        let snapshot = server.open_documents.read().unwrap().clone();
+        let completed_worker = rename_snapshot(
+            &snapshot,
+            &uri,
+            Position::new(0, 8),
+            "salute",
+            Some(vec![root_alias.clone()]),
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+        std::fs::remove_file(&root_alias).unwrap();
+        std::os::unix::fs::symlink(&outside.0, &root_alias).unwrap();
+        let error = complete_rename(server, &snapshot, completed_worker).unwrap_err();
+        assert!(
+            matches!(error, RenameError::Io { message, .. } if message.contains("root identities changed during rename"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("greeting.hew")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.0.join("greeting.hew")).unwrap(),
+            original
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_imported_type_rename_stays_synchronous_and_reads_current_disk() {
+        let consumer = "import model.{ Thing };\nfn main() {}\n";
+        let model = "// 🍁 moved before request\npub type Thing { value: i32; }\n";
+        let project = Project::new(&[
+            ("model.hew", "pub type Thing { value: i32; }\n"),
+            ("consumer.hew", consumer),
+        ]);
+        let (service, _socket) = tower_lsp_server::LspService::new(HewLanguageServer::new);
+        let server = service.inner();
+        let uri = Uri::from_checked_file_path(project.0.join("consumer.hew")).unwrap();
+        let model_uri = Uri::from_checked_file_path(project.0.join("model.hew")).unwrap();
+        server.open_documents.write().unwrap().insert(
+            uri.clone(),
+            OpenDocument {
+                source: consumer.into(),
+                version: 1,
+            },
+        );
+        *server.workspace_roots.write().unwrap() = vec![project.0.clone()];
+        *server.rename_document_changes.write().unwrap() = true;
+        let occupied = std::sync::Arc::clone(&server.rename_jobs)
+            .acquire_owned()
+            .await
+            .unwrap();
+        std::fs::write(project.0.join("model.hew"), model).unwrap();
+        let character = u32::try_from(consumer.find("Thing").unwrap()).unwrap();
+        let mut request = Box::pin(rename(server, &uri, Position::new(0, character), "Renamed"));
+        let edit = std::future::poll_fn(|context| {
+            match std::future::Future::poll(request.as_mut(), context) {
+                std::task::Poll::Ready(result) => std::task::Poll::Ready(result),
+                std::task::Poll::Pending => {
+                    panic!("legacy planning must finish without an async handoff")
+                }
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let Some(DocumentChanges::Edits(edits)) = edit.document_changes else {
+            panic!("versioned edits required");
+        };
+        assert_eq!(edits.len(), 2);
+        let closed = edits
+            .iter()
+            .find(|edit| edit.text_document.uri == model_uri)
+            .unwrap();
+        assert_eq!(closed.text_document.version, None);
+        assert_eq!(closed.edits.len(), 1);
+        let OneOf::Left(edit) = &closed.edits[0] else {
+            panic!("plain text edit required");
+        };
+        assert_eq!(edit.range.start.line, 1);
+        assert_eq!(edit.new_text, "Renamed");
+        let opened = edits
+            .iter()
+            .find(|edit| edit.text_document.uri == uri)
+            .unwrap();
+        assert_eq!(opened.text_document.version, Some(1));
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("model.hew")).unwrap(),
+            model
+        );
+        assert_eq!(server.rename_jobs.available_permits(), 0);
+        drop(occupied);
+    }
 
     struct Project(PathBuf);
 
@@ -1181,6 +1832,7 @@ mod tests {
                 std::slice::from_ref(&self.0),
                 &[],
             )
+            .map(|planned| planned.edit)
         }
     }
 

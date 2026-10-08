@@ -403,6 +403,7 @@ mod tests {
             debug: false,
             opt_level: "0".to_string(),
             link_libs: Vec::new(),
+            emit_deps: None,
             common: crate::args::CommonBuildArgs::default(),
             format: crate::args::DiagnosticFormat::Text,
         });

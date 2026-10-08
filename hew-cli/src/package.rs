@@ -89,29 +89,3 @@ fn exit_code(error: &ResolveError) -> i32 {
         | ResolveError::MissingEntry { .. } => 1,
     }
 }
-
-/// Build the package's own `[native]` FFI crate — the prerequisite step of a
-/// package build — and return the archive to add to the link line.
-///
-/// Returns nothing for a file input or a package with no `[native]` section.
-/// Native libraries of *imported* packages are handled separately, by
-/// [`crate::native_link`], off the resolved import graph.
-///
-/// # Errors
-///
-/// Returns the cargo build failure message.
-pub fn native_link_libs(input: &Input) -> Result<Vec<String>, String> {
-    let Some(pkg) = input.package() else {
-        return Ok(Vec::new());
-    };
-    if !pkg.has_native() {
-        return Ok(Vec::new());
-    }
-    let Some(path) = project::build_native_lib(&pkg.root)? else {
-        return Ok(Vec::new());
-    };
-    let lib = path
-        .to_str()
-        .ok_or_else(|| format!("native library path is not valid UTF-8: {}", path.display()))?;
-    Ok(vec![lib.to_string()])
-}

@@ -46,8 +46,9 @@ as in `hew build .` or `hew build path/to/package`. The optional
 `[package] main` field selects an entry point relative to the manifest and
 defaults to `main.hew`. A build writes the binary into the package root, named
 after the last dotted component of the package name; `-o PATH` overrides it.
-If the package declares `[native]`, Hew builds that crate first and links it as
-a prerequisite.
+If the package declares `[native]` code (a Rust crate, C or C++ sources, or
+system libraries), Hew builds it and links it into every program that compiles
+the package; see the [package manifest reference](package-manifest.md).
 
 Every native executable records the compiler that built it, in a read-only
 `.hewbuildinfo` section (`__DATA,__hewbuildinfo` on macOS, `.hewinfo` on

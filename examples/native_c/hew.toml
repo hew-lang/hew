@@ -1,0 +1,22 @@
+[package]
+name = "native_c"
+version = "0.1.0"
+edition = "2026"
+description = "A package whose extern functions are C, compiled and linked by hew"
+
+# The C source behind main.hew's `extern "C"` block. `hew build` and `hew run`
+# compile it with the C driver they link with and link the object, so no
+# `--link-lib` is needed here or in any package that imports this one.
+[native]
+sources = ["native/colour.c"]
+include-dirs = ["native/include"]
+defines = ["COLOUR_CHANNEL_MAX=255"]
+cflags = ["-std=c11", "-Wall", "-Wextra"]
+
+# `cbrt` and `lround` live in libm on Linux and FreeBSD. macOS keeps them in
+# libSystem and Windows in the C runtime, which every program already links.
+[native.linux]
+link-libs = ["m"]
+
+[native.freebsd]
+link-libs = ["m"]

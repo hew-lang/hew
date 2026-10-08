@@ -23,6 +23,7 @@ libc.workspace = true
 tar = "0.4"
 zstd = "0.14"
 ureq = { version = "3", features = ["json"] }
+object = "0.40"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

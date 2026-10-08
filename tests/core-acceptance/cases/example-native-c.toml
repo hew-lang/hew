@@ -1,0 +1,10 @@
+[[case]]
+id = "example-native-c"
+intent = "A package's [native] C source, header, define and per-OS system library build and link with no --link-lib."
+source = "../../examples/native_c/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 60
+
+[case.expected]
+stdout_file = "../../examples/native_c/main.expected"
+exit = 0

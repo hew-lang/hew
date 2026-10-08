@@ -1,0 +1,40 @@
+//! Status: runnable
+//! Description: A package with C sources and a system library, built by hew
+
+// The C functions come from native/colour.c, which hew.toml's [native]
+// section compiles and links. Each symbol carries the package's own prefix:
+// the `hew_` prefix belongs to the Hew runtime.
+extern "C" {
+    fn native_c_lightness(red: i32, green: i32, blue: i32) -> i32;
+    fn native_c_distance_sq(r1: i32, g1: i32, b1: i32, r2: i32, g2: i32, b2: i32) -> i64;
+}
+
+type Colour {
+    name: string;
+    red: i32;
+    green: i32;
+    blue: i32;
+}
+
+fn lightness(colour: Colour) -> i32 {
+    unsafe {
+        native_c_lightness(colour.red, colour.green, colour.blue)
+    }
+}
+
+fn distance_sq(a: Colour, b: Colour) -> i64 {
+    unsafe {
+        native_c_distance_sq(a.red, a.green, a.blue, b.red, b.green, b.blue)
+    }
+}
+
+fn main() {
+    let maple = Colour { name: "maple", red: 200, green: 16, blue: 46 };
+    let spruce = Colour { name: "spruce", red: 34, green: 85, blue: 51 };
+    let glacier = Colour { name: "glacier", red: 230, green: 242, blue: 250 };
+    for colour in [maple, spruce, glacier] {
+        let l = lightness(colour);
+        println(f"{colour.name}: L* {l / 10}.{l % 10}");
+    }
+    println(f"maple to spruce: {distance_sq(maple, spruce)}");
+}

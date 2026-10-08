@@ -28,6 +28,7 @@
 
 mod args;
 mod compile;
+mod depfile;
 mod diagnostic;
 mod diagnostic_json;
 mod doc;
@@ -201,7 +202,7 @@ fn lower_file_to_semantics(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_compile::SessionOutput, Vec<PathBuf>), DiagChannel> {
+) -> Result<(hew_compile::SessionOutput, native_link::ProgramInputs), DiagChannel> {
     let input = input_path.display().to_string();
     let fopts = compile::frontend_options(target, options);
     let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
@@ -227,8 +228,16 @@ fn lower_file_to_semantics(
         target,
         hew_compile::CheckSet::Build,
     )?;
-    let native_pkg_dirs = native_link::collect_import_pkg_dirs(&state.program);
-    Ok((output, native_pkg_dirs))
+    let std_roots = options
+        .module_search_paths
+        .clone()
+        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths);
+    let inputs = native_link::ProgramInputs::collect(&state.program, input_path, &std_roots)
+        .map_err(|error| {
+            diagnostic::emit_plain_diagnostic_line(&format!("Error: {error}"));
+            DiagChannel::User
+        })?;
+    Ok((output, inputs))
 }
 
 /// Inspect semantic SSA before target storage and layout realization.
@@ -250,9 +259,9 @@ fn lower_file_to_physical_for_target(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_mir::VerifiedPhysicalModule, Vec<PathBuf>), DiagChannel> {
-    let (output, native_pkg_dirs) = lower_file_to_semantics(input_path, target, options)?;
-    Ok((lower_session_to_physical(&output, target)?, native_pkg_dirs))
+) -> Result<(hew_mir::VerifiedPhysicalModule, native_link::ProgramInputs), DiagChannel> {
+    let (output, inputs) = lower_file_to_semantics(input_path, target, options)?;
+    Ok((lower_session_to_physical(&output, target)?, inputs))
 }
 
 fn lower_session_to_physical(
@@ -459,7 +468,7 @@ pub(crate) fn compile_native_binary(
     bin_path: &Path,
     options: &compile::CompileOptions,
 ) -> Result<(), DiagChannel> {
-    compile_native_binary_with_paths(input, bin_path, options, None, &[])
+    compile_native_binary_with_paths(input, bin_path, options, None)
 }
 
 fn compile_native_binary_with_paths(
@@ -467,14 +476,14 @@ fn compile_native_binary_with_paths(
     bin_path: &Path,
     options: &compile::CompileOptions,
     paths: Option<&NativeBuildPaths>,
-    extra_libs: &[String],
 ) -> Result<(), DiagChannel> {
     let target =
         target::TargetSpec::from_requested(options.target.as_deref()).map_err(|error| {
             eprintln!("Error: {error}");
             DiagChannel::User
         })?;
-    let (pipeline, _) = lower_file_to_physical_for_target(input, &target, options)?;
+    let (pipeline, inputs) = lower_file_to_physical_for_target(input, &target, options)?;
+    let native = link_program_native(&inputs, &target, false, hew_codegen_rs::OptLevel::O0)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
         .file_stem()
@@ -499,8 +508,36 @@ fn compile_native_binary_with_paths(
         obj,
         bin_path,
         paths.map(|paths| paths.hew_lib.as_path()),
-        extra_libs,
+        &native.libraries(&[]),
     )
+}
+
+/// Build the `[native]` code of every package `inputs` owns, reporting a
+/// failure as a user diagnostic.
+fn link_program_native(
+    inputs: &native_link::ProgramInputs,
+    target: &target::TargetSpec,
+    debug: bool,
+    opt_level: hew_codegen_rs::OptLevel,
+) -> Result<native_link::NativeLink, DiagChannel> {
+    native_link::link(inputs, target, debug, opt_level).map_err(|error| {
+        // Coded package diagnostics (`error[E_NATIVE_…]`) carry their own
+        // heading; everything else gets the CLI's.
+        if error.starts_with("error[") {
+            diagnostic::emit_plain_diagnostic_line(&error);
+        } else {
+            diagnostic::emit_plain_diagnostic_line(&format!("Error: {error}"));
+        }
+        DiagChannel::User
+    })
+}
+
+/// Refuse a wasm build of a program that compiles a `[native]` package.
+fn refuse_native_for_wasm(inputs: &native_link::ProgramInputs) -> Result<(), DiagChannel> {
+    inputs.refuse_native_for_wasm().map_err(|error| {
+        diagnostic::emit_plain_diagnostic_line(&format!("Error: {error}"));
+        DiagChannel::User
+    })
 }
 
 #[derive(Debug)]
@@ -774,7 +811,8 @@ fn link_wasm_module_for_target(
 }
 
 /// Build a native (or wasm) binary for an explicit target, writing it to
-/// `output_path`. Reuses the front-end → MIR → emit → link chain.
+/// `output_path`. Reuses the front-end → MIR → emit → link chain. Returns
+/// every file the build read, for `--emit-deps`.
 #[allow(
     clippy::too_many_arguments,
     reason = "the build path threads each emit/link knob explicitly; grouping obscures the flow"
@@ -788,7 +826,7 @@ fn compile_build_binary(
     emit_llvm: bool,
     extra_libs: &[String],
     options: &compile::CompileOptions,
-) -> Result<(), DiagChannel> {
+) -> Result<Vec<PathBuf>, DiagChannel> {
     compile_build_binary_with_hew_lib(
         input,
         output_path,
@@ -816,10 +854,13 @@ fn compile_build_binary_with_hew_lib(
     extra_libs: &[String],
     options: &compile::CompileOptions,
     hew_lib: Option<&Path>,
-) -> Result<(), DiagChannel> {
+) -> Result<Vec<PathBuf>, DiagChannel> {
     let wall_started = std::time::Instant::now();
     let lower_started = std::time::Instant::now();
-    let (physical, native_pkg_dirs) = lower_file_to_physical_for_target(input, target, options)?;
+    let (physical, inputs) = lower_file_to_physical_for_target(input, target, options)?;
+    if target.is_wasm() {
+        refuse_native_for_wasm(&inputs)?;
+    }
     measure_compile_phase("physical lowering", lower_started.elapsed());
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
@@ -845,7 +886,7 @@ fn compile_build_binary_with_hew_lib(
             remove_intermediate_object(object)?;
         }
         measure_compile_phase("total", wall_started.elapsed());
-        return Ok(());
+        return Ok(depfile::prerequisites(&inputs, &[]));
     }
     let object = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         emit_semantic_error(
@@ -854,26 +895,18 @@ fn compile_build_binary_with_hew_lib(
             DiagChannel::Internal,
         )
     })?;
-    let auto_libs = native_link::build_native_link_libs(&native_pkg_dirs).map_err(|error| {
-        eprintln!("Error: {error}");
-        DiagChannel::User
-    })?;
-    let libraries = extra_libs
-        .iter()
-        .cloned()
-        .chain(auto_libs)
-        .collect::<Vec<_>>();
+    let native = link_program_native(&inputs, target, debug, opt_level)?;
     link_native_object_for_target_with_hew_lib(
         object,
         output_path,
         target,
         debug,
-        &libraries,
+        &native.libraries(extra_libs),
         hew_lib,
     )?;
     remove_intermediate_object(object)?;
     measure_compile_phase("total", wall_started.elapsed());
-    Ok(())
+    Ok(depfile::prerequisites(&inputs, &native.dependencies))
 }
 
 fn measure_compile_phase(phase: &str, elapsed: std::time::Duration) {
@@ -917,10 +950,11 @@ fn emit_obj_only(
     profile: &str,
     output: Option<&Path>,
     host_export: Option<&str>,
-) -> Result<(), DiagChannel> {
+) -> Result<(PathBuf, Vec<PathBuf>), DiagChannel> {
     let final_path = resolve_output(Artifact::Object, input, package, profile, target, output);
     if let Some(selection) = host_export {
-        return host::emit(
+        // `--emit-deps` conflicts with `--export-c` at the argument parser.
+        host::emit(
             input,
             target,
             options,
@@ -928,9 +962,10 @@ fn emit_obj_only(
             &final_path,
             opt_level,
             emit_llvm,
-        );
+        )?;
+        return Ok((final_path, Vec::new()));
     }
-    let (pipeline, _native_pkg_dirs) = lower_file_to_physical_for_target(input, target, options)?;
+    let (pipeline, inputs) = lower_file_to_physical_for_target(input, target, options)?;
     let out_dir = match final_path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -978,7 +1013,8 @@ fn emit_obj_only(
             DiagChannel::User
         })?;
     }
-    Ok(())
+    // An object is not linked, so no package's native code is built.
+    Ok((final_path, depfile::prerequisites(&inputs, &[])))
 }
 
 fn cmd_build(a: &args::BuildArgs) {
@@ -1030,28 +1066,6 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         );
         return 2;
     }
-    if target.is_wasm()
-        && resolved
-            .package()
-            .is_some_and(hew_pkg::project::ResolvedPackage::has_native)
-    {
-        eprintln!(
-            "Error: this package declares a [native] library, which cannot be \
-             linked into a wasm module"
-        );
-        return 2;
-    }
-
-    // The package's own [native] crate is a prerequisite of its link step:
-    // build it before compiling so `extern` calls resolve.
-    let mut link_libs = a.link_libs.clone();
-    match package::native_link_libs(&resolved) {
-        Ok(libs) => link_libs.extend(libs),
-        Err(e) => {
-            eprintln!("Error: {e}");
-            return 1;
-        }
-    }
 
     let options = a.to_compile_options();
 
@@ -1081,7 +1095,9 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
             a.output.as_deref(),
             a.export_c.as_deref(),
         ) {
-            Ok(()) => 0,
+            Ok((object, prerequisites)) => {
+                write_deps(a.emit_deps.as_deref(), &object, &prerequisites)
+            }
             Err(channel) => channel.exit_code(),
         };
     }
@@ -1108,17 +1124,30 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         a.debug,
         opt_level,
         a.emit_llvm,
-        &link_libs,
+        &a.link_libs,
         &options,
     ) {
-        Ok(()) => {
+        Ok(prerequisites) => {
             eprintln!(
                 "   Built {}",
                 display_relative_to_cwd(&output_path).display()
             );
-            0
+            write_deps(a.emit_deps.as_deref(), &output_path, &prerequisites)
         }
         Err(channel) => channel.exit_code(),
+    }
+}
+
+/// Write the `--emit-deps` file, when one was requested, and return the
+/// command's exit code.
+fn write_deps(path: Option<&Path>, target: &Path, prerequisites: &[PathBuf]) -> i32 {
+    let Some(path) = path else { return 0 };
+    match depfile::write(path, target, prerequisites) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("Error: cannot write {}: {error}", path.display());
+            1
+        }
     }
 }
 
@@ -1211,11 +1240,10 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         }
     };
     let options = compile::CompileOptions::default();
-    let (pipeline, native_pkg_dirs) =
-        match lower_file_to_physical_for_target(&a.input, &target, &options) {
-            Ok(result) => result,
-            Err(channel) => return channel.exit_code(),
-        };
+    let (pipeline, inputs) = match lower_file_to_physical_for_target(&a.input, &target, &options) {
+        Ok(result) => result,
+        Err(channel) => return channel.exit_code(),
+    };
     if a.dump_mir.is_some() {
         let dump = format!("{:#?}\n", pipeline.module());
         if json {
@@ -1277,15 +1305,17 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         // `<stem>.exe` whatever stem it is given — so a suffixless name made
         // the reported `native:` path name a file that does not exist.
         let bin_path = target.executable_path(emit_dir, module_name);
-        let libraries = match native_link::build_native_link_libs(&native_pkg_dirs) {
-            Ok(libraries) => libraries,
-            Err(error) => {
-                eprintln!("Error: {error}");
-                return 1;
-            }
+        let native = match link_program_native(&inputs, &target, false, opt_level) {
+            Ok(native) => native,
+            Err(channel) => return channel.exit_code(),
         };
         if let Err(channel) = link_native_object_for_target_with_hew_lib(
-            obj, &bin_path, &target, false, &libraries, None,
+            obj,
+            &bin_path,
+            &target,
+            false,
+            &native.libraries(&[]),
+            None,
         ) {
             return channel.exit_code();
         }
@@ -1346,6 +1376,8 @@ fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
 
 struct CompiledTempExecutable {
     path: std::path::PathBuf,
+    /// Every file the compile read, for `hew run --emit-deps`.
+    prerequisites: Vec<PathBuf>,
     _cleanup: TempExecutableCleanup,
 }
 
@@ -1422,14 +1454,16 @@ fn compile_temp_wasi_module(
         .unwrap_or("hew_wasi_run");
     let wasm_path = target.executable_path(tmp_dir.path(), stem);
 
-    let artifact = CompiledTempExecutable {
+    let mut artifact = CompiledTempExecutable {
         path: wasm_path.clone(),
+        prerequisites: Vec::new(),
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     };
 
-    let result = (|| -> Result<(), DiagChannel> {
-        let (pipeline, _native_pkg_dirs) =
+    let result = (|| -> Result<Vec<PathBuf>, DiagChannel> {
+        let (pipeline, inputs) =
             lower_file_to_physical_for_target(Path::new(input), &target_spec, options)?;
+        refuse_native_for_wasm(&inputs)?;
         let emit_dir = tmp_dir_of_path(&wasm_path);
         // Emit the wasm object only — the WASI runtime link happens in
         // `link::link_executable` below, which links against libhew_runtime.a.
@@ -1464,15 +1498,19 @@ fn compile_temp_wasi_module(
         crate::link::link_executable(obj_str, out_str, &target_spec, &[], false).map_err(|e| {
             eprintln!("{e}");
             DiagChannel::User
-        })
+        })?;
+        Ok(depfile::prerequisites(&inputs, &[]))
     })();
 
-    if let Err(channel) = result {
-        drop(artifact);
-        if diagnostic_json::json_output_active() {
-            diagnostic_json::flush_json_diagnostics();
+    match result {
+        Ok(prerequisites) => artifact.prerequisites = prerequisites,
+        Err(channel) => {
+            drop(artifact);
+            if diagnostic_json::json_output_active() {
+                diagnostic_json::flush_json_diagnostics();
+            }
+            return Err(channel);
         }
-        return Err(channel);
     }
 
     Ok(artifact)
@@ -1484,7 +1522,7 @@ fn tmp_dir_of_path(path: &Path) -> &Path {
 
 fn compile_temp_artifact(
     input: &str,
-    artifact: CompiledTempExecutable,
+    mut artifact: CompiledTempExecutable,
     options: &compile::CompileOptions,
     debug: bool,
     extra_libs: &[String],
@@ -1513,7 +1551,10 @@ fn compile_temp_artifact(
         extra_libs,
         options,
     ) {
-        Ok(()) => Ok(artifact),
+        Ok(prerequisites) => {
+            artifact.prerequisites = prerequisites;
+            Ok(artifact)
+        }
         Err(channel) => {
             drop(artifact);
             // Flush any collected JSON diagnostics before the caller exits.
@@ -1535,6 +1576,7 @@ fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempE
 
     CompiledTempExecutable {
         path,
+        prerequisites: Vec::new(),
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     }
 }
@@ -1548,6 +1590,7 @@ fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExe
 
     CompiledTempExecutable {
         path,
+        prerequisites: Vec::new(),
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     }
 }
@@ -1589,27 +1632,6 @@ fn cmd_run(a: &args::RunArgs) {
         );
         std::process::exit(2);
     }
-    if target.is_wasi()
-        && resolved
-            .package()
-            .is_some_and(hew_pkg::project::ResolvedPackage::has_native)
-    {
-        eprintln!(
-            "Error: this package declares a [native] library, which cannot be \
-             linked into a wasm module"
-        );
-        std::process::exit(2);
-    }
-
-    // The package's own [native] crate is a prerequisite of its link step.
-    let mut link_libs = a.link_libs.clone();
-    match package::native_link_libs(&resolved) {
-        Ok(libs) => link_libs.extend(libs),
-        Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-    }
 
     let timeout = a.timeout.as_deref().map(|raw| {
         crate::util::parse_timeout(raw).unwrap_or_else(|e| {
@@ -1641,7 +1663,18 @@ fn cmd_run(a: &args::RunArgs) {
     if target.is_wasi() {
         cmd_run_wasi(a, &input, &options, &target, timeout);
     } else {
-        cmd_run_native(a, &input, &options, &target, &link_libs, timeout);
+        cmd_run_native(a, &input, &options, &target, &a.link_libs, timeout);
+    }
+}
+
+/// `hew run` has no output file, so its `--emit-deps` file names itself as
+/// the target: Make reruns the recipe whenever a prerequisite changes.
+fn write_run_deps(a: &args::RunArgs, artifact: &CompiledTempExecutable) {
+    if let Some(path) = a.emit_deps.as_deref() {
+        let code = write_deps(Some(path), path, &artifact.prerequisites);
+        if code != 0 {
+            std::process::exit(code);
+        }
     }
 }
 
@@ -1654,6 +1687,7 @@ fn cmd_run_wasi(
 ) -> ! {
     let artifact = compile_temp_wasi_module(input, options, target)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
+    write_run_deps(a, &artifact);
 
     match wasi_runner::run_module(
         artifact.path(),
@@ -1690,6 +1724,7 @@ fn cmd_run_native(
 ) -> ! {
     let artifact = compile_temp_run_artifact(input, options, target, link_libs)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
+    write_run_deps(a, &artifact);
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);

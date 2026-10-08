@@ -1,9 +1,9 @@
 extern "C" {
-    fn hew_test_ffi_answer() -> i64;
+    fn test_ffi_answer() -> i64;
 }
 
 #[test]
 #[real_time]
 fn native_ffi_is_linked() {
-    assert(unsafe { hew_test_ffi_answer() } == 42);
+    assert(unsafe { test_ffi_answer() } == 42);
 }

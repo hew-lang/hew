@@ -343,9 +343,6 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
 
     let cwd = root.clone();
     let project_dir = find_project_dir(&cwd).unwrap_or_else(|| cwd.clone());
-    let ffi_lib = (args.engine == crate::args::TestEngine::Native)
-        .then(|| resolve_ffi_lib(&project_dir))
-        .flatten();
     let compile_paths = (args.engine == crate::args::TestEngine::Native)
         .then(|| resolve_compile_paths(&project_dir));
     let vm_runner = (args.engine == crate::args::TestEngine::Vm).then(|| {
@@ -368,7 +365,6 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         runner::TestRunOptions {
             filter: None,
             include_ignored,
-            ffi_lib: ffi_lib.as_deref(),
             compile_paths: compile_paths.as_ref(),
             project_dir: &project_dir,
             engine: args.engine,
@@ -455,13 +451,6 @@ fn find_project_dir(start_dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn resolve_ffi_lib(project_dir: &Path) -> Option<String> {
-    detect_and_build_ffi_lib(project_dir).unwrap_or_else(|error| {
-        eprintln!("Error building FFI library: {error}");
-        std::process::exit(1);
-    })
-}
-
 fn resolve_compile_paths(project_dir: &Path) -> runner::TestCompilePaths {
     runner::TestCompilePaths::resolve(project_dir).unwrap_or_else(|error| {
         eprintln!("Error: cannot prepare in-process test compilation: {error}");
@@ -510,30 +499,6 @@ fn handle_discovered_file(file: &discovery::DiscoveredTestFile) -> bool {
         }
     }
     had_errors
-}
-
-/// Detect whether the current directory is inside an FFI-backed Hew package,
-/// build its declared native library, and return the artifact path.
-fn detect_and_build_ffi_lib(start_dir: &std::path::Path) -> Result<Option<String>, String> {
-    if !start_dir.join("hew.toml").is_file() {
-        return Ok(None);
-    }
-    let expected = hew_pkg::native::embedded_rustc_identity();
-    let Some(artifact) = hew_pkg::native::build_native(start_dir, &expected)? else {
-        return Ok(None);
-    };
-    let canonical = artifact
-        .path
-        .canonicalize()
-        .map_err(|error| {
-            format!(
-                "cannot canonicalize native artifact {}: {error}",
-                artifact.path.display()
-            )
-        })?
-        .display()
-        .to_string();
-    Ok(Some(canonical))
 }
 
 #[cfg(test)]

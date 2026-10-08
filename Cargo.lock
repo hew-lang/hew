@@ -1965,6 +1965,7 @@ dependencies = [
  "ed25519-dalek",
  "hew-testutil",
  "libc",
+ "object 0.40.0",
  "rand 0.10.3",
  "semver",
  "serde",

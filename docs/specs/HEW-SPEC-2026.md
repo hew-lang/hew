@@ -3003,9 +3003,9 @@ fn main() {
 ### 3.9 Foreign Function Interface (FFI)
 
 > **Partially implemented.** `extern "C"` blocks, unsafe foreign calls,
-> and native static-library linking with `hew build --link-lib` are shipped.
-> Layout/export attributes and the higher-level C-string wrapper surface remain
-> planned; their subsections are marked accordingly.
+> package native code (§3.9.7) and native linking with `hew build --link-lib`
+> are shipped. Layout/export attributes and the higher-level C-string wrapper
+> surface remain planned; their subsections are marked accordingly.
 
 Hew provides FFI capabilities for interoperating with C libraries and system calls.
 
@@ -3039,6 +3039,14 @@ one ABI contract. This holds even if the conflicting declaration is never
 called: the compiler rejects the drift at declaration time, not at the call
 site. Identical re-declarations (for example, the same C header imported by
 two modules) are accepted and resolve to the one established contract.
+
+**Reserved prefix:** C symbols beginning with `hew_` belong to the Hew runtime
+and its standard library. A program may declare and call them, as the standard
+library does, but package native code may not define them: a C or C++ source or
+a `[native]` Rust crate that defines a global `hew_` symbol is refused with
+`E_RESERVED_NATIVE_SYMBOL`, and the diagnostic proposes the name under the
+package's own prefix (§3.9.7). Packages in the `hew.` namespace are exempt, and
+libraries named by `--link-lib` are not inspected.
 
 An `extern` callee consumes only the parameters its declaration marks
 `consume`; every other parameter is borrowed for the call, exactly as for a
@@ -3298,6 +3306,48 @@ impl Value {
 > serializes. The refusal rides the Limitation channel under its own code so
 > that one code has one channel, and it lifts when local sends carry the
 > transfer-last-use move.
+
+#### 3.9.7 Native code in packages
+
+A package's `hew.toml` declares the native code behind its `extern "C"`
+functions in a `[native]` section: a Rust crate, C and C++ sources with their
+include directories, definitions and flags, and the system libraries they need,
+found with `pkg-config` or named directly. `[native.linux]`, `[native.macos]`,
+`[native.freebsd]` and `[native.windows]` add inputs for one target operating
+system.
+
+```toml
+[package]
+name = "acme.tls"
+version = "0.1.0"
+edition = "2026"
+
+[native]
+sources = ["native/tls.c"]
+include-dirs = ["native/include"]
+pkg-config = ["openssl"]
+
+[native.windows]
+link-libs = ["libssl", "libcrypto", "ws2_32"]
+```
+
+```hew,ignore
+extern "C" {
+    fn acme_tls_handshake(fd: i32) -> i32;
+}
+```
+
+A source file belongs to the package whose `hew.toml` is nearest above it.
+Building a program builds and links the native code of every package it
+compiles a module of, at any depth of imports, so neither the package nor its
+consumers name its objects or libraries on the command line. Sources compile
+with the C driver that links the program, for the same target and at the same
+optimization level. Native code cannot join a WebAssembly module; a wasm build
+of a program that compiles a `[native]` package is refused.
+
+Package native code defines its symbols under the package's own prefix, never
+`hew_` (§3.9.1); only packages in the `hew.` namespace may define `hew_`
+symbols. `docs/package-manifest.md` is the field reference.
 
 ---
 

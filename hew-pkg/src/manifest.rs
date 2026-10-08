@@ -6,6 +6,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+mod native;
+
+pub use native::{LinkLib, NativeInputs, NativeLib, NativeOs, RustCrate, SourceLanguage};
+
 // ── Hew language editions ───────────────────────────────────────────────────
 
 /// Hew language editions this build understands. Updated each time a new
@@ -131,7 +135,7 @@ pub enum ManifestError {
         edition: String,
         supported: &'static [&'static str],
     },
-    /// The `[native]` section is malformed (bad `kind` or empty `lib`).
+    /// The `[native]` section is malformed.
     InvalidNative(String),
 }
 
@@ -253,37 +257,6 @@ impl Package {
     }
 }
 
-/// `[native]` — declares the Rust FFI library that backs this package's `extern`
-/// functions. `hew build` builds the crate at [`crate_dir`](NativeLib::crate_dir);
-/// the compiler links the produced `lib<lib>.a` (or `.dylib`) when the package is
-/// built or imported, so consumers never pass `--link-lib` manually.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct NativeLib {
-    /// Path to the Cargo crate directory, relative to `hew.toml` (default `"."`).
-    #[serde(rename = "crate", default = "default_native_crate")]
-    pub crate_dir: String,
-    /// The `[lib]` name the crate produces as `lib<lib>.a` or `lib<lib>.dylib`.
-    pub lib: String,
-    /// Library kind: `"staticlib"` (default) or `"cdylib"`.
-    #[serde(default = "default_native_kind")]
-    pub kind: String,
-    /// Extra system libraries to pass to the linker (e.g. `["sqlite3"]`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link: Option<Vec<String>>,
-}
-
-fn default_native_crate() -> String {
-    ".".to_string()
-}
-
-fn default_native_kind() -> String {
-    "staticlib".to_string()
-}
-
-/// Library kinds accepted in a `[native]` section.
-const NATIVE_KINDS: &[&str] = &["staticlib", "cdylib"];
-
 /// Template kind used when generating a default `hew.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManifestTemplate {
@@ -344,7 +317,7 @@ pub struct HewManifest {
     /// `[features]` — named feature flags and their implications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub features: BTreeMap<String, Vec<String>>,
-    /// `[native]` — optional Rust FFI library backing this package's externs.
+    /// `[native]` — optional native code backing this package's externs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeLib>,
 }
@@ -381,8 +354,48 @@ impl HewManifest {
 /// Returns [`ManifestError`] when the file cannot be read or its TOML is
 /// malformed / missing required fields.
 pub fn parse_manifest(path: &Path) -> Result<HewManifest, ManifestError> {
+    parse_manifest_text(&std::fs::read_to_string(path)?)
+}
+
+/// Parse the `hew.toml` at `path` only when it declares `[native]`.
+///
+/// A program that compiles a module reads the nearest `hew.toml` for its
+/// native code and nothing else, so a manifest without `[native]` (a
+/// workspace root, a dependency list, a bare `[package]`) is not required to
+/// be a complete package manifest.
+///
+/// # Errors
+///
+/// Returns [`ManifestError`] when the file cannot be read or is not TOML, or
+/// when it declares `[native]` and is not a valid package manifest.
+pub fn parse_native_manifest(path: &Path) -> Result<Option<HewManifest>, ManifestError> {
     let text = std::fs::read_to_string(path)?;
-    let manifest: HewManifest = toml::from_str(&text)?;
+    let table: toml::Table = toml::from_str(&text)?;
+    if table.contains_key("native") {
+        parse_manifest_text(&text).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// The `[native]` section alone, ignoring the rest of the manifest.
+#[derive(Deserialize)]
+struct NativeProbe {
+    #[serde(rename = "native")]
+    _native: Option<NativeLib>,
+}
+
+fn parse_manifest_text(text: &str) -> Result<HewManifest, ManifestError> {
+    // Read `[native]` on its own first, so every way it can be malformed
+    // (a wrong type, an unknown field, an unknown OS table) carries
+    // `E_INVALID_NATIVE`, with the source line, instead of a bare serde
+    // message. Malformed TOML stays a plain parse error.
+    let table: toml::Table = toml::from_str(text)?;
+    if table.contains_key("native") {
+        toml::from_str::<NativeProbe>(text)
+            .map_err(|e| ManifestError::InvalidNative(e.to_string()))?;
+    }
+    let manifest: HewManifest = toml::from_str(text)?;
     if !SUPPORTED_EDITIONS.contains(&manifest.package.edition.as_str()) {
         return Err(ManifestError::UnsupportedEdition {
             edition: manifest.package.edition.clone(),
@@ -390,17 +403,7 @@ pub fn parse_manifest(path: &Path) -> Result<HewManifest, ManifestError> {
         });
     }
     if let Some(native) = &manifest.native {
-        if native.lib.trim().is_empty() {
-            return Err(ManifestError::InvalidNative(
-                "[native] lib must be a non-empty library name".to_string(),
-            ));
-        }
-        if !NATIVE_KINDS.contains(&native.kind.as_str()) {
-            return Err(ManifestError::InvalidNative(format!(
-                "[native] kind = \"{}\" is invalid (expected one of {NATIVE_KINDS:?})",
-                native.kind
-            )));
-        }
+        native.validate().map_err(ManifestError::InvalidNative)?;
     }
     Ok(manifest)
 }
@@ -611,14 +614,15 @@ mod tests {
     #[test]
     fn parse_native_section_with_defaults() {
         let f = write_temp(
-            "[package]\nname = \"hew::db::sqlite\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"hew_hew_db_sqlite\"\nlink = [\"sqlite3\"]\n",
+            "[package]\nname = \"hew::db::sqlite\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"hew_hew_db_sqlite\"\nlink-libs = [\"sqlite3\"]\n",
         );
         let m = parse_manifest(f.path()).unwrap();
         let n = m.native.expect("native section");
-        assert_eq!(n.lib, "hew_hew_db_sqlite");
-        assert_eq!(n.crate_dir, ".");
-        assert_eq!(n.kind, "staticlib");
-        assert_eq!(n.link.as_deref(), Some(&["sqlite3".to_string()][..]));
+        let rust = n.rust_crate().expect("rust crate");
+        assert_eq!(rust.lib, "hew_hew_db_sqlite");
+        assert_eq!(rust.dir, ".");
+        assert_eq!(rust.kind, "staticlib");
+        assert_eq!(n.inputs_for(NativeOs::Linux).link_libs, ["sqlite3"]);
     }
 
     #[test]

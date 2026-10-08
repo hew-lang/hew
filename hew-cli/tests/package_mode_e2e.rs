@@ -2,7 +2,7 @@
 //!
 //! With no argument, or with a directory argument, all three resolve the
 //! enclosing package through `hew.toml`: `[package] main` names the entry
-//! point, `[native]` is built first as a prerequisite, and the binary is named
+//! point, `[native]` code is built and linked, and the binary is named
 //! after the package and written to `<root>/target/<profile>/`, cargo-style.
 //! The explicit-file form is unchanged: no package root means no `target/` to
 //! own, so the binary lands beside the source. A directory is resolved before
@@ -241,8 +241,8 @@ fn build_relative_directory_from_a_subdirectory_resolves_the_enclosing_package()
     assert_prints_greeting(&package_binary_in(dir.path(), "debug", "relativewalkup"));
 }
 
-/// The package's `[native]` crate is a prerequisite: when it cannot build, the
-/// package build stops there and never produces a binary.
+/// The package's `[native]` crate is part of its link: when it cannot build,
+/// the package build fails naming it and never produces a binary.
 #[test]
 fn native_prerequisite_failure_stops_the_build() {
     let dir = workspace();
@@ -252,9 +252,6 @@ fn native_prerequisite_failure_stops_the_build() {
         "main.hew",
         "\n[native]\nlib = \"withnative\"\ncrate = \"native\"\n",
     );
-    // If Hew compilation ran first, this malformed entry would win. Seeing the
-    // missing native crate instead pins the prerequisite ordering.
-    std::fs::write(dir.path().join("main.hew"), "fn main( {\n").expect("break entry point");
 
     let output = Command::new(hew_binary())
         .arg("build")

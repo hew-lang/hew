@@ -76,6 +76,7 @@ If the diff is empty the output matches exactly. A non-empty diff means the prog
 - **progressive/** -- Numbered lessons (01-11) introducing core language features with expected output files
 - **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more; all lessons have expected output files and run as automated tests
 - **directory_module_demo/** -- Quick proof that directory-form module merging works: two peer files compose into one `greeting` module ([README](directory_module_demo/README.md))
+- **native_c/** -- A package whose `extern "C"` functions are a C source with a header, a define and a per-OS system library, declared in `hew.toml`'s `[native]` section and linked with no `--link-lib` ([manifest reference](../docs/package-manifest.md#native))
 - **module_generic_boundaries/** -- Small two-file demo showing generic trait APIs crossing a module boundary (`main.hew` + `src/widgets.hew`)
 - **multifile/** -- Progressive multi-file examples showing peer-file type contribution, selective imports, and two-level module hierarchies ([README](multifile/README.md)):
   - `01_shapes/` — directory module with peer-file types + trait impls; bare import + qualified access

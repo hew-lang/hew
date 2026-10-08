@@ -3837,6 +3837,8 @@ struct PackageSection {
     reason = "manifest compatibility fields are parsed but not all consumed by the compiler"
 )]
 struct DepTable {
+    /// Absent for a path dependency, as in the package manager's table.
+    #[serde(default = "any_version")]
     version: String,
     #[serde(default)]
     path: Option<String>,
@@ -3848,6 +3850,10 @@ struct DepTable {
     default_features: Option<bool>,
     #[serde(default)]
     registry: Option<String>,
+}
+
+fn any_version() -> String {
+    "*".to_string()
 }
 
 /// A `hew.toml` dependency value: a bare version string (`"^1.0"`) or a detailed
@@ -6077,6 +6083,19 @@ fn main() {
             .expect("manifest should be present");
         deps.sort();
         assert_eq!(deps, vec!["hew::math::stats", "local", "web"]);
+    }
+
+    #[test]
+    fn a_path_dependency_needs_no_version() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(
+            dir.path(),
+            "[dependencies]\n\"acme.local\" = { path = \"../local\" }\n",
+        );
+        let deps = load_dependencies(dir.path())
+            .expect("manifest should load")
+            .expect("manifest should be present");
+        assert_eq!(deps, vec!["acme.local"]);
     }
 
     #[test]

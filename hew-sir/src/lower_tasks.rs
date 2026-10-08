@@ -107,27 +107,17 @@ impl Builder<'_, '_> {
         Ok(scope)
     }
 
-    pub(super) fn finish_task_scopes(&mut self, floor: usize, cancel: bool) -> Result<(), String> {
-        while self
-            .task_scopes
-            .last()
-            .is_some_and(|frame| frame.depth >= floor)
-        {
-            let frame = self.task_scopes.pop().expect("active task scope");
-            let scope = frame.scope;
-            let mode = match (frame.race, cancel) {
-                (false, false) => crate::TaskScopeJoinMode::Wait,
-                (false, true) => crate::TaskScopeJoinMode::PropagateFault,
-                (true, false) => crate::TaskScopeJoinMode::CancelLosers,
-                (true, true) => crate::TaskScopeJoinMode::CancelLosersAfterFault,
+    /// Join the task scopes opened at or above `floor` on an ordinary exit.
+    /// A child's fault leaves through the enclosing cleanup.
+    pub(super) fn finish_task_scopes(&mut self, floor: usize) -> Result<(), String> {
+        for step in self.plan_task_joins(floor, false) {
+            let super::cleanup::ExitStep::JoinScope { scope, mode } = step else {
+                unreachable!("task joins plan only joins");
             };
+            self.task_scopes.pop().expect("active task scope");
             let live = self.owned_live.clone();
             let normal = self.new_block(Vec::new());
-            let fault = if cancel {
-                normal
-            } else {
-                self.new_block(Vec::new())
-            };
+            let fault = self.new_block(Vec::new());
             self.set_terminator(SemTerminator::Suspend {
                 kind: SuspendKind::Join { scope, mode },
                 inputs: Vec::new(),
@@ -136,14 +126,12 @@ impl Builder<'_, '_> {
                 cancel: edge(fault),
                 unwind: edge(fault),
             })?;
-            if !cancel {
-                self.current = fault;
-                self.emit_place_operation(
-                    SemOpKind::TaskScopeClose { scope },
-                    Provenance::Synthesized,
-                )?;
-                self.finish_fault_exit()?;
-            }
+            self.current = fault;
+            self.emit_place_operation(
+                SemOpKind::TaskScopeClose { scope },
+                Provenance::Synthesized,
+            )?;
+            self.finish_fault_exit()?;
             self.current = normal;
             self.owned_live = live;
             self.emit_place_operation(
@@ -220,7 +208,7 @@ impl Builder<'_, '_> {
                 }
                 result = None;
             }
-            self.finish_task_scopes(floor, false)?;
+            self.finish_task_scopes(floor)?;
             self.end_scopes(floor)?;
         }
         self.leave_scope();

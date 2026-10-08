@@ -153,7 +153,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 8
+              "to": 10
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -173,34 +173,14 @@
           "ops": [],
           "params": [],
           "term": {
-            "cancel": {
+            "edge": {
               "args": [],
-              "to": 4
+              "to": 7
             },
-            "detail": {
-              "mode": "propagate_fault",
-              "scope": 1
-            },
-            "error_shape": null,
-            "inputs": [],
-            "kind": "Join",
-            "op": "suspend",
-            "request_shapes": null,
-            "result": null,
-            "result_shape": null,
-            "resumes": [
-              {
-                "args": [],
-                "to": 4
-              }
-            ],
+            "op": "goto",
             "span": {
               "end": 102,
               "start": 102
-            },
-            "unwind": {
-              "args": [],
-              "to": 4
             }
           }
         },
@@ -209,78 +189,24 @@
           "ops": [],
           "params": [],
           "term": {
-            "cancel": {
+            "edge": {
               "args": [],
-              "to": 6
+              "to": 7
             },
-            "detail": {
-              "mode": "propagate_fault",
-              "scope": 1
-            },
-            "error_shape": null,
-            "inputs": [],
-            "kind": "Join",
-            "op": "suspend",
-            "request_shapes": null,
-            "result": null,
-            "result_shape": null,
-            "resumes": [
-              {
-                "args": [],
-                "to": 6
-              }
-            ],
+            "op": "goto",
             "span": {
               "end": 102,
               "start": 102
-            },
-            "unwind": {
-              "args": [],
-              "to": 6
             }
           }
         },
         {
           "id": 4,
-          "ops": [
-            {
-              "dst": null,
-              "op": "task_scope.close",
-              "scope": 1,
-              "span": null
-            }
-          ],
+          "ops": [],
           "params": [],
           "term": {
-            "cancel": {
-              "args": [],
-              "to": 5
-            },
-            "detail": {
-              "mode": "propagate_fault",
-              "scope": 0
-            },
-            "error_shape": null,
-            "inputs": [],
-            "kind": "Join",
-            "op": "suspend",
-            "request_shapes": null,
-            "result": null,
-            "result_shape": null,
-            "resumes": [
-              {
-                "args": [],
-                "to": 5
-              }
-            ],
-            "span": {
-              "end": 102,
-              "start": 102
-            },
-            "unwind": {
-              "args": [],
-              "to": 5
-            }
+            "op": "resume_unwind",
+            "span": null
           }
         },
         {
@@ -288,12 +214,6 @@
           "ops": [
             {
               "dst": null,
-              "op": "task_scope.close",
-              "scope": 0,
-              "span": null
-            },
-            {
-              "dst": null,
               "op": "end_lifetime",
               "place": 0,
               "span": null
@@ -301,93 +221,26 @@
           ],
           "params": [],
           "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 102,
-              "start": 102
-            }
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
           }
         },
         {
           "id": 6,
-          "ops": [
-            {
-              "dst": null,
-              "op": "task_scope.close",
-              "scope": 1,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "cancel": {
-              "args": [],
-              "to": 7
-            },
-            "detail": {
-              "mode": "propagate_fault",
-              "scope": 0
-            },
-            "error_shape": null,
-            "inputs": [],
-            "kind": "Join",
-            "op": "suspend",
-            "request_shapes": null,
-            "result": null,
-            "result_shape": null,
-            "resumes": [
-              {
-                "args": [],
-                "to": 7
-              }
-            ],
-            "span": {
-              "end": 102,
-              "start": 102
-            },
-            "unwind": {
-              "args": [],
-              "to": 7
-            }
-          }
-        },
-        {
-          "id": 7,
-          "ops": [
-            {
-              "dst": null,
-              "op": "task_scope.close",
-              "scope": 0,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 0,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 102,
-              "start": 102
-            }
-          }
-        },
-        {
-          "id": 8,
           "ops": [],
           "params": [],
           "term": {
             "cancel": {
               "args": [],
-              "to": 10
+              "to": 9
             },
             "detail": {
-              "mode": "wait",
-              "scope": 1
+              "mode": "propagate_fault",
+              "scope": 0
             },
             "error_shape": null,
             "inputs": [],
@@ -402,41 +255,25 @@
                 "to": 9
               }
             ],
-            "span": {
-              "end": 102,
-              "start": 102
-            },
+            "span": null,
             "unwind": {
               "args": [],
-              "to": 10
+              "to": 9
             }
           }
         },
         {
-          "id": 9,
-          "ops": [
-            {
-              "dst": null,
-              "op": "task_scope.close",
-              "scope": 1,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 0,
-              "span": null
-            }
-          ],
+          "id": 7,
+          "ops": [],
           "params": [],
           "term": {
             "cancel": {
               "args": [],
-              "to": 13
+              "to": 8
             },
             "detail": {
-              "mode": "wait",
-              "scope": 0
+              "mode": "propagate_fault",
+              "scope": 1
             },
             "error_shape": null,
             "inputs": [],
@@ -448,21 +285,18 @@
             "resumes": [
               {
                 "args": [],
-                "to": 12
+                "to": 8
               }
             ],
-            "span": {
-              "end": 102,
-              "start": 102
-            },
+            "span": null,
             "unwind": {
               "args": [],
-              "to": 13
+              "to": 8
             }
           }
         },
         {
-          "id": 10,
+          "id": 8,
           "ops": [
             {
               "dst": null,
@@ -473,13 +307,46 @@
           ],
           "params": [],
           "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 9,
+          "ops": [
+            {
+              "dst": null,
+              "op": "task_scope.close",
+              "scope": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
             "cancel": {
               "args": [],
-              "to": 11
+              "to": 12
             },
             "detail": {
-              "mode": "propagate_fault",
-              "scope": 0
+              "mode": "wait",
+              "scope": 1
             },
             "error_shape": null,
             "inputs": [],
@@ -500,7 +367,7 @@
             },
             "unwind": {
               "args": [],
-              "to": 11
+              "to": 12
             }
           }
         },
@@ -510,7 +377,7 @@
             {
               "dst": null,
               "op": "task_scope.close",
-              "scope": 0,
+              "scope": 1,
               "span": null
             },
             {
@@ -522,7 +389,54 @@
           ],
           "params": [],
           "term": {
-            "op": "resume_unwind",
+            "cancel": {
+              "args": [],
+              "to": 14
+            },
+            "detail": {
+              "mode": "wait",
+              "scope": 0
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Join",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 13
+              }
+            ],
+            "span": {
+              "end": 102,
+              "start": 102
+            },
+            "unwind": {
+              "args": [],
+              "to": 14
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [
+            {
+              "dst": null,
+              "op": "task_scope.close",
+              "scope": 1,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
             "span": {
               "end": 102,
               "start": 102
@@ -530,7 +444,7 @@
           }
         },
         {
-          "id": 12,
+          "id": 13,
           "ops": [
             {
               "dst": null,
@@ -550,7 +464,7 @@
           }
         },
         {
-          "id": 13,
+          "id": 14,
           "ops": [
             {
               "dst": null,
@@ -561,7 +475,11 @@
           ],
           "params": [],
           "term": {
-            "op": "resume_unwind",
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
             "span": {
               "end": 102,
               "start": 102
@@ -622,7 +540,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 7
             },
             "op": "goto",
             "span": {
@@ -638,7 +556,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -649,45 +567,61 @@
         },
         {
           "id": 3,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 0
-            }
-          ],
-          "params": [],
-          "term": {
-            "fault": {
-              "args": [],
-              "to": 4
-            },
-            "normal": {
-              "args": [],
-              "to": 4
-            },
-            "op": "cleanup.dispatch",
-            "span": {
-              "end": 75,
-              "start": 75
-            }
-          }
-        },
-        {
-          "id": 4,
           "ops": [],
           "params": [],
           "term": {
             "op": "resume_unwind",
-            "span": {
-              "end": 75,
-              "start": 75
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 0
             }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
           }
         },
         {
           "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 7,
           "ops": [
             {
               "dst": null,
@@ -700,11 +634,11 @@
           "term": {
             "fault": {
               "args": [],
-              "to": 7
+              "to": 9
             },
             "normal": {
               "args": [],
-              "to": 6
+              "to": 8
             },
             "op": "cleanup.dispatch",
             "span": {
@@ -714,7 +648,7 @@
           }
         },
         {
-          "id": 6,
+          "id": 8,
           "ops": [],
           "params": [],
           "term": {
@@ -730,11 +664,15 @@
           }
         },
         {
-          "id": 7,
+          "id": 9,
           "ops": [],
           "params": [],
           "term": {
-            "op": "resume_unwind",
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
             "span": {
               "end": 75,
               "start": 75

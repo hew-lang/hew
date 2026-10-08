@@ -1,0 +1,11 @@
+[[case]]
+id = "cleanup-ladder-fault-combine"
+intent = "A faulting ask releases two owners newest first and reports the failing close after the ask fault."
+source = "cases/cleanup-ladder-fault-combine.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "closed right\nclosed left\n"
+stderr = "hew: failure: UserPanic (212): second ask: Dead: the destination actor is gone and will not come back\nhew: secondary failure: UserPanic (212): release failed\n"
+exit = 1

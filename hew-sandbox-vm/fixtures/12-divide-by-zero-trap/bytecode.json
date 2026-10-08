@@ -97,7 +97,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 8
+              "to": 9
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -136,7 +136,7 @@
           "term": {
             "cleanup": {
               "args": [],
-              "to": 6
+              "to": 8
             },
             "op": "checked_raise",
             "span": {
@@ -153,7 +153,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 6
             },
             "op": "goto",
             "span": {
@@ -168,10 +168,7 @@
           "params": [],
           "term": {
             "op": "resume_unwind",
-            "span": {
-              "end": 53,
-              "start": 53
-            }
+            "span": null
           }
         },
         {
@@ -184,10 +181,7 @@
               "to": 7
             },
             "op": "goto",
-            "span": {
-              "end": 53,
-              "start": 53
-            }
+            "span": null
           }
         },
         {
@@ -195,11 +189,12 @@
           "ops": [],
           "params": [],
           "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 53,
-              "start": 53
-            }
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
           }
         },
         {
@@ -209,7 +204,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 9
+              "to": 6
             },
             "op": "goto",
             "span": {
@@ -220,6 +215,22 @@
         },
         {
           "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 10
+            },
+            "op": "goto",
+            "span": {
+              "end": 53,
+              "start": 53
+            }
+          }
+        },
+        {
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {

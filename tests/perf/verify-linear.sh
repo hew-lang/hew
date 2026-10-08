@@ -10,8 +10,15 @@
 # blocks. Reaching physical MIR must stay proportional to the awaits, and a
 # verifier that walks a whole table per operation does not.
 #
-# The chain moves one record through one binding, so the body it lowers to
-# grows with the await count and nothing else. The gate checks that first: a
+# The record chain moves one record through one binding, so the body it lowers
+# to grows with the await count and nothing else. The owner chain declares one
+# closable binding per await and holds an owned string temporary across each
+# await, so every await's fault edges owe one more release than the last; its
+# body stays linear only while fault sites share their cleanup. Its clock is not
+# gated: every block of that body carries all N live bindings in the builder's
+# and both verifiers' dense per-block state, so its lowering time grows with
+# awaits times bindings even when the body does not. The gate checks the
+# operation count first: a
 # lowering that makes the operation count superlinear would turn the timing
 # below into a measurement of the lowering rather than of the verifiers, and
 # says so instead of passing quietly.
@@ -48,13 +55,13 @@ fi
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/hew-verify-linear.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Emit the chain: N awaits, each moving the record out of the binding and the
-# reply back into it.
-generate() {
+# Emit the record chain: N awaits, each moving the record out of the binding
+# and the reply back into it.
+generate_record() {
     local n="$1" out="$2" i
     {
         echo "type Payload {"
-        for i in 0 1 2 3 4 5 6 7; do echo "    f$i: string,"; done
+        for i in 0 1 2 3 4 5 6 7; do echo "    f$i: string;"; done
         echo "}"
         echo
         echo "actor Gate {"
@@ -70,7 +77,44 @@ generate() {
             echo "    value = gate.pass(value).expect(\"reply\");"
         done
         echo "    println(value.f0);"
-        echo "    close(gate);"
+        echo "    stop(gate);"
+        echo "    stopped(gate);"
+        echo "}"
+    } >"$out"
+}
+
+# Emit the owner chain: N awaits, each after declaring one more closable
+# binding and while an owned string temporary is live.
+generate_owners() {
+    local n="$1" out="$2" i
+    {
+        echo "#[resource]"
+        echo "type Lease {"
+        echo "    id: i64;"
+        echo "}"
+        echo
+        echo "impl Lease {"
+        echo "    fn close(consume self) {"
+        echo "        if self.id < 0 { println(\"negative lease\"); }"
+        echo "    }"
+        echo "}"
+        echo
+        echo "actor Gate {"
+        echo "    receive fn pass(value: string) -> i64 { value.len() }"
+        echo "}"
+        echo
+        echo "fn width(text: string, n: i64) -> i64 { text.len() + n }"
+        echo
+        echo "fn main() {"
+        echo "    let gate = spawn Gate();"
+        echo "    var total = 0;"
+        for ((i = 1; i <= n; i++)); do
+            echo "    var lease$i = Lease { id: $i };"
+            echo "    total = total + width(f\"t{total}\", gate.pass(\"k\").expect(\"reply\"));"
+        done
+        echo "    println(total);"
+        echo "    stop(gate);"
+        echo "    stopped(gate);"
         echo "}"
     } >"$out"
 }
@@ -109,24 +153,6 @@ operations() {
     "$HEW_BIN" tool compile "$1" --dump-sir 2>/dev/null | grep -cE '^    [a-z%$]'
 }
 
-declare -A elapsed_ms ops
-for n in "${LENGTHS[@]}"; do
-    generate "$n" "$tmpdir/chain$n.hew"
-    if ! elapsed_ms[$n]="$(lowering_ms "$tmpdir/chain$n.hew" "$tmpdir/chain$n.log")"; then
-        echo "verify-linear: compiling the chain at N=$n failed" >&2
-        exit 1
-    fi
-    ops[$n]="$(operations "$tmpdir/chain$n.hew")"
-    if [[ "${ops[$n]}" -lt 1 ]]; then
-        echo "verify-linear: the chain at N=$n lowered to no SIR operations" >&2
-        exit 1
-    fi
-    echo "verify-linear: N=$n physical lowering ${elapsed_ms[$n]} ms over ${ops[$n]} SIR operations"
-done
-
-first="${LENGTHS[0]}"
-last="${LENGTHS[${#LENGTHS[@]} - 1]}"
-
 report() {
     python3 -c "print(f'{$1 / $2:.2f}')"
 }
@@ -134,17 +160,46 @@ exceeds() {
     python3 -c "import sys; sys.exit(0 if $1 / $2 > $RATIO_LIMIT else 1)"
 }
 
-operation_ratio="$(report "${ops[$last]}" "${ops[$first]}")"
-echo "verify-linear: N=$last emits ${operation_ratio}x the operations of N=$first (limit $RATIO_LIMIT)"
-if exceeds "${ops[$last]}" "${ops[$first]}"; then
-    echo "verify-linear: lowering this chain is superlinear, so the timing below measures the lowering" >&2
-    exit 1
-fi
+check_chain() {
+    local chain="$1" timed="$2"
+    local -A elapsed_ms ops
+    local n
+    for n in "${LENGTHS[@]}"; do
+        "generate_$chain" "$n" "$tmpdir/$chain$n.hew"
+        if ! elapsed_ms[$n]="$(lowering_ms "$tmpdir/$chain$n.hew" "$tmpdir/$chain$n.log")"; then
+            echo "verify-linear: compiling the $chain chain at N=$n failed" >&2
+            exit 1
+        fi
+        ops[$n]="$(operations "$tmpdir/$chain$n.hew")"
+        if [[ "${ops[$n]}" -lt 1 ]]; then
+            echo "verify-linear: the $chain chain at N=$n lowered to no SIR operations" >&2
+            exit 1
+        fi
+        echo "verify-linear: $chain N=$n physical lowering ${elapsed_ms[$n]} ms over ${ops[$n]} SIR operations"
+    done
 
-elapsed_ratio="$(report "${elapsed_ms[$last]}" "${elapsed_ms[$first]}")"
-echo "verify-linear: N=$last costs ${elapsed_ratio}x N=$first (limit $RATIO_LIMIT)"
-if exceeds "${elapsed_ms[$last]}" "${elapsed_ms[$first]}"; then
-    echo "verify-linear: reaching physical MIR is superlinear in the awaits per function" >&2
-    exit 1
-fi
+    local first="${LENGTHS[0]}"
+    local last="${LENGTHS[${#LENGTHS[@]} - 1]}"
+    local operation_ratio elapsed_ratio
+    operation_ratio="$(report "${ops[$last]}" "${ops[$first]}")"
+    echo "verify-linear: $chain N=$last emits ${operation_ratio}x the operations of N=$first (limit $RATIO_LIMIT)"
+    if exceeds "${ops[$last]}" "${ops[$first]}"; then
+        echo "verify-linear: lowering the $chain chain is superlinear, so the timing below measures the lowering" >&2
+        exit 1
+    fi
+
+    elapsed_ratio="$(report "${elapsed_ms[$last]}" "${elapsed_ms[$first]}")"
+    if [[ "$timed" != timed ]]; then
+        echo "verify-linear: $chain N=$last costs ${elapsed_ratio}x N=$first (not gated)"
+        return
+    fi
+    echo "verify-linear: $chain N=$last costs ${elapsed_ratio}x N=$first (limit $RATIO_LIMIT)"
+    if exceeds "${elapsed_ms[$last]}" "${elapsed_ms[$first]}"; then
+        echo "verify-linear: reaching physical MIR is superlinear in the awaits per function" >&2
+        exit 1
+    fi
+}
+
+check_chain record timed
+check_chain owners untimed
 echo "verify-linear: reaching physical MIR scales with the awaits per function"

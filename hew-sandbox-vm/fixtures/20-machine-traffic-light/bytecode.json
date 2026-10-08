@@ -110,7 +110,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 4
+              "to": 7
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -132,7 +132,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -143,6 +143,15 @@
         },
         {
           "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
           "ops": [
             {
               "dst": null,
@@ -153,15 +162,42 @@
           ],
           "params": [],
           "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 256,
-              "start": 256
-            }
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
           }
         },
         {
-          "id": 4,
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 7,
           "ops": [
             {
               "dst": null,
@@ -213,7 +249,7 @@
               "args": [
                 6
               ],
-              "to": 5
+              "to": 8
             },
             "op": "call",
             "result": {
@@ -228,12 +264,12 @@
               "args": [
                 8
               ],
-              "to": 6
+              "to": 9
             }
           }
         },
         {
-          "id": 5,
+          "id": 8,
           "ops": [
             {
               "aggregate": 7,
@@ -294,7 +330,7 @@
               "args": [
                 13
               ],
-              "to": 8
+              "to": 10
             },
             "op": "call",
             "result": {
@@ -307,12 +343,12 @@
             },
             "unwind": {
               "args": [],
-              "to": 9
+              "to": 11
             }
           }
         },
         {
-          "id": 6,
+          "id": 9,
           "ops": [],
           "params": [
             {
@@ -323,7 +359,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -333,26 +369,7 @@
           }
         },
         {
-          "id": 7,
-          "ops": [
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 0,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 300,
-              "start": 300
-            }
-          }
-        },
-        {
-          "id": 8,
+          "id": 10,
           "ops": [],
           "params": [
             {
@@ -371,7 +388,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 11
+              "to": 12
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -387,13 +404,13 @@
           }
         },
         {
-          "id": 9,
+          "id": 11,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 10
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -403,26 +420,7 @@
           }
         },
         {
-          "id": 10,
-          "ops": [
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 0,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 320,
-              "start": 320
-            }
-          }
-        },
-        {
-          "id": 11,
+          "id": 12,
           "ops": [
             {
               "dst": null,
@@ -435,7 +433,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 12
+              "to": 13
             },
             "op": "goto",
             "span": {
@@ -445,7 +443,7 @@
           }
         },
         {
-          "id": 12,
+          "id": 13,
           "ops": [
             {
               "dst": null,

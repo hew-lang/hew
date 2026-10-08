@@ -1,0 +1,42 @@
+// An ask to a stopped actor faults through `expect` while two closable
+// owners are live. Both are closed, newest first, and the failing close is
+// reported after the ask's fault.
+#[resource]
+type Lease {
+    name: string;
+}
+
+impl Lease {
+    fn close(consume self) {
+        println("closed " + self.name);
+        if self.name == "right" {
+            panic("release failed");
+        }
+    }
+}
+
+actor Store {
+    receive fn get(key: string) -> i64 {
+        key.len()
+    }
+}
+
+fn fetch(store: Store, n: i64) -> i64 {
+    let left = Lease { name: "left" };
+    var total = 0;
+    for i in 0..n {
+        if i == 1 {
+            continue;
+        }
+        total = total + store.get(f"k{i}").expect("first ask");
+    }
+    let right = Lease { name: "right" };
+    total + store.get("k").expect("second ask")
+}
+
+fn main() {
+    let s = spawn Store;
+    stop(s);
+    stopped(s);
+    println(fetch(s, 0));
+}

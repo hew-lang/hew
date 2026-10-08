@@ -1,0 +1,10 @@
+[[case]]
+id = "cleanup-ladder-shared-exits"
+intent = "Every exit of a body with a closable binding and two asks closes it once."
+source = "cases/cleanup-ladder-shared-exits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "closed a\nboth ok 3\nclosed a\nsecond err Dead: the destination actor is gone and will not come back\nclosed a\nfirst err Dead: the destination actor is gone and will not come back\n"
+exit = 0

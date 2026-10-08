@@ -144,6 +144,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             state_taken: BTreeSet::new(),
             stream_sink,
             dual_return: None,
+            cleanup_ladder: super::cleanup::CleanupLadder::default(),
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;

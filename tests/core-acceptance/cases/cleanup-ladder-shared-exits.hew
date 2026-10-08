@@ -1,0 +1,45 @@
+// Every exit of a body with one closable binding and two asks closes the
+// binding exactly once: both asks succeed, the second ask's actor has
+// stopped, or the first one's has.
+#[resource]
+type Lease {
+    name: string;
+}
+
+impl Lease {
+    fn close(consume self) {
+        println("closed " + self.name);
+    }
+}
+
+actor Store {
+    receive fn get(key: string) -> i64 {
+        key.len()
+    }
+}
+
+fn pair(first: Store, second: Store) -> Result<i64, ActorError> {
+    let lease = Lease { name: "a" };
+    let one = first.get("k")?;
+    let two = second.get("jj")?;
+    .Ok(one + two)
+}
+
+fn show(label: string, result: Result<i64, ActorError>) {
+    match result {
+        .Ok(v) => println(f"{label} ok {v}"),
+        .Err(e) => println(f"{label} err {e}"),
+    }
+}
+
+fn main() {
+    let live = spawn Store;
+    let dead = spawn Store;
+    stop(dead);
+    stopped(dead);
+    show("both", pair(live, live));
+    show("second", pair(live, dead));
+    show("first", pair(dead, live));
+    stop(live);
+    stopped(live);
+}

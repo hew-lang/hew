@@ -1,0 +1,10 @@
+[[case]]
+id = "cleanup-ladder-defer-reads"
+intent = "A defer run on a fault exit reads mutable bindings as that exit left them, in straight-line code and loops."
+source = "cases/cleanup-ladder-defer-reads.hew"
+suites = ["acceptance"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "defer n=3\nboth ok 6\ndefer n=2\nsecond err Dead: the destination actor is gone and will not come back\ndefer n=1\nfirst err Dead: the destination actor is gone and will not come back\nloop defer n=3\nloop err Dead: the destination actor is gone and will not come back\nloop defer n=4\nloop done ok 4\nitems 2\nfill ok 2\nitems 0\nfill dead err Dead: the destination actor is gone and will not come back\n"
+exit = 0

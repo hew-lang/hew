@@ -1,0 +1,11 @@
+[[case]]
+id = "cleanup-ladder-return-close-fault"
+intent = "An error return releases two owners newest first and a failing close becomes the frame fault."
+source = "cases/cleanup-ladder-return-close-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "closed right\nclosed left\n"
+stderr = "hew: failure: UserPanic (212): release failed\n"
+exit = 1

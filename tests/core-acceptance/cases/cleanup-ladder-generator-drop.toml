@@ -1,0 +1,10 @@
+[[case]]
+id = "cleanup-ladder-generator-drop"
+intent = "A generator dropped half-consumed runs its defer and releases its closable binding once."
+source = "cases/cleanup-ladder-generator-drop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "first\nfirst cleaned\nclosed first\n"
+exit = 0

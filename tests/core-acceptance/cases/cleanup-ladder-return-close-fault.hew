@@ -1,0 +1,39 @@
+// Two closable owners are live across an ask whose actor has stopped, so `?`
+// returns the error. The return releases both, newest first, and the failing
+// close becomes the frame's fault after every remaining owner is released.
+#[resource]
+type Lease {
+    name: string;
+}
+
+impl Lease {
+    fn close(consume self) {
+        println("closed " + self.name);
+        if self.name == "right" {
+            panic("release failed");
+        }
+    }
+}
+
+actor Store {
+    receive fn put(key: string, value: string) -> bool {
+        key.len() == value.len()
+    }
+}
+
+fn copy_pair(store: Store) -> Result<bool, ActorError> {
+    let left = Lease { name: "left" };
+    let right = Lease { name: "right" };
+    let ok = store.put("k", "v")?;
+    .Ok(ok)
+}
+
+fn main() {
+    let s = spawn Store;
+    stop(s);
+    stopped(s);
+    match copy_pair(s) {
+        .Ok(v) => println(v),
+        .Err(e) => println(e),
+    }
+}

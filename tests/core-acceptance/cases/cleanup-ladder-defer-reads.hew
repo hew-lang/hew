@@ -1,0 +1,65 @@
+// A defer reads a mutable binding at the exit that runs it, so two fault
+// exits of the same scope that differ only in the binding's value print
+// different values.
+actor Store {
+    receive fn get(key: string) -> i64 {
+        key.len()
+    }
+}
+
+fn track(first: Store, second: Store) -> Result<i64, ActorError> {
+    var n = 1;
+    defer println(f"defer n={n}");
+    let one = first.get("k")?;
+    n = 2;
+    let two = second.get("jj")?;
+    n = 3;
+    .Ok(one + two + n)
+}
+
+fn count(store: Store, stop_at: i64, dead: Store) -> Result<i64, ActorError> {
+    var n = 0;
+    defer println(f"loop defer n={n}");
+    for i in 0..4 {
+        n = n + 1;
+        if i == stop_at {
+            dead.get("x")?;
+        } else {
+            store.get("x")?;
+        }
+    }
+    .Ok(n)
+}
+
+// The receiver loan of `items.push` is live while its argument's ask
+// suspends; the defer still reads `items` on that ask's fault exit.
+fn fill(store: Store) -> Result<i64, ActorError> {
+    var items: Vec<i64> = Vec.new();
+    defer println(f"items {items.len()}");
+    items.push(store.get("k")?);
+    items.push(store.get("jj")?);
+    .Ok(items.len())
+}
+
+fn show(label: string, result: Result<i64, ActorError>) {
+    match result {
+        .Ok(v) => println(f"{label} ok {v}"),
+        .Err(e) => println(f"{label} err {e}"),
+    }
+}
+
+fn main() {
+    let live = spawn Store;
+    let dead = spawn Store;
+    stop(dead);
+    stopped(dead);
+    show("both", track(live, live));
+    show("second", track(live, dead));
+    show("first", track(dead, live));
+    show("loop", count(live, 2, dead));
+    show("loop done", count(live, 9, dead));
+    show("fill", fill(live));
+    show("fill dead", fill(dead));
+    stop(live);
+    stopped(live);
+}

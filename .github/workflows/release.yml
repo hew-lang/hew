@@ -961,9 +961,9 @@ jobs:
           path: portable-release-libs
 
       - name: Build on FreeBSD
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
-          release: "15.0"
+          release: "15.1"
           mem: 8192
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
@@ -993,7 +993,7 @@ jobs:
             rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
 
             # ── LLVM ───────────────────────────────────────────────────────
-            # LLVM 22 comes from pkg on FreeBSD 15.0 (llvm22-22.1.2).
+            # LLVM 22 comes from pkg on FreeBSD 15.1 (latest branch).
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
             /usr/local/llvm22/bin/llvm-config --version
 
@@ -1048,7 +1048,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD build — aarch64 via QEMU VM (tier-1, required release gate)
-  # Runs inside a FreeBSD 15.0 aarch64 VM under QEMU emulation on a standard
+  # Runs inside a FreeBSD 15.1 aarch64 VM under QEMU emulation on a standard
   # x86_64 runner (vmactions/freebsd-vm with arch: aarch64). Emulation is slow
   # but needs no new host infra. The native aarch64 build is not reproducible
   # locally; CI is the proving gate for this toolchain asset.

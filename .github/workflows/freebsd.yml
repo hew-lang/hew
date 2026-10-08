@@ -1,7 +1,7 @@
-# FreeBSD CI — nightly regression testing on FreeBSD 15.0
+# FreeBSD CI — nightly regression testing on FreeBSD 15.1
 #
 # FreeBSD is a tier-1 platform. LLVM 22 is available via FreeBSD `pkg`
-# (llvm22-22.1.2 on FreeBSD 15.0 latest), so no source build is needed.
+# (FreeBSD 15.1 latest), so no source build is needed.
 # Uses vmactions/freebsd-vm@v1 to run FreeBSD in QEMU on an Ubuntu host.
 
 name: FreeBSD CI
@@ -40,9 +40,9 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Build and test on FreeBSD
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
-          release: "15.0"
+          release: "15.1"
           mem: 8192
           # Keep multi-gigabyte build outputs in the guest. Only the JUnit
           # reports staged in ci-reports/ need to return to the host.

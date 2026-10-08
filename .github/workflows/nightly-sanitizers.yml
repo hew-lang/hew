@@ -61,10 +61,17 @@ jobs:
   # Generated-code and runtime ownership cases share the instrumented build.
   # The explicit safety integrations below exercise the C and host-client edges.
   # ─────────────────────────────────────────────────────────────────────────
+  # The safety suite runs one case at a time by design, and its 1,436 cases
+  # take about four hours serially on a hosted runner, so it is split into
+  # stable partitions that each fit the job budget.
   core-safety:
-    name: Core safety (generated code and runtime)
+    name: Core safety (generated code and runtime, ${{ matrix.shard }}/6)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -104,7 +111,7 @@ jobs:
       - name: Run native ownership safety cases
         env:
           SANITIZER_RUST_TARGET: x86_64-unknown-linux-gnu
-        run: make core-safety
+        run: make core-safety CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/6"
 
   # ─────────────────────────────────────────────────────────────────────────
   # C extern byte ownership and compiled Hew host-client ownership are

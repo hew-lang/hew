@@ -296,7 +296,9 @@ jobs:
   gate-linux-aarch64:
     name: Release Gate — Linux aarch64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    # Workspace tests plus native core acceptance take about 44 minutes on
+    # a warm cache, so 45 cancelled the job while it saved its caches.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -640,9 +642,9 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Build and test on FreeBSD
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
-          release: "15.0"
+          release: "15.1"
           mem: 8192
           # Return JUnit reports without copying the guest's build tree.
           copyback: true
@@ -765,7 +767,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD aarch64 — release binary build + smoke test only.
-  # Runs inside a FreeBSD 15.0 aarch64 VM under full-system QEMU emulation on
+  # Runs inside a FreeBSD 15.1 aarch64 VM under full-system QEMU emulation on
   # a standard x86_64 runner (vmactions/freebsd-vm with arch: aarch64). This
   # job cannot be reproduced locally; CI is the proving gate for the FreeBSD
   # aarch64 toolchain.
@@ -806,9 +808,9 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Build and test on FreeBSD aarch64
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
-          release: "15.0"
+          release: "15.1"
           arch: aarch64
           mem: 8192
           cpu: 4

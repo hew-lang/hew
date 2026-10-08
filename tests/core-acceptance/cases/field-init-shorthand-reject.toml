@@ -1,6 +1,6 @@
 [[case]]
 id = "field-init-shorthand-reject"
-intent = "A shorthand field whose name has no binding reports the missing binding as a shorthand, not a parse cascade; naming a field twice and naming a non-field are refused exactly as in the explicit form."
+intent = "A shorthand field whose name has no binding reports the missing binding as a shorthand, not a parse cascade; naming a field twice, naming a non-field and misspelling a field are refused exactly as in the explicit form."
 source = "cases/field-init-shorthand-reject.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -29,8 +29,22 @@ message = "no field `retries` on type `Endpoint`"
 
 [[case.expected.diagnostics]]
 severity = "error"
+code = "UndefinedField"
+line = 27
+column = 16
+message = "no field `prot` on type `Endpoint`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedField"
+line = 27
+column = 16
+message = "missing field `port` in initializer of `Endpoint`"
+
+[[case.expected.diagnostics]]
+severity = "error"
 code = "UndefinedVariable"
-line = 26
+line = 29
 column = 34
 message = "cannot find `greeting` in scope (field shorthand for `greeting`)"
 
@@ -40,3 +54,10 @@ code = "UnusedVariable"
 line = 23
 column = 9
 message = "unused variable `retries`"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "UnusedVariable"
+line = 16
+column = 9
+message = "unused variable `prt`"

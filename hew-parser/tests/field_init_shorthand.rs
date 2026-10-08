@@ -168,3 +168,19 @@ fn machine_transition_lone_name_is_a_block_and_list_is_a_payload() {
         ]
     );
 }
+
+#[test]
+fn lone_shorthand_after_while_let_scrutinee_is_the_body() {
+    let result = parse_clean("fn main() {\n    while let .Some(v) = next { v }\n}\n");
+    let Some((Stmt::WhileLet { conditions, .. }, _)) = main_body(&result).stmts.first() else {
+        panic!("expected a while-let loop");
+    };
+    let Some(ConditionItem::Let { expr, .. }) = conditions.first() else {
+        panic!("expected a let condition");
+    };
+    assert!(
+        matches!(expr.0, Expr::Ident(_)),
+        "`next {{ v }}` must not be a record literal, got {:?}",
+        expr.0
+    );
+}

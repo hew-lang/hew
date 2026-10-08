@@ -1,10 +1,10 @@
 [[case]]
 id = "field-init-shorthand"
-intent = "A bare field name in a record literal, enum struct variant, record update, actor spawn and machine emit or payload initializes that field from the binding of the same name, owned values included; after an `if let` scrutinee or `for` iterable, `{ name }` stays the body block."
+intent = "A bare field name in a record literal, enum struct variant, record update, actor spawn and machine emit or payload initializes that field from the binding of the same name, owned values, actor state and captured bindings included; after an `if let` scrutinee or `for` iterable, `{ name }` stays the body block."
 source = "cases/field-init-shorthand.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "db1.local:5432 2\ndb1.local:6543 replica\ncache:6379 primary\n12\n12\nhello, hew x2\nalarm 7 over 0\npeak 7 seen 1\n9\n6\n"
+stdout = "db1.local:5432 2\ndb1.local:6543 replica\ncache:6379 primary\n12\n12\nhello, hew x2\nhits 2\ncap1 2\ncap1 5\nalarm 7 over 0\npeak 7 seen 1\n9\n6\n"
 exit = 0

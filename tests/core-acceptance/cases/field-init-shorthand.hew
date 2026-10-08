@@ -27,6 +27,22 @@ actor Greeter {
     }
 }
 
+type Snapshot {
+    count: i64;
+    label: string;
+}
+
+// Bare actor state reads through shorthand like any other name.
+actor Tally {
+    var count: i64 = 0;
+    let label: string;
+
+    receive fn bump() -> Snapshot {
+        count += 1;
+        Snapshot { count, label }
+    }
+}
+
 machine Meter {
     events {
         Reading { value: i64; }
@@ -89,6 +105,26 @@ fn main() {
         .Ok(text) => println(text),
         .Err(_) => println("greeter failed"),
     }
+    let tally = spawn Tally(label: "hits");
+    let _ = tally.bump();
+    match tally.bump() {
+        .Ok(snap) => println(f"{snap.label} {snap.count}"),
+        .Err(_) => println("tally failed"),
+    }
+
+    // Captured bindings, in a closure and a moving lambda actor.
+    let label = f"cap{1}";
+    let make = || Snapshot { count, label: label.clone() };
+    let made = make();
+    println(f"{made.label} {made.count}");
+    let reporter = actor move |n: i64| {
+        let snap = Snapshot { count: n, label };
+        println(f"{snap.label} {snap.count}");
+    };
+    let _ = reporter(5);
+    stop(reporter);
+    stopped(reporter);
+
     // Machine `emit` and state payloads.
     var meter: Meter = .Watching { peak: 0, seen: 0 };
     let report = meter.step(.Reading { value: 7 });

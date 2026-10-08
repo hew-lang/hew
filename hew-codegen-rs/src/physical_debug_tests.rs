@@ -352,7 +352,13 @@ mod codeview {
 
     /// The nesting claim the DWARF twin makes about lexical blocks: both
     /// shadowed bindings survive as their own `S_LOCAL`, the inner one inside a
-    /// block nested in the outer one's.
+    /// block that the outer one is not in.
+    ///
+    /// CodeView gives a block one address range. The shared fault-exit path is
+    /// laid out inside the body, so the body's lexical block has two ranges
+    /// (the DWARF twin keeps both) and LLVM's CodeView emitter folds it into the
+    /// procedure, keeping its locals there. The nesting a debugger needs to
+    /// resolve the shadowing survives either layout.
     #[test]
     fn shadowed_locals_emit_nested_codeview_block_scopes() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -373,17 +379,6 @@ mod codeview {
             .take_while(|record| !record.contains("S_GPROC32_ID") || records[probe] == **record)
             .collect();
 
-        let blocks: Vec<usize> = body
-            .iter()
-            .enumerate()
-            .filter(|(_, record)| record.contains("S_BLOCK32"))
-            .map(|(index, _)| index)
-            .collect();
-        assert_eq!(
-            blocks.len(),
-            2,
-            "the body's block and the nested one must each open a scope:\n{symbols}"
-        );
         let locals: Vec<usize> = body
             .iter()
             .enumerate()
@@ -395,9 +390,32 @@ mod codeview {
             2,
             "both shadowed bindings must survive as their own local:\n{symbols}"
         );
+        let (outer, inner) = (locals[0], locals[1]);
+        // The innermost scope around the inner binding: the last block opened
+        // before it, closed by the first unmatched `S_END` after it.
+        let block = body[..inner]
+            .iter()
+            .rposition(|record| record.contains("S_BLOCK32"))
+            .unwrap_or_else(|| panic!("the inner binding must sit in a block:\n{symbols}"));
+        let mut depth = 0_usize;
+        let end = body[block + 1..]
+            .iter()
+            .position(|record| {
+                if record.contains("S_BLOCK32") {
+                    depth += 1;
+                } else if record.starts_with("S_END") {
+                    if depth == 0 {
+                        return true;
+                    }
+                    depth -= 1;
+                }
+                false
+            })
+            .map(|offset| block + 1 + offset)
+            .unwrap_or_else(|| panic!("the inner binding's block must close:\n{symbols}"));
         assert!(
-            blocks[0] < locals[0] && locals[0] < blocks[1] && blocks[1] < locals[1],
-            "the inner binding must sit in a block opened inside the outer one's:\n{symbols}"
+            outer < block && block < inner && inner < end,
+            "the inner binding must sit in a block that the outer one is not in:\n{symbols}"
         );
     }
 

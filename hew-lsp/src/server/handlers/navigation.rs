@@ -6,8 +6,8 @@ use tower_lsp_server::ls_types::{
 
 use super::super::{
     collect_import_items, find_cross_file_definition, find_definition_in_ast,
-    find_stdlib_definition, non_empty, offset_range_to_lsp, plan_workspace_rename,
-    position_to_offset, word_at_offset, DocumentState, HewLanguageServer,
+    find_stdlib_definition, non_empty, offset_range_to_lsp, position_to_offset, word_at_offset,
+    DocumentState, HewLanguageServer,
 };
 
 fn source_definition_location(
@@ -198,12 +198,7 @@ pub(crate) fn prepare_rename(
     server: &HewLanguageServer,
     params: &tower_lsp_server::ls_types::TextDocumentPositionParams,
 ) -> Option<PrepareRenameResponse> {
-    let uri = &params.text_document.uri;
-
-    let doc = server.documents.get(uri)?;
-
-    let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
-    super::super::build_prepare_rename_response(uri, &doc, offset, &server.documents)
+    super::super::project_rename::prepare(server, &params.text_document.uri, params.position)
 }
 
 pub(crate) fn rename(
@@ -212,16 +207,12 @@ pub(crate) fn rename(
 ) -> Result<Option<WorkspaceEdit>> {
     let uri = &params.text_document_position.text_document.uri;
 
-    let Some(doc) = server.documents.get(uri) else {
-        return Ok(None);
-    };
-
-    let offset = position_to_offset(
-        &doc.source,
-        &doc.line_offsets,
+    match super::super::project_rename::rename(
+        server,
+        uri,
         params.text_document_position.position,
-    );
-    match plan_workspace_rename(uri, &doc, offset, &params.new_name, &server.documents) {
+        &params.new_name,
+    ) {
         Ok(edit) => Ok(edit),
         Err(err) => Err(rename_error_to_jsonrpc(&err)),
     }

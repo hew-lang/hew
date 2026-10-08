@@ -12,8 +12,10 @@
 //! treat any failure as "no edits" and do not need to distinguish
 //! causes. New callers should prefer [`plan_rename`].
 
+use hew_parser::ast::{Expr, FnDecl, Item, Param, Pattern, Span, Stmt, TypeBodyItem, TypeExpr};
 use hew_parser::ParseResult;
 
+use crate::ast_visit::{self, AstVisitor, BindingInfo, VisitContext};
 use crate::definition::find_matching_import;
 use crate::definition::{find_definition, find_local_binding_definition, find_param_definition};
 use crate::references::{find_all_references, is_top_level_name};
@@ -87,6 +89,296 @@ pub fn prepare_rename(
     }
     let (_word, span) = simple_word_at_offset(source, offset)?;
     Some(span)
+}
+
+/// Recognize local annotation and field roles without resolving imports.
+///
+/// This only preserves eligibility for the existing syntactic rename planner.
+/// A same-spelled declaration alone cannot prove an imported function reference
+/// is local: the selected token must occupy the parsed non-function role.
+/// Because the legacy planner collects names, unproved same-spelled expression
+/// leaves and named imports keep the operation in the conservative refusal path.
+#[must_use]
+pub fn is_local_non_function_reference(
+    source: &str,
+    parse_result: &ParseResult,
+    offset: usize,
+) -> bool {
+    let Some((name, token)) = simple_word_at_offset(source, offset) else {
+        return false;
+    };
+    let mut roles = LocalNonFunctionRoles {
+        parse_result,
+        name: &name,
+        token,
+        typed_bindings: std::collections::HashMap::new(),
+        pending_fields: std::collections::HashMap::new(),
+        found: false,
+        ambiguous: false,
+    };
+    ast_visit::walk_parse_result(Some(source), parse_result, &mut roles);
+    roles.found && !roles.ambiguous && roles.pending_fields.is_empty()
+}
+
+struct LocalNonFunctionRoles<'a> {
+    parse_result: &'a ParseResult,
+    name: &'a str,
+    token: OffsetSpan,
+    typed_bindings: std::collections::HashMap<usize, String>,
+    pending_fields: std::collections::HashMap<usize, OffsetSpan>,
+    found: bool,
+    ambiguous: bool,
+}
+
+impl LocalNonFunctionRoles<'_> {
+    fn local_type(&self, name: &str) -> bool {
+        self.parse_result
+            .program
+            .items
+            .iter()
+            .any(|(item, _)| match item {
+                Item::TypeDecl(item) => item.name.name.as_str() == name,
+                Item::TypeAlias(item) => item.name.name.as_str() == name,
+                Item::Record(item) => item.name.name.as_str() == name,
+                Item::Actor(item) => item.name.name.as_str() == name,
+                Item::Trait(item) => item.name.name.as_str() == name,
+                Item::Machine(item) => item.name.name.as_str() == name,
+                _ => false,
+            })
+    }
+
+    fn annotation(&mut self, ty: &TypeExpr) {
+        match ty {
+            TypeExpr::Named { path, type_args } => {
+                if let Some(name) = path.as_single() {
+                    let span = &path.segments[0].1;
+                    self.found |= name.name.as_str() == self.name
+                        && span.start == self.token.start
+                        && span.end == self.token.end
+                        && self.local_type(self.name);
+                }
+                for (argument, _) in type_args.iter().flatten() {
+                    self.annotation(argument);
+                }
+            }
+            TypeExpr::Fallible {
+                success: left,
+                error: right,
+            }
+            | TypeExpr::Result {
+                ok: left,
+                err: right,
+            } => {
+                self.annotation(&left.0);
+                self.annotation(&right.0);
+            }
+            TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
+                self.annotation(&inner.0);
+            }
+            TypeExpr::Array { element, .. } => self.annotation(&element.0),
+            TypeExpr::Pointer { pointee, .. } => self.annotation(&pointee.0),
+            TypeExpr::Tuple(elements) => {
+                for (element, _) in elements {
+                    self.annotation(element);
+                }
+            }
+            TypeExpr::Function {
+                params,
+                return_type,
+                ..
+            }
+            | TypeExpr::ActorFn {
+                params,
+                return_type,
+            } => {
+                for (param, _) in params {
+                    self.annotation(param);
+                }
+                self.annotation(&return_type.0);
+            }
+            TypeExpr::QualifiedAssocPath(path) => self.annotation(&path.base.0),
+            TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+        }
+    }
+
+    fn binding(&mut self, start: usize, ty: &TypeExpr) {
+        self.annotation(ty);
+        if let TypeExpr::Named { path, .. } = ty {
+            if let Some(name) = path.as_single() {
+                if self.local_type(name.name.as_str()) {
+                    self.typed_bindings
+                        .insert(start, name.name.as_str().to_string());
+                }
+            }
+        }
+    }
+
+    fn signature(&mut self, params: &[Param], result: Option<&(TypeExpr, Span)>) {
+        for param in params {
+            self.binding(param.name_span.start, &param.ty.0);
+        }
+        if let Some((result, _)) = result {
+            self.annotation(result);
+        }
+    }
+
+    fn function(&mut self, function: &FnDecl) {
+        self.signature(&function.params, function.return_type.as_ref());
+    }
+
+    fn nominal_has_field(&self, nominal: &str) -> bool {
+        self.parse_result.program.items.iter().any(|(item, _)| {
+            let Item::TypeDecl(item) = item else { return false; };
+            item.name.name.as_str() == nominal && item.body.iter().any(|member| {
+                matches!(member, TypeBodyItem::Field { name, .. } if name.name.as_str() == self.name)
+            })
+        })
+    }
+}
+
+impl<'ast> AstVisitor<'ast> for LocalNonFunctionRoles<'_> {
+    fn visit_item(&mut self, item: &'ast Item, _: &'ast Span, _: VisitContext<'ast>) {
+        if self.ambiguous {
+            return;
+        }
+        match item {
+            Item::Function(function) => {
+                self.ambiguous |=
+                    function.visibility.is_pub() && function.name.name.as_str() == self.name;
+                self.function(function);
+            }
+            Item::Import(import) => {
+                if let Some(hew_parser::ast::ImportSpec::Names(names)) = &import.spec {
+                    self.ambiguous |= names.iter().any(|name| {
+                        name.name.name.as_str() == self.name
+                            || name
+                                .alias
+                                .is_some_and(|alias| alias.name.as_str() == self.name)
+                    });
+                }
+            }
+            Item::TypeDecl(item) => {
+                for member in &item.body {
+                    match member {
+                        TypeBodyItem::Field { ty, .. } => self.annotation(&ty.0),
+                        TypeBodyItem::Method(function) => self.function(function),
+                        TypeBodyItem::Variant(_) => {}
+                    }
+                }
+            }
+            Item::Actor(actor) => {
+                for field in &actor.fields {
+                    self.annotation(&field.ty.0);
+                }
+                if let Some(init) = &actor.init {
+                    self.signature(&init.params, None);
+                }
+                for receive in &actor.receive_fns {
+                    self.signature(&receive.params, receive.return_type.as_ref());
+                }
+                for method in &actor.methods {
+                    self.function(method);
+                }
+            }
+            Item::Impl(item) => {
+                for method in &item.methods {
+                    self.function(method);
+                }
+            }
+            Item::Trait(item) => {
+                for member in &item.items {
+                    if let hew_parser::ast::TraitItem::Method(method) = member {
+                        self.signature(&method.params, method.return_type.as_ref());
+                    }
+                }
+            }
+            Item::TypeAlias(item) => self.annotation(&item.ty.0),
+            Item::Const(item) => self.annotation(&item.ty.0),
+            Item::Record(item) => match &item.kind {
+                hew_parser::ast::RecordKind::Named(fields) => {
+                    for field in fields {
+                        self.annotation(&field.ty.0);
+                    }
+                }
+                hew_parser::ast::RecordKind::Tuple(fields) => {
+                    for (ty, _) in fields {
+                        self.annotation(ty);
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+
+    fn visit_stmt(&mut self, stmt: &'ast Stmt, _: &'ast Span, _: VisitContext<'ast>) {
+        if self.ambiguous {
+            return;
+        }
+        match stmt {
+            Stmt::Let {
+                pattern,
+                ty: Some(ty),
+                ..
+            } => {
+                if matches!(pattern.0, Pattern::Identifier(_)) {
+                    self.binding(pattern.1.start, &ty.0);
+                } else {
+                    self.annotation(&ty.0);
+                }
+            }
+            Stmt::Var {
+                name_span,
+                ty: Some(ty),
+                ..
+            } => self.binding(name_span.start, &ty.0),
+            _ => {}
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &'ast Expr, _: &'ast Span, _: VisitContext<'ast>) {
+        if self.ambiguous {
+            return;
+        }
+        if matches!(expr, Expr::Ident(name) if name.name.as_str() == self.name) {
+            self.ambiguous = true;
+        }
+        let Expr::FieldAccess { object, field } = expr else {
+            return;
+        };
+        if field.0.name.as_str() != self.name {
+            return;
+        }
+        if matches!(object.0, Expr::Ident(_)) {
+            // The walker visits the receiver next with its scoped binding fact.
+            self.pending_fields
+                .insert(object.1.start, field.1.clone().into());
+        } else {
+            self.ambiguous = true;
+        }
+    }
+
+    fn visit_identifier(
+        &mut self,
+        _: &'ast str,
+        span: &'ast Span,
+        binding: Option<BindingInfo<'ast>>,
+        _: VisitContext<'ast>,
+    ) {
+        if self.ambiguous {
+            return;
+        }
+        let Some(field) = self.pending_fields.remove(&span.start) else {
+            return;
+        };
+        let local_field = binding
+            .and_then(|binding| self.typed_bindings.get(&binding.span.start))
+            .is_some_and(|nominal| self.nominal_has_field(nominal));
+        // The legacy planner collects same-spelled expression occurrences.
+        // Any unproved leaf could be an exported function, so do not let a
+        // proved local field lend its role to those other occurrences.
+        self.ambiguous |= !local_field;
+        self.found |= local_field && field == self.token;
+    }
 }
 
 /// Compute rename edits for the symbol at `offset`, replaced with `new_name`.
@@ -185,9 +477,18 @@ pub fn plan_rename(
 
     let mut edits: Vec<RenameEdit> = spans
         .into_iter()
-        .map(|span| RenameEdit {
-            span,
-            new_text: new_name.to_string(),
+        .map(|span| {
+            // Binding-pattern spans can include trivia before the next token.
+            // Keep the parsed occurrence, but replace only its identifier.
+            let span = simple_word_at_offset(source, span.start)
+                .filter(|(spelling, token)| {
+                    spelling == &name && token.start == span.start && token.end <= span.end
+                })
+                .map_or(span, |(_, token)| token);
+            RenameEdit {
+                span,
+                new_text: new_name.to_string(),
+            }
         })
         .collect();
 
@@ -341,6 +642,18 @@ mod tests {
     }
 
     #[test]
+    fn local_rename_preserves_binding_trivia() {
+        let source = "fn main() { let answer /* keep answer */ : i32 = 7; println(answer); }\n";
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty());
+        let edits = plan_rename(source, &parsed, source.find("answer").unwrap(), "result").unwrap();
+        assert_eq!(
+            apply_edits(source, &edits),
+            "fn main() { let result /* keep answer */ : i32 = 7; println(result); }\n"
+        );
+    }
+
+    #[test]
     fn rename_local_variable() {
         let source = "fn main() {\n    let x = 1;\n    let y = x + 2;\n}";
         let pr = parse(source);
@@ -377,6 +690,67 @@ mod tests {
             result.is_some(),
             "definition-only symbols should still be renameable"
         );
+    }
+
+    #[test]
+    fn local_non_function_roles_require_the_selected_annotation_or_typed_field() {
+        let source = "import util.{ greet };\nimport missing;\ntype Thing { value: i32; greet: i32; }\ntype Other { value: i32; }\nfn read(item: Thing) -> i32 { let local: Thing = item; local.value + item.value }\nfn main() { println(util.greet()); println(greet()); }\n";
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty());
+        for needle in ["Thing)", "Thing =", "value +", "value }"] {
+            assert!(
+                is_local_non_function_reference(source, &parsed, source.find(needle).unwrap()),
+                "{needle}"
+            );
+        }
+        for needle in ["greet };", "greet());", "greet: i32"] {
+            assert!(
+                !is_local_non_function_reference(source, &parsed, source.find(needle).unwrap()),
+                "{needle}"
+            );
+        }
+        assert!(!is_local_non_function_reference(
+            source,
+            &parsed,
+            source.rfind("greet()").unwrap()
+        ));
+    }
+
+    #[test]
+    fn local_field_role_respects_receiver_shadowing_and_nominal_owner() {
+        let source = "type Thing { value: i32; }\ntype Other { count: i32; }\nfn read(item: Thing) { { let item: Other; println(item.value); } println(item.value); }\n";
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty());
+        assert!(!is_local_non_function_reference(
+            source,
+            &parsed,
+            source.find("value);").unwrap()
+        ));
+        assert!(
+            !is_local_non_function_reference(source, &parsed, source.rfind("value);").unwrap()),
+            "an unproved peer occurrence prevents legacy name collection"
+        );
+        let unambiguous = "type Thing { value: i32; }\nfn read(item: Thing) { { let item: Thing; println(item.value); } println(item.value); }\n";
+        let parsed = parse(unambiguous);
+        assert!(is_local_non_function_reference(
+            unambiguous,
+            &parsed,
+            unambiguous.rfind("value);").unwrap()
+        ));
+    }
+
+    #[test]
+    fn local_field_role_cannot_lend_identity_to_imported_function_uses() {
+        for imported in ["import util.{ greet };", "import util as utility;"] {
+            let source = format!("{imported}\nimport missing;\ntype Holder {{ greet: i32; }}\nfn read(item: Holder) -> i32 {{ item.greet }}\nfn main() {{ println(utility.greet()); println(greet()); }}\n");
+            let parsed = parse(&source);
+            assert!(parsed.errors.is_empty());
+            assert!(!is_local_non_function_reference(
+                &source,
+                &parsed,
+                source.find("greet }").unwrap()
+            ));
+        }
     }
 
     #[test]

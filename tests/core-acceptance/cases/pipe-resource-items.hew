@@ -1,0 +1,50 @@
+import std.net;
+import std.stream;
+
+extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn close(fd: i32) -> i32;
+}
+
+// The lowest free descriptor number: it grows when a descriptor leaks.
+fn next_fd() -> i32 {
+    let fd = unsafe { dup(1) };
+    unsafe { close(fd) };
+    fd
+}
+
+fn connection_pipe() -> (stream.Sink<net.Connection>, stream.Stream<net.Connection>) {
+    match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    }
+}
+
+// A pipe moves opaque resources: the receiver owns each connection it takes,
+// and connections still queued when the stream closes close with it.
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let port = listener.local_port();
+    let before = next_fd();
+    let (tx, rx) = connection_pipe();
+    tx.send(net.connect(f"127.0.0.1:{port}").expect("connect")).expect("send");
+    tx.close();
+    var received = 0;
+    for conn in rx {
+        received += 1;
+        conn.close();
+    }
+    listener.accept().close();
+    println(f"received: {received}");
+    for round in 0..20 {
+        let (queue, unread) = connection_pipe();
+        queue.send(net.connect(f"127.0.0.1:{port}").expect("connect")).expect("send");
+        queue.send(net.connect(f"127.0.0.1:{port}").expect("connect")).expect("send");
+        queue.close();
+        unread.close();
+        listener.accept().close();
+        listener.accept().close();
+    }
+    println(f"descriptors leaked: {next_fd() - before}");
+    listener.close();
+}

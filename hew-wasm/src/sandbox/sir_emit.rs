@@ -275,6 +275,22 @@ pub struct RuntimeFamily {
 pub struct Extern {
     pub id: u32,
     pub symbol: String,
+    /// The capability manifest's label for a native-only runtime endpoint,
+    /// so a refusal can name what needs native execution. Admission still
+    /// keys on `symbol` alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_capability: Option<String>,
+}
+
+/// The manifest label of the native-only capability `symbol` belongs to.
+fn native_capability(symbol: &str) -> Option<String> {
+    let endpoint = hew_types::DETERMINISTIC_ENDPOINT_REJECTIONS
+        .iter()
+        .find(|endpoint| endpoint.identity == symbol)?;
+    hew_types::WasmUnsupportedFeature::ALL
+        .iter()
+        .find(|feature| feature.capability_id() == endpoint.capability)
+        .map(|feature| feature.label().to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1063,6 +1079,7 @@ impl<'m> Walker<'m> {
         self.externs.push(Extern {
             id,
             symbol: symbol.to_string(),
+            native_capability: native_capability(symbol),
         });
         self.extern_index.insert(symbol.to_string(), id);
         id

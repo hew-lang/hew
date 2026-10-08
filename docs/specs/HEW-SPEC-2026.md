@@ -4806,6 +4806,40 @@ cleanup columns; the difference is which side initiates the teardown.
 | `<id> from <task>`         | `id: T` for `Task<T>`             | The task's own outcome, exactly as `await` would deliver it.                                                                                                                                                | The handle is not consumed: the losing task keeps running and its handle stays owned by the enclosing scope, which must still join it. Its registration is disarmed, never cancelled.                     | The registration is disarmed; the task takes the enclosing scope's ordinary cancellation.                                                                  |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | Timer expiry selects this arm; evaluating its duration follows ordinary expression rules.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
 
+**A task arm does not bound the task.** A timer that beats a task arm leaves
+the task running, and the scope that forked it still waits for it at exit, so
+the `select` returns early while the scope does not. When the task's only wait
+is a timed `select`, the checker warns (`fork_outlives_timed_select`). Put the
+deadline on the work instead: `scope within` cancels it when the time is up.
+
+```hew
+import std.net;
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    // Warned: if no client connects within 50ms, the timer wins, but the
+    // scope still waits for `pending` to accept a connection.
+    //     scope {
+    //         let pending = fork listener.accept();
+    //         select {
+    //             conn from pending => true,
+    //             after 50ms => false,
+    //         }
+    //     }
+    let accepted = scope within 50ms {
+        let conn = listener.accept();
+        conn.close();
+        true
+    } handle failure {
+        false
+    };
+    println(accepted);
+}
+```
+
+For a listener, `listener.incoming()` (§6.4.5) is also a select source and
+accepts nothing when it loses.
+
 **Semantics:**
 
 1. **Exhaustive arm set.** Each arm's source must be one of the four
@@ -5503,10 +5537,15 @@ One pipe family carries data between actors, sockets and files.
 types name an in-memory pipe, an open file, a split socket and the output
 of a `receive gen fn`. There is no separate channel type.
 
-**Pipes carry data, actors carry handles (normative).** An item is a
-primitive, a `string`, `bytes`, or a value record, enum or tuple whose
-members are items. Containers and handles are not items: `Sink<Vec<T>>`
-and `Stream<Sink<T>>` are refused at check time. A half is itself a
+**Items (normative).** An item is a primitive, a `string`, `bytes`, an
+opaque resource such as `net.Connection`, or a value record, enum or tuple
+whose members are items. Builtin containers, pipe halves, actor references
+and function values are not items: `Sink<Vec<T>>` and `Stream<Sink<T>>` are
+refused at check time. A resource item moves: a successful send gives it to
+the pipe, the receiver owns each one it receives, and a stream that closes
+or is released with items still queued closes those resources with it. A
+listener's `incoming()` stream yields each accepted `Connection` the same
+way and buffers none (§6.4.5). A half is itself a
 handle. It moves between actors as a message payload or a state field,
 and it is `Send` exactly when `T` is `Send`. `sink.clone()` adds a
 producer on the same pipe and a `Stream<T>` has one consumer. Neither
@@ -5606,7 +5645,58 @@ other socket write failure traps.
 `Option<T>` and `None` is a normal winning value (§4.11.1). Observing a
 stream takes nothing: a losing arm leaves every element, and every byte
 of a socket, for the next receive. A regular file stream is ready at
-once, since its next read never waits. A child process's stdout or stderr
+once, since its next read never waits.
+
+Three runtime sources give waits on things other than data the same stream
+shape:
+
+```
+listener.incoming(consume)  -> Stream<Connection>                 // std.net
+io.watch_readable(fd: i32)  -> Result<Stream<()>, io.WatchError>  // std.io
+os.shutdown_signal()        -> Stream<()>                         // std.os, §5.9
+```
+
+`incoming` owns the listener and accepts one connection per receive, so a
+losing arm accepts nothing and a pending client waits for the next receive.
+Each `Connection` it yields is owned by the receiver, and it buffers none:
+`try_recv` accepts a connection already waiting and otherwise returns
+`None` at once. It ends once runtime shutdown
+closes listener admission, so `for conn in listener.incoming()` stops
+cleanly; an accept failure traps like a socket read failure (§6.4.4).
+`watch_readable` watches a descriptor the program opened through FFI: each
+receive waits until a read on it would not wait and yields `()`, reading
+nothing, so the program reads the descriptor itself; `try_recv` yields
+`()` exactly when a receive would not wait. The stream watches its own
+duplicate of the descriptor and never closes the program's, so the two
+close in either order and several watches of one descriptor are
+independent. It refuses an unopened descriptor (`NotOpen`) and a regular
+file or a platform without descriptor readiness (`Unsupported`, Windows
+today).
+
+```hew,ignore
+import std.io;
+import std.net;
+import std.os;
+
+fn serve(radio_fd: i32) {
+    let listener = net.listen("0.0.0.0:7000").expect("listen");
+    let clients = listener.incoming();
+    let radio = io.watch_readable(radio_fd).expect("watch the radio");
+    let stop = os.shutdown_signal();
+    loop {
+        select {
+            next from clients.recv() => match next {
+                .Some(conn) => greet(conn),
+                .None => break,
+            }
+            ready from radio.recv() => read_frame(radio_fd),
+            request from stop.recv() => break,
+        }
+    }
+}
+```
+
+A child process's stdout or stderr
 stream (§6.4.7) is a select source on Unix, observed through the same
 readiness as a socket; on Windows it is read on the blocking pool and is
 not one yet. A line, chunk or take adapter over a socket or child pipe

@@ -259,8 +259,8 @@ impl LowerCtx {
     /// desugar can reach a `Stream<T>`
     /// whose element no method call ever validated. The HIR layer rejects only
     /// the classes the witness can NEVER describe — builtin container/handle
-    /// nominals, opaque handles, function values and never — and admits the
-    /// rest, including the zero-sized `()`; codegen's witness synthesis stays the fail-closed authority
+    /// nominals, function values and never — and admits the rest, including
+    /// the zero-sized `()` and opaque resources; codegen's witness synthesis stays the fail-closed authority
     /// for anything that slips past both layers.
     pub(super) fn queue_elem_witness_unsupported(ty: &ResolvedTy) -> Option<&'static str> {
         match ty {
@@ -273,20 +273,15 @@ impl LowerCtx {
             | ResolvedTy::Char
             | ResolvedTy::Duration
             | ResolvedTy::Tuple(_) => None,
+            // An opaque resource rides its handle image, the same witness a
+            // `recv` uses (a listener's accepted connections, §6.4.5).
             ResolvedTy::Named {
                 head:
                     hew_types::TypeHead::Nominal(_)
                     | hew_types::TypeHead::Param(_)
                     | hew_types::TypeHead::Unresolved(_),
-                is_opaque,
                 ..
-            } => {
-                if *is_opaque {
-                    Some("opaque handle types cannot be queue elements")
-                } else {
-                    None
-                }
-            }
+            } => None,
             ResolvedTy::Named {
                 head: hew_types::TypeHead::Builtin(_) | hew_types::TypeHead::Actor(_),
                 ..

@@ -39,9 +39,9 @@ pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use file::{start_sink_write, start_stream_read};
 #[cfg(not(target_arch = "wasm32"))]
-pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
+pub(crate) use net::{accept_now, start_tcp_readable, start_tcp_stream_write};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use net::{start_tcp_readable, start_tcp_stream_write};
+pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
 pub use offload::hew_async_offload;
 #[cfg(windows)]
 pub(crate) use stdin::ensure_reader as ensure_stdin_reader;
@@ -564,6 +564,90 @@ pub unsafe extern "C" fn hew_async_io_take_bytes(
     }
     *state = State::Taken;
     AsyncIoStatus::Success as i32
+}
+
+/// Take the result of a stream's accept or readiness wait as a stream poll
+/// status: 1 with an item, 2 at end of stream, 3 on failure, 0 while pending.
+/// A wait the shutdown sweep cancelled, or one refused because shutdown closed
+/// listener admission, ends the stream.
+///
+/// # Safety
+/// `operation` is the live result of an accept or readable submission.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn take_watch_item(
+    operation: *const HewAsyncIo,
+    item: impl FnOnce(IoValue) -> Option<Vec<u8>>,
+) -> (i32, Option<Vec<u8>>) {
+    if operation.is_null() {
+        return (3, None);
+    }
+    // SAFETY: the caller lends a live operation reference.
+    unsafe { HewAsyncIo::advance_if_ready(operation) };
+    // SAFETY: as above.
+    let operation = unsafe { &*operation };
+    let mut state = operation.state.lock_or_recover();
+    match &*state {
+        State::Pending(_) => return (0, None),
+        State::Cancelled => return (2, None),
+        State::Ready(Err(failure)) if failure.errno == libc::ECANCELED => return (2, None),
+        State::Ready(Ok(_)) => {}
+        _ => return (3, None),
+    }
+    let State::Ready(Ok(value)) = std::mem::replace(&mut *state, State::Taken) else {
+        unreachable!("checked under the same lock");
+    };
+    match item(value) {
+        Some(item) => (1, Some(item)),
+        None => (3, None),
+    }
+}
+
+/// Take an accepted connection as a `size`-byte handle item; the stream's
+/// consumer becomes its owner.
+///
+/// # Safety
+/// `operation` is the live result of an accept submission.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn take_accepted_item(
+    operation: *const HewAsyncIo,
+    size: usize,
+) -> (i32, Option<Vec<u8>>) {
+    // SAFETY: forwards the caller's contract.
+    unsafe {
+        take_watch_item(operation, |value| {
+            let IoValue::Connection(mut connection) = value else {
+                return None;
+            };
+            Some(connection_item(
+                std::mem::replace(&mut connection.0, -1),
+                size,
+            ))
+        })
+    }
+}
+
+/// A connection handle as a `size`-byte item: the slot image of the
+/// receiver's `Connection`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn connection_item(handle: i32, size: usize) -> Vec<u8> {
+    match size {
+        4 => handle.to_ne_bytes().to_vec(),
+        _ => i64::from(handle).to_ne_bytes().to_vec(),
+    }
+}
+
+/// Take a completed readiness wait as one `()` item.
+///
+/// # Safety
+/// `operation` is the live result of a readable submission.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn take_readiness_item(operation: *const HewAsyncIo) -> (i32, Option<Vec<u8>>) {
+    // SAFETY: forwards the caller's contract.
+    unsafe {
+        take_watch_item(operation, |value| {
+            matches!(value, IoValue::Count(_)).then(Vec::new)
+        })
+    }
 }
 
 /// Take one content-backed stream result without conflating an empty item

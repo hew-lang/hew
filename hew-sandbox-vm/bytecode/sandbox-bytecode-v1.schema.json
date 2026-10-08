@@ -228,6 +228,10 @@
           "symbol": {
             "type": "string",
             "minLength": 1
+          },
+          "native_capability": {
+            "type": "string",
+            "minLength": 1
           }
         }
       }

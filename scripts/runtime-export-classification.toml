@@ -351,6 +351,8 @@ stable = [
   "hew_hostname",
   "hew_i64_to_string",
   "hew_int_to_string",
+  "hew_io_watch_check",
+  "hew_io_watch_readable",
   "hew_io_write",
   "hew_io_write_err",
   "hew_iter_free",
@@ -669,6 +671,7 @@ stable = [
   "hew_tcp_connect_timed",
   "hew_tcp_connect_timeout",
   "hew_tcp_listen",
+  "hew_tcp_incoming",
   "hew_tcp_listener_close",
   "hew_tcp_listener_local_port",
   "hew_tcp_read",
@@ -2768,6 +2771,23 @@ discharge-depth = "none"
 # stdio — hew-runtime/src/stdio.rs. write/write_err read their C-string operand
 # only. Standard input is the waiting hew_async_stdin_read_line operation.
 [[ownership.contracts]]
+symbol = "hew_io_watch_check"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_io_watch_readable"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one fresh Box::into_raw(HewStreamPair) holding the only owner of a new readiness stream; the descriptor stays with the caller"
+
+[[ownership.contracts]]
 symbol = "hew_io_write"
 result = "none"
 params = ["borrow"]
@@ -4037,6 +4057,17 @@ release-symbol = "hew_tcp_listener_close"
 discharge-depth = "shallow"
 result-retention = "resource-transfer"
 result-retention-basis = "success inserts the newly bound TcpListener under a fresh table handle returned as the sole hew_tcp_listener_close token"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_incoming"
+result = "fresh"
+params = ["consume"]
+resource-param-types = ["std.net.Listener"]
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "takes the listener's table handle into one fresh Box::into_raw(HewStreamPair) whose stream closes it; a non-listener handle is closed and null returned"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_listener_close"

@@ -8681,6 +8681,32 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_io_watch_check( i32) -> i32"
+      },
+      "symbol": "hew_io_watch_check"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_io_watch_readable( i32) -> *mut HewStreamPair"
+      },
+      "symbol": "hew_io_watch_readable"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -17993,6 +18019,19 @@
         "native": "fn hew_tcp_connect_timeout( *const c_char, c_int, c_int, ) -> c_int"
       },
       "symbol": "hew_tcp_connect_timeout"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_tcp_incoming( c_int) -> *mut HewStreamPair"
+      },
+      "symbol": "hew_tcp_incoming"
     },
     {
       "availability": [

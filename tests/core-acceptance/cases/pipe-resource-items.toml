@@ -1,0 +1,10 @@
+[[case]]
+id = "pipe-resource-items"
+intent = "A pipe carries opaque resources: the receiver owns each connection it takes, and connections still queued when the stream closes are closed with it."
+source = "cases/pipe-resource-items.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "received: 1\ndescriptors leaked: 0\n"
+exit = 0

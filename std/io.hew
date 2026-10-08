@@ -17,6 +17,7 @@
 //! ```
 
 import std.encoding.utf8;
+import std.stream;
 
 /// Read one line from standard input.
 ///
@@ -94,6 +95,55 @@ fn next_line() -> bytes {
     line
 }
 
+/// Why a descriptor cannot be watched for readability.
+pub enum WatchError {
+    /// The number is not an open descriptor.
+    NotOpen;
+    /// The descriptor is a regular file, which is always readable, or the
+    /// platform has no descriptor readiness (Windows).
+    Unsupported;
+}
+
+impl Display for WatchError {
+    fn fmt(self) -> string {
+        match self {
+            WatchError.NotOpen => "NotOpen: the number is not an open descriptor",
+            WatchError.Unsupported => "Unsupported: this descriptor cannot be watched for readability",
+        }
+    }
+}
+
+impl Error for WatchError {}
+
+/// Watch a descriptor the program opened through FFI, such as a serial
+/// device, a socket or a pipe, for readability.
+///
+/// Each receive waits, without holding a scheduler thread, until a read on
+/// `fd` would not wait (data, end of input or an error is pending) and yields
+/// `()`; it reads nothing, so the program then reads the descriptor itself.
+/// Readiness is level-triggered: a receive returns at once while unread data
+/// remains, and `try_recv` yields `()` exactly when a receive would not wait.
+/// The stream is a `select` source and never ends on its own. It watches its
+/// own duplicate of `fd`: closing it stops the watch and leaves `fd` open,
+/// closing `fd` first is safe, and several watches of one descriptor, or a
+/// watch of standard input alongside `read_line`, are independent. Unix only.
+pub fn watch_readable(fd: i32) -> Result<stream.Stream<()>, WatchError> {
+    unsafe {
+        match hew_io_watch_check(fd) {
+            0 => {}
+            1 => return .Err(WatchError.NotOpen),
+            _ => return .Err(WatchError.Unsupported),
+        }
+        let pair = hew_io_watch_readable(fd);
+        if !hew_stream_pair_is_valid(pair) {
+            return .Err(WatchError.NotOpen);
+        }
+        let ready: stream.Stream<()> = stream.pair_stream(pair);
+        pair.close();
+        .Ok(ready)
+    }
+}
+
 // ── Declarative bytes receiver FFI ───────────────────────────────────
 //
 // Decode bytes explicitly with std.encoding.utf8.decode or decode_lossy.
@@ -142,4 +192,7 @@ extern "C" {
     fn hew_stream_last_error() -> string;
     fn hew_io_write(s: string);
     fn hew_io_write_err(s: string);
+    fn hew_io_watch_check(fd: i32) -> i32;
+    fn hew_io_watch_readable(fd: i32) -> stream.StreamPair;
+    fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
 }

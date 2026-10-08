@@ -625,3 +625,39 @@ fn main() {
         );
     }
 }
+
+/// A `for` loop over a listener's incoming stream ends when shutdown closes
+/// listener admission; it never traps or fabricates a connection.
+#[test]
+fn signal_shutdown_ends_a_listener_incoming_loop() {
+    require_codegen();
+    let source = r#"
+import std.net;
+
+actor Server {
+    receive fn serve() -> i64 {
+        let listener = net.listen("127.0.0.1:0").expect("listen");
+        var served = 0;
+        println("READY");
+        for conn in listener.incoming() {
+            served += 1;
+            conn.close();
+        }
+        served
+    }
+}
+
+fn main() {
+    let server = spawn Server();
+    match server.serve() {
+        .Ok(served) => println(f"ENDED:{served}"),
+        .Err(error) => println(f"ERROR:{error}"),
+    }
+}
+"#;
+    for opt_level in [0, 2] {
+        let (status, stdout, stderr) = run_until_signalled(source, opt_level);
+        assert!(status.success(), "O{opt_level} exited {status}: {stderr}");
+        assert_eq!(stdout, ["READY", "ENDED:0"], "O{opt_level} {stderr}");
+    }
+}

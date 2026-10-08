@@ -9,15 +9,16 @@ pub(crate) use crate::ast::{
     ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
     CallArg, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
     ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
-    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, Ident, ImplDecl, ImplTypeAlias, ImportDecl,
-    ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl,
-    MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
-    NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
-    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
+    ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImplTypeAlias,
+    ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal,
+    MachineDecl, MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm,
+    MatchArm, NamingCase, NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path,
+    Pattern, PatternField, Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl,
+    RecordDecl, RecordKind, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
+    WireFieldMeta, WireMetadata,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
@@ -60,7 +61,7 @@ mod tests;
 pub(crate) type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 pub(crate) type StructInitFields = (
     Vec<(Ident, Spanned<Expr>)>,
-    Vec<Span>,
+    Vec<FieldLabel>,
     Option<Box<Spanned<Expr>>>,
 );
 
@@ -629,13 +630,26 @@ impl Drop for RecursionGuard {
     }
 }
 
-/// Restores the `no_struct_literal` restriction to its previous value on drop.
+/// Where a bare path followed by `{` may open a record literal. See
+/// [`Parser::struct_literal_rule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StructLiteralRule {
+    /// Every record literal form, shorthand fields included.
+    Allowed,
+    /// A record literal, except one whose body is a single shorthand field
+    /// (`{ name }`), which reads as the following block.
+    ExplicitFieldsOnly,
+    /// No bare record literal: the `{` opens the following block.
+    Forbidden,
+}
+
+/// Restores the struct-literal rule to its previous value on drop.
 /// Holds the shared cell directly (not a `&mut Parser`) so it survives every
 /// early `return`/`?` path inside a delimited-expression arm without borrowing
 /// the parser for its whole lifetime.
 pub(crate) struct NoStructLiteralGuard {
-    cell: Rc<Cell<bool>>,
-    prev: bool,
+    cell: Rc<Cell<StructLiteralRule>>,
+    prev: StructLiteralRule,
 }
 
 impl Drop for NoStructLiteralGuard {
@@ -684,20 +698,23 @@ pub struct Parser<'src> {
     /// True while parsing an impl-method parameter list that accepts bare
     /// `self` as sugar for a `Self` receiver parameter.
     pub(crate) allow_implicit_self_params: bool,
-    /// True while parsing an `if`/`while` condition or `match` scrutinee at the
-    /// top level (outside any bracketing delimiter). In that position a bare
-    /// identifier immediately followed by `{` must NOT be read as a struct
-    /// literal — the `{` opens the then-block / loop body / match arms. Without
-    /// this, `if flag { }` parses `flag { }` as an empty struct literal and the
-    /// real block goes missing. The flag is cleared the moment we descend into a
-    /// delimited sub-expression (`(...)`, `[...]`, call args, index, struct
-    /// body) so a struct literal nested there — e.g. `if (Foo { a: 1 }).b {…}`
-    /// — still parses.
+    /// Which record literals a bare path followed by `{` may open here.
     ///
-    /// Held in an `Rc<Cell<bool>>` (like `depth`) so a `NoStructLiteralGuard`
+    /// `Forbidden` holds in an `if`/`while` condition or `match` scrutinee at
+    /// the top level (outside any bracketing delimiter): the `{` opens the
+    /// then-block / loop body / match arms, so `if flag { }` must not read
+    /// `flag { }` as an empty literal. `ExplicitFieldsOnly` holds where an
+    /// expression is followed by a block but a record literal is still
+    /// admitted (`if let` scrutinee, `for` iterable): there `{ name }` is the
+    /// body block reading `name`, so a lone shorthand field does not open a
+    /// literal. The rule returns to `Allowed` the moment we descend into a
+    /// delimited sub-expression (`(...)`, `[...]`, call args, index, struct
+    /// body), so `if (Foo { a: 1 }).b {…}` still parses.
+    ///
+    /// Held in an `Rc<Cell<_>>` (like `depth`) so a `NoStructLiteralGuard`
     /// can restore the previous value on drop without borrowing the parser for
     /// its whole lifetime.
-    pub(crate) no_struct_literal: Rc<Cell<bool>>,
+    pub(crate) struct_literal_rule: Rc<Cell<StructLiteralRule>>,
     /// Set for exactly one `parse_expr_bp` call: the body of a match arm whose
     /// opening token starts a block (`{`, `if`, `match`, …). Such an arm needs
     /// no trailing comma, so the token after its closing `}` is the next arm's

@@ -99,7 +99,7 @@ impl<'src> Parser<'src> {
             depth: Rc::new(Cell::new(0)),
             angle_mutations: Vec::new(),
             allow_implicit_self_params: false,
-            no_struct_literal: Rc::new(Cell::new(false)),
+            struct_literal_rule: Rc::new(Cell::new(StructLiteralRule::Allowed)),
             block_arm_body: Rc::new(Cell::new(false)),
             statement_block: Cell::new(false),
             source,

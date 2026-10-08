@@ -53,13 +53,50 @@ impl Checker {
         // operand, argument, or non-tail statement) can never trip the
         // coercion. The flag is only meaningful on the `check_against` path.
         let prev_tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
+        let shorthand_mark = self.enter_field_shorthands(expr);
         // Grow the stack on demand so deeply-nested expressions (e.g. 1000+
         // chained binary operators) don't overflow.
         let result = stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
             self.synthesize_inner(expr, span)
         });
+        self.field_shorthand_values.truncate(shorthand_mark);
         self.tail_ok_armed = prev_tail_ok_armed;
         self.publish_checked_expression(expr, span, result)
+    }
+
+    /// Note the shorthand fields of the named field list `expr` opens, so an
+    /// unbound shorthand name is reported as one. Returns the length to
+    /// truncate `field_shorthand_values` back to once `expr` is checked.
+    pub(super) fn enter_field_shorthands(&mut self, expr: &Expr) -> usize {
+        let mark = self.field_shorthand_values.len();
+        let (fields, labels) = match expr {
+            Expr::StructInit {
+                fields,
+                field_labels,
+                ..
+            }
+            | Expr::MachineEmit {
+                fields,
+                field_labels,
+                ..
+            } => (fields, field_labels),
+            Expr::Spawn {
+                args, arg_labels, ..
+            } => (args, arg_labels),
+            Expr::ContextVariant(context) => match &context.record {
+                Some(record) => (&record.fields, &record.field_labels),
+                None => return mark,
+            },
+            _ => return mark,
+        };
+        self.field_shorthand_values.extend(
+            fields
+                .iter()
+                .zip(labels)
+                .filter(|(_, label)| label.shorthand)
+                .map(|((_, value), _)| value.1.clone()),
+        );
+        mark
     }
 
     #[expect(
@@ -345,7 +382,7 @@ impl Checker {
             Expr::StructInit {
                 path,
                 fields,
-                field_name_spans,
+                field_labels,
                 type_args,
                 base,
             } => {
@@ -358,7 +395,7 @@ impl Checker {
                 );
                 if !matches!(&ty, Ty::Error) {
                     self.resolve_type_path_head(path);
-                    self.record_struct_init_field_resolutions(fields, field_name_spans, &ty);
+                    self.record_struct_init_field_resolutions(fields, field_labels, &ty);
                 }
                 ty
             }
@@ -368,6 +405,7 @@ impl Checker {
                 target,
                 type_args,
                 args,
+                ..
             } => self.check_spawn(target, type_args, args, span),
 
             // Lambda (synthesize mode — no expected type)

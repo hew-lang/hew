@@ -1276,6 +1276,31 @@ fn main() {
 
 Bind with `var` to reassign fields; `let` is immutable. Immutability is on the binding, not the type.
 
+### Field-init shorthand
+
+```hew
+type Endpoint {
+    host: string;
+    port: i64;
+    secure: bool;
+}
+
+fn endpoint(host: string, port: i64) -> Endpoint {
+    Endpoint { host, port, secure: port == 443 }
+}
+
+fn main() {
+    let site = endpoint("hew.sh", 443);
+    let port = 8443;
+    let staging = Endpoint { ..site, port };
+    println(f"{staging.host}:{staging.port} {staging.secure}"); // hew.sh:8443 true
+}
+```
+
+A field written as a bare name takes the binding of the same name: `Endpoint { host, port }` is `Endpoint { host: host, port: port }`. Bare and explicit fields mix freely, and a bare field overrides `..base` like any named field. The same spelling works wherever fields are named: enum struct variants (`Shape.Circle { radius }`, `.Circle { radius }`), actor spawn arguments (`spawn Counter(count)`), and machine `emit` and transition field lists. It mirrors the record pattern `.Circle { radius }`, which binds the field to a name of the same name. `hew fmt` keeps each field as you wrote it.
+
+Where a block follows the expression — after an `if let` or `while let` scrutinee or a `for` iterable — `{ name }` is that block, not a one-field literal; write `(Wrapper { value })` there.
+
 ### Spread in literals
 
 ```hew

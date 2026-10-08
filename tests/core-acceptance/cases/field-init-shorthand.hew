@@ -1,0 +1,153 @@
+// Field-init shorthand: `name` in a named field list stands for `name: name`.
+
+type Endpoint {
+    host: string;
+    port: i64;
+    tags: Vec<string>;
+}
+
+enum Shape {
+    Circle { radius: f64; }
+    Rect { width: f64; height: f64; }
+}
+
+fn area(shape: Shape) -> f64 {
+    match shape {
+        .Circle { radius } => 3.0 * radius * radius,
+        .Rect { width, height } => width * height,
+    }
+}
+
+actor Greeter {
+    let greeting: string;
+    let count: i64;
+
+    receive fn greet(name: string) -> string {
+        f"{greeting}, {name} x{count}"
+    }
+}
+
+type Snapshot {
+    count: i64;
+    label: string;
+}
+
+// Bare actor state reads through shorthand like any other name.
+actor Tally {
+    var count: i64 = 0;
+    let label: string;
+
+    receive fn bump() -> Snapshot {
+        count += 1;
+        Snapshot { count, label }
+    }
+}
+
+machine Meter {
+    events {
+        Reading { value: i64; }
+    }
+    emits {
+        Alarm { value: i64; peak: i64; }
+    }
+
+    state Watching { peak: i64; seen: i64; }
+
+    on Reading: Watching => Watching when event.value > state.peak {
+        let value = event.value;
+        let peak = state.peak;
+        emit Alarm { value, peak };
+        let seen = state.seen + 1;
+        Watching { peak: value, seen }
+    }
+    on Reading: Watching => Watching {
+        state
+    }
+}
+
+fn endpoint(host: string, port: i64) -> Endpoint {
+    let tags = ["primary"];
+    Endpoint { host, port, tags }
+}
+
+fn relocate(base: Endpoint, port: i64) -> Endpoint {
+    Endpoint { ..base, port }
+}
+
+fn main() {
+    // Owned fields move in through shorthand, mixed with explicit fields.
+    let host = f"db{1}.local";
+    let port = 5432;
+    let primary = Endpoint { host, port, tags: ["a", "b"] };
+    println(f"{primary.host}:{primary.port} {primary.tags.len()}");
+
+    // Record update: shorthand fields override the base.
+    let replica = relocate(primary, 6543);
+    let tags = ["replica"];
+    let tagged = Endpoint { ..replica, tags };
+    println(f"{replica.host}:{replica.port} {tagged.tags[0]}");
+    let built = endpoint("cache", 6379);
+    println(f"{built.host}:{built.port} {built.tags[0]}");
+
+    // Enum struct variants, qualified and contextual.
+    let radius = 2.0;
+    let width = 3.0;
+    let height = 4.0;
+    println(area(Shape.Circle { radius }));
+    let rect: Shape = .Rect { width, height };
+    println(area(rect));
+
+    // Actor spawn arguments name the actor's fields the same way.
+    let greeting = "hello";
+    let count = 2;
+    let greeter = spawn Greeter(greeting, count);
+    match greeter.greet("hew") {
+        .Ok(text) => println(text),
+        .Err(_) => println("greeter failed"),
+    }
+    let tally = spawn Tally(label: "hits");
+    let _ = tally.bump();
+    match tally.bump() {
+        .Ok(snap) => println(f"{snap.label} {snap.count}"),
+        .Err(_) => println("tally failed"),
+    }
+
+    // Captured bindings, in a closure and a moving lambda actor.
+    let label = f"cap{1}";
+    let make = || Snapshot { count, label: label.clone() };
+    let made = make();
+    println(f"{made.label} {made.count}");
+    let reporter = actor move |n: i64| {
+        let snap = Snapshot { count: n, label };
+        println(f"{snap.label} {snap.count}");
+    };
+    let _ = reporter(5);
+    stop(reporter);
+    stopped(reporter);
+
+    // Machine `emit` and state payloads.
+    var meter: Meter = .Watching { peak: 0, seen: 0 };
+    let report = meter.step(.Reading { value: 7 });
+    for output in report.outputs {
+        match output {
+            .Alarm { value, peak } => println(f"alarm {value} over {peak}"),
+        }
+    }
+    match meter {
+        .Watching { peak, seen } => println(f"peak {peak} seen {seen}"),
+    }
+    // Where a block follows the expression, `{ name }` is that block.
+    let cached: Option<i64> = .Some(9);
+    let hit = if let .Some(value) = cached {
+        value
+    } else {
+        0
+    };
+    println(hit);
+    var total = 0;
+    let n = 4;
+    for i in 0..n {
+        total = total + i;
+    }
+    println(total);
+}

@@ -1,7 +1,8 @@
 //! A machine state literal takes the same `..base` spread as any record
 //! literal: inside a transition the source state's fields are readable, so
 //! `..state` carries the fields the literal does not name and the transition
-//! only writes what actually changes.
+//! only writes what actually changes. A block body spreads the same way in
+//! either spelling of the state, bare or contextual.
 //!
 //! Harness verb: hew run
 
@@ -9,6 +10,7 @@ machine Till {
     events {
         Sale;
         Void;
+        Rename;
         Close;
     }
     state Empty;
@@ -16,6 +18,10 @@ machine Till {
     on Sale: Empty => Filled { count: 1, label: "open" }
     on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
     on Void: Filled => Filled reenter { ..state, label: "voided" }
+    on Rename: Filled => Filled reenter {
+        let label = "renamed";
+        .Filled { ..state, label }
+    }
     on Close: Filled => Empty;
     default { state }
 }
@@ -36,6 +42,8 @@ fn main() {
     let _ = till.step(.Sale);
     show(till);
     let _ = till.step(.Void);
+    show(till);
+    let _ = till.step(.Rename);
     show(till);
     let _ = till.step(.Close);
     show(till);

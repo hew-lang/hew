@@ -1,0 +1,31 @@
+type Endpoint {
+    host: string;
+    port: i64;
+}
+
+actor Greeter {
+    let greeting: string;
+
+    receive fn greet() -> string {
+        greeting
+    }
+}
+
+fn main() {
+    let host = "db.local";
+    let prt = 5432;
+    // `port` names a field but no binding.
+    let unbound = Endpoint { host, port };
+    // `port` written twice: once as shorthand, once explicitly.
+    let port = 1;
+    let twice = Endpoint { host, port, port: 2 };
+    // `retries` is bound but is not a field of `Endpoint`.
+    let retries = 3;
+    let extra = Endpoint { host, port, retries };
+    // A misspelled shorthand names neither a binding nor a field; the
+    // unknown field is the error, as for the explicit form.
+    let typo = Endpoint { host, prot };
+    // A spawn argument takes the shorthand too.
+    let _greeter = spawn Greeter(greeting);
+    println(f"{unbound.port} {twice.port} {extra.port} {typo.port}");
+}

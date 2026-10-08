@@ -416,6 +416,19 @@
     }
   },
   {
+    "id": "types/field_shorthand",
+    "category": "types",
+    "name": "Field Shorthand",
+    "description": "Initialize record and variant fields from bindings of the same name",
+    "source_path": "types/field_shorthand.hew",
+    "expected_path": "types/field_shorthand.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "types/wire_types",
     "category": "types",
     "name": "Wire Types",

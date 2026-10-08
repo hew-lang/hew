@@ -661,7 +661,7 @@ impl Parser<'_> {
             self.expect(&Token::LeftBrace)?;
             // The head already named the target, so the braces hold exactly a
             // record literal's field list — `..base` included.
-            let (fields, field_name_spans, base) = self.parse_struct_init_fields()?;
+            let (fields, field_labels, base) = self.parse_struct_init_fields()?;
             let be = self.peek_span().start;
             // A contextual target keeps its contextual form when it carries a
             // payload: `=> .Faulted { error }` resolves against the machine's
@@ -669,13 +669,17 @@ impl Parser<'_> {
             let payload = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
                     name: target_state,
-                    record: Some(Box::new(ContextVariantRecord { fields, base })),
+                    record: Some(Box::new(ContextVariantRecord {
+                        fields,
+                        field_labels,
+                        base,
+                    })),
                 })
             } else {
                 Expr::StructInit {
                     path: Path::single(target_state, target_span.clone()),
                     fields,
-                    field_name_spans,
+                    field_labels,
                     type_args: None,
                     base,
                 }
@@ -1178,8 +1182,10 @@ impl Parser<'_> {
         })
     }
 
-    /// Check if the next tokens look like a struct init body: `{ ident: expr }`.
-    /// Used to detect `on Event: S -> T { field: expr }` shorthand.
+    /// Check if the next tokens look like a struct init body: `{ ident: expr }`,
+    /// `{ ident, ... }` or `{ ..base }`. Used to detect the
+    /// `on Event: S -> T { field: expr }` payload form. A lone `{ ident }` is
+    /// the block form: the body reads `ident`, it does not name a field.
     pub(crate) fn is_struct_init_body(&self) -> bool {
         // Peek at `{`, then `ident`, then `:` — if all three, it's struct init
         if self.peek() != Some(&Token::LeftBrace) {
@@ -1195,7 +1201,7 @@ impl Parser<'_> {
         matches!(&self.tokens[pos + 1].0, Token::DotDot)
             || matches!(
                 (&self.tokens[pos + 1].0, &self.tokens[pos + 2].0),
-                (Token::Identifier(_), Token::Colon)
+                (Token::Identifier(_), Token::Colon | Token::Comma)
             )
     }
 

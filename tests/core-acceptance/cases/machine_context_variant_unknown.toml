@@ -8,6 +8,7 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 3
-column = 59
+file = "machine_context_variant_unknown/lights.hew"
+line = 12
+column = 26
 message = "transition to `Off` must produce that state on every normal path"

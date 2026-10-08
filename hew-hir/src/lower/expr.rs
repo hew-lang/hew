@@ -208,7 +208,7 @@ impl LowerCtx {
                 Expr::StructInit {
                     path: Path::single(Ident::new(&contextual_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
                     fields: record.fields.clone(),
-                    field_name_spans: Vec::new(),
+                    field_labels: Vec::new(),
                     type_args: None,
                     base: record.base.clone(),
                 }

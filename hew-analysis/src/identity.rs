@@ -45,6 +45,13 @@ pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
             (key, resolution)
         })
         .collect();
+    output.shorthand_field_labels = std::mem::take(&mut output.shorthand_field_labels)
+        .into_iter()
+        .map(|(mut key, field)| {
+            swap(&mut key);
+            (key, field)
+        })
+        .collect();
 }
 
 /// An offset on a boundary belongs to the segment on its left, as it does in
@@ -108,6 +115,42 @@ pub fn all_reference_spans(
     spans.sort_by_key(|(module, span)| (*module, span.start, span.end));
     spans.dedup();
     spans
+}
+
+/// Shorthand initializer labels (`Point { x }`) naming the field `resolution`,
+/// in every source file checked in this compilation.
+///
+/// Each span is the shorthand token, which is also a use of the value binding
+/// of the same spelling. A rename of the field keeps that binding by writing
+/// the label out (`Point { y: x }`) instead of replacing the token.
+#[must_use]
+pub fn all_shorthand_label_spans(
+    output: &TypeCheckOutput,
+    resolution: Resolution,
+) -> Vec<(u32, OffsetSpan)> {
+    let Resolution::Field(owner, index) = resolution else {
+        return Vec::new();
+    };
+    let mut spans: Vec<_> = output
+        .shorthand_field_labels
+        .iter()
+        .filter(|(key, field)| key.start < key.end && **field == (owner, index))
+        .map(|(key, _)| (key.module_idx, span_of(key)))
+        .collect();
+    spans.sort_by_key(|(module, span)| (*module, span.start, span.end));
+    spans.dedup();
+    spans
+}
+
+/// True when `span` in `module_idx` is a shorthand initializer token: a use
+/// of a binding that also labels the field of the same spelling.
+#[must_use]
+pub fn is_shorthand_label(output: &TypeCheckOutput, module_idx: u32, span: OffsetSpan) -> bool {
+    output.shorthand_field_labels.contains_key(&SpanKey {
+        start: span.start,
+        end: span.end,
+        module_idx,
+    })
 }
 
 /// Map a field declaration token to the same nominal/index identity used by

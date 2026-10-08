@@ -139,6 +139,7 @@ fn payload_transition(
                         )
                     })
                     .collect(),
+                field_labels: Vec::new(),
                 base: None,
             })),
         }),

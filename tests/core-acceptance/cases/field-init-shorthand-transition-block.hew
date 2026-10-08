@@ -1,0 +1,14 @@
+// After a transition head, a lone `{ name }` is the block that yields
+// `name`, not a one-field payload: the refusal says so and shows the
+// payload spelling.
+machine Counter {
+    events {
+        Go;
+    }
+    state Idle { n: i64; }
+    state Busy { n: i64; }
+    on Go: Idle => Busy { n }
+    on Go: Busy => Idle { n: 0 }
+}
+
+fn main() {}

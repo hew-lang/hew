@@ -492,7 +492,7 @@ impl Checker {
             hew_parser::ast::Ident,
             hew_parser::ast::Spanned<hew_parser::ast::Expr>,
         )],
-        label_spans: &[hew_parser::ast::Span],
+        labels: &[hew_parser::ast::FieldLabel],
         ty: &crate::Ty,
     ) {
         let crate::Ty::Named { head, .. } = self.subst.resolve(ty) else {
@@ -507,20 +507,23 @@ impl Checker {
         let Some(site) = self.scope_site() else {
             return;
         };
-        for ((field, _), span) in fields.iter().zip(label_spans) {
+        for ((field, _), label) in fields.iter().zip(labels) {
             if let Some(index) = definition
                 .field_order
                 .iter()
                 .position(|name| name == field.name.as_str())
             {
-                self.scopes.record_resolution(
-                    site,
-                    span,
-                    super::scope::Resolution::Field(
-                        nominal,
-                        u32::try_from(index).expect("more than u32::MAX record fields"),
-                    ),
-                );
+                let index = u32::try_from(index).expect("more than u32::MAX record fields");
+                if label.shorthand {
+                    self.scopes
+                        .record_shorthand_label(site, &label.span, (nominal, index));
+                } else {
+                    self.scopes.record_resolution(
+                        site,
+                        &label.span,
+                        super::scope::Resolution::Field(nominal, index),
+                    );
+                }
             }
         }
     }

@@ -454,23 +454,31 @@ impl Parser<'_> {
     ///   - the brace is immediately followed by `}` (empty struct literal)
     ///   - the brace is followed by `..` (functional-update-only form)
     ///   - the brace is followed by `ident :` (named field)
+    ///   - the brace is followed by `ident ,` (shorthand field; no block
+    ///     starts that way)
+    ///   - the brace holds exactly `ident }` (a lone shorthand field) and the
+    ///     struct-literal rule is `Allowed`; where a block follows the
+    ///     expression, `{ name }` is that block
     ///
     /// Returns `false` otherwise (block beginning with a statement, expression,
     /// keyword, etc.).
     pub(crate) fn probe_struct_init_brace(&mut self) -> bool {
         let saved_pos = self.save_pos();
         self.advance(); // consume {
-        let probe = if self.peek() == Some(&Token::RightBrace) {
-            // Empty struct literal: Foo {}
-            true
-        } else if self.peek() == Some(&Token::DotDot) {
-            // Functional-update-only form: `Foo { ..base }`.
-            true
-        } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
-            self.advance();
-            self.peek() == Some(&Token::Colon)
-        } else {
-            false
+        let probe = match self.peek() {
+            // Empty struct literal `Foo {}`, or functional-update-only `Foo { ..base }`.
+            Some(Token::RightBrace | Token::DotDot) => true,
+            Some(tok) if Self::is_ident_token(tok) => {
+                self.advance();
+                match self.peek() {
+                    Some(Token::Colon | Token::Comma) => true,
+                    Some(Token::RightBrace) => {
+                        self.struct_literal_rule.get() == StructLiteralRule::Allowed
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
         };
         self.restore_pos(saved_pos);
         probe

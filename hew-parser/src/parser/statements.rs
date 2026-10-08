@@ -549,11 +549,20 @@ impl Parser<'_> {
     fn parse_let_condition(&mut self) -> Option<ConditionItem> {
         let pattern = self.parse_pattern()?;
         self.expect(&Token::Equal)?;
-        // The scrutinee keeps ordinary expression rules, so a struct literal
-        // still reads as one (`if let P = Point { x: 1, y: 2 } { … }`); only
-        // the joiner precedence is capped so the operand ends at `&&`.
+        // The scrutinee admits a struct literal (`if let P = Point { x: 1, y: 2 }
+        // { … }`) except a lone shorthand field: in `if let .Some(v) = opt { v }`
+        // the braces are the body. The joiner precedence is capped so the
+        // operand ends at `&&`.
+        let _guard = self.set_struct_literal_rule(StructLiteralRule::ExplicitFieldsOnly);
         let expr = self.parse_expr_bp(CONDITION_OPERAND_BP)?;
         Some(ConditionItem::Let { pattern, expr })
+    }
+
+    /// Parse a `for` loop's iterable. A struct literal reads as one, except a
+    /// lone shorthand field: in `for i in 0..n { i }` the braces are the body.
+    fn parse_for_iterable(&mut self) -> Option<Spanned<Expr>> {
+        let _guard = self.set_struct_literal_rule(StructLiteralRule::ExplicitFieldsOnly);
+        self.parse_expr()
     }
 
     /// Parse one operand of a pattern condition: an expression that stops at
@@ -828,7 +837,7 @@ impl Parser<'_> {
                 self.refuse_for_await();
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
-                let iterable = self.parse_expr()?;
+                let iterable = self.parse_for_iterable()?;
                 let body = self.parse_block()?;
                 Stmt::For {
                     label: None,
@@ -973,7 +982,7 @@ impl Parser<'_> {
                 self.refuse_for_await();
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
-                let iterable = self.parse_expr()?;
+                let iterable = self.parse_for_iterable()?;
                 let body = self.parse_block()?;
                 Stmt::For {
                     label: Some(label),

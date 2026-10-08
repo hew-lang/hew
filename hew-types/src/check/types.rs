@@ -628,6 +628,10 @@ pub struct TypeCheckOutput {
     /// the identity `Scope::resolve` answered. HIR and tooling read it rather
     /// than resolving a spelling again.
     pub resolutions: HashMap<SpanKey, super::scope::Resolution>,
+    /// The field each shorthand initializer label (`Point { x }`) names, keyed
+    /// by the label's token. That token is also the value expression, whose
+    /// binding `resolutions` holds; tooling reads both for one occurrence.
+    pub shorthand_field_labels: HashMap<SpanKey, (crate::NominalId, u32)>,
     /// The compilation's hygiene contexts (identity plan §3.8).
     pub contexts: super::scope::SyntaxContexts,
     /// The checker-selected process entry and its complete exit contract.
@@ -3288,6 +3292,11 @@ pub struct Checker {
     /// `check_against`. Gates the tail Ok-coercion so it never fires in a
     /// non-tail expression position.
     pub(super) tail_ok_armed: bool,
+    /// Value spans of the shorthand fields (`Config { port }`) in the named
+    /// field lists enclosing the expression being checked, so an unbound
+    /// shorthand name reports as a shorthand. Pushed and truncated by
+    /// `synthesize` / `check_against` around each field list.
+    pub(super) field_shorthand_values: Vec<Span>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     pub(super) indexed_place_operations:
@@ -4345,6 +4354,7 @@ impl Checker {
             tail_ok_coercions: HashSet::new(),
             result_return_coercions: HashMap::new(),
             tail_ok_armed: false,
+            field_shorthand_values: Vec::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             indexed_place_operations: HashMap::new(),

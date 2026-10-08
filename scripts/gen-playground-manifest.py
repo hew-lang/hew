@@ -78,6 +78,7 @@ EXAMPLE_ORDER = {
         "collections",
         "pattern_matching",
         "record_types",
+        "field_shorthand",
         "wire_types",
         "structural_bounds",
         "record_equality",
@@ -156,6 +157,9 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/record_types: plain record types with enum dispatch (formerly
     # misnamed wire_types); all constructs are sandbox-admitted.
     "types/record_types": "runnable",
+    # types/field_shorthand: the parser desugars `name` to `name: name`, so
+    # the sandbox emitter sees ordinary record and variant literals.
+    "types/field_shorthand": "runnable",
     # types/wire_types: #[wire] struct declarations emit sandbox bytecode
     # (the playground consistency test proves it both ways); the example's
     # body is declaration + prints, all sandbox-admitted.

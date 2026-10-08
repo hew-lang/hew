@@ -193,7 +193,38 @@ pub struct ContextVariantExpr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextVariantRecord {
     pub fields: Vec<(Ident, Spanned<Expr>)>,
+    /// Written labels, in `fields` order.
+    #[serde(skip)]
+    pub field_labels: Vec<FieldLabel>,
     pub base: Option<Box<Spanned<Expr>>>,
+}
+
+/// The written label of one named field initializer.
+///
+/// The parser desugars the shorthand `name` to `name: name`, so every later
+/// stage sees the explicit form; `shorthand` records the spelling for the
+/// stages that care (the formatter, the shorthand diagnostic, editor rename).
+/// A shorthand label shares its token with the value `Expr::Ident`, so the
+/// checker publishes the label's field identity apart from the value's
+/// binding (`TypeCheckOutput::shorthand_field_labels`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldLabel {
+    /// The label's source token. For a shorthand field this is also the
+    /// value's span.
+    pub span: Span,
+    /// True when the source wrote `name` rather than `name: expr`.
+    pub shorthand: bool,
+}
+
+impl FieldLabel {
+    /// A label written as `name: expr`, or synthesized by a desugaring.
+    #[must_use]
+    pub fn explicit(span: Span) -> Self {
+        Self {
+            span,
+            shorthand: false,
+        }
+    }
 }
 
 /// One item in a bracket literal: an ordinary element or a `..operand`
@@ -457,6 +488,9 @@ pub enum Expr {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         type_args: Vec<Spanned<TypeExpr>>,
         args: Vec<(Ident, Spanned<Expr>)>,
+        /// Written argument labels, in `args` order.
+        #[serde(skip)]
+        arg_labels: Vec<FieldLabel>,
     },
     SpawnLambdaActor {
         is_move: bool,
@@ -496,9 +530,9 @@ pub enum Expr {
     StructInit {
         path: Path,
         fields: Vec<(Ident, Spanned<Expr>)>,
-        /// Source tokens for named field labels, in `fields` order.
+        /// Written labels, in `fields` order.
         #[serde(skip)]
-        field_name_spans: Vec<Span>,
+        field_labels: Vec<FieldLabel>,
         /// Explicit type arguments supplied at the struct literal site,
         /// e.g. `Wrapper<String> { value: "hello" }`.
         /// Absent when the user omits them and inference fills the gap.
@@ -590,6 +624,9 @@ pub enum Expr {
     MachineEmit {
         event_name: Ident,
         fields: Vec<(Ident, Spanned<Expr>)>,
+        /// Written labels, in `fields` order.
+        #[serde(skip)]
+        field_labels: Vec<FieldLabel>,
     },
 
     /// Generator block expression: `gen { yield ...; }`.

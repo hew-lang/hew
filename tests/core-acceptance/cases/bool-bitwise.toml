@@ -1,0 +1,10 @@
+[[case]]
+id = "bool-bitwise"
+intent = "`&`, `|` and `^` on bool yield the logical truth tables and always evaluate both operands, while `&&` and `||` still short-circuit; compound forms agree."
+source = "../../examples/sandbox-graduation/bool_bitwise.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "false false: and=false or=false xor=false\nfalse true: and=false or=true xor=true\ntrue false: and=false or=true xor=true\ntrue true: and=true or=true xor=false\neval l1\neval r1\neval l2\neval r2\neval l3\neval r3\nfalse true false\neval l4\neval l5\nfalse true\nand_assign false\nor_assign true\nxor_assign false\neval rc\nfalse\n"
+exit = 0

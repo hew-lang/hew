@@ -2061,7 +2061,13 @@ impl Checker {
             | BinaryOp::BitXor
             | BinaryOp::Shl
             | BinaryOp::Shr => {
-                if left_resolved.is_integer() && right_resolved.is_integer() {
+                if matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor)
+                    && left_resolved == Ty::Bool
+                    && right_resolved == Ty::Bool
+                {
+                    // Non-short-circuiting logical operators: both operands are evaluated.
+                    Ty::Bool
+                } else if left_resolved.is_integer() && right_resolved.is_integer() {
                     if let Some(common_ty) =
                         common_integer_type(&left_resolved, &right_resolved, self.pointer_width())
                     {
@@ -2094,7 +2100,7 @@ impl Checker {
                         TypeErrorKind::BinaryOperandTypes,
                         &left.1,
                         format!(
-                            "bitwise `{op}` requires integer operands, found `{}` and `{}`",
+                            "`{op}` requires two integers or two `bool`s, found `{}` and `{}`",
                             left_resolved.user_facing(),
                             right_resolved.user_facing()
                         ),

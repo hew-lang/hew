@@ -359,7 +359,6 @@ impl TestNode {
     unsafe fn new(node_id: u16, bind_addr: &CString) -> Self {
         // SAFETY: Caller guarantees bind_addr is a valid C string.
         let node = unsafe { hew_node_new(node_id, bind_addr.as_ptr()) };
-        #[cfg(feature = "encryption")]
         if !node.is_null() {
             let dir = tempfile::tempdir().expect("test node identity directory");
             let path = dir.path().join("node.key");
@@ -396,13 +395,11 @@ impl Drop for TestNode {
     }
 }
 
-#[cfg(feature = "encryption")]
 struct PublicApiTestIdentity {
     dir: tempfile::TempDir,
     saved_transport: Option<std::ffi::OsString>,
 }
 
-#[cfg(feature = "encryption")]
 impl Drop for PublicApiTestIdentity {
     fn drop(&mut self) {
         crate::env::ENV_LOCK.access(|()| {
@@ -420,7 +417,6 @@ impl Drop for PublicApiTestIdentity {
 
 /// Stage a real stable TCP identity for a public `Node::start` test and keep
 /// its tempfile-backed key path alive until the public node is shut down.
-#[cfg(feature = "encryption")]
 fn stage_public_api_test_identity() -> PublicApiTestIdentity {
     let saved_transport = crate::env::ENV_LOCK.read_access(|()| std::env::var_os("HEW_TRANSPORT"));
     let identity = PublicApiTestIdentity {
@@ -462,12 +458,10 @@ fn start_tcp_test_listener_node(node_id: u16) -> (TestNode, u16) {
 
 /// Environment key naming the pre-generated Noise keyfile a two-process
 /// helper loads its stable identity from (brokered by the parent test).
-#[cfg(feature = "encryption")]
 const TWO_PROCESS_KEYFILE_ENV: &str = "HEW_2P_KEYFILE";
 
 /// Environment key carrying the peer's Noise static pubkey (lowercase hex)
 /// for the helper to bind via its per-node snapshot before connecting.
-#[cfg(feature = "encryption")]
 const TWO_PROCESS_PEER_PUBKEY_ENV: &str = "HEW_2P_PEER_PUBKEY";
 
 /// Start a **credentialed, Strict-authorized** TCP-Noise listener node for a
@@ -481,7 +475,6 @@ const TWO_PROCESS_PEER_PUBKEY_ENV: &str = "HEW_2P_PEER_PUBKEY";
 /// authenticates the peer and the claim machine binds its `NodeId`. This is a
 /// genuine authorized connection — there is no test-only posture promotion:
 /// a peer presenting an unbound Noise key fails the pre-gate and admission.
-#[cfg(feature = "encryption")]
 fn start_authorized_tcp_node(
     node_id: u16,
     peer_node: u16,
@@ -547,7 +540,6 @@ fn start_authorized_tcp_node(
 /// posture promotion; it mirrors [`start_authorized_quic_mesh_pair`] for the
 /// cases that must exercise TCP-specific pending-ask / connection behaviour
 /// now that an unverified outbound ask fails closed before it is ever sent.
-#[cfg(feature = "encryption")]
 fn start_authorized_tcp_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, u16) {
     use crate::peer_binding::{PeerAuthConfig, StableNoiseIdentity, NOISE_KEY_LEN};
 

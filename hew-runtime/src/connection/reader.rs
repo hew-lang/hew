@@ -3,12 +3,10 @@
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
-#[cfg(feature = "encryption")]
 use std::sync::Mutex;
 
 use crate::envelope::{decode_wire_frame, WireFrame};
 use crate::set_last_error;
-#[cfg(feature = "encryption")]
 use crate::util::MutexExt;
 
 use super::admission::hew_connmgr_remove;
@@ -77,7 +75,7 @@ pub(super) fn reader_loop(
     last_activity: Arc<AtomicU64>,
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
-    #[cfg(feature = "encryption")] noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
+    noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
 ) {
     let mgr = mgr.0;
     let transport = transport.0;
@@ -109,7 +107,6 @@ pub(super) fn reader_loop(
 
         // Decrypt in place when encryption is on; `buf.as_mut_ptr()` is stable
         // across the in-place copy, so only the length can change.
-        #[cfg(feature = "encryption")]
         let payload_len = {
             let mut len = read_len;
             let mut decrypted = vec![0u8; read_len];
@@ -125,8 +122,6 @@ pub(super) fn reader_loop(
             }
             len
         };
-        #[cfg(not(feature = "encryption"))]
-        let payload_len = read_len;
         let payload_ptr = buf.as_mut_ptr();
 
         // Update heartbeat.

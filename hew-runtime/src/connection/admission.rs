@@ -5,7 +5,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 
-#[cfg(feature = "encryption")]
 use zeroize::Zeroizing;
 
 use crate::node_identity::NodeId;
@@ -17,7 +16,6 @@ use crate::util::MutexExt;
 use super::handshake::{
     close_transport_conn, handshake_exchange, local_handshake, peer_identity_compatible,
 };
-#[cfg(feature = "encryption")]
 use super::handshake::{supports_encryption, upgrade_noise};
 use super::identity_claim::{
     abort_identity_claim, publish_identity_connection_established, reserve_identity_claim,
@@ -25,7 +23,6 @@ use super::identity_claim::{
 };
 use super::reader::reader_loop;
 use super::reconnect::next_publication_token;
-#[cfg(feature = "encryption")]
 use super::NOISE_PATTERN;
 use super::{
     ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr, SendConnMgr,
@@ -137,15 +134,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     }
 
-    #[cfg_attr(
-        not(feature = "encryption"),
-        allow(
-            unused_mut,
-            reason = "filled by copy_from_slice only in the encryption-gated keypair block"
-        )
-    )]
     let mut local_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
-    #[cfg(feature = "encryption")]
     let local_noise_private = {
         #[cfg(feature = "quic")]
         let skip_noise = {
@@ -270,7 +259,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     }
 
-    #[cfg(feature = "encryption")]
     let skip_noise = {
         #[cfg(feature = "quic")]
         {
@@ -287,7 +275,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     };
 
-    #[cfg(feature = "encryption")]
     let upgraded_noise = if !skip_noise
         && supports_encryption(local_hs.feature_flags)
         && supports_encryption(peer_hs.feature_flags)
@@ -311,10 +298,8 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     // used to bind the claimed `NodeId` in the claim machine below. Populated
     // from the Noise static key for tcp-noise; mesh SPKI extraction is wired in
     // a later slice. `None` under `Unverified` posture (loopback / opt-out).
-    #[cfg(feature = "encryption")]
     let mut peer_credential: Option<PeerCredential> = None;
 
-    #[cfg(feature = "encryption")]
     let upgraded_noise = if !skip_noise
         && supports_encryption(local_hs.feature_flags)
         && supports_encryption(peer_hs.feature_flags)
@@ -364,10 +349,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     //    not claim a NodeId bound to a different key);
     //  - otherwise (plain tcp without encryption / plain quic / Unknown):
     //    credential-free (delivery-only / loopback dev).
-    #[cfg(feature = "encryption")]
     let noise_credential: Option<PeerCredential> = peer_credential;
-    #[cfg(not(feature = "encryption"))]
-    let noise_credential: Option<PeerCredential> = None;
 
     #[cfg(feature = "quic")]
     // SAFETY: mgr.transport is valid while the manager is alive; conn_id is the
@@ -473,7 +455,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     actor.peer_feature_flags = peer_hs.feature_flags;
     actor.posture = posture;
     actor.credential = Some(peer_credential);
-    #[cfg(feature = "encryption")]
     if let Some(noise) = upgraded_noise {
         let Ok(mut guard) = actor.noise_transport.lock() else {
             // Policy: per-connection state (C-ABI) — poisoned noise transport
@@ -501,7 +482,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let mgr_send = SendConnMgr(mgr_ptr);
     let peer_feature_flags = actor.peer_feature_flags;
     let reader_lifecycle_guard = mgr.reader_lifecycle.register();
-    #[cfg(feature = "encryption")]
     let noise_transport = Arc::clone(&actor.noise_transport);
 
     let handle = thread::Builder::new()
@@ -517,7 +497,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
                 activity_send,
                 router,
                 peer_feature_flags,
-                #[cfg(feature = "encryption")]
                 noise_transport,
             );
         });

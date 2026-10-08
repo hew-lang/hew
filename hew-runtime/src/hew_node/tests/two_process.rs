@@ -2,7 +2,6 @@
 
 use super::*;
 
-#[cfg(feature = "encryption")]
 fn run_registry_gossip_server_helper() {
     reset_two_process_delivery();
     // Install the runtime before touching the name registry: in this helper
@@ -47,7 +46,6 @@ fn run_registry_gossip_server_helper() {
     assert!(delivered, "server did not observe two-process send");
 }
 
-#[cfg(feature = "encryption")]
 fn run_registry_gossip_client_helper() {
     // Install the runtime before touching the name registry (helper
     // subprocess holds no `runtime_test_guard`).
@@ -112,7 +110,6 @@ fn run_registry_gossip_client_helper() {
 /// on its peer to detect an early exit; the orchestrating parent's own
 /// bounded `wait_output` is the backstop that surfaces a hang as a timeout
 /// with both processes' captured output.
-#[cfg(feature = "encryption")]
 fn wait_for_marker_file(path: &std::path::Path, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while !path.exists() {
@@ -128,7 +125,6 @@ fn wait_for_marker_file(path: &std::path::Path, timeout: Duration) -> bool {
 /// worker, lets the client resolve it over gossip, then fully frees it
 /// (stop + free — not merely stop) before the client asks it, reproducing
 /// a target that is genuinely gone rather than merely stopped-but-tracked.
-#[cfg(feature = "encryption")]
 fn run_two_process_ask_dead_server_helper() {
     register_test_u32_codec(dispatch_key(noop_dispatch), TWO_PROCESS_REGISTRY_MSG_TYPE);
     let _real_sched = init_real_scheduler();
@@ -194,7 +190,6 @@ fn run_two_process_ask_dead_server_helper() {
 
 /// Client half of the dead-actor cross-process ask case (see the server
 /// half's doc comment).
-#[cfg(feature = "encryption")]
 fn run_two_process_ask_dead_client_helper() {
     let client = run_two_process_ask_client_setup(
         TWO_PROCESS_REGISTRY_CLIENT_NODE,
@@ -263,7 +258,6 @@ fn run_two_process_ask_dead_client_helper() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 fn run_two_process_ask_server_helper(
     node_id: u16,
     name: &str,
@@ -325,14 +319,12 @@ fn run_two_process_ask_server_helper(
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 struct TwoProcessAskClient {
     node: TestNode,
     remote_pid: HewRemotePid,
     _real_sched: RealSchedulerGuard,
 }
 
-#[cfg(feature = "encryption")]
 fn run_two_process_ask_echo_client_helper() {
     let client = run_two_process_ask_client_setup(
         TWO_PROCESS_REGISTRY_CLIENT_NODE,
@@ -373,7 +365,6 @@ fn run_two_process_ask_echo_client_helper() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 fn run_two_process_ask_timeout_client_helper() {
     let client = run_two_process_ask_client_setup(
         TWO_PROCESS_REGISTRY_CLIENT_NODE,
@@ -415,7 +406,6 @@ fn run_two_process_ask_timeout_client_helper() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 fn run_two_process_ask_client_setup(
     client_node_id: u16,
     server_node_id: u16,
@@ -465,7 +455,6 @@ fn run_two_process_ask_client_setup(
     }
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn registry_gossip_two_process_server_helper() {
     if !matches!(
@@ -477,7 +466,6 @@ fn registry_gossip_two_process_server_helper() {
     run_registry_gossip_server_helper();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn registry_gossip_two_process_client_helper() {
     if !matches!(
@@ -489,7 +477,6 @@ fn registry_gossip_two_process_client_helper() {
     run_registry_gossip_client_helper();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn remote_ask_two_process_echo_server_helper() {
     if !matches!(
@@ -505,7 +492,6 @@ fn remote_ask_two_process_echo_server_helper() {
     );
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn remote_ask_two_process_echo_client_helper() {
     if !matches!(
@@ -517,7 +503,6 @@ fn remote_ask_two_process_echo_client_helper() {
     run_two_process_ask_echo_client_helper();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn remote_ask_two_process_timeout_server_helper() {
     if !matches!(
@@ -533,7 +518,6 @@ fn remote_ask_two_process_timeout_server_helper() {
     );
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn remote_ask_two_process_timeout_client_helper() {
     if !matches!(
@@ -545,7 +529,6 @@ fn remote_ask_two_process_timeout_client_helper() {
     run_two_process_ask_timeout_client_helper();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn remote_ask_two_process_dead_server_helper() {
     if !matches!(
@@ -557,7 +540,6 @@ fn remote_ask_two_process_dead_server_helper() {
     run_two_process_ask_dead_server_helper();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn remote_ask_two_process_dead_client_helper() {
     if !matches!(
@@ -575,7 +557,6 @@ fn remote_ask_two_process_dead_client_helper() {
 /// client_pubkey_hex)`. Each helper is handed its own keyfile (which it
 /// re-loads to the identical identity) plus the *peer's* pubkey, so both
 /// sides bind each other before connecting — no test-only posture promotion.
-#[cfg(feature = "encryption")]
 fn broker_two_process_noise_keys(dir: &std::path::Path) -> (String, String, String, String) {
     use crate::peer_binding::hex_lower;
     let server_keyfile = dir.join("server.key");
@@ -592,7 +573,6 @@ fn broker_two_process_noise_keys(dir: &std::path::Path) -> (String, String, Stri
     )
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn two_process_registry_gossip_lookup_then_tell() {
     let _guard = crate::runtime_test_guard();
@@ -631,7 +611,6 @@ fn two_process_registry_gossip_lookup_then_tell() {
     assert_child_success("server", &server_output);
 }
 
-#[cfg(feature = "encryption")]
 fn run_two_process_remote_ask_case(
     server_helper: &'static str,
     server_role: &'static str,
@@ -678,7 +657,6 @@ fn run_two_process_remote_ask_case(
     assert_child_success(server_role, &server_output);
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn two_process_remote_ask_echo_double_returns_42() {
     run_two_process_remote_ask_case(
@@ -689,7 +667,6 @@ fn two_process_remote_ask_echo_double_returns_42() {
     );
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn two_process_remote_ask_timeout_returns_timeout() {
     run_two_process_remote_ask_case(
@@ -705,7 +682,6 @@ fn two_process_remote_ask_timeout_returns_timeout() {
 /// through an extra marker file so the actor is freed only after the
 /// client has resolved it over gossip (`hew_actor_free` unregisters the
 /// name and emits a gossip-remove, which would otherwise race the lookup).
-#[cfg(feature = "encryption")]
 fn run_two_process_dead_ask_case() {
     let _guard = crate::runtime_test_guard();
     let ready_dir = tempfile::tempdir().expect("ready tempdir");
@@ -760,7 +736,6 @@ fn run_two_process_dead_ask_case() {
 /// same `Dead` reason a local ask to a dead target reports (D526), not
 /// `DecodeFailure`. Complements the in-process QUIC-mesh coverage above
 /// with a real two-process reproduction of the reported symptom.
-#[cfg(feature = "encryption")]
 #[test]
 fn two_process_remote_ask_dead_actor_reports_dead() {
     run_two_process_dead_ask_case();

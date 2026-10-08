@@ -88,7 +88,6 @@ const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x02";
 const HEW_PROTOCOL_VERSION: u16 = 2;
 // Advertised only when the `encryption` feature is compiled in; both consumers
 // (`local_feature_flags` and `supports_encryption`) are encryption-gated.
-#[cfg(feature = "encryption")]
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
@@ -109,9 +108,7 @@ const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV1A32_PRIME: u32 = 16_777_619;
 
 const NOISE_STATIC_PUBKEY_LEN: usize = 32;
-#[cfg(feature = "encryption")]
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
-#[cfg(feature = "encryption")]
 const NOISE_MAX_MSG_SIZE: usize = 65_535;
 
 const RECONNECT_DEFAULT_MAX_RETRIES: u32 = 5;
@@ -214,7 +211,6 @@ struct ConnectionActor {
     /// Monotonic timestamp (ms) of last successful send or recv.
     last_activity_ms: Arc<AtomicU64>,
     /// Optional per-connection Noise transport state.
-    #[cfg(feature = "encryption")]
     noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
     /// Handle to the reader thread (if running).
     reader_handle: Option<JoinHandle<()>>,
@@ -494,7 +490,6 @@ impl TransportClose {
 struct ClaimedSendLease {
     _guard: ReaderLifecycleGuard,
     publication_removed: Arc<AtomicBool>,
-    #[cfg(feature = "encryption")]
     noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
 }
 
@@ -569,7 +564,6 @@ impl ConnectionActor {
             credential: None,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
             last_activity_ms: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "encryption")]
             noise_transport: Arc::new(Mutex::new(None)),
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),

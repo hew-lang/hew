@@ -18,13 +18,13 @@
 //! Layer 3: actor, scope, actor_group (L2)
 //! Layer 4: task_scope, timer_wheel, blocking_pool (L3)
 //! Layer 5: wire, transport, node, supervisor (L3+wire)
-//! Layer 6: encryption (snow)
+//! Layer 6: encryption (snow, always present on native targets)
 //! ```
 //!
 //! # Cargo Features
 //!
-//! - `full` (default) — encryption + profiler
-//! - `encryption` — Noise protocol encryption via `snow`
+//! - `full` (default) — profiler + QUIC
+//! - `quic` — QUIC transports (quic-mesh mutual TLS 1.3)
 //! - `profiler` — built-in profiler dashboard and pprof export
 #![allow(
     unsafe_op_in_unsafe_fn,
@@ -775,7 +775,7 @@ pub mod tracing;
 
 // ── Ecosystem modules (feature-gated) ───────────────────────────────────────
 
-#[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod encryption;
 
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]

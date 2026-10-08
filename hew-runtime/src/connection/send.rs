@@ -3,7 +3,6 @@
 use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-#[cfg(feature = "encryption")]
 use std::sync::Mutex;
 
 use crate::mailbox_envelope::MailboxPayloadClass;
@@ -71,10 +70,8 @@ pub unsafe extern "C" fn hew_connmgr_send(
     // Verify the connection is the active authenticated owner of this exact
     // node/session pair. This prevents conn-id and route-slot reuse from
     // redirecting a carried location.
-    #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
-        #[cfg(feature = "encryption")]
         let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
         let publication_token = mgr_ref.connections.access(|conns| {
             let active = conns.iter().find(|c| {
@@ -83,7 +80,6 @@ pub unsafe extern "C" fn hew_connmgr_send(
                     && c.peer_identity == Some(target.node())
                     && c.peer_session_incarnation == target.incarnation()
             });
-            #[cfg(feature = "encryption")]
             if let Some(c) = active {
                 noise_out = Some(Arc::clone(&c.noise_transport));
             }
@@ -106,7 +102,6 @@ pub unsafe extern "C" fn hew_connmgr_send(
         if !owns_claim {
             return -1;
         }
-        #[cfg(feature = "encryption")]
         {
             maybe_noise = noise_out;
         }
@@ -126,7 +121,6 @@ pub unsafe extern "C" fn hew_connmgr_send(
         return -1;
     };
 
-    #[cfg(feature = "encryption")]
     if let Some(noise_transport) = maybe_noise {
         let mut maybe_ciphertext = None;
         {
@@ -185,7 +179,6 @@ pub(super) unsafe fn send_preencoded_on_manager(
             Some(ClaimedSendLease {
                 _guard: active.claimed_send_lifecycle.register(),
                 publication_removed: Arc::clone(&active.publication_removed),
-                #[cfg(feature = "encryption")]
                 noise_transport: Arc::clone(&active.noise_transport),
             })
         });
@@ -196,7 +189,6 @@ pub(super) unsafe fn send_preencoded_on_manager(
             return -1;
         }
 
-        #[cfg(feature = "encryption")]
         {
             // SAFETY: data is valid for `len` bytes per caller contract.
             let slice = unsafe { std::slice::from_raw_parts(data, len) };
@@ -234,10 +226,8 @@ pub(super) unsafe fn send_preencoded_on_manager(
         return if rc > 0 { 0 } else { -1 };
     }
 
-    #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
-        #[cfg(feature = "encryption")]
         let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
         let ok = mgr_ref.connections.access(|conns| {
             let active = conns.iter().find(|c| {
@@ -245,7 +235,6 @@ pub(super) unsafe fn send_preencoded_on_manager(
                     && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
                     && expected_publication_token.is_none_or(|token| c.publication_token == token)
             });
-            #[cfg(feature = "encryption")]
             if let Some(c) = active {
                 noise_out = Some(Arc::clone(&c.noise_transport));
             }
@@ -254,13 +243,11 @@ pub(super) unsafe fn send_preencoded_on_manager(
         if !ok {
             return -1;
         }
-        #[cfg(feature = "encryption")]
         {
             maybe_noise = noise_out;
         }
     }
 
-    #[cfg(feature = "encryption")]
     if let Some(noise_arc) = maybe_noise {
         // SAFETY: data is valid for `len` bytes per caller contract.
         let slice = unsafe { std::slice::from_raw_parts(data, len) };

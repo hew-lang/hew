@@ -563,7 +563,6 @@ fn node_stop_drains_inbound_ask_active() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     struct HookResetGuard;
@@ -823,7 +822,6 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
 /// WITHOUT touching the freed manager; under `AddressSanitizer` the run is
 /// clean. Against the old `*guard == 0`-only capture the release reads freed
 /// memory.
-#[cfg(feature = "encryption")]
 #[test]
 fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     struct HookResetGuard;

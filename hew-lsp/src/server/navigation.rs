@@ -222,39 +222,22 @@ pub(super) fn find_definition_in_ast(
 
 // ── Import path resolution ────────────────────────────────────────────
 
-/// Compute the absolute file path that an `ImportDecl` would resolve to,
-/// searching the workspace root first then the importing file's directory.
+/// The file an `ImportDecl` in the document at `uri` names. A module import
+/// resolves exactly as the compiler resolves it.
 ///
-/// Does **not** check whether the file exists on disk; callers decide whether
-/// to check existence before performing I/O.
+/// A file import's path is not checked for existence; callers decide whether
+/// to check before performing I/O.
 pub(super) fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std::path::PathBuf> {
+    let importer = uri.to_checked_file_path()?;
     // String-literal import: `import "relative/path.hew";`
     if let Some(fp) = &import.file_path {
-        let file_dir = uri
-            .to_checked_file_path()
-            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
-        return Some(file_dir.join(fp));
+        return Some(importer.parent()?.join(fp));
     }
-
-    if import.path.segments.is_empty() {
-        return None;
-    }
-
-    let relative = format!("{}.hew", import_file_stem(&import.path));
-
-    // Prefer workspace root when the file already exists there.
-    if let Some(root) = find_workspace_root_for_uri(uri) {
-        let candidate = root.join(&relative);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    // Fall back to the directory of the importing file.
-    let file_dir = uri
-        .to_checked_file_path()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
-    Some(file_dir.join(&relative))
+    hew_compile::resolve_module_import(
+        &importer,
+        &import.path,
+        &hew_compile::FrontendOptions::default(),
+    )
 }
 
 pub(super) fn collect_import_items(parse_result: &ParseResult) -> Vec<(ImportDecl, Span)> {
@@ -2055,26 +2038,17 @@ pub(super) fn build_document_links(
                 continue;
             }
             if let Some(target_uri) = Url::from_checked_file_path(&path) {
-                let relative = format!("{}.hew", import_file_stem(&import.path));
+                let file = path.file_name().unwrap_or_default().to_string_lossy();
                 links.push(DocumentLink {
                     range: span_to_range(source, lo, span),
                     target: Some(target_uri),
-                    tooltip: Some(format!("Open {relative}")),
+                    tooltip: Some(format!("Open {file}")),
                     data: None,
                 });
             }
         }
     }
     links
-}
-
-/// The relative source-file stem an import path names (`a.b` -> `a/b`).
-fn import_file_stem(path: &hew_parser::ast::Path) -> String {
-    path.segments
-        .iter()
-        .map(|(segment, _)| segment.name.as_str())
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 #[cfg(test)]

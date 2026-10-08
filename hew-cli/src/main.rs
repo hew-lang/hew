@@ -208,7 +208,7 @@ fn lower_file_to_semantics(
     let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
         let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
         if failure.diagnostics.is_empty() {
-            diagnostic::emit_plain_diagnostic_line(&format!("Error: {}", failure.message));
+            diagnostic::emit_plain_diagnostic_line(&failure.message);
         }
         channel.unwrap_or(DiagChannel::User)
     })?;
@@ -261,6 +261,29 @@ fn lower_file_to_physical_for_target(
     options: &compile::CompileOptions,
 ) -> Result<(hew_mir::VerifiedPhysicalModule, native_link::ProgramInputs), DiagChannel> {
     let (output, inputs) = lower_file_to_semantics(input_path, target, options)?;
+    Ok((lower_session_to_physical(&output, target)?, inputs))
+}
+
+/// Lower a file that is built into an executable. An executable starts at
+/// `main`; without one the link would fail on the platform's start symbol
+/// instead of naming the program.
+fn lower_program_to_physical(
+    input_path: &Path,
+    target: &target::TargetSpec,
+    options: &compile::CompileOptions,
+) -> Result<(hew_mir::VerifiedPhysicalModule, native_link::ProgramInputs), DiagChannel> {
+    let (output, inputs) = lower_file_to_semantics(input_path, target, options)?;
+    if output.semantics().module.entry_callable.is_none() && !target.is_wasm_freestanding() {
+        return Err(emit_semantic_error(
+            "E_NO_MAIN",
+            &format!(
+                "{} has no `fn main`, so it cannot be built or run as a program\n  \
+                 hint: add `fn main() {{ ... }}`, or check a library with `hew check` and run its tests with `hew test`",
+                display_relative_to_cwd(input_path).display()
+            ),
+            DiagChannel::User,
+        ));
+    }
     Ok((lower_session_to_physical(&output, target)?, inputs))
 }
 
@@ -857,7 +880,7 @@ fn compile_build_binary_with_hew_lib(
 ) -> Result<Vec<PathBuf>, DiagChannel> {
     let wall_started = std::time::Instant::now();
     let lower_started = std::time::Instant::now();
-    let (physical, inputs) = lower_file_to_physical_for_target(input, target, options)?;
+    let (physical, inputs) = lower_program_to_physical(input, target, options)?;
     if target.is_wasm() {
         refuse_native_for_wasm(&inputs)?;
     }
@@ -1462,7 +1485,7 @@ fn compile_temp_wasi_module(
 
     let result = (|| -> Result<Vec<PathBuf>, DiagChannel> {
         let (pipeline, inputs) =
-            lower_file_to_physical_for_target(Path::new(input), &target_spec, options)?;
+            lower_program_to_physical(Path::new(input), &target_spec, options)?;
         refuse_native_for_wasm(&inputs)?;
         let emit_dir = tmp_dir_of_path(&wasm_path);
         // Emit the wasm object only — the WASI runtime link happens in
@@ -1874,11 +1897,13 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let frontend_options = compile::frontend_options(&target, &options);
 
     if !json {
-        if let Some(entry) = hew_compile::directory_module_entry(&resolved.source()) {
-            let module_dir = entry.parent().unwrap_or(&entry);
+        if let Some(membership) =
+            hew_compile::module_membership(&resolved.source(), &frontend_options)
+                .filter(hew_types::module_registry::ModuleMembership::checks_as_directory_module)
+        {
             eprintln!(
-                "note: {input} belongs to directory module {}; checking the entry and all its peers",
-                display_relative_to_cwd(module_dir).display()
+                "note: {input} belongs to directory module `{}`; checking the entry and all its peers",
+                membership.module.dotted()
             );
         }
     }

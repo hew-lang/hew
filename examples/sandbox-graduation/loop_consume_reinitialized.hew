@@ -18,8 +18,9 @@ type Pair {
 }
 
 fn main() {
-    // Re-initialised before the consume; the assignment closes the old ticket.
+    // Re-initialised before the consume.
     var fresh = Ticket { id: 1 };
+    fresh.close();
     for i in 0..2 {
         fresh = Ticket { id: 10 + i };
         fresh.close();

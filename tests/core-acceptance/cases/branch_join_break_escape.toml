@@ -23,13 +23,20 @@ message = "use of moved value `s`"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 92
+line = 89
+column = 21
+message = "use of moved value `s`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 93
 column = 5
 message = "use of moved value `s`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 104
+line = 105
 column = 5
 message = "use of moved value `held`"

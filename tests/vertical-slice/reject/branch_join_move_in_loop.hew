@@ -1,10 +1,6 @@
-// Cross-iteration double consume. The env checker walks a loop body once and
-// is silent here by design; the checked-MIR dataflow pass owns this rejection
-// and reports `E_MIR_CHECK: UseAfterConsume` for the back edge.
-//
-// This fixture pins that split: relaxing the env checker at branch joins must
-// not relax the loop verdict, because the loop verdict was never the env
-// checker's to give.
+// Cross-iteration double consume. The checker reports the second
+// iteration's consume as a use of a moved value, with a note at the first
+// iteration's consume, before SIR verification sees the loop.
 #[resource]
 type Conn {
     fd: i64;

@@ -1,13 +1,14 @@
 [[case]]
 id = "branch_join_move_in_loop"
-intent = "Cross-iteration double consume."
+intent = "A cross-iteration double consume is a checker diagnostic at the next iteration's use, not an internal SIR verification error."
 source = "../vertical-slice/reject/branch_join_move_in_loop.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_VERIFY"
-line = 0
-column = 0
-message = "SIR verification failed: [SirDiagnostic { function: \"__hew_fn_move_in_loop\", callable: Some(CallableId(1)), kind: PlaceLifetime { block: BlockId(13), place: PlaceId(0), reason: \"aggregate field is not initialized on every incoming path\" } }]"
+severity = "error"
+code = "UseAfterMove"
+line = 19
+column = 17
+message = "use of moved value `held`"

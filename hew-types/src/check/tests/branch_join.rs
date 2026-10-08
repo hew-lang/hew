@@ -942,3 +942,20 @@ fn a_won_task_arm_that_forks_a_replacement_is_accepted() {
         output.errors
     );
 }
+
+#[test]
+fn a_move_capture_on_every_iteration_is_rejected() {
+    assert_loop_rejects(
+        "a move closure takes the value each iteration",
+        r"
+        fn probe() {
+            let held = Socket { fd: 1 };
+            for i in 0..2 {
+                let release = move || held.close();
+                release();
+            }
+        }
+        ",
+        "use of moved value `held`",
+    );
+}

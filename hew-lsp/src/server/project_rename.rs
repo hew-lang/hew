@@ -310,6 +310,14 @@ fn checked_frontend(source: &Source, mut state: hew_compile::DocumentFrontendSta
     if let (Some(output), Some(index)) = (output.as_mut(), index) {
         hew_analysis::identity::focus_file(output, index);
     }
+    if output.is_none() {
+        output = Some(hew_analysis::identity::source_identities(
+            state
+                .parse_result
+                .as_ref()
+                .expect("source frontend parses its root"),
+        ));
+    }
     let functions = output.as_ref().map_or_else(HashMap::new, |output| {
         output
             .defs
@@ -654,8 +662,8 @@ fn query_source(snapshot: &HashMap<Uri, OpenDocument>, uri: &Uri) -> Option<Sour
     })
 }
 
-/// Legacy non-function targets still use their existing syntax queries, but
-/// their peers must have the same fresh authored text as the project planner.
+/// Single-file targets and their peers use the same fresh authored text as
+/// the project planner.
 fn legacy_documents(snapshot: &HashMap<Uri, OpenDocument>) -> dashmap::DashMap<Uri, DocumentState> {
     snapshot
         .iter()
@@ -675,7 +683,7 @@ fn legacy_documents(snapshot: &HashMap<Uri, OpenDocument>) -> dashmap::DashMap<U
         .collect()
 }
 
-/// A syntactic local or parameter has no external consumers. An incomplete
+/// A checked local or parameter has no external consumers. An incomplete
 /// exported/imported target must never fall through to declaration-only edits.
 fn potential_external_target(checked: &Checked, offset: usize) -> bool {
     let Some((name, word)) = hew_analysis::util::simple_word_at_offset(&checked.doc.source, offset)
@@ -708,16 +716,9 @@ fn potential_external_target(checked: &Checked, offset: usize) -> bool {
             return false;
         }
     }
-    if hew_analysis::definition::find_local_binding_definition(
-        &checked.doc.source,
-        &checked.doc.parse_result,
-        &name,
-        offset,
-    )
-    .is_some()
-        || hew_analysis::definition::find_param_definition(&checked.doc.parse_result, &name, offset)
-            .is_some()
-    {
+    if checked.doc.type_output.as_ref().is_some_and(|output| {
+        matches!(resolution_for_token(output, word), Some((span, Resolution::Local(_))) if span == word)
+    }) {
         return false;
     }
     if hew_analysis::rename::is_local_non_function_reference(
@@ -727,8 +728,8 @@ fn potential_external_target(checked: &Checked, offset: usize) -> bool {
     ) {
         return false;
     }
-    // A parsed non-function declaration remains eligible for the legacy
-    // syntactic rename even when an unrelated import could not be resolved.
+    // A parsed non-function declaration remains eligible for single-file
+    // rename even when an unrelated import could not be resolved.
     if let Some(span) = hew_analysis::definition::find_definition(
         &checked.doc.source,
         &checked.doc.parse_result,

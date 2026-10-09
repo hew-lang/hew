@@ -101,6 +101,31 @@ impl Checker {
             Expr::Call { .. } | Expr::MethodCall { .. } => IndirectCallCandidates::single(
                 CallableCandidate::CallResult(SpanKey::in_module(span, self.current_module_idx)),
             ),
+            Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } => {
+                self.branch_value_candidates(expr)
+            }
+            Expr::Block(block)
+            | Expr::Scope { body: block }
+            | Expr::ScopeDeadline { body: block, .. } => self.callable_candidates_for_block(block),
+            Expr::UnsafeBlock(block) => self.callable_candidates_for_block(block),
+            Expr::Coalesce { left, right } => {
+                let mut candidates = self.callable_candidates_for_expr(&left.0, &left.1);
+                candidates.join(self.callable_candidates_for_expr(&right.0, &right.1));
+                candidates
+            }
+            Expr::Clone(value)
+            | Expr::Cast { expr: value, .. }
+            | Expr::PostfixTry(value)
+            | Expr::Index { object: value, .. }
+            | Expr::ArrayRepeat { value, .. } => {
+                self.callable_candidates_for_expr(&value.0, &value.1)
+            }
+            _ => IndirectCallCandidates::unknown(),
+        }
+    }
+
+    fn branch_value_candidates(&self, expr: &Expr) -> IndirectCallCandidates {
+        match expr {
             Expr::If {
                 then_block,
                 else_block: Some(else_block),
@@ -129,22 +154,6 @@ impl Checker {
                     candidates.join(self.callable_candidates_for_expr(&arm.body.0, &arm.body.1));
                 }
                 candidates
-            }
-            Expr::Block(block)
-            | Expr::Scope { body: block }
-            | Expr::ScopeDeadline { body: block, .. } => self.callable_candidates_for_block(block),
-            Expr::UnsafeBlock(block) => self.callable_candidates_for_block(block),
-            Expr::Coalesce { left, right } => {
-                let mut candidates = self.callable_candidates_for_expr(&left.0, &left.1);
-                candidates.join(self.callable_candidates_for_expr(&right.0, &right.1));
-                candidates
-            }
-            Expr::Clone(value)
-            | Expr::Cast { expr: value, .. }
-            | Expr::PostfixTry(value)
-            | Expr::Index { object: value, .. }
-            | Expr::ArrayRepeat { value, .. } => {
-                self.callable_candidates_for_expr(&value.0, &value.1)
             }
             _ => IndirectCallCandidates::unknown(),
         }
@@ -219,15 +228,101 @@ impl Checker {
         target: &Spanned<Expr>,
         value: &Spanned<Expr>,
     ) {
-        let Expr::Ident(name) = &target.0 else {
-            return;
-        };
-        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
-            return;
-        };
-        let id = binding.id;
-        let value_candidates = self.callable_candidates_for_expr(&value.0, &value.1);
-        self.env.set_value_candidates(id, value_candidates);
+        let candidates = self.callable_candidates_for_expr(&value.0, &value.1);
+        self.replace_place_value_candidates(target, candidates);
+    }
+
+    fn current_place_value_candidates(&self, place: &Spanned<Expr>) -> IndirectCallCandidates {
+        let key = SpanKey::in_module(&place.1, self.current_module_idx);
+        if let Some(Resolution::Local(binding)) = self.scopes.resolutions().get(&key) {
+            return self
+                .env
+                .value_candidates(*binding)
+                .cloned()
+                .unwrap_or_else(IndirectCallCandidates::unknown);
+        }
+        if let Expr::FieldAccess { object, field } = &place.0 {
+            let key = SpanKey::in_module(&field.1, self.current_module_idx);
+            if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+                let source = self.current_place_value_candidates(object);
+                return IndirectCallCandidates {
+                    known: source
+                        .known
+                        .into_iter()
+                        .map(|receiver| CallableCandidate::Field {
+                            receiver: Box::new(receiver),
+                            owner: *owner,
+                            index: *index,
+                        })
+                        .collect(),
+                    may_be_unknown: source.may_be_unknown,
+                };
+            }
+        }
+        self.callable_candidates_for_expr(&place.0, &place.1)
+    }
+
+    fn replace_place_value_candidates(
+        &mut self,
+        target: &Spanned<Expr>,
+        candidates: IndirectCallCandidates,
+    ) {
+        let key = SpanKey::in_module(&target.1, self.current_module_idx);
+        match &target.0 {
+            Expr::Ident(_) => {
+                if let Some(Resolution::Local(binding)) = self.scopes.resolutions().get(&key) {
+                    self.env.set_value_candidates(*binding, candidates);
+                }
+            }
+            Expr::FieldAccess { object, field } => {
+                let field_key = SpanKey::in_module(&field.1, self.current_module_idx);
+                let Some(Resolution::Field(owner, selected)) =
+                    self.scopes.resolutions().get(&field_key).copied()
+                else {
+                    return;
+                };
+                let object_key = SpanKey::in_module(&object.1, self.current_module_idx);
+                let Some(ty) = self.expr_types.get(&object_key) else {
+                    return;
+                };
+                let Some(definition) = self.ty_type_def(&self.subst.resolve(ty)) else {
+                    return;
+                };
+                let count = definition.field_order.len();
+                let base = self.current_place_value_candidates(object);
+                let fields = (0..count)
+                    .map(|index| {
+                        let index = u32::try_from(index).expect("checked field index");
+                        CallableFieldFlow {
+                            owner,
+                            index,
+                            candidates: if index == selected {
+                                candidates.clone()
+                            } else {
+                                IndirectCallCandidates {
+                                    known: base
+                                        .known
+                                        .iter()
+                                        .map(|receiver| CallableCandidate::Field {
+                                            receiver: Box::new(receiver.clone()),
+                                            owner,
+                                            index,
+                                        })
+                                        .collect(),
+                                    may_be_unknown: base.may_be_unknown,
+                                }
+                            },
+                        }
+                    })
+                    .collect();
+                self.aggregate_field_candidates.insert(key.clone(), fields);
+                self.replace_place_value_candidates(
+                    object,
+                    IndirectCallCandidates::single(CallableCandidate::Aggregate(key)),
+                );
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn record_indirect_call_candidates(&mut self, span: &Span, callee: &Spanned<Expr>) {

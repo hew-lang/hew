@@ -590,53 +590,7 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     // `.resume`, post-suspend): both stored. lldb uses hardware breakpoints
     // to avoid patching coroutine code while runtime threads execute it; gdb
     // falls back to software breakpoints (see the await test above for why).
-    let cmd = if dbg == "lldb" {
-        let mut command = Command::new("lldb");
-        command.args([
-            "-b",
-            "-o",
-            &format!("breakpoint set -H --file {src} --line 4"),
-            "-o",
-            &format!("breakpoint set -H --file {src} --line 7"),
-            "-o",
-            "run",
-            "-o",
-            "frame variable x y",
-            // The line-4 breakpoint also matches the `.resume` re-entry PC;
-            // disable it so the next stop is the line-7 one.
-            "-o",
-            "breakpoint disable 1",
-            "-o",
-            "continue",
-            "-o",
-            "frame variable x y",
-            "-o",
-            "quit",
-            bin,
-        ]);
-        command
-    } else {
-        let mut command = Command::new("gdb");
-        command.args([
-            "--batch",
-            "-ex",
-            &format!("break {src}:4"),
-            "-ex",
-            &format!("break {src}:7"),
-            "-ex",
-            "run",
-            "-ex",
-            "info locals",
-            "-ex",
-            "disable 1",
-            "-ex",
-            "continue",
-            "-ex",
-            "info locals",
-            bin,
-        ]);
-        command
-    };
+    let cmd = two_stop_sleep_cmd(dbg, &src, bin);
     let out = run_debugger_query(cmd, format!("{dbg} honest post-suspend local"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -644,9 +598,26 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
         "{dbg} failed while debugging sleep handler:\n{text}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let (before, after) = text.split_once(STOP_SPLIT).expect("both debugger stops");
+    assert!(
+        before.lines().any(|line| line
+            .split_once("n = ")
+            .is_some_and(|(_, value)| value.trim() == "7")),
+        "pre-suspend breakpoint must read the parameter `n = 7`:\n{text}"
+    );
+    let honest_n = text
+        .lines()
+        .filter_map(|line| line.split_once("n = ").map(|(_, value)| value.trim()))
+        .all(|value| {
+            value == "7" || value.contains("not available") || value.contains("optimized out")
+        });
+    assert!(
+        after.lines().any(|line| line.contains("n = ")) && honest_n,
+        "resumed parameter must read 7 or be unavailable, never a frame pointer or stale stack value:\n{text}"
+    );
     // Pre-suspend stop: the stored local reads its real value.
     assert!(
-        text.contains("x = 8"),
+        before.contains("x = 8"),
         "pre-suspend breakpoint must read the stored `x = 8`:\n{text}"
     );
     // The unstored local must be reported absent, and must never surface a
@@ -654,7 +625,8 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     // 42, and 42 may legitimately appear at the second (post-store) stop — so
     // reject any `y = <digits>` line that is not exactly 42.
     assert!(
-        text.contains("not available") || text.contains("optimized out"),
+        before.lines().any(|line| line.contains("y = ")
+            && (line.contains("not available") || line.contains("optimized out"))),
         "unstored `y` must be reported unavailable/optimized-out at the pre-store stop:\n{text}"
     );
     let wrong_y = text.lines().any(|line| {
@@ -674,9 +646,64 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     // Post-store stop: the value is either honestly absent or the real 42 —
     // this fixture's codegen shape keeps it readable at the `y` return line.
     assert!(
-        text.contains("y = 42") || text.contains("= 42"),
+        after.contains("y = 42"),
         "post-store breakpoint must read the stored `y = 42`:\n{text}"
     );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
+    if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 4"),
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 7"),
+            "-o",
+            "run",
+            "-o",
+            "frame variable n x y",
+            "-o",
+            &format!("script print(\"{STOP_SPLIT}\")"),
+            // The line-4 breakpoint also matches the `.resume` re-entry PC;
+            // disable it so the next stop is the line-7 one.
+            "-o",
+            "breakpoint disable 1",
+            "-o",
+            "continue",
+            "-o",
+            "frame variable n x y",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("break {src}:4"),
+            "-ex",
+            &format!("break {src}:7"),
+            "-ex",
+            "run",
+            "-ex",
+            "info locals",
+            "-ex",
+            &format!("echo {STOP_SPLIT}\\n"),
+            "-ex",
+            "disable 1",
+            "-ex",
+            "continue",
+            "-ex",
+            "info locals",
+            bin,
+        ]);
+        command
+    }
 }
 
 /// Marker printed between the two debugger stops so each stop's reads can be

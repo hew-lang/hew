@@ -4,7 +4,7 @@
 //! from SIR ([`hew_mir::physical::PhysicalDebug`]). This module decides only
 //! how those facts are spelled as LLVM debug metadata.
 
-use super::{coro, CodegenResult, LlvmResultExt};
+use super::{coro, CodegenResult, LlvmResultExt, StorageId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,7 +23,7 @@ use inkwell::debug_info::{
     DebugInfoBuilder,
 };
 use inkwell::module::{FlagBehavior, Module};
-use inkwell::values::{FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
 const DW_ATE_BOOLEAN: u32 = 0x02;
@@ -109,6 +109,13 @@ pub(super) struct FunctionDebug<'ctx> {
     /// `(start, end, scope)` sorted innermost-first, so the first containing
     /// entry is the tightest scope around a byte.
     ranges: Vec<(u32, u32, u32)>,
+    locals: HashMap<StorageId, LocalValue<'ctx>>,
+}
+
+struct LocalValue<'ctx> {
+    variable: DILocalVariable<'ctx>,
+    location: DILocation<'ctx>,
+    anchor: PointerValue<'ctx>,
 }
 
 impl<'ctx> DebugEmitter<'ctx> {
@@ -221,6 +228,7 @@ impl<'ctx> DebugEmitter<'ctx> {
             subprogram,
             blocks: HashMap::new(),
             ranges: Vec::new(),
+            locals: HashMap::new(),
         };
         self.build_lexical_blocks(&mut function, attribution);
         function
@@ -329,6 +337,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         ty: &ResolvedTy,
         layout: &PhysicalLayout,
         target: &PhysicalTarget,
+        resumable: bool,
     ) -> Option<(DILocalVariable<'ctx>, DIScope<'ctx>, u32)> {
         let PhysicalDebugLocal {
             name,
@@ -337,7 +346,8 @@ impl<'ctx> DebugEmitter<'ctx> {
         } = local;
         let (decl, parameter) = (*decl, *parameter);
         let di_type = self.resolve_type(ty, layout, target)?;
-        if let Some(index) = parameter {
+        // A continuation body receives a frame pointer, not source parameters.
+        if let Some(index) = parameter.filter(|_| !resumable) {
             let line = self.lines.line(decl);
             let scope = function.subprogram.as_debug_info_scope();
             let variable = self.builder.create_parameter_variable(
@@ -374,11 +384,8 @@ impl<'ctx> DebugEmitter<'ctx> {
         variable: DILocalVariable<'ctx>,
         location: DILocation<'ctx>,
         block: inkwell::basic_block::BasicBlock<'ctx>,
-        indirect: bool,
     ) {
-        let expression = self
-            .builder
-            .create_expression(if indirect { vec![0x06] } else { vec![] });
+        let expression = self.builder.create_expression(vec![]);
         // WHY a raw call: on LLVM 19+ `LLVMDIBuilderInsertDeclareAtEnd` returns
         // a `DbgRecord`, and inkwell 0.9's safe wrapper casts that to an
         // `InstructionValue` whose `is_instruction()` assertion then panics even
@@ -397,6 +404,91 @@ impl<'ctx> DebugEmitter<'ctx> {
                 expression.as_mut_ptr(),
                 location.as_mut_ptr(),
                 block.as_mut_ptr(),
+            );
+        }
+    }
+
+    pub(super) fn local_value(
+        &self,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        value: BasicValueEnum<'ctx>,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> CodegenResult<()> {
+        let Some(local) = function.locals.get(&id) else {
+            return Ok(());
+        };
+        let builder = self.ctx.create_builder();
+        if let Some(terminator) = block.get_terminator() {
+            builder.position_before(&terminator);
+        } else {
+            builder.position_at_end(block);
+        }
+        builder
+            .build_store(local.anchor, value)
+            .llvm_ctx("retain current source local value")?;
+        self.value_record(
+            local.anchor.into(),
+            local.variable,
+            local.location,
+            block,
+            true,
+        );
+        Ok(())
+    }
+
+    fn value_record(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        variable: DILocalVariable<'ctx>,
+        location: DILocation<'ctx>,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+        indirect: bool,
+    ) {
+        let expression = self
+            .builder
+            .create_expression(if indirect { vec![0x06] } else { vec![] });
+        use inkwell::llvm_sys::debuginfo::{
+            LLVMDIBuilderInsertDbgValueRecordAtEnd, LLVMDIBuilderInsertDbgValueRecordBefore,
+        };
+        use inkwell::values::AsValueRef;
+        // SAFETY: the value, metadata and block belong to this live context.
+        unsafe {
+            if let Some(terminator) = block.get_terminator() {
+                LLVMDIBuilderInsertDbgValueRecordBefore(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    location.as_mut_ptr(),
+                    terminator.as_value_ref(),
+                );
+            } else {
+                LLVMDIBuilderInsertDbgValueRecordAtEnd(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    location.as_mut_ptr(),
+                    block.as_mut_ptr(),
+                );
+            }
+        }
+    }
+
+    pub(super) fn local_unavailable(
+        &self,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) {
+        if let Some(local) = function.locals.get(&id) {
+            self.value_record(
+                self.ctx.i8_type().get_undef().into(),
+                local.variable,
+                local.location,
+                block,
+                false,
             );
         }
     }
@@ -922,7 +1014,7 @@ fn type_name(ty: &ResolvedTy) -> String {
 pub(super) fn declare_locals<'ctx>(
     ctx: &'ctx Context,
     emitter: &DebugEmitter<'ctx>,
-    function_debug: &FunctionDebug<'ctx>,
+    function_debug: &mut FunctionDebug<'ctx>,
     attribution: &PhysicalDebugFunction,
     function: &PhysicalFunction,
     target: &PhysicalTarget,
@@ -937,9 +1029,14 @@ pub(super) fn declare_locals<'ctx>(
         let Some(slot) = slots.get(id.0 as usize) else {
             continue;
         };
-        let Some((variable, scope, line)) =
-            emitter.local_variable(function_debug, local, &storage.ty, &storage.layout, target)
-        else {
+        let Some((variable, scope, line)) = emitter.local_variable(
+            function_debug,
+            local,
+            &storage.ty,
+            &storage.layout,
+            target,
+            frame.is_some(),
+        ) else {
             continue;
         };
         let location = emitter.location_in(ctx, scope, line);
@@ -952,15 +1049,29 @@ pub(super) fn declare_locals<'ctx>(
                     .expect("frame dispatch exists"),
             );
             let anchor = builder
-                .build_alloca(ctx.ptr_type(AddressSpace::default()), "debug.local.address")
-                .llvm_ctx("allocate debug local address")?;
+                .build_alloca(
+                    super::llvm_type(ctx, &storage.layout.repr)?,
+                    "debug.local.value",
+                )
+                .llvm_ctx("allocate source local value")?;
             frame.stack(ctx, anchor)?;
-            builder
-                .build_store(anchor, *slot)
-                .llvm_ctx("anchor current local storage")?;
-            emitter.declare(anchor, variable, location, frame.allocations, true);
+            function_debug.locals.insert(
+                *id,
+                LocalValue {
+                    variable,
+                    location,
+                    anchor,
+                },
+            );
+            emitter.value_record(
+                ctx.i8_type().get_undef().into(),
+                variable,
+                location,
+                frame.allocations,
+                false,
+            );
         } else {
-            emitter.declare(*slot, variable, location, prologue, false);
+            emitter.declare(*slot, variable, location, prologue);
         }
     }
     Ok(())

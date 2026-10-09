@@ -3,13 +3,14 @@
 use super::{
     callable, capability, collection_type_arguments, encoding_format, partial, required_layout,
     sequence_element_type, suspend, verify_initialization, verify_operation_storage,
-    verify_terminator, wire, BTreeSet, BuiltinType, CloneAction, CloneKind, DestroyAction, OwnKind,
-    ParamCarrier, PhysicalAggregateGlue, PhysicalAggregateId, PhysicalError, PhysicalFunction,
-    PhysicalLayout, PhysicalMapGlue, PhysicalMapId, PhysicalModule, PhysicalRepr, PhysicalSetGlue,
-    PhysicalSetId, PhysicalSharedGlue, PhysicalSharedId, PhysicalStorage, PhysicalStructuralId,
-    PhysicalStructuralShape, PhysicalValueRecipe, PhysicalVariantCase, PhysicalVariantGlue,
-    PhysicalVariantId, PhysicalVectorGlue, PhysicalVectorId, ResolvedTy, SemParamPassing,
-    StorageId, StorageOrigin, TypeInstanceKey,
+    verify_terminator, wire, BTreeMap, BTreeSet, BuiltinType, CloneAction, CloneKind,
+    DestroyAction, OwnKind, ParamCarrier, PhysicalAggregateGlue, PhysicalAggregateId,
+    PhysicalError, PhysicalFunction, PhysicalLayout, PhysicalMapGlue, PhysicalMapId,
+    PhysicalModule, PhysicalRepr, PhysicalSetGlue, PhysicalSetId, PhysicalSharedGlue,
+    PhysicalSharedId, PhysicalStorage, PhysicalStructuralId, PhysicalStructuralShape,
+    PhysicalValueRecipe, PhysicalVariantCase, PhysicalVariantGlue, PhysicalVariantId,
+    PhysicalVectorGlue, PhysicalVectorId, ResolvedTy, SemParamPassing, StorageId, StorageOrigin,
+    TypeInstanceKey,
 };
 
 pub(crate) fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
@@ -145,7 +146,9 @@ pub(crate) fn verify_structural_glue(module: &PhysicalModule) -> Result<(), Phys
     Ok(())
 }
 
-pub(crate) fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
+pub(crate) fn verify_physical_module(
+    module: &PhysicalModule,
+) -> Result<BTreeMap<super::CallableId, super::PhysicalDebugAvailability>, PhysicalError> {
     capability::verify(module)?;
     wire::verify_actor_codecs(module)?;
     verify_resources(module)?;
@@ -209,6 +212,7 @@ pub(crate) fn verify_physical_module(module: &PhysicalModule) -> Result<(), Phys
         }
     }
     let mut function_ids = BTreeSet::new();
+    let mut availability = BTreeMap::new();
     for function in &module.functions {
         if !function_ids.insert(function.callable) {
             return Err(PhysicalError::new(format!(
@@ -216,7 +220,10 @@ pub(crate) fn verify_physical_module(module: &PhysicalModule) -> Result<(), Phys
                 function.callable.0
             )));
         }
-        verify_physical_function(module, function)?;
+        availability.insert(
+            function.callable,
+            verify_physical_function(module, function)?,
+        );
     }
     if module
         .test_entries
@@ -226,7 +233,7 @@ pub(crate) fn verify_physical_module(module: &PhysicalModule) -> Result<(), Phys
         return Err(PhysicalError::new("test dispatcher callable has no body"));
     }
     suspend::verify_callables(module)?;
-    Ok(())
+    Ok(availability)
 }
 
 pub(crate) fn verify_environment_glue(module: &PhysicalModule) -> Result<(), PhysicalError> {
@@ -635,7 +642,7 @@ pub(crate) fn verify_variant_glue(
 pub(crate) fn verify_physical_function(
     module: &PhysicalModule,
     function: &PhysicalFunction,
-) -> Result<(), PhysicalError> {
+) -> Result<super::PhysicalDebugAvailability, PhysicalError> {
     suspend::verify_task_scopes(function)?;
     let callable = module
         .callables
@@ -733,7 +740,7 @@ pub(crate) fn verify_physical_function(
     // Compute the suffix facts once, retaining any error. Initialization keeps
     // its existing diagnostic priority over stale physical cleanup sites.
     let needs_fault = partial::verify_trap_cleanup_refinement(function);
-    verify_initialization(module, function, needs_fault.as_ref().ok())?;
+    let availability = verify_initialization(module, function, needs_fault.as_ref().ok())?;
     for block in &function.blocks {
         for (index, operation) in block.ops.iter().enumerate() {
             partial::verify_cleanup_site(function, operation, (block.id, index))?;
@@ -745,7 +752,7 @@ pub(crate) fn verify_physical_function(
             "physical frame storage differs from its suspension and dependency contract",
         ));
     }
-    Ok(())
+    Ok(availability)
 }
 
 pub(crate) fn storage(

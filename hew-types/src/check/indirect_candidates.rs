@@ -10,6 +10,35 @@ use crate::DeclarationKind;
 use hew_parser::ast::{CallArg, Expr, Ident, Span, Spanned};
 
 impl Checker {
+    /// Provenance tracks callables and task handles. Scalar values and their
+    /// concrete collection shapes cannot carry either; abstract and nominal
+    /// values remain conservative because their members may do so.
+    fn type_may_carry_value_candidates(ty: &crate::Ty) -> bool {
+        match ty {
+            crate::Ty::String | crate::Ty::Bytes => false,
+            crate::Ty::Tuple(items) => items.iter().any(Self::type_may_carry_value_candidates),
+            crate::Ty::Array(item, _) | crate::Ty::Slice(item) => {
+                Self::type_may_carry_value_candidates(item)
+            }
+            crate::Ty::Named { head, args }
+                if matches!(
+                    head.builtin(),
+                    Some(
+                        crate::BuiltinType::Option
+                            | crate::BuiltinType::Result
+                            | crate::BuiltinType::Vec
+                            | crate::BuiltinType::HashMap
+                            | crate::BuiltinType::HashSet
+                    )
+                ) =>
+            {
+                args.iter().any(Self::type_may_carry_value_candidates)
+            }
+            ty if ty.is_primitive() => false,
+            _ => true,
+        }
+    }
+
     /// Read the selected declaration or lexical binding at the authored
     /// expression. An absent row is opaque; a spelling is never a candidate.
     fn resolved_callable_candidate(&self, span: &Span) -> IndirectCallCandidates {
@@ -42,10 +71,18 @@ impl Checker {
         expr: &Expr,
         span: &Span,
     ) -> IndirectCallCandidates {
-        if let Some(candidates) = self
-            .expression_value_candidates
-            .get(&SpanKey::in_module(span, self.current_module_idx))
-        {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if self.expr_types.get(&key).is_some_and(|ty| {
+            !Self::type_may_carry_value_candidates(
+                &self.subst.resolve(ty).materialize_literal_defaults(),
+            )
+        }) {
+            return IndirectCallCandidates {
+                known: Vec::new(),
+                may_be_unknown: false,
+            };
+        }
+        if let Some(candidates) = self.expression_value_candidates.get(&key) {
             return candidates.clone();
         }
 

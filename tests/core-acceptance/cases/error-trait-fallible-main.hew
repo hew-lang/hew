@@ -10,8 +10,7 @@ impl Display for ParseFailure {
 
 // `Error` inherits `Display`, so this impl is what obliges `ParseFailure` to
 // render; the failing `main` below prints through that rendering.
-impl Error for ParseFailure {
-}
+impl Error for ParseFailure {}
 
 fn parse(text: string) -> i64 fails ParseFailure {
     if text == "" {
@@ -20,10 +19,9 @@ fn parse(text: string) -> i64 fails ParseFailure {
     return text.len();
 }
 
-fn main() -> Result<(), ParseFailure> {
+fn main() fails ParseFailure {
     let width = parse("hello")?;
     println(f"width={width}");
     let missing = parse("")?;
     println(f"unreachable={missing}");
-    .Ok(())
 }

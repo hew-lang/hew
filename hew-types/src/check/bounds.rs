@@ -461,6 +461,47 @@ impl Checker {
             .is_some_and(|target| self.type_implements_trait(&target, trait_id))
     }
 
+    /// Whether an impl of `trait_id`, or of a trait extending it, filed
+    /// under `ty`'s head names `ty` itself: `impl Display for Wrap<string>`
+    /// does not render a `Wrap<i64>`. A type with no arguments, or one whose
+    /// head files no impl (an alias answers through its target), is decided
+    /// by the head alone.
+    pub(in crate::check) fn an_impl_head_admits(
+        &mut self,
+        ty: &Ty,
+        trait_id: crate::DefId,
+    ) -> bool {
+        let Ty::Named { args, .. } = ty else {
+            return true;
+        };
+        if args.is_empty() {
+            return true;
+        }
+        let Some(key) = Self::impl_self_key(ty) else {
+            return true;
+        };
+        let rows: Vec<TraitImplArgs> = self
+            .trait_impls
+            .iter()
+            .filter(|((implemented, declared), _)| {
+                *implemented == key
+                    && (*declared == trait_id || self.trait_extends(*declared, trait_id))
+            })
+            .flat_map(|(_, rows)| rows.iter().cloned())
+            .collect();
+        if rows.is_empty() {
+            return true;
+        }
+        rows.iter().any(|row| {
+            let opened = std::cell::RefCell::new(HashMap::new());
+            let target = super::coerce::open_type_params(&row.target, &opened);
+            let snapshot = self.subst.snapshot();
+            let matched = self.try_unify_with_owner_identity(&target, ty);
+            self.subst.restore(snapshot);
+            matched
+        })
+    }
+
     /// Whether `ty` has a declared impl of `bound`'s trait at `bound`'s
     /// arguments. A generic impl matches with its binders opened.
     pub(in crate::check) fn type_implements_trait_ref(

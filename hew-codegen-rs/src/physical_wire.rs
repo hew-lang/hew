@@ -29,7 +29,13 @@ fn runtime<'ctx>(
         || values.ctx.void_type().fn_type(&params, false),
         |ty| ty.fn_type(&params, false),
     );
-    let function = get_or_declare_external(values.llvm, name, signature)?;
+    // The codec runtime takes every Boolean and flag as a C `i8`.
+    let widen = (0_u32..)
+        .zip(args)
+        .filter(|(_, arg)| arg.get_type() == values.ctx.i8_type().into())
+        .map(|(index, _)| (index, Widen::Sign))
+        .collect::<Vec<_>>();
+    let function = get_or_declare_external_widened(values.llvm, name, signature, &widen)?;
     let args = args.iter().copied().map(Into::into).collect::<Vec<_>>();
     let call = values
         .builder
@@ -884,7 +890,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
     fn finish(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         if let Some(frame) = &self.frame {
             let pointer = self.values.ctx.ptr_type(AddressSpace::default());
-            let finish = coro::external(
+            let finish = get_or_declare_external(
                 self.values.llvm,
                 "hew_coro_state_finish",
                 self.values

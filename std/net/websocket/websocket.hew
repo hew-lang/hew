@@ -168,9 +168,9 @@ impl ConnMethods for Conn {
     fn recv(self) -> Result<Option<Message>, net.NetError> {
         next_message(self, -1)
     }
-    fn recv_timeout(self, timeout: duration) -> Result<Option<Message>, net.NetError> {
+    fn recv_timeout(self, timeout: duration) -> Option<Message> fails net.NetError {
         let ms = net.duration_ms("websocket.Conn.recv_timeout", timeout.millis())?;
-        next_message(self, ms)
+        next_message(self, ms)?
     }
     /// Compiler-lowered active-mode attach.
     ///
@@ -319,10 +319,10 @@ pub fn last_error() -> string {
 ///     }
 /// }
 /// ```
-pub fn connect(url: string, options: ConnectOptions) -> Result<Conn, net.NetError> {
+pub fn connect(url: string, options: ConnectOptions) -> Conn fails net.NetError {
     for protocol in options.subprotocols {
         if protocol.is_empty() || protocol.contains(",") || protocol.contains(" ") {
-            return .Err(net.NetError.InvalidArgument(f"websocket.connect: subprotocol {protocol:?} is not a token"));
+            return error net.NetError.InvalidArgument(f"websocket.connect: subprotocol {protocol:?} is not a token");
         }
     }
     let handshake_ms = net.duration_ms("websocket.connect handshake_timeout", options.tls.handshake_timeout.millis())?;
@@ -338,9 +338,9 @@ pub fn connect(url: string, options: ConnectOptions) -> Result<Conn, net.NetErro
     if unsafe {
         hew_ws_conn_is_valid(conn)
     } {
-        return .Ok(conn);
+        return conn;
     }
-    .Err(last_net_error())
+    return error last_net_error();
 }
 
 /// Start a WebSocket server listening on the given address.

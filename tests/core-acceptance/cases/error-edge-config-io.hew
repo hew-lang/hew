@@ -18,8 +18,7 @@ impl Display for ConfigError {
     }
 }
 
-impl Error for ConfigError {
-}
+impl Error for ConfigError {}
 
 impl From<fs.IoError> for ConfigError {
     fn from(value: fs.IoError) -> ConfigError {

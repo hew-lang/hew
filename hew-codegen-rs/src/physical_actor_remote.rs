@@ -89,7 +89,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let (wrapper, size) = self.remote_request(handler, payload)?;
         let waker = call_value(
             &self.builder,
-            coro::external(
+            get_or_declare_external(
                 self.llvm,
                 "hew_coro_state_waker",
                 ptr.fn_type(&[ptr.into()], false),
@@ -107,7 +107,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     })
             })
             .transpose()?;
-        let start = coro::external(
+        let start = get_or_declare_external(
             self.llvm,
             "hew_remote_call_new",
             ptr.fn_type(
@@ -205,7 +205,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .llvm_ctx("allocate remote reply")
             })
             .transpose()?;
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             "hew_remote_call_take",
             i32_ty.fn_type(&[ptr.into(), ptr.into()], false),
@@ -263,7 +263,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ptr_sized_int_type(&TargetData::create(&self.module.target.data_layout), None);
         let i32_ty = self.ctx.i32_type();
         let (wrapper, size) = self.remote_request(handler, *payload)?;
-        let send = coro::external(
+        let send = get_or_declare_external(
             self.llvm,
             "hew_node_api_send_location",
             i32_ty.fn_type(
@@ -326,7 +326,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .build_int_z_extend_or_bit_cast(tag, self.ctx.i64_type(), "link.policy")
                     .llvm_ctx("widen link policy")?;
                 self.clear_owned(*policy)?;
-                let link = coro::external(
+                let link = get_or_declare_external(
                     self.llvm,
                     "hew_node_link_remote_location",
                     i32_ty.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
@@ -350,7 +350,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let id = entry
                     .build_alloca(self.ctx.i64_type(), "monitor.remote.id")
                     .llvm_ctx("allocate remote monitor identity")?;
-                let monitor = coro::external(
+                let monitor = get_or_declare_external(
                     self.llvm,
                     "hew_node_monitor_location",
                     i32_ty.fn_type(&[ptr.into(), ptr.into()], false),

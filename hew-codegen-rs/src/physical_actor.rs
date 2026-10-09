@@ -195,7 +195,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .map_or(ptr.const_null(), |function| {
                 function.as_global_value().as_pointer_value()
             });
-        let reply = coro::external(
+        let reply = get_or_declare_external(
             &self.llvm,
             "hew_actor_reply_native",
             ptr.fn_type(&[ptr.into(), size_ty.into(), ptr.into(), ptr.into()], false),
@@ -274,7 +274,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         };
         let inspect = self.ctx.append_basic_block(function, "reply.oneway");
         let raise = self.ctx.append_basic_block(function, "reply.unhandled");
-        let channel = coro::external(&self.llvm, "hew_get_reply_channel", ptr.fn_type(&[], false))?;
+        let channel =
+            get_or_declare_external(&self.llvm, "hew_get_reply_channel", ptr.fn_type(&[], false))?;
         let channel = call_value(builder, channel, &[], "reply.channel")?.into_pointer_value();
         let one_way = builder
             .build_is_null(channel, "reply.oneway.test")
@@ -1302,7 +1303,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     "handler.frame",
                 )?
                 .into_pointer_value();
-                let is_done = coro::external(
+                let is_done = get_or_declare_external(
                     &self.llvm,
                     "hew_cont_done",
                     self.ctx.bool_type().fn_type(&[ptr.into()], false),
@@ -1421,7 +1422,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(ramp, "entry"));
-        let new_state = coro::external(
+        let new_state = get_or_declare_external(
             &self.llvm,
             "hew_actor_coro_state_new",
             ptr.fn_type(&[], false),
@@ -1493,7 +1494,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             )?;
         }
         self.emit_actor_reply(&builder, ramp, actor, handler, output, fault, Some(&frame))?;
-        let free_state = coro::external(
+        let free_state = get_or_declare_external(
             &self.llvm,
             "hew_coro_state_free",
             self.ctx.void_type().fn_type(&[ptr.into()], false),
@@ -1504,7 +1505,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let returned_fault = builder
             .build_load(ptr, fault, "handler.returned.fault")
             .llvm_ctx("read completed handler fault")?;
-        let publish = coro::external(
+        let publish = get_or_declare_external(
             &self.llvm,
             "hew_actor_coro_set_fault",
             self.ctx.void_type().fn_type(&[ptr.into()], false),
@@ -1626,7 +1627,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .builder
                     .build_extract_value(role, 1, "lifecycle.role.slot")
                     .llvm_ctx("read nested role slot")?;
-                let request = coro::external(
+                let request = get_or_declare_external(
                     self.llvm,
                     "hew_supervisor_native_role_request",
                     self.ctx.void_type().fn_type(
@@ -1673,7 +1674,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ) => "hew_supervisor_terminate_native",
                     _ => unreachable!("lifecycle operation selected above"),
                 };
-                let request = coro::external(
+                let request = get_or_declare_external(
                     self.llvm,
                     symbol,
                     self.ctx
@@ -1752,7 +1753,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 })?;
                 let target = TargetData::create(&self.module.target.data_layout);
                 let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-                let token = coro::external(
+                let token = get_or_declare_external(
                     self.llvm,
                     "hew_actor_self_token",
                     size_ty.fn_type(&[], false),
@@ -1866,7 +1867,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             || self.ctx.void_type().fn_type(&types, false),
             |ty| ty.fn_type(&types, false),
         );
-        let function = coro::external(self.llvm, symbol, function_type)?;
+        let function = get_or_declare_external(self.llvm, symbol, function_type)?;
         if return_type.is_none() {
             self.builder
                 .build_call(function, &args, "")

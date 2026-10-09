@@ -36,10 +36,7 @@ pub fn resolve_runner(project_dir: &Path) -> Result<PathBuf, String> {
         })
 }
 
-pub(super) fn compile_test(
-    tests: &[&TestCase],
-    project_dir: &Path,
-) -> Result<CompiledTestArtifact, String> {
+pub(super) fn compile_test(tests: &[&TestCase]) -> Result<CompiledTestArtifact, String> {
     let test = tests
         .first()
         .ok_or("VM test file has no selected entries")?;
@@ -48,6 +45,12 @@ pub(super) fn compile_test(
         .map_err(|error| format!("cannot read {}: {error}", source_path.display()))?;
     let selections = tests.iter().map(|test| test.occurrence).collect::<Vec<_>>();
     let companion = test.companion.as_deref().map(Path::new);
+    // The test file's own package, wherever `hew test` was run from.
+    let source_dir = source_path.parent().unwrap_or(Path::new("."));
+    let project_dir = source_dir
+        .ancestors()
+        .find(|dir| dir.join("hew.toml").is_file())
+        .unwrap_or(source_dir);
     let output = hew_wasm::sandbox::compile_tests_to_sandbox_bytecode(
         &source,
         source_path,

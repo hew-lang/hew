@@ -1,0 +1,16 @@
+gen fn lines(limit: i64) -> string fails string {
+    for i in 0..limit {
+        if i == 3 {
+            return error "corrupt";
+        }
+        yield f"line {i}";
+    }
+}
+
+fn main() {
+    // Each item of a failing generator is a `Result`: it is not the line.
+    for item in lines(5) {
+        let line: string = item;
+        println(line);
+    }
+}

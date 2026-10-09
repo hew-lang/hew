@@ -1,9 +1,9 @@
 //! Named and aliased actor imports must retain their declaration identity when
 //! used as supervised children.
 
-import tests.hew.imported_supervisor_named_binding_support.worker.{Worker};
+import imported_supervisor_named_binding_support.worker.{Worker};
 
-import tests.hew.imported_supervisor_named_binding_support.worker.{Worker as Renamed};
+import imported_supervisor_named_binding_support.worker.{Worker as Renamed};
 
 supervisor DirectPool {
     strategy: one_for_one;

@@ -84,8 +84,13 @@ impl DiscoveredTestFile {
 #[must_use]
 pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
     let mut tests = Vec::new();
-    let companion = hew_compile::test_companion(std::path::Path::new(file))
-        .map(|companion| companion.display().to_string());
+    let path = std::path::Path::new(file);
+    let companion = hew_compile::module_membership(path, &hew_compile::FrontendOptions::default())
+        .and_then(|membership| {
+            membership
+                .test_companion(&path.canonicalize().ok()?)
+                .map(|companion| companion.display().to_string())
+        });
     for declaration in hew_analysis::test_discovery::discover_tests(program) {
         tests.push(TestCase {
             name: declaration.name,

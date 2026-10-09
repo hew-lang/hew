@@ -22,7 +22,7 @@ pub fn lower_program_with_mono_cap(
     target_arch: TargetArch,
 ) -> LowerOutput {
     let program = type_check_output
-        .normalized_machines
+        .normalized_program
         .as_ref()
         .map_or(program, |normalized| &normalized.program);
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);

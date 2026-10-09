@@ -5,7 +5,7 @@
 //! exercises direct construction, matching, transition, calls, returns, and a
 //! record field while its heap string makes the clone/drop path observable.
 
-import tests.hew.imported_machine_support.machine_defs;
+import imported_machine_support.machine_defs;
 
 type Envelope {
     value: machine_defs.PayloadLifecycle;

@@ -14,7 +14,7 @@ actor DocHolder {
             .Ok(node) => {
                 doc = DocState.Loaded(node);
             }
-            .Err(message) => {
+            .Err(.Malformed(message)) => {
                 doc = DocState.Broken(message);
             }
         }

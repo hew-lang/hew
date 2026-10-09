@@ -463,9 +463,8 @@ fn check_threads_pkg_path_and_project_dir_options() {
         "[package]\nname = \"app\"\n",
     )
     .expect("write manifest");
-    fs::create_dir(project.path().join("src")).expect("create src");
     fs::write(
-        project.path().join("src/helper.hew"),
+        project.path().join("helper.hew"),
         "pub fn answer() -> i64 { 42 }\n",
     )
     .expect("write helper");

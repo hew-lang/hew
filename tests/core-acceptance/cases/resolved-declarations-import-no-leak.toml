@@ -8,7 +8,7 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "UndefinedFunction"
-file = "resolved-declarations-import-scope/src/unbound/peer.hew"
+file = "resolved-declarations-import-scope/unbound/peer.hew"
 line = 2
 column = 5
 message = "undefined function `label`"

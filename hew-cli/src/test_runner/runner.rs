@@ -191,7 +191,7 @@ pub struct TestCompilePaths {
 
 impl TestCompilePaths {
     /// Resolve the standard library and runtime archive before scheduling work.
-    pub fn resolve(project_dir: &Path) -> Result<Self, String> {
+    pub fn resolve() -> Result<Self, String> {
         let module_search_paths = hew_types::module_registry::stdlib_search_paths();
         let target = crate::target::TargetSpec::from_requested(None)
             .map_err(|error| format!("cannot determine the host target: {error}"))?;
@@ -200,18 +200,10 @@ impl TestCompilePaths {
             target.normalized_triple(),
             target.can_run_on_host(),
         )?;
-        Self::from_explicit(
-            project_dir.to_path_buf(),
-            module_search_paths,
-            PathBuf::from(hew_lib),
-        )
+        Self::from_explicit(module_search_paths, PathBuf::from(hew_lib))
     }
 
-    fn from_explicit(
-        project_dir: PathBuf,
-        module_search_paths: Vec<PathBuf>,
-        hew_lib: PathBuf,
-    ) -> Result<Self, String> {
+    fn from_explicit(module_search_paths: Vec<PathBuf>, hew_lib: PathBuf) -> Result<Self, String> {
         let has_stdlib = module_search_paths
             .iter()
             .any(|root| root.join("std/builtins.hew").is_file());
@@ -240,7 +232,6 @@ impl TestCompilePaths {
             .map_err(|error| format!("cannot determine the host target: {error}"))?;
         Ok(Self {
             paths: crate::NativeBuildPaths {
-                project_dir,
                 module_search_paths,
                 hew_lib,
             },
@@ -258,7 +249,6 @@ pub struct TestRunOptions<'a> {
     pub filter: Option<&'a str>,
     pub include_ignored: bool,
     pub compile_paths: Option<&'a TestCompilePaths>,
-    pub project_dir: &'a Path,
     pub engine: crate::args::TestEngine,
     pub vm_runner: Option<&'a Path>,
     pub step_budget: u64,
@@ -756,7 +746,7 @@ fn compile_test(
         return Err("selected test entries span multiple source files".into());
     }
     if options.engine == crate::args::TestEngine::Vm {
-        return super::vm::compile_test(tests, options.project_dir);
+        return super::vm::compile_test(tests);
     }
     let compile_paths = options
         .compile_paths
@@ -775,7 +765,6 @@ fn compile_test(
         .target
         .executable_path(emit_dir.path(), binary_name);
     let options = crate::compile::CompileOptions {
-        project_dir: Some(compile_paths.paths.project_dir.clone()),
         module_search_paths: Some(compile_paths.paths.module_search_paths.clone()),
         test_entry_selections: tests.iter().map(|test| test.occurrence).collect(),
         deterministic_admission: hew_compile::DeterministicAdmission::Tests(
@@ -1341,7 +1330,7 @@ mod tests {
             let hew_lib = test_toolchain_lib()
                 .expect("require_codegen must gate every caller of this helper")
                 .clone();
-            TestCompilePaths::from_explicit(workspace_root.clone(), vec![workspace_root], hew_lib)
+            TestCompilePaths::from_explicit(vec![workspace_root], hew_lib)
                 .expect("the serialized toolchain build should provide test compiler paths")
         })
     }
@@ -1352,12 +1341,8 @@ mod tests {
         let archive = dir.path().join("libhew.a");
         std::fs::write(&archive, []).expect("create archive fixture");
 
-        let error = TestCompilePaths::from_explicit(
-            dir.path().to_path_buf(),
-            vec![dir.path().to_path_buf()],
-            archive,
-        )
-        .expect_err("a root without std/builtins.hew must fail");
+        let error = TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive)
+            .expect_err("a root without std/builtins.hew must fail");
 
         assert!(error.contains("standard library"), "error: {error}");
         assert!(error.contains("std/builtins.hew"), "error: {error}");
@@ -1370,12 +1355,9 @@ mod tests {
         std::fs::write(dir.path().join("std/builtins.hew"), []).expect("create builtins fixture");
         let archive = dir.path().join("missing-libhew.a");
 
-        let error = TestCompilePaths::from_explicit(
-            dir.path().to_path_buf(),
-            vec![dir.path().to_path_buf()],
-            archive.clone(),
-        )
-        .expect_err("a missing runtime archive must fail");
+        let error =
+            TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive.clone())
+                .expect_err("a missing runtime archive must fail");
 
         assert!(error.contains("runtime archive"), "error: {error}");
         assert!(
@@ -1457,7 +1439,6 @@ mod tests {
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
-                project_dir: Path::new("/"),
                 engine: crate::args::TestEngine::Native,
                 vm_runner: None,
                 step_budget: 10_000_000,
@@ -1484,7 +1465,6 @@ mod tests {
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
-                project_dir: Path::new("/"),
                 engine: crate::args::TestEngine::Native,
                 vm_runner: None,
                 step_budget: 10_000_000,
@@ -1586,6 +1566,9 @@ fn selected_test() {
             return;
         }
         let dir = tempfile::tempdir().expect("create module fixture directory");
+        // A directory module belongs to a package (HEW-SPEC-2026 §3.5.1).
+        std::fs::write(dir.path().join("hew.toml"), "[package]\nname = \"app\"\n")
+            .expect("write manifest");
         let module = dir.path().join("greeting");
         std::fs::create_dir(&module).expect("create module directory");
         std::fs::write(
@@ -1892,7 +1875,6 @@ fn test_timeout() {
 
         let unused_paths = TestCompilePaths {
             paths: crate::NativeBuildPaths {
-                project_dir: PathBuf::new(),
                 module_search_paths: Vec::new(),
                 hew_lib: PathBuf::new(),
             },
@@ -1905,7 +1887,6 @@ fn test_timeout() {
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(&unused_paths),
-                project_dir: Path::new("/"),
                 engine: crate::args::TestEngine::Native,
                 vm_runner: None,
                 step_budget: 10_000_000,

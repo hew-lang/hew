@@ -9,7 +9,7 @@ fn _literal_text_passthrough_returns_unchanged() {
     let r = template.render("hello world", ctx);
     match r {
         .Ok(s) => assert(s == "hello world"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -19,7 +19,7 @@ fn _empty_template_returns_empty_string() {
     let r = template.render("", ctx);
     match r {
         .Ok(s) => assert(s == ""),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -31,7 +31,7 @@ fn _dot_key_string_substituted() {
     let r = template.render("Hello {{.name}}!", ctx);
     match r {
         .Ok(s) => assert(s == "Hello Alice!"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -42,7 +42,7 @@ fn _dot_key_int_substituted() {
     let r = template.render("count={{.count}}", ctx);
     match r {
         .Ok(s) => assert(s == "count=42"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -53,7 +53,7 @@ fn _dot_key_bool_true_substituted() {
     let r = template.render("flag={{.flag}}", ctx);
     match r {
         .Ok(s) => assert(s == "flag=true"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -63,7 +63,7 @@ fn _dot_key_missing_key_expands_to_empty() {
     let r = template.render("x={{.missing}}", ctx);
     match r {
         .Ok(s) => assert(s == "x="),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -75,7 +75,7 @@ fn _multiple_substitutions_in_one_template() {
     let r = template.render("{{.a}} and {{.b}}", ctx);
     match r {
         .Ok(s) => assert(s == "foo and bar"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -87,7 +87,7 @@ fn _if_true_branch_rendered() {
     let r = template.render("{{if .ok}}yes{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == "yes"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -98,7 +98,7 @@ fn _if_false_branch_suppressed() {
     let r = template.render("{{if .ok}}yes{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == ""),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -109,7 +109,7 @@ fn _if_else_true_branch_rendered() {
     let r = template.render("{{if .active}}on{{else}}off{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == "on"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -120,7 +120,7 @@ fn _if_else_false_branch_rendered() {
     let r = template.render("{{if .active}}on{{else}}off{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == "off"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -131,7 +131,7 @@ fn _if_surrounds_literal_text_correctly() {
     let r = template.render("A{{if .show}}B{{end}}C", ctx);
     match r {
         .Ok(s) => assert(s == "ABC"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -147,7 +147,7 @@ fn _range_non_empty_list_iterates_all_elements() {
     let r = template.render("{{range .xs}}[{{.}}]{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == "[a][b][c]"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -159,7 +159,7 @@ fn _range_empty_list_produces_no_output() {
     let r = template.render("{{range .xs}}X{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == ""),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -172,7 +172,7 @@ fn _range_dot_is_current_element() {
     let r = template.render("{{range .words}}{{.}}{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == "hello"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -185,7 +185,7 @@ fn _range_surrounds_literal_text_correctly() {
     let r = template.render("before{{range .xs}}{{.}}{{end}}after", ctx);
     match r {
         .Ok(s) => assert(s == "beforexafter"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -203,7 +203,7 @@ fn _nested_substitution_and_literal_in_range() {
     let r = template.render("{{range .parts}}{{.}}{{end}}", ctx);
     match r {
         .Ok(s) => assert(s == "onetwo"),
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"{e}"),
     }
 }
 
@@ -214,7 +214,7 @@ fn _malformed_unclosed_brace_returns_error() {
     let r = template.render("{{.name", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{"),
-        .Err(e) => assert(!e.is_empty()),
+        .Err(e) => assert(!f"{e}".is_empty()),
     }
 }
 
@@ -225,7 +225,7 @@ fn _malformed_unclosed_if_returns_error() {
     let r = template.render("{{if .x}}body", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{if}}"),
-        .Err(e) => assert(!e.is_empty()),
+        .Err(e) => assert(!f"{e}".is_empty()),
     }
 }
 
@@ -238,7 +238,7 @@ fn _malformed_unclosed_range_returns_error() {
     let r = template.render("{{range .xs}}body", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{range}}"),
-        .Err(e) => assert(!e.is_empty()),
+        .Err(e) => assert(!f"{e}".is_empty()),
     }
 }
 
@@ -248,7 +248,7 @@ fn _malformed_dot_outside_range_returns_error() {
     let r = template.render("{{.}}", ctx);
     match r {
         .Ok(_) => panic("expected error for {{.}} outside range"),
-        .Err(e) => assert(!e.is_empty()),
+        .Err(e) => assert(!f"{e}".is_empty()),
     }
 }
 
@@ -258,7 +258,7 @@ fn _malformed_unexpected_end_returns_error() {
     let r = template.render("{{end}}", ctx);
     match r {
         .Ok(_) => panic("expected error for unexpected {{end}}"),
-        .Err(e) => assert(!e.is_empty()),
+        .Err(e) => assert(!f"{e}".is_empty()),
     }
 }
 
@@ -278,7 +278,7 @@ fn _test_render_rejects_a_duplicate_else_in_one_if() {
     let r = template.render("{{if .a}}A{{else}}B{{else}}C{{end}}", ctx);
     match r {
         .Ok(out) => panic(f"expected a duplicate else to be rejected, rendered `{out}`"),
-        .Err(e) => assert(e == "template: duplicate `{{else}}` in one `{{if}}`"),
+        .Err(e) => assert(f"{e}" == "template: duplicate `{{else}}` in one `{{if}}`"),
     }
 }
 

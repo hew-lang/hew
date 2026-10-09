@@ -1,0 +1,10 @@
+[[case]]
+id = "variant-edges"
+intent = "`?` and `return error` wrap an error in the one variant of the target enum that carries it alone, nested patterns reach the wrapped error, and a declared `From` takes precedence."
+source = "../../examples/sandbox-graduation/variant_edges.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "port: 8080\nhost: not a number: localhost\nuser: no setting named user\nlock: Store: Locked\nErr(Code: -2) Ok(3)\nErr(Note: noted: busy)\n"
+exit = 0

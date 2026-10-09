@@ -47,17 +47,13 @@ pub struct FrontendOptions {
     pub no_typecheck: bool,
     pub enable_wasm_target: bool,
     pub pkg_path: Option<PathBuf>,
-    /// Anchor the in-memory compile to a specific project directory, enabling
-    /// manifest-aware import resolution (local `src/` lookup, manifest dep
-    /// validation, lockfile) identical to `compile_file`.  When `None` the
-    /// old cwd-fallback with no manifest is used.
+    /// Select a project directory for manifest and lockfile resolution.
+    /// When unset, use the nearest manifest above the input file, or the
+    /// input's directory when it belongs to no package.
     pub project_dir: Option<PathBuf>,
-    /// Exact roots used to resolve standard-library and global modules.
-    ///
-    /// When unset, the frontend discovers roots from the source path, current
-    /// directory, and installed compiler layout. Synthetic in-process callers
-    /// should set this so resolution does not depend on the host process's
-    /// working directory or executable location.
+    /// Exact roots used to resolve `std.*` modules. When unset, use `HEW_STD`
+    /// or the standard library shipped with the compiler. In-memory hosts can
+    /// set these roots to match their retained source paths.
     pub module_search_paths: Option<Vec<PathBuf>>,
     /// Treat warning-severity diagnostics as hard errors.
     ///
@@ -139,7 +135,19 @@ impl DocumentSet {
         self.get(path).is_some()
     }
 
-    fn get(&self, path: &Path) -> Option<&str> {
+    /// The documents directly inside `dir`, so a host without a filesystem
+    /// lists a directory module's peers from the sources it was given.
+    fn files_in(&self, dir: &Path) -> Vec<PathBuf> {
+        self.sources
+            .keys()
+            .filter(|path| path.parent() == Some(dir))
+            .cloned()
+            .collect()
+    }
+
+    /// The recorded content of `path`, under its given or canonical spelling.
+    #[must_use]
+    pub fn get(&self, path: &Path) -> Option<&str> {
         if self.sources.is_empty() {
             return None;
         }
@@ -286,7 +294,7 @@ impl Session {
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<SessionOutput, SessionError> {
         let program = tco
-            .normalized_machines
+            .normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
         let mut lowered =
@@ -1186,12 +1194,22 @@ fn merge_prior_diagnostics(
     failure
 }
 
-#[must_use]
-pub fn validate_imports_against_manifest(
+/// The module imports of a package's root file that its manifest does not
+/// declare and nothing local supplies.
+///
+/// An import that resolves from the standard library, from the package's
+/// own name or beside the importing file needs no declaration; anything else
+/// must be a declared dependency, whether or not it is installed.
+fn undeclared_imports(
+    source_file: &Path,
     items: &[Spanned<Item>],
-    manifest_deps: &[String],
-    package_name: Option<&str>,
-) -> Vec<String> {
+    ctx: &ImportResolutionContext<'_>,
+) -> Result<Vec<String>, FrontendFailure> {
+    let Some(manifest_deps) = ctx.manifest_deps else {
+        return Ok(Vec::new());
+    };
+    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let anchor = importer_anchor(source_file, ctx, &std_roots)?;
     let mut errors = Vec::new();
     for (item, _) in items {
         let Item::Import(decl) = item else { continue };
@@ -1199,24 +1217,33 @@ pub fn validate_imports_against_manifest(
             continue;
         }
         let segments = import_segments(&decl.path);
-        let module_str = segments.join("::");
-        let source_module = segments.join(".");
-        if is_builtin_module(&module_str) {
-            continue;
-        }
-        if package_name.is_some_and(|pkg| segments.first().is_some_and(|seg| *seg == pkg)) {
-            continue;
-        }
-        if !manifest_deps
-            .iter()
-            .any(|dependency| dependency == &module_str || dependency == &source_module)
+        // The package's own name is local: a module it does not have is
+        // reported as not found, not as an undeclared dependency.
+        let names_own_package = matches!(&anchor,
+            hew_types::module_registry::ModuleAnchor::Package { name: Some(package), .. }
+                if package_relative(&decl.path, package).is_some());
+        if names_own_package
+            || is_builtin_module(&segments.join("::"))
+            || declares_dependency(Some(manifest_deps), &segments)
         {
+            continue;
+        }
+        let resolves_locally = module_candidates(&decl.path, source_file, &anchor, ctx, &std_roots)
+            .candidates
+            .iter()
+            .any(|entry| {
+                entry.2 != CandidateRoot::Dependency
+                    && resolve_module_candidate(ctx, &std_roots, entry)
+                        .is_ok_and(|found| found.is_some())
+            });
+        if !resolves_locally {
+            let source_module = segments.join(".");
             errors.push(format!(
                 "Error: module `{source_module}` is not declared in hew.toml\n  hint: add it with `hew add {source_module}`"
             ));
         }
     }
-    errors
+    Ok(errors)
 }
 
 fn is_builtin_module(module_path: &str) -> bool {
@@ -1432,20 +1459,6 @@ fn resolve_imports_internal(
     options: &FrontendOptions,
     diagnostics: &mut Vec<FrontendDiagnostic>,
 ) -> Result<(), FrontendFailure> {
-    if let Some(deps) = &project.manifest_deps {
-        let errs = validate_imports_against_manifest(
-            &program.items,
-            deps,
-            project.package_name.as_deref(),
-        );
-        if !errs.is_empty() {
-            return Err(FrontendFailure::new(
-                "undeclared dependencies",
-                errs.into_iter().map(FrontendDiagnostic::message).collect(),
-            ));
-        }
-    }
-
     inject_implicit_imports(&mut program.items, source);
 
     let input_path = Path::new(input);
@@ -1461,6 +1474,19 @@ fn resolve_imports_internal(
         module_search_paths: options.module_search_paths.as_deref(),
         documents: &options.documents,
     };
+    let input_canonical = input_path
+        .canonicalize()
+        .unwrap_or_else(|_| input_path.to_path_buf());
+    let undeclared = undeclared_imports(&input_canonical, &program.items, &import_ctx)?;
+    if !undeclared.is_empty() {
+        return Err(FrontendFailure::new(
+            "undeclared dependencies",
+            undeclared
+                .into_iter()
+                .map(FrontendDiagnostic::message)
+                .collect(),
+        ));
+    }
     let module_graph = build_module_graph_with_diagnostics(
         input_path,
         &mut program.items,
@@ -1952,54 +1978,168 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     hew_parser::module::ModulePath::new(segments)
 }
 
-/// The entry file of the directory module (spec 3.5.1) that `path` belongs
-/// to, when `path` is that module's entry or one of its peers.
-///
-/// A peer shares one namespace with its entry and siblings, and an entry is
-/// incomplete without its peers, so neither is a program of its own. Checking
-/// or migrating such a file checks the whole module as an importer sees it.
-/// Test files (`*_test.hew`) are never peers; see [`test_companion`]. A
-/// shipped std source already has its module identity from the std root, so
-/// it checks through that identity instead.
-#[must_use]
-pub fn directory_module_entry(path: &Path) -> Option<PathBuf> {
-    let path = path.canonicalize().ok()?;
-    if path.extension()? != "hew"
-        || is_hew_test_file(&path)
-        || hew_types::module_registry::canonical_stdlib_module_for_source(&path).is_some()
-    {
-        return None;
-    }
-    directory_module_entry_in(path.parent()?)
+/// The standard-library roots a run resolves `std.*` from, in the spelling
+/// resolved sources are compared in.
+fn stdlib_roots(module_search_paths: Option<&[PathBuf]>) -> Vec<PathBuf> {
+    module_search_paths
+        .map_or_else(
+            hew_types::module_registry::stdlib_search_paths,
+            <[PathBuf]>::to_vec,
+        )
+        .into_iter()
+        .map(|root| root.canonicalize().unwrap_or(root))
+        .collect()
 }
 
-/// The production source a test file (`*_test.hew`) is compiled with.
-///
-/// A test file inside a directory module tests that whole module, so its
-/// companion is the module's entry, which assembles every peer. Elsewhere it is
-/// the same-stem file beside it (`math_test.hew` tests `math.hew`).
-#[must_use]
-pub fn test_companion(test_file: &Path) -> Option<PathBuf> {
-    let test_file = test_file.canonicalize().ok()?;
-    if !is_hew_test_file(&test_file) {
-        return None;
+/// The module path a `[package] name` spells. A package name is a dotted
+/// module path (older manifests separate segments with `::`); the manifest is
+/// the one place it is read as text.
+fn package_module_path(name: &str) -> ModulePath {
+    ModulePath::new(
+        name.split("::")
+            .flat_map(|part| part.split('.'))
+            .filter(|segment| !segment.is_empty()),
+    )
+}
+
+/// The anchor of `file` (spec 3.5.1): the std root for a file under
+/// `<std root>/std/`, otherwise the nearest directory at or above the file
+/// holding `hew.toml`, otherwise none. A path that is not absolute names no
+/// file on disk (an editor or browser buffer) and has no package.
+fn anchor_for(
+    file: &Path,
+    std_roots: &[PathBuf],
+) -> Result<hew_types::module_registry::ModuleAnchor, FrontendFailure> {
+    use hew_types::module_registry::ModuleAnchor;
+    if let Some(anchor) = hew_types::module_registry::std_anchor_for(file, std_roots) {
+        return Ok(anchor);
     }
-    let dir = test_file.parent()?;
-    directory_module_entry_in(dir).or_else(|| {
-        let stem = test_file.file_stem()?.to_str()?.strip_suffix("_test")?;
-        dir.join(stem)
-            .with_extension("hew")
-            .canonicalize()
-            .ok()
-            .filter(|path| path.is_file())
+    let Some(dir) = file
+        .parent()
+        .filter(|_| file.is_absolute())
+        .and_then(|dir| dir.ancestors().find(|dir| dir.join("hew.toml").is_file()))
+    else {
+        return Ok(ModuleAnchor::Loose);
+    };
+    let name = load_manifest(dir)?
+        .and_then(|manifest| manifest.package)
+        .map(|package| package_module_path(&package.name));
+    Ok(ModuleAnchor::Package {
+        dir: dir.to_path_buf(),
+        name,
     })
 }
 
-/// The canonical entry file `dir/<dir>.hew` of the directory module `dir`,
-/// when it exists.
-fn directory_module_entry_in(dir: &Path) -> Option<PathBuf> {
-    let entry = dir.join(dir.file_name()?).with_extension("hew");
-    entry.canonicalize().ok().filter(|path| path.is_file())
+/// The anchor imports written in `file` resolve against. A file outside any
+/// package compiled with an explicit project (`--project-dir`, an editor
+/// workspace) imports as a member of that project's package.
+fn importer_anchor(
+    file: &Path,
+    ctx: &ImportResolutionContext<'_>,
+    std_roots: &[PathBuf],
+) -> Result<hew_types::module_registry::ModuleAnchor, FrontendFailure> {
+    use hew_types::module_registry::ModuleAnchor;
+    match anchor_for(file, std_roots)? {
+        ModuleAnchor::Loose => Ok(match ctx.package_name {
+            Some(name) => ModuleAnchor::Package {
+                dir: ctx.project_dir.to_path_buf(),
+                name: Some(package_module_path(name)),
+            },
+            None => ModuleAnchor::Loose,
+        }),
+        anchor => Ok(anchor),
+    }
+}
+
+/// The module `file` belongs to (spec 3.5.1), with directories listed from
+/// the filesystem and the open documents together.
+fn membership_of(
+    file: &Path,
+    std_roots: &[PathBuf],
+    documents: &DocumentSet,
+) -> Result<hew_types::module_registry::ModuleMembership, FrontendFailure> {
+    let anchor = anchor_for(file, std_roots)?;
+    let list_dir = |dir: &Path| {
+        let mut files = hew_types::module_registry::filesystem_dir_listing(dir);
+        for path in documents.files_in(dir) {
+            if !files.contains(&path) {
+                files.push(path);
+            }
+        }
+        files
+    };
+    Ok(hew_types::module_registry::module_membership(
+        &anchor, file, &list_dir,
+    ))
+}
+
+/// Which module the source file at `path` belongs to: the one answer the
+/// import resolver, `hew check`, the language server, `hew test` and
+/// migration share (spec 3.5.1). `None` when the file's manifest is invalid;
+/// a frontend run over it reports why.
+#[must_use]
+pub fn module_membership(
+    path: &Path,
+    options: &FrontendOptions,
+) -> Option<hew_types::module_registry::ModuleMembership> {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let std_roots = stdlib_roots(options.module_search_paths.as_deref());
+    membership_of(&path, &std_roots, &options.documents).ok()
+}
+
+/// The source file a module import written in `importer` names, from the
+/// import resolver's own search roots; `None` when nothing, or more than one
+/// file, answers. Editor navigation follows imports through this rather than
+/// a search of its own.
+#[must_use]
+pub fn resolve_module_import(
+    importer: &Path,
+    path: &hew_parser::ast::Path,
+    options: &FrontendOptions,
+) -> Option<PathBuf> {
+    if path.segments.is_empty() {
+        return None;
+    }
+    let importer = importer
+        .canonicalize()
+        .unwrap_or_else(|_| importer.to_path_buf());
+    let project_dir = options.project_dir.clone().unwrap_or_else(|| {
+        let dir = importer.parent().unwrap_or(Path::new("."));
+        dir.ancestors()
+            .find(|dir| dir.join("hew.toml").is_file())
+            .unwrap_or(dir)
+            .to_path_buf()
+    });
+    let (manifest_deps, package_name) = load_manifest_metadata(&project_dir).ok()?;
+    let locked_versions = load_lockfile(&project_dir).ok()?;
+    let ctx = ImportResolutionContext {
+        in_progress_imports: HashSet::new(),
+        resolved_imports: HashMap::new(),
+        manifest_deps: manifest_deps.as_deref(),
+        extra_pkg_path: options.pkg_path.as_deref(),
+        locked_versions: locked_versions.as_deref(),
+        package_name: package_name.as_deref(),
+        project_dir: &project_dir,
+        module_search_paths: options.module_search_paths.as_deref(),
+        documents: &options.documents,
+    };
+    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let anchor = anchor_for(&importer, &std_roots).ok()?;
+    let mut resolved = module_candidates(path, &importer, &anchor, &ctx, &std_roots)
+        .candidates
+        .iter()
+        .filter_map(|entry| {
+            resolve_module_candidate(&ctx, &std_roots, entry)
+                .ok()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    resolved.sort();
+    resolved.dedup();
+    let [found] = resolved.as_slice() else {
+        return None;
+    };
+    Some(found.clone())
 }
 
 /// How a requested file becomes the root of a frontend run.
@@ -2081,33 +2221,6 @@ fn run_directory_module_frontend(
     run_frontend_after_parse(state, &project, &label, options, None)
 }
 
-/// Resolve a module import of a directory peer through that directory's
-/// canonical entry file before parsing its source set. A peer such as
-/// `http_client.hew` is still a valid import spelling, but loading it as an
-/// independent source would omit the entry module and make the result depend
-/// on import order once both spellings canonicalise to one graph owner.
-fn canonical_directory_module_entry_source(source: &Path) -> PathBuf {
-    let Some(parent) = source.parent() else {
-        return source.to_path_buf();
-    };
-    let Some(directory_name) = parent.file_name().and_then(|name| name.to_str()) else {
-        return source.to_path_buf();
-    };
-    let Some(file_stem) = source.file_stem().and_then(|name| name.to_str()) else {
-        return source.to_path_buf();
-    };
-    if directory_name == file_stem {
-        return source.to_path_buf();
-    }
-
-    let entry = parent.join(format!("{directory_name}.hew"));
-    if entry.is_file() {
-        entry.canonicalize().unwrap_or(entry)
-    } else {
-        source.to_path_buf()
-    }
-}
-
 /// The shape a dotted import path was turned into a candidate file with: the
 /// directory form `a/b/b.hew` or the flat form `a/b.hew`. Which one a module
 /// resolved through is the only thing that separates the entry-file spelling of
@@ -2117,24 +2230,6 @@ fn canonical_directory_module_entry_source(source: &Path) -> PathBuf {
 enum CandidateForm {
     Directory,
     Flat,
-}
-
-/// Whether a module import named a directory module through its entry file
-/// rather than through the directory itself.
-///
-/// `pkg.dir.dir` matches the FLAT candidate `…/dir/dir.hew`, which is also the
-/// directory candidate of `pkg.dir` — one source under two spellings. Paths
-/// that repeat their last segment and still name a module of their own match a
-/// DIRECTORY candidate instead: `std.crypto.crypto` is
-/// `std/crypto/crypto/crypto.hew`, and a module named after its own package
-/// (`probe.probe` at `probe/src/probe/probe.hew`) resolves the same way.
-fn is_directory_module_entry_alias(path: &[&str], canonical: &Path, form: CandidateForm) -> bool {
-    let Some((last, rest)) = path.split_last() else {
-        return false;
-    };
-    form == CandidateForm::Flat
-        && rest.last() == Some(last)
-        && canonical.file_stem() == canonical.parent().and_then(Path::file_name)
 }
 
 /// The spelled segments of a module import path. Mapping a module path onto
@@ -2161,18 +2256,10 @@ fn canonical_direct_stdlib_module_for_source(
 /// A cycle where every module's entry file lives in the same directory is the
 /// directory-module shape described in spec 3.5.1 — the fix is to promote
 /// that directory to a directory module rather than importing between its
-/// files. Otherwise the fix is a shared module both sides import.
-///
-/// `manifest_project_dir` (a discovered `hew.toml` package root — `None` for
-/// a manifest-less standalone compile) and its `src` are excluded from that
-/// "shared directory" check even when every module happens to sit there:
-/// both are flat buckets the dotted-path resolver searches for otherwise-
-/// unrelated top-level modules (see the `candidates.push(ctx.project_dir...)`
-/// sites in `resolve_file_imports_internal`), not a private submodule
-/// directory a program ever imports as one unit — "make `src/src.hew` the
-/// entry" is not a real fix. A manifest-less compile has no such bucket: its
-/// `project_dir` fallback is just the entry file's own directory, which is a
-/// perfectly good directory-module candidate.
+/// files. That needs the directory to lie strictly below a package or std
+/// anchor: the anchor directory itself holds otherwise unrelated top-level
+/// modules, and a loose directory first needs a package. Otherwise the fix is
+/// a shared module both sides import.
 ///
 /// Falls back to the bare chain message (former behaviour) if a cycle member
 /// is missing from `graph` or its source file cannot be re-read; both should
@@ -2181,7 +2268,7 @@ fn canonical_direct_stdlib_module_for_source(
 fn cycle_error_to_frontend_failure(
     graph: &hew_parser::module::ModuleGraph,
     cycle_err: &hew_parser::module::CycleError,
-    manifest_project_dir: Option<&Path>,
+    std_roots: &[PathBuf],
     documents: &DocumentSet,
 ) -> FrontendFailure {
     let chain = cycle_err.to_string();
@@ -2225,20 +2312,27 @@ fn cycle_error_to_frontend_failure(
         && locations
             .windows(2)
             .all(|pair| pair[0].0.parent() == pair[1].0.parent());
-    let shared_dir_is_a_flat_root = manifest_project_dir.is_some_and(|project_dir| {
-        let project_src_dir = project_dir.join("src");
-        shared_dir == Some(project_dir) || shared_dir == Some(project_src_dir.as_path())
+    let anchor = anchor_for(&locations[0].0, std_roots)
+        .unwrap_or(hew_types::module_registry::ModuleAnchor::Loose);
+    let below_anchor = anchor.dir().is_some_and(|dir| {
+        shared_dir.is_some_and(|shared| shared != dir && shared.starts_with(dir))
     });
-    let help = if same_directory && !shared_dir_is_a_flat_root {
+    let is_loose = matches!(anchor, hew_types::module_registry::ModuleAnchor::Loose);
+    let help = if same_directory && (below_anchor || is_loose) {
         let dir_name = locations[0]
             .0
             .parent()
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             .unwrap_or("<dir>");
+        let package = if is_loose {
+            "; directory modules belong to a package, so run `hew init` first"
+        } else {
+            ""
+        };
         format!(
             "these modules share one directory; make `{dir_name}/{dir_name}.hew` the entry and \
-             let the others be peers (spec 3.5.1), then drop the imports between them"
+             let the others be peers (spec 3.5.1), then drop the imports between them{package}"
         )
     } else {
         "move the shared declarations into a module both sides import".to_string()
@@ -2270,7 +2364,7 @@ fn rewrite_direct_stdlib_module_root(
     module_graph: &mut hew_parser::module::ModuleGraph,
     items: &mut Vec<Spanned<Item>>,
     source_file: &Path,
-    manifest_project_dir: Option<&Path>,
+    std_roots: &[PathBuf],
     documents: &DocumentSet,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::Module;
@@ -2297,7 +2391,7 @@ fn rewrite_direct_stdlib_module_root(
         })
         .expect("synthetic floor-check root is unique");
     module_graph.compute_topo_order().map_err(|cycle_err| {
-        cycle_error_to_frontend_failure(module_graph, &cycle_err, manifest_project_dir, documents)
+        cycle_error_to_frontend_failure(module_graph, &cycle_err, std_roots, documents)
     })?;
     items.clear();
 
@@ -2349,11 +2443,10 @@ fn build_module_graph_with_diagnostics(
         .expect("root module id is unique");
 
     if let Err(cycle_err) = graph.compute_topo_order() {
-        let manifest_project_dir = ctx.package_name.is_some().then_some(ctx.project_dir);
         return Err(cycle_error_to_frontend_failure(
             &graph,
             &cycle_err,
-            manifest_project_dir,
+            &stdlib_roots(ctx.module_search_paths),
             ctx.documents,
         ));
     }
@@ -2366,7 +2459,7 @@ fn build_module_graph_with_diagnostics(
         &mut graph,
         items,
         &input_canonical,
-        ctx.package_name.is_some().then_some(ctx.project_dir),
+        &stdlib_roots(ctx.module_search_paths),
         ctx.documents,
     )?;
 
@@ -2766,6 +2859,369 @@ fn extract_module_info(
     imports
 }
 
+/// Where an import candidate comes from, in search order (spec 3.5.3).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CandidateRoot {
+    /// The standard-library root, for `std.*` imports only.
+    Std,
+    /// The importing file's own package, reached through its whole name.
+    Package,
+    /// The importing file's directory.
+    Relative,
+    /// An installed or locked dependency, or a `--pkg-path` root.
+    Dependency,
+}
+
+/// Every file one module import may name.
+struct ModuleCandidates {
+    candidates: Vec<(PathBuf, CandidateForm, CandidateRoot)>,
+    locked_project_candidates: Vec<(PathBuf, LockedPackageCheck)>,
+    installed_package_dir: Option<PathBuf>,
+}
+
+/// The part of an import path below the package `package`, when the path
+/// starts with the package's whole dotted name.
+fn package_relative<'p>(
+    path: &'p hew_parser::ast::Path,
+    package: &ModulePath,
+) -> Option<&'p [Spanned<hew_parser::ast::Ident>]> {
+    let prefix_len = package.segments.len();
+    (path.segments.len() >= prefix_len
+        && path
+            .segments
+            .iter()
+            .zip(&package.segments)
+            .all(|((segment, _), package_segment)| segment.name == *package_segment))
+    .then(|| &path.segments[prefix_len..])
+}
+
+/// Whether the manifest declares the dependency an import path names: the
+/// dependency itself or a module inside it.
+fn declares_dependency(manifest_deps: Option<&[String]>, segments: &[&str]) -> bool {
+    manifest_deps.is_some_and(|deps| {
+        deps.iter().any(|dependency| {
+            let declared = dependency
+                .split("::")
+                .flat_map(|part| part.split('.'))
+                .collect::<Vec<_>>();
+            segments.starts_with(&declared)
+        })
+    })
+}
+
+/// The directory form `a/b/c/c.hew` and flat form `a/b/c.hew` of a module
+/// path below `base`.
+fn module_forms(base: &Path, segments: &[&str]) -> [(PathBuf, CandidateForm); 2] {
+    let relative = segments.iter().collect::<PathBuf>();
+    let last = segments.last().copied().unwrap_or_default();
+    [
+        (
+            base.join(&relative).join(last).with_extension("hew"),
+            CandidateForm::Directory,
+        ),
+        (
+            base.join(relative.with_extension("hew")),
+            CandidateForm::Flat,
+        ),
+    ]
+}
+
+/// The files `import a.b.c` written in `importer` may name, in search order
+/// (spec 3.5.3):
+///
+/// 1. `std.*` resolves from the standard-library root only.
+/// 2. A path starting with the importing package's whole name resolves inside
+///    that package: the bare name is its root module `<leaf>.hew`.
+/// 3. Paths relative to the importing file's directory; the directory form
+///    only when the importer belongs to a package.
+/// 4. Dependencies, then the `--pkg-path`, `hew.` and `ecosystem.` roots.
+///
+/// The working directory and the std root are not searched for user modules.
+fn module_candidates(
+    path: &hew_parser::ast::Path,
+    importer: &Path,
+    anchor: &hew_types::module_registry::ModuleAnchor,
+    ctx: &ImportResolutionContext<'_>,
+    std_roots: &[PathBuf],
+) -> ModuleCandidates {
+    use hew_types::module_registry::ModuleAnchor;
+    let segments = import_segments(path);
+    let module_str = segments.join("::");
+    let mut out = ModuleCandidates {
+        candidates: Vec::new(),
+        locked_project_candidates: Vec::new(),
+        installed_package_dir: None,
+    };
+    let push = |candidates: &mut Vec<(PathBuf, CandidateForm, CandidateRoot)>,
+                forms: [(PathBuf, CandidateForm); 2],
+                root: CandidateRoot,
+                directory: bool| {
+        for (candidate, form) in forms {
+            if directory || form == CandidateForm::Flat {
+                candidates.push((candidate, form, root));
+            }
+        }
+    };
+
+    if module_str.starts_with("std::") {
+        for root in std_roots {
+            push(
+                &mut out.candidates,
+                module_forms(root, &segments),
+                CandidateRoot::Std,
+                true,
+            );
+        }
+        return out;
+    }
+
+    if let ModuleAnchor::Package {
+        dir,
+        name: Some(package),
+    } = anchor
+    {
+        if let Some(rest) = package_relative(path, package) {
+            if rest.is_empty() {
+                let leaf = package.segments.last().map_or("", |leaf| leaf.as_str());
+                out.candidates.push((
+                    dir.join(leaf).with_extension("hew"),
+                    CandidateForm::Flat,
+                    CandidateRoot::Package,
+                ));
+            } else {
+                let rest = rest
+                    .iter()
+                    .map(|(segment, _)| segment.name.as_str())
+                    .collect::<Vec<_>>();
+                push(
+                    &mut out.candidates,
+                    module_forms(dir, &rest),
+                    CandidateRoot::Package,
+                    true,
+                );
+            }
+        }
+    }
+
+    let importer_dir = importer.parent().unwrap_or(Path::new("."));
+    push(
+        &mut out.candidates,
+        module_forms(importer_dir, &segments),
+        CandidateRoot::Relative,
+        true,
+    );
+    if let ModuleAnchor::Package { dir, .. } = anchor {
+        if importer_dir != dir.as_path() {
+            push(
+                &mut out.candidates,
+                module_forms(dir, &segments),
+                CandidateRoot::Package,
+                true,
+            );
+        }
+    }
+
+    dependency_candidates(&mut out, &segments, ctx);
+    out
+}
+
+/// Step 4 of [`module_candidates`]: the project's installed and locked
+/// packages, then the `--pkg-path`, `hew.` and `ecosystem.` roots.
+fn dependency_candidates(
+    out: &mut ModuleCandidates,
+    segments: &[&str],
+    ctx: &ImportResolutionContext<'_>,
+) {
+    let module_str = segments.join("::");
+    let source_module = segments.join(".");
+    let [(dir_rel, _), (flat_rel, _)] = module_forms(Path::new(""), segments);
+    let module_dir = segments.iter().collect::<PathBuf>();
+    let packages = ctx.project_dir.join(".hew/packages");
+    let locked_version = ctx
+        .locked_versions
+        .and_then(|locked| {
+            locked
+                .iter()
+                .find(|(name, _)| name == &module_str || name == &source_module)
+        })
+        .map(|(_, version)| version.as_str());
+    if let Some(version) = locked_version {
+        let last = segments.last().copied().unwrap_or_default();
+        let versioned_rel = module_dir.join(version).join(last).with_extension("hew");
+        // The version directory sits between the module and its entry file,
+        // so this is a package root, never a flat file.
+        out.candidates.push((
+            packages.join(&versioned_rel),
+            CandidateForm::Directory,
+            CandidateRoot::Dependency,
+        ));
+        if let Some(pkg) = ctx.extra_pkg_path {
+            out.candidates.push((
+                pkg.join(&versioned_rel),
+                CandidateForm::Directory,
+                CandidateRoot::Dependency,
+            ));
+        }
+    }
+    out.candidates.push((
+        packages.join(&flat_rel),
+        CandidateForm::Flat,
+        CandidateRoot::Dependency,
+    ));
+    let project_package_dir = packages.join(&module_dir);
+    if declares_dependency(ctx.manifest_deps, segments) {
+        out.installed_package_dir = Some(project_package_dir.clone());
+    }
+    let project_package_entry = packages.join(&dir_rel);
+    if let Some(version) = locked_version {
+        out.locked_project_candidates.push((
+            project_package_entry.clone(),
+            LockedPackageCheck {
+                package_dir: project_package_dir,
+                name: source_module.clone(),
+                version: version.to_string(),
+            },
+        ));
+    }
+    out.candidates.push((
+        project_package_entry,
+        CandidateForm::Directory,
+        CandidateRoot::Dependency,
+    ));
+
+    if let Some(pkg) = ctx.extra_pkg_path {
+        out.candidates.extend(
+            module_forms(pkg, segments)
+                .into_iter()
+                .map(|(candidate, form)| (candidate, form, CandidateRoot::Dependency)),
+        );
+        // The `--pkg-path` root holds `hew.` and `ecosystem.` packages below
+        // their namespace, and others below their first segment.
+        if segments.len() > 1 {
+            out.candidates.extend(
+                module_forms(pkg, &segments[1..])
+                    .into_iter()
+                    .map(|(candidate, form)| (candidate, form, CandidateRoot::Dependency)),
+            );
+        }
+    }
+}
+
+/// Whether a module path repeats its last segment, the spelling that names a
+/// directory module's entry file (`pkg.dir.dir` for `pkg/dir/dir.hew`).
+fn repeats_last_segment(segments: &[&str]) -> bool {
+    matches!(segments, [.., parent, last] if parent == last)
+}
+
+/// The file a module-import candidate names, if it exists and the spelling
+/// may reach it. Beside the importer, the directory form `a/b/b.hew` names a
+/// module only when that file roots one: a directory module's entry, or a
+/// package directory's own `b.hew`. A loose `b/b.hew` is a file in a namespace
+/// directory, never a directory module (spec 3.5.1).
+fn resolve_module_candidate(
+    ctx: &ImportResolutionContext<'_>,
+    std_roots: &[PathBuf],
+    (candidate, form, root): &(PathBuf, CandidateForm, CandidateRoot),
+) -> Result<Option<PathBuf>, FrontendFailure> {
+    use hew_types::module_registry::{MembershipRole, ModuleAnchor};
+    let Some(canonical) = resolve_candidate(ctx.documents, candidate) else {
+        return Ok(None);
+    };
+    if *form == CandidateForm::Flat || *root != CandidateRoot::Relative {
+        return Ok(Some(canonical));
+    }
+    let membership = membership_of(&canonical, std_roots, ctx.documents)?;
+    let roots_a_module = membership.role == MembershipRole::Entry
+        || matches!(&membership.anchor, ModuleAnchor::Package { dir, .. }
+            if canonical.parent() == Some(dir.as_path()));
+    Ok(roots_a_module.then_some(canonical))
+}
+
+/// A positioned resolver diagnostic on the import at `span`, or a plain one
+/// when the importing file can no longer be read.
+fn import_failure(
+    ctx: &ImportResolutionContext<'_>,
+    source_file: &Path,
+    span: &Range<usize>,
+    code: &'static str,
+    message: String,
+) -> FrontendFailure {
+    match read_source(ctx.documents, source_file) {
+        Ok(module_source) => FrontendFailure::coded_message_at(
+            code,
+            message,
+            span.clone(),
+            &module_source,
+            &source_file.display().to_string(),
+        ),
+        Err(_) => FrontendFailure::coded_message(code, message),
+    }
+}
+
+/// Why a module import found nothing, beyond the paths it tried: a directory
+/// module beside a file that belongs to no package, or a module that sits in
+/// a parent directory of the importing file.
+fn module_not_found_hints(
+    importer: &Path,
+    anchor: &hew_types::module_registry::ModuleAnchor,
+    segments: &[&str],
+    ctx: &ImportResolutionContext<'_>,
+) -> String {
+    use hew_types::module_registry::ModuleAnchor;
+    let importer_dir = importer.parent().unwrap_or(Path::new("."));
+    let [(directory_form, _), (flat_form, _)] = module_forms(Path::new(""), segments);
+    let source_module = segments.join(".");
+    if matches!(anchor, ModuleAnchor::Loose)
+        && resolve_candidate(ctx.documents, &importer_dir.join(&directory_form)).is_some()
+    {
+        return format!(
+            "\n  note: {} forms a directory module, and directory modules belong to a package\n  \
+             help: run `hew init` in this directory, or import `{source_module}.{}` for the entry file alone",
+            display_path(&directory_form),
+            segments.last().copied().unwrap_or_default(),
+        );
+    }
+    let Some(found) = importer_dir.ancestors().skip(1).find_map(|dir| {
+        [&directory_form, &flat_form]
+            .into_iter()
+            .map(|form| dir.join(form))
+            .find(|candidate| resolve_candidate(ctx.documents, candidate).is_some())
+    }) else {
+        return String::new();
+    };
+    let help = match anchor {
+        ModuleAnchor::Package {
+            dir,
+            name: Some(package),
+        } if found.starts_with(dir) => {
+            let below = found
+                .strip_prefix(dir)
+                .unwrap_or(&found)
+                .with_extension("");
+            let mut module = package.segments.iter().map(|segment| segment.as_str()).collect::<Vec<_>>();
+            let below = below
+                .iter()
+                .filter_map(|segment| segment.to_str())
+                .collect::<Vec<_>>();
+            // `dir/dir.hew` is reached as `dir`.
+            let below = if repeats_last_segment(&below) {
+                &below[..below.len() - 1]
+            } else {
+                &below[..]
+            };
+            if below != [module.last().copied().unwrap_or_default()] {
+                module.extend(below);
+            }
+            format!("import `{}` names it through the package", module.join("."))
+        }
+        _ => "imports are relative to the importing file; a package (`hew init`) names its modules from its root".to_string(),
+    };
+    format!(
+        "\n  note: `{}` is in a parent directory of the importing file\n  help: {help}",
+        display_path(&found)
+    )
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "sequential import resolution steps for file and module imports"
@@ -2792,14 +3248,14 @@ fn resolve_file_imports_internal(
             None
         })
         .collect::<Vec<_>>();
+    if import_indices.is_empty() {
+        return Ok(());
+    }
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let anchor = importer_anchor(source_file, ctx, &std_roots)?;
 
     for idx in &import_indices {
-        let is_module_import = matches!(
-            &items[*idx].0,
-            Item::Import(decl) if !decl.path.segments.is_empty()
-        );
         let canonical = match &items[*idx].0 {
             Item::Import(decl) if decl.file_path.is_some() => {
                 let file_path = decl.file_path.as_ref().expect("checked above");
@@ -2815,164 +3271,21 @@ fn resolve_file_imports_internal(
             }
             Item::Import(decl) if !decl.path.segments.is_empty() => {
                 let segments = import_segments(&decl.path);
-                let module_str = segments.join("::");
                 let source_module = segments.join(".");
-                // A `std` module resolves only from the standard-library root
-                // (`stdlib_search_paths`), never beside the source or in cwd.
-                let is_std_import = module_str.starts_with("std::");
-                let is_declared_dependency = ctx.manifest_deps.is_some_and(|deps| {
-                    deps.iter()
-                        .any(|dependency| dependency == &module_str || dependency == &source_module)
-                });
-                let is_local = ctx
-                    .package_name
-                    .is_some_and(|pkg| segments.first().is_some_and(|seg| *seg == pkg));
-                let rest_path: Vec<&str> = if is_local {
-                    segments[1..].to_vec()
-                } else {
-                    Vec::new()
-                };
-
-                let rel_path = segments.iter().collect::<PathBuf>().with_extension("hew");
-                let last = *segments.last().expect("path is non-empty");
-                let dir_path = segments
-                    .iter()
-                    .collect::<PathBuf>()
-                    .join(format!("{last}.hew"));
-                let mut candidates: Vec<(PathBuf, CandidateForm)> = Vec::new();
-                let mut locked_project_candidates = Vec::new();
-                let mut installed_package_dir = None;
-                let locked_version = ctx
-                    .locked_versions
-                    .and_then(|locked| {
-                        locked
-                            .iter()
-                            .find(|(name, _)| name == &module_str || name == &source_module)
-                    })
-                    .map(|(_, version)| version.as_str());
-
-                if !is_std_import && is_local && !rest_path.is_empty() {
-                    let local_last = *rest_path.last().expect("non-empty local path");
-                    let local_rel = rest_path.iter().collect::<PathBuf>();
-                    let local_dir = local_rel.join(format!("{local_last}.hew"));
-                    let local_flat = local_rel.with_extension("hew");
-                    candidates.push((
-                        ctx.project_dir.join("src").join(&local_dir),
-                        CandidateForm::Directory,
-                    ));
-                    candidates.push((
-                        ctx.project_dir.join("src").join(&local_flat),
-                        CandidateForm::Flat,
-                    ));
-                    candidates.push((ctx.project_dir.join(&local_dir), CandidateForm::Directory));
-                    candidates.push((ctx.project_dir.join(&local_flat), CandidateForm::Flat));
-                }
-
-                if !is_std_import {
-                    candidates.push((source_dir.join(&dir_path), CandidateForm::Directory));
-                    candidates.push((source_dir.join(&rel_path), CandidateForm::Flat));
-                    candidates.push((cwd.join(&dir_path), CandidateForm::Directory));
-                    candidates.push((cwd.join(&rel_path), CandidateForm::Flat));
-                }
-
-                let module_dir = segments.iter().collect::<PathBuf>();
-                if let Some(version) = locked_version.filter(|_| !is_std_import) {
-                    let entry_file = format!("{}.hew", segments.last().expect("path is non-empty"));
-                    let versioned_rel = module_dir.join(version).join(entry_file);
-                    // The version directory sits between the module and its
-                    // entry file, so this is a package root, never a flat file.
-                    candidates.push((
-                        ctx.project_dir.join(".hew/packages").join(&versioned_rel),
-                        CandidateForm::Directory,
-                    ));
-                    if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push((pkg.join(&versioned_rel), CandidateForm::Directory));
-                    }
-                }
-
-                if !is_std_import {
-                    candidates.push((
-                        ctx.project_dir.join(".hew/packages").join(&rel_path),
-                        CandidateForm::Flat,
-                    ));
-                    let project_package_dir =
-                        ctx.project_dir.join(".hew/packages").join(&module_dir);
-                    if is_declared_dependency {
-                        installed_package_dir = Some(project_package_dir.clone());
-                    }
-                    let project_package_entry =
-                        ctx.project_dir.join(".hew/packages").join(&dir_path);
-                    if let Some(version) = locked_version {
-                        locked_project_candidates.push((
-                            project_package_entry.clone(),
-                            LockedPackageCheck {
-                                package_dir: project_package_dir,
-                                name: source_module.clone(),
-                                version: version.to_string(),
-                            },
-                        ));
-                    }
-                    candidates.push((project_package_entry, CandidateForm::Directory));
-                }
-
-                if let Some(pkg) = ctx.extra_pkg_path.filter(|_| !is_std_import) {
-                    candidates.push((pkg.join(&dir_path), CandidateForm::Directory));
-                    candidates.push((pkg.join(&rel_path), CandidateForm::Flat));
-                    if segments.len() > 1 && !is_builtin_module(&module_str) {
-                        let rest_dir = segments[1..]
-                            .iter()
-                            .collect::<PathBuf>()
-                            .join(format!("{last}.hew"));
-                        let rest_flat = segments[1..]
-                            .iter()
-                            .collect::<PathBuf>()
-                            .with_extension("hew");
-                        candidates.push((pkg.join(&rest_dir), CandidateForm::Directory));
-                        candidates.push((pkg.join(&rest_flat), CandidateForm::Flat));
-                    }
-                }
-
-                if module_str.starts_with("hew::") && segments.len() > 1 {
-                    let tail = segments[1..].iter().collect::<PathBuf>();
-                    let tail_last = segments.last().expect("path is non-empty");
-                    let tail_dir = tail.join(format!("{tail_last}.hew"));
-                    let tail_rel = tail.with_extension("hew");
-                    if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push((pkg.join(&tail_dir), CandidateForm::Directory));
-                        candidates.push((pkg.join(&tail_rel), CandidateForm::Flat));
-                    }
-                }
-
-                if module_str.starts_with("ecosystem::") && segments.len() > 1 {
-                    let tail = segments[1..].iter().collect::<PathBuf>();
-                    let tail_last = segments.last().expect("path is non-empty");
-                    let tail_dir = tail.join(format!("{tail_last}.hew"));
-                    let tail_rel = tail.with_extension("hew");
-                    if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push((pkg.join(&tail_dir), CandidateForm::Directory));
-                        candidates.push((pkg.join(&tail_rel), CandidateForm::Flat));
-                    }
-                }
-
-                // The standard-library root.
-                let discovered_search_paths;
-                let search_paths = if let Some(paths) = ctx.module_search_paths {
-                    paths
-                } else {
-                    discovered_search_paths = hew_types::module_registry::stdlib_search_paths();
-                    &discovered_search_paths
-                };
-                for root in search_paths {
-                    candidates.push((root.join(&dir_path), CandidateForm::Directory));
-                    candidates.push((root.join(&rel_path), CandidateForm::Flat));
-                }
+                let is_std_import = segments.join("::").starts_with("std::");
+                let ModuleCandidates {
+                    candidates,
+                    locked_project_candidates,
+                    installed_package_dir,
+                } = module_candidates(&decl.path, source_file, &anchor, ctx, &std_roots);
 
                 // Collect ALL candidates that resolve, then deduplicate by canonical path.
                 // If two or more distinct canonical paths resolve, the import is ambiguous —
                 // fail-closed rather than silently picking the first match.
                 let mut resolved: Vec<(PathBuf, CandidateForm)> = Vec::new();
-                for (candidate, form) in &candidates {
-                    if let Some(canonical) = resolve_candidate(ctx.documents, candidate) {
+                for entry in &candidates {
+                    let (candidate, form, _) = entry;
+                    if let Some(canonical) = resolve_module_candidate(ctx, &std_roots, entry)? {
                         if let Some((_, check)) = locked_project_candidates
                             .iter()
                             .find(|(locked_candidate, _)| locked_candidate == candidate)
@@ -3005,79 +3318,60 @@ fn resolve_file_imports_internal(
                 }
 
                 if let Some((canonical, form)) = resolved.into_iter().next() {
-                    if is_module_import
-                        && is_directory_module_entry_alias(&segments, &canonical, form)
-                    {
-                        // A directory module is spelled by its directory, and
-                        // its entry file adds no second module (spec 3.5.1).
-                        // Accepting both spellings would let one compilation
-                        // reach one source under two names, so refuse the
-                        // longer one and name the module it aliases.
-                        let directory_module = segments[..segments.len() - 1].join(".");
-                        let message = format!(
-                            "cannot import `{source_module}`: `{directory_module}` is a directory module and its entry file is not a module of its own; import `{directory_module}` instead"
-                        );
-                        return Err(match read_source(ctx.documents, source_file) {
-                            Ok(module_source) => FrontendFailure::coded_message_at(
-                                "E_ENTRY_FILE_IMPORT",
-                                message,
-                                items[*idx].1.clone(),
-                                &module_source,
-                                &source_file.display().to_string(),
-                            ),
-                            Err(_) => {
-                                FrontendFailure::coded_message("E_ENTRY_FILE_IMPORT", message)
-                            }
-                        });
-                    } else if is_module_import
-                        && canonical_directory_module_entry_source(&canonical) != canonical
-                        && segments.len() >= 2
-                    {
-                        // The shipped stdlib's directory peers stay importable
-                        // by file (`std.net.http.http_client`, D461); they load
-                        // through the directory's entry source so the module is
-                        // complete however it was reached. The entry-file
-                        // spelling is refused above for the stdlib too, so one
-                        // directory module has exactly one name everywhere.
-                        if hew_types::module_registry::canonical_stdlib_module_for_source(
-                            &canonical,
-                        )
-                        .is_some()
+                    use hew_types::module_registry::{MembershipRole, ModuleAnchor};
+                    let membership = membership_of(&canonical, &std_roots, ctx.documents)?;
+                    let directory_module = || segments[..segments.len() - 1].join(".");
+                    match membership.role {
+                        MembershipRole::Entry
+                            if form == CandidateForm::Flat && repeats_last_segment(&segments) =>
                         {
-                            canonical_directory_module_entry_source(&canonical)
-                        } else {
-                            // A user package's peer file has no identity of its
-                            // own — spec 3.5.1 merges every peer into the
-                            // directory module's namespace. Importing it
-                            // directly would parse it standalone, isolated from
-                            // the sibling declarations it expects to share a
-                            // scope with, and any reference to one of those
-                            // siblings would surface downstream as a plain
-                            // "undefined function"/"undefined variable" with no
-                            // hint that the fix is to import the directory
-                            // module instead. Refuse here, before that isolated
-                            // module ever gets built.
-                            let directory_module = segments[..segments.len() - 1].join(".");
-                            let message = format!(
-                                "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
-                            );
-                            return Err(match read_source(ctx.documents, source_file) {
-                                Ok(module_source) => FrontendFailure::coded_message_at(
-                                    "E_PEER_IMPORT",
-                                    message,
-                                    items[*idx].1.clone(),
-                                    &module_source,
-                                    &source_file.display().to_string(),
+                            // A directory module is spelled by its directory,
+                            // and its entry file adds no second module (spec
+                            // 3.5.1). Accepting both spellings would let one
+                            // compilation reach one source under two names.
+                            return Err(import_failure(
+                                ctx,
+                                source_file,
+                                &items[*idx].1,
+                                "E_ENTRY_FILE_IMPORT",
+                                format!(
+                                    "cannot import `{source_module}`: `{}` is a directory module and its entry file is not a module of its own; import `{}` instead",
+                                    directory_module(),
+                                    directory_module(),
                                 ),
-                                Err(_) => FrontendFailure::coded_message("E_PEER_IMPORT", message),
-                            });
+                            ));
                         }
-                    } else {
-                        canonical
+                        MembershipRole::Peer if segments.len() >= 2 => {
+                            if matches!(membership.anchor, ModuleAnchor::Std { .. }) {
+                                // The shipped std's directory peers stay
+                                // importable by file (`std.net.http.http_client`,
+                                // D461); they load through the directory's
+                                // entry so the module is complete however it
+                                // was reached.
+                                membership.entry
+                            } else {
+                                // A user peer has no identity of its own: it
+                                // shares the directory module's namespace, so
+                                // loading it alone would miss the siblings it
+                                // refers to.
+                                return Err(import_failure(
+                                    ctx,
+                                    source_file,
+                                    &items[*idx].1,
+                                    "E_PEER_IMPORT",
+                                    format!(
+                                        "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{}` instead",
+                                        directory_module(),
+                                    ),
+                                ));
+                            }
+                        }
+                        _ => canonical,
                     }
                 } else {
+                    let last = *segments.last().expect("path is non-empty");
                     if let Some(package_dir) = installed_package_dir.filter(|dir| dir.is_dir()) {
-                        let expected = package_dir.join(format!("{last}.hew"));
+                        let expected = package_dir.join(last).with_extension("hew");
                         return Err(FrontendFailure::coded_message(
                             "E_PACKAGE_ROOT_MISSING",
                             format!(
@@ -3089,30 +3383,25 @@ fn resolve_file_imports_internal(
                     }
                     let tried = candidates
                         .iter()
-                        .map(|(candidate, _)| candidate.display().to_string())
+                        .map(|(candidate, _, _)| display_path(candidate))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let hint = if is_declared_dependency {
+                    let hint = if declares_dependency(ctx.manifest_deps, &segments) {
                         "\n  hint: this dependency is declared in hew.toml — run `hew install`"
-                    } else if ctx.manifest_deps.is_some() {
-                        "\n  hint: add this module to [dependencies] in hew.toml"
-                    } else {
-                        ""
-                    };
-                    let suggestion = if is_std_import {
-                        nearest_std_module(last, search_paths)
+                            .to_string()
+                    } else if is_std_import {
+                        nearest_std_module(last, &std_roots)
                             .map(|nearest| format!("\n  did you mean `{nearest}`?"))
                             .unwrap_or_default()
                     } else {
-                        String::new()
+                        let hints = module_not_found_hints(source_file, &anchor, &segments, ctx);
+                        if hints.is_empty() && ctx.manifest_deps.is_some() {
+                            "\n  hint: add this module to [dependencies] in hew.toml".to_string()
+                        } else {
+                            hints
+                        }
                     };
-                    // No leading "Error: " here (unlike the sibling messages
-                    // above): this one now renders with a real
-                    // `file:line:col: error:` header, and the plain-text
-                    // fallback below only fires if `source_file` cannot be
-                    // re-read, which never happens on the path that just
-                    // parsed it.
-                    let message = if is_std_import && search_paths.is_empty() {
+                    let message = if is_std_import && std_roots.is_empty() {
                         // No std root at all: the toolchain's std is missing,
                         // not this one module.
                         let probed = hew_types::module_registry::compiler_stdlib_root_candidates()
@@ -3125,20 +3414,15 @@ fn resolve_file_imports_internal(
                              standard library (tried: {probed}); set HEW_STD to a std/ directory"
                         )
                     } else {
-                        format!(
-                            "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
-                        )
+                        format!("module `{source_module}` not found (tried: {tried}){hint}")
                     };
-                    return Err(match read_source(ctx.documents, source_file) {
-                        Ok(module_source) => FrontendFailure::coded_message_at(
-                            "E_MODULE_NOT_FOUND",
-                            message,
-                            items[*idx].1.clone(),
-                            &module_source,
-                            &source_file.display().to_string(),
-                        ),
-                        Err(_) => FrontendFailure::coded_message("E_MODULE_NOT_FOUND", message),
-                    });
+                    return Err(import_failure(
+                        ctx,
+                        source_file,
+                        &items[*idx].1,
+                        "E_MODULE_NOT_FOUND",
+                        message,
+                    ));
                 }
             }
             _ => continue,
@@ -3195,28 +3479,10 @@ fn build_resolved_import_internal(
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
 ) -> Result<ResolvedImport, FrontendFailure> {
-    let module_dir = canonical.parent();
-    let is_directory_module = module_dir.is_some_and(|dir| {
-        let dir_name = dir.file_name().and_then(|name| name.to_str());
-        let file_stem = canonical.file_stem().and_then(|name| name.to_str());
-        dir_name.is_some() && dir_name == file_stem
-    });
-
-    let peer_files = if is_directory_module {
-        let dir = module_dir.expect("directory module has a parent");
-        let mut peers = std::fs::read_dir(dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension().and_then(|ext| ext.to_str()) == Some("hew") && *path != canonical
-            })
-            .filter(|path| !is_hew_test_file(path))
-            .collect::<Vec<_>>();
-        peers.sort();
-        peers
+    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let membership = membership_of(canonical, &std_roots, ctx.documents)?;
+    let peer_files = if membership.role == hew_types::module_registry::MembershipRole::Entry {
+        membership.peers.clone()
     } else {
         Vec::new()
     };
@@ -3241,16 +3507,7 @@ fn build_resolved_import_internal(
     }
 
     if !peer_files.is_empty() {
-        let module_str = if let Item::Import(decl) = import_item {
-            if decl.path.segments.is_empty() {
-                canonical.display().to_string()
-            } else {
-                import_segments(&decl.path).join(".")
-            }
-        } else {
-            canonical.display().to_string()
-        };
-        check_duplicate_pub_names(&import_items, &module_str)
+        check_duplicate_pub_names(&import_items, &import_item_source_paths, &membership)
             .map_err(FrontendFailure::message_only)?;
     }
 
@@ -3259,12 +3516,6 @@ fn build_resolved_import_internal(
         item_source_paths: import_item_source_paths,
         source_paths,
     })
-}
-
-fn is_hew_test_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with("_test.hew"))
 }
 
 fn parse_and_resolve_file_internal(
@@ -3305,7 +3556,13 @@ fn parse_and_resolve_file_internal(
     Ok(import_items)
 }
 
-fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Result<(), String> {
+/// Reject two `pub` declarations of one name across the files of a directory
+/// module, naming both files and why they share a namespace.
+fn check_duplicate_pub_names(
+    items: &[Spanned<Item>],
+    item_sources: &[PathBuf],
+    membership: &hew_types::module_registry::ModuleMembership,
+) -> Result<(), String> {
     use hew_parser::ast::Visibility;
 
     // Only `Visibility::Pub` items are checked here — intentionally.
@@ -3316,30 +3573,43 @@ fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Resu
     // duplicate-name guard exists to catch clashes in the *globally-exported*
     // interface (i.e. items a downstream package could import by name), which
     // only `pub` items contribute to.
-    //
-    // If/when package-boundary enforcement is added (a future edition), a
-    // separate within-package duplicate check will be needed at that boundary,
-    // not here.
-    let mut seen: HashMap<&str, usize> = HashMap::new();
-    for (item, _) in items {
+    let mut seen: Vec<(hew_parser::ast::Symbol, &Path)> = Vec::new();
+    for ((item, _), source) in items.iter().zip(item_sources) {
         let name = match item {
-            Item::Function(f) if f.visibility == Visibility::Pub => Some(f.name.name.as_str()),
-            Item::TypeAlias(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
-            Item::TypeDecl(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
-            Item::Actor(a) if a.visibility == Visibility::Pub => Some(a.name.name.as_str()),
-            Item::Trait(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
-            Item::Const(c) if c.visibility == Visibility::Pub => Some(c.name.name.as_str()),
-            _ => None,
+            Item::Function(f) if f.visibility == Visibility::Pub => f.name.name,
+            Item::TypeAlias(t) if t.visibility == Visibility::Pub => t.name.name,
+            Item::TypeDecl(t) if t.visibility == Visibility::Pub => t.name.name,
+            Item::Actor(a) if a.visibility == Visibility::Pub => a.name.name,
+            Item::Trait(t) if t.visibility == Visibility::Pub => t.name.name,
+            Item::Const(c) if c.visibility == Visibility::Pub => c.name.name,
+            _ => continue,
         };
-        if let Some(name) = name {
-            let count = seen.entry(name).or_insert(0);
-            *count += 1;
-            if *count > 1 {
-                return Err(format!(
-                    "Error: duplicate pub name `{name}` in module {module_name}"
-                ));
-            }
+        if let Some((_, first)) = seen.iter().find(|(seen_name, _)| *seen_name == name) {
+            // A file below the anchor is shown as its package-relative path,
+            // spelled with `/` on every platform like the module path it is.
+            let shown = |path: &Path| match membership
+                .anchor
+                .dir()
+                .and_then(|dir| path.strip_prefix(dir).ok())
+            {
+                Some(relative) => relative
+                    .iter()
+                    .map(|component| component.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                None => display_path(path),
+            };
+            let entry = shown(&membership.entry);
+            let directory = membership.entry.parent().map_or_else(String::new, &shown);
+            return Err(format!(
+                "Error: duplicate pub name `{name}` in module `{}`: declared in `{}` and in `{}`\n  \
+                 note: `{directory}/` is a directory module because `{entry}` exists, so its files share one namespace",
+                membership.module.dotted(),
+                shown(first),
+                shown(source),
+            ));
         }
+        seen.push((name, source));
     }
     Ok(())
 }
@@ -3546,8 +3816,15 @@ fn run_document_frontend_with_dependency_cache(
     cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
     if roots == RootSelection::Module {
-        if let Some(entry) = directory_module_entry(Path::new(input)) {
-            return run_directory_module_frontend(&entry, input, source_override, options);
+        if let Some(membership) = module_membership(Path::new(input), options)
+            .filter(|m| m.checks_as_directory_module() || m.is_package_root_module())
+        {
+            return run_directory_module_frontend(
+                &membership.entry,
+                input,
+                source_override,
+                options,
+            );
         }
     }
     let project = match load_project_context(input, Some(options), source_override) {
@@ -3692,7 +3969,7 @@ fn run_frontend_after_parse_with_dependency_cache(
         .typecheck_result
         .as_mut()
         .and_then(|result| result.tco.as_mut())
-        .and_then(|tco| tco.normalized_machines.as_mut())
+        .and_then(|tco| tco.normalized_program.as_mut())
     {
         flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
     } else {
@@ -3767,7 +4044,7 @@ pub fn run_program_frontend(
 /// Parse, resolve imports, and type-check a Hew source file.
 ///
 /// A directory-module entry or peer checks its whole module (see
-/// [`directory_module_entry`]).
+/// [`module_membership`]).
 ///
 /// # Errors
 ///
@@ -4007,11 +4284,11 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 mod tests {
     use super::{
         build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
-        directory_module_entry, display_path, hir_diagnostics_to_frontend, load_dependencies,
-        load_lockfile, load_package_name, parse_source, retain_user_facing_diagnostics,
-        run_document_frontend, run_file_frontend_to_typecheck, run_source_frontend, test_companion,
-        DiagnosticPolicy, DocumentSet, FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions,
-        ImportResolutionContext, Session, SessionTarget,
+        display_path, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
+        load_package_name, parse_source, retain_user_facing_diagnostics, run_document_frontend,
+        run_file_frontend_to_typecheck, run_source_frontend, DiagnosticPolicy, DocumentSet,
+        FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext,
+        Session, SessionTarget,
     };
     use hew_parser::ast::Item;
     use std::collections::{HashMap, HashSet};
@@ -4120,6 +4397,11 @@ mod tests {
         assert!(state.parse_result.is_some());
     }
 
+    /// Make `dir` a package, the anchor directory modules need (spec 3.5.1).
+    fn write_package_manifest(dir: &Path) {
+        fs::write(dir.join("hew.toml"), "[package]\nname = \"app\"\n").expect("write manifest");
+    }
+
     fn write_source(dir: &Path, name: &str, content: &str) -> String {
         let path = dir.join(name);
         let mut file = File::create(&path).expect("create source file");
@@ -4178,6 +4460,8 @@ mod tests {
     #[test]
     fn selected_occurrence_survives_directory_module_entry_import() {
         let dir = tempfile::tempdir().expect("create directory-module fixture");
+        fs::write(dir.path().join("hew.toml"), "[package]\nname = \"app\"\n")
+            .expect("write manifest");
         let module_dir = dir.path().join("greeting");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(
@@ -4216,7 +4500,11 @@ mod tests {
             &FrontendOptions {
                 project_dir: Some(dir.path().to_path_buf()),
                 entry_selection: Some(selection),
-                companion: test_companion(Path::new(&input)),
+                companion: super::module_membership(Path::new(&input), &FrontendOptions::default())
+                    .and_then(|membership| {
+                        let input = Path::new(&input).canonicalize().ok()?;
+                        membership.test_companion(&input).map(Path::to_path_buf)
+                    }),
                 ..FrontendOptions::default()
             },
         )
@@ -4559,6 +4847,7 @@ mod tests {
     #[test]
     fn checking_directory_module_peer_loads_entry_namespace() {
         let dir = tempfile::tempdir().expect("create directory-module fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("greeting");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(
@@ -4596,11 +4885,10 @@ mod tests {
             "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
         )
         .expect("write manifest");
-        let src = dir.path().join("src");
-        let forge = src.join("forge");
+        let forge = dir.path().join("forge");
         fs::create_dir_all(&forge).expect("create module directory");
         write_source(
-            &src,
+            dir.path(),
             "util.hew",
             "pub fn twice(x: i64) -> i64 {\n    x * 2\n}\n",
         );
@@ -4621,23 +4909,26 @@ mod tests {
     }
 
     #[test]
-    fn directory_module_entry_selects_entries_and_peers_only() {
+    fn module_membership_assigns_entries_peers_and_tests() {
+        use hew_types::module_registry::MembershipRole;
         let (dir, entry, peer) = forge_package("");
         let canonical_entry = Path::new(&entry).canonicalize().expect("entry exists");
-        assert_eq!(
-            directory_module_entry(Path::new(&entry)),
-            Some(canonical_entry.clone())
-        );
-        assert_eq!(
-            directory_module_entry(Path::new(&peer)),
-            Some(canonical_entry)
-        );
-        let forge = dir.path().join("src").join("forge");
-        assert_eq!(directory_module_entry(&forge.join("ado_test.hew")), None);
-        assert_eq!(
-            directory_module_entry(&dir.path().join("src").join("util.hew")),
-            None
-        );
+        let membership = |path: &Path| {
+            super::module_membership(path, &FrontendOptions::default()).expect("valid manifest")
+        };
+        let of_entry = membership(Path::new(&entry));
+        assert_eq!(of_entry.role, MembershipRole::Entry);
+        assert_eq!(of_entry.module, super::ModulePath::new(["app", "forge"]));
+        let of_peer = membership(Path::new(&peer));
+        assert_eq!(of_peer.role, MembershipRole::Peer);
+        assert_eq!(of_peer.entry, canonical_entry);
+        let forge = dir.path().join("forge");
+        let of_test = membership(&forge.join("ado_test.hew"));
+        assert_eq!(of_test.role, MembershipRole::Test);
+        assert_eq!(of_test.entry, canonical_entry);
+        let of_util = membership(&dir.path().join("util.hew"));
+        assert_eq!(of_util.role, MembershipRole::Single);
+        assert_eq!(of_util.module, super::ModulePath::new(["app", "util"]));
     }
 
     #[test]
@@ -4674,6 +4965,185 @@ mod tests {
                 "the error belongs to the peer, not {file}"
             );
         }
+    }
+
+    /// The std directory module a peer import loads, as source paths below
+    /// `root`, from a run that resolves the std at `root` through `documents`.
+    fn std_http_sources(root: &Path, documents: &DocumentSet) -> Vec<std::path::PathBuf> {
+        let dir = tempfile::tempdir().expect("create importer fixture");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.net.http.http_client;\n\nfn main() {}\n",
+        );
+        let source = fs::read_to_string(&input).expect("read importer fixture");
+        let mut program = parse_source(&source, &input).expect("parse importer fixture");
+        let roots = [root.to_path_buf()];
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: dir.path(),
+            module_search_paths: Some(&roots),
+            documents,
+        };
+        let graph = build_module_graph(
+            Path::new(&input),
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("the std peer import should build a module graph");
+        let client = root.join("std/net/http/http_client.hew");
+        let owners = graph
+            .modules
+            .values()
+            .filter(|module| {
+                module
+                    .source_paths
+                    .iter()
+                    .any(|path| path.ends_with("std/net/http/http_client.hew"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 1, "one graph node holds {}", client.display());
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        owners[0]
+            .source_paths
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .expect("a std source is below its root")
+                    .to_path_buf()
+            })
+            .collect()
+    }
+
+    /// A host with no filesystem (the browser) lists a std directory module's
+    /// peers from the sources it was given, so its module graph is the native
+    /// one: the same entry and peers in the same order.
+    #[test]
+    fn std_directory_module_peers_come_from_documents_without_a_filesystem() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root")
+            .to_path_buf();
+        let native = std_http_sources(&repo_root, &DocumentSet::new());
+
+        let virtual_root = std::env::temp_dir().join("hew-std-without-a-filesystem");
+        assert!(
+            !virtual_root.exists(),
+            "the virtual std root must not exist on disk"
+        );
+        let mut documents = DocumentSet::new();
+        let mut pending = vec![repo_root.join("std")];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(&dir).expect("read the std tree").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "hew") {
+                    let relative = path.strip_prefix(&repo_root).expect("below the repository");
+                    documents.insert(
+                        virtual_root.join(relative),
+                        fs::read_to_string(&path).expect("read a std source"),
+                    );
+                }
+            }
+        }
+        let in_memory = std_http_sources(&virtual_root, &documents);
+
+        assert_eq!(
+            native.len(),
+            4,
+            "std.net.http is its entry and three peers: {native:?}"
+        );
+        assert_eq!(native[0], Path::new("std/net/http/http.hew"));
+        assert_eq!(in_memory, native);
+    }
+
+    fn manifest_errors(manifest: &str, files: &[(&str, &str)], main: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("create package fixture");
+        fs::write(dir.path().join("hew.toml"), manifest).expect("write manifest");
+        for (path, source) in files {
+            let path = dir.path().join(path);
+            fs::create_dir_all(path.parent().expect("a fixture file has a parent"))
+                .expect("create fixture directory");
+            fs::write(path, source).expect("write fixture source");
+        }
+        let input = write_source(dir.path(), "main.hew", main);
+        let program = parse_source(main, &input).expect("parse package fixture");
+        let (manifest_deps, package_name) =
+            super::load_manifest_metadata(dir.path()).expect("valid manifest");
+        let documents = DocumentSet::new();
+        let ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: manifest_deps.as_deref(),
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: package_name.as_deref(),
+            project_dir: dir.path(),
+            module_search_paths: None,
+            documents: &documents,
+        };
+        let input = Path::new(&input).canonicalize().expect("main exists");
+        super::undeclared_imports(&input, &program.items, &ctx).expect("valid manifests")
+    }
+
+    #[test]
+    fn an_undeclared_dependency_is_named_with_its_fix() {
+        let errors = manifest_errors(
+            "[package]\nname = \"app\"\n",
+            &[],
+            "import mylib.utils;\nimport mylib.other;\nfn main() {}\n",
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "every undeclared import is reported: {errors:?}"
+        );
+        assert!(errors[0].contains("`mylib.utils` is not declared in hew.toml"));
+        assert!(errors[0].contains("hew add mylib.utils"));
+    }
+
+    #[test]
+    fn a_declared_dependency_covers_its_modules() {
+        let errors = manifest_errors(
+            "[package]\nname = \"app\"\n\n[dependencies]\n\"acme.http\" = \"1.0\"\n",
+            &[],
+            "import acme.http;\nimport acme.http.client;\nimport acme.other;\nfn main() {}\n",
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("`acme.other`"), "{errors:?}");
+    }
+
+    #[test]
+    fn std_file_and_package_local_imports_need_no_declaration() {
+        let errors = manifest_errors(
+            "[package]\nname = \"meshcore.broker\"\n",
+            &[
+                ("wire.hew", "pub fn w() -> i64 { 7 }\n"),
+                ("helpers.hew", "pub fn h() -> i64 { 1 }\n"),
+                ("greeting/greeting.hew", "pub fn hello() -> string { \"hi\" }\n"),
+                ("lib.hew", "pub fn l() -> i64 { 2 }\n"),
+            ],
+            "import std.fs;\nimport \"lib.hew\";\nimport meshcore.broker.wire;\nimport helpers;\nimport greeting;\nfn main() {}\n",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_dotted_package_imports_itself_but_not_a_shorter_prefix() {
+        let errors = manifest_errors(
+            "[package]\nname = \"meshcore.broker\"\n",
+            &[("wire.hew", "pub fn w() -> i64 { 7 }\n")],
+            "import meshcore.broker.wire;\nimport meshcore.wire;\nfn main() {}\n",
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("`meshcore.wire`"), "{errors:?}");
     }
 
     #[test]
@@ -4823,6 +5293,7 @@ mod tests {
     #[test]
     fn user_directory_peer_import_is_refused() {
         let dir = tempfile::tempdir().expect("create module-owner fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("greeting");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(&module_dir, "greeting.hew", "pub fn entry() -> i64 { 1 }\n");
@@ -4880,6 +5351,7 @@ mod tests {
     #[test]
     fn directory_module_peers_claiming_one_name_report_a_duplicate_definition() {
         let dir = tempfile::tempdir().expect("create directory-module fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("shapes");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(
@@ -4983,6 +5455,7 @@ mod tests {
     #[test]
     fn directory_module_peers_may_redeclare_one_extern_symbol() {
         let dir = tempfile::tempdir().expect("create directory-module fixture");
+        write_package_manifest(dir.path());
         let module_dir = dir.path().join("clock");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(
@@ -7244,6 +7717,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     #[test]
     fn extern_conflict_in_peer_file_routes_to_the_declaring_file() {
         let dir = tempfile::tempdir().expect("create temp dir");
+        write_package_manifest(dir.path());
         let pkg_dir = dir.path().join("pkg");
         fs::create_dir(&pkg_dir).expect("create pkg dir");
         let main = write_source(
@@ -7294,6 +7768,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     #[test]
     fn state_constructor_error_in_peer_routes_to_its_source_line() {
         let dir = tempfile::tempdir().expect("create temp dir");
+        write_package_manifest(dir.path());
         let workflow_dir = dir.path().join("workflow");
         fs::create_dir(&workflow_dir).expect("create workflow dir");
         let main = write_source(
@@ -7867,8 +8342,10 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         assert_eq!(inner.help.len(), 1);
         assert!(
-            inner.help[0].contains("share one directory") && inner.help[0].contains("spec 3.5.1"),
-            "same-directory cycle should recommend the directory-module form: {}",
+            inner.help[0].contains("share one directory")
+                && inner.help[0].contains("spec 3.5.1")
+                && inner.help[0].contains("hew init"),
+            "a loose same-directory cycle should recommend a package's directory-module form: {}",
             inner.help[0]
         );
     }

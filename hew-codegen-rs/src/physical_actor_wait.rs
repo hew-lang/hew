@@ -14,7 +14,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("restart wait requires a resumable invocation".into())
         })?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let wake = coro::external(
+        let wake = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
             ptr.fn_type(&[ptr.into()], false),
@@ -34,7 +34,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_extract_value(role, 1, "restart.slot")
             .llvm_ctx("read the role slot")?;
-        let new = coro::external(
+        let new = get_or_declare_external(
             self.llvm,
             "hew_supervisor_native_restart_wait_new",
             ptr.fn_type(
@@ -136,7 +136,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target_data = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
-        let new = coro::external(
+        let new = get_or_declare_external(
             self.llvm,
             "hew_actor_wait_edge_new",
             ptr.fn_type(
@@ -187,7 +187,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         edge: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let fault = coro::external(
+        let fault = get_or_declare_external(
             self.llvm,
             "hew_actor_wait_edge_fault",
             ptr.fn_type(&[ptr.into()], false),
@@ -221,7 +221,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("actor wait requires a resumable invocation".into())
         })?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let wake = coro::external(
+        let wake = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
             ptr.fn_type(&[ptr.into()], false),
@@ -251,7 +251,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ctx
             .append_basic_block(self.value, "actor.wait.cycle.fault");
         let (new, arguments) = if let (Some(nested), Some(slot)) = (role_wait, slot) {
-            let new = coro::external(
+            let new = get_or_declare_external(
                 self.llvm,
                 "hew_supervisor_native_role_wait_new",
                 ptr.fn_type(
@@ -277,7 +277,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ],
             )
         } else {
-            let new = coro::external(
+            let new = get_or_declare_external(
                 self.llvm,
                 "hew_actor_wait_new",
                 ptr.fn_type(&[target.get_type().into(), ptr.into()], false),
@@ -285,7 +285,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             (new, vec![target.into(), waker.into()])
         };
         let wait = call_value(&self.builder, new, &arguments, "actor.wait")?.into_pointer_value();
-        let edge_new = coro::external(
+        let edge_new = get_or_declare_external(
             self.llvm,
             "hew_actor_wait_edge_new_for_wait",
             ptr.fn_type(&[ptr.into(), ptr.into(), self.ctx.i32_type().into()], false),
@@ -356,7 +356,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         // The three failing exits record their fault and share one release.
         let mut join = self.exit_join("actor.wait.release");
         self.builder.position_at_end(failed);
-        let take_fault = coro::external(
+        let take_fault = get_or_declare_external(
             self.llvm,
             "hew_actor_wait_take_fault",
             ptr.fn_type(&[ptr.into()], false),
@@ -402,13 +402,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let wake = coro::external(
+        let wake = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
             ptr.fn_type(&[ptr.into()], false),
         )?;
         let waker = call_value(&self.builder, wake, &[frame.state.into()], "send.waker")?;
-        let new = coro::external(
+        let new = get_or_declare_external(
             self.llvm,
             "hew_actor_send_wait_new",
             ptr.fn_type(

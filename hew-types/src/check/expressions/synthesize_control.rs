@@ -399,7 +399,10 @@ impl Checker {
                 let prev_in_generator = self.in_generator;
                 let prev_return_type = self.current_return_type.take();
                 let previous_defer = self.deferred_body.take();
-                let prev_fails = std::mem::replace(&mut self.current_fails, false);
+                let prev_failure_edge = self.current_failure_edge.take();
+                let prev_failure_edge_inferred =
+                    std::mem::replace(&mut self.failure_edge_inferred, false);
+                let previous_inferred = self.inferred_lambda.take();
                 self.in_generator = true;
                 self.current_return_type = Some(gen_ty.clone());
 
@@ -418,7 +421,9 @@ impl Checker {
                 self.in_generator = prev_in_generator;
                 self.current_return_type = prev_return_type;
                 self.deferred_body = previous_defer;
-                self.current_fails = prev_fails;
+                self.current_failure_edge = prev_failure_edge;
+                self.failure_edge_inferred = prev_failure_edge_inferred;
+                self.inferred_lambda = previous_inferred;
 
                 // Unify the tail-expression type with the Return type-variable.
                 // Never / Error propagate vacuously (unify is a no-op for Error).
@@ -549,14 +554,6 @@ impl Checker {
         // is seen as Ty::I32 by the coercion arms below.
         let resolved = self.subst.resolve(expected);
         let expected = &resolved;
-        // Capture whether THIS expression is a function-return tail (armed by
-        // `check_fn_decl` and threaded through `check_block`), then disarm so
-        // the recursive operand/field/condition checks below never inherit it —
-        // only a genuine tail expression may Ok-coerce. The `Expr::If` and
-        // `Expr::Match` arms below re-arm explicitly for their branch bodies
-        // (which are themselves tail-flowing), and the default arm consults
-        // `tail_ok_armed` to perform the actual coercion.
-        let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         // A struct literal's written path names its nominal by identity; it
         // meets the expected type only when both name one declaration.
         let struct_init_head = match expr {
@@ -677,10 +674,6 @@ impl Checker {
                 _,
             ) => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
-                // Both branch bodies of a tail `if` flow to the function return,
-                // so they inherit this expression's armed state; the condition
-                // (checked above against `Bool`) does not.
-                self.tail_ok_armed = tail_ok_armed;
                 let entry = self.env.ownership_snapshot();
                 let then_ty = self.check_expr_with_expected(&then_block.0, &then_block.1, expected);
                 let then_exit = BranchArmExit {
@@ -688,7 +681,6 @@ impl Checker {
                     diverges: Self::arm_skips_join(&then_ty),
                 };
                 let actual = if let Some(else_block) = else_block {
-                    self.tail_ok_armed = tail_ok_armed;
                     self.env.restore_ownership(&entry);
                     let else_ty =
                         self.check_expr_with_expected(&else_block.0, &else_block.1, expected);
@@ -723,7 +715,6 @@ impl Checker {
             }
 
             (Expr::Select { arms, timeout }, _) => {
-                self.tail_ok_armed = tail_ok_armed;
                 let actual = self.check_select_expr(arms, timeout.as_deref(), span, Some(expected));
                 if matches!(actual, Ty::Never | Ty::Error) {
                     actual
@@ -740,10 +731,6 @@ impl Checker {
             }
             (Expr::Match { scrutinee, arms }, _) => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                // A tail `match`'s arm bodies flow to the function return, so
-                // re-arm before checking them; the scrutinee (synthesized above)
-                // does not. `check_match_expr` threads the flag to each arm body.
-                self.tail_ok_armed = tail_ok_armed;
                 let actual = self.check_match_expr(&scr_ty, scrutinee, arms, span, Some(expected));
                 if matches!(actual, Ty::Never | Ty::Error) {
                     actual
@@ -1069,7 +1056,6 @@ impl Checker {
             }
 
             (Expr::Block(_) | Expr::UnsafeBlock(_), _) => {
-                self.tail_ok_armed = tail_ok_armed;
                 self.check_expr_with_expected(expr, span, expected)
             }
             // Array repeat coercion to Array<T, N> type. The declared length
@@ -1599,11 +1585,6 @@ impl Checker {
                     &actual,
                     span,
                 );
-                if tail_ok_armed {
-                    if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
-                        return coerced;
-                    }
-                }
                 let n = self.errors.len();
                 self.expect_type(expected, &actual, span);
                 if self.errors.len() > n {
@@ -1638,20 +1619,6 @@ impl Checker {
                     actual
                 } else {
                     let actual = self.synthesize(expr, span);
-                    // Function-tail Ok-coercion for a bare call tail (e.g.
-                    // `fn f() -> Result<i64, E> { value() }` where `value(): i64`).
-                    // `tail_ok_armed` is true only at a genuine tail position —
-                    // the recursive operand/argument checks disarm it — so a call
-                    // appearing as an argument or non-tail sub-expression never
-                    // reaches here armed. Probe the same sound two-step as the
-                    // default arm: full-`Result` tail → no wrap; `Ok`-payload tail
-                    // → `Ok(call)`. Both miss → fall through to the normal
-                    // unify-and-diagnose below.
-                    if tail_ok_armed {
-                        if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
-                            return coerced;
-                        }
-                    }
                     let n = self.errors.len();
                     self.expect_type(expected, &actual, span);
                     if self.errors.len() > n {
@@ -1751,18 +1718,6 @@ impl Checker {
                 } else {
                     // Not a unit variant of this type — synthesize and unify.
                     let actual = self.synthesize(expr, span);
-                    // Function-tail Ok-coercion for a bare identifier tail (e.g.
-                    // `fn f(x: i64) -> Result<i64, E> { x }`, including the
-                    // generic `fn g<T>(x: T) -> Result<T, E> { x }`). `tail_ok_armed`
-                    // is true only at a genuine tail — recursive checks disarm it —
-                    // so an identifier used as an argument or non-tail
-                    // sub-expression never reaches here armed. Same two-step probe
-                    // as the default arm.
-                    if tail_ok_armed {
-                        if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
-                            return coerced;
-                        }
-                    }
                     let n = self.errors.len();
                     self.expect_type(expected, &actual, span);
                     if self.errors.len() > n {
@@ -1776,22 +1731,6 @@ impl Checker {
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
-                // Function-tail Ok-coercion. When this expression is the tail of
-                // a `Result<Ok, Err>`-returning function (and only then —
-                // `tail_ok_armed` is set exclusively at tail positions) and its
-                // type is the `Ok` payload rather than the full `Result`, wrap
-                // it in `Ok(..)`. This is type-directed and unambiguous: the
-                // full-`Result` case is probed FIRST and takes the no-coercion
-                // path, so a tail already typed `Result<Ok, Err>` is returned
-                // directly (no double-wrap into `Result<Result<..>, ..>`), and a
-                // genuine `Ok`-payload tail (e.g. `db.find(id)?` typed `User`
-                // under `-> Result<User, E>`) is wrapped. For finite types the
-                // two are mutually exclusive (no `T == Result<T, E>`).
-                if tail_ok_armed {
-                    if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
-                        return coerced;
-                    }
-                }
                 let n = self.errors.len();
                 self.expect_type(expected, &actual, span);
                 // Same duplicate-suppression as the struct-init fallthrough above.

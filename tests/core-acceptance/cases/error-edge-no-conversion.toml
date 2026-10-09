@@ -1,6 +1,6 @@
 [[case]]
 id = "error-edge-no-conversion"
-intent = "Without a declared `From`, `?` refuses to carry an `IoError` into `ConfigError` and names both types."
+intent = "Without a declared `From` or a variant carrying the error alone, `?` refuses to carry an `IoError` into `ConfigError` and names both types."
 source = "cases/error-edge-no-conversion.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -8,6 +8,6 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "E_ERROR_NO_CONVERSION"
-line = 25
+line = 24
 column = 16
 message = "`?` cannot convert `std.fs.IoError` into `ConfigError`"

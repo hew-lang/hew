@@ -57,10 +57,10 @@ fn parse(text: string) -> Result<i64, ParseError> {
     if text.len() > 4 { .Err(ParseError { line: text }) } else { .Ok(text.len()) }
 }
 
-fn load<F: From<IoError> + From<ParseError>>(path: string) -> Result<i64, F> {
+fn load<F: From<IoError> + From<ParseError>>(path: string) -> i64 fails F {
     let text = read(path)?;
     let n = parse(text)?;
-    .Ok(n)
+    n
 }
 
 fn lift<F: From<IoError>>(error: IoError) -> F {

@@ -1,0 +1,84 @@
+// `impl Error for X {}` is all an error type needs: the compiler supplies its
+// Display, which renders the variant name and then its payloads. A payload
+// renders through its own Display, so wrapped errors read outermost first,
+// and a hand-written Display still takes precedence.
+
+enum StoreError {
+    Missing(string);
+    Pair(string, i64);
+    OutOfRange { name: string; value: i64; }
+    Closed;
+}
+
+impl Error for StoreError {}
+
+type Location {
+    file: string;
+    line: i64;
+}
+
+impl Error for Location {}
+
+enum Refusal {
+    Busy;
+}
+
+impl Display for Refusal {
+    fn fmt(self) -> string {
+        "the store is busy"
+    }
+}
+
+impl Error for Refusal {}
+
+enum AppError {
+    Store(StoreError);
+    Refused(Refusal);
+    Other(dyn Error);
+}
+
+impl Error for AppError {}
+
+// The implied Display keeps the `impl Error` header: its bounds, and a
+// binder whose spelling is a trait's.
+type Labeled<T: Display> {
+    label: T;
+    code: i64;
+}
+
+impl<T: Display> Error for Labeled<T> {}
+
+enum Tagged<Display> {
+    Tag(Display);
+}
+
+impl<Display> Error for Tagged<Display> {}
+
+fn load(key: string) -> i64 fails StoreError {
+    if key == "port" {
+        return error .Missing(key);
+    }
+    8080
+}
+
+fn report(key: string) -> i64 fails dyn Error {
+    load(key)?
+}
+
+fn main() fails dyn Error {
+    println(f"{StoreError.Missing("port")}");
+    println(f"{StoreError.Pair("retries", 3)}");
+    println(f"{StoreError.OutOfRange { name: "port", value: 70000 }}");
+    println(f"{StoreError.Closed}");
+    println(f"{Location { file: "app.hew", line: 12 }}");
+    println(f"{AppError.Store(StoreError.Closed)}");
+    println(f"{AppError.Refused(Refusal.Busy)}");
+    let other: dyn Error = Location { file: "lib.hew", line: 4 };
+    println(f"{AppError.Other(other)}");
+    println(f"{Labeled { label: "port", code: 2 }}");
+    let tagged: Tagged<i64> = Tagged.Tag(5);
+    println(f"{tagged}");
+    println(f"{report("host")?}");
+    let port = load("port").context("reading the listen port")?;
+    println(f"unreachable {port}");
+}

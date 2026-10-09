@@ -250,15 +250,15 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
 ///     }
 /// }
 /// ```
-pub fn parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
+pub fn parse_endpoint(context: string, addr: string) -> Endpoint fails NetError {
     if addr == "" {
-        return .Err(endpoint_reject(context, addr, "empty address"));
+        return error endpoint_reject(context, addr, "empty address");
     }
     if addr.len() > max_endpoint_len() {
-        return .Err(endpoint_reject(context, "<oversized>", f"address length {addr.len()} exceeds {max_endpoint_len()}"));
+        return error endpoint_reject(context, "<oversized>", f"address length {addr.len()} exceeds {max_endpoint_len()}");
     }
     if addr.starts_with("[") {
-        return try_parse_bracketed_endpoint(context, addr);
+        return try_parse_bracketed_endpoint(context, addr)?;
     }
     let colon = addr.find(":");
     match colon {
@@ -269,38 +269,38 @@ pub fn parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetErro
             // its grammar is ambiguous with `host:port` and it is rejected
             // rather than silently split at the first colon.
             if port_text.contains(":") {
-                return .Err(endpoint_reject(context, addr, "unbracketed IPv6 literal; write [address]:port"));
+                return error endpoint_reject(context, addr, "unbracketed IPv6 literal; write [address]:port");
             }
             let port = try_endpoint_port(context, addr, port_text)?;
             if host == "" {
-                .Ok(Endpoint { host: "127.0.0.1", port: port })
+                Endpoint { host: "127.0.0.1", port: port }
             } else {
-                .Ok(Endpoint { host: host, port: port })
+                Endpoint { host: host, port: port }
             }
         }
-        .None => .Err(endpoint_reject(context, addr, "missing ':port'")),
+        .None => return error endpoint_reject(context, addr, "missing ':port'"),
     }
 }
 
-fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
+fn try_parse_bracketed_endpoint(context: string, addr: string) -> Endpoint fails NetError {
     let close = addr.find("]");
     match close {
         .Some(end) => {
             let host = addr.slice(1, end);
             if host == "" {
-                return .Err(endpoint_reject(context, addr, "empty bracketed host"));
+                return error endpoint_reject(context, addr, "empty bracketed host");
             }
             let rest = addr.slice(end + 1, addr.len());
             if rest == "" {
-                return .Err(endpoint_reject(context, addr, "missing ':port'"));
+                return error endpoint_reject(context, addr, "missing ':port'");
             }
             if !rest.starts_with(":") {
-                return .Err(endpoint_reject(context, addr, "expected ':port' after ']'"));
+                return error endpoint_reject(context, addr, "expected ':port' after ']'");
             }
             let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
-            .Ok(Endpoint { host: host, port: port })
+            Endpoint { host: host, port: port }
         }
-        .None => .Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
+        .None => return error endpoint_reject(context, addr, "unterminated '[' in IPv6 literal"),
     }
 }
 
@@ -538,18 +538,18 @@ impl ConnectionMethods for Connection {
         }
     }
     /// Set the read timeout in milliseconds.
-    fn set_read_timeout(self, ms: i64) -> Result<(), NetError> {
+    fn set_read_timeout(self, ms: i64) fails NetError {
         let checked = try_connection_timeout_ms("net.Connection.set_read_timeout", ms)?;
         net_result_from_status(unsafe {
             hew_tcp_set_read_timeout(self, checked as i32) // INTERNAL-ABI: range-checked above
-        })
+        })?
     }
     /// Set the write timeout in milliseconds.
-    fn set_write_timeout(self, ms: i64) -> Result<(), NetError> {
+    fn set_write_timeout(self, ms: i64) fails NetError {
         let checked = try_connection_timeout_ms("net.Connection.set_write_timeout", ms)?;
         net_result_from_status(unsafe {
             hew_tcp_set_write_timeout(self, checked as i32) // INTERNAL-ABI: range-checked above
-        })
+        })?
     }
 }
 
@@ -647,17 +647,17 @@ pub fn connect(addr: string) -> Result<Connection, NetError> {
 /// before the native connect rather than becoming host `127.0.0.1` port `0`.
 /// The deadline is accumulated with overflow checks and validated against the
 /// `i32` the C ABI carries.
-pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Result<Connection, NetError> {
+pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection fails NetError {
     let Endpoint { host, port } = parse_endpoint("net.connect_timeout", addr)?;
     let timeout_ms = try_connect_timeout_ms(timeout_sec, timeout_usec)?;
     unsafe {
         let conn = hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
         if hew_connection_is_valid(conn) {
-            .Ok(conn)
+            conn
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            .Err(net_error_from_errno(errno as i64))
+            return error net_error_from_errno(errno as i64);
         }
     }
 }

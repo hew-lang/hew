@@ -26,7 +26,7 @@ fn main() -> i64 {
     parsed_url.close();
     let node = match xml.parse("<root/>") {
         .Ok(node) => node,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     node.close();
     0

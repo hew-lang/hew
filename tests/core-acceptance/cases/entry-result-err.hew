@@ -20,10 +20,14 @@ fn check(value: i64) -> Result<(), AppError> {
     .Ok(())
 }
 
+// A `main` that returns its Result as a value exits exactly as one that
+// fails through its edge.
 fn main() -> Result<(), AppError> {
     let held = "held:" + "err";
     println(held);
-    check(3)?;
-    println("unreachable");
-    .Ok(())
+    let checked = check(3);
+    if checked.is_ok() {
+        println("unreachable");
+    }
+    checked
 }

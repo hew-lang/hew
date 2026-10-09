@@ -752,17 +752,6 @@
               "span": null
             },
             {
-              "dst": 18,
-              "fields": [
-                17
-              ],
-              "op": "variant.make",
-              "own": "owned",
-              "shape": 0,
-              "span": null,
-              "variant": 0
-            },
-            {
               "dst": null,
               "op": "end_lifetime",
               "place": 2,
@@ -778,9 +767,9 @@
           "term": {
             "edge": {
               "args": [
-                18
+                17
               ],
-              "to": 13
+              "to": 14
             },
             "op": "goto",
             "span": null
@@ -790,7 +779,7 @@
           "id": 12,
           "ops": [
             {
-              "dst": 19,
+              "dst": 18,
               "op": "const.int",
               "own": "none",
               "span": null,
@@ -798,9 +787,9 @@
               "value": "0"
             },
             {
-              "dst": 20,
+              "dst": 19,
               "fields": [
-                19
+                18
               ],
               "op": "variant.make",
               "own": "none",
@@ -809,9 +798,9 @@
               "variant": 6
             },
             {
-              "dst": 21,
+              "dst": 20,
               "fields": [
-                20
+                19
               ],
               "op": "variant.make",
               "own": "owned",
@@ -828,9 +817,7 @@
           ],
           "term": {
             "edge": {
-              "args": [
-                21
-              ],
+              "args": [],
               "to": 13
             },
             "op": "goto",
@@ -839,24 +826,56 @@
         },
         {
           "id": 13,
-          "ops": [],
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 1,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 20
+            }
+          }
+        },
+        {
+          "id": 14,
+          "ops": [
+            {
+              "dst": 22,
+              "fields": [
+                21
+              ],
+              "op": "variant.make",
+              "own": "owned",
+              "shape": 0,
+              "span": null,
+              "variant": 0
+            }
+          ],
           "params": [
             {
               "own": "owned",
-              "value": 22
+              "value": 21
             }
           ],
           "term": {
             "edge": {
               "args": [],
-              "to": 14
+              "to": 15
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 14,
+          "id": 15,
           "ops": [
             {
               "dst": null,

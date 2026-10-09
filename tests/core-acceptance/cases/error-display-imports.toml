@@ -1,0 +1,10 @@
+[[case]]
+id = "error-display-imports"
+intent = "An implied Display written into a program leaves imported modules' declarations intact, including receiver methods on builtin types."
+source = "cases/error-display-imports.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Ok(ok) Err(Bad: empty) 3\n"
+exit = 0

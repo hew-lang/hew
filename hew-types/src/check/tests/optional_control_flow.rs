@@ -199,15 +199,15 @@ fn local_handler_question_mark_uses_the_enclosing_return_type() {
 #[test]
 fn propagation_rejects_absence_error_conflation() {
     for source in [
-        "fn f(value: Option<i64>) -> Result<i64, string> { .Ok(value?) }",
+        "fn f(value: Option<i64>) -> i64 fails string { value? }",
         "fn f(value: Result<i64, string>) -> Option<i64> { .Some(value?) }",
     ] {
         let checked = check_source(source);
         assert!(
-            checked
-                .errors
-                .iter()
-                .any(|error| matches!(error.kind, TypeErrorKind::InvalidOperation)),
+            checked.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::InvalidOperation | TypeErrorKind::NoFailureEdge
+            )),
             "{source}: {:?}",
             checked.errors
         );
@@ -218,7 +218,7 @@ fn propagation_rejects_absence_error_conflation() {
 fn propagation_accepts_same_container_with_different_success_type() {
     for source in [
         "fn f(value: Option<i64>) -> Option<string> { value?; .Some(\"done\") }",
-        "fn f(value: Result<i64, string>) -> Result<bool, string> { value?; .Ok(true) }",
+        "fn f(value: Result<i64, string>) -> bool fails string { value?; true }",
     ] {
         let checked = check_source(source);
         assert!(checked.errors.is_empty(), "{source}: {:?}", checked.errors);
@@ -287,5 +287,98 @@ fn required_optional_failure_arm_cannot_see_success_binding() {
             .iter()
             .any(|error| matches!(error.kind, TypeErrorKind::UndefinedVariable)),
         "success binding must not exist on the absence path"
+    );
+}
+
+#[test]
+fn an_inferred_closure_opens_its_edge_only_at_a_result_exit() {
+    // A `?` on an `Option` opens no edge: the closure returns its `Option`.
+    for source in [
+        "fn wrap(v: i64) -> Option<i64> { .Some(v) } \
+         fn f(xs: Vec<Option<i64>>) -> Vec<Option<i64>> { xs.map(|o| wrap(o? + 1)) }",
+        "fn wrap(v: i64) -> Option<i64> { .Some(v) } \
+         fn f(o: Option<i64>) -> Option<i64> { let g = |o: Option<i64>| wrap(o? * 3); g(o) }",
+        // A `return v` before the first `Result` exit is the success.
+        "fn parse(t: string) -> i64 fails string { 1 } \
+         fn f() -> Result<i64, string> { let g = |t: string| { if t == \"r\" { return 7; } parse(t)? }; g(\"x\") }",
+    ] {
+        let checked = check_source(source);
+        assert!(checked.errors.is_empty(), "{source}: {:?}", checked.errors);
+    }
+}
+
+#[test]
+fn a_failing_closure_refuses_absence_and_a_nested_result_tail() {
+    for (source, message) in [
+        (
+            "fn parse(t: string) -> i64 fails string { 1 } \
+             fn f() { let g = |t: string, o: Option<i64>| { let n = parse(t)?; n + o? }; let _ = g(\"a\", .None); }",
+            "`?` cannot propagate absence here",
+        ),
+        (
+            "fn parse(t: string) -> i64 fails string { 1 } \
+             fn f() { let g = |o: Option<i64>, t: string| { let x = o?; x + parse(t)? }; let _ = g(.None, \"a\"); }",
+            "`?` cannot propagate absence here",
+        ),
+        (
+            "fn a(t: string) -> Result<i64, string> { .Ok(1) } \
+             fn f() { let g = |t: string| { let _ = a(t)?; a(t) }; let _ = g(\"a\"); }",
+            "would be returned as data inside another `Result`",
+        ),
+    ] {
+        let checked = check_source(source);
+        assert!(
+            checked
+                .errors
+                .iter()
+                .any(|error| error.message.contains(message)),
+            "{source}: {:?}",
+            checked.errors
+        );
+    }
+}
+
+#[test]
+fn a_missing_edge_fix_it_is_a_clause_that_compiles() {
+    for (source, clause) in [
+        (
+            "fn p(t: string) -> i64 fails string { 1 } \
+             fn mk(t: string) -> Result<fn(i64) -> i64, string> { let k = p(t)?; .Ok(|n: i64| n * k) }",
+            "`-> (fn(i64) -> i64) fails string`",
+        ),
+        (
+            "fn d() -> Result<i64, i64> { return error \"x\"; }",
+            "`-> i64 fails string`",
+        ),
+    ] {
+        let checked = check_source(source);
+        let error = checked
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::NoFailureEdge)
+            .unwrap_or_else(|| panic!("{source}: {:?}", checked.errors));
+        assert!(
+            error.suggestions.iter().any(|hint| hint.contains(clause)),
+            "{source}: {:?}",
+            error.suggestions
+        );
+    }
+    let checked = check_source(
+        "fn p(t: string) -> i64 fails string { 1 } \
+         fn f() -> i64 fails string { let g = gen { yield p(\"x\")?; }; for v in g { return v; } 0 }",
+    );
+    let error = checked
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::NoFailureEdge)
+        .unwrap_or_else(|| panic!("{:?}", checked.errors));
+    assert!(
+        error.message.contains("`gen {}` block has none"),
+        "{error:?}"
+    );
+    assert!(
+        error.suggestions.iter().all(|hint| !hint.contains("fails")),
+        "{:?}",
+        error.suggestions
     );
 }

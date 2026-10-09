@@ -82,8 +82,20 @@ fn main() {
     if ($ProbeOutput -notmatch 'release-native-link-ok') {
         throw "release-link consumer produced unexpected output: ${ProbeOutput}"
     }
+
+    # The release runtime reads a narrow C argument from its whole register, so
+    # an O2 caller must widen it; the debug runtime reads only the low byte and hides a miss.
+    $AbiSource = Join-Path $PSScriptRoot '..\tests\core-acceptance\cases\stream-select-timeout-bool-print.hew'
+    $AbiOutput = Join-Path $WorkDir 'release-abi-probe.exe'
+    & $StagedHew build --opt-level 2 $AbiSource -o $AbiOutput
+    Assert-NativeSuccess 'hew build --opt-level 2 narrow-scalar probe'
+    $AbiResult = & $AbiOutput
+    Assert-NativeSuccess 'O2 narrow-scalar probe run'
+    if ($AbiResult -ne 'false false') {
+        throw "O2 narrow-scalar probe produced unexpected output: ${AbiResult}"
+    }
 } finally {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host 'PASS: release hew.lib linked and ran a Rust native staticlib consumer'
+Write-Host 'PASS: release hew.lib linked and ran a Rust native staticlib consumer and an O2 narrow-scalar probe'

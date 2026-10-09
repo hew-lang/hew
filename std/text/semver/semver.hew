@@ -11,7 +11,7 @@
 //! fn main() {
 //!     let v = match semver.parse("1.2.3-beta.1") {
 //!         .Ok(version) => version,
-//!         .Err(reason) => panic(reason),
+//!         .Err(reason) => panic(f"{reason}"),
 //!     };
 //!     println(v.major());
 //!     if v.matches(">=1.0.0") {
@@ -223,10 +223,23 @@ fn compare_decimal_strings(a: string, b: string) -> i64 {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// Text that is not a semantic version, by the part that is wrong. Each
+/// carries the whole text.
+pub enum VersionError {
+    /// The `+` build metadata is not dot-separated identifiers.
+    InvalidBuild(string);
+    /// The `-` pre-release is not dot-separated identifiers.
+    InvalidPreRelease(string);
+    /// The core is not `major.minor.patch` numeric identifiers.
+    InvalidCore(string);
+}
+
+impl Error for VersionError {}
+
 /// Parse a semantic version string.
 ///
-/// Returns `Err(string)` if the string is not a valid semantic version.
-pub fn parse(s: string) -> Result<Version, string> {
+/// Fails with a `VersionError` naming the part that is not valid SemVer.
+pub fn parse(s: string) -> Version fails VersionError {
     // Split off build metadata (+...)
     // Clone s so it remains available for error messages and further searches.
     var main_part = clone s;
@@ -241,7 +254,7 @@ pub fn parse(s: string) -> Result<Version, string> {
         .None => {}
     }
     if has_build && !dotted_identifiers_are_valid(build, false) {
-        return .Err(f"semver: invalid build metadata: {s}");
+        return error VersionError.InvalidBuild(s);
     }
     // Split off pre-release (-...)
     // Clone main_part so it remains available for further searches.
@@ -257,27 +270,27 @@ pub fn parse(s: string) -> Result<Version, string> {
         .None => {}
     }
     if has_pre && !dotted_identifiers_are_valid(pre, true) {
-        return .Err(f"semver: invalid pre-release: {s}");
+        return error VersionError.InvalidPreRelease(s);
     }
     // Split major.minor.patch
     let first_dot = match version_part.find(".") {
         .Some(i) => i,
-        .None => return .Err(f"semver: invalid version string: {s}"),
+        .None => return error VersionError.InvalidCore(s),
     };
     let major_str = version_part.slice(0, first_dot);
     let rest = version_part.slice(first_dot + 1, version_part.len());
     let second_dot = match rest.find(".") {
         .Some(i) => i,
-        .None => return .Err(f"semver: invalid version string: {s}"),
+        .None => return error VersionError.InvalidCore(s),
     };
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
     // Each of major, minor, and patch must be a numeric identifier: digits
     // only, and no leading zero unless the component is exactly "0".
     if !is_numeric_identifier(major_str) || !is_numeric_identifier(minor_str) || !is_numeric_identifier(patch_str) {
-        return .Err(f"semver: invalid version string: {s}");
+        return error VersionError.InvalidCore(s);
     }
-    .Ok(Version { pre_release: pre, build_meta: build, maj: major_str, min: minor_str, pat: patch_str })
+    Version { pre_release: pre, build_meta: build, maj: major_str, min: minor_str, pat: patch_str }
 }
 
 /// Format a `Version` as its canonical string representation.

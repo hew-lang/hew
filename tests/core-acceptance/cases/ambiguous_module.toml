@@ -1,7 +1,7 @@
 [[case]]
 id = "ambiguous_module"
 intent = "The fixture is refused, and the refusal names E_IMPORT_AMBIGUOUS."
-source = "../vertical-slice/reject/ambiguous_module.hew"
+source = "../vertical-slice/reject/ambiguous_module/main.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "reject"

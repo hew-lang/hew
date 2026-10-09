@@ -33,7 +33,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 _ => unreachable!("verified native I/O carrier"),
             })
             .collect::<Vec<_>>();
-        let submit = coro::external(
+        let submit = get_or_declare_external(
             self.llvm,
             operation.submit_symbol(),
             pointer.fn_type(&types, false),
@@ -69,7 +69,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(poll)
             .llvm_ctx("poll I/O quiescence")?;
         self.builder.position_at_end(poll);
-        let status = coro::external(
+        let status = get_or_declare_external(
             self.llvm,
             "hew_async_io_cleanup_status",
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
@@ -125,7 +125,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ("hew_async_io_take_handle", output)
             }
         };
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             symbol,
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),

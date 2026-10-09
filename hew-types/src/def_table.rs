@@ -929,6 +929,19 @@ impl DefTable {
             .find(|member| self.kind(*member) == kind)
     }
 
+    /// Every member of `owner` declared with `kind`, in no fixed order.
+    pub fn members_of_kind(
+        &self,
+        owner: DefId,
+        kind: DeclarationKind,
+    ) -> impl Iterator<Item = DefId> + '_ {
+        self.members
+            .iter()
+            .filter(move |((member_owner, _), _)| *member_owner == owner)
+            .flat_map(|(_, members)| members.iter().copied())
+            .filter(move |member| self.kind(*member) == kind)
+    }
+
     fn row(&self, id: DefId) -> &DefRow {
         &self.defs[id.index()]
     }

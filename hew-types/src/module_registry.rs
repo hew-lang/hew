@@ -248,48 +248,286 @@ pub fn stdlib_search_paths() -> Vec<PathBuf> {
     compiler_stdlib_root().into_iter().collect()
 }
 
+/// What a source file's module membership is measured from (spec 3.5.1).
+///
+/// The anchor travels with the code: the standard-library root, or the
+/// nearest package manifest. The name of the anchor directory itself is
+/// never read, so a checkout, an install and a linked path dependency give
+/// every file the same module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleAnchor {
+    /// A file under `<root>/std/`, where `root` is a standard-library root.
+    Std { root: PathBuf },
+    /// A file in the package whose `hew.toml` sits in `dir`. `name` is the
+    /// manifest's `[package] name`, when it has one.
+    Package {
+        dir: PathBuf,
+        name: Option<ModulePath>,
+    },
+    /// A file outside any package: a single-file module whose directories
+    /// are only namespaces.
+    Loose,
+}
+
+impl ModuleAnchor {
+    /// The directory the anchor's module paths are relative to.
+    #[must_use]
+    pub fn dir(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Std { root } => Some(root),
+            Self::Package { dir, .. } => Some(dir),
+            Self::Loose => None,
+        }
+    }
+}
+
+/// The part a file plays in its module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipRole {
+    /// The file is a module of its own.
+    Single,
+    /// The file is `D/D.hew`, the entry of directory module `D`.
+    Entry,
+    /// The file is another top-level file of directory module `D`.
+    Peer,
+    /// A `*_test.hew` file, compiled with the module it tests.
+    Test,
+}
+
+/// Which module a source file belongs to, and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleMembership {
+    /// The module's path relative to its anchor: the package name and the
+    /// file's place below it, `std.…` for the standard library, or the file
+    /// stem for a loose file.
+    pub module: ModulePath,
+    /// The file that roots the module: the directory module's entry, the
+    /// file itself for a single-file module, or the production source a test
+    /// file compiles with (itself when it has none).
+    pub entry: PathBuf,
+    /// The entry's peers, sorted, for a directory module; otherwise empty.
+    pub peers: Vec<PathBuf>,
+    pub role: MembershipRole,
+    /// The anchor the membership was measured from.
+    pub anchor: ModuleAnchor,
+}
+
+impl ModuleMembership {
+    /// Whether checking this file checks its whole directory module. A std
+    /// source is checked by itself under the identity the std root gives it.
+    #[must_use]
+    pub fn checks_as_directory_module(&self) -> bool {
+        matches!(self.role, MembershipRole::Entry | MembershipRole::Peer)
+            && !matches!(self.anchor, ModuleAnchor::Std { .. })
+    }
+
+    /// Whether the file is its package's root module, `<leaf>.hew` beside
+    /// `hew.toml`. Checking it checks the module importers see, under the
+    /// package's name.
+    #[must_use]
+    pub fn is_package_root_module(&self) -> bool {
+        self.role == MembershipRole::Single
+            && matches!(&self.anchor, ModuleAnchor::Package { dir, name: Some(name) }
+                if self.entry.parent() == Some(dir.as_path()) && self.module == *name)
+    }
+
+    /// The production source a test file compiles with, when it has one.
+    #[must_use]
+    pub fn test_companion(&self, file: &std::path::Path) -> Option<&std::path::Path> {
+        (self.role == MembershipRole::Test && self.entry != file).then_some(self.entry.as_path())
+    }
+}
+
+fn is_test_source(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("_test.hew"))
+}
+
+fn is_hew_source(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "hew")
+}
+
+/// The entry `dir/<dir>.hew` of `dir` as a directory module, when `dir` lies
+/// strictly below the anchor and holds that file. This is the one place a
+/// directory's name is compared with a file's: it only ever reads names the
+/// package's author chose below the anchor.
+fn directory_module_entry(
+    anchor_dir: &std::path::Path,
+    file: &std::path::Path,
+    list_dir: &dyn Fn(&std::path::Path) -> Vec<PathBuf>,
+) -> Option<PathBuf> {
+    let dir = file.parent()?;
+    if dir == anchor_dir || !dir.starts_with(anchor_dir) {
+        return None;
+    }
+    let mut entry_name = dir.file_name()?.to_os_string();
+    entry_name.push(".hew");
+    let entry = dir.join(entry_name);
+    (entry == file || list_dir(dir).contains(&entry)).then_some(entry)
+}
+
+/// The module path of the file or directory at `relative` below the anchor,
+/// with any extension removed.
+fn anchored_module_path(anchor: &ModuleAnchor, relative: &std::path::Path) -> Option<ModulePath> {
+    let segments = relative
+        .iter()
+        .map(|component| component.to_str().map(crate::Symbol::intern))
+        .collect::<Option<Vec<_>>>()?;
+    let ModuleAnchor::Package {
+        name: Some(package),
+        ..
+    } = anchor
+    else {
+        return Some(ModulePath { segments });
+    };
+    // R2: the package's root module is `<anchor>/<leaf>.hew`, named by the
+    // manifest. Every other file sits below the package name.
+    let is_root_module = segments.len() == 1 && package.segments.last() == segments.first();
+    let mut module = package.segments.clone();
+    if !is_root_module {
+        module.extend(segments);
+    }
+    Some(ModulePath { segments: module })
+}
+
+/// Which module `file` belongs to under `anchor` (spec 3.5.1).
+///
+/// A directory `D` strictly below a package or std anchor that holds
+/// `D/D.hew` is a directory module: that file is its entry and every other
+/// top-level `.hew` file in `D`, except `*_test.hew`, is a peer. A loose file
+/// never forms one. A test file `foo_test.hew` compiles with the directory
+/// module it sits in, or else with `foo.hew` beside it.
+///
+/// Membership is a pure function of the path, the anchor and `list_dir`,
+/// which names the files of a directory (the filesystem, or a host's
+/// in-memory sources). Paths are compared as given, never canonicalized, so a
+/// host without a filesystem gets the same answer.
+#[must_use]
+pub fn module_membership(
+    anchor: &ModuleAnchor,
+    file: &std::path::Path,
+    list_dir: &dyn Fn(&std::path::Path) -> Vec<PathBuf>,
+) -> ModuleMembership {
+    let module_at = |relative: Option<&std::path::Path>, fallback: &std::path::Path| {
+        relative
+            .and_then(|relative| anchored_module_path(anchor, relative))
+            .or_else(|| Some(ModulePath::new([fallback.file_stem()?.to_str()?])))
+            .unwrap_or_else(ModulePath::root)
+    };
+    let below_anchor = |path: &std::path::Path| {
+        anchor
+            .dir()
+            .and_then(|dir| path.strip_prefix(dir).ok())
+            .map(|relative| relative.with_extension(""))
+    };
+    let parent = file.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let directory_entry = anchor
+        .dir()
+        .and_then(|anchor_dir| directory_module_entry(anchor_dir, file, list_dir));
+    let is_test = is_test_source(file);
+
+    if let Some(entry) = directory_entry {
+        let role = if is_test {
+            MembershipRole::Test
+        } else if entry == file {
+            MembershipRole::Entry
+        } else {
+            MembershipRole::Peer
+        };
+        let peers = if role == MembershipRole::Test {
+            Vec::new()
+        } else {
+            let mut peers = list_dir(parent)
+                .into_iter()
+                .filter(|path| is_hew_source(path) && !is_test_source(path) && *path != entry)
+                .collect::<Vec<_>>();
+            peers.sort();
+            peers
+        };
+        return ModuleMembership {
+            module: module_at(below_anchor(parent).as_deref(), parent),
+            entry,
+            peers,
+            role,
+            anchor: anchor.clone(),
+        };
+    }
+
+    let (entry, role) = if is_test {
+        let companion = file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_suffix("_test"))
+            .map(|stem| parent.join(stem).with_extension("hew"))
+            .filter(|companion| list_dir(parent).contains(companion));
+        (
+            companion.unwrap_or_else(|| file.to_path_buf()),
+            MembershipRole::Test,
+        )
+    } else {
+        (file.to_path_buf(), MembershipRole::Single)
+    };
+    ModuleMembership {
+        module: module_at(below_anchor(&entry).as_deref(), &entry),
+        entry,
+        peers: Vec::new(),
+        role,
+        anchor: anchor.clone(),
+    }
+}
+
+/// The std anchor of `file` among `roots`, when `file` lies under
+/// `<root>/std/`.
+#[must_use]
+pub fn std_anchor_for(file: &std::path::Path, roots: &[PathBuf]) -> Option<ModuleAnchor> {
+    roots.iter().find_map(|root| {
+        let relative = file.strip_prefix(root).ok()?;
+        (relative
+            .components()
+            .next()
+            .is_some_and(|component| component.as_os_str() == "std")
+            && is_hew_source(relative))
+        .then(|| ModuleAnchor::Std { root: root.clone() })
+    })
+}
+
+/// The files of `dir` on the filesystem; empty where it cannot be read.
+#[must_use]
+pub fn filesystem_dir_listing(dir: &std::path::Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// A path in the form the standard-library roots are compared in: canonical
+/// where the host has a filesystem, as spelled where it has none.
+fn stdlib_comparable_path(path: &std::path::Path) -> Option<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(canonical) => Some(canonical),
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => Some(path.to_path_buf()),
+        Err(_) => None,
+    }
+}
+
 /// Return the canonical stdlib owner for an exact shipped source file.
 ///
-/// Package directories are owned by their primary `{name}.hew` source, so a
-/// peer file in that directory has the same owner. A directory without such a
-/// primary source leaves each `.hew` file as its own module.
+/// A peer of a std directory module has the directory module as its owner
+/// (D461); see [`module_membership`].
 #[must_use]
 pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<ModulePath> {
-    let input_canonical = std::fs::canonicalize(source_file).ok()?;
-
-    stdlib_search_paths().into_iter().find_map(|root| {
-        let root_canonical = std::fs::canonicalize(root).ok()?;
-        let relative = input_canonical.strip_prefix(&root_canonical).ok()?;
-        if relative
-            .extension()
-            .is_none_or(|extension| extension != "hew")
-            || relative
-                .components()
-                .next()
-                .is_none_or(|component| component.as_os_str() != "std")
-        {
-            return None;
-        }
-
-        let parent = relative.parent()?;
-        let parent_name = parent.file_name()?.to_str()?;
-        let primary = root_canonical
-            .join(parent)
-            .join(format!("{parent_name}.hew"));
-        let module_path = if primary.is_file() {
-            parent.to_path_buf()
-        } else {
-            relative.with_extension("")
-        };
-        let module = ModulePath::new(
-            module_path
-                .iter()
-                .map(|component| component.to_str())
-                .collect::<Option<Vec<_>>>()?,
-        );
-
-        is_canonical_stdlib_module_source(&input_canonical, &module.dotted()).then_some(module)
-    })
+    let input = stdlib_comparable_path(source_file)?;
+    let roots = stdlib_search_paths()
+        .iter()
+        .filter_map(|root| stdlib_comparable_path(root))
+        .collect::<Vec<_>>();
+    let anchor = std_anchor_for(&input, &roots)?;
+    let membership = module_membership(&anchor, &input, &filesystem_dir_listing);
+    is_canonical_stdlib_module_source(&input, &membership.module.dotted())
+        .then_some(membership.module)
 }
 
 /// Whether `source_file` is the canonical source selected for `dotted_module`
@@ -1198,6 +1436,131 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn listing(files: &[&str]) -> impl Fn(&Path) -> Vec<PathBuf> {
+        let files = files.iter().map(PathBuf::from).collect::<Vec<_>>();
+        move |dir: &Path| {
+            files
+                .iter()
+                .filter(|file| file.parent() == Some(dir))
+                .cloned()
+                .collect()
+        }
+    }
+
+    #[test]
+    fn std_peers_are_listed_from_the_given_sources() {
+        // A host with no filesystem names its embedded std as `./std/...`.
+        let list = listing(&[
+            "./std/net/http/http.hew",
+            "./std/net/http/http_client.hew",
+            "./std/net/http/http_test.hew",
+            "./std/net/http/server.hew",
+        ]);
+        let anchor = ModuleAnchor::Std {
+            root: PathBuf::from("."),
+        };
+        let peer = module_membership(&anchor, Path::new("./std/net/http/http_client.hew"), &list);
+        assert_eq!(peer.role, MembershipRole::Peer);
+        assert_eq!(peer.module, ModulePath::new(["std", "net", "http"]));
+        assert_eq!(peer.entry, Path::new("./std/net/http/http.hew"));
+        let entry = module_membership(&anchor, &peer.entry, &list);
+        assert_eq!(entry.role, MembershipRole::Entry);
+        assert_eq!(
+            entry.peers,
+            [
+                PathBuf::from("./std/net/http/http_client.hew"),
+                PathBuf::from("./std/net/http/server.hew"),
+            ],
+            "test files are not peers"
+        );
+    }
+
+    #[test]
+    fn a_package_root_module_is_its_leaf_file_alone() {
+        let list = listing(&[
+            "/src/my-http/http.hew",
+            "/src/my-http/client.hew",
+            "/src/my-http/greeting/greeting.hew",
+            "/src/my-http/greeting/helpers.hew",
+        ]);
+        let anchor = ModuleAnchor::Package {
+            dir: PathBuf::from("/src/my-http"),
+            name: Some(ModulePath::new(["acme", "http"])),
+        };
+        let of = |file: &str| module_membership(&anchor, Path::new(file), &list);
+        let root = of("/src/my-http/http.hew");
+        assert_eq!(
+            (root.role, root.module),
+            (MembershipRole::Single, ModulePath::new(["acme", "http"]))
+        );
+        let client = of("/src/my-http/client.hew");
+        assert_eq!(
+            (client.role, client.module),
+            (
+                MembershipRole::Single,
+                ModulePath::new(["acme", "http", "client"])
+            )
+        );
+        let entry = of("/src/my-http/greeting/greeting.hew");
+        assert_eq!(
+            (entry.role, entry.module),
+            (
+                MembershipRole::Entry,
+                ModulePath::new(["acme", "http", "greeting"])
+            )
+        );
+        assert_eq!(
+            of("/src/my-http/greeting/helpers.hew").role,
+            MembershipRole::Peer
+        );
+    }
+
+    #[test]
+    fn loose_files_never_form_directory_modules() {
+        let list = listing(&["/x/greeting/greeting.hew", "/x/greeting/helpers.hew"]);
+        for file in ["/x/greeting/greeting.hew", "/x/greeting/helpers.hew"] {
+            let membership = module_membership(&ModuleAnchor::Loose, Path::new(file), &list);
+            assert_eq!(membership.role, MembershipRole::Single, "{file}");
+            assert!(membership.peers.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_test_file_compiles_with_its_module_or_its_namesake() {
+        let list = listing(&[
+            "/p/greeting/greeting.hew",
+            "/p/greeting/greeting_test.hew",
+            "/p/math.hew",
+            "/p/math_test.hew",
+            "/p/alone_test.hew",
+        ]);
+        let package = ModuleAnchor::Package {
+            dir: PathBuf::from("/p"),
+            name: Some(ModulePath::new(["p"])),
+        };
+        for anchor in [&package, &ModuleAnchor::Loose] {
+            let math = module_membership(anchor, Path::new("/p/math_test.hew"), &list);
+            assert_eq!(math.role, MembershipRole::Test);
+            assert_eq!(
+                math.test_companion(Path::new("/p/math_test.hew")),
+                Some(Path::new("/p/math.hew"))
+            );
+            let alone = module_membership(anchor, Path::new("/p/alone_test.hew"), &list);
+            assert_eq!(alone.test_companion(Path::new("/p/alone_test.hew")), None);
+        }
+        let in_module =
+            module_membership(&package, Path::new("/p/greeting/greeting_test.hew"), &list);
+        assert_eq!(in_module.entry, Path::new("/p/greeting/greeting.hew"));
+        // A loose test file still pairs with its namesake, as a single file.
+        let loose = module_membership(
+            &ModuleAnchor::Loose,
+            Path::new("/p/greeting/greeting_test.hew"),
+            &list,
+        );
+        assert_eq!(loose.entry, Path::new("/p/greeting/greeting.hew"));
+        assert_eq!(loose.module, ModulePath::new(["greeting"]));
+    }
 
     #[test]
     fn canonical_stdlib_owner_follows_flat_package_and_peer_layouts() {

@@ -101,6 +101,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| CodegenError::FailClosed("offload run lacks its environment".into()))?
             .into_pointer_value();
         let mut values = Vec::with_capacity(offload.params.len());
+        let widen = (0_u32..)
+            .zip(&offload.params)
+            .filter_map(|(index, slot)| Widen::of(&slot.recipe.ty).map(|kind| (index, kind)))
+            .collect::<Vec<_>>();
         for (index, slot) in offload.params.iter().enumerate() {
             let field = builder
                 .build_struct_gep(env_ty, env, index as u32, "offload.argument")
@@ -141,6 +145,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.thunk_emitter(&builder, function).call_foreign(
             &offload.symbol,
             &values,
+            &widen,
             result,
             &offload.result_abi,
         )?;
@@ -248,7 +253,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
         let usize_ty = self.ctx.ptr_sized_int_type(&data, None);
-        let alloc = coro::external(
+        let alloc = get_or_declare_external(
             self.llvm,
             "hew_alloc",
             pointer.fn_type(&[i64_ty.into(), i64_ty.into()], false),
@@ -286,7 +291,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("move input into offload environment")?;
         }
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
-        let submit = coro::external(
+        let submit = get_or_declare_external(
             self.llvm,
             "hew_async_offload",
             pointer.fn_type(
@@ -340,7 +345,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             None => (pointer.const_null(), 0, 0),
         };
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             "hew_async_io_take_offload",
             self.ctx.i32_type().fn_type(

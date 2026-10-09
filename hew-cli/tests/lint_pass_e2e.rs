@@ -58,6 +58,8 @@ fn run_check(source: &str, extra_args: &[&str]) -> Output {
 /// `journal.hew` and `recovery.hew`. Only the peer file contains a lint.
 fn run_directory_module_check() -> Output {
     let dir = tempdir();
+    // A directory module belongs to a package (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(dir.path().join("hew.toml"), "[package]\nname = \"app\"\n").unwrap();
     let journal_dir = dir.path().join("journal");
     std::fs::create_dir(&journal_dir).unwrap();
     std::fs::write(

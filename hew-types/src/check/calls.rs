@@ -1807,13 +1807,14 @@ impl Checker {
                 let (expr, arg_span) = arg.expr();
                 self.synthesize(expr, arg_span);
             }
-            self.report_error(
+            self.report_error_with_suggestions(
                 TypeErrorKind::ContextVariantNoType,
                 span,
                 format!(
                     "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.{}` requires an expected enum or machine type",
                     context.name
                 ),
+                self.context_variant_edge_hint(),
             );
             return Ty::Error;
         }

@@ -1,17 +1,19 @@
 import std.crypto.sign;
+
 import std.fs;
+
 import std.os;
 
 // Identity keys persist as seed or expanded material; loading picks the
 // constructor by length and rotation commits the new seed atomically.
-fn load_identity(path: string) -> Result<sign.SigningKey, string> {
+fn load_identity(path: string) -> sign.SigningKey fails string {
     let material = fs.read_bytes(path).map_err(|e: fs.IoError| f"{e}")?;
     let key = match material.len() {
         32 => sign.from_seed(material),
         64 => sign.from_expanded(material),
         _ => sign.from_pkcs8(material),
     };
-    key.map_err(|e: sign.KeyError| f"identity {material.len()} bytes: {e}")
+    key.map_err(|e: sign.KeyError| f"identity {material.len()} bytes: {e}")?
 }
 
 fn rotate(path: string) -> Result<sign.SigningKey, string> {

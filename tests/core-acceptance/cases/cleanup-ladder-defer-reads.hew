@@ -7,17 +7,17 @@ actor Store {
     }
 }
 
-fn track(first: Store, second: Store) -> Result<i64, ActorError> {
+fn track(first: Store, second: Store) -> i64 fails ActorError {
     var n = 1;
     defer println(f"defer n={n}");
     let one = first.get("k")?;
     n = 2;
     let two = second.get("jj")?;
     n = 3;
-    .Ok(one + two + n)
+    one + two + n
 }
 
-fn count(store: Store, stop_at: i64, dead: Store) -> Result<i64, ActorError> {
+fn count(store: Store, stop_at: i64, dead: Store) -> i64 fails ActorError {
     var n = 0;
     defer println(f"loop defer n={n}");
     for i in 0..4 {
@@ -28,17 +28,17 @@ fn count(store: Store, stop_at: i64, dead: Store) -> Result<i64, ActorError> {
             store.get("x")?;
         }
     }
-    .Ok(n)
+    n
 }
 
 // The receiver loan of `items.push` is live while its argument's ask
 // suspends; the defer still reads `items` on that ask's fault exit.
-fn fill(store: Store) -> Result<i64, ActorError> {
+fn fill(store: Store) -> i64 fails ActorError {
     var items: Vec<i64> = Vec.new();
     defer println(f"items {items.len()}");
     items.push(store.get("k")?);
     items.push(store.get("jj")?);
-    .Ok(items.len())
+    items.len()
 }
 
 fn show(label: string, result: Result<i64, ActorError>) {

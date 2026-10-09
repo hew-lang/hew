@@ -1,0 +1,36 @@
+fn parse(text: string) -> i64 fails string {
+    if text == "" {
+        return error "empty";
+    }
+    1
+}
+
+// A `-> Result` return is a value: the body builds the Result.
+fn value() -> Result<i64, string> {
+    .Ok(1)
+}
+
+// A success value is not wrapped into the Result a value return expects.
+fn unwrapped() -> Result<i64, string> {
+    1
+}
+
+// `?` and `return error` need a declared failure edge.
+fn propagated() -> Result<i64, string> {
+    parse("1")?
+}
+
+fn returned() -> Result<i64, string> {
+    return error "no edge";
+}
+
+fn plain() -> i64 {
+    parse("1")?
+}
+
+// Both spellings are one type.
+fn main() {
+    let edge: fn() -> i64 fails string = value;
+    let data: fn() -> Result<i64, string> = || -> i64 fails string { parse("")? };
+    println(f"{edge():?} {data():?} {unwrapped():?} {propagated():?} {returned():?} {plain()}");
+}

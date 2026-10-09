@@ -1,25 +1,24 @@
-// Without a declared `From`, `?` cannot carry an `IoError` into a
-// `ConfigError`; the refusal offers all three repairs.
+// Without a declared `From` or a variant that carries an `IoError` alone, `?`
+// cannot carry one into a `ConfigError`; the refusal offers all three repairs.
 import std.fs;
 
 import std.string;
 
 enum ConfigError {
-    Io(fs.IoError);
+    Unreadable(string);
     Missing(string);
 }
 
 impl Display for ConfigError {
     fn fmt(self) -> string {
         match self {
-            .Io(e) => f"Io: {e}",
+            .Unreadable(path) => f"Unreadable: {path}",
             .Missing(key) => f"Missing: {key}",
         }
     }
 }
 
-impl Error for ConfigError {
-}
+impl Error for ConfigError {}
 
 fn read_port(path: string) -> i64 fails ConfigError {
     let text = fs.read(path)?;

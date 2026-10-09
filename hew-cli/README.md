@@ -316,6 +316,7 @@ Given a project with this layout:
 
 ```
 myapp/
+├── hew.toml
 ├── main.hew
 └── greeting/
     ├── greeting.hew
@@ -333,6 +334,8 @@ hew run   myapp/main.hew
 The `greeting/` directory is a **directory-form module**: `greeting/greeting.hew`
 is the entry file (its stem matches the directory name) and
 `greeting/greeting_helpers.hew` is merged in automatically as a peer file.
+Directory modules belong to a package, so the project needs its `hew.toml`
+(`hew init` writes one); outside a package every file is a module of its own.
 See [§ 3.5.1 of HEW-SPEC-2026.md](../docs/specs/HEW-SPEC-2026.md) for the full rules.
 
 For the current wildcard-import warning caveat, see the

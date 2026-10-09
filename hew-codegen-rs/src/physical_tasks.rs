@@ -35,7 +35,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         args: &[BasicMetadataValueEnum<'ctx>],
     ) -> CodegenResult<PointerValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let function = coro::external(
+        let function = get_or_declare_external(
             self.llvm,
             name,
             pointer.fn_type(&vec![pointer.into(); args.len()], false),
@@ -85,7 +85,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("retain lexical task scope")?;
         let token = self.task_pointer_call("hew_task_scope_cancel_token", &[handle.into()])?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let enter = coro::external(
+        let enter = get_or_declare_external(
             self.llvm,
             "hew_coro_state_enter_token",
             self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
@@ -94,7 +94,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_call(enter, &[self.task_frame()?.state.into(), token.into()], "")
             .llvm_ctx("enter lexical cancellation token")?;
         if let Some(duration) = duration {
-            let arm = coro::external(
+            let arm = get_or_declare_external(
                 self.llvm,
                 "hew_checked_scope_deadline",
                 self.ctx
@@ -150,7 +150,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     /// Premature frame destruction and a successful uninhabited result both
     /// violate the checked task ABI.
     pub(super) fn reject_invalid_task_state(&self) -> CodegenResult<()> {
-        let abort = coro::external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
+        let abort =
+            get_or_declare_external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
         self.builder
             .build_call(abort, &[], "")
             .llvm_ctx("reject an invalid task state")?;
@@ -261,7 +262,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(cleanup, pointer.const_null())
             .llvm_ctx("initialize unused task result cleanup")?;
-        let take_fn = coro::external(
+        let take_fn = get_or_declare_external(
             self.llvm,
             "hew_checked_task_wait_take",
             self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
@@ -403,7 +404,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(child_fault_slot, pointer.const_null())
             .llvm_ctx("initialize drained fault slot")?;
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             "hew_checked_scope_wait_take_fault",
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),

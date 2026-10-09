@@ -1,0 +1,100 @@
+fn total(marker: bool, last: bool) -> i64 {
+    8388608 + if marker {
+        15
+    } else {
+        0
+    } + if last {
+        4
+    } else {
+        0
+    }
+}
+
+fn grouped(marker: bool, last: bool) -> i64 {
+    8388608 + (if marker {
+        15
+    } else {
+        0
+    }) + (if last {
+        4
+    } else {
+        0
+    })
+}
+
+fn chained(marker: bool, last: bool) -> i64 {
+    10 + if marker {
+        15
+    } else if last {
+        4
+    } else {
+        0
+    } + 7
+}
+
+fn optional(value: Option<i64>, last: bool) -> i64 {
+    10 + if let .Some(n) = value {
+        n
+    } else {
+        0
+    } + if last {
+        4
+    } else {
+        0
+    }
+}
+
+fn mixed(marker: bool, value: Option<i64>) -> i64 {
+    10 + if marker {
+        15
+    } else if let .Some(n) = value {
+        n
+    } else {
+        0
+    } + 7
+}
+
+fn success(value: i64) -> Result<i64, string> {
+    .Ok(value)
+}
+
+fn propagated(marker: bool) -> Result<i64, string> {
+    let value = if marker {
+        success(15)
+    } else {
+        success(4)
+    }?;
+    .Ok(value + 7)
+}
+
+fn length(marker: bool) -> i64 {
+    let size = if marker {
+        "fifteen"
+    } else {
+        "four"
+    }.len();
+    size
+}
+
+fn main() {
+    println(total(false, false));
+    println(grouped(false, false));
+    println(total(false, true));
+    println(grouped(false, true));
+    println(total(true, false));
+    println(grouped(true, false));
+    println(total(true, true));
+    println(grouped(true, true));
+    println(chained(true, true));
+    println(chained(false, true));
+    println(chained(false, false));
+    println(optional(.Some(15), true));
+    println(optional(.None, true));
+    println(mixed(true, .Some(4)));
+    println(mixed(false, .Some(4)));
+    println(mixed(false, .None));
+    println(propagated(true).expect("the selected arm succeeds"));
+    println(propagated(false).expect("the selected arm succeeds"));
+    println(length(true));
+    println(length(false));
+}

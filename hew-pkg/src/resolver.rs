@@ -1276,6 +1276,8 @@ fn validate_package_name(package: &str) -> Result<(), ResolveError> {
 /// Resolved version from a remote index query.
 #[derive(Debug)]
 pub struct ResolvedEntry {
+    /// Exact package identity retained from the checked registry response.
+    pub registry_name: String,
     pub version: String,
     pub checksum: String,
     pub dl: Option<String>,
@@ -1339,6 +1341,10 @@ pub fn resolve_version_from_entries_with_requirements(
 ) -> Result<Option<ResolvedEntry>, ResolveError> {
     Ok(
         best_matching_entry(entries, requirements)?.map(|(version, entry)| ResolvedEntry {
+            registry_name: entry
+                .registry_name
+                .clone()
+                .unwrap_or_else(|| entry.name.clone()),
             version: version.to_string(),
             checksum: entry.cksum.clone(),
             dl: entry.dl.clone(),
@@ -2598,6 +2604,7 @@ mod tests {
     fn sample_entry(name: &str, vers: &str) -> IndexEntry {
         IndexEntry {
             name: name.to_string(),
+            registry_name: None,
             vers: vers.to_string(),
             deps: vec![],
             features: std::collections::BTreeMap::new(),

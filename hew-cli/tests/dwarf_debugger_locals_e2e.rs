@@ -600,19 +600,17 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     );
     let (before, after) = text.split_once(STOP_SPLIT).expect("both debugger stops");
     assert!(
-        before.lines().any(|line| line
-            .split_once("n = ")
-            .is_some_and(|(_, value)| value.trim() == "7")),
+        before
+            .lines()
+            .filter_map(debugger_n_value)
+            .any(|value| value == "7"),
         "pre-suspend breakpoint must read the parameter `n = 7`:\n{text}"
     );
-    let honest_n = text
-        .lines()
-        .filter_map(|line| line.split_once("n = ").map(|(_, value)| value.trim()))
-        .all(|value| {
-            value == "7" || value.contains("not available") || value.contains("optimized out")
-        });
+    let honest_n = text.lines().filter_map(debugger_n_value).all(|value| {
+        value == "7" || value.contains("not available") || value.contains("optimized out")
+    });
     assert!(
-        after.lines().any(|line| line.contains("n = ")) && honest_n,
+        after.lines().any(|line| debugger_n_value(line).is_some()) && honest_n,
         "resumed parameter must read 7 or be unavailable, never a frame pointer or stale stack value:\n{text}"
     );
     // Pre-suspend stop: the stored local reads its real value.
@@ -649,6 +647,13 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
         after.contains("y = 42"),
         "post-store breakpoint must read the stored `y = 42`:\n{text}"
     );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn debugger_n_value(line: &str) -> Option<&str> {
+    line.strip_prefix("n = ")
+        .or_else(|| line.split_once(" n = ").map(|(_, value)| value))
+        .map(str::trim)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]

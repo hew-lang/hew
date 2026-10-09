@@ -1733,26 +1733,6 @@ impl Checker {
                 let actual = self.synthesize(expr, span);
                 let n = self.errors.len();
                 self.expect_type(expected, &actual, span);
-                if self.errors.len() > n
-                    && matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. })
-                {
-                    let actual = self.normalize_for_use(&actual);
-                    if actual.as_result().is_some_and(|(success, _)| {
-                        *success
-                            == self
-                                .normalize_for_use(expected)
-                                .materialize_literal_defaults()
-                    }) {
-                        let propagates = self.current_failure_edge.is_some();
-                        if let Some(error) = self.errors.last_mut() {
-                            error.suggestions.push(if propagates {
-                                "propagate the failure with `?`, or recover with `handle`, `match` or `.expect(...)`".to_string()
-                            } else {
-                                "recover with `handle` or `match`, or use `.expect(...)` when failure should stop the program".to_string()
-                            });
-                        }
-                    }
-                }
                 // Same duplicate-suppression as the struct-init fallthrough above.
                 if self.errors.len() > n {
                     Ty::Error

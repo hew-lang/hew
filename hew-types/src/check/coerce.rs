@@ -595,6 +595,35 @@ impl Checker {
             }
             self.report_type_mismatch(&expected_resolved, &actual_resolved, span);
             self.suggest_success_value_repair(&expected_resolved, &actual_resolved);
+            self.suggest_result_value_repair(&expected_resolved, &actual_resolved, span);
+        }
+    }
+
+    fn suggest_result_value_repair(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if !self.direct_call_targets.contains_key(&key)
+            && !self.resolved_calls.contains_key(&key)
+            && !self.dyn_trait_method_calls.contains_key(&key)
+            && !self.method_call_rewrites.contains_key(&key)
+        {
+            return;
+        }
+        let Some((success, failure)) = actual.as_result() else {
+            return;
+        };
+        if *success != expected.materialize_literal_defaults() {
+            return;
+        }
+        let propagates = self
+            .current_failure_edge
+            .as_ref()
+            .is_some_and(|edge| self.normalize_for_use(edge) == *failure);
+        if let Some(error) = self.errors.last_mut() {
+            error.suggestions.push(if propagates {
+                "propagate the failure with `?`, or recover with `handle`, `match` or `.expect(...)`".to_string()
+            } else {
+                "recover with `handle` or `match`, or use `.expect(...)` when failure should stop the program".to_string()
+            });
         }
     }
 
@@ -1091,7 +1120,11 @@ impl Checker {
             ));
         }
         if edge == FailureEdge::Try {
-            suggestions.push(format!("or {recover}"));
+            suggestions.push(if suggestions.is_empty() {
+                recover.to_string()
+            } else {
+                format!("or {recover}")
+            });
         }
         self.report_error_with_suggestions(
             TypeErrorKind::NoFailureEdge,

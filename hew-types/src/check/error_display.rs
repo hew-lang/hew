@@ -156,18 +156,11 @@ impl Checker {
             } else {
                 site.span.clone()
             };
-            let mut implementation = implementation.clone();
-            let target_source = format!("fn target(value: {}) {{}}", target.user_facing());
-            let parsed_target = hew_parser::parse(&target_source);
-            let Some((Item::Function(function), _)) =
-                parsed_target.program.items.into_iter().next()
+            let Some(implementation) =
+                self.implied_display_header(implementation, target, site.file)
             else {
                 continue;
             };
-            let Some(parameter) = function.params.into_iter().next() else {
-                continue;
-            };
-            implementation.target_type = parameter.ty;
             headers.push((site, implementation, declaration, origin));
         }
         if headers.is_empty() {
@@ -235,6 +228,105 @@ impl Checker {
             origins,
             context,
         })
+    }
+
+    fn implied_display_header(
+        &mut self,
+        implementation: &ImplDecl,
+        target: &Ty,
+        file: crate::ModuleId,
+    ) -> Option<ImplDecl> {
+        let mut implementation = implementation.clone();
+        let alias = match &implementation.target_type.0 {
+                TypeExpr::Named { path, .. } => self.resolve_at(file, &path.segments)
+                    .is_some_and(|resolved| matches!(resolved,
+                        Resolution::Nominal(nominal) if self.defs.kind(nominal.declaration()) == crate::DeclarationKind::TypeAlias)),
+                _ => false,
+            };
+        if alias {
+            let target_source = format!("fn target(value: {}) {{}}", target.user_facing());
+            let parsed_target = hew_parser::parse(&target_source);
+            let Some((Item::Function(function), _)) =
+                parsed_target.program.items.into_iter().next()
+            else {
+                return None;
+            };
+            let parameter = function.params.into_iter().next()?;
+            implementation.target_type = parameter.ty;
+            self.contextualize_alias_target(&mut implementation.target_type, target);
+        }
+        Some(implementation)
+    }
+
+    fn contextualize_alias_target(&mut self, syntax: &mut Spanned<TypeExpr>, ty: &Ty) {
+        match (&mut syntax.0, ty) {
+            (TypeExpr::Named { path, type_args }, Ty::Named { head, args }) => {
+                if let Some(nominal) = head.nominal() {
+                    if let Some(module) = self.defs.module(nominal.declaration()) {
+                        let context = self.scopes.contexts_mut().mint(SyntaxContext::ROOT, module);
+                        *path = Path::single(
+                            Ident {
+                                name: self.defs.name(nominal.declaration()),
+                                ctx: context,
+                            },
+                            syntax.1.clone(),
+                        );
+                    }
+                }
+                for (syntax, ty) in type_args.iter_mut().flatten().zip(args) {
+                    self.contextualize_alias_target(syntax, ty);
+                }
+            }
+            (TypeExpr::Named { path, .. }, ty) if ty.canonical_lowering_name().is_some() => {
+                if let Some(context) = self.mint_implied_display_context() {
+                    for (name, _) in &mut path.segments {
+                        name.ctx = context;
+                    }
+                }
+            }
+            (TypeExpr::Tuple(syntax), Ty::Tuple(types)) => {
+                for (syntax, ty) in syntax.iter_mut().zip(types) {
+                    self.contextualize_alias_target(syntax, ty);
+                }
+            }
+            (TypeExpr::Array { element, .. }, Ty::Array(ty, _))
+            | (TypeExpr::Borrow(element), Ty::Borrow { pointee: ty })
+            | (
+                TypeExpr::Pointer {
+                    pointee: element, ..
+                },
+                Ty::Pointer { pointee: ty, .. },
+            ) => {
+                self.contextualize_alias_target(element, ty);
+            }
+            (TypeExpr::Option(syntax), ty) => {
+                if let Some(ty) = ty.as_option() {
+                    self.contextualize_alias_target(syntax, ty);
+                }
+            }
+            (TypeExpr::Result { ok, err }, ty) => {
+                if let Some((success, error)) = ty.as_result() {
+                    self.contextualize_alias_target(ok, success);
+                    self.contextualize_alias_target(err, error);
+                }
+            }
+            (
+                TypeExpr::Function {
+                    params,
+                    return_type,
+                    ..
+                },
+                Ty::Function {
+                    params: types, ret, ..
+                },
+            ) => {
+                for (syntax, ty) in params.iter_mut().zip(types) {
+                    self.contextualize_alias_target(syntax, ty);
+                }
+                self.contextualize_alias_target(return_type, ret);
+            }
+            _ => {}
+        }
     }
 
     /// Each source `impl Error` no `Display` impl of its type overlaps, by

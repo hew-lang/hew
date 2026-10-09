@@ -27,7 +27,7 @@ actor Crasher {
 fn main() {
     let gate = spawn Gate;
     for _ in 0 .. 1 {
-        let crasher = spawn Crasher(gate: gate);
+        let crasher = spawn Crasher { gate: gate };
         match crasher.run() {
             .Ok(_) => panic("reassigned child crash unexpectedly returned"),
             .Err(_) => println("restarted"),

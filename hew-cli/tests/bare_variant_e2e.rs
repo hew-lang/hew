@@ -186,7 +186,7 @@ fn main() {
     println(f"{show(inferred)} {show(annotated)} {passed} {show(arm)} {show(wrap(3))}");
     println(f"{half(4).is_ok()} {half(3).is_err()} {result.is_ok()} {show(first([7]))}");
     println(door.state_name());
-    let keeper = spawn Keeper(held: .None);
+    let keeper = spawn Keeper { held: .None };
     let _ = keeper.keep(9);
 }
 "#;

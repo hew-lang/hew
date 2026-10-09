@@ -110,7 +110,7 @@ actor Counter {
     }
 }
 
-let counter = spawn Counter(count: 0);
+let counter = spawn Counter { count: 0 };
 counter.increment(1).expect("increment completes");
 counter.increment(2).expect("increment completes");
 let total = counter.total().expect("total query completes");
@@ -242,7 +242,7 @@ Use this pattern in examples and tests that need deterministic scrape output:
 This fragment uses the `Counter` actor and `std.observe` import from the example above.
 
 ```hew,ignore
-let counter = spawn Counter(count: 0);
+let counter = spawn Counter { count: 0 };
 counter.increment(1).expect("increment completes");
 let value = counter.total().expect("total query completes");
 let _barrier = observe.barrier().expect("barrier succeeds");

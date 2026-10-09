@@ -20,13 +20,13 @@ fn nested_supervisor_remains_a_valid_child_target() {
 fn supervisor_stop_clause_checks_a_configured_duration() {
     let output = check_source(
         "actor Worker { receive fn ping() {} }\n\
-         supervisor Team(grace: duration) { child worker: Worker() stop: grace; }",
+         supervisor Team(grace: duration) { child worker: Worker stop: grace; }",
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
     let invalid = check_source(
         "actor Worker { receive fn ping() {} }\n\
-         supervisor Team { child worker: Worker() stop: \"later\"; }",
+         supervisor Team { child worker: Worker stop: \"later\"; }",
     );
     assert!(
         invalid
@@ -42,7 +42,7 @@ fn supervisor_stop_clause_checks_a_configured_duration() {
 fn generic_supervisor_infers_config_and_child_type_before_function_projection() {
     let output = check_source(
         r#"fn main() {
-    let group = spawn Group(seed: "owned");
+    let group = spawn Group { seed: "owned" };
     let value: Result<string, ActorError<Never>> = group.worker.get();
     stop(group); stopped(group);
 }
@@ -55,7 +55,7 @@ actor Worker<T> {
 }
 
 supervisor Group<T>(seed: T) {
-    child worker: Worker(value: seed);
+    child worker: Worker { value: seed };
 }
 "#,
     );
@@ -73,7 +73,7 @@ fn generic_supervisor_rejects_wrong_child_argument_type() {
 }
 
 supervisor Group<T>(seed: T) {
-    child worker: Worker<i64>(value: seed);
+    child worker: Worker<i64> { value: seed };
 }
 ",
     );
@@ -92,7 +92,7 @@ fn generic_supervisor_rejects_non_send_type_argument_at_spawn() {
     let output = check_source(
         r"
         supervisor Group<T> {}
-        fn main() { let _ = spawn Group<Rc<i64>>(); }
+        fn main() { let _ = spawn Group<Rc<i64>>; }
     ",
     );
     assert!(
@@ -116,11 +116,11 @@ fn generic_supervisor_checks_nested_send_bounds() {
 }
 
 supervisor Group<T>(seed: Vec<T>) {
-    child worker: Worker<Vec<T>>(value: seed);
+    child worker: Worker<Vec<T>> { value: seed };
 }
 
 fn main() {
-    let group = spawn Group(seed: ["owned"]);
+    let group = spawn Group { seed: ["owned"] };
     let values: Result<Vec<string>, ActorError<Never>> = group.worker.get();
     stop(group); stopped(group);
 }
@@ -146,7 +146,7 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    child cache: Cache(capacity: config.size);
+    child cache: Cache { capacity: config.size };
 }
 ",
     );
@@ -172,7 +172,7 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    child cache: Cache(capacity: config.nonexistent);
+    child cache: Cache { capacity: config.nonexistent };
 }
 ",
     );
@@ -207,7 +207,7 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    child cache: Cache(capacity: config.flag);
+    child cache: Cache { capacity: config.flag };
 }
 ",
     );

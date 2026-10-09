@@ -1,8 +1,8 @@
 //! Checker probes for qualified cross-module actor identity.
 //!
 //! Two modules each exporting `pub actor Account` must produce DISTINCT
-//! checker identities: `spawn bank.Account()` types to
-//! `hew.bank.Account`, `spawn store.Account()` to
+//! checker identities: `spawn bank.Account` types to
+//! `hew.bank.Account`, `spawn store.Account` to
 //! `hew.store.Account`, and the two `deposit` signatures are
 //! independently resolvable in `fn_sigs` under their dotted keys. A bare
 //! reference resolves local-first; a bare name exported by two modules with
@@ -75,8 +75,8 @@ fn two_modules_same_actor_spawns_type_to_distinct_dotted_pids() {
     let output = typecheck_with_modules(
         "
 fn main() {
-    let a = spawn bank.Account();
-    let s = spawn store.Account();
+    let a = spawn bank.Account;
+    let s = spawn store.Account;
 }
 ",
         &[(&["hew", "bank"], BANK_SRC), (&["hew", "store"], STORE_SRC)],
@@ -102,8 +102,8 @@ fn two_modules_same_actor_receive_sigs_independently_resolvable() {
     let output = typecheck_with_modules(
         "
 fn main() {
-    let a = spawn bank.Account();
-    let s = spawn store.Account();
+    let a = spawn bank.Account;
+    let s = spawn store.Account;
 }
 ",
         &[(&["hew", "bank"], BANK_SRC), (&["hew", "store"], STORE_SRC)],
@@ -138,7 +138,7 @@ fn main() {
 #[test]
 fn bare_spawn_resolves_local_actor_over_imported_same_name() {
     let output = typecheck_with_modules(
-        "actor Account {\n    var local_n: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        n\n    }\n}\n\nfn main() {\n    let a = spawn Account();\n}\n",
+        "actor Account {\n    var local_n: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        n\n    }\n}\n\nfn main() {\n    let a = spawn Account;\n}\n",
         &[(&["hew", "bank"], BANK_SRC)],
     );
     assert!(
@@ -159,7 +159,7 @@ fn bare_spawn_of_doubly_exported_actor_is_typed_ambiguity_error() {
     let output = typecheck_with_modules(
         "
 fn main() {
-    let a = spawn Account();
+    let a = spawn Account;
 }
 ",
         &[(&["hew", "bank"], BANK_SRC), (&["hew", "store"], STORE_SRC)],
@@ -198,7 +198,7 @@ fn bare_spawn_of_uniquely_exported_actor_resolves_to_that_module() {
     let output = typecheck_with_modules(
         "
 fn main() {
-    let a = spawn Account();
+    let a = spawn Account;
 }
 ",
         &[(&["hew", "bank"], BANK_SRC)],

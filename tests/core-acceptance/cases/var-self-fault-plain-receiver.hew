@@ -53,7 +53,7 @@ actor Holder {
 
 supervisor Group {
     intensity: 1 within 60s;
-    child holder: Holder(p: Point { x: 1, y: 0 });
+    child holder: Holder { p: Point { x: 1, y: 0 } };
 }
 
 fn main() {

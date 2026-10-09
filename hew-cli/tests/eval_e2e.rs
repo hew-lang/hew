@@ -309,7 +309,7 @@ actor Counter {
 }
 
 fn run_counter() {
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     let _ = counter.increment(1);
     let _ = counter.increment(2);
     let _total = counter.total();

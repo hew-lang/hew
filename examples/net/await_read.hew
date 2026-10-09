@@ -35,7 +35,7 @@ fn main() {
         .Ok(listener) => listener,
         .Err(_) => panic(f"network setup failed"),
     };
-    let reader = spawn Reader(port: "18077");
+    let reader = spawn Reader { port: "18077" };
     fork reader.go(0);
     let client = listener.accept();
     let _ = client.send("hello-from-server".to_bytes());

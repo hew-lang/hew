@@ -26,12 +26,12 @@ supervisor App(config: AppConfig) {
     intensity: 3 within 60s;
 
     // Stateless children with no init args — no config.field reads.
-    child a: Ping();
-    child b: Ping();
+    child a: Ping;
+    child b: Ping;
 }
 
 fn main() -> i64 {
     let cfg = AppConfig { threshold: 10 };
-    spawn App(config: cfg);
+    spawn App { config: cfg };
     0
 }

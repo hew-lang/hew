@@ -17,10 +17,11 @@ use super::super::*;
 use super::*;
 use crate::check::types::{
     DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation,
+    PendingInstantiation, SpawnKey, SpawnSlot,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
+use hew_parser::ast::FieldLabel;
 use std::collections::VecDeque;
 
 impl Checker {
@@ -1748,69 +1749,62 @@ impl Checker {
         }
     }
 
-    /// Check each constructor argument of a `spawn` expression, pushing the
-    /// actor field's declared type down as the expected type so that generic
-    /// constructors like `HashMap::new()` and `Vec::new()` can resolve their
-    /// type parameters.
+    /// Check each key of a `spawn` against the keys its actor or supervisor
+    /// accepts, then check each value against the key's declared type.
     ///
-    /// Without this, `spawn Cache(store: HashMap::new())` synthesises the arg
-    /// with unbound type variables (`HashMap<?T, ?U>`).  The Send check then
-    /// fires on those unbound vars with the misleading message:
-    ///   "cannot send `HashMap<?T22, ?T23>` to actor: type is not Send"
+    /// The declared type is pushed down as the expected type so that generic
+    /// constructors like `HashMap.new()` and `Vec.new()` resolve their type
+    /// parameters; without it the Send check fires on unbound variables. A
+    /// key naming an `init` parameter checks against the parameter's type,
+    /// any other against the state field's. A duplicate, deferred or unknown
+    /// key is reported at the key and its value only synthesized.
     ///
-    /// Mirrors `check_struct_init`'s field push-down.  Two exceptions fall back
-    /// to `synthesize`:
-    ///
-    /// 1. Unknown field name — an error will be reported separately.
-    /// 2. Bare-actor-name field (e.g. `let target: Printer`): the spawn arg
-    ///    carries `Printer`'s own actor-handle type, not the bare `Printer`
-    ///    used for construction, so checking against the bare name produces
-    ///    a spurious type mismatch.
+    /// A bare-actor-name field (`let target: Printer`) is synthesized too: the
+    /// value carries `Printer`'s handle type, not the bare `Printer` used for
+    /// construction.
     pub(super) fn check_spawn_constructor_args(
         &mut self,
         actor_name: &str,
         args: &[(Ident, Spanned<Expr>)],
+        labels: &[FieldLabel],
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
     ) {
-        let actor_fields: Option<HashMap<String, Ty>> =
-            self.lookup_type_def(actor_name).map(|td| td.fields);
-        // An actor with an explicit `init(...)` names its spawn args after
-        // the INIT PARAMETERS, not the state fields they assign into (the
-        // two names may differ, and even when they match, the init
-        // parameter's declared width is the checker-authoritative one — the
-        // init body may narrow/widen before storing into the field). Look up
-        // `actor_init_params` first so a param like `init(start: i32)` gets
-        // `check_against(..., i32)` here. The field-type lookup is the
-        // fallback for two shapes: an actor with no explicit `init` (whose
-        // spawn args map directly onto bare field names), and an init-bearing
-        // actor whose spawn arg name does not match any init parameter and so
-        // routes straight into a same-named state field. Without this, an
-        // unmatched `field_name` silently synthesizes the arg (defaulting an
-        // untyped int literal to `i64`), which then mismatches the init
-        // thunk's declared i32 parameter and trips the LLVM verifier at the
-        // spawn call site (#2402).
-        let init_params = self.actor_init_params.get(actor_name).cloned();
-        for (field_name, (arg, as_)) in args {
-            let declared_init_param = init_params
-                .as_ref()
-                .and_then(|params| params.iter().find(|p| p.name == field_name.name.as_str()))
-                .map(|p| p.ty.clone());
+        let definition = self.lookup_type_def(actor_name);
+        let registered = self.registered_spawn_identity(actor_name);
+        let actor_fields: Option<HashMap<String, Ty>> = definition.map(|td| td.fields);
+        let init_params = self.actor_init_params.get(&registered).cloned();
+        let keys = self.actor_spawn_args.get(&registered).cloned();
+        let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
+        for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
+            let key_span = labels
+                .get(index)
+                .map_or_else(|| as_.clone(), |label| label.span.clone());
+            if seen.contains(&field_name.name) {
+                self.report_error(
+                    TypeErrorKind::SpawnArgDuplicate,
+                    &key_span,
+                    format!("spawn of `{actor_name}` names `{field_name}` more than once"),
+                );
+                let ty_raw = self.synthesize(arg, as_);
+                self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
+                continue;
+            }
+            seen.push(field_name.name);
             // A field init initializes has no spawn value (D447): one init
             // body cannot be a first store at one spawn site and a
             // replacement at another.
-            if declared_init_param.is_none()
-                && self
-                    .actor_deferred_fields
-                    .get(actor_name)
-                    .is_some_and(|deferred| {
-                        deferred
-                            .iter()
-                            .any(|field| field == field_name.name.as_str())
-                    })
+            if self
+                .actor_deferred_fields
+                .get(&registered)
+                .is_some_and(|deferred| {
+                    deferred
+                        .iter()
+                        .any(|field| field == field_name.name.as_str())
+                })
             {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
-                    as_,
+                    &key_span,
                     format!(
                         "E_ACTOR_FIELD_DEFERRED: state field `{field_name}` of actor \
                          `{actor_name}` is initialized by `init`; remove it from the spawn \
@@ -1821,47 +1815,25 @@ impl Checker {
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
-            // A spawn arg name that matches BOTH an init parameter and a state
-            // field with a DIFFERENT declared type is unsatisfiable: the one
-            // provided value cannot simultaneously be the init parameter's type
-            // (which the init thunk expects) and the field's type (which the
-            // constructor stores it into). Checking the arg against the init
-            // parameter alone lets it pass here, but codegen then stores the
-            // value into the mismatched field slot and fails closed with a raw
-            // RecordInit verifier dump (#2448). Name the collision at the
-            // checker level -- the parameter, the field, and the two disagreeing
-            // types -- and skip the per-arg check so no confusing secondary
-            // diagnostic piles on.
-            let field_ty = actor_fields
+            if let Some(keys) = keys
                 .as_ref()
-                .and_then(|f| f.get(field_name.name.as_str()));
-            if let (Some(param_ty), Some(field_ty)) = (declared_init_param.as_ref(), field_ty) {
-                if param_ty != field_ty {
-                    let param_display = param_ty.user_facing().to_string();
-                    let field_display = field_ty.user_facing().to_string();
-                    self.report_error(
-                        TypeErrorKind::Mismatch {
-                            expected: field_display.clone(),
-                            actual: param_display.clone(),
-                        },
-                        as_,
-                        format!(
-                            "spawn argument `{field_name}` matches both the `init` \
-                             parameter `{field_name}: {param_display}` and the state \
-                             field `{field_name}: {field_display}` of actor \
-                             `{actor_name}`, whose types disagree; one value cannot \
-                             fill both. Rename the `init` parameter or the field so the \
-                             spawn argument targets exactly one of them."
-                        ),
-                    );
-                    // Still synthesize the arg so downstream expression typing
-                    // sees a type for this span, but do not run `check_against`
-                    // (it would emit a second, less-informative mismatch).
-                    let ty_raw = self.synthesize(arg, as_);
-                    self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
-                    continue;
-                }
+                .filter(|keys| !keys.iter().any(|key| key.name == field_name.name))
+            {
+                self.report_unknown_spawn_key(
+                    actor_name,
+                    &registered,
+                    *field_name,
+                    keys,
+                    &key_span,
+                );
+                let ty_raw = self.synthesize(arg, as_);
+                self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
+                continue;
             }
+            let declared_init_param = init_params
+                .as_ref()
+                .and_then(|params| params.iter().find(|p| p.name == field_name.name.as_str()))
+                .map(|p| p.ty.clone());
             let declared = declared_init_param.as_ref().or_else(|| {
                 actor_fields
                     .as_ref()
@@ -1896,6 +1868,63 @@ impl Checker {
             };
             self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
         }
+    }
+
+    /// The identity a spawn target's declaration was registered under. A
+    /// file-imported actor answers to its bare name at the spawn site but is
+    /// registered under its file's module identity.
+    fn registered_spawn_identity(&self, actor_name: &str) -> String {
+        self.type_def_at(actor_name).map_or_else(
+            || actor_name.to_string(),
+            |definition| definition.name.clone(),
+        )
+    }
+
+    /// What a spawn key of the registered declaration is called in a
+    /// diagnostic.
+    fn spawn_key_noun(&self, registered: &str, key: Symbol) -> &'static str {
+        if self.supervisor_children.contains_key(registered) {
+            "parameter"
+        } else if self
+            .actor_init_params
+            .get(registered)
+            .is_some_and(|params| params.iter().any(|param| param.name == key.as_str()))
+        {
+            "`init` parameter"
+        } else {
+            "field"
+        }
+    }
+
+    fn report_unknown_spawn_key(
+        &mut self,
+        actor_name: &str,
+        registered: &str,
+        key: Ident,
+        keys: &[SpawnKey],
+        key_span: &Span,
+    ) {
+        let message = if self.supervisor_children.contains_key(registered) {
+            format!("supervisor `{actor_name}` has no parameter `{key}`")
+        } else if self
+            .actor_init_params
+            .get(registered)
+            .is_some_and(|params| !params.is_empty())
+        {
+            format!("actor `{actor_name}` has no field or `init` parameter `{key}`")
+        } else {
+            format!("actor `{actor_name}` has no field `{key}`")
+        };
+        let similar = crate::error::find_similar(
+            key.name.as_str(),
+            keys.iter().map(|candidate| candidate.name.as_str()),
+        );
+        self.report_error_with_suggestions(
+            TypeErrorKind::SpawnArgUnknown,
+            key_span,
+            message,
+            similar,
+        );
     }
 
     /// Resolve a `spawn` target expression to the registered actor identity.
@@ -1959,7 +1988,7 @@ impl Checker {
                     }
                 }
             }
-            // Handle module-qualified actor: spawn module.ActorName(args)
+            // Handle module-qualified actor: spawn module.ActorName { args }
             Expr::FieldAccess { object, field } => {
                 if let Expr::Ident(module) = &object.0 {
                     if self.module_binding_in_current_file(module.name.as_str()) {
@@ -1972,7 +2001,7 @@ impl Checker {
                         // private actor is absent from it entirely). Resolve the
                         // qualified definition and require an actor or a
                         // supervisor, which spawn the same way; otherwise
-                        // `spawn secret.Account()` would lower to bare `Account`
+                        // `spawn secret.Account` would lower to bare `Account`
                         // and silently route to a same-named root/pub actor -- a
                         // capability-boundary hole. `resolve_module_type` already
                         // gates on `pub` export + the module-qualified `type_defs`
@@ -2033,6 +2062,7 @@ impl Checker {
         target: &Spanned<Expr>,
         type_args: &[Spanned<TypeExpr>],
         args: &[(Ident, Spanned<Expr>)],
+        labels: &[FieldLabel],
         span: &Span,
     ) -> Ty {
         let Ok(actor_name) = self.resolve_spawn_target(target, span) else {
@@ -2040,7 +2070,10 @@ impl Checker {
         };
 
         if let Some(name) = actor_name {
-            let owner_kind = if self.supervisor_children.contains_key(&name) {
+            let owner_kind = if self
+                .type_def_at(&name)
+                .is_some_and(|definition| definition.kind == TypeDefKind::Supervisor)
+            {
                 "supervisor"
             } else {
                 "actor"
@@ -2074,23 +2107,34 @@ impl Checker {
                 .copied()
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
-            self.check_spawn_constructor_args(&name, args, Some(&type_subst));
-            if let Some(expected_args) = self.actor_spawn_args.get(&name).cloned() {
-                for (argument, required) in expected_args {
-                    if required
-                        && !args
-                            .iter()
-                            .any(|(provided, _)| provided.name.as_str() == argument)
+            self.check_spawn_constructor_args(&name, args, labels, Some(&type_subst));
+            let registered = self.registered_spawn_identity(&name);
+            if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
+                // Bind each key the target accepts to its written value or
+                // its default; lowering consumes this binding.
+                let mut slots = Vec::with_capacity(keys.len());
+                for key in keys {
+                    match args
+                        .iter()
+                        .position(|(provided, _)| provided.name == key.name)
                     {
-                        self.report_error(
-                            TypeErrorKind::MissingActorSpawnArgument,
-                            span,
-                            format!(
-                                "actor `{name}` requires an initialized spawn value for `{argument}`"
-                            ),
-                        );
+                        Some(index) => slots.push(SpawnSlot::Written(index)),
+                        None if key.required => {
+                            let noun = self.spawn_key_noun(&registered, key.name);
+                            self.report_error(
+                                TypeErrorKind::MissingActorSpawnArgument,
+                                span,
+                                format!(
+                                    "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
+                                    key.name.as_str()
+                                ),
+                            );
+                        }
+                        None => slots.push(SpawnSlot::Default),
                     }
                 }
+                self.spawn_argument_slots
+                    .insert(SpanKey::in_module(span, self.current_module_idx), slots);
             }
             resolved_type_args = resolved_type_args
                 .iter()
@@ -2107,7 +2151,13 @@ impl Checker {
             self.enforce_type_def_instantiation_bounds(&name, &resolved_type_args, span);
 
             match self.nominal_head_for_key(&name) {
-                Some(actor) => Ty::actor_handle(actor, resolved_type_args),
+                Some(actor) => {
+                    let handle = Ty::actor_handle(actor, resolved_type_args);
+                    // A key naming a state field resolves to that field, so
+                    // a field rename reaches every spawn that names it.
+                    self.record_struct_init_field_resolutions(args, labels, &handle);
+                    handle
+                }
                 None => Ty::Error,
             }
         } else {
@@ -2139,7 +2189,7 @@ impl Checker {
             .join(", ");
         let qualified_examples = candidate_modules
             .iter()
-            .map(|m| format!("`spawn {m}.{name}(...)`"))
+            .map(|m| format!("`spawn {m}.{name}`"))
             .collect::<Vec<_>>()
             .join(" or ");
         self.report_error_with_suggestions(

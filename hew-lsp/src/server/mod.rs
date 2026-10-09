@@ -1420,7 +1420,7 @@ mod tests {
             "    receive fn increment(n: i64) { count = count + n; }\n",
             "}\n",
             "fn main() {\n",
-            "    let c = spawn Counter(count: 0);\n",
+            "    let c = spawn Counter { count: 0 };\n",
             "    c.increment(1);\n",
             "}",
         );
@@ -1776,7 +1776,7 @@ impl Worker {
 
     #[test]
     fn goto_def_receive_method() {
-        let source = "actor Counter {\n    let count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    c.increment(1);\n}\n";
+        let source = "actor Counter {\n    let count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let c = spawn Counter { count: 0 };\n    c.increment(1);\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let call_offset = source.rfind("increment").unwrap();
@@ -2039,6 +2039,29 @@ impl Worker {
                 expected
             );
         }
+    }
+
+    const ROLE_BRANCH: &str = "type Plan { name: string; }\nactor RoleWorker {\n    let plan: Plan;\n    receive fn name() -> string { plan.name }\n}\nsupervisor RoleBranch(plan: Plan) {\n    strategy: one_for_one;\n    child role: RoleWorker { plan };\n}\nfn main() {\n    let plan = Plan { name: \"relay\" };\n    let w = spawn RoleWorker { plan };\n    let b = spawn RoleBranch { plan };\n    println(w.name().expect(\"w\"));\n    println(b.role.name().expect(\"b\"));\n}\n";
+
+    #[test]
+    fn actor_field_rename_writes_spawn_and_child_keys_out() {
+        let uri = make_test_uri("/spawn-key-field-rename.hew");
+        let expected = ROLE_BRANCH
+            .replace("let plan: Plan;", "let blueprint: Plan;")
+            .replace("{ plan.name }", "{ blueprint.name }")
+            .replace(
+                "child role: RoleWorker { plan }",
+                "child role: RoleWorker { blueprint: plan }",
+            )
+            .replace(
+                "spawn RoleWorker { plan }",
+                "spawn RoleWorker { blueprint: plan }",
+            );
+        let declaration = ROLE_BRANCH.find("plan: Plan;").unwrap();
+        assert_eq!(
+            renamed_source(ROLE_BRANCH, &uri, declaration, "blueprint"),
+            expected
+        );
     }
 
     #[test]

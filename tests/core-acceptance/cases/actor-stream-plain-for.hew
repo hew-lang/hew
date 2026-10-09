@@ -13,7 +13,7 @@ actor Producer {
 }
 
 fn main() {
-    let producer = spawn Producer();
+    let producer = spawn Producer;
     // A plain `for` waits per item and runs the producer to completion.
     var seen = 0;
     for item in producer.ticks(3) {

@@ -57,7 +57,7 @@ actor Watcher {
 fn main() {
     let audit = spawn Audit;
     let target = spawn Target;
-    let watcher = spawn Watcher(audit: audit);
+    let watcher = spawn Watcher { audit: audit };
     let observation = watcher.watch(target).expect("watch target");
     let _ = target.fail();
     while watcher.counts().expect("hook outcomes") != 11 {

@@ -25,7 +25,7 @@ actor Tracker {
 }
 
 fn main() -> i64 {
-    let t = spawn Tracker(status: Status.Idle);
+    let t = spawn Tracker { status: Status.Idle };
     var i: i64 = 0;
     while i < 50 {
         let _ = t.advance(i);

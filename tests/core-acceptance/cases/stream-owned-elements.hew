@@ -13,7 +13,7 @@ actor Producer {
 }
 
 fn main() {
-    let producer = spawn Producer();
+    let producer = spawn Producer;
     var seen = 0;
     for packet in producer.records(3) {
         assert(packet.label == "PACKET");

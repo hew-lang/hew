@@ -8,13 +8,13 @@ import imported_supervisor_named_binding_support.worker.{Worker as Renamed};
 supervisor DirectPool {
     strategy: one_for_one;
 
-    child worker: Worker(id: 31) restart: temporary;
+    child worker: Worker { id: 31 } restart: temporary;
 }
 
 supervisor AliasedPool {
     strategy: one_for_one;
 
-    child worker: Renamed(id: 47) restart: temporary;
+    child worker: Renamed { id: 47 } restart: temporary;
 }
 
 #[test]

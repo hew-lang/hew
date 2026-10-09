@@ -28,6 +28,13 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/named_arguments.hew",
     },
     ParityCase {
+        // A spawn, supervisor child and transition head bind keys by name in
+        // braces, with defaults, init and supervisor parameters, while a call
+        // with the same bare names stays positional.
+        test_name: "spawn_keyed",
+        source_rel: "tests/core-acceptance/cases/spawn-keyed.hew",
+    },
+    ParityCase {
         // Deferred work runs as the scope ends, in reverse registration order.
         test_name: "defer_order",
         source_rel: "examples/sandbox-graduation/defer_order.hew",

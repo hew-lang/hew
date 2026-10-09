@@ -21,7 +21,7 @@ actor Cache {
 }
 
 fn main() -> i64 {
-    let c = spawn Cache(items: Vec.new(), index: HashMap.new(), seen: HashSet.new());
+    let c = spawn Cache { items: Vec.new(), index: HashMap.new(), seen: HashSet.new() };
     var i: i64 = 0;
     while i < 50 {
         let _ = c.refresh(i);

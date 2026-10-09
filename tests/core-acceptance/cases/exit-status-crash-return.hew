@@ -6,7 +6,7 @@ actor Worker {
 }
 
 fn main() {
-    let w = spawn Worker();
+    let w = spawn Worker;
     let _ = w.boom();
     println("returned");
 }

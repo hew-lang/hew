@@ -647,7 +647,7 @@ fn check_sir_unsupported_renders_with_source_span() {
 #[test]
 fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     let (_dir, path) = write_fixture(
-        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nactor Holder {\n    var registry: Registry;\n\n    receive fn poke() {\n        let conn = Conn { fd: 1 };\n        registry.conns.insert(\"a\", conn);\n    }\n}\n\nfn main() {\n    let h = spawn Holder(registry: Registry { conns: HashMap.new() });\n    let _ = h.poke();\n}\n",
+        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nactor Holder {\n    var registry: Registry;\n\n    receive fn poke() {\n        let conn = Conn { fd: 1 };\n        registry.conns.insert(\"a\", conn);\n    }\n}\n\nfn main() {\n    let h = spawn Holder { registry: Registry { conns: HashMap.new() } };\n    let _ = h.poke();\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);

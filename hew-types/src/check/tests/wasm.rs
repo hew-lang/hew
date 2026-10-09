@@ -1738,8 +1738,8 @@ fn main() {}
 }
 
 fn main() {
-    let a = spawn Responder(value: 1);
-    let b = spawn Responder(value: 2);
+    let a = spawn Responder { value: 1 };
+    let b = spawn Responder { value: 2 };
     let timeout = 1ms;
     let result = select {
         x from a.get() => match x {

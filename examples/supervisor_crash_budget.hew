@@ -32,8 +32,8 @@ supervisor FragilePool {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child f1: Fragile(id: 1, lives: 3);
-    child f2: Fragile(id: 2, lives: 3);
+    child f1: Fragile { id: 1, lives: 3 };
+    child f2: Fragile { id: 2, lives: 3 };
 }
 
 fn main() {

@@ -7,7 +7,7 @@ actor SeedChild {
 supervisor SeedSupervisor {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child worker: SeedChild() restart: temporary;
+    child worker: SeedChild restart: temporary;
 }
 
 fn background_task() {}

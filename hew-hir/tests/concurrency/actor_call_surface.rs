@@ -239,7 +239,7 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
 }
 
 fn main() -> i64 {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     let _ = c.increment(10);
     let _ = c.print_total();
     return 0;

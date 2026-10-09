@@ -89,9 +89,9 @@ fn report(result: string) {
 }
 
 fn main() {
-    let gate = spawn Gate();
-    let waiter = spawn Waiter();
-    let opener = spawn Opener();
+    let gate = spawn Gate;
+    let waiter = spawn Waiter;
+    let opener = spawn Opener;
     scope within 1s {
         let (first, second) = await fork (waiter.wait(gate), opener.open(gate));
         match first {
@@ -153,8 +153,8 @@ fn report(parcel: Parcel) {
 }
 
 fn main() {
-    let first = spawn Maker();
-    let second = spawn Maker();
+    let first = spawn Maker;
+    let second = spawn Maker;
     let left_input = ReceiverInput { maker: first, label: "receiver one" };
     let right_input = ReceiverInput { maker: second, label: "receiver two" };
     let (left, right) = await fork (receiver(left_input).make(second: mark("b"), first: mark("a")), receiver(right_input).make(second: late("d"), first: mark("c")));
@@ -180,7 +180,7 @@ fn one_branch_returns_its_result_without_a_tuple_wrapper() {
         r#"
 actor Echo { receive fn echo(value: string) -> string { value.to_upper() } }
 fn main() {
-    let echo = spawn Echo();
+    let echo = spawn Echo;
     let result = await fork echo.echo("one");
     match result { .Ok(value) => println(value), .Err(_) => panic("join failed"), }
 }
@@ -204,8 +204,8 @@ actor Broken {
 actor Healthy { receive fn echo() -> string { sleep(2ms); "healthy".to_upper() } }
 fn main() {
     defer println("parent cleanup");
-    let broken = spawn Broken();
-    let healthy = spawn Healthy();
+    let broken = spawn Broken;
+    let healthy = spawn Healthy;
     let (failed, success) = await fork (broken.fail(), healthy.echo());
     match failed {
         .Err(ActorError.Trapped) => println("ordinary error"),
@@ -233,7 +233,7 @@ actor Echo { receive fn echo(value: string) -> string { println("unexpected chil
 fn fail() -> string { panic("argument failed"); }
 fn main() {
     defer println("parent cleanup");
-    let echo = spawn Echo();
+    let echo = spawn Echo;
     let _result = await fork (echo.echo("prepared".to_upper()), echo.echo(fail()));
 }
 "#,
@@ -275,8 +275,8 @@ fn request(receiver: Slow, value: string, consume frame: TaskFrame) -> string {
 }
 
 fn main() {
-    let first = spawn Slow();
-    let second = spawn Slow();
+    let first = spawn Slow;
+    let second = spawn Slow;
     scope within 20ms {
         defer println("parent cleanup");
         let _result = await fork (request(first, "one", TaskFrame { id: 1 }), request(second, "two", TaskFrame { id: 2 }));

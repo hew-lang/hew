@@ -8,7 +8,7 @@
 import "imported_actor_msg_discriminants_lib.hew";
 
 fn main() {
-    let reg = spawn Register(total: 0);
+    let reg = spawn Register { total: 0 };
     match reg.add(5) {
         .Ok(v) => println(f"add={v}"),
         .Err(_) => println("add failed"),

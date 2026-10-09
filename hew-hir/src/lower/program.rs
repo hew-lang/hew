@@ -1279,16 +1279,6 @@ pub fn lower_program_with_mono_cap(
     // gains TargetSpec threading (see audit `:5336`, `:5564`, `:5696`).
     check_binary_operator_gates(&mut ctx, program);
 
-    // FC-P1-A3: Supervisor spawn args gate. Same survival-ordering rationale
-    // as the wasm gate above — dispatched AFTER `ctx.diagnostics.clear()` so
-    // the SupervisorSpawnArgsUnsupported diagnostics survive into the final
-    // LowerOutput. The checker already rejects supervisor declarations with
-    // init params; this HIR gate is defense-in-depth that catches any future
-    // surface which reaches MIR (`hew-mir/src/lower.rs:8852`) before the
-    // checker guard does. Per slepp A222: compile-time fail-closed instead of
-    // a `NotYetImplemented` runtime-style diagnostic at MIR-lowering time.
-    check_supervisor_spawn_gate(&mut ctx, program);
-
     // FC-P1-E: Vec<T> index/slice element-type gates. Dispatched HERE (after
     // the diagnostics.clear above) so the gate's VecIndex/Slice element-type
     // diagnostics survive into the final LowerOutput. Target-independent: the
@@ -2580,7 +2570,7 @@ pub fn lower_program_with_mono_cap(
                         // Emit `HirItem::Actor` entries for imported actors
                         // so MIR's actor-layout pass (which walks `module.items`)
                         // builds a layout keyed by the actor's bare name. Without
-                        // it, `spawn module.Actor(...)` and the subsequent
+                        // it, `spawn module.Actor { ... }` and the subsequent
                         // `receive fn` calls fail closed at MIR with
                         // `spawn of unknown actor` / `actor call on unknown actor`,
                         // even though HIR/types resolved the cross-module

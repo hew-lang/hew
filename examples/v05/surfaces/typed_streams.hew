@@ -39,7 +39,7 @@ fn main() {
         .Err(error) => panic(error),
     };
     // The Stream half moves into the actor's state; the Sink half stays local.
-    let d = spawn Drainer(input: input);
+    let d = spawn Drainer { input: input };
     // `fork` starts the completion call concurrently: an ordinary call here
     // would wait for the handler to finish before this function's next
     // statement runs, and the handler cannot finish until the producer below

@@ -552,7 +552,7 @@ fn try_spawn_completions(
     // canonical dotted identities (`hew.bank.Account`); the file's AST does
     // not carry them. Convert each identity back through the checker-published
     // lexical binding table before emitting a completion. The table is the
-    // same authority that resolves `spawn bank.Account()` in the type checker;
+    // same authority that resolves `spawn bank.Account` in the type checker;
     // never infer a source qualifier by trimming a package path.
     if let Some(output) = type_output {
         for label in imported_actor_spawn_labels(output) {
@@ -1153,7 +1153,7 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         (
             "spawn",
             "let ${1:handle} = spawn ${2:Actor}(${3:field}: ${4:value});",
-            "let handle = spawn Actor(field: value);",
+            "let handle = spawn Actor { field: value };",
         ),
         (
             "receive",
@@ -1254,7 +1254,7 @@ mod tests {
         "    events { Tick { by: i64; } }\n",
         "    state Idle;\n",
         "    state Live { hits: i64; }\n",
-        "    on Tick(by): Idle => Live { hits: by }\n",
+        "    on Tick { by }: Idle => Live { hits: by }\n",
         "    on Tick: Live => Live reenter {\n",
         "        /*cursor*/\n",
         "        Live { hits: state.hits + event.by }\n",
@@ -1288,7 +1288,7 @@ mod tests {
             "    events { Tick { by: i64; } }\n",
             "    state Idle;\n",
             "    state Live { hits: i64; }\n",
-            "    on Tick(by): Idle => Live {\n",
+            "    on Tick { by }: Idle => Live {\n",
             "        hits: /*cursor*/by\n",
             "    }\n",
             "    on Tick: Live => Live reenter { hits: state.hits }\n",
@@ -1946,7 +1946,7 @@ impl Box {
 }
 
 fn main() {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     c. /*cursor*/ increment(1);
 }
 ";
@@ -1972,7 +1972,7 @@ fn main() {
 }
 
 fn main() {
-    let worker = policy(spawn Worker(), on_full: .Reject);
+    let worker = policy(spawn Worker, on_full: .Reject);
     let result = worker.echo("hello");
     match result {
         .Err(ActorError.Rejected(failure)) => {

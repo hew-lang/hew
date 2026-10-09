@@ -14,7 +14,7 @@ supervisor Farm {
     strategy: simple_one_for_one;
     intensity: 3 within 60s;
 
-    pool workers: Worker(value: 7);
+    pool workers: Worker { value: 7 };
 }
 
 fn main() -> i64 {

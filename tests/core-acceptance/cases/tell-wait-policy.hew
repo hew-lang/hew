@@ -30,8 +30,8 @@ actor Driver {
 }
 
 fn main() {
-    let sink = spawn Sink();
-    let driver = spawn Driver();
+    let sink = spawn Sink;
+    let driver = spawn Driver;
     match driver.run(sink) {
         .Ok(_) => {}
         .Err(_) => panic("driver ask failed"),

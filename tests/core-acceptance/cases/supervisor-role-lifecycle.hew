@@ -17,17 +17,17 @@ actor Worker {
 }
 
 supervisor Branch(seed: string) {
-    child worker: Worker(seed: seed);
+    child worker: Worker { seed: seed };
 }
 
 supervisor Root(seed: string) {
-    child persistent: Branch(seed: seed);
-    child recoverable: Branch(seed: seed) restart: transient;
-    child short_lived: Branch(seed: seed) restart: temporary;
+    child persistent: Branch { seed: seed };
+    child recoverable: Branch { seed: seed } restart: transient;
+    child short_lived: Branch { seed: seed } restart: temporary;
 }
 
 fn main() {
-    let root = spawn Root(seed: "owned child stopped".to_upper());
+    let root = spawn Root { seed: "owned child stopped".to_upper() };
     let role = root.persistent;
     let worker = role.worker;
     for _ in 0 .. 2 {

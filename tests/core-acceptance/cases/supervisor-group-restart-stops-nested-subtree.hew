@@ -22,13 +22,13 @@ actor Worker {
 supervisor Inner {
     strategy: one_for_one;
     intensity: 10 within 60s;
-    child deep: Worker(name: "deep");
+    child deep: Worker { name: "deep" };
 }
 
 supervisor App {
     strategy: one_for_all;
     intensity: 10 within 60s;
-    child left: Worker(name: "left");
+    child left: Worker { name: "left" };
     child inner: Inner;
 }
 

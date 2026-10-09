@@ -9,5 +9,5 @@ kind = "reject"
 [[case.expected.diagnostics]]
 code = "Other"
 line = 18
-column = 33
+column = 35
 message = "pool arity is a child clause"

@@ -23,10 +23,10 @@ actor Ping {
 
 fn main() {
     let flag = f"{os.temp_dir()}/hew-concurrent-waits-{os.pid()}.flag";
-    let ping = spawn Ping();
+    let ping = spawn Ping;
     var waiters: Vec<Waiter> = Vec.new();
     for _ in 0..160 {
-        waiters.push(spawn Waiter());
+        waiters.push(spawn Waiter);
     }
     var tasks = [fork waiters[0].run(flag)];
     for i in 1..160 {

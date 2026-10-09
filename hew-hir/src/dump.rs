@@ -486,7 +486,9 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 dump_expr(defs, out, arg, indent + 4);
             }
         }
-        HirExprKind::Spawn { actor_name, args } => {
+        HirExprKind::Spawn {
+            actor_name, args, ..
+        } => {
             writeln!(out, "{pad}  spawn {actor_name}").expect("write to string");
             for (arg_name, value) in args {
                 writeln!(out, "{pad}    {arg_name}:").expect("write to string");

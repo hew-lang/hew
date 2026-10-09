@@ -2,7 +2,7 @@
 // must NOT also get a scope-exit `hew_vec_free_owned` in the spawning function.
 //
 // The bug (100% deterministic UAF -> SIGSEGV, exit 139):
-//   `let t = Vec::new(); let q = spawn TaskQueue(tasks: t);` lowers to
+//   `let t = Vec::new(); let q = spawn TaskQueue { tasks: t };` lowers to
 //   `RecordInit -> SpawnActor`, which marks `t` as `AliasedIntoAggregate` (NOT
 //   `Consumed`). The owned-Vec drop allow-set was derived dataflow-only, so the
 //   `Consumed`/`MaybeConsumed` filter left `t` admitted and emitted a scope-exit
@@ -46,7 +46,7 @@ actor TaskQueue {
 
 fn main() {
     let t: Vec<WorkItem> = Vec.new();
-    let q = spawn TaskQueue(tasks: t);
+    let q = spawn TaskQueue { tasks: t };
     let _ = q.enqueue(WorkItem { name: "only", priority: 1 });
     let r = q.remove_front();
     match r {

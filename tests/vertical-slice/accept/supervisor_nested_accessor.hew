@@ -27,14 +27,14 @@ supervisor Inner {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child leaf: Worker(tag: 0);
+    child leaf: Worker { tag: 0 };
 }
 
 supervisor Root {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child direct: Worker(tag: 0);
+    child direct: Worker { tag: 0 };
     child sub: Inner;
 }
 

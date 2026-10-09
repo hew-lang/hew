@@ -54,7 +54,7 @@ actor Probe {
 }
 
 fn drive() {
-    let probe = spawn Probe(gate: .Shut);
+    let probe = spawn Probe { gate: .Shut };
     println(probe.open("front".to_upper()).expect("open"));
     println(probe.close().expect("close"));
 }

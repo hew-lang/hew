@@ -1248,7 +1248,7 @@ fn for_receive_generator_int_stream_typechecks() {
         }
 
         fn main() {
-            let c = spawn Counter();
+            let c = spawn Counter;
             for val in c.count_up() {
                 println(val);
             }
@@ -1339,7 +1339,7 @@ fn for_over_a_plain_receive_fn_is_refused() {
         }
 
         fn main() {
-            let r = spawn Reader();
+            let r = spawn Reader;
             for line in r.lines() {
                 println(line);
             }
@@ -1487,7 +1487,7 @@ fn weak_rejected_at_actor_send_boundary() {
 fn main() {
     let rc = Rc.new(1);
     let weak = rc.downgrade();
-    let sink = spawn BoundarySink(_unused: 0);
+    let sink = spawn BoundarySink { _unused: 0 };
     let _ = sink.consume(weak);
 }
 ",
@@ -1615,7 +1615,7 @@ fn rc_rejected_at_actor_send_boundary() {
 
 fn main() {
     let rc: Rc<i64> = Rc.new(1);
-    let a = spawn BoundarySink(_unused: 0);
+    let a = spawn BoundarySink { _unused: 0 };
     let _ = a.consume(rc);
 }
 ",
@@ -1641,7 +1641,7 @@ actor BoundarySink {
 }
 
 fn main() {
-    let sink = spawn BoundarySink(_unused: 0);
+    let sink = spawn BoundarySink { _unused: 0 };
     var value = Boxed { payload: [1, 2] };
     let _ = sink.take(value);
     let _ = sink.take(value);
@@ -1671,7 +1671,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    let _writer = spawn Writer(sink: sink);
+    let _writer = spawn Writer { sink: sink };
     sink.send("after-move");
 }
 "#,
@@ -1701,7 +1701,7 @@ actor BoundarySink {
 }
 
 fn main() {
-    let sink = spawn BoundarySink(_unused: 0);
+    let sink = spawn BoundarySink { _unused: 0 };
     let rc = Rc.new(1);
     let weak = rc.downgrade();
     let boxed = RcBox { value: rc.clone() };
@@ -1818,7 +1818,7 @@ fn actor_ref_send_method_requires_send_payload() {
 }
 
 fn main() {
-    let sink = spawn Sink(_unused: 0);
+    let sink = spawn Sink { _unused: 0 };
     let rc: Rc<i64> = Rc.new(1);
     sink.send(rc);
 }
@@ -1851,7 +1851,7 @@ fn actor_receive_fn_option_reply_accepted() {
 }
 
 fn main() {
-    let q = spawn Queue(items: Vec.new());
+    let q = spawn Queue { items: Vec.new() };
     let _item = q.dequeue();
 }
 ",
@@ -5584,7 +5584,7 @@ fn deferred_pipe_unresolved_inner_fails_closed() {
 #[test]
 fn await_stream_recv_bytes_typechecks() {
     let output = typecheck_inline(
-        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_bytes(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner();\n    let _ = r.go(0);\n}\n",
+        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_bytes(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner;\n    let _ = r.go(0);\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -5599,7 +5599,7 @@ fn await_stream_recv_bytes_typechecks() {
 #[test]
 fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
-        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_i64(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner();\n    let _ = r.go(0);\n}\n",
+        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_i64(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner;\n    let _ = r.go(0);\n}\n",
     );
     assert!(
         output.errors.is_empty(),

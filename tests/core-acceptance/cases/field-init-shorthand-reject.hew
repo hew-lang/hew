@@ -26,6 +26,6 @@ fn main() {
     // unknown field is the error, as for the explicit form.
     let typo = Endpoint { host, prot };
     // A spawn argument takes the shorthand too.
-    let _greeter = spawn Greeter(greeting);
+    let _greeter = spawn Greeter { greeting };
     println(f"{unbound.port} {twice.port} {extra.port} {typo.port}");
 }

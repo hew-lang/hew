@@ -1,0 +1,118 @@
+// Keyed construction: a spawn binds its keys by name, in braces, the way a
+// record literal does, while a call binds bare names by position.
+actor Pair {
+    let a: i64;
+    let b: i64;
+    receive fn show() -> string {
+        f"a={a} b={b}"
+    }
+}
+
+fn pair_fn(a: i64, b: i64) -> string {
+    f"a={a} b={b}"
+}
+
+actor Meter {
+    let label: string;
+    var reads: i64 = 0;
+    var limit: i64 = 10;
+    receive fn show() -> string {
+        f"{label} reads={reads} limit={limit}"
+    }
+}
+
+actor Loader {
+    var items: Vec<i64>;
+    let label: string;
+    init(seed: i64, extra: i64) {
+        items = [seed, extra];
+    }
+    receive fn show() -> string {
+        f"{label} {items[0]} {items[1]}"
+    }
+}
+
+actor Cache<K: Hash + Eq, V> {
+    var entries: HashMap<K, V>;
+    receive fn size() -> i64 {
+        entries.len()
+    }
+}
+
+type Plan {
+    name: string;
+    kind: i64;
+}
+
+actor RoleWorker {
+    let plan: Plan;
+    var failed: bool = false;
+    receive fn describe() -> string {
+        f"{plan.name} kind={plan.kind} failed={failed}"
+    }
+}
+
+supervisor RoleBranch(plan: Plan) {
+    strategy: one_for_one;
+    intensity: 2 within 60s;
+    child role: RoleWorker { plan } restart: transient;
+}
+
+supervisor Crossed(a: i64, b: i64) {
+    strategy: one_for_one;
+    child pair: Pair { a: b, b: a };
+}
+
+machine Door {
+    events {
+        Open { by: string; }
+        Close;
+    }
+    state Shut;
+    state Ajar { by: string; }
+
+    on Open { by }: Shut => Ajar { by: f"opened by {by}" }
+    on Close: Ajar => Shut;
+
+    default { state }
+}
+
+fn tag(label: string) -> string {
+    println(f"evaluate {label}");
+    label
+}
+
+fn main() {
+    let a = 1;
+    let b = 2;
+    // A call is positional; the keyed spawn binds by name in any order.
+    println(pair_fn(b, a));
+    println(spawn Pair { b, a }.show().expect("show"));
+    println(spawn Pair { a: b, b: a }.show().expect("show"));
+
+    // Defaults fill omitted keys; a written key overrides one.
+    println(spawn Meter { label: "plain" }.show().expect("show"));
+    println(spawn Meter { limit: 3, label: tag("set") }.show().expect("show"));
+
+    // Init parameters are keys too, in any order; values run as written.
+    println(spawn Loader { extra: 9, label: tag("loader"), seed: 4 }.show().expect("show"));
+
+    // Type arguments sit before the braces, as on a record literal.
+    let entries: HashMap<string, i64> = HashMap.new();
+    println(spawn Cache<string, i64> { entries }.size().expect("size"));
+
+    // Supervisor parameters are keys, and child keys may read them.
+    let plan = Plan { name: "relay", kind: 2 };
+    let branch = spawn RoleBranch { plan };
+    println(branch.role.describe().expect("describe"));
+    let crossed = spawn Crossed { b: 20, a: 10 };
+    println(crossed.pair.show().expect("show"));
+
+    // A transition head binds the event's fields in braces.
+    var door: Door = .Shut;
+    let _ = door.step(.Open { by: "sam" });
+    match door {
+        .Ajar { by } => println(by),
+        .Shut => println("shut"),
+    }
+}

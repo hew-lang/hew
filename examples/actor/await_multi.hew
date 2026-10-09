@@ -60,8 +60,8 @@ actor Coordinator {
 }
 
 fn main() {
-    let w = spawn Worker(factor: 6);
-    let c = spawn Coordinator(worker: w, rounds: 4);
+    let w = spawn Worker { factor: 6 };
+    let c = spawn Coordinator { worker: w, rounds: 4 };
     let r2 = c.two(7);
     match r2 {
         .Ok(v) => println(f"two={v}"),

@@ -737,7 +737,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",
         K::CallableUnsupportedInMir { .. } => "CallableUnsupportedInMir",
         K::IndirectCallUnsupported { .. } => "IndirectCallUnsupported",
-        K::SupervisorSpawnArgsUnsupported { .. } => "SupervisorSpawnArgsUnsupported",
         K::VecIndexElementTypeUnsupported { .. } => "VecIndexElementTypeUnsupported",
         K::VecSliceElementTypeUnsupported { .. } => "VecSliceElementTypeUnsupported",
         K::CloneNotYetSupported { .. } => "CloneNotYetSupported",

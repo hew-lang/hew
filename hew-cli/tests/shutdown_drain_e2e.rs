@@ -57,7 +57,7 @@ actor Handler {{
 }}
 
 fn main() {{
-    let handler = spawn Handler(addr: "127.0.0.1:{port}");
+    let handler = spawn Handler {{ addr: "127.0.0.1:{port}" }};
     let _ = mailbox(handler, on_full: .Wait).run(0);
     sleep(750ms);
 }}
@@ -212,7 +212,7 @@ actor Service {
 fn main() {
     let root = Ticket { id: 1 };
     let peer = spawn Peer;
-    let service = spawn Service(held: Ticket { id: 2 });
+    let service = spawn Service { held: Ticket { id: 2 } };
     loop {
         match service.poll(peer) {
             .Ok(value) => assert(value == 42),
@@ -361,7 +361,7 @@ actor Acceptor {{
 }}
 
 fn main() {{
-    let acceptor = spawn Acceptor(addr: "127.0.0.1:{port}");
+    let acceptor = spawn Acceptor {{ addr: "127.0.0.1:{port}" }};
     // The accept loop never returns on its own; this call keeps main blocked
     // (and the process alive) until shutdown cancels it.
     let _ = acceptor.start();
@@ -451,7 +451,7 @@ actor Saver {
 }
 
 fn main() {
-    let saver = spawn Saver();
+    let saver = spawn Saver;
     saver.tick().expect("a running runtime admits root calls");
     println("READY");
     for i in 0..1000 {
@@ -530,7 +530,7 @@ actor Journal {
 
 fn main() {
     let stop = os.shutdown_signal();
-    let journal = spawn Journal();
+    let journal = spawn Journal;
     journal.record().expect("record before the request");
     println("READY");
     for i in 0..1000 {
@@ -590,7 +590,7 @@ actor Saver {
 fn main() {
     let stop = os.shutdown_signal();
     stop.close();
-    let saver = spawn Saver();
+    let saver = spawn Saver;
     saver.tick().expect("tick before the request");
     println("READY");
     for i in 0..1000 {
@@ -648,7 +648,7 @@ actor Server {
 }
 
 fn main() {
-    let server = spawn Server();
+    let server = spawn Server;
     match server.serve() {
         .Ok(served) => println(f"ENDED:{served}"),
         .Err(error) => println(f"ERROR:{error}"),

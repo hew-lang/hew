@@ -24,7 +24,7 @@ actor Ticker {
 }
 
 fn main() {
-    let t = spawn Ticker(b: 100);
+    let t = spawn Ticker { b: 100 };
     let s1 = t.stream(3);
     let head = s1.recv();
     match head {

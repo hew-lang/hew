@@ -174,7 +174,7 @@
     "within": "Scope deadline (scope within duration { ... }) and supervisor intensity window separator",
     "stop": "Supervisor child graceful-stop deadline clause",
     "wired_to": "Supervisor child sibling-wiring clause",
-    "count": "Supervisor pool arity clause (pool ws: Worker(..) count: N)",
+    "count": "Supervisor pool arity clause (pool ws: Worker { .. } count: N)",
     "pool": "Supervisor child-pool declaration marker (contextual inside a supervisor body)",
     "default": "Machine fallback transition marker (contextual inside a machine body)",
     "emit": "Machine event emission marker (contextual before an event name)",

@@ -15,16 +15,16 @@ actor Worker {
 }
 
 supervisor Branch(port: i64) {
-    child worker: Worker(port: port);
+    child worker: Worker { port: port };
 }
 
 supervisor Root(port: i64) {
-    child branch: Branch(port: port) restart: temporary;
+    child branch: Branch { port: port } restart: temporary;
 }
 
 fn main() {
     let listener = net.listen("127.0.0.1:0").expect("listen");
-    let root = spawn Root(port: listener.local_port());
+    let root = spawn Root { port: listener.local_port() };
     let role = root.branch;
     stop(role);
     println("requested");

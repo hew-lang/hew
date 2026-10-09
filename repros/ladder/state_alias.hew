@@ -12,6 +12,6 @@ actor Example {
 }
 
 fn main() {
-    let e = spawn Example();
+    let e = spawn Example;
     let _ = e.demo();
 }

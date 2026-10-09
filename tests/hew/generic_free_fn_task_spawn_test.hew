@@ -84,7 +84,7 @@ actor TaskRunner {
 // ---- Tests ----
 #[test]
 fn test_generic_free_fn_task_spawn_value() {
-    let r = spawn TaskRunner(total: 0);
+    let r = spawn TaskRunner { total: 0 };
     match r.run_value_tasks() {
         .Ok(n) => assert(n == 84),
         .Err(_) => assert(false),
@@ -93,7 +93,7 @@ fn test_generic_free_fn_task_spawn_value() {
 
 #[test]
 fn test_generic_free_fn_task_spawn_unit_fork_block() {
-    let r = spawn TaskRunner(total: 0);
+    let r = spawn TaskRunner { total: 0 };
     match r.run_unit_fork_block() {
         .Ok(n) => assert(n == 7),
         .Err(_) => assert(false),
@@ -102,7 +102,7 @@ fn test_generic_free_fn_task_spawn_unit_fork_block() {
 
 #[test]
 fn test_generic_free_fn_task_spawn_arg_fork_block() {
-    let r = spawn TaskRunner(total: 0);
+    let r = spawn TaskRunner { total: 0 };
     match r.run_arg_fork_block() {
         .Ok(n) => assert(n == 55),
         .Err(_) => assert(false),

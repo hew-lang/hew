@@ -43,7 +43,7 @@ actor Pump {
 fn main() -> i64 {
     let deliveries = 50;
     let (ready_tx, ready_rx) = stream.pipe(deliveries).expect("ready");
-    let ready = spawn Ready(tx: ready_tx);
+    let ready = spawn Ready { tx: ready_tx };
     let listener = match net.listen("127.0.0.1:0") {
         .Ok(value) => value,
         .Err(_) => panic("network setup failed"),
@@ -56,8 +56,8 @@ fn main() -> i64 {
             .Err(_) => panic("connect failed"),
         };
         let conn = listener.accept();
-        let sink = spawn ProbeSink(ready: ready);
-        let pump = spawn Pump(conn: conn, sink: sink);
+        let sink = spawn ProbeSink { ready: ready };
+        let pump = spawn Pump { conn: conn, sink: sink };
         mailbox(pump, on_full: .Wait).run().expect("start pump");
         client.send(b"active-mode-delivery").expect("send");
         client.close();

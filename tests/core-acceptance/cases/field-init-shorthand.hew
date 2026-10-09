@@ -100,12 +100,12 @@ fn main() {
     // Actor spawn arguments name the actor's fields the same way.
     let greeting = "hello";
     let count = 2;
-    let greeter = spawn Greeter(greeting, count);
+    let greeter = spawn Greeter { greeting, count };
     match greeter.greet("hew") {
         .Ok(text) => println(text),
         .Err(_) => println("greeter failed"),
     }
-    let tally = spawn Tally(label: "hits");
+    let tally = spawn Tally { label: "hits" };
     let _ = tally.bump();
     match tally.bump() {
         .Ok(snap) => println(f"{snap.label} {snap.count}"),

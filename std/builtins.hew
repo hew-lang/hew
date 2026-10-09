@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 // Actor references
 // ---------------------------------------------------------------------------
-// An actor is the type of its handle: `spawn Orders(...)` has type `Orders`,
+// An actor is the type of its handle: `spawn Orders { ... }` has type `Orders`,
 // and a field, parameter, return or element that holds an actor is written
 // with the actor's own name. There is no separate pid type to declare here.
 //

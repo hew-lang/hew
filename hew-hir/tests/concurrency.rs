@@ -31,8 +31,6 @@ mod spawn_qualified_identity;
 mod supervisor_child_accessor_gates;
 #[path = "concurrency/supervisor_hir.rs"]
 mod supervisor_hir;
-#[path = "concurrency/supervisor_spawn_gates.rs"]
-mod supervisor_spawn_gates;
 #[path = "concurrency/task_gates.rs"]
 mod task_gates;
 #[path = "concurrency/task_gates_type_dependent.rs"]

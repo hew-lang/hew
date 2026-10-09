@@ -1,0 +1,13 @@
+[[case]]
+id = "spawn-keyed-reject-parens"
+intent = "A parenthesised spawn is a parse error naming the brace spelling, never a by-name binding that looks positional."
+source = "cases/spawn-keyed-reject-parens.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_SPAWN_PAREN_ARGS"
+line = 12
+column = 24
+message = "keys are written in braces"

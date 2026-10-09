@@ -34,7 +34,7 @@ fn main() {
         .Err(error) => panic("network operation failed"),
     };
     let port = listener.local_port();
-    let reader = spawn Reader(addr: f"127.0.0.1:{port}");
+    let reader = spawn Reader { addr: f"127.0.0.1:{port}" };
     let result = reader.go(0);
     let peer = listener.accept();
     peer.close();

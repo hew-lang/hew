@@ -16,7 +16,7 @@ actor Sink {
 }
 
 fn main() {
-    let sink = spawn Sink();
+    let sink = spawn Sink;
     let inbox = mailbox(sink);
     for _ in 0 .. 1000 {
         match inbox.take(1) {

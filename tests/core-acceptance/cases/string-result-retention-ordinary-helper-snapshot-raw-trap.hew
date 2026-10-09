@@ -45,7 +45,7 @@ actor Runner {
 fn main() {
     let gate = spawn Gate;
     for _ in 0 .. 50 {
-        let runner = spawn Runner(gate: gate);
+        let runner = spawn Runner { gate: gate };
         match runner.go() {
             .Ok(_) => println("unexpected"),
             .Err(_) => println("crashed"),

@@ -1845,7 +1845,7 @@ fn machine_release_proves_the_resource_close() {
         )
     };
     let helper = "fn weigh(n: i64) -> i64 {\n    let t = Tag { id: n };\n    t.id + 1\n}\n\nmachine Counter {\n    events {\n        Bump;\n    }\n    state Idle;\n    state Live { n: i64; }\n    on Bump: Idle => Live { n: weigh(1) }\n    on Bump: Live => Live reenter { n: state.n + 1 }\n    default { state }\n}\n\nfn main() {\n    var c: Counter = .Idle;\n    let _ = c.step(.Bump);\n}\n";
-    let payload = "machine Link {\n    events {\n        Open { id: i64; }\n        Shut;\n    }\n    state Idle;\n    state Live { tag: Rc<Tag>; }\n    on Open(id): Idle => Live { tag: Rc.new(Tag { id: id }) }\n    on Shut: Live => Idle;\n    default { state }\n}\n\nfn main() {\n    var l: Link = .Idle;\n    let _ = l.step(.Open { id: 1 });\n}\n";
+    let payload = "machine Link {\n    events {\n        Open { id: i64; }\n        Shut;\n    }\n    state Idle;\n    state Live { tag: Rc<Tag>; }\n    on Open { id }: Idle => Live { tag: Rc.new(Tag { id: id }) }\n    on Shut: Live => Idle;\n    default { state }\n}\n\nfn main() {\n    var l: Link = .Idle;\n    let _ = l.step(.Open { id: 1 });\n}\n";
     let generic = "machine Slot<T> {\n    events {\n        Put { value: T; }\n        Clear;\n    }\n    state Empty;\n    state Full { value: T; }\n    on Put: Empty => Full { value: event.value }\n    on Clear: Full => Empty;\n    default { state }\n}\n\nfn main() {\n    var slot: Slot<Rc<Tag>> = .Empty;\n    let _ = slot.step(.Clear);\n}\n";
     for rest in [helper, payload, generic] {
         let refused = typecheck_isolated(&source("println(f\"close {self.id}\");", rest));
@@ -1872,7 +1872,7 @@ fn machine_transition_supervisor_spawn_refused_as_impure() {
     let output = typecheck_isolated(
         r"supervisor Root {
     strategy: one_for_one;
-    child worker: Worker();
+    child worker: Worker;
 }
 
 actor Worker {
@@ -1886,7 +1886,7 @@ machine M {
 
     state Active;
     on Tick: Active => Active reenter {
-        let s = spawn Root(value: 1);
+        let s = spawn Root { value: 1 };
         .Active
     }
 }
@@ -1911,7 +1911,7 @@ fn machine_state_entry_supervisor_spawn_refused_as_impure() {
     let output = typecheck_isolated(
         r"supervisor Root {
     strategy: one_for_one;
-    child worker: Worker();
+    child worker: Worker;
 }
 
 actor Worker {
@@ -1925,7 +1925,7 @@ machine M {
 
     state Idle {
         entry {
-            let s = spawn Root(value: 1);
+            let s = spawn Root { value: 1 };
         }
     }
     on Tick: Idle => Idle reenter;

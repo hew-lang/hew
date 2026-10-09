@@ -33,7 +33,7 @@ actor Driver {
 
 fn main() -> i64 {
     let slow = spawn SlowReplier;
-    let driver = spawn Driver(slow: slow);
+    let driver = spawn Driver { slow: slow };
     match driver.run() {
         .Ok(v) => {
             print("${v}");

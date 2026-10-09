@@ -10,7 +10,7 @@ use hew_parser::ast::Ident;
 /// File-path imports (`import "x.hew";`) are FLATTENED: after type-checking,
 /// `flatten_file_import_items` (hew-compile) appends each file-import decl's
 /// resolved items to the tail of `program.items` under their bare names so the
-/// unqualified surface (`spawn Counter()`) lowers as a root item. But the
+/// unqualified surface (`spawn Counter`) lowers as a root item. But the
 /// checker validated those same items during its `module_graph.topo_order`
 /// walk, stamping their `SpanKey` facts with a non-root `current_module_idx`
 /// (1-based, incremented per present module — see `Checker::check_program`).

@@ -12,7 +12,7 @@ actor Counter {
 }
 
 fn main() {
-    let counter = spawn Counter();
+    let counter = spawn Counter;
     let listener = net.listen("127.0.0.1:0").expect("listen");
     let client = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
     let conn = listener.accept();

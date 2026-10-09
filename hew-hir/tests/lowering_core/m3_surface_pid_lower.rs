@@ -119,7 +119,7 @@ fn spawn_expr_type_is_the_actor_handle() {
 }
 
 fn main() {
-    let c = spawn Counter(n: 0);
+    let c = spawn Counter { n: 0 };
 }
 ";
     let (tc, _lower) = lower_with_types(source);
@@ -182,7 +182,7 @@ fn hir_module_has_main() {
 }
 
 fn main() {
-    let _f = spawn Foo(v: 0);
+    let _f = spawn Foo { v: 0 };
 }
 ";
     let (_tc, lower) = lower_with_types(source);

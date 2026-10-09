@@ -15,7 +15,7 @@ fn main() {
     var ended = 0;
     for round in 0..40 {
         let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
-        let target = spawn Target(ready: tx);
+        let target = spawn Target { ready: tx };
         mailbox(target, on_full: .Wait).work(round).expect("submit");
         match rx.recv() {
             .Some(_) => {}

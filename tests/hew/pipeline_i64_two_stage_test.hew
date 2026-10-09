@@ -189,8 +189,8 @@ fn admission_reply_waits_for_downstream_post_send_barrier() {
         .Ok(value) => value,
         .Err(_) => panic("pipeline control handle unavailable"),
     };
-    let probe = spawn PushProbe(completed: false, accepted: false);
-    let runner = spawn PushRunner(source: source, probe: probe);
+    let probe = spawn PushProbe { completed: false, accepted: false };
+    let runner = spawn PushRunner { source: source, probe: probe };
     match source.push(item(1, "held-one", false)) {
         .Ok(admitted) => assert(admitted),
         .Err(_) => assert(false),
@@ -262,10 +262,10 @@ fn cancelled_admission_settles_and_pipeline_continues() {
 
 #[test]
 fn crash_mid_pipeline_settles_without_sink_delivery() {
-    let control = spawn pipeline.AdmissionControlI64(permits: 1, stage_attempts: 0, stage_post_sends: 0);
-    let sink = spawn pipeline.SinkI64(count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control);
-    let stage = spawn CrashStage(next: sink, crashed: false);
-    let source = spawn CrashSource(next: stage, sink: sink);
+    let control = spawn pipeline.AdmissionControlI64 { permits: 1, stage_attempts: 0, stage_post_sends: 0 };
+    let sink = spawn pipeline.SinkI64 { count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control };
+    let stage = spawn CrashStage { next: sink, crashed: false };
+    let source = spawn CrashSource { next: stage, sink: sink };
     match source.push(item(9, "crash-owned", true)) {
         .Ok(admitted) => assert(!admitted),
         .Err(_) => assert(false),
@@ -287,12 +287,12 @@ fn graceful_shutdown_drains_queued_owned_items() {
         .Ok(value) => value,
         .Err(_) => panic("pipeline control handle unavailable"),
     };
-    let first_probe = spawn PushProbe(completed: false, accepted: false);
-    let second_probe = spawn PushProbe(completed: false, accepted: false);
-    let third_probe = spawn PushProbe(completed: false, accepted: false);
-    let first = spawn PushRunner(source: source, probe: first_probe);
-    let second = spawn PushRunner(source: source, probe: second_probe);
-    let third = spawn PushRunner(source: source, probe: third_probe);
+    let first_probe = spawn PushProbe { completed: false, accepted: false };
+    let second_probe = spawn PushProbe { completed: false, accepted: false };
+    let third_probe = spawn PushProbe { completed: false, accepted: false };
+    let first = spawn PushRunner { source: source, probe: first_probe };
+    let second = spawn PushRunner { source: source, probe: second_probe };
+    let third = spawn PushRunner { source: source, probe: third_probe };
     let _ = mailbox(first).start(4, "drain-one");
     let _ = mailbox(second).start(5, "drain-two");
     let _ = mailbox(third).start(6, "drain-three");

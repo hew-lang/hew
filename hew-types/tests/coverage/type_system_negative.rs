@@ -845,7 +845,7 @@ actor SnapshotSink {
 }
 
 fn main() {
-    let s = spawn SnapshotSink(val: 0);
+    let s = spawn SnapshotSink { val: 0 };
     let h = Payload { data: "hello" };
     let _ = s.consume(h);
     let _ = s.consume(h);

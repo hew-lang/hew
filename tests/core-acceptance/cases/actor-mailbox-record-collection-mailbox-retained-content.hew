@@ -13,7 +13,7 @@ actor ProbeSink {
 }
 
 fn main() -> i64 {
-    let sink = spawn ProbeSink(store: []);
+    let sink = spawn ProbeSink { store: [] };
     var i: i64 = 0;
     while i < 7 {
         let b = Boxed { payload: [i * 10, i, i] };

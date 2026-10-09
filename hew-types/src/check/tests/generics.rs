@@ -4546,7 +4546,7 @@ fn generic_receive_call_instantiates_its_type_parameters() {
     let source = format!(
         "{GENERIC_RECEIVE_ACTOR}
 fn main() -> i64 {{
-    let store: Store = spawn Store();
+    let store: Store = spawn Store;
     let left: Option<i64> = Some(1);
     let right: Option<i64> = Some(1);
     let out = await store.keep(left, right);
@@ -4574,7 +4574,7 @@ fn generic_receive_call_with_ineligible_instantiation_is_refused_by_checker() {
     let source = format!(
         "{GENERIC_RECEIVE_ACTOR}
 fn main() -> i64 {{
-    let store: Store = spawn Store();
+    let store: Store = spawn Store;
     let a: HashMap<string, i64> = HashMap.new();
     let b: HashMap<string, i64> = HashMap.new();
     let left: Option<HashMap<string, i64>> = Some(a);

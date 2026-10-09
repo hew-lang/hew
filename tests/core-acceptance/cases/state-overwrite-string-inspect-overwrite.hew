@@ -13,7 +13,7 @@ actor Namer {
 }
 
 fn main() -> i64 {
-    let h = spawn Namer(name: "seed".to_upper());
+    let h = spawn Namer { name: "seed".to_upper() };
     var i: i64 = 0;
     while i < 50 {
         let _ = h.tick();

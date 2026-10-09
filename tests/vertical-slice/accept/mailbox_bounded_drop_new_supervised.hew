@@ -22,7 +22,7 @@ supervisor MailboxSupervisor {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child w1: MailboxWorker(processed: 0);
+    child w1: MailboxWorker { processed: 0 };
 }
 
 fn main() -> i64 {

@@ -781,10 +781,10 @@ pub struct HirSupervisorChild {
     /// Assigned by the HIR lowering pass by counting each partition in source order.
     /// MIR lowering reads this field to emit the correct runtime ABI call.
     pub slot_index: u32,
-    /// Named init args from the child declaration, e.g. `child w: Worker(id: 7)`.
+    /// Keyed init values from the child declaration, e.g. `child w: Worker { id: 7 }`.
     ///
     /// Each entry is `(field_name, expr)`, mirroring `HirSpawnExpr.args`.
-    /// Empty when no `(...)` clause appears on the child declaration.
+    /// Empty when the child declaration names no keys.
     /// MIR lowering reads these to build `SupervisorChildLayout.init_state_fields`
     /// so codegen can construct the per-child state template.
     ///
@@ -793,8 +793,11 @@ pub struct HirSupervisorChild {
     /// here — `init_args` carries only the per-member init template, shared by
     /// all N fungible members.
     pub init_args: Vec<(String, HirExpr)>,
+    /// The checker's binding of the child's keys, as on
+    /// [`HirExprKind::Spawn`].
+    pub init_slots: Vec<hew_types::check::SpawnSlot>,
     /// Reserved pool-size expression, lowered from the `count:` named arg on a
-    /// `pool name: Type(...) count: N` declaration. `None` for a static child
+    /// `pool name: Type { .. } count: N` declaration. `None` for a static child
     /// or a pool child that omitted `count:` (which the checker rejects). The
     /// expression yields the number of fungible members the bootstrap spawns
     /// into the pool slot. `count` is a reserved arg name on pool declarations,
@@ -1353,12 +1356,15 @@ pub enum HirExprKind {
         /// evaluates them; empty when that is parameter order.
         evaluation_order: Vec<usize>,
     },
-    /// `spawn Actor(field: value, ...)` — named-actor spawn. The checker owns
-    /// the result type (`Actor`'s own actor-handle type); HIR carries only the
-    /// structural spawn surface and lowered init arguments for MIR/codegen.
+    /// `spawn Actor { key: value, .. }` — named-actor spawn. The checker owns
+    /// the result type (`Actor`'s own actor-handle type) and the binding of
+    /// keys to slots; HIR carries the written values in source order.
     Spawn {
         actor_name: String,
         args: Vec<(String, HirExpr)>,
+        /// The checker's binding: one slot per key the target accepts, in
+        /// declaration order, naming the written value or the default.
+        slots: Vec<hew_types::check::SpawnSlot>,
     },
     /// Owned message construction; this does not enqueue or suspend.
     ActorMessage {

@@ -557,6 +557,7 @@ impl Checker {
                 scrutinee_place.clone(),
                 scrutinee_loan.clone(),
             );
+            self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
             self.record_pattern_value_sources(&arm.pattern, scrutinee_ty, scrutinee);
 
             let mut guard_diverges = false;

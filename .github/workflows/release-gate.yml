@@ -84,7 +84,7 @@ jobs:
         run: make release-checks
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Sanitizers — executed ASan hard gate. TSan and Miri remain nightly lanes.
+  # Sanitizers — executed ASan hard gate. No current TSan or Miri CI jobs.
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
     name: Release Gate — Sanitizers

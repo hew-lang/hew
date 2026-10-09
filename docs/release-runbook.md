@@ -131,7 +131,10 @@ gate again with no version-keyed exemption.
 - [ ] `main` CI is green
       (check [Actions → CI](../../actions/workflows/ci.yml))
 - [ ] The release branch `gate-sanitizers` job is green: ASan executed and passed
-- [ ] The latest nightly TSan and Miri results have been reviewed with their documented scope limits (see Known gaps)
+- [ ] The latest completed nightly sanitizer run has been reviewed for its
+      recorded revision and scope (see [Known gaps](#known-gaps-tracked))
+- [ ] The missing TSan/Miri evidence and its coverage implications have an
+      explicit release-acceptance decision (see Known gaps)
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
 - [ ] CHANGELOG.md has either a populated `[Unreleased]` section or the dated
       `[X.Y.Z]` section for the intended release
@@ -411,8 +414,10 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 
 Do not tag until `release-gate.yml` and the `release.yml` dry run are green on
 the release branch. In particular, `gate-sanitizers` must have executed ASan
-successfully and the latest advisory TSan/Miri runs must have been reviewed
-within their documented scope.
+successfully. Review the latest completed nightly run for its recorded revision
+and scope. Current workflows do not execute TSan or Miri; before tagging,
+record the coverage and release-acceptance decision for that missing evidence
+(see [Sanitizer trust contract](#sanitizer-trust-contract)).
 
 macOS release notes:
 
@@ -483,9 +488,12 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | macOS build + tests                  | ci.yml + release-gate.yml                                         | Yes                                 |
 | Windows build + tests                | ci.yml + release-gate.yml                                         | Yes                                 |
 | FreeBSD build + tests                | release-gate.yml (x86_64 + aarch64), freebsd.yml (nightly)        | Yes for release branches            |
-| ASan                                 | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml     | Yes for release branches            |
-| TSan (Rust runtime)                  | nightly-sanitizers.yml                                            | Recurring advisory lane             |
-| Miri                                 | nightly-sanitizers.yml                                            | Curated recurring advisory lane     |
+| Rust runtime ASan (`make asan`)       | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml     | Yes for release branches            |
+| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)           | Blocks nightly result; review before release |
+| Host and extern-byte safety         | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release |
+| Bounded parser fuzz smoke           | nightly-sanitizers.yml (`make fuzz-smoke`)                        | Blocks nightly result; review before release |
+| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                        | Current CI evidence unavailable; release decision required |
+| Miri                                | Local `make miri`; no current workflow job                        | Current CI evidence unavailable; release decision required |
 | Codegen silent-failure lint          | codegen-lint.yml (PR)                                             | Advisory                            |
 | Local cross-platform build           | `make pre-release`                                                | Recommended                         |
 
@@ -497,18 +505,33 @@ The release branch gate runs `make asan` directly. A missing, skipped, or red
 ASan execution therefore fails the job without an intermediate result file or
 waiver parser.
 
-TSan remains an executed nightly advisory lane while the prebuilt,
-uninstrumented standard library prevents authoritative race classification.
-Miri likewise remains an executed nightly lane over the curated pure-Rust
-unsafe subset; FFI, syscall, socket, and subprocess paths remain outside its
-model. Review those real runs when preparing a release rather than maintaining
-a second prose contract that cannot validate their results.
+The current [nightly sanitizer workflow](../.github/workflows/nightly-sanitizers.yml)
+executes `make asan`, six partitions of `make core-safety`, the
+`make test-host-safety` and `make test-extern-bytes-safety` integrations, and
+`make fuzz-smoke`. Every job blocks the nightly result. Record the reviewed
+run's revision and job outcomes; a successful run is evidence only for that
+revision and scope.
 
-- **ASan coverage is only as broad as `make asan`.** Today that command runs
-  the `hew-runtime --lib` ASan suite. It does not prove integration-only free
-  sites, thread-reachable handle leaks, or every packaged binary path are
-  covered. Expanding ASan to integration binaries is a tracked follow-on; once
-  `make asan` grows, the release gate inherits that coverage automatically.
+Current workflows contain no TSan or Miri jobs, so current CI evidence for
+either is unavailable. `make tsan` and `make miri` remain local entry points,
+not recurring CI proof. Before release, review the missing race, aliasing and
+pointer-provenance coverage and record the required coverage and
+release-acceptance decision. A green ASan or nightly result does not supply
+that missing evidence or establish safety sign-off.
+
+- **The release-branch ASan gate is only as broad as `make asan`.** Today
+  that command runs the `hew-runtime --lib` ASan suite. It does not by itself
+  prove integration-only free sites, thread-reachable handle leaks, or every
+  packaged binary path are covered. The separate nightly generated-code/runtime
+  partitions and host/extern-byte safety integrations add coverage without
+  expanding the release-branch job's scope. Expanding `make asan` to integration
+  binaries is a tracked follow-on; once it grows, the release gate inherits
+  that coverage automatically.
+
+- **Miri: current CI evidence unavailable.** The local `make miri` target
+  covers a curated pure-Rust unsafe subset. FFI, syscall, socket and subprocess
+  paths remain outside its model; review the toolchain and scope of any new
+  results before using them as release evidence.
 
 - **Windows codegen**: release-gate and tag workflows provision LLVM 22, build
   the release compiler and `hew.lib`, and execute a Rust-staticlib consumer
@@ -528,10 +551,13 @@ a second prose contract that cannot validate their results.
   publish the LLVM 22 packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
   arm VM/container / remote host).
-- **TSan (Rust runtime)**: upstream Rust/Cargo build-std + TSan link failures
-  (duplicate lang items, panic-strategy mismatch) have no clean repo-side fix
-  as of 2026-04. Keep and review the nightly signal; re-evaluate when upstream
-  resolves.
+- **TSan (Rust runtime): current CI evidence unavailable.** The local
+  `make tsan` target uses a prebuilt, uninstrumented standard library, so its
+  results cannot authoritatively classify races. Earlier investigation found
+  upstream Rust/Cargo build-std + TSan link failures (duplicate lang items,
+  panic-strategy mismatch) as of 2026-04. Re-evaluate those limits against the
+  selected toolchain when obtaining fresh evidence; no current nightly signal
+  is available to review.
 - **WASM capability gaps**: Pipes (`stream.pipe`, `Stream<T>`, `Sink<T>`)
   and the other suspending I/O paths remain compile-time refusals on
   wasm32-wasi. Timers (`sleep`/`sleep_until`) have cooperative

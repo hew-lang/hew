@@ -629,7 +629,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             let ramp = self.emit_actor_notification_ramp(actor, hook, exit)?;
             let handle = call_value(builder, ramp, &[state.into(), payload.into()], "hook.frame")?
                 .into_pointer_value();
-            let is_done = coro::external(
+            let is_done = get_or_declare_external(
                 &self.llvm,
                 "hew_cont_done",
                 self.ctx.bool_type().fn_type(&[ptr.into()], false),
@@ -706,7 +706,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(ramp, "entry"));
-        let new_state = coro::external(
+        let new_state = get_or_declare_external(
             &self.llvm,
             "hew_actor_coro_state_new",
             ptr.fn_type(&[], false),
@@ -744,7 +744,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ramps[&hook],
             &args,
         )?;
-        let free_state = coro::external(
+        let free_state = get_or_declare_external(
             &self.llvm,
             "hew_coro_state_free",
             self.ctx.void_type().fn_type(&[ptr.into()], false),
@@ -755,7 +755,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let returned_fault = builder
             .build_load(ptr, fault, "hook.returned.fault")
             .llvm_ctx("read completed lifecycle hook fault")?;
-        let publish = coro::external(
+        let publish = get_or_declare_external(
             &self.llvm,
             "hew_actor_coro_set_fault",
             self.ctx.void_type().fn_type(&[ptr.into()], false),

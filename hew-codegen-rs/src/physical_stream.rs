@@ -56,7 +56,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let sink_out = self
             .value_emitter()
             .entry_scratch(pointer.into(), "stream.sink.out")?;
-        let make = coro::external(
+        let make = get_or_declare_external(
             self.llvm,
             "hew_stream_pipe_native",
             pointer.fn_type(
@@ -135,7 +135,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(poll)
             .llvm_ctx("poll stream quiescence")?;
         self.builder.position_at_end(poll);
-        let status = coro::external(
+        let status = get_or_declare_external(
             self.llvm,
             "hew_stream_cleanup_status_native",
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
@@ -171,7 +171,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     /// faulted pipe or the I/O error - rather than a bare code.
     fn initialize_stream_fault(&self, request: PointerValue<'ctx>) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let fault = coro::external(
+        let fault = get_or_declare_external(
             self.llvm,
             "hew_stream_operation_fault_native",
             pointer.fn_type(&[pointer.into()], false),
@@ -216,7 +216,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             "hew_stream_try_next_layout",
             self.ctx
@@ -312,7 +312,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         let frame = self.stream_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
-        let start = coro::external(
+        let start = get_or_declare_external(
             self.llvm,
             "hew_stream_read_start_native",
             pointer.fn_type(&[pointer.into(); 3], false),
@@ -372,7 +372,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let mut join = self.exit_join("stream.next.release");
         self.builder.position_at_end(some);
         self.finish_stream(request, waker, cancelled)?;
-        let take = coro::external(
+        let take = get_or_declare_external(
             self.llvm,
             "hew_stream_read_take_native",
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
@@ -449,7 +449,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(cleanup, pointer.const_null())
             .llvm_ctx("initialize rejected stream owner")?;
-        let send = coro::external(
+        let send = get_or_declare_external(
             self.llvm,
             "hew_stream_try_send_move_release",
             self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
@@ -558,7 +558,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
-        let start = coro::external(
+        let start = get_or_declare_external(
             self.llvm,
             "hew_stream_write_start_native",
             pointer.fn_type(&[pointer.into(); 4], false),
@@ -640,7 +640,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(timed_out);
         let count = suspend::call_value(
             &self.builder,
-            coro::external(
+            get_or_declare_external(
                 self.llvm,
                 "hew_stream_write_committed_native",
                 self.ctx.i64_type().fn_type(&[pointer.into()], false),

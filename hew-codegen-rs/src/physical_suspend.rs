@@ -77,7 +77,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     ) -> CodegenResult<IntValue<'ctx>> {
         let start = self.emit_root_start(callable)?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let run = coro::external(
+        let run = get_or_declare_external(
             &self.llvm,
             "hew_coro_run_root",
             self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
@@ -146,7 +146,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("return root continuation")?;
         } else {
             let status = call_value(&builder, self.functions[&callable.id], &args, "root.status")?;
-            let finish = coro::external(
+            let finish = get_or_declare_external(
                 &self.llvm,
                 "hew_coro_state_finish",
                 self.ctx
@@ -244,7 +244,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_finish(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         if let Some(frame) = &self.frame {
             let pointer = self.ctx.ptr_type(AddressSpace::default());
-            let finish = coro::external(
+            let finish = get_or_declare_external(
                 self.llvm,
                 "hew_coro_state_finish",
                 self.ctx
@@ -271,7 +271,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         state: PointerValue<'ctx>,
     ) -> CodegenResult<IntValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let function = coro::external(
+        let function = get_or_declare_external(
             self.llvm,
             name,
             self.ctx.i32_type().fn_type(&[pointer.into()], false),
@@ -281,7 +281,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 
     pub(super) fn free_handle(&self, name: &str, handle: PointerValue<'ctx>) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let free = coro::external(
+        let free = get_or_declare_external(
             self.llvm,
             name,
             self.ctx.void_type().fn_type(&[pointer.into()], false),
@@ -328,7 +328,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .as_ref()
             .ok_or_else(|| CodegenError::FailClosed("sleep requires a resumable body".into()))?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let waker_fn = coro::external(
+        let waker_fn = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
             pointer.fn_type(&[pointer.into()], false),
@@ -339,7 +339,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[frame.state.into()],
             "sleep.waker",
         )?;
-        let start = coro::external(
+        let start = get_or_declare_external(
             self.llvm,
             start_symbol,
             pointer.fn_type(&[self.ctx.i64_type().into(), pointer.into()], false),
@@ -432,7 +432,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("resumable call requires a resumable caller".into())
         })?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let child_fn = coro::external(
+        let child_fn = get_or_declare_external(
             self.llvm,
             "hew_coro_state_child",
             pointer.fn_type(&[pointer.into()], false),
@@ -486,11 +486,11 @@ pub(super) fn await_child<'ctx>(
     let pointer = ctx.ptr_type(AddressSpace::default());
     let state_value = |name: &str, state: PointerValue<'ctx>| -> CodegenResult<IntValue<'ctx>> {
         let function =
-            coro::external(llvm, name, ctx.i32_type().fn_type(&[pointer.into()], false))?;
+            get_or_declare_external(llvm, name, ctx.i32_type().fn_type(&[pointer.into()], false))?;
         Ok(call_value(builder, function, &[state.into()], "child.status")?.into_int_value())
     };
     let free_handle = |name: &str, handle: PointerValue<'ctx>| -> CodegenResult<()> {
-        let function = coro::external(
+        let function = get_or_declare_external(
             llvm,
             name,
             ctx.void_type().fn_type(&[pointer.into()], false),
@@ -558,7 +558,7 @@ pub(super) fn invoke_child<'ctx>(
     args: &[BasicMetadataValueEnum<'ctx>],
 ) -> CodegenResult<IntValue<'ctx>> {
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let create = coro::external(
+    let create = get_or_declare_external(
         llvm,
         "hew_coro_state_child",
         pointer.fn_type(&[pointer.into()], false),

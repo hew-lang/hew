@@ -92,7 +92,7 @@ pub(super) fn custom<'ctx>(
     let status = builder
         .build_load(ctx.i32_type(), status, "release.outcome")
         .llvm_ctx("read release outcome")?;
-    let finish = coro::external(
+    let finish = get_or_declare_external(
         llvm,
         "hew_coro_state_finish",
         ctx.i32_type()
@@ -120,7 +120,7 @@ fn invoke<'ctx>(
         .builder
         .build_store(fault, pointer.const_null())
         .llvm_ctx("clear release child fault")?;
-    let create = coro::external(
+    let create = get_or_declare_external(
         values.llvm,
         "hew_coro_state_cleanup_child",
         pointer.fn_type(&[pointer.into()], false),
@@ -169,7 +169,7 @@ fn publish_fault<'ctx>(
         .builder
         .build_load(pointer, fault, "release.context.fault")
         .llvm_ctx("borrow retained cleanup fault")?;
-    let publish = coro::external(
+    let publish = get_or_declare_external(
         values.llvm,
         "hew_coro_state_set_cleanup_fault",
         values.ctx.void_type().fn_type(&[pointer.into(); 2], false),
@@ -261,7 +261,7 @@ fn combine<'ctx>(
                 "release.context.fault",
             )
             .llvm_ctx("borrow retained cleanup fault")?;
-        let publish = coro::external(
+        let publish = get_or_declare_external(
             values.llvm,
             "hew_coro_state_set_cleanup_fault",
             values.ctx.void_type().fn_type(&[pointer.into(); 2], false),
@@ -484,7 +484,7 @@ fn ready_release<'ctx>(
     };
     let settled = values.ctx.append_basic_block(function, "settled");
     let pending = values.ctx.append_basic_block(function, "pending");
-    let poll_fn = coro::external(
+    let poll_fn = get_or_declare_external(
         values.llvm,
         poll,
         i32_ty.fn_type(&[pointer.into(); 2], false),
@@ -512,7 +512,7 @@ fn ready_release<'ctx>(
         .build_return(Some(&i32_ty.const_zero()))
         .llvm_ctx("leave an unfinished drain to the thunk")?;
     builder.position_at_end(settled);
-    let take_fault = coro::external(
+    let take_fault = get_or_declare_external(
         values.llvm,
         fault,
         pointer.fn_type(&[pointer.into()], false),
@@ -529,7 +529,7 @@ fn ready_release<'ctx>(
     builder
         .build_store(slot, raised)
         .llvm_ctx("own operation cleanup fault")?;
-    let code_fn = coro::external(
+    let code_fn = get_or_declare_external(
         values.llvm,
         "hew_fault_code",
         i32_ty.fn_type(&[pointer.into()], false),
@@ -617,7 +617,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("stream operation release lacks continuation".into())
         })?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let begin = coro::external(
+        let begin = get_or_declare_external(
             self.llvm,
             "hew_stream_operation_release_begin",
             pointer.fn_type(&[pointer.into()], false),
@@ -902,7 +902,7 @@ fn drain_operation<'ctx>(
         .build_unconditional_branch(poll)
         .llvm_ctx("drain operation owners")?;
     values.builder.position_at_end(poll);
-    let poll_fn = coro::external(
+    let poll_fn = get_or_declare_external(
         values.llvm,
         poll_name,
         values.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
@@ -933,7 +933,7 @@ fn drain_operation<'ctx>(
         .build_unreachable()
         .llvm_ctx("refuse unfinished operation destruction")?;
     values.builder.position_at_end(done);
-    let take_fault = coro::external(
+    let take_fault = get_or_declare_external(
         values.llvm,
         fault_name,
         pointer.fn_type(&[pointer.into()], false),
@@ -954,7 +954,7 @@ fn drain_operation<'ctx>(
         .builder
         .build_store(fault, raised)
         .llvm_ctx("own operation cleanup fault")?;
-    let code_fn = coro::external(
+    let code_fn = get_or_declare_external(
         values.llvm,
         "hew_fault_code",
         values.ctx.i32_type().fn_type(&[pointer.into()], false),
@@ -996,7 +996,7 @@ fn cursor<'ctx>(
         });
         args.push(extra);
     }
-    let begin = coro::external(values.llvm, begin_name, pointer.fn_type(&types, false))?;
+    let begin = get_or_declare_external(values.llvm, begin_name, pointer.fn_type(&types, false))?;
     let cursor =
         suspend::call_value(values.builder, begin, &args, "release.cursor")?.into_pointer_value();
     drain_cursor_inline(values, frame, cursor)
@@ -1076,7 +1076,7 @@ fn drain_cursor_inline<'ctx>(
         .build_conditional_branch(present, next, done)
         .llvm_ctx("start consuming container")?;
     values.builder.position_at_end(next);
-    let advance = coro::external(
+    let advance = get_or_declare_external(
         values.llvm,
         "hew_release_next",
         pointer.fn_type(&[pointer.into()], false),
@@ -1092,7 +1092,7 @@ fn drain_cursor_inline<'ctx>(
         .build_conditional_branch(present, item, done)
         .llvm_ctx("select next release item")?;
     values.builder.position_at_end(item);
-    let get_layout = coro::external(
+    let get_layout = get_or_declare_external(
         values.llvm,
         "hew_release_layout",
         pointer.fn_type(&[pointer.into()], false),
@@ -1110,7 +1110,7 @@ fn drain_cursor_inline<'ctx>(
         .build_unconditional_branch(next)
         .llvm_ctx("continue consuming container")?;
     values.builder.position_at_end(done);
-    let finish = coro::external(
+    let finish = get_or_declare_external(
         values.llvm,
         "hew_release_finish",
         values.ctx.void_type().fn_type(&[pointer.into()], false),
@@ -1233,7 +1233,7 @@ fn generator<'ctx>(
         .builder
         .build_store(fault, pointer.const_null())
         .llvm_ctx("clear generator cleanup fault")?;
-    let poll_fn = coro::external(
+    let poll_fn = get_or_declare_external(
         values.llvm,
         "hew_checked_generator_close_poll",
         values.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
@@ -1269,7 +1269,7 @@ fn generator<'ctx>(
         .build_load(pointer, fault, "release.generator.raised")
         .llvm_ctx("read generator cleanup fault")?
         .into_pointer_value();
-    let fault_code = coro::external(
+    let fault_code = get_or_declare_external(
         values.llvm,
         "hew_fault_code",
         values.ctx.i32_type().fn_type(&[pointer.into()], false),

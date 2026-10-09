@@ -82,7 +82,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             || self.ctx.void_type().fn_type(&parameters, false),
             |ty| ty.fn_type(&parameters, false),
         );
-        let function = get_or_declare_external(self.llvm, row.symbol, signature)?;
+        let function = get_or_declare_external_widened(
+            self.llvm,
+            row.symbol,
+            signature,
+            &self.argument_widening(transfers)?,
+        )?;
         for transfer in transfers {
             if let ArgumentTransfer::Move(source) = transfer {
                 self.clear_owned(*source)?;
@@ -177,6 +182,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_result_edge(result, normal)
     }
 
+    /// How each narrow argument widens, from the C type its storage holds.
+    fn argument_widening(
+        &self,
+        transfers: &[ArgumentTransfer],
+    ) -> CodegenResult<Vec<(u32, Widen)>> {
+        let mut widen = Vec::new();
+        for (index, transfer) in (0_u32..).zip(transfers) {
+            if let Some(kind) = Widen::of(&self.storage(argument_source(transfer))?.ty) {
+                widen.push((index, kind));
+            }
+        }
+        Ok(widen)
+    }
+
     /// Call a C symbol with prepared arguments, initializing `result` under
     /// the target-classified result ABI. Moved arguments discharge their
     /// obligation at the call.
@@ -203,8 +222,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.clear_owned(*source)?;
             }
         }
-        self.value_emitter()
-            .call_foreign(symbol, values, destination, result_abi)?;
+        self.value_emitter().call_foreign(
+            symbol,
+            values,
+            &self.argument_widening(transfers)?,
+            destination,
+            result_abi,
+        )?;
         if let Some(result) = result {
             // Mark the result initialized through the ordinary storage
             // contract, after the foreign function has written it.
@@ -225,10 +249,12 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
     /// Declare and call a C symbol under the target-classified result ABI,
     /// writing its result to `result`. This is the one realization of the
     /// extern call ABI, shared by direct calls and offloaded call thunks.
+    /// `widen` names each narrow argument of `values` by position.
     pub(super) fn call_foreign(
         &self,
         symbol: &str,
         values: &[BasicValueEnum<'ctx>],
+        widen: &[(u32, Widen)],
         result: Option<ForeignResult<'ctx>>,
         result_abi: &PhysicalExternResultAbi,
     ) -> CodegenResult<()> {
@@ -236,11 +262,15 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             .iter()
             .map(|value| value.get_type().into())
             .collect::<Vec<_>>();
+        let mut widen = widen.to_vec();
         let return_type = match result_abi {
             PhysicalExternResultAbi::Direct => result.as_ref().map(|result| result.storage),
             PhysicalExternResultAbi::Coerce(repr) => Some(llvm_type(self.ctx, repr)?),
             PhysicalExternResultAbi::Indirect => {
                 parameters.insert(0, self.ctx.ptr_type(AddressSpace::default()).into());
+                for (index, _) in &mut widen {
+                    *index += 1;
+                }
                 None
             }
         };
@@ -248,7 +278,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             || self.ctx.void_type().fn_type(&parameters, false),
             |ty| ty.fn_type(&parameters, false),
         );
-        let function = get_or_declare_external(self.llvm, symbol, signature)?;
+        let function = get_or_declare_external_widened(self.llvm, symbol, signature, &widen)?;
         let mut arguments = values.iter().copied().map(Into::into).collect::<Vec<_>>();
         let call_value = |arguments: &[BasicMetadataValueEnum<'ctx>]| {
             self.builder

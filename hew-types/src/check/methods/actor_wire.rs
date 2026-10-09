@@ -27,7 +27,7 @@ use crate::BuiltinType;
 
 impl Checker {
     /// Enforce the actor mailbox boundary on every arg of an actor receive
-    /// method dispatch. Called after [`Self::try_resolve_named_method`] has
+    /// method dispatch. Called after [`Self::try_resolve_source_method`] has
     /// already type-checked the args (so `self.expr_types` is populated), to
     /// avoid double synthesis.
     ///

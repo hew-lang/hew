@@ -875,6 +875,12 @@ impl Display for string {
 /// works in a `fails dyn Error` function, and the message renders as written.
 impl Error for string {}
 
+impl bytes {
+    fn clone(self) -> bytes {
+        self
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Time canaries
 // ---------------------------------------------------------------------------

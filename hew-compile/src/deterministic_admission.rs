@@ -1022,7 +1022,7 @@ mod tests {
         let declaration = "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n\nactor Worker {\n    receive fn ping(msg: Ping) -> i64 {\n        0\n    }\n}\n\nimpl ActorMsg for Worker {\n    type Msg = Ping;\n    type Reply = i64;\n}\n";
         for call in ["pid.send(Ping { n: 0 })", "pid.ask(Ping { n: 0 }, 1000)"] {
             let source =
-                format!("{declaration}fn main() {{ let pid: RemotePid<Worker>; let _ = {call}; }}");
+                format!("{declaration}fn main() {{ let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\"); let _ = {call}; }}");
             let failure = check_source(&source, DeterministicAdmission::ProcessEntry).unwrap_err();
             assert!(
                 failure.contains("E_DETERMINISTIC_HOST_OPERATION"),

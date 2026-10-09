@@ -1,7 +1,20 @@
 import std.stream;
+import std.concurrency.lifecycle;
 
 fn vector_pipe() -> (stream.Sink<Vec<string>>, stream.Stream<Vec<string>>) {
     stream.pipe(4).expect("pipe")
+}
+
+indirect enum Wrapped {
+    Val(string);
+}
+
+machine Buffered {
+    events { Load { items: Vec<string>; } }
+    state Empty;
+    state Loaded { items: Vec<string>; }
+    on Load: Empty => Loaded { items: event.items }
+    on Load: _ => _ { state }
 }
 
 fn main() {
@@ -23,5 +36,34 @@ fn main() {
         iterated += 1;
     }
     assert(iterated == 1);
+    let (wrapped_tx, wrapped_rx): (stream.Sink<Vec<Wrapped>>, stream.Stream<Vec<Wrapped>>) = stream.pipe(4).expect("wrapped pipe");
+    var wrapped: Vec<Wrapped> = Vec.new();
+    wrapped.push(Wrapped.Val("received".to_upper()));
+    wrapped_tx.send(wrapped).expect("wrapped send");
+    wrapped_tx.send([Wrapped.Val("queued".to_upper())]).expect("wrapped queued");
+    wrapped_tx.close();
+    let values = wrapped_rx.recv().expect("wrapped recv");
+    assert(values.len() == 1);
+    match values[0] {
+        Wrapped.Val(value) => assert(value == "RECEIVED"),
+    }
+    wrapped_rx.close();
+    let (machine_tx, machine_rx): (stream.Sink<Buffered>, stream.Stream<Buffered>) = stream.pipe(2).expect("machine pipe");
+    machine_tx.send(Buffered.Loaded { items: ["payload".to_upper()] }).expect("machine send");
+    machine_tx.send(Buffered.Loaded { items: ["queued".to_upper()] }).expect("machine queued");
+    machine_tx.close();
+    match machine_rx.recv().expect("machine recv") {
+        Buffered.Loaded { items } => assert(items[0] == "PAYLOAD"),
+        Buffered.Empty => panic("missing payload"),
+    }
+    machine_rx.close();
+    let (generic_tx, generic_rx): (stream.Sink<lifecycle.Lifecycle<i64>>, stream.Stream<lifecycle.Lifecycle<i64>>) = stream.pipe(2).expect("generic pipe");
+    generic_tx.send(lifecycle.Lifecycle.Running { handle: 42 }).expect("generic send");
+    generic_tx.close();
+    match generic_rx.recv().expect("generic recv") {
+        lifecycle.Lifecycle.Running { handle } => assert(handle == 42),
+        _ => panic("missing generic payload"),
+    }
+    generic_rx.close();
     println("owned vectors cross pipes and queued values are released");
 }

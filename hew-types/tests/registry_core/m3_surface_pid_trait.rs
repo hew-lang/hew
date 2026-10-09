@@ -152,8 +152,7 @@ impl ActorMsg for Worker {
     type Reply = ();
 }
 
-fn main() {
-    let remote: RemotePid<Worker>;
+fn use_remote(remote: RemotePid<Worker>) {
     let result: Result<(), SendError> = remote.send(Job { n: 9 });
 }
 ",
@@ -186,8 +185,7 @@ impl ActorMsg for Worker {
     type Reply = i64;
 }
 
-fn main() {
-    let remote: RemotePid<Worker>;
+fn use_remote(remote: RemotePid<Worker>) {
     let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
 }
 ",
@@ -222,8 +220,7 @@ impl ActorMsg for Worker {
     type Reply = fn(i64) -> i64;
 }
 
-fn main() {
-    let remote: RemotePid<Worker>;
+fn use_remote(remote: RemotePid<Worker>) {
     let result = remote.ask(Job { n: 9 }, 250);
 }
 ",

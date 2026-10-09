@@ -932,7 +932,11 @@ fn tcp_sink_flush(_backing: &mut TcpStreamBacking) {}
 fn tcp_sink_close(backing: &mut TcpStreamBacking) {
     if let Some(stream) = crate::transport::tcp_clone_stream(backing.connection) {
         if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
-            set_last_error(format!("TCP sink shutdown failed: {error}"));
+            // A reset peer can retire the TCP connection before its sink is
+            // released. There is then no connected write half left to finish.
+            if error.kind() != std::io::ErrorKind::NotConnected {
+                set_last_error(format!("TCP sink shutdown failed: {error}"));
+            }
         }
     }
 }

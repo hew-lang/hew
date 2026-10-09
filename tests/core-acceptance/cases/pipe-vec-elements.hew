@@ -1,0 +1,27 @@
+import std.stream;
+
+fn vector_pipe() -> (stream.Sink<Vec<string>>, stream.Stream<Vec<string>>) {
+    stream.pipe(4).expect("pipe")
+}
+
+fn main() {
+    let (tx, rx) = vector_pipe();
+    var original = ["one".to_upper(), "two".to_upper()];
+    tx.send(original).expect("send");
+    original.push("THREE");
+    tx.send(["loop".to_upper()]).expect("send loop item");
+    tx.send(["discarded".to_upper()]).expect("send queued");
+    tx.close();
+    let received = rx.recv().expect("item");
+    assert(received.len() == 2);
+    assert(received[0] == "ONE");
+    assert(received[1] == "TWO");
+    assert(original.len() == 3);
+    var iterated = 0;
+    for item in rx.take(1) {
+        assert(item[0] == "LOOP");
+        iterated += 1;
+    }
+    assert(iterated == 1);
+    println("owned vectors cross pipes and queued values are released");
+}

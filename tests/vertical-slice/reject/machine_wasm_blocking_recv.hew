@@ -1,10 +1,10 @@
-// W4.002 reject fixture: `.recv()` inside a machine transition body must
-// be rejected at HIR-lower time when compiling for wasm32, exercising the
-// Item::Machine arm of `check_wasm_blocking_recv_gate` added in this change.
+// A machine transition cannot perform externally visible stream I/O.
+// The checker rejects the receive through its checked runtime target,
+// after inferring the pipe's element type from the expected receive type.
 //
 // The .recv() call is on a real `Stream<i64>` obtained from the successful
-// `stream.pipe(capacity)` result so the type checker accepts the program; the
-// wasm32 gate then rejects the blocking `.recv()` at HIR-lower time.
+// `stream.pipe(capacity)` result, rather than an unknown method or fake handle.
+// The purity diagnostic must identify the receive on every target.
 import std.stream;
 
 machine M {

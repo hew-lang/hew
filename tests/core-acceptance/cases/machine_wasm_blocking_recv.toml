@@ -1,6 +1,6 @@
 [[case]]
 id = "machine_wasm_blocking_recv"
-intent = "W4.002 reject fixture: `.recv()` inside a machine transition body must be rejected at HIR-lower time when compiling for wasm32, exercising the Item::Machine arm of `check_wasm_blocking_recv_gate` added in this change."
+intent = "A machine transition cannot perform an impure stream receive, even when its pipe element type is inferred from the receive's expected type."
 source = "../vertical-slice/reject/machine_wasm_blocking_recv.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

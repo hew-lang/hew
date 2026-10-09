@@ -38,7 +38,7 @@ fn main() {
     let receiver = spawn Receiver;
     scope {
         let _client = fork peer(f"ws://127.0.0.1:{listener.port()}");
-        let server = listener.accept().expect("accept");
+        let server = listener.accept();
         server.attach(receiver);
         server.send_text("still writable").expect("writable after attach");
         var finished = false;

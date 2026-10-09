@@ -1009,29 +1009,6 @@ fn stream_dot_stream_int_element_now_admitted() {
     );
 }
 
-#[test]
-fn stream_dot_stream_container_element_reports_user_facing_type() {
-    // Container elements have no clone/drop thunk path — the fail-closed
-    // diagnostic must name the user-facing element type.
-    let output = typecheck_inline(
-        r"
-        import std.stream;
-
-        fn close_rows(s: stream.Stream<Vec<i64>>) {
-            s.close();
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("`Stream<Vec<i64>>` is not supported")),
-        "expected Stream<Vec<i64>> fail-closed diagnostic, got: {:#?}",
-        output.errors
-    );
-}
-
 // The old bare `stream.decode()` / `sink.encode()` fail-closed carve-outs are
 // gone along with `stream.bytes_pipe`: decoding/encoding now goes through the
 // `Codec<T>` trait (`Lines`, `LengthPrefixed`), never a method directly on
@@ -1141,70 +1118,6 @@ fn main() {
     assert!(
         output.errors.is_empty(),
         "Stream<Row> for-await must be admitted by the layout witness, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `for item in input` over a container element (`Stream<Vec<i64>>`)
-/// must fail closed at the stream element validation boundary.
-#[test]
-fn for_stream_container_element_errors() {
-    let output = typecheck_inline(
-        r#"
-        import std.stream;
-
-        extern "C" {
-            fn fake_stream() -> Stream<Vec<i64>>;
-        }
-
-        fn main() {
-            let input = unsafe { fake_stream() };
-            for rows in input {
-                println("seen");
-            }
-        }
-        "#,
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Vec<i64>>` is not supported")
-        }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Unsupported first-class `Stream<T>` element types in `for` must fail
-/// closed without cascading into loop-body field/type errors.
-#[test]
-fn for_stream_unsupported_type_does_not_cascade() {
-    let output = typecheck_inline(
-        r#"
-        extern "C" {
-            fn fake_stream() -> Stream<Vec<i64>>;
-        }
-
-        fn main() {
-            let input = unsafe { fake_stream() };
-            for rows in input {
-                println(rows.missing);
-            }
-        }
-        "#,
-    );
-    assert_eq!(
-        output.errors.len(),
-        1,
-        "expected only the fail-closed Stream<Vec<i64>> error, got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Vec<i64>>` is not supported")
-        }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }

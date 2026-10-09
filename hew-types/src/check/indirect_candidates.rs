@@ -64,6 +64,12 @@ impl Checker {
             Expr::GenericApplySuffix { target, .. } => {
                 self.callable_candidates_for_expr(&target.0, &target.1)
             }
+            Expr::ContextVariant(context) if context.record.is_some() => {
+                IndirectCallCandidates::single(CallableCandidate::Aggregate(SpanKey::in_module(
+                    span,
+                    self.current_module_idx,
+                )))
+            }
             Expr::StructInit { .. } => IndirectCallCandidates::single(
                 CallableCandidate::Aggregate(SpanKey::in_module(span, self.current_module_idx)),
             ),
@@ -168,7 +174,7 @@ impl Checker {
     ) -> IndirectCallCandidates {
         IndirectCallCandidates::single(CallableCandidate::Sequence(
             values
-                .flat_map(|value| self.callable_candidates_for_expr(&value.0, &value.1).known)
+                .map(|value| self.callable_candidates_for_expr(&value.0, &value.1))
                 .collect(),
         ))
     }
@@ -349,13 +355,19 @@ impl Checker {
     /// The initializer's written labels already carry checker-selected field
     /// identities. Preserve their value origins under the constructor site.
     pub(super) fn record_aggregate_field_sources(&mut self, expr: &Expr, span: &Span) {
-        let Expr::StructInit {
-            fields,
-            field_labels,
-            ..
-        } = expr
-        else {
-            return;
+        let (fields, field_labels) = match expr {
+            Expr::StructInit {
+                fields,
+                field_labels,
+                ..
+            } => (fields, field_labels),
+            Expr::ContextVariant(context) => {
+                let Some(record) = context.record.as_ref() else {
+                    return;
+                };
+                (&record.fields, &record.field_labels)
+            }
+            _ => return,
         };
         let mut writes = Vec::new();
         for ((_, value), label) in fields.iter().zip(field_labels) {

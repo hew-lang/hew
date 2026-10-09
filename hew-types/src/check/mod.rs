@@ -40,6 +40,7 @@ pub mod dispatch;
 pub mod dispatch_table;
 pub use dyn_layout::{DynReceiver, DynSlot, SlotEffect, TraitObjectLayout};
 mod indirect_candidates;
+mod indirect_patterns;
 pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,

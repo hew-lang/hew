@@ -1079,7 +1079,11 @@ pub enum CallableCandidate {
     Closure(SpanKey),
     TaskProducer(SpanKey),
     TaskResult(Box<CallableCandidate>),
-    Sequence(Vec<CallableCandidate>),
+    Sequence(Vec<IndirectCallCandidates>),
+    Element {
+        receiver: Box<CallableCandidate>,
+        index: usize,
+    },
     /// A checker-bound formal supplied by a caller at the selected call site.
     Formal(TypeBindingId),
     /// Intermediate value origin: an authored aggregate constructor.
@@ -1144,7 +1148,7 @@ pub(super) struct PendingCallableArguments {
 }
 
 /// Possible indirect callees and whether an opaque source may also arrive.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IndirectCallCandidates {
     pub known: Vec<CallableCandidate>,
     pub may_be_unknown: bool,

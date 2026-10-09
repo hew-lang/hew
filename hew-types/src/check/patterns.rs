@@ -1718,7 +1718,7 @@ impl Checker {
                     self.bind_scrutinee_pattern(pattern, &scrutinee_ty, false, place, loan);
                     // Record the pattern resolution so HIR lowering consumes the
                     // same `pattern_resolutions` side-table that powers `match`.
-                    self.record_arm_resolution(&pattern.0, &pattern.1, &scrutinee_ty);
+                    self.record_pattern_value_sources(pattern, &scrutinee_ty, expr);
                 }
                 ConditionItem::Expr(expr) => {
                     self.check_against(&expr.0, &expr.1, &Ty::Bool);

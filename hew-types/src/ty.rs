@@ -1265,6 +1265,11 @@ impl Ty {
     }
 
     #[must_use]
+    pub fn contains_task(&self) -> bool {
+        matches!(self, Ty::Task(_)) || self.any_child(&Ty::contains_task)
+    }
+
+    #[must_use]
     pub fn contains_error(&self) -> bool {
         matches!(self, Ty::Error) || self.any_child(&Ty::contains_error)
     }

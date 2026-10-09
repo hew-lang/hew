@@ -11,7 +11,7 @@
 //! fn main() {
 //!     let root = match xml.parse("<book><title>Hew Guide</title></book>") {
 //!         .Ok(node) => node,
-//!         .Err(reason) => panic(reason),
+//!         .Err(reason) => panic(f"{reason}"),
 //!     };
 //!     let title = root.get_child(0);
 //!     println(title.get_text());
@@ -109,19 +109,29 @@ impl Node {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// Text that is not well-formed XML, with the parser's reason.
+pub enum XmlError {
+    Malformed(string);
+}
+
+impl Error for XmlError {}
+
 /// Parse an XML string without panicking.
 ///
-/// Returns the parsed `Node` on success or the parser's error message when
-/// `s` is not well-formed XML.
-pub fn parse(s: string) -> Result<Node, string> {
-    unsafe {
-        let handle = hew_xml_parse(s);
-        if hew_xml_is_element(handle) < 0 {
-            .Err(hew_xml_last_error())
-        } else {
-            .Ok(Node { handle: handle })
-        }
+/// Returns the parsed `Node`, or fails with `XmlError.Malformed` and the
+/// parser's reason when `s` is not well-formed XML.
+pub fn parse(s: string) -> Node fails XmlError {
+    let handle = unsafe {
+        hew_xml_parse(s)
+    };
+    if unsafe {
+        hew_xml_is_element(handle)
+    } < 0 {
+        return error XmlError.Malformed(unsafe {
+            hew_xml_last_error()
+        });
     }
+    Node { handle: handle }
 }
 
 /// Report whether `s` is well-formed XML, without constructing a `Node`.

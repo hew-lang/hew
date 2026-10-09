@@ -539,13 +539,18 @@ pub(super) fn lint_source(
 /// - [`NodeVisitor::visit_stmt`] / [`NodeVisitor::visit_expr`] fire for every
 ///   node regardless of position, which the position-agnostic lints
 ///   (`len_zero_comparison`, `needless_bool`) use.
-pub(super) trait NodeVisitor {
+pub trait NodeVisitor {
     /// A block, visited before its contents are descended.
     fn visit_block(&mut self, _block: &Block) {}
     /// A statement, visited before its sub-nodes are descended.
     fn visit_stmt(&mut self, _stmt: &Stmt, _span: &Span) {}
     /// An expression, visited before its sub-expressions are descended.
     fn visit_expr(&mut self, _expr: &Expr, _span: &Span) {}
+    /// Whether the walk descends into the body of a nested callable (a
+    /// closure, an actor closure or a `gen { }` block).
+    fn enters_nested_callables(&self) -> bool {
+        true
+    }
 }
 
 /// Drive `visitor` over `body` and every node nested inside it.
@@ -553,7 +558,7 @@ pub(super) fn walk_body<V: NodeVisitor>(body: &Block, visitor: &mut V) {
     walk_block(body, visitor);
 }
 
-pub(super) fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
+pub fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
     visitor.visit_block(block);
     for (stmt, span) in &block.stmts {
         walk_stmt(stmt, span, visitor);
@@ -683,8 +688,16 @@ fn walk_call_args<V: NodeVisitor>(args: &[CallArg], visitor: &mut V) {
     clippy::match_same_arms,
     reason = "exhaustive expression visitor enumerates every Expr shape so a new node forces a decision; per-variant arms are kept even when two walks coincide"
 )]
-fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     visitor.visit_expr(expr, span);
+    if !visitor.enters_nested_callables()
+        && matches!(
+            expr,
+            Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } | Expr::GenBlock { .. }
+        )
+    {
+        return;
+    }
     match expr {
         Expr::Literal(_)
         | Expr::Ident(_)

@@ -27,8 +27,6 @@ mod hash_eq_derivation_audit;
 mod is_allowance;
 #[path = "coverage/numerics.rs"]
 mod numerics;
-#[path = "coverage/tail_ok_coercion.rs"]
-mod tail_ok_coercion;
 #[path = "coverage/ty_coverage.rs"]
 mod ty_coverage;
 #[path = "coverage/type_error_coverage.rs"]

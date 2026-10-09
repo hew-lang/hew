@@ -20,10 +20,9 @@ fn parse(text: string) -> i64 fails ParseFailure {
     return text.len();
 }
 
-fn main() -> Result<(), ParseFailure> {
+fn main() fails ParseFailure {
     let width = parse("hello")?;
     println(f"width={width}");
     let missing = parse("")?;
     println(f"unreachable={missing}");
-    .Ok(())
 }

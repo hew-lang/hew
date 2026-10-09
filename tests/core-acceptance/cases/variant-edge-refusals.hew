@@ -1,0 +1,36 @@
+enum ParseError {
+    Empty;
+}
+
+impl Error for ParseError {}
+
+// Two variants carry the error: the edge has no single meaning.
+enum Twice {
+    First(ParseError);
+    Second(ParseError);
+}
+
+impl Error for Twice {}
+
+// A payload that is the enum's own type parameter never converts.
+enum Wrapper<E> {
+    Inner(E);
+}
+
+impl<E> Error for Wrapper<E> {}
+
+fn parse() -> i64 fails ParseError {
+    return error .Empty;
+}
+
+fn twice() -> i64 fails Twice {
+    parse()?
+}
+
+fn wrapped() -> i64 fails Wrapper<ParseError> {
+    parse()?
+}
+
+fn main() {
+    println(f"{twice():?} {wrapped():?}");
+}

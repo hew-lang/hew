@@ -285,7 +285,7 @@ fn test_url_resolve_reports_an_unresolvable_path_as_a_failure() {
             panic("expected an unresolvable path to be rejected");
         }
         .Err(msg) => {
-            assert(msg.contains("cannot resolve"));
+            assert(f"{msg}".contains("cannot resolve"));
         }
     }
 }

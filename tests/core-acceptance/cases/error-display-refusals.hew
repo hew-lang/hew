@@ -1,0 +1,26 @@
+// Only `Error` implies a Display: a plain enum still cannot be interpolated.
+enum Plain {
+    Only;
+}
+
+// The implied Display renders each payload, so a payload with no rendering is
+// reported at the error type.
+enum Holder {
+    Callback(fn(i64) -> i64);
+}
+
+impl Error for Holder {}
+
+// The implied Display renders the head its `impl Error` names, not every
+// instance of the type.
+enum Wrap<T> {
+    Inner(T);
+}
+
+impl Error for Wrap<string> {}
+
+fn main() {
+    println(f"{Plain.Only}");
+    let wrapped: Wrap<i64> = Wrap.Inner(5);
+    println(f"{wrapped}");
+}

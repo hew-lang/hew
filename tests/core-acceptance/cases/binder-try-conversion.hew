@@ -32,10 +32,10 @@ fn io(n: i64) -> Result<i64, IoError> {
     if n < 0 { .Err(IoError { code: n }) } else { .Ok(n) }
 }
 
-fn both<F: From<LowError> + From<IoError>>(a: i64, b: i64) -> Result<i64, F> {
+fn both<F: From<LowError> + From<IoError>>(a: i64, b: i64) -> i64 fails F {
     let x = low(a)?;
     let y = io(b)?;
-    .Ok(x + y)
+    x + y
 }
 
 fn show(result: Result<i64, AppError>) {

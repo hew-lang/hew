@@ -1,0 +1,11 @@
+[[case]]
+id = "error-display-expect"
+intent = "`expect` on a failure whose type implements only `Error` traps with the reason and the implied Display text."
+source = "cases/error-display-expect.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): config must load: Missing: port\n"
+exit = 1

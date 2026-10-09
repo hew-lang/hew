@@ -149,10 +149,10 @@ impl Child {
     /// Wait for the child to exit and reap it. The task suspends and holds
     /// no thread; a wait cancelled by `scope within` releases its watch and
     /// leaves the child running and unreaped.
-    fn wait(self) -> Result<ExitStatus, ProcessError> {
+    fn wait(self) -> ExitStatus fails ProcessError {
         loop {
             match self.try_wait()? {
-                .Some(status) => return .Ok(status),
+                .Some(status) => return status,
                 .None => {}
             }
             let watch = unsafe {
@@ -164,7 +164,7 @@ impl Child {
                 let failure = unsafe {
                     hew_process_wait_error(self.handle)
                 };
-                return .Err(ProcessError.System(failure as i64));
+                return error ProcessError.System(failure as i64);
             }
             // The stream carries no items; it ends once the child exits.
             let exited: stream.Stream<bytes> = stream.pair_stream(watch);

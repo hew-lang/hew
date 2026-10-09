@@ -19,11 +19,11 @@ fn main() -> i64 {
     println(f"{b}");
     match string.to_int("not-a-number") {
         .Ok(_) => println("unexpected ok"),
-        .Err(message) => println(message),
+        .Err(error) => println(f"{error}"),
     }
     match string.to_float("not-a-number") {
         .Ok(_) => println("unexpected ok"),
-        .Err(message) => println(message),
+        .Err(error) => println(f"{error}"),
     }
     0
 }

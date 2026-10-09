@@ -2,11 +2,11 @@
 
 import std.time.datetime;
 
-fn assert_parse_ok(actual: Result<i64, string>) -> i64 {
+fn assert_parse_ok(actual: Result<i64, datetime.DateTimeError>) -> i64 {
     match actual {
         .Ok(value) => value,
         .Err(message) => {
-            panic(message);
+            panic(f"{message}");
             0
         }
     }
@@ -17,7 +17,7 @@ fn test_try_parse_full_timestamp_formats_back_to_date() {
     let parsed = assert_parse_ok(datetime.parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
     match datetime.format(parsed, "%Y-%m-%d") {
         .Ok(formatted) => assert(formatted == "2025-07-10"),
-        .Err(message) => panic(message),
+        .Err(message) => panic(f"{message}"),
     }
 }
 
@@ -28,7 +28,8 @@ fn test_try_parse_invalid_timestamp_returns_err() {
             panic(f"expected invalid parse to fail, got {value}");
             assert(value == 0);
         }
-        .Err(message) => assert(!message.is_empty()),
+        .Err(.Parse(message)) => assert(!message.is_empty()),
+        .Err(other) => panic(f"expected a parse failure, got {other}"),
     }
 }
 
@@ -36,7 +37,7 @@ fn test_try_parse_invalid_timestamp_returns_err() {
 fn test_try_format_rejects_invalid_directive_with_error() {
     match datetime.format(0, "%Q") {
         .Ok(_) => assert(false),
-        .Err(message) => assert(message == "invalid datetime format directive"),
+        .Err(error) => assert(error == datetime.DateTimeError.Format("invalid datetime format directive")),
     }
 }
 

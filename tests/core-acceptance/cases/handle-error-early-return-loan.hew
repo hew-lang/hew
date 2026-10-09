@@ -45,7 +45,7 @@ fn main() {
     fork reader.pump();
     // Control: a chunk that decodes takes the handler's success path.
     sink.send("first".to_bytes()).expect("send");
-    sink.send(hex.decode("ff")).expect("send");
+    sink.send(hex.decode("ff").expect("ff is hex")).expect("send");
     // The early return leaves this chunk unread.
     sink.send("never read".to_bytes()).expect("send");
     sink.close();

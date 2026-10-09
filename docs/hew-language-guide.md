@@ -1804,7 +1804,7 @@ An ordinary `Err` is a value, not a scope fault. A child fault or cancellation
 uses structured cleanup; `scope within d { ... } handle failure { ... }`
 can recover only after that cleanup. Parent cancellation continues outward.
 
-### Ask try-sugar in a Result-returning fn
+### A failing ask inside a failing fn
 
 ```hew
 actor Counter {
@@ -3144,13 +3144,16 @@ forms: `println(f"{val}")` (f-string interpolation) or a generic function
 that takes `T: Display` and calls `println` internally. The `fmt` method is
 also callable directly: `val.fmt()` returns the string representation.
 
-## Errors — Result and Option
+## Errors — failing functions, Result and Option
 
-### Result construction and matching
+### A function that can fail
 
 ```hew
-fn divide(a: i64, b: i64) -> Result<i64, string> {
-    if b == 0 { .Err("division by zero") } else { .Ok(a / b) }
+fn divide(a: i64, b: i64) -> i64 fails string {
+    if b == 0 {
+        return error "division by zero";
+    }
+    a / b
 }
 fn main() {
     match divide(10, 2) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
@@ -3158,7 +3161,24 @@ fn main() {
 }
 ```
 
-Construct with `.Ok(v)`/`.Err(e)` where the expected type selects `Result` (here the function's declared return type), or `Result.Ok(v)` where nothing does; consume with `match` covering both arms.
+`-> T fails E` declares the function's failure edge. The body produces the success value: the tail and `return v` are a `T`, and `return error e` leaves through the edge with an `E`. A call produces the ordinary value `Result<T, E>`, which the caller matches, propagates with `?` or recovers with `handle`. A function that only fails writes `fn check() fails E` with no arrow.
+
+### Result as a value
+
+```hew
+fn parse_all(texts: Vec<string>) -> Vec<Result<i64, string>> {
+    var out: Vec<Result<i64, string>> = [];
+    for text in texts {
+        out.push(if text == "" { .Err("empty") } else { .Ok(text.len()) });
+    }
+    out
+}
+fn main() {
+    for r in parse_all(["ab", ""]) { println(f"{r:?}"); }
+}
+```
+
+`Result<T, E>` is an ordinary enum: fields, collection elements and returns can hold one. Construct with `.Ok(v)`/`.Err(e)` where the expected type selects `Result`, or `Result.Ok(v)` where nothing does. A function declared `-> Result<T, E>` returns a `Result` as data and builds it itself; it has no failure edge, so `?` and `return error` are refused there with a fix-it that declares `-> T fails E`.
 
 ### Option construction and matching
 
@@ -3175,16 +3195,18 @@ fn main() {
 
 `Option.Some(7)` infers `Option<i64>` on its own. A standalone none needs an annotation — `let n: Option<i64> = .None`.
 
-### ? operator for propagation (Result and Option)
+### ? propagates a failure through the edge
 
 ```hew
-fn divide(a: i64, b: i64) -> Result<i64, string> {
-    if b == 0 { .Err("division by zero") } else { .Ok(a / b) }
+fn divide(a: i64, b: i64) -> i64 fails string {
+    if b == 0 {
+        return error "division by zero";
+    }
+    a / b
 }
-fn chain(a: i64, b: i64, c: i64) -> Result<i64, string> {
+fn chain(a: i64, b: i64, c: i64) -> i64 fails string {
     let x = divide(a, b)?;
-    let y = divide(x, c)?;
-    .Ok(y)
+    divide(x, c)?
 }
 fn main() {
     match chain(100, 5, 2) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
@@ -3192,7 +3214,7 @@ fn main() {
 }
 ```
 
-Use `?` to unwrap-or-early-return inside a fn that itself returns Result/Option; chain multiple `?` for sequential steps. The enclosing fn must return Result/Option — `?` in a `()`-returning fn is rejected.
+`?` unwraps a success and sends a failure out through the enclosing function's edge, so it needs a function declared `fails`. On an `Option`, `?` propagates absence instead and needs a function returning `Option`.
 
 ### ? on Option propagates None
 
@@ -3309,11 +3331,13 @@ fn main() {
 
 Each arm yields a value and the whole `match` is the function's return value. Arms may be if-expressions or blocks; all arms must produce the same type.
 
-### Fallible op with no success value: sentinel payload
+### A failing operation with no success value
 
 ```hew
-fn validate(x: i64) -> Result<i64, string> {
-    if x < 0 { .Err("negative") } else { .Ok(0) }
+fn validate(x: i64) fails string {
+    if x < 0 {
+        return error "negative";
+    }
 }
 fn main() {
     match validate(5)  { .Ok(_) => println("valid"), .Err(e) => println(f"err: {e}") }
@@ -3321,55 +3345,124 @@ fn main() {
 }
 ```
 
-For a fallible operation with no meaningful success value, `Result<(), E>` and `Ok(())` are the shapes to reach for — that is what `os.set_env` and a `main` that can fail both return. The `Result<i64, E>` with `Ok(0)` form above is a payload nobody reads; it appears here because older stdlib signatures used it, not because it is the shape to copy.
+`fails E` with no arrow is a function that succeeds with unit; falling off the end is success.
 
-### Errors that compose: `dyn Error`
-
-`?` is exact. The error type of the operand has to be the error type of the enclosing function — there is no `From`, no `#[from]`, and no conversion the compiler inserts on your behalf, so two concrete error enums never flow into one another by accident.
-
-A function that calls into several modules can use `dyn Error`. Convert each
-concrete error at an explicit failure return; `?` does not implicitly erase a
-concrete error into `dyn Error`:
+### Error types
 
 ```hew
-import std.fs;
-
-enum PortError {
-    NotANumber(string);
+enum ConfigError {
+    Missing(string);
+    OutOfRange { name: string; value: i64; }
 }
 
-impl Display for PortError {
-    fn fmt(self) -> string {
-        match self {
-            .NotANumber(s) => f"NotANumber: {s} is not a port number",
-        }
+impl Error for ConfigError {}
+
+fn port(text: string) -> i64 fails ConfigError {
+    if text == "" {
+        return error .Missing("port");
+    }
+    let value = text.len() * 10000;
+    if value > 65535 {
+        return error .OutOfRange { name: "port", value: value };
+    }
+    value
+}
+fn main() {
+    match port("") { .Ok(p) => println(p), .Err(e) => println(f"{e}") }        // Missing: port
+    match port("abcdefghij") { .Ok(p) => println(p), .Err(e) => println(f"{e}") }  // OutOfRange: name: port, value: 100000
+}
+```
+
+An error type is an enum (or record) with `impl Error for X {}`. That one line also gives it a `Display` in the error style: the variant name, then `": "` and the payloads, each payload through its own `Display`. Write `impl Display for X` yourself when the text needs prose; yours is the one used.
+
+### Errors that compose
+
+```hew
+enum ParseError {
+    Empty;
+    NotANumber(string);
+}
+impl Error for ParseError {}
+
+enum StoreError {
+    Missing(string);
+}
+impl Error for StoreError {}
+
+enum AppError {
+    Parse(ParseError);
+    Store(StoreError);
+}
+impl Error for AppError {}
+
+fn lookup(key: string) -> string fails StoreError {
+    if key == "port" {
+        return "80x";
+    }
+    return error .Missing(key);
+}
+
+fn parse(text: string) -> i64 fails ParseError {
+    if text == "" {
+        return error .Empty;
+    }
+    return error .NotANumber(text);
+}
+
+fn setting(key: string) -> i64 fails AppError {
+    let text = lookup(key)?;   // a StoreError becomes AppError.Store
+    parse(text)?               // a ParseError becomes AppError.Parse
+}
+
+fn report() fails dyn Error {
+    let port = setting("port").context("reading the port")?;
+    println(port);
+}
+
+fn main() {
+    match setting("host") {
+        .Ok(v) => println(v),
+        .Err(.Store(.Missing(key))) => println(f"no setting {key}"),
+        .Err(e) => println(f"{e}"),
+    }
+    report() handle e { println(f"error: {e}"); };
+}
+```
+
+At a failure edge an error converts to the edge's type when it is the same type, when the edge is `dyn Error`, through a declared `impl From<E> for F`, or into the one variant of `F` whose only payload is the error, as `AppError.Store` above. Two variants carrying the same error type are ambiguous; declare a `From` to choose. Nothing converts away from an edge: a `.Err(e)` you build keeps its exact type.
+
+`dyn Error` is the type to name when a function composes errors from several modules without an enum of its own, and `.context("doing what")` erases with a description; the program above prints `no setting host`, then `error: reading the port: Parse: NotANumber: 80x`. `main` may fail too: `fn main() fails E` with `E: Error` writes `error: {e}` to stderr and exits 1. Crash on the spot with `.expect(reason)`, the one deliberate invariant assertion; `unwrap()` is not a method in Hew.
+
+### Failing closures and generators
+
+```hew
+fn parse(text: string) -> i64 fails string {
+    if text == "" {
+        return error "empty";
+    }
+    text.len()
+}
+
+gen fn lengths(texts: Vec<string>) -> i64 fails string {
+    for text in texts {
+        yield parse(text)?;
     }
 }
 
-impl Error for PortError {
-}
-
-fn parse_port(text: string) -> Result<i64, PortError> {
-    .Err(PortError.NotANumber(text))
-}
-
-fn load_port(path: string) -> i64 fails dyn Error {
-    let text = fs.read(path) handle problem {
-        return error problem;
-    };
-    parse_port(text) handle problem {
-        return error problem;
+fn main() {
+    let doubled = |text: string| parse(text)? * 2;
+    println(f"{doubled("abc"):?} {doubled(""):?}");    // Ok(6) Err(empty)
+    for item in lengths(["ab", "", "c"]) {
+        println(f"{item:?}");                          // Ok(2), then Err(empty)
     }
 }
 ```
 
-`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.expect(reason)`, the one deliberate invariant assertion (it requires `E: Display`; every `impl Error` satisfies that); `unwrap()` is not a method in Hew.
+A closure whose body uses `?` or `return error` fails through its own edge, and can declare one as `|t| -> i64 fails string { .. }`; a fn type spells it `fn(string) -> i64 fails string`. A generator declared `-> Y fails E` yields `Result<Y, E>` items and stops after the first `.Err`, so a consumer writes `let y = item?;`.
 
-`fn main() -> Result<(), E>` needs `E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr and exits 1.
+### Fallible means `fails`
 
-### Fallible means `Result`
-
-Standard-library functions report failure in the type system. A fallible call returns `Result<T, E>` under its plain name — there is no `try_read` beside `read` — and a lookup that can miss returns `Option<T>`, so `os.env("PORT")` gives you `None` rather than an empty string you have to guess about. Nothing returns a status integer or a sentinel value.
+Standard-library functions report failure in the type system. A fallible function fails through `fails E` under its plain name — there is no `try_read` beside `read` — and a lookup that can miss returns `Option<T>`, so `os.env("PORT")` gives you `None` rather than an empty string you have to guess about. Nothing returns a status integer or a sentinel value.
 
 The exception is indexing: `v[i]` and `m[k]` trap when the index or key is absent, because that is a bug in the program rather than a condition to handle. Use `.get()` when a miss is expected.
 
@@ -3753,13 +3846,16 @@ Option/Result and their constructors are builtin — do not import `std.option`/
 ### The ? operator on Result
 
 ```hew
-fn try_parse(s: string) -> Result<i64, string> {
-    if s == "bad" { .Err("bad input") } else { .Ok(10) }
+fn try_parse(s: string) -> i64 fails string {
+    if s == "bad" {
+        return error "bad input";
+    }
+    10
 }
-fn parse_add(a: string, b: string) -> Result<i64, string> {
+fn parse_add(a: string, b: string) -> i64 fails string {
     let x = try_parse(a)?;
     let y = try_parse(b)?;
-    .Ok(x + y)
+    x + y
 }
 fn main() {
     match parse_add("a", "b") { .Ok(n) => println(n), .Err(e) => println(e) }       // 20
@@ -3767,7 +3863,7 @@ fn main() {
 }
 ```
 
-Use `?` to short-circuit Err and propagate it; the enclosing fn must return a Result whose Err type matches.
+Use `?` to short-circuit a failure and propagate it; the enclosing fn declares its edge with `fails`, and the error converts to that edge's type.
 
 ### std.string helpers
 
@@ -3781,7 +3877,7 @@ fn main() {
 }
 ```
 
-Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` returns `Result<i64, string>` — use `handle` or `match` to recover from a parse failure.
+Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` fails with `string.NumberError` (`Invalid` or `OutOfRange`, carrying the text) — use `?`, `handle` or `match` to deal with a parse failure.
 
 ### std.math helpers
 

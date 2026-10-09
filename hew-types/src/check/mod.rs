@@ -46,16 +46,19 @@ pub use self::dispatch::{
 };
 mod dyn_layout;
 pub mod effects;
+mod error_display;
 mod exhaustiveness;
 mod expressions;
 mod generics;
 mod items;
 mod lints;
+/// The one exhaustive AST walk, shared with tools that rewrite source.
+pub use lints::{walk_block, walk_expr, NodeVisitor};
 mod race;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod machine_effects;
 mod machine_normalize;
-pub use machine_normalize::NormalizedMachines;
+pub use machine_normalize::NormalizedProgram;
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
@@ -2498,20 +2501,42 @@ impl Checker {
         } else {
             self.has_checked_program = true;
         }
-        let normalized_machines = match machine_normalize::normalize(program) {
-            Ok(normalized) => normalized,
-            Err(errors) => {
-                self.errors.extend(errors);
-                None
-            }
+        let (normalized_program, normalization_errors) = match machine_normalize::normalize(program)
+        {
+            Ok(normalized) => (normalized, Vec::new()),
+            Err(errors) => (None, errors),
         };
-        let program = normalized_machines
+        self.errors.extend(normalization_errors.iter().cloned());
+        let checked = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
-        self.prepare_program(program, false);
+        self.prepare_program(checked, false);
+        let normalized_program = match self.synthesize_error_displays(checked) {
+            Some(displays) => {
+                let normalized =
+                    std::sync::Arc::new(machine_normalize::NormalizedProgram::with_error_displays(
+                        normalized_program.as_deref(),
+                        displays,
+                    ));
+                self.implied_display_context = normalized.implied_context;
+                self.mint_source_declaration_identities(&normalized.program);
+                if let Some(graph) = &normalized.program.module_graph {
+                    self.module_item_sources.clone_from(&graph.item_sources);
+                }
+                self.collect_function_signatures(
+                    &normalized.program,
+                    Some(&normalized.implied_displays),
+                );
+                Some(normalized)
+            }
+            None => normalized_program,
+        };
+        let program = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         self.check_dependency_bodies(program);
         self.check_root_bodies(program);
-        self.finish_program(program, normalized_machines.as_ref())
+        self.finish_program(program, normalized_program.as_ref())
     }
 
     /// Deep-copy a sealed dependency-only checkpoint. Callers never copy a
@@ -2608,8 +2633,9 @@ impl Checker {
             machine_method_dispatch: self.machine_method_dispatch.clone(),
             tail_ok_coercions: self.tail_ok_coercions.clone(),
             result_return_coercions: self.result_return_coercions.clone(),
-            tail_ok_armed: self.tail_ok_armed.clone(),
             field_shorthand_values: self.field_shorthand_values.clone(),
+            yield_ok_coercions: self.yield_ok_coercions.clone(),
+            failing_generators: self.failing_generators.clone(),
             assign_target_kinds: self.assign_target_kinds.clone(),
             assign_target_shapes: self.assign_target_shapes.clone(),
             indexed_place_operations: self.indexed_place_operations.clone(),
@@ -2672,8 +2698,9 @@ impl Checker {
             reported_actor_handle_type_spans: self.reported_actor_handle_type_spans.clone(),
             reported_unknown_dyn_traits: self.reported_unknown_dyn_traits.clone(),
             current_return_type: self.current_return_type.clone(),
-            inferred_lambda_returns: self.inferred_lambda_returns.clone(),
-            current_fails: self.current_fails.clone(),
+            inferred_lambda: self.inferred_lambda.clone(),
+            current_failure_edge: self.current_failure_edge.clone(),
+            failure_edge_inferred: self.failure_edge_inferred.clone(),
             in_generator: self.in_generator.clone(),
             suspension_operands: self.suspension_operands.clone(),
             prepared_select_tasks: self.prepared_select_tasks.clone(),
@@ -2806,6 +2833,7 @@ impl Checker {
             lint_levels: self.lint_levels.clone(),
             lint_sources: self.lint_sources.clone(),
             import_type_name_aliases: self.import_type_name_aliases.clone(),
+            implied_display_context: self.implied_display_context,
         }
     }
 
@@ -3149,7 +3177,7 @@ impl Checker {
     fn finish_program(
         &mut self,
         program: &Program,
-        normalized_machines: Option<&std::sync::Arc<machine_normalize::NormalizedMachines>>,
+        normalized_program: Option<&std::sync::Arc<machine_normalize::NormalizedProgram>>,
     ) -> TypeCheckOutput {
         // Closure escape classification — runs after all bodies have
         // been type-checked. Walks each fn body (root + modules) looking
@@ -3631,7 +3659,7 @@ impl Checker {
         };
         // Machine purity follows each resource's release into its `close`.
         let resource_closes: HashMap<crate::NominalId, crate::DefId> =
-            if normalized_machines.is_some() {
+            if normalized_program.is_some() {
                 self.registry
                     .resource_type_ids()
                     .iter()
@@ -3659,7 +3687,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             resolved_annotation_types,
-            normalized_machines: normalized_machines.cloned(),
+            normalized_program: normalized_program.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
@@ -3712,6 +3740,8 @@ impl Checker {
             actor_coalesce_keys: std::mem::take(&mut self.actor_coalesce_keys),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
+            yield_ok_coercions: std::mem::take(&mut self.yield_ok_coercions),
+            failing_generators: std::mem::take(&mut self.failing_generators),
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
@@ -3809,9 +3839,9 @@ impl Checker {
                 .errors
                 .extend(machine_effects::validate(&output, &resource_closes));
         }
-        if let Some(normalized) = &normalized_machines {
+        if let Some(normalized) = normalized_program {
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
-                if let Some(source) = normalized.source_spans.get(&diagnostic.span) {
+                if let Some(source) = normalized.source_span(&diagnostic.span) {
                     diagnostic.span = source.clone();
                 }
             }
@@ -3831,7 +3861,7 @@ impl Checker {
     /// two generated spans that disagree is dropped rather than resolved
     /// arbitrarily.
     fn project_machine_expr_types(
-        normalized: &NormalizedMachines,
+        normalized: &NormalizedProgram,
         expr_types: &mut HashMap<SpanKey, Ty>,
     ) {
         let mut projected: HashMap<SpanKey, Ty> = HashMap::new();

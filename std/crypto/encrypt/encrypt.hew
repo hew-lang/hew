@@ -11,7 +11,7 @@
 //! fn main() {
 //!     let key = match crypto.random_bytes(32) {
 //!         .Ok(key) => key,
-//!         .Err(reason) => panic(reason),
+//!         .Err(reason) => panic(f"{reason}"),
 //!     };
 //!     let ciphertext = match encrypt.seal(key, "hello world") {
 //!         .Ok(ciphertext) => ciphertext,
@@ -100,7 +100,7 @@ pub fn seal(key: bytes, plaintext: string) -> Result<bytes, CryptoError> {
         hew_encrypt_try_seal_base64_hew(key, plaintext)
     };
     match last_seal_error() {
-        CryptoError.None => .Ok(base64.decode(encoded)),
+        CryptoError.None => .Ok(base64.decode(encoded).expect("the native sealer returns Base64")),
         err => .Err(err),
     }
 }

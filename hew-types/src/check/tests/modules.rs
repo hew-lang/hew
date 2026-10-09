@@ -2390,15 +2390,15 @@ mod warning_source_attribution {
     #[test]
     fn question_mark_result_check_passes_with_matching_error_type() {
         let source = r"
-fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
+fn pass(r: Result<i64, i64>) -> i64 fails i64 {
     let x: i64 = r?;
-    .Ok(x)
+    x
 }
 ";
         let (errors, _) = parse_and_check(source);
         assert!(
             errors.is_empty(),
-            "Result<T, E>? in Result<_, same E> function must check-pass; got {errors:?}"
+            "Result<T, E>? under `fails E` must check-pass; got {errors:?}"
         );
     }
 
@@ -2426,19 +2426,19 @@ fn bad(r: Result<i64, i64>) -> i64 {
 ";
         let (errors, _) = parse_and_check(source);
         assert!(
-            errors.iter().any(|e| e
-                .message
-                .contains("cannot be used in a function returning `i64`")),
-            "`?` in an i64-returning function must be rejected; got {errors:?}"
+            errors
+                .iter()
+                .any(|e| e.kind == crate::error::TypeErrorKind::NoFailureEdge),
+            "`?` in a function without a failure edge must be rejected; got {errors:?}"
         );
     }
 
     #[test]
     fn question_mark_result_error_type_mismatch_errors() {
         let source = r"
-fn bad(r: Result<i64, string>) -> Result<i64, i64> {
+fn bad(r: Result<i64, string>) -> i64 fails i64 {
     let x: i64 = r?;
-    .Ok(x)
+    x
 }
 ";
         let (errors, _) = parse_and_check(source);
@@ -2496,10 +2496,10 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         );
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
-        let has_ctx_err = output.errors.iter().any(|e| {
-            e.message
-                .contains("cannot be used in a function returning `Vec<i32>`")
-        });
+        let has_ctx_err = output
+            .errors
+            .iter()
+            .any(|e| e.kind == crate::error::TypeErrorKind::NoFailureEdge);
         assert!(
             has_ctx_err,
             "? on valid Result in a function returning builtin Vec must still \

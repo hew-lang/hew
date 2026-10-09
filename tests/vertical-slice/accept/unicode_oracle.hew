@@ -15,19 +15,19 @@ fn main() {
     println(f"title_a={unicode.to_title(97)} title_eacute={unicode.to_title(233)} title_digit={unicode.to_title(49)}");
     let ascii_width = match unicode.rune_len(65) {
         .Ok(width) => width,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     let latin_width = match unicode.rune_len(233) {
         .Ok(width) => width,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     let cjk_width = match unicode.rune_len(26085) {
         .Ok(width) => width,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     let emoji_width = match unicode.rune_len(128578) {
         .Ok(width) => width,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     println(f"rune_len={ascii_width},{latin_width},{cjk_width},{emoji_width}");
     let text = "Aé日🙂";
@@ -36,19 +36,19 @@ fn main() {
     println(f"runes={rs[0]},{rs[1]},{rs[2]},{rs[3]}");
     let first = match unicode.codepoint_at(text, 0) {
         .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     let second = match unicode.codepoint_at(text, 1) {
         .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     let third = match unicode.codepoint_at(text, 2) {
         .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     let fourth = match unicode.codepoint_at(text, 3) {
         .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     println(f"codepoint_at={first},{second},{third},{fourth}");
     let empty_text = "";

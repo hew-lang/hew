@@ -47,12 +47,6 @@ impl Checker {
             );
             return Ty::Error;
         }
-        // Synthesis runs without an expected type, so no expression reached
-        // through `synthesize` is in `check_against` tail position. Clear the
-        // tail Ok-coercion flag for the duration so a nested expression (an
-        // operand, argument, or non-tail statement) can never trip the
-        // coercion. The flag is only meaningful on the `check_against` path.
-        let prev_tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         let shorthand_mark = self.enter_field_shorthands(expr);
         // Grow the stack on demand so deeply-nested expressions (e.g. 1000+
         // chained binary operators) don't overflow.
@@ -60,7 +54,6 @@ impl Checker {
             self.synthesize_inner(expr, span)
         });
         self.field_shorthand_values.truncate(shorthand_mark);
-        self.tail_ok_armed = prev_tail_ok_armed;
         self.publish_checked_expression(expr, span, result)
     }
 
@@ -189,13 +182,14 @@ impl Checker {
                         self.synthesize(&base.0, &base.1);
                     }
                 }
-                self.report_error(
+                self.report_error_with_suggestions(
                     TypeErrorKind::ContextVariantNoType,
                     span,
                     format!(
                         "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.{}` requires an expected enum or machine type",
                         context.name
                     ),
+                    self.context_variant_edge_hint(),
                 );
                 Ty::Error
             }
@@ -480,76 +474,80 @@ impl Checker {
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
                 let ty = self.subst.resolve(&ty);
-                // Build an error message if the enclosing function's return type
-                // cannot propagate via `?`.  Computed before any mutable borrow.
+                // `?` on an `Option` propagates absence to an `Option` return;
+                // `?` on a `Result` leaves through the failure edge.
                 //
-                // JUSTIFIED: Ty::Var(_) is bypassed because the return type is
-                // still being inferred — reporting a context error would be a false
-                // positive.  Ty::Error is bypassed for the same reason: it means the
-                // return-type annotation failed to resolve (e.g. references an
-                // unknown type), so we cannot know whether `?` propagation would be
-                // valid.  The annotation-resolution error is already reported
-                // separately; adding a second "? cannot be used here" error would be
-                // confusing rather than helpful.  Inner-type errors ("`?` requires
-                // Result or Option, found X`") are reported unconditionally via the
-                // else branch below and are NOT affected by this bypass.
-                //
-                // Ty::Named where the name is not builtin and not in type_defs or
-                // type_aliases is also bypassed: this arises when a return-type
-                // annotation references an undefined type (resolution falls through
-                // to Ty::normalize_named rather than returning Ty::Error). Emitting
-                // the context error in this case is a false positive — we cannot
-                // know whether the intended type would have been a Result/Option.
+                // JUSTIFIED: a return type that is still being inferred
+                // (`Ty::Var`), failed to resolve (`Ty::Error`), or names an
+                // undefined type is not judged here: its own diagnostic
+                // stands, and a second "`?` cannot be used here" would be a
+                // false positive. Inner-type errors ("`?` requires Result or
+                // Option") are reported unconditionally below.
                 let current_return_type = self.current_return_type.clone();
-                let bad_ctx_msg: Option<String> = current_return_type.as_ref().and_then(|ret| {
+                let return_unknown = current_return_type.as_ref().is_none_or(|ret| {
                     let r = self.subst.resolve(ret);
-                    if (r.as_option().is_some() && ty.as_option().is_some())
-                        || (r.as_result().is_some() && ty.as_result().is_some())
-                        || matches!(r, Ty::Var(_) | Ty::Error)
+                    matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { head, .. }
                         if head.builtin().is_none()
                             && self.head_type_def(*head).is_none()
                             && !head.nominal().is_some_and(|id| {
                                 self.type_aliases.contains_key(&id.declaration())
                             }))
-                    {
-                        None
-                    } else {
-                        Some(format!(
-                            "`?` cannot be used in a function returning `{r}` to propagate `{ty}`; \
-                             absence requires an Option return and errors require a Result return"
-                        ))
-                    }
                 });
                 if let Some(inner_ty) = ty.as_option() {
-                    if let Some(msg) = bad_ctx_msg {
-                        self.report_error(TypeErrorKind::InvalidOperation, span, msg);
-                        Ty::Error
-                    } else {
+                    if let Some(inferred) = self.inferred_lambda.as_mut() {
+                        // A closure whose edge is not yet open propagates
+                        // absence until a `Result` exit opens one.
+                        if self.current_failure_edge.is_none() {
+                            inferred.push_option_try(span.clone());
+                            return inner_ty.clone();
+                        }
+                        self.report_option_try_on_failing_closure(span);
+                        return Ty::Error;
+                    }
+                    let returns_option = current_return_type
+                        .as_ref()
+                        .is_some_and(|ret| self.subst.resolve(ret).as_option().is_some());
+                    if returns_option || return_unknown {
                         inner_ty.clone()
+                    } else {
+                        let ret = current_return_type
+                            .as_ref()
+                            .map_or(Ty::Unit, |ret| self.subst.resolve(ret));
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "`?` cannot be used in a function returning `{ret}` to propagate \
+                                 `{ty}`; absence requires an Option return"
+                            ),
+                        );
+                        Ty::Error
                     }
                 } else if let Some((ok, err)) = ty.as_result() {
                     let ok_ty = ok.clone();
                     let err_ty = err.clone();
-                    if let Some(msg) = bad_ctx_msg {
-                        self.report_error(TypeErrorKind::InvalidOperation, span, msg);
-                        Ty::Error
-                    } else {
-                        if let Some(ret) = current_return_type.as_ref() {
-                            let resolved_ret = self.subst.resolve(ret);
-                            if let Some((_, ret_err)) = resolved_ret.as_result() {
-                                let ret_err = ret_err.clone();
-                                if !self.select_error_conversion(
-                                    crate::check::coerce::FailureEdge::Try,
-                                    &err_ty,
-                                    &ret_err,
-                                    span,
-                                ) {
-                                    return Ty::Error;
-                                }
-                            }
+                    if let Some(edge) = self.failure_edge_or_open() {
+                        // The enclosing callable's failure edge carries the
+                        // error out, converting it by the edge rule.
+                        if !self.select_error_conversion(
+                            crate::check::coerce::FailureEdge::Try,
+                            &err_ty,
+                            &edge,
+                            span,
+                        ) {
+                            return Ty::Error;
                         }
                         ok_ty
+                    } else if return_unknown {
+                        ok_ty
+                    } else {
+                        self.report_no_failure_edge(
+                            crate::check::coerce::FailureEdge::Try,
+                            &err_ty,
+                            span,
+                        );
+                        Ty::Error
                     }
                 } else {
                     self.report_error(
@@ -587,13 +585,7 @@ impl Checker {
                 Ty::Never
             }
             Expr::ReturnError(value) => {
-                let error = self.current_return_type.as_ref().and_then(|ty| {
-                    self.subst
-                        .resolve(ty)
-                        .as_result()
-                        .map(|(_, error)| error.clone())
-                });
-                if let Some(error) = error.filter(|_| self.current_fails) {
+                if let Some(error) = self.failure_edge_or_open() {
                     // A leading-dot variant names a member of the function's
                     // own error type; everything else crosses the edge by the
                     // failure-edge rule.
@@ -640,12 +632,11 @@ impl Checker {
                         super::ResultReturnKind::Error,
                     );
                 } else {
-                    self.synthesize(&value.0, &value.1);
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
+                    let value_ty = self.synthesize(&value.0, &value.1);
+                    self.report_no_failure_edge(
+                        crate::check::coerce::FailureEdge::ReturnError,
+                        &value_ty,
                         span,
-                        "`return error` requires an enclosing function declared with `fails`"
-                            .to_string(),
                     );
                 }
                 self.recheck_return_edge_defers();
@@ -1156,7 +1147,20 @@ impl Checker {
                 } else {
                     resolved
                 };
-                self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
+                // A failing generator yields its success payload; HIR makes
+                // the item `Ok(value)`.
+                let success = self
+                    .current_failure_edge
+                    .as_ref()
+                    .and(self.subst.resolve(&yield_ty).as_result())
+                    .map(|(success, _)| success.clone());
+                if let Some(success) = success {
+                    self.check_against(&val_expr.0, &val_expr.1, &success);
+                    self.yield_ok_coercions
+                        .insert(SpanKey::in_module(span, self.current_module_idx));
+                } else {
+                    self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
+                }
             } else {
                 self.synthesize(&val_expr.0, &val_expr.1);
             }

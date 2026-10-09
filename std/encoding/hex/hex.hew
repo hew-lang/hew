@@ -14,8 +14,9 @@
 //!     data.push(0xAD);
 //!     let s = hex.encode(data);
 //!     println(s);   // "dead"
-//!     let back = hex.decode(s);
+//!     let back = hex.decode(s).expect("encoded text is hex");
 //!     println(back.len());  // 2
+//!     println(f"{hex.decode("abc").is_err()}");  // true
 //! }
 //! ```
 
@@ -31,26 +32,32 @@ pub fn encode_upper(data: bytes) -> string {
     encode_impl(data, true)
 }
 
-/// Decode a hex string to binary data.
-///
-/// Returns an empty `bytes` buffer if the input is not valid hex.
-pub fn decode(s: string) -> bytes {
+/// Text that is not hexadecimal.
+pub enum DecodeError {
+    /// The text has an odd number of digits, so its last byte is incomplete.
+    InvalidLength(i64);
+    /// The character at `index` is not a hex digit.
+    InvalidCharacter { index: i64; text: string; }
+}
+
+impl Error for DecodeError {}
+
+/// Decode a hex string to binary data. The empty string decodes to no bytes;
+/// any other text that is not pairs of hex digits fails.
+pub fn decode(s: string) -> bytes fails DecodeError {
     let slen = s.len();
     var out: bytes = bytes.new();
-    if slen == 0 {
-        return out;
-    }
     if slen % 2 != 0 {
-        return out;
+        return error .InvalidLength(slen);
     }
     for i in (0..slen).step_by(2) {
         let hi = hex_char_to_nibble(s.slice(i, i + 1));
-        let lo = hex_char_to_nibble(s.slice(i + 1, i + 2));
         if hi < 0 {
-            return bytes.new();
+            return error .InvalidCharacter { index: i, text: s.slice(i, i + 1) };
         }
+        let lo = hex_char_to_nibble(s.slice(i + 1, i + 2));
         if lo < 0 {
-            return bytes.new();
+            return error .InvalidCharacter { index: i + 1, text: s.slice(i + 1, i + 2) };
         }
         out.push((hi * 16 + lo) as u8);
     }

@@ -38,33 +38,29 @@ pub type Conn {
 /// Methods available on an SMTP `Conn`.
 trait ConnMethods {
     /// Send a plain-text email.
-    fn send(self, from: string, to: string, subject: string, body: string) -> Result<(), string>;
+    fn send(self, from: string, to: string, subject: string, body: string) fails SmtpError;
 
     /// Send an HTML email.
-    fn send_html(self, from: string, to: string, subject: string, html: string) -> Result<(), string>;
+    fn send_html(self, from: string, to: string, subject: string, html: string) fails SmtpError;
 }
 
 impl ConnMethods for Conn {
     /// Send a plain-text email.
-    fn send(self, from: string, to: string, subject: string, body: string) -> Result<(), string> {
+    fn send(self, from: string, to: string, subject: string, body: string) fails SmtpError {
         let n: i32 = unsafe {
             hew_smtp_send(self, from, to, subject, body)
         };
         if n < 0 {
-            .Err(smtp_err("smtp send failed"))
-        } else {
-            .Ok(())
+            return error SmtpError.Send(smtp_err("smtp send failed"));
         }
     }
     /// Send an HTML email.
-    fn send_html(self, from: string, to: string, subject: string, html: string) -> Result<(), string> {
+    fn send_html(self, from: string, to: string, subject: string, html: string) fails SmtpError {
         let n: i32 = unsafe {
             hew_smtp_send_html(self, from, to, subject, html)
         };
         if n < 0 {
-            .Err(smtp_err("smtp send_html failed"))
-        } else {
-            .Ok(())
+            return error SmtpError.Send(smtp_err("smtp send_html failed"));
         }
     }
 }
@@ -79,6 +75,16 @@ impl Conn {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// An SMTP exchange that failed, with the client's reason.
+pub enum SmtpError {
+    /// The server could not be reached, refused the session or is not SMTP.
+    Connect(string);
+    /// The server refused or broke off a message.
+    Send(string);
+}
+
+impl Error for SmtpError {}
+
 /// Return the last SMTP client error observed on this thread.
 ///
 /// Failed `connect()`/`connect_tls()`/`send()` calls update this string.
@@ -122,18 +128,17 @@ fn smtp_err(fallback: string) -> string {
 ///     }
 /// }
 /// ```
-pub fn connect(host: string, port: i64, username: string, password: string) -> Result<Conn, string> {
+pub fn connect(host: string, port: i64, username: string, password: string) -> Conn fails SmtpError {
     let conn = unsafe {
         hew_smtp_connect(host, port, username, password)
     };
     let ok = unsafe {
         hew_smtp_conn_is_valid(conn)
     };
-    if ok {
-        .Ok(conn)
-    } else {
-        .Err(smtp_err("smtp connect failed"))
+    if !ok {
+        return error SmtpError.Connect(smtp_err("smtp connect failed"));
     }
+    conn
 }
 
 /// Connect to an SMTP server using implicit TLS.
@@ -154,43 +159,38 @@ pub fn connect(host: string, port: i64, username: string, password: string) -> R
 ///     }
 /// }
 /// ```
-pub fn connect_tls(host: string, port: i64, username: string, password: string) -> Result<Conn, string> {
+pub fn connect_tls(host: string, port: i64, username: string, password: string) -> Conn fails SmtpError {
     let conn = unsafe {
         hew_smtp_connect_tls(host, port, username, password)
     };
     let ok = unsafe {
         hew_smtp_conn_is_valid(conn)
     };
-    if ok {
-        .Ok(conn)
-    } else {
-        .Err(smtp_err("smtp connect failed"))
+    if !ok {
+        return error SmtpError.Connect(smtp_err("smtp connect failed"));
     }
+    conn
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one plain-text
 /// email, and close the connection.
-pub fn send(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) -> Result<(), string> {
+pub fn send(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) fails SmtpError {
     let n: i32 = unsafe {
         hew_smtp_send_once(host, port, username, password, from, to, subject, body)
     };
     if n < 0 {
-        .Err(smtp_err("smtp send failed"))
-    } else {
-        .Ok(())
+        return error SmtpError.Send(smtp_err("smtp send failed"));
     }
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,
 /// and close the connection.
-pub fn send_html(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) -> Result<(), string> {
+pub fn send_html(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) fails SmtpError {
     let n: i32 = unsafe {
         hew_smtp_send_html_once(host, port, username, password, from, to, subject, html)
     };
     if n < 0 {
-        .Err(smtp_err("smtp send_html failed"))
-    } else {
-        .Ok(())
+        return error SmtpError.Send(smtp_err("smtp send_html failed"));
     }
 }
 

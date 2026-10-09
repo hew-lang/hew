@@ -353,7 +353,13 @@ fn hex_bytes(values: Vec<i64>) -> bytes {
 #[test]
 fn test_checked_uint_every_width_round_trips() {
     for width in 0..9 {
-        let value = if width == 8 { -2 } else if width == 0 { 0 } else { (1 << (8 * width - 1)) + 3 };
+        let value = if width == 8 {
+            -2
+        } else if width == 0 {
+            0
+        } else {
+            (1 << (8 * width - 1)) + 3
+        };
         let le = binary.put_uint_le(value, width).expect("fits");
         let be = binary.put_uint_be(value, width).expect("fits");
         assert(le.len() == width);
@@ -482,8 +488,8 @@ fn test_f32_rejects_non_finite_and_overflow() {
     }
 }
 
-fn parse_record(record: bytes) -> Result<(i64, f64), binary.BinaryError> {
-    .Ok((binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?))
+fn parse_record(record: bytes) -> (i64, f64) fails binary.BinaryError {
+    (binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?)
 }
 
 #[test]

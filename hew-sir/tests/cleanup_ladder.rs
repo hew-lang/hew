@@ -121,11 +121,11 @@ fn chain(function: &SemFunction, start: BlockId) -> Vec<BlockId> {
 #[test]
 fn fault_sites_with_the_same_live_owners_share_one_rung() {
     let module = lower_source(
-        r#"fn pair(first: Store, second: Store) -> Result<i64, ActorError> {
+        r#"fn pair(first: Store, second: Store) -> i64 fails ActorError {
     let lease = Lease { name: "a" };
     let one = first.get("k")?;
     let two = second.get("jj")?;
-    .Ok(one + two)
+    one + two
 }"#,
         "let _ = pair(store, store)",
     );
@@ -151,10 +151,10 @@ fn fault_sites_with_the_same_live_owners_share_one_rung() {
 #[test]
 fn a_site_with_one_more_temporary_enters_one_rung_above_the_shared_suffix() {
     let module = lower_source(
-        r#"fn temp(store: Store) -> Result<i64, ActorError> {
+        r#"fn temp(store: Store) -> i64 fails ActorError {
     let lease = Lease { name: "a" };
     let one = store.get("k")?;
-    .Ok(join(f"t{one}", store.get("j")?))
+    join(f"t{one}", store.get("j")?)
 }"#,
         "let _ = temp(store)",
     );
@@ -190,12 +190,12 @@ fn a_site_with_one_more_temporary_enters_one_rung_above_the_shared_suffix() {
 #[test]
 fn a_defer_rung_dispatches_its_outcome_and_no_other_fault_rung_does() {
     let module = lower_source(
-        r#"fn deferred(store: Store) -> Result<i64, ActorError> {
+        r#"fn deferred(store: Store) -> i64 fails ActorError {
     let lease = Lease { name: "a" };
     defer println("deferred");
     let one = store.get("k")?;
     let two = store.get("j")?;
-    .Ok(one + two)
+    one + two
 }"#,
         "let _ = deferred(store)",
     );
@@ -231,7 +231,7 @@ fn a_defer_reading_rewritten_places_keeps_one_rung() {
     // The deferred body reads `n` and `text` through their places, so every
     // ask runs the same deferred body whatever has been stored there since.
     let module = lower_source(
-        r#"fn track(store: Store, label: string) -> Result<i64, ActorError> {
+        r#"fn track(store: Store, label: string) -> i64 fails ActorError {
     var n = 1;
     var text = label;
     defer println(f"{text} {n}");
@@ -240,7 +240,7 @@ fn a_defer_reading_rewritten_places_keeps_one_rung() {
     let two = store.get("jj")?;
     text = "replaced";
     let three = store.get("jjj")?;
-    .Ok(one + two + three + n)
+    one + two + three + n
 }"#,
         "let _ = track(store, \"label\")",
     );

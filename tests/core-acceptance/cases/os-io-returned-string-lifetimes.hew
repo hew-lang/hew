@@ -35,7 +35,8 @@ fn exercise() {
     let dns_timed = dns.lookup_host_timed("127.0.0.1", 1000);
     let compressed_reason = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(_) => panic("invalid gzip admitted"),
-        .Err(reason) => reason,
+        .Err(.Decompress(reason)) => reason,
+        .Err(.Compress(reason)) => panic(f"decompression failed as compression: {reason}"),
     };
     let output = process.run("echo retained-output").expect("run child");
     assert(!arg.is_empty());

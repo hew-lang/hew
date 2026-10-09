@@ -43,9 +43,9 @@ fn test_result_err() -> i64 {
     }
 }
 
-fn try_divide(a: i64, b: i64) -> Result<i64, string> {
+fn try_divide(a: i64, b: i64) -> i64 fails string {
     let x = divide(a, b)?;
-    .Ok(x * 2)
+    x * 2
 }
 
 fn test_try_operator() -> i64 {

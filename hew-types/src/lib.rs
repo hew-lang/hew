@@ -77,6 +77,7 @@ pub use check::{
     UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind,
     WidthCastLowering,
 };
+pub use check::{walk_block, walk_expr, NodeVisitor};
 pub use def_table::{
     DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, KnownDecl,
     ModuleId, NominalId, Predicate, TypeParamId,

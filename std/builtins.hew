@@ -759,8 +759,9 @@ pub trait Display {
 /// The marker an error type carries so it can be erased to `dyn Error`.
 ///
 /// `Error` adds no methods of its own: an error is a value that can say what
-/// went wrong, so `Display` is the whole obligation. Declaring
-/// `impl Error for MyError {}` therefore requires `impl Display for MyError`.
+/// went wrong, so `Display` is the whole obligation. `impl Error for MyError {}`
+/// on a type that declares no `Display` supplies one: the variant name, then
+/// `": "` and the payloads, each through its own `Display`.
 #[lang_item("error")]
 pub trait Error: Display {
 }

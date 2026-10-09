@@ -833,6 +833,21 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
     ) -> CodegenResult<()> {
         let structure = llvm_type(self.parent.ctx, repr)?.into_struct_type();
         let mut state = self.parent.ctx.i64_type().const_int(FNV_OFFSET, false);
+        if let Some(frame) = &self.frame {
+            frame.carry(self.parent.ctx, &self.builder, lhs, "key.fields.left.slot")?;
+            if let Some(rhs) = rhs {
+                frame.carry(self.parent.ctx, &self.builder, rhs, "key.fields.right.slot")?;
+            }
+        }
+        let hash = if self.frame.is_some() && self.capability == ValueCapability::Hash {
+            let slot = self.scratch(state.get_type().into(), "key.fields.hash")?;
+            self.builder
+                .build_store(slot, state)
+                .llvm_ctx("initialize field hash")?;
+            Some(slot)
+        } else {
+            None
+        };
         for (index, field) in fields.iter().enumerate() {
             let index = u32::try_from(index).map_err(|_| {
                 CodegenError::FailClosed("key field index exceeds LLVM range".into())
@@ -850,7 +865,15 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
                 .transpose()?;
             let value = self.component(&field.ty, left, right)?;
             if self.capability == ValueCapability::Hash {
+                if let Some(hash) = hash {
+                    state = self.load(state.get_type().into(), hash)?.into_int_value();
+                }
                 state = self.mix(state, value)?;
+                if let Some(hash) = hash {
+                    self.builder
+                        .build_store(hash, state)
+                        .llvm_ctx("retain field hash")?;
+                }
             } else {
                 self.continue_equal(value)?;
             }
@@ -940,6 +963,11 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         let left = self.handle(lhs)?;
         let right = self.handle(rhs)?;
         let len = self.length("hew_vec_len", left)?;
+        if let Some(frame) = &self.frame {
+            frame.carry(ctx, &self.builder, left, "key.vector.left.slot")?;
+            frame.carry(ctx, &self.builder, right, "key.vector.right.slot")?;
+            frame.carry(ctx, &self.builder, len, "key.vector.length.slot")?;
+        }
         self.continue_equal(self.equal(len, self.length("hew_vec_len", right)?)?)?;
         let index = self.scratch(ctx.i64_type().into(), "key.vector.index")?;
         self.builder
@@ -965,6 +993,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             .runtime("hew_vec_get_owned", get_ty, &[right.into(), i.into()])?
             .into_pointer_value();
         self.continue_equal(self.component(element, left_slot, Some(right_slot))?)?;
+        let i = self.load(ctx.i64_type().into(), index)?.into_int_value();
         let next = self
             .builder
             .build_int_add(i, ctx.i64_type().const_int(1, false), "key.vector.next")

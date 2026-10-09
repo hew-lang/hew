@@ -61,10 +61,14 @@ pub(super) fn allocate_storage<'ctx>(
                     .map(Some);
             }
             if matches!(storage.origin, StorageOrigin::Capture { .. }) {
-                return callable::capture_parameter_slot(
-                    module, function, signature, value, addressing, storage,
-                )
-                .map(Some);
+                let slot = callable::capture_parameter_slot(
+                    module, function, signature, value, builder, storage,
+                )?;
+                if let Some(frame) = frame.filter(|_| function.frame_storage.contains(&storage.id))
+                {
+                    frame.carry(module.ctx, builder, slot, "capture.address.slot")?;
+                }
+                return Ok(Some(slot));
             }
             if let Some((index, _)) = function
                 .parameters

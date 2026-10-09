@@ -2,6 +2,45 @@
 
 const PACKAGE_NAME_RULES: &str = "only lowercase alphanumeric, `_`, and dotted segments allowed";
 
+/// Encode an authored identity only after checking its complete grammar.
+pub(crate) fn to_wire(name: &str, mode: crate::config::WireNames) -> Result<String, String> {
+    if !is_valid(name) {
+        return Err(invalid_message(name));
+    }
+    Ok(match mode {
+        crate::config::WireNames::Dotted => name.to_string(),
+        crate::config::WireNames::Slash => name.replace('.', "/"),
+    })
+}
+
+/// Decode the exact configured wire grammar without accepting mixed identities.
+pub(crate) fn from_wire(name: &str, mode: crate::config::WireNames) -> Result<String, String> {
+    match mode {
+        crate::config::WireNames::Dotted => to_wire(name, mode),
+        crate::config::WireNames::Slash => {
+            if name.contains('.') {
+                return Err(format!("invalid slash package identity `{name}`"));
+            }
+            let logical = name.replace('/', ".");
+            if !is_valid(&logical) {
+                return Err(format!("invalid slash package identity `{name}`"));
+            }
+            Ok(logical)
+        }
+    }
+}
+
+/// Registry publishers retain authored dependency names; other publishers may
+/// submit slash names. Decode either complete grammar, never a mixture.
+pub(crate) fn dependency_from_wire(name: &str) -> Result<String, String> {
+    let mode = if name.contains('/') {
+        crate::config::WireNames::Slash
+    } else {
+        crate::config::WireNames::Dotted
+    };
+    from_wire(name, mode)
+}
+
 /// Validate a package name in dotted notation.
 ///
 /// Names must be non-empty, at most 128 bytes, and composed of non-empty
@@ -47,6 +86,39 @@ mod tests {
         assert!(is_valid("my_package"));
         assert!(is_valid("std.net.http"));
         assert!(is_valid("pkg123.v2"));
+    }
+
+    #[test]
+    fn wire_identity_rejects_mixed_or_escaping_names() {
+        use crate::config::WireNames;
+        assert_eq!(
+            to_wire("hew.math.stats", WireNames::Slash).unwrap(),
+            "hew/math/stats"
+        );
+        assert_eq!(
+            from_wire("hew/math/stats", WireNames::Slash).unwrap(),
+            "hew.math.stats"
+        );
+        assert_eq!(
+            dependency_from_wire("hew.math.stats").unwrap(),
+            "hew.math.stats"
+        );
+        assert_eq!(
+            dependency_from_wire("hew/math/stats").unwrap(),
+            "hew.math.stats"
+        );
+        for name in [
+            "hew.math/stats",
+            "hew//stats",
+            "../stats",
+            "/stats",
+            "hew/%2e%2e/stats",
+            "hew::stats",
+        ] {
+            assert!(dependency_from_wire(name).is_err(), "{name}");
+        }
+        assert!(from_wire("hew.math.stats", WireNames::Slash).is_err());
+        assert!(from_wire("hew/math/stats", WireNames::Dotted).is_err());
     }
 
     #[test]

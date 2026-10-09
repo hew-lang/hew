@@ -310,7 +310,7 @@ impl MockRegistry {
 
         let pkgs = packages.lock().unwrap();
         if let Some(entries) = pkgs.get(&pkg_name) {
-            let body = serde_json::json!({ "versions": entries });
+            let body = serde_json::json!({ "metadata": { "name": pkg_name }, "versions": entries });
             RouteResult::Json {
                 status: 200,
                 body: body.to_string(),
@@ -334,7 +334,7 @@ impl MockRegistry {
         for param in query_str.split('&') {
             if let Some((key, val)) = param.split_once('=') {
                 match key {
-                    "q" => q = val.to_string(),
+                    "q" => q = percent_decode(val),
                     "page" => page = val.parse().unwrap_or(1),
                     "per_page" => per_page = val.parse().unwrap_or(20),
                     _ => {}
@@ -442,10 +442,71 @@ impl Drop for MockRegistry {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+#[test]
+fn deprecation_requests_preserve_status_and_encode_successor() {
+    for (mode, package, successor) in [
+        (
+            hew_pkg::config::WireNames::Dotted,
+            "alice.router",
+            "alice.next",
+        ),
+        (
+            hew_pkg::config::WireNames::Slash,
+            "alice/router",
+            "alice/next",
+        ),
+    ] {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let api = format!("http://{}/api/v1", server.server_addr());
+        let handle = thread::spawn(move || {
+            let mut observed = Vec::new();
+            for _ in 0..2 {
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .expect("deprecation request");
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                observed.push((
+                    request.method().as_str().to_string(),
+                    request.url().to_string(),
+                    serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                ));
+                request
+                    .respond(tiny_http::Response::from_string("{}"))
+                    .unwrap();
+            }
+            observed
+        });
+        let client = RegistryClient::with_url(api)
+            .with_wire_names(mode)
+            .with_token("local-fixture".to_string());
+        client
+            .deprecate("alice.router", Some("use next"), Some("alice.next"))
+            .unwrap();
+        client
+            .set_deprecation("alice.router", false, None, None)
+            .unwrap();
+        let requests = handle.join().unwrap();
+        assert_eq!(requests[0].0, "PATCH");
+        assert_eq!(
+            requests[0].1,
+            format!("/api/v1/packages/{package}/deprecate")
+        );
+        assert_eq!(
+            requests[0].2,
+            serde_json::json!({"deprecated":true,"message":"use next","successor":successor})
+        );
+        assert_eq!(requests[1].1, requests[0].1);
+        assert_eq!(requests[1].2, serde_json::json!({"deprecated":false}));
+    }
+}
+
 /// Create a sample `IndexEntry` for testing.
 fn sample_entry(name: &str, vers: &str) -> IndexEntry {
     IndexEntry {
         name: name.to_string(),
+        registry_name: None,
         vers: vers.to_string(),
         deps: vec![],
         features: std::collections::BTreeMap::new(),

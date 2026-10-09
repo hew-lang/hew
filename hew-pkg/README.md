@@ -146,6 +146,50 @@ license = "MIT"
 path = "~/.hew/packages"
 ```
 
+Authored package names, dependencies, cache entries and lockfiles use dotted
+names such as `hew.math.stats`. The official registry uses slash-separated
+names on the wire; Hew translates at that boundary without changing package
+archives or signatures over their checksums.
+
+Custom APIs keep dotted wire names by default. To use a custom API implementing
+the official slash protocol, configure its named registry:
+
+```toml
+[registries.internal]
+index = "https://git.example.com/hew-index"
+api = "https://packages.example.com/api/v1"
+wire-names = "slash"
+```
+
+Select it with `hew info hew.math.stats -r internal` or add a dependency with
+`hew add hew.math.stats -r internal`. `wire-names = "dotted"` explicitly selects
+the custom default. Under `[registry]`, `wire-names` selects the encoding for
+the default API, including an API selected by `HEW_REGISTRY`.
+
+Online installs through a custom `HEW_REGISTRY` currently fail because the
+resolver retains the official default source identity; configure and select a
+named registry for custom installs.
+
+The built-in CDN and mirror belong only to the official primary API. A custom
+default API uses an explicitly configured mirror, with an independent encoding:
+
+```toml
+[registry]
+wire-names = "slash"
+fallback-api = "https://mirror.example.com/api/v1"
+fallback-wire-names = "slash"
+```
+
+The same `fallback-api` and `fallback-wire-names` settings under
+`[registries.internal]` configure that named source's mirror. Named sources do
+not inherit the default registry's fallback.
+
+The mirror serves metadata below its API base and archives at its origin under
+`/packages/{wire-name}/{version}.tar.zst`. Network errors and server errors may
+use the mirror; HTTP 404 and other client errors remain authoritative. Supplied
+publisher and registry signatures must verify even when archive bytes are
+already cached. Git-index file paths remain unchanged.
+
 ## Version Requirements
 
 The resolver supports semver version requirements:

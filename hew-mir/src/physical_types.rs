@@ -1369,10 +1369,15 @@ pub struct PhysicalDebugFunction {
     pub end: u32,
     /// Named source locals by the storage that realizes them.
     pub locals: BTreeMap<StorageId, PhysicalDebugLocal>,
+    /// Frame-backed source storage initialized on every incoming path.
+    pub available: PhysicalDebugAvailability,
     /// Source byte of each physical op, by block and index within the block.
     /// Sparse: an op lowered from a synthesized operation has no source point.
     pub sites: BTreeMap<(BlockId, u32), u32>,
 }
+
+/// Frame-backed source storage certified initialized at each reachable block's entry.
+pub type PhysicalDebugAvailability = BTreeMap<BlockId, BTreeSet<StorageId>>;
 
 /// One source binding and the storage that realizes it.
 #[derive(Debug, Clone, PartialEq, Eq)]

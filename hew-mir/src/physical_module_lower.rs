@@ -299,7 +299,11 @@ pub fn lower_physical_module(
     for (function, retained) in physical.functions.iter_mut().zip(retained) {
         function.frame_storage = retained;
     }
-    verify_physical_module(&physical)?;
+    for (callable, available) in verify_physical_module(&physical)? {
+        if let Some(debug) = physical.debug.functions.get_mut(&callable) {
+            debug.available = available;
+        }
+    }
     Ok(VerifiedPhysicalModule(physical))
 }
 
@@ -1299,6 +1303,7 @@ pub(crate) fn function_attribution(
         decl: u32::try_from(function.span.start).unwrap_or(u32::MAX),
         end: u32::try_from(function.span.end).unwrap_or(u32::MAX),
         locals,
+        available: BTreeMap::new(),
         sites,
     })
 }

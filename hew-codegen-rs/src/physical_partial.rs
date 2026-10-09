@@ -320,7 +320,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let Some(projection) = self.function.place_storage.get(&source) else {
             return Ok(false);
         };
+        self.debug_unavailable(source);
         for leaf in projection.leaves.iter().rev() {
+            self.debug_unavailable(leaf.storage);
             let held = contents(leaf.storage)?;
             // An absent leaf holds nothing and its bit already reads false on
             // every path that arrives here.
@@ -345,6 +347,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             };
             self.set_place_initialized(leaf.storage, false)?;
             let value = self.load(leaf.storage, "aggregate.drop.value")?;
+            self.debug_unavailable(leaf.storage);
             self.release_loaded(value, &self.storage(leaf.storage)?.layout, action)?;
             if let Some(next) = next {
                 self.builder

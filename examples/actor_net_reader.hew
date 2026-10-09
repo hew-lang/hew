@@ -56,7 +56,7 @@ fn main() {
     println(f"[reader] listening on {addr}");
     var next_id: i32 = 1;
     loop {
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         let (input, sink) = conn.split();
         let reader = spawn ServerReader(input: input, sink: sink, name: f"peer-{next_id}");
         fork reader.start();

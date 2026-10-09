@@ -179,13 +179,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
-            RuntimeCallFamily::SinkFinish => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::SinkFinish,
-                    transfers,
-                    result,
-                )?;
-            }
+
             RuntimeCallFamily::StreamForward => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamForward,
@@ -548,8 +542,51 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     llvm_type(self.ctx, &error_layout.object.repr)?,
                     "node.error",
                 )?;
+                let config_failure = self.ctx.append_basic_block(self.value, "node.error.config");
+                let error_complete = self
+                    .ctx
+                    .append_basic_block(self.value, "node.error.complete");
+                let mut cases = Vec::new();
+                for (failure, variant, name) in [
+                    (hew_cabi::node::NodeFailure::Key, 1, "node.error.key"),
+                    (
+                        hew_cabi::node::NodeFailure::Unreachable,
+                        2,
+                        "node.error.unreachable",
+                    ),
+                    (
+                        hew_cabi::node::NodeFailure::Refused,
+                        3,
+                        "node.error.refused",
+                    ),
+                ] {
+                    let block = self.ctx.append_basic_block(self.value, name);
+                    cases.push((
+                        status_ty.const_int(u64::from((failure as i32).cast_unsigned()), true),
+                        block,
+                    ));
+                    self.builder.position_at_end(block);
+                    self.value_emitter().write_variant_value(
+                        error_storage,
+                        variant,
+                        &[],
+                        error_glue,
+                    )?;
+                    self.builder
+                        .build_unconditional_branch(error_complete)
+                        .llvm_ctx("finish node error variant")?;
+                }
+                self.builder.position_at_end(failure_block);
+                self.builder
+                    .build_switch(status, config_failure, &cases)
+                    .llvm_ctx("classify node lifecycle failure")?;
+                self.builder.position_at_end(config_failure);
                 self.value_emitter()
                     .write_variant_value(error_storage, 0, &[], error_glue)?;
+                self.builder
+                    .build_unconditional_branch(error_complete)
+                    .llvm_ctx("finish node config error")?;
+                self.builder.position_at_end(error_complete);
                 let error_value = self
                     .builder
                     .build_load(

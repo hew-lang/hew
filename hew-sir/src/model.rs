@@ -604,7 +604,6 @@ pub enum RuntimeVariantRole {
     SendErrorLocalShutdown,
     SendErrorCancelled,
     SendErrorVersionMismatch,
-    SendErrorUnauthorized,
     SendErrorBackpressure,
     SendErrorDead,
     SendErrorWriteTimedOut,

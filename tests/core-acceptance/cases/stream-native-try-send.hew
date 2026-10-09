@@ -1,0 +1,171 @@
+import std.io;
+
+import std.net;
+
+import std.os;
+
+import std.process;
+
+import std.stream;
+
+fn read_peer(consume connection: net.Connection, with_last: bool) {
+    sleep(1s);
+    let (input, output) = connection.split();
+    output.close();
+    var received = bytes.new();
+    for chunk in input {
+        received.append(chunk);
+    }
+    assert(received.len() == 8 * 1024 * 1024 + if with_last {
+        4
+    } else {
+        0
+    });
+    if with_last {
+        assert(received[received.len() - 4] == 108);
+    }
+}
+
+fn socket_try_send() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
+    let peer = listener.accept().expect("accept");
+    let (input, output) = connection.split();
+    input.close();
+    scope {
+        let reading = fork read_peer(peer, true);
+        output.try_send("a".repeat(8 * 1024 * 1024).to_bytes()).expect("partial socket item accepted");
+        match output.try_send("must not arrive".to_bytes()) {
+            .Err(SendError.Full) => {}
+            _ => panic("pending socket bytes must keep the next item out"),
+        }
+        output.send("last".to_bytes()).expect("ordered socket send");
+        output.finish();
+        await reading;
+    };
+    listener.close();
+}
+
+fn send_then_release(consume output: stream.Sink<bytes>, mode: i64) {
+    output.try_send("a".repeat(8 * 1024 * 1024).to_bytes()).expect("partial item accepted");
+    if mode == 1 {
+        output.finish();
+    }
+    if mode == 2 {
+        output.close();
+    }
+}
+
+fn socket_finish(mode: i64) {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
+    let peer = listener.accept().expect("accept");
+    let (input, output) = connection.split();
+    input.close();
+    scope {
+        let reading = fork read_peer(peer, false);
+        send_then_release(output, mode);
+        await reading;
+    };
+    listener.close();
+}
+
+fn cancelled_writer(consume connection: net.Connection, during_finish: bool) -> string {
+    scope within 50ms {
+        let (input, output) = connection.split();
+        input.close();
+        output.try_send("a".repeat(8 * 1024 * 1024).to_bytes()).expect("partial item accepted");
+        if !during_finish {
+            sleep(1s);
+        }
+        output.finish();
+        "unexpected completion"
+    } handle failure {
+        match failure {
+            .Deadline { message } => "cancelled",
+            .Fault { message } => panic(message),
+        }
+    }
+}
+
+fn socket_cancellation(during_finish: bool) {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
+    let peer = listener.accept().expect("accept");
+    assert(cancelled_writer(connection, during_finish) == "cancelled");
+    let (input, output) = peer.split();
+    output.close();
+    var received = 0;
+    for chunk in input {
+        received += chunk.len();
+    }
+    assert(received > 0 && received < 8 * 1024 * 1024);
+    listener.close();
+}
+
+fn pipe_cancellation(program: string) {
+    var command = process.command(program, ["silent"]);
+    command.stdin = process.Stdio.Piped;
+    command.stdout = process.Stdio.Piped;
+    let child = process.start(command).expect("silent child starts");
+    let output = child.stdout().expect("piped stdout").lines();
+    assert(output.recv().expect("ready") == "ready");
+    let outcome = scope within 50ms {
+        let input = child.stdin().expect("piped stdin");
+        input.try_send("a".repeat(8 * 1024 * 1024).to_bytes()).expect("partial pipe item accepted");
+        input.finish();
+        "unexpected completion"
+    } handle failure {
+        match failure {
+            .Deadline { message } => "cancelled",
+            .Fault { message } => panic(message),
+        }
+    };
+    assert(outcome == "cancelled");
+    assert(child.try_wait().expect("poll silent child").is_none());
+    child.kill().expect("stop silent child");
+    child.wait().expect("reap silent child");
+}
+
+fn main() {
+    let arguments = os.args();
+    if arguments.len() > 1 && arguments[1] == "silent" {
+        println("ready");
+        sleep(3s);
+        return;
+    }
+    if arguments.len() > 1 {
+        println("ready");
+        sleep(1s);
+        let received = io.read_all();
+        assert(received.len() == 8 * 1024 * 1024 + 4);
+        assert(received.ends_with("last"));
+        println("retained item then last");
+        return;
+    }
+    var command = process.command(arguments[0], ["child"]);
+    command.stdin = process.Stdio.Piped;
+    command.stdout = process.Stdio.Piped;
+    let child = process.start(command).expect("child starts");
+    let input = child.stdin().expect("piped stdin");
+    let output = child.stdout().expect("piped stdout").lines();
+    assert(output.recv().expect("ready") == "ready");
+    input.try_send("a".repeat(8 * 1024 * 1024).to_bytes()).expect("partial item accepted");
+    match input.try_send("must not arrive".to_bytes()) {
+        .Err(SendError.Full) => {}
+        _ => panic("pending bytes must keep the next item out"),
+    }
+    input.send("last".to_bytes()).expect("ordered send");
+    input.finish();
+    assert(output.recv().expect("result") == "retained item then last");
+    assert(child.wait().expect("wait") == process.ExitStatus.Exited(0));
+    pipe_cancellation(arguments[0]);
+    socket_try_send();
+    for mode in 0..3 {
+        socket_finish(mode);
+    }
+    socket_cancellation(false);
+    socket_cancellation(true);
+    socket_finish(0);
+    println("nonblocking pipe and socket sends retain item order");
+}

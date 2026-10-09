@@ -1,0 +1,11 @@
+[[case]]
+id = "listener-accept-shutdown-refusal"
+intent = "A held listener reports NetError.Cancelled when shutdown closes new accept admission, instead of fabricating an invalid connection."
+source = "cases/listener-accept-shutdown-refusal.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "accept admission cancelled\n"
+stderr = ""
+exit = 0

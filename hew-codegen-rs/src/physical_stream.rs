@@ -505,13 +505,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let at_capacity = self
             .ctx
             .append_basic_block(self.value, "stream.try_send.full");
+        let write_failed = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_send.failed");
         self.builder
             .build_switch(
                 status,
-                at_capacity,
+                write_failed,
                 &[
                     (self.ctx.i32_type().const_zero(), accepted),
                     (self.ctx.i32_type().const_int(1, false), peer_closed),
+                    (self.ctx.i32_type().const_int(2, false), at_capacity),
                 ],
             )
             .llvm_ctx("dispatch non-parking stream send outcome")?;
@@ -520,7 +524,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(peer_closed);
         self.emit_edge(closed)?;
         self.builder.position_at_end(at_capacity);
-        self.emit_edge(full)
+        self.emit_edge(full)?;
+        self.builder.position_at_end(write_failed);
+        let fault = coro::external(
+            self.llvm,
+            "hew_stream_take_error_fault",
+            pointer.fn_type(&[], false),
+        )?;
+        let fault = suspend::call_value(&self.builder, fault, &[], "stream.write.fault")?;
+        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(unwind)
     }
 
     pub(super) fn emit_stream_send(&self, block: &PhysicalBlock) -> CodegenResult<()> {

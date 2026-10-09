@@ -42,6 +42,9 @@ pub struct HewNativeStream {
     #[cfg(not(target_arch = "wasm32"))]
     yields: ReadYield,
     envelope: Option<Vec<u8>>,
+    read_stream: Option<*mut HewStream>,
+    #[cfg(not(target_arch = "wasm32"))]
+    write_prefix: usize,
 }
 
 /// The item a reactor read produces, fixed when the read starts.
@@ -148,35 +151,40 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
     #[cfg(not(target_arch = "wasm32"))]
     let mut yields = ReadYield::Content;
     // SAFETY: stream is a live exclusive loan.
-    let backing = match unsafe { (*stream).channel.clone() } {
-        Some(core) => Backing::Pipe(core),
-        #[cfg(not(target_arch = "wasm32"))]
-        None => Backing::Io(unsafe {
-            // SAFETY: the exclusive stream loan remains live during inspection;
-            // generated cleanup retains it through producer quiescence.
-            match (*stream).native_read() {
-                Some(NativeRead::Content(handle)) => {
-                    content_layout(&layout);
-                    async_io::hew_async_tcp_read(handle, waker)
+    let backing = if unsafe { (*stream).exhausted() } {
+        Backing::Finished
+    } else {
+        // SAFETY: the exclusive source loan is live until this request drains.
+        match unsafe { (*stream).channel.clone() } {
+            Some(core) => Backing::Pipe(core),
+            #[cfg(not(target_arch = "wasm32"))]
+            None => Backing::Io(unsafe {
+                // SAFETY: the exclusive stream loan remains live during inspection;
+                // generated cleanup retains it through producer quiescence.
+                match (*stream).native_read() {
+                    Some(NativeRead::Content(handle)) => {
+                        content_layout(&layout);
+                        async_io::hew_async_tcp_read(handle, waker)
+                    }
+                    Some(NativeRead::Accept(listener)) => {
+                        connection_layout(&layout);
+                        yields = ReadYield::Connection;
+                        async_io::hew_async_tcp_accept(listener, waker)
+                    }
+                    Some(NativeRead::Readiness(handle)) => {
+                        unit_layout(&layout);
+                        yields = ReadYield::Readiness;
+                        async_io::start_tcp_readable(handle, waker)
+                    }
+                    None => {
+                        content_layout(&layout);
+                        async_io::start_stream_read(stream, waker)
+                    }
                 }
-                Some(NativeRead::Accept(listener)) => {
-                    connection_layout(&layout);
-                    yields = ReadYield::Connection;
-                    async_io::hew_async_tcp_accept(listener, waker)
-                }
-                Some(NativeRead::Readiness(handle)) => {
-                    unit_layout(&layout);
-                    yields = ReadYield::Readiness;
-                    async_io::start_tcp_readable(handle, waker)
-                }
-                None => {
-                    content_layout(&layout);
-                    async_io::start_stream_read(stream, waker)
-                }
-            }
-        }),
-        #[cfg(target_arch = "wasm32")]
-        None => reactor_backing_unreachable("read"),
+            }),
+            #[cfg(target_arch = "wasm32")]
+            None => reactor_backing_unreachable("read"),
+        }
     };
     Box::into_raw(Box::new(HewNativeStream {
         layout,
@@ -186,6 +194,9 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
         #[cfg(not(target_arch = "wasm32"))]
         yields,
         envelope: None,
+        read_stream: Some(stream),
+        #[cfg(not(target_arch = "wasm32"))]
+        write_prefix: 0,
     }))
 }
 
@@ -218,6 +229,9 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
             #[cfg(not(target_arch = "wasm32"))]
             yields: ReadYield::Content,
             envelope: Some(envelope),
+            read_stream: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            write_prefix: 0,
         }));
     }
     // SAFETY: sink is a live exclusive loan.
@@ -230,6 +244,8 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
         // SAFETY: the increment above creates this operation's independent owner.
         Some(unsafe { Arc::from_raw(raw) })
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut write_prefix = 0;
     let (backing, envelope) = match core {
         Some(core) => {
             core.stamp_elem_layout(&layout);
@@ -241,7 +257,11 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
             // SAFETY: the exclusive sink loan remains live during inspection.
             let io = if let Some(connection) = unsafe { (*sink).native_connection() } {
                 // SAFETY: generated cleanup retains the transport loan through quiescence.
-                unsafe { async_io::start_tcp_stream_write(connection, envelope, waker) }
+                let mut bytes = unsafe { (*sink).take_pending() };
+                write_prefix = bytes.len();
+                bytes.extend_from_slice(&envelope);
+                // SAFETY: the caller retains the sink loan and borrowed waker.
+                unsafe { async_io::start_tcp_stream_write(connection, bytes, waker) }
             } else {
                 // SAFETY: generated cleanup retains sink through producer quiescence.
                 unsafe { async_io::start_sink_write(sink, envelope, waker) }
@@ -259,6 +279,9 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
         #[cfg(not(target_arch = "wasm32"))]
         yields: ReadYield::Content,
         envelope,
+        read_stream: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        write_prefix,
     }))
 }
 
@@ -285,6 +308,10 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
         Backing::Finished => (2, None),
     };
     if status == 1 {
+        if let Some(stream) = operation.read_stream.take() {
+            // SAFETY: the operation holds its source loan through cleanup.
+            unsafe { (*stream).received() };
+        }
         operation.envelope = item;
     }
     status
@@ -381,7 +408,8 @@ pub unsafe extern "C" fn hew_stream_write_committed_native(operation: *mut HewNa
         #[cfg(not(target_arch = "wasm32"))]
         // SAFETY: the operation owns this live async request.
         Backing::Io(io) => match unsafe { async_io::write_failure(*io) } {
-            async_io::WriteFailure::TimedOut(committed) => committed,
+            async_io::WriteFailure::TimedOut(committed) => committed
+                .saturating_sub(i64::try_from((*operation).write_prefix).unwrap_or(i64::MAX)),
             _ => 0,
         },
         _ => 0,

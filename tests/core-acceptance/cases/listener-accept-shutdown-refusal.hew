@@ -1,0 +1,28 @@
+import std.net;
+
+import std.stream;
+
+actor Acceptor {
+    let ready: stream.Sink<i64>;
+    receive fn run() {
+        let listener = net.listen("127.0.0.1:0").expect("listen");
+        ready.send(listener.local_port()).expect("ready");
+        sleep(100ms);
+        match listener.accept() {
+            .Err(net.NetError.Cancelled(_)) => println("accept admission cancelled"),
+            .Err(other) => panic(f"wrong refusal {other}"),
+            .Ok(connection) => {
+                connection.close();
+                panic("admission unexpectedly accepted");
+            }
+        }
+        listener.close();
+    }
+}
+
+fn main() {
+    let (ready, entered): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let acceptor = spawn Acceptor(ready: ready);
+    mailbox(acceptor, on_full: .Wait).run().expect("start");
+    entered.recv().expect("listener bound");
+}

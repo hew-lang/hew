@@ -1615,8 +1615,7 @@ impl FunctionLowerer<'_> {
             let config_ty = &self.storage[self.value(config.operand.value)?.0 as usize].ty;
             let expected_fields = vec![
                 ResolvedTy::String,
-                ResolvedTy::String,
-                ResolvedTy::String,
+                ResolvedTy::named_path(&self.module.defs, "std.builtins.NodeTransport", vec![]),
                 ResolvedTy::String,
                 ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::String]),
                 ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::String]),
@@ -1635,7 +1634,7 @@ impl FunctionLowerer<'_> {
                     == expected_fields
             }) {
                 return Err(PhysicalError::new(
-                    "Node::start requires NodeConfig ABI fields bind, transport, key, trust, peers, seeds in source order",
+                    "Node::start requires NodeConfig ABI fields bind, transport, key, peers, seeds in source order",
                 ));
             }
         }

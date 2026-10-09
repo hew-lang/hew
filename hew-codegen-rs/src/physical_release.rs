@@ -739,14 +739,7 @@ fn body<'ctx>(
                 false,
                 None,
             ),
-            hew_mir::physical::ResourceRelease::Sink => cursor(
-                values,
-                frame,
-                source,
-                "hew_sink_release_begin",
-                false,
-                Some(frame.state.into()),
-            ),
+            hew_mir::physical::ResourceRelease::Sink => release_sink(values, frame, source),
             _ => Err(CodegenError::FailClosed(
                 "synchronous resource selected for consuming continuation".into(),
             )),
@@ -875,6 +868,67 @@ fn body<'ctx>(
             "plain release selected for continuation".into(),
         )),
     }
+}
+
+fn release_sink<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+    source: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let owner = values
+        .builder
+        .build_load(pointer, source, "sink.release.owner")
+        .llvm_ctx("take sink owner for release")?
+        .into_pointer_value();
+    let begin = coro::external(
+        values.llvm,
+        "hew_sink_release_begin",
+        pointer.fn_type(&[pointer.into(); 2], false),
+    )?;
+    let cursor = suspend::call_value(
+        values.builder,
+        begin,
+        &[owner.into(), frame.state.into()],
+        "sink.release.cursor",
+    )?
+    .into_pointer_value();
+    let waker = coro::external(
+        values.llvm,
+        "hew_coro_state_waker",
+        pointer.fn_type(&[pointer.into()], false),
+    )?;
+    let waker = suspend::call_value(
+        values.builder,
+        waker,
+        &[frame.state.into()],
+        "sink.release.waker",
+    )?;
+    let finish = coro::external(
+        values.llvm,
+        "hew_async_sink_finish",
+        pointer.fn_type(&[pointer.into(); 2], false),
+    )?;
+    let request = suspend::call_value(
+        values.builder,
+        finish,
+        &[owner.into(), waker.into()],
+        "sink.release.finish",
+    )?
+    .into_pointer_value();
+    drain_operation(
+        values,
+        frame,
+        request,
+        "hew_sink_finish_cleanup_poll",
+        "hew_sink_finish_cleanup_fault",
+    )?;
+    let free = external_drop(values.ctx, values.llvm, "hew_async_io_free")?;
+    values
+        .builder
+        .build_call(free, &[request.into()], "")
+        .llvm_ctx("free sink finish request")?;
+    drain_cursor_inline(values, frame, cursor)
 }
 
 fn drain_operation<'ctx>(

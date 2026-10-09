@@ -91,7 +91,6 @@ export type RuntimeVariantRole =
   | "SendErrorLocalShutdown"
   | "SendErrorCancelled"
   | "SendErrorVersionMismatch"
-  | "SendErrorUnauthorized"
   | "SendErrorBackpressure"
   | "SendErrorDead"
   | "SendErrorWriteTimedOut"

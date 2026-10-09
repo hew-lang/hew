@@ -357,7 +357,7 @@ fn main() {{
     scope {{
         let _client_turn = fork client.connect_send_and_read(0);
 
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         let request = match conn.recv() {{ .Some(data) => utf8.decode(data).expect("server read is valid UTF-8"), .None => panic("server read hit end of data"), }};
         println(f"server-read={{request}}");
         conn.send("tcp-echo:hew-net-r319".to_bytes()).expect("send");
@@ -483,7 +483,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
 }
 
 fn main() {
-    let config = NodeConfig { bind: "127.0.0.1:0", transport: "quic-mesh", key: "node.key", trust: "pinned", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),
@@ -561,9 +561,8 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "",
-                trust: "pinned",
                 peers: ["zznothexzz"],
                 seeds: [],
             };
@@ -612,9 +611,8 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "node.key",
-                trust: "pinned",
                 peers: [],
                 seeds: [],
             };
@@ -658,9 +656,8 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "no_such_dir/node.key",
-                trust: "pinned",
                 peers: [],
                 seeds: [],
             };

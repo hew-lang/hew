@@ -12,7 +12,7 @@ impl ActorMsg for Worker {
 }
 
 fn main() -> i64 {
-    let started = Node.start(NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: f"{os.temp_dir()}/hew-node-lookup-location-{os.pid()}.key", trust: "pinned", peers: Vec.new(), seeds: Vec.new() });
+    let started = Node.start(NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-node-lookup-location-{os.pid()}.key", peers: Vec.new(), seeds: Vec.new() });
     match started {
         .Ok(_) => {}
         .Err(_) => return 1,

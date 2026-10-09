@@ -20,7 +20,7 @@ fn send_within(conn: net.Connection, payload: bytes) -> string {
 fn main() {
     let listener = net.listen("127.0.0.1:0").expect("listen");
     let conn = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
-    let peer = listener.accept();
+    let peer = listener.accept().expect("accept");
     // Larger than the loopback send and receive buffers on every platform.
     let payload = "0123456789abcdef".repeat(1024 * 1024).to_bytes();
     println(send_within(conn, payload));

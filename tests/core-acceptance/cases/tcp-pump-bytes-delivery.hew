@@ -49,20 +49,20 @@ fn main() -> i64 {
         .Err(_) => panic("network setup failed"),
     };
     let addr = f"127.0.0.1:{listener.local_port()}";
-    for _ in 0 .. deliveries {
+    for _ in 0..deliveries {
         // The kernel completes the handshake before `accept` takes it.
         let client = match net.connect(addr) {
             .Ok(value) => value,
             .Err(_) => panic("connect failed"),
         };
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         let sink = spawn ProbeSink(ready: ready);
         let pump = spawn Pump(conn: conn, sink: sink);
         mailbox(pump, on_full: .Wait).run().expect("start pump");
         client.send(b"active-mode-delivery").expect("send");
         client.close();
     }
-    for _ in 0 .. deliveries {
+    for _ in 0..deliveries {
         ready_rx.recv();
     }
     println("DONE");

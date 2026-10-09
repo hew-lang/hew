@@ -6884,14 +6884,17 @@ does not by itself establish final-core source support or execution parity.
 in the type system:
 
 - `Node.start(config: NodeConfig) -> Result<(), NodeError>` is the only start.
-  `NodeConfig { bind: string, transport: string, key: string, trust: string,
+  `NodeConfig { bind: string, transport: NodeTransport, key: string,
   peers: Vec<string>, seeds: Vec<string> }` is a prelude record, and
   `NodeConfig.at(addr)` fills the defaults around a bind address. No field is
   inert: `Node.start` pins every `peers` entry — the slot a peer occupies is
   its one-based position in that vector, so slot `0` stays reserved for local
   dispatch — dials every `seeds` entry once while skipping its
-  own bind address, and admits `trust = "pinned"` only, answering
-  `Err(NodeError.Config)` for anything else.
+  own bind address. `NodeTransport` is `Tcp | QuicMesh`; both require
+  authenticated, pinned peers. There is no trust-mode field. `NodeError.Config`
+  reports invalid configuration, `Key` an invalid identity or peer key,
+  `Unreachable` a failed dial, and `Refused` denied admission or an unavailable
+  node or transport.
 - `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` do not exist.
   Each carried one fact that is a field of `NodeConfig`, and a setup sequence
   whose steps can be reordered or skipped is a second configuration authority.

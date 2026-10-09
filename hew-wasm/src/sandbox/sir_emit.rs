@@ -121,7 +121,6 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::SendErrorLocalShutdown => "SendErrorLocalShutdown",
         Role::SendErrorCancelled => "SendErrorCancelled",
         Role::SendErrorVersionMismatch => "SendErrorVersionMismatch",
-        Role::SendErrorUnauthorized => "SendErrorUnauthorized",
         Role::SendErrorBackpressure => "SendErrorBackpressure",
         Role::SendErrorDead => "SendErrorDead",
         Role::SendErrorWriteTimedOut => "SendErrorWriteTimedOut",

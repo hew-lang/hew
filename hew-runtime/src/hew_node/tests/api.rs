@@ -167,9 +167,8 @@ fn concurrent_start_config_keeps_transactions_atomic() {
                 barrier.wait();
                 let config = HewNodeConfig {
                     bind: hew_cabi::string::string_from_str("127.0.0.1:0"),
-                    transport: hew_cabi::string::string_from_str("tcp"),
+                    transport: 0,
                     key: hew_cabi::string::string_from_str(&key_path),
-                    trust: hew_cabi::string::string_from_str("pinned"),
                     // SAFETY: these freshly allocated string vectors are
                     // moved into the consuming NodeConfig call below.
                     peers: unsafe { crate::vec::hew_vec_new_str() },
@@ -200,7 +199,10 @@ fn concurrent_start_config_keeps_transactions_atomic() {
         "one complete NodeConfig transaction must own the public node: {results:?}"
     );
     assert_eq!(
-        results.iter().filter(|&&rc| rc == -1).count(),
+        results
+            .iter()
+            .filter(|&&rc| rc == hew_cabi::node::NodeFailure::Refused as i32)
+            .count(),
         1,
         "the competing complete configuration must fail closed: {results:?}"
     );

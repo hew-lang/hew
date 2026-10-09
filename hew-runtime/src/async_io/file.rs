@@ -13,6 +13,7 @@ use crate::wake::HewWaker;
 enum FileRequest {
     StreamRead(*mut crate::stream::HewStream),
     SinkWrite(*mut crate::stream::HewSink, Vec<u8>),
+    SinkFinish(*mut crate::stream::HewSink),
 }
 
 // SAFETY: a stream or sink submission lends its heap handle exclusively
@@ -34,7 +35,30 @@ impl FileRequest {
                     i64::try_from(data.len()).expect("stream item size"),
                 ))
             }
+            Self::SinkFinish(sink) => {
+                let _ = crate::stream_error::take_last_error();
+                // SAFETY: the producer retains the sink loan until quiescence.
+                unsafe { (*sink).close() };
+                match IoFailure::take_recorded() {
+                    Some(failure) => Err(failure),
+                    None => Ok(IoValue::Count(0)),
+                }
+            }
         }
+    }
+}
+
+pub(super) unsafe fn start_sink_finish(
+    sink: *mut crate::stream::HewSink,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the caller retains the exclusive sink loan and supplies the waker.
+    unsafe {
+        submit(
+            shared_blocking_pool_opt(),
+            waker,
+            Ok(FileRequest::SinkFinish(sink)),
+        )
     }
 }
 

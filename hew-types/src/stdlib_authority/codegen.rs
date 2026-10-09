@@ -43,22 +43,22 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "NodeError",
-        variant_count: 1,
-        order_fingerprint: 0xb89f_e6dc_5d57_7668,
+        variant_count: 4,
+        order_fingerprint: 0x71e5_1619_5fbd_0372,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "LookupError",
-        variant_count: 7,
-        order_fingerprint: 0x66e4_5f01_5f05_d553,
+        variant_count: 6,
+        order_fingerprint: 0x0ca9_2eb4_ecaa_e030,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "SendError",
-        variant_count: 11,
-        order_fingerprint: 0x6bb1_0898_daed_4845,
+        variant_count: 10,
+        order_fingerprint: 0x483d_054d_d429_288c,
         suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {

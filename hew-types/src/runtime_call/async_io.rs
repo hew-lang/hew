@@ -39,6 +39,7 @@ impl IoHandleKind {
 /// the ordinary source wrapper to run. Cancellation follows task cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncIoResume {
+    Unit,
     /// Transfer bytes on success; return empty bytes on ordinary I/O failure.
     Bytes,
     /// Return the successful byte count; return -1 on failure.
@@ -78,6 +79,7 @@ pub enum AsyncIoOp {
     TcpConnect,
     TcpConnectTimeout,
     StdinReadLine,
+    SinkFinish,
 }
 
 impl AsyncIoOp {
@@ -87,12 +89,15 @@ impl AsyncIoOp {
             Self::TcpConnect | Self::TcpConnectTimeout | Self::StdinReadLine => {
                 AsyncIoLoan::UntilSubmitReturns
             }
-            Self::TcpRead | Self::TcpWrite | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
+            Self::TcpRead | Self::TcpWrite | Self::TcpAccept | Self::SinkFinish => {
+                AsyncIoLoan::UntilQuiescent
+            }
         }
     }
     #[must_use]
     pub const fn c_symbol(self) -> &'static str {
         match self {
+            Self::SinkFinish => "hew_sink_finish",
             Self::TcpRead => "hew_tcp_read",
             Self::TcpWrite => "hew_tcp_write",
             Self::TcpAccept => "hew_tcp_accept",
@@ -107,6 +112,7 @@ impl AsyncIoOp {
     #[must_use]
     pub const fn submit_symbol(self) -> &'static str {
         match self {
+            Self::SinkFinish => "hew_async_sink_finish",
             Self::TcpRead => "hew_async_tcp_read",
             Self::TcpWrite => "hew_async_tcp_write",
             Self::TcpAccept => "hew_async_tcp_accept",
@@ -124,6 +130,7 @@ impl AsyncIoOp {
                 AsyncIoResume::Connection
             }
             Self::TcpWrite => AsyncIoResume::WriteCount,
+            Self::SinkFinish => AsyncIoResume::Unit,
         }
     }
 
@@ -159,6 +166,14 @@ impl AsyncIoOp {
         // I/O errors belong to the source wrapper's Result/error channel,
         // not the logical-fault set on RuntimeSemanticContract.
         match self {
+            Self::SinkFinish => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::PipeHalf(crate::runtime_call::PipeHalfKind::Sink),
+                    effect: RuntimeArgumentEffect::Borrow,
+                }],
+                RuntimeResultEffect::Unit,
+                &[],
+            ),
             Self::TcpRead => runtime_semantic_contract(&[CONNECTION], FreshOwned(Bytes), &[]),
             Self::StdinReadLine => runtime_semantic_contract(&[], FreshOwned(Bytes), &[]),
             Self::TcpConnect => runtime_semantic_contract(
@@ -208,6 +223,7 @@ impl RuntimeCallFamily {
             | AsyncIoOp::TcpConnect
             | AsyncIoOp::TcpConnectTimeout => "std.net",
             AsyncIoOp::StdinReadLine => "std.io",
+            AsyncIoOp::SinkFinish => "std.stream",
         };
         module == owner
             && symbol == op.c_symbol()

@@ -1,8 +1,11 @@
 // After a default termination request, main keeps waiting on the handles it
 // already holds, while new root work and actor calls are refused.
 import std.io;
+
 import std.net;
+
 import std.os;
+
 import std.process;
 
 actor Counter {
@@ -15,15 +18,13 @@ fn main() {
     let counter = spawn Counter();
     let listener = net.listen("127.0.0.1:0").expect("listen");
     let client = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
-    let conn = listener.accept();
+    let conn = listener.accept().expect("accept");
     let child = process.start(process.command("sh", ["-c", "sleep 0.2; exit 3"])).expect("start");
-
     let _ = process.run(f"kill -TERM {os.pid()}").expect("kill");
     while counter.bump().is_ok() {
         sleep(1ms);
     }
     println("call refused");
-
     client.send("late".to_bytes()).expect("send on an open connection");
     match conn.recv() {
         .Some(data) => println(f"recv {data.len()} bytes"),
@@ -43,7 +44,6 @@ fn main() {
         .Some(_) => println("stdin line"),
         .None => println("stdin end"),
     }
-
     match process.start(process.command("true", [])) {
         .Ok(_) => println("start admitted"),
         .Err(.LaunchFailed(_)) => println("start refused"),

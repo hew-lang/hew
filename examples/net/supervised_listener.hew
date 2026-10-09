@@ -56,7 +56,7 @@ actor Acceptor {
         let listener = net.listen(address).expect("listen");
         events.mark(f"port {listener.local_port()}").expect("record port");
         for index in 1..4 {
-            let conn = listener.accept();
+            let conn = listener.accept().expect("accept");
             if index <= 2 {
                 let session = spawn Session(conn: conn, events: events);
                 // Submitting `run` starts the session's pump in its own actor
@@ -71,7 +71,7 @@ actor Acceptor {
         // Main waits for this event before probing the scheduler and stopping
         // the supervisor, so this fourth accept is known to be waiting.
         events.mark("accepting").expect("record waiting accept");
-        let unexpected = listener.accept();
+        let unexpected = listener.accept().expect("accept");
         unexpected.close();
         panic("fourth connection unexpectedly arrived");
     }

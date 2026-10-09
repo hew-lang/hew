@@ -33,7 +33,7 @@ fn main() {
     };
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     let reading = fork reader.go(0);
-    let client = listener.accept();
+    let client = listener.accept().expect("accept");
     let _ = client.send("hello-from-server".to_bytes());
     let _ = client.close();
     // The reader reports before the server does.

@@ -1992,7 +1992,12 @@ class ExecutorV1 {
         return;
       }
       case "NativeIo": {
-        // Admission passed only `StdinReadLine`. The record is the raw line,
+        if (term.detail?.operation === "SinkFinish") {
+          this.host.pipes!.close(this.boundary(act, term.inputs[0]!));
+          this.park(act, term)(UNIT);
+          return;
+        }
+        // Admission passed `StdinReadLine`. The record is the raw line,
         // so the records concatenate to the stdin the program consumed.
         const line = this.stdin.readLine() ?? new Uint8Array();
         this.trace.recordReplayInput(
@@ -3791,8 +3796,6 @@ function sendErrorRole(reason: string): RuntimeVariantRole {
       return "SendErrorCancelled";
     case "VersionMismatch":
       return "SendErrorVersionMismatch";
-    case "Unauthorized":
-      return "SendErrorUnauthorized";
     case "Backpressure":
       return "SendErrorBackpressure";
     case "Dead":

@@ -80,7 +80,7 @@ fn socket_stream_within(input: Stream<bytes>, limit: duration) -> string {
 
 fn accept_within(listener: net.Listener, limit: duration) -> string {
     scope within limit {
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         conn.close();
         "accepted"
     } handle failure {
@@ -154,14 +154,12 @@ fn main() {
     println(f"helper accept: {accept_within(listener, 10s)}");
     let second = net.connect(f"127.0.0.1:{port}").expect("connect");
     let server = scope within 10s {
-        listener.accept()
-    } handle failure {
-        panic("the accept deadline expired")
-    };
+        listener.accept().expect("accept")
+    } handle failure { panic("the accept deadline expired") };
     println("main accept: accepted");
     println(f"helper accept: {accept_within(listener, 20ms)}");
     let idle_accept = scope within 20ms {
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         conn.close();
         "accepted"
     } handle failure {

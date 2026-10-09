@@ -25,7 +25,7 @@ actor Server {
         };
         // The client dials only after the listener is bound.
         ready.send(1).expect("ready");
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         var raw = "";
         var reads = 0;
         var done = false;

@@ -40,6 +40,14 @@ pub struct HewCoroState {
     status: AtomicI32,
     private_status: AtomicI32,
     cleanup_fault: std::sync::atomic::AtomicBool,
+    cleanup_abandon_io: std::sync::atomic::AtomicU8,
+}
+
+#[repr(u8)]
+enum CleanupIo {
+    Normal,
+    Abandon,
+    InheritedAbandon,
 }
 
 impl Drop for HewCoroState {
@@ -85,6 +93,7 @@ pub unsafe extern "C" fn hew_coro_state_new(
         status: AtomicI32::new(CoroStatus::Pending as i32),
         private_status: AtomicI32::new(1),
         cleanup_fault: std::sync::atomic::AtomicBool::new(false),
+        cleanup_abandon_io: std::sync::atomic::AtomicU8::new(CleanupIo::Normal as u8),
     }))
 }
 
@@ -147,6 +156,10 @@ pub unsafe extern "C" fn hew_coro_state_cleanup_child(
             parent.cleanup_fault.load(Ordering::Acquire),
             Ordering::Release,
         );
+        let abandon = cleanup_abandons_io(parent) || hew_coro_state_is_cancelled(parent) != 0;
+        if abandon {
+            abandon_cleanup_io(child);
+        }
     }
     child
 }
@@ -172,6 +185,16 @@ pub unsafe extern "C" fn hew_coro_state_set_cleanup_fault(
             )
         });
         state.cleanup_fault.store(failed, Ordering::Release);
+        if state.cleanup_abandon_io.load(Ordering::Acquire) != CleanupIo::InheritedAbandon as u8 {
+            state.cleanup_abandon_io.store(
+                if fault.is_null() {
+                    CleanupIo::Normal as u8
+                } else {
+                    CleanupIo::Abandon as u8
+                },
+                Ordering::Release,
+            );
+        }
     }
 }
 
@@ -180,6 +203,26 @@ pub(crate) unsafe fn cleanup_fault_owner(state: *const HewCoroState) -> Option<u
     let state = unsafe { state.as_ref() }?;
     let id = state.actor_turn.actor_id();
     (id != 0 && state.cleanup_fault.load(Ordering::Acquire)).then_some(id)
+}
+
+/// # Safety
+/// The optional cleanup invocation stays live while its disposition is set.
+pub(crate) unsafe fn abandon_cleanup_io(state: *const HewCoroState) {
+    // SAFETY: the caller retains the cleanup state for this invocation.
+    if let Some(state) = unsafe { state.as_ref() } {
+        state
+            .cleanup_abandon_io
+            .store(CleanupIo::InheritedAbandon as u8, Ordering::Release);
+    }
+}
+
+/// # Safety
+/// The optional cleanup invocation stays live during inspection.
+pub(crate) unsafe fn cleanup_abandons_io(state: *const HewCoroState) -> bool {
+    // SAFETY: the caller retains this optional invocation.
+    unsafe { state.as_ref() }.is_some_and(|state| {
+        state.cleanup_abandon_io.load(Ordering::Acquire) != CleanupIo::Normal as u8
+    })
 }
 
 /// Request cancellation of this invocation and its descendants.

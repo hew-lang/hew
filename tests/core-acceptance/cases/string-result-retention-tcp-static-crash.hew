@@ -21,7 +21,7 @@ actor Reader {
 }
 
 fn main() {
-    for _ in 0 .. 1 {
+    for _ in 0..1 {
         // An ephemeral port keeps concurrent runs from colliding.
         let listener = match net.listen("127.0.0.1:0") {
             .Ok(value) => value,
@@ -29,7 +29,7 @@ fn main() {
         };
         let reader = spawn Reader(addr: f"127.0.0.1:{listener.local_port()}");
         let result = reader.go(0);
-        let peer = listener.accept();
+        let peer = listener.accept().expect("accept");
         peer.close();
         listener.close();
         match result {

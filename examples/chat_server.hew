@@ -150,7 +150,7 @@ fn main() {
     let room = spawn ChatRoom(handlers: handlers, names: names);
     var next_id: i32 = 1;
     loop {
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         let name = f"client-{next_id}";
         let (input, sink) = conn.split();
         let handler = spawn ClientHandler(sink: sink, name: name.clone(), room: room, registered: true);

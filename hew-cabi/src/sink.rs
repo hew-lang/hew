@@ -130,6 +130,8 @@ pub enum TrySendResult {
     Closed = 1,
     /// The sink is open, but its bounded buffer has no capacity.
     Full = 2,
+    /// The write failed; the runtime error channel carries the diagnostic.
+    Failed = 3,
 }
 
 impl TrySendResult {
@@ -142,11 +144,12 @@ impl TrySendResult {
 
 trait SinkOps: Send {
     fn write_item(&mut self, data: &[u8]);
-    /// Non-blocking write attempt. The default delegates to `write_item`, which
-    /// blocks until the item is accepted.
-    fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
-        self.write_item(data);
-        TrySendResult::Accepted
+    fn try_write_item(&mut self, _data: &[u8]) -> TrySendResult {
+        set_last_error("this sink does not support nonblocking writes".into());
+        TrySendResult::Failed
+    }
+    fn take_pending(&mut self) -> Vec<u8> {
+        Vec::new()
     }
     fn flush(&mut self);
     fn close(&mut self);
@@ -169,6 +172,98 @@ impl<T: Send> SinkOps for CallbackSink<T> {
     }
 
     fn close(&mut self) {
+        (self.close)(&mut self.backing);
+    }
+}
+
+struct NonblockingSink<T> {
+    backing: T,
+    write: fn(&mut T, &[u8]) -> bool,
+    try_write: fn(&mut T, &[u8]) -> std::io::Result<usize>,
+    flush: fn(&mut T),
+    close: fn(&mut T),
+    pending: Vec<u8>,
+    offset: usize,
+}
+
+fn try_write_error(error: &std::io::Error) -> TrySendResult {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::WouldBlock | ErrorKind::Interrupted => TrySendResult::Full,
+        ErrorKind::BrokenPipe
+        | ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::NotConnected => TrySendResult::Closed,
+        _ => {
+            set_last_error_with_errno(
+                format!("sink try_send: {error}"),
+                error.raw_os_error().unwrap_or(0),
+            );
+            TrySendResult::Failed
+        }
+    }
+}
+
+impl<T: Send> NonblockingSink<T> {
+    fn drain_pending(&mut self) -> bool {
+        let success = self.pending.is_empty()
+            || (self.write)(&mut self.backing, &self.pending[self.offset..]);
+        self.pending.clear();
+        self.offset = 0;
+        success
+    }
+}
+
+impl<T: Send> SinkOps for NonblockingSink<T> {
+    fn write_item(&mut self, data: &[u8]) {
+        if self.drain_pending() {
+            (self.write)(&mut self.backing, data);
+        }
+    }
+
+    fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
+        if !self.pending.is_empty() {
+            match (self.try_write)(&mut self.backing, &self.pending[self.offset..]) {
+                Ok(count) => {
+                    self.offset += count;
+                    if self.offset < self.pending.len() {
+                        return TrySendResult::Full;
+                    }
+                    self.pending.clear();
+                    self.offset = 0;
+                }
+                Err(error) => return try_write_error(&error),
+            }
+        }
+        if data.is_empty() {
+            return TrySendResult::Accepted;
+        }
+        match (self.try_write)(&mut self.backing, data) {
+            Ok(0) => TrySendResult::Full,
+            Ok(count) => {
+                if count < data.len() {
+                    self.pending.extend_from_slice(&data[count..]);
+                }
+                TrySendResult::Accepted
+            }
+            Err(error) => try_write_error(&error),
+        }
+    }
+
+    fn take_pending(&mut self) -> Vec<u8> {
+        let pending = std::mem::take(&mut self.pending);
+        let offset = std::mem::take(&mut self.offset);
+        pending.into_iter().skip(offset).collect()
+    }
+
+    fn flush(&mut self) {
+        if self.drain_pending() {
+            (self.flush)(&mut self.backing);
+        }
+    }
+
+    fn close(&mut self) {
+        self.drain_pending();
         (self.close)(&mut self.backing);
     }
 }
@@ -206,6 +301,13 @@ impl HewSink {
         self.native_connection
     }
 
+    /// Transfer buffered bytes to the sink's exclusive native write operation.
+    pub fn take_pending(&mut self) -> Vec<u8> {
+        self.inner
+            .as_mut()
+            .map_or_else(Vec::new, |inner| inner.take_pending())
+    }
+
     /// Attach an opaque suspending-channel-core borrow (NEW-7). Called by the
     /// runtime pipe constructor after building the channel sink backing.
     pub fn set_channel_core(&mut self, core: *const std::ffi::c_void) {
@@ -241,10 +343,7 @@ impl HewSink {
     /// Attempt to write one item without blocking.
     ///
     /// Returns whether the item was accepted, the buffer was full, or the sink
-    /// was closed. For non-channel sinks the default behaviour is to block
-    /// (delegating to `write_item`) until the item is accepted — callers that
-    /// need genuine non-blocking semantics should create the sink with
-    /// [`into_channel_sink_ptr`].
+    /// was closed, or a write failed. Unsupported backings report failure.
     pub fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
         let Some(inner) = self.inner.as_mut() else {
             return TrySendResult::Closed;
@@ -296,6 +395,29 @@ pub fn into_sink_ptr<T: Send + 'static>(
             write_item,
             flush,
             close,
+        })),
+        channel_core: std::ptr::null(),
+        native_connection: None,
+    }))
+}
+
+/// Create a sink that retains an accepted item's unwritten bytes in order.
+pub fn into_nonblocking_sink_ptr<T: Send + 'static>(
+    backing: T,
+    write: fn(&mut T, &[u8]) -> bool,
+    try_write: fn(&mut T, &[u8]) -> std::io::Result<usize>,
+    flush: fn(&mut T),
+    close: fn(&mut T),
+) -> *mut HewSink {
+    Box::into_raw(Box::new(HewSink {
+        inner: Some(Box::new(NonblockingSink {
+            backing,
+            write,
+            try_write,
+            flush,
+            close,
+            pending: Vec::new(),
+            offset: 0,
         })),
         channel_core: std::ptr::null(),
         native_connection: None,

@@ -709,7 +709,6 @@ impl RuntimeCallFamily {
             | F::StreamPairSink
             | F::StreamPairStream
             | F::SinkClone
-            | F::SinkFinish
             | F::SinkClose
             | F::SinkPeerClosed
             | F::ActorGenSinkComplete

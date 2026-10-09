@@ -278,17 +278,10 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let inner = Self::stream_element_type(type_args);
-        // Gate 2: lowering-capability check. The element-layout witness
-        // carries every describable element type through the layout recv
-        // entries; only elements the witness provably cannot describe
-        // (containers, handles, closures) fail closed here. Emit a
-        // user-facing diagnostic rather than the ICE-flavoured "missing
-        // runtime rewrite metadata" from require_builtin_runtime_symbol.
         let resolved_inner = self.subst.resolve(&inner);
-        if !matches!(resolved_inner, Ty::Var(_)) && !self.queue_elem_admissible(&resolved_inner) {
-            let reason = self.queue_elem_rejection_reason(&resolved_inner);
+        if let Some((kind, reason)) = self.element_admission_refusal(&resolved_inner) {
             self.report_error(
-                TypeErrorKind::InvalidOperation,
+                kind,
                 span,
                 format!(
                     "`Stream<{}>` is not supported: {reason}",

@@ -11,7 +11,6 @@ fn send_error_id(err: SendError) -> i64 {
         SendError.LocalShutdown => 6,
         SendError.Cancelled => 7,
         SendError.VersionMismatch => 8,
-        SendError.Unauthorized => 9,
         SendError.Backpressure => 10,
         SendError.Dead => 11,
         SendError.WriteTimedOut(_) => 12,
@@ -26,7 +25,6 @@ fn lookup_error_id(err: LookupError) -> i64 {
         LookupError.Cancelled => 5,
         LookupError.LocalShutdown => 6,
         LookupError.VersionMismatch => 7,
-        LookupError.Unauthorized => 8,
     }
 }
 
@@ -68,7 +66,6 @@ fn test_send_error_taxonomy_variants() {
     assert(send_error_id(SendError.LocalShutdown) == 6);
     assert(send_error_id(SendError.Cancelled) == 7);
     assert(send_error_id(SendError.VersionMismatch) == 8);
-    assert(send_error_id(SendError.Unauthorized) == 9);
     assert(send_error_id(SendError.Backpressure) == 10);
     assert(send_error_id(SendError.Dead) == 11);
     assert(send_error_id(SendError.WriteTimedOut(5)) == 12);
@@ -82,7 +79,6 @@ fn test_lookup_error_taxonomy_variants() {
     assert(lookup_error_id(LookupError.Cancelled) == 5);
     assert(lookup_error_id(LookupError.LocalShutdown) == 6);
     assert(lookup_error_id(LookupError.VersionMismatch) == 7);
-    assert(lookup_error_id(LookupError.Unauthorized) == 8);
 }
 
 #[test]

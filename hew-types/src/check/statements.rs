@@ -2097,12 +2097,10 @@ impl Checker {
                         } else {
                             let inner = Self::stream_element_type(args);
                             let resolved = self.subst.resolve(&inner);
-                            if !matches!(resolved, Ty::Var(_))
-                                && !self.queue_elem_admissible(&resolved)
+                            if let Some((kind, reason)) = self.element_admission_refusal(&resolved)
                             {
-                                let reason = self.queue_elem_rejection_reason(&resolved);
                                 self.report_error(
-                                    TypeErrorKind::InvalidOperation,
+                                    kind,
                                     &iterable.1,
                                     format!(
                                         "`Stream<{}>` is not supported in a `for` loop: {reason}",

@@ -1,8 +1,7 @@
 //! Owned native I/O operations for suspendable Hew code.
 //!
-//! On wasm32 only standard input is compiled: WASI runs one thread, so its
-//! read completes at submission and the entries below see a finished
-//! operation. Files, sockets and deadlines need the reactor and stay native.
+//! On wasm32 standard input and in-memory sink finish complete at submission.
+//! Files, sockets and deadlines need native I/O facilities.
 //!
 //! A coroutine owns the returned reference and takes a result only on its
 //! resume edge. Pool producers own their inputs and one `Arc` until they
@@ -33,6 +32,8 @@ mod file;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
 mod offload;
+mod sink;
+pub use sink::hew_async_sink_finish;
 mod stdin;
 #[cfg(not(target_arch = "wasm32"))]
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
@@ -137,7 +138,7 @@ pub(crate) enum IoValue {
         target_arch = "wasm32",
         expect(
             dead_code,
-            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
+            reason = "wasm32 produces StdinLine and Count; native producers build this and the shared take entries name it"
         )
     )]
     Bytes(Vec<u8>),
@@ -145,17 +146,10 @@ pub(crate) enum IoValue {
         target_arch = "wasm32",
         expect(
             dead_code,
-            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
+            reason = "wasm32 produces StdinLine and Count; native producers build this and the shared take entries name it"
         )
     )]
     StreamItem(Option<Vec<u8>>),
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            dead_code,
-            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
-        )
-    )]
     Count(i64),
     #[cfg(not(target_arch = "wasm32"))]
     Connection(AcceptedConnection),
@@ -509,6 +503,15 @@ pub unsafe extern "C" fn hew_async_io_cleanup_status(
         }
     };
     drop(previous);
+    #[cfg(not(target_arch = "wasm32"))]
+    if ready == 1 && !operation.is_pending() {
+        if let Some(failure) = operation.net.as_ref().and_then(net::NetOp::finish_sink) {
+            let mut state = operation.state.lock_or_recover();
+            if matches!(*state, State::Ready(Ok(_))) {
+                *state = State::Ready(Err(failure));
+            }
+        }
+    }
     ready
 }
 

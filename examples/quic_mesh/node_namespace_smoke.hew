@@ -13,7 +13,7 @@
 // Run:
 //   hew run examples/quic_mesh/node_namespace_smoke.hew
 fn main() {
-    let config = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: "node-namespace-smoke.key", trust: "pinned", peers: [], seeds: [] };
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: "node-namespace-smoke.key", peers: [], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),

@@ -452,7 +452,11 @@ pub(super) fn scan_expr_for_call_shape(
         | HirExprKind::TryWidthCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
+        HirExprKind::TaskRace {
+            members: elements, ..
+        }
+        | HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 scan_expr_for_call_shape(elem, callable, diagnostics);
             }
@@ -508,8 +512,7 @@ pub(super) fn scan_expr_for_call_shape(
         HirExprKind::FieldAccess { object, .. } => {
             scan_expr_for_call_shape(object, callable, diagnostics);
         }
-        HirExprKind::Scope { body }
-        | HirExprKind::Race { body }
+        HirExprKind::Scope { body, .. }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::GenBlock { body, .. } => {
             scan_block_for_call_shape(body, callable, diagnostics);
@@ -518,7 +521,7 @@ pub(super) fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(scope, callable, diagnostics);
             scan_expr_for_call_shape(handler, callable, diagnostics);
         }
-        HirExprKind::ScopeDeadline { duration, body } => {
+        HirExprKind::ScopeDeadline { duration, body, .. } => {
             scan_expr_for_call_shape(duration, callable, diagnostics);
             scan_block_for_call_shape(body, callable, diagnostics);
         }

@@ -52,6 +52,7 @@ mod generics;
 mod items;
 mod lints;
 mod race;
+mod task_lifetimes;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod machine_effects;
 mod machine_normalize;
@@ -98,11 +99,11 @@ pub use self::types::{
     OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind,
     PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverObligation, ReceiverUpdate,
-    RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, StackHint, StructuralWitness,
-    TraitRef, TryConversionKind, TryWidthCastLowering, TypeAliasDef, TypeCheckOutput, TypeDef,
-    TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp,
-    WidthCastKind, WidthCastLowering,
+    PoolAccessor, PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation,
+    ReceiverUpdate, RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, StackHint,
+    StructuralWitness, TraitRef, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
+    TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
+    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -2708,6 +2709,8 @@ impl Checker {
             dyn_trait_method_calls: self.dyn_trait_method_calls.clone(),
             closure_capture_facts: self.closure_capture_facts.clone(),
             select_sources: self.select_sources.clone(),
+            race_operands: self.race_operands.clone(),
+            task_lifetimes: self.task_lifetimes.clone(),
             closure_escape_facts: self.closure_escape_facts.clone(),
             actor_init_params: self.actor_init_params.clone(),
             actor_spawn_args: self.actor_spawn_args.clone(),
@@ -3271,6 +3274,9 @@ impl Checker {
         self.report_completion_call_cycles();
         let checked_impl_body_callees = self.checked_impl_body_callees();
         let suspension_effects = self.finish_suspension_effects();
+        let callable_argument_flows = self.finish_callable_argument_flows();
+        self.finish_task_lifetimes(&callable_argument_flows);
+        self.pending_callable_arguments.clear();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()
             .map(|(k, facts)| {
@@ -3650,7 +3656,6 @@ impl Checker {
         // moved out: the output layer uses it for codegen decisions, and it
         // reads the declaration table the output takes next.
         self.ensure_handle_bearing_fresh();
-        let callable_argument_flows = self.finish_callable_argument_flows();
         // The checker keeps its table: post-check queries resolve through it.
         let defs = std::sync::Arc::new(self.defs.clone());
         let resolutions = self.scopes.take_resolutions();
@@ -3661,6 +3666,9 @@ impl Checker {
             resolved_annotation_types,
             normalized_machines: normalized_machines.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),
+            race_operands: std::mem::take(&mut self.race_operands),
+            task_scope_results: std::mem::take(&mut self.task_lifetimes.scope_results),
+            task_result_lifetimes: self.task_lifetimes.checked_results(),
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             call_argument_slots: std::mem::take(&mut self.call_argument_slots),

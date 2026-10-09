@@ -3230,6 +3230,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_task_race( *mut HewTaskScope, *const *mut HewTask, u32, *const HewValueLayout, ) -> *mut HewTask",
+        "wasm32-wasip1": "fn hew_checked_task_race( *mut HewTaskScope, *const *mut HewTask, u32, *const HewValueLayout, ) -> *mut HewTask"
+      },
+      "symbol": "hew_checked_task_race"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

@@ -481,7 +481,7 @@ fn delayed(value: i64, delay: duration) -> i64 {
     value
 }
 fn main() {
-    println(race { delayed(1, 1ms), delayed(2, 10s) });
+    println(await race [delayed(1, 1ms), delayed(2, 10s)]);
 }
 ",
     );

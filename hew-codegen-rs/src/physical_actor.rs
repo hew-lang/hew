@@ -474,7 +474,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn needs_process_runtime(&self) -> bool {
         !self.module.actors.is_empty()
             || self.module.functions.iter().flat_map(|function| &function.blocks).any(|block| {
-                if block.ops.iter().any(|op| matches!(op, PhysicalOp::TaskSpawn { .. })) {
+                if block.ops.iter().any(|op| matches!(op, PhysicalOp::TaskSpawn { .. } | PhysicalOp::TaskRace { .. })) {
                     return true;
                 }
                 match &block.terminator {

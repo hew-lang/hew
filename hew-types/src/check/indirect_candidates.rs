@@ -3,7 +3,7 @@
 use super::scope::Resolution;
 use super::types::{
     CallableArgumentFlow, CallableCandidate, CallableDispatchActual, CallableFieldFlow, Checker,
-    IndirectCallCandidates, PendingCallableArguments, SpanKey,
+    IndirectCallCandidates, PendingCallableArguments, PendingCallableTarget, SpanKey,
 };
 use super::{CallTarget, MethodCallRewrite};
 use crate::DeclarationKind;
@@ -37,32 +37,30 @@ impl Checker {
         }
     }
 
-    fn callable_candidates_for_expr(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
+    pub(super) fn callable_candidates_for_expr(
+        &self,
+        expr: &Expr,
+        span: &Span,
+    ) -> IndirectCallCandidates {
         match expr {
+            Expr::ForkChild { .. } | Expr::ForkBlock { .. } | Expr::Race(_) => {
+                IndirectCallCandidates::single(CallableCandidate::TaskProducer(SpanKey::in_module(
+                    span,
+                    self.current_module_idx,
+                )))
+            }
+            Expr::Await(value) => self
+                .callable_candidates_for_expr(&value.0, &value.1)
+                .task_results(),
+            Expr::Tuple(values) => self.callable_sequence_candidates(values.iter()),
+            Expr::Array(values) => self.callable_sequence_candidates(
+                values.iter().map(hew_parser::ast::ArrayElement::expr),
+            ),
             Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => IndirectCallCandidates::single(
                 CallableCandidate::Closure(SpanKey::in_module(span, self.current_module_idx)),
             ),
             Expr::Ident(_) => self.resolved_callable_candidate(span),
-            Expr::FieldAccess { object, field } => {
-                let key = SpanKey::in_module(&field.1, self.current_module_idx);
-                if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
-                    let receiver = self.callable_candidates_for_expr(&object.0, &object.1);
-                    IndirectCallCandidates {
-                        known: receiver
-                            .known
-                            .into_iter()
-                            .map(|receiver| CallableCandidate::Field {
-                                receiver: Box::new(receiver),
-                                owner: *owner,
-                                index: *index,
-                            })
-                            .collect(),
-                        may_be_unknown: receiver.may_be_unknown,
-                    }
-                } else {
-                    self.resolved_callable_candidate(&field.1)
-                }
-            }
+            Expr::FieldAccess { object, field } => self.callable_field_candidates(object, field),
             Expr::GenericApplySuffix { target, .. } => {
                 self.callable_candidates_for_expr(&target.0, &target.1)
             }
@@ -82,14 +80,14 @@ impl Checker {
                         self.callable_candidates_for_expr(value, value_span)
                     })
             }
-            Expr::Call { .. } | Expr::MethodCall { .. }
-                if self.selected_callable_declaration(span).is_some() =>
+            Expr::Call { args, .. } | Expr::MethodCall { args, .. }
+                if self.is_construct_call(span) =>
             {
-                IndirectCallCandidates::single(CallableCandidate::CallResult(SpanKey::in_module(
-                    span,
-                    self.current_module_idx,
-                )))
+                self.callable_sequence_candidates(args.iter().map(CallArg::expr))
             }
+            Expr::Call { .. } | Expr::MethodCall { .. } => IndirectCallCandidates::single(
+                CallableCandidate::CallResult(SpanKey::in_module(span, self.current_module_idx)),
+            ),
             Expr::If {
                 then_block,
                 else_block: Some(else_block),
@@ -119,20 +117,63 @@ impl Checker {
                 }
                 candidates
             }
-            Expr::Block(block) => self.callable_candidates_for_block(block),
+            Expr::Block(block)
+            | Expr::Scope { body: block }
+            | Expr::ScopeDeadline { body: block, .. } => self.callable_candidates_for_block(block),
+            Expr::UnsafeBlock(block) => self.callable_candidates_for_block(block),
             Expr::Coalesce { left, right } => {
                 let mut candidates = self.callable_candidates_for_expr(&left.0, &left.1);
                 candidates.join(self.callable_candidates_for_expr(&right.0, &right.1));
                 candidates
             }
-            Expr::Clone(value) | Expr::Cast { expr: value, .. } => {
+            Expr::Clone(value)
+            | Expr::Cast { expr: value, .. }
+            | Expr::PostfixTry(value)
+            | Expr::Index { object: value, .. }
+            | Expr::ArrayRepeat { value, .. } => {
                 self.callable_candidates_for_expr(&value.0, &value.1)
             }
             _ => IndirectCallCandidates::unknown(),
         }
     }
 
-    fn callable_candidates_for_block(
+    fn callable_field_candidates(
+        &self,
+        object: &Spanned<Expr>,
+        field: &Spanned<Ident>,
+    ) -> IndirectCallCandidates {
+        let key = SpanKey::in_module(&field.1, self.current_module_idx);
+        if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+            let receiver = self.callable_candidates_for_expr(&object.0, &object.1);
+            IndirectCallCandidates {
+                known: receiver
+                    .known
+                    .into_iter()
+                    .map(|receiver| CallableCandidate::Field {
+                        receiver: Box::new(receiver),
+                        owner: *owner,
+                        index: *index,
+                    })
+                    .collect(),
+                may_be_unknown: receiver.may_be_unknown,
+            }
+        } else {
+            self.resolved_callable_candidate(&field.1)
+        }
+    }
+
+    fn callable_sequence_candidates<'a>(
+        &self,
+        values: impl Iterator<Item = &'a Spanned<Expr>>,
+    ) -> IndirectCallCandidates {
+        IndirectCallCandidates::single(CallableCandidate::Sequence(
+            values
+                .flat_map(|value| self.callable_candidates_for_expr(&value.0, &value.1).known)
+                .collect(),
+        ))
+    }
+
+    pub(super) fn callable_candidates_for_block(
         &self,
         block: &hew_parser::ast::Block,
     ) -> IndirectCallCandidates {
@@ -278,7 +319,13 @@ impl Checker {
             self.generic_trait_call_arguments.insert(key, actuals);
             return;
         }
-        let Some(callee) = self.selected_callable_declaration(span) else {
+        let callee = if let Some(declaration) = self.selected_callable_declaration(span) {
+            PendingCallableTarget::Declaration(declaration)
+        } else if let Expr::Call { function, .. } = expr {
+            PendingCallableTarget::Indirect(
+                self.callable_candidates_for_expr(&function.0, &function.1),
+            )
+        } else {
             return;
         };
         let receiver = receiver.map(|value| self.callable_candidates_for_expr(&value.0, &value.1));
@@ -346,7 +393,7 @@ impl Checker {
         };
         let candidates = self.callable_candidates_for_expr(&tail.0, &tail.1);
         self.callable_return_candidates
-            .entry(declaration)
+            .entry(super::effects::EffectBody::Declaration(declaration))
             .and_modify(|existing| existing.join(candidates.clone()))
             .or_insert(candidates);
     }
@@ -355,8 +402,14 @@ impl Checker {
         &mut self,
     ) -> std::collections::HashMap<SpanKey, Vec<CallableArgumentFlow>> {
         let mut flows = std::collections::HashMap::new();
-        for (site, pending) in std::mem::take(&mut self.pending_callable_arguments) {
-            let Some(formals) = self.callable_formals.get(&pending.callee) else {
+        for (site, pending) in self.pending_callable_arguments.clone() {
+            let PendingCallableTarget::Declaration(callee) = pending.callee else {
+                continue;
+            };
+            let Some(formals) = self
+                .callable_formals
+                .get(&super::effects::EffectBody::Declaration(callee))
+            else {
                 continue;
             };
             let receiver_offset = usize::from(
@@ -368,7 +421,7 @@ impl Checker {
             let mut actuals = Vec::with_capacity(formals.len());
             if receiver_offset == 1 {
                 actuals.push(CallableArgumentFlow {
-                    callee: pending.callee,
+                    callee,
                     formal: formals[0],
                     candidates: pending
                         .receiver
@@ -383,7 +436,7 @@ impl Checker {
                     break;
                 };
                 actuals.push(CallableArgumentFlow {
-                    callee: pending.callee,
+                    callee,
                     formal: *formal,
                     candidates,
                 });

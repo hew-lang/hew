@@ -11,6 +11,8 @@ use super::{
 use crate::callable::HewCallableValue;
 #[path = "task_scope_executor.rs"]
 mod executor;
+#[path = "task_scope_group.rs"]
+mod group;
 use crate::coro_state::{hew_coro_state_free, hew_coro_state_new, HewCoroState};
 use crate::fault::{hew_fault_combine, hew_fault_drop, HewFault, HEW_FAULT_CANCELLED};
 use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
@@ -43,8 +45,15 @@ const CANCELLED: i32 = 3;
 const TAKEN: i32 = 4;
 static COMPLETION_ORDER: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TaskAccounting {
+    Scope,
+    Group,
+}
+
 pub(super) struct CheckedTaskState {
-    callable: Option<HewCallableValue>,
+    invocation: Option<CheckedTaskInvocation>,
+    accounting: TaskAccounting,
     layout: *const HewValueLayout,
     allocation: Option<Layout>,
     result: *mut c_void,
@@ -82,7 +91,7 @@ impl Drop for CheckedTaskState {
         // The scope barrier owns every consuming callback. Final handle drop
         // reclaims only raw result storage and an unobserved fault diagnostic.
         assert!(
-            self.callable.is_none(),
+            self.invocation.is_none(),
             "task invocation must consume its captures"
         );
         // SAFETY: the final task owner has exclusive access to raw storage.
@@ -126,6 +135,7 @@ pub struct HewCheckedScopeWait {
     scope: *mut HewTaskScope,
     tasks: Vec<HewCheckedTaskWait>,
     cancellation: ScopeCancellation,
+    subset: bool,
     close: Mutex<ScopeResultClose>,
 }
 
@@ -262,40 +272,35 @@ pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, du
     }
 }
 
-/// Transfer a checked nullary once callable into a scope and return one handle.
-///
-/// # Safety
-/// Scope is live and exclusively accessed. Callable and layout have the exact
-/// checked Send input/result contract; the descriptor code outlives the scope.
-/// A null layout declares an uninhabited result: the callable must never succeed.
-/// This consumes and clears `callable` before scheduling its invocation.
-#[no_mangle]
-pub unsafe extern "C" fn hew_checked_task_spawn(
+enum CheckedTaskInvocation {
+    Callable(HewCallableValue),
+    Race(Vec<*mut HewTask>),
+}
+
+unsafe fn spawn_invocation(
     scope: *mut HewTaskScope,
-    callable: *mut HewCallableValue,
+    invocation: CheckedTaskInvocation,
     layout: *const HewValueLayout,
 ) -> *mut HewTask {
-    // SAFETY: the compiler supplies an immutable layout, or null for !.
+    // SAFETY: generated result layouts remain immutable and live through execution.
     let allocation = unsafe { layout.as_ref() }.map(|layout| {
         Layout::from_size_align(layout.size.max(1), layout.align)
             .unwrap_or_else(|_| std::process::abort())
     });
     let result = allocation.map_or(ptr::null_mut(), |allocation| {
-        // SAFETY: the valid nonzero layout is released by the final task owner.
+        // SAFETY: allocation is nonzero and released by the final task owner.
         let result = unsafe { alloc(allocation) };
         if result.is_null() {
             handle_alloc_error(allocation);
         }
         result
     });
-    // SAFETY: caller transfers the owning carrier and exclusively borrows scope.
+    // SAFETY: caller transfers invocation ownership and exclusively accesses scope.
     unsafe {
-        let owner = ptr::read(callable);
-        (*callable).environment = ptr::null_mut();
-        (*callable).descriptor = ptr::null();
         let task = hew_task_new();
         (*task).checked = Some(Mutex::new(CheckedTaskState {
-            callable: Some(owner),
+            invocation: Some(invocation),
+            accounting: TaskAccounting::Scope,
             layout,
             allocation,
             result: result.cast(),
@@ -307,11 +312,59 @@ pub unsafe extern "C" fn hew_checked_task_spawn(
             order: 0,
             waiters: Vec::new(),
         }));
-        hew_task_scope_spawn(scope, task); // original reference becomes scope-owned
-        retain(task); // source handle
-        retain(task); // execution owner, released after terminal publication
+        hew_task_scope_spawn(scope, task);
+        retain(task);
+        retain(task);
         TaskExecution::spawn(task);
         task
+    }
+}
+
+/// Transfer a checked nullary once callable into a scope and return one handle.
+/// # Safety
+/// Scope is exclusively accessed and outlives its drained tasks. Callable and
+/// layout obey the compiler's exact Send input/result contract. Null layout is !.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_spawn(
+    scope: *mut HewTaskScope,
+    callable: *mut HewCallableValue,
+    layout: *const HewValueLayout,
+) -> *mut HewTask {
+    // SAFETY: generated code transfers the owning carrier and writable source slot.
+    unsafe {
+        let owner = ptr::read(callable);
+        (*callable).environment = ptr::null_mut();
+        (*callable).descriptor = ptr::null();
+        spawn_invocation(scope, CheckedTaskInvocation::Callable(owner), layout)
+    }
+}
+
+/// Adopt owning handles into a group without changing their cancellation ancestry.
+/// # Safety
+/// Members are distinct owning checked Task<T> references whose original scopes
+/// outlive the group. Scope is exclusively accessed; layout describes their T.
+/// The member array is borrowed only during this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_race(
+    scope: *mut HewTaskScope,
+    members: *const *mut HewTask,
+    count: u32,
+    layout: *const HewValueLayout,
+) -> *mut HewTask {
+    // SAFETY: generated code supplies distinct owned members and a live array.
+    unsafe {
+        let members = std::slice::from_raw_parts(members, count as usize).to_vec();
+        if members.is_empty() {
+            std::process::abort();
+        }
+        for member in &members {
+            let mut state = checked(*member).lock_or_recover();
+            if state.accounting == TaskAccounting::Group || state.taken {
+                std::process::abort();
+            }
+            state.accounting = TaskAccounting::Group;
+        }
+        spawn_invocation(scope, CheckedTaskInvocation::Race(members), layout)
     }
 }
 
@@ -469,6 +522,7 @@ pub unsafe extern "C" fn hew_checked_scope_wait_new(
         scope,
         tasks,
         cancellation: ScopeCancellation::Ordinary,
+        subset: false,
         close: Mutex::new(ScopeResultClose {
             state,
             driver: None,
@@ -541,11 +595,24 @@ pub unsafe extern "C-unwind" fn hew_checked_scope_wait_status(
         // SAFETY: each wait retains the corresponding task.
         let state = unsafe { checked(task.task) }.lock_or_recover();
         pending |= !state.completed;
-        failed |= state.completed && !state.taken && state.status != 0;
+        failed |= (wait.subset || state.accounting == TaskAccounting::Scope)
+            && state.completed
+            && !state.taken
+            && state.status != 0;
     }
     if failed && wait.cancellation == ScopeCancellation::Ordinary {
         // SAFETY: wait borrows its still-live scope until released.
-        unsafe { hew_checked_scope_cancel(wait.scope) };
+        unsafe {
+            if wait.subset {
+                for member in &wait.tasks {
+                    if !checked(member.task).lock_or_recover().completed {
+                        hew_cancel_token_cancel((*member.task).cancel_token, HEW_FAULT_CANCELLED);
+                    }
+                }
+            } else {
+                hew_checked_scope_cancel(wait.scope);
+            }
+        };
     }
     if pending {
         return PENDING;
@@ -561,7 +628,10 @@ pub unsafe extern "C-unwind" fn hew_checked_scope_wait_status(
             let mut values = Vec::new();
             for task in &wait.tasks {
                 let mut state = checked(task.task).lock_or_recover();
-                if state.initialized && !state.taken {
+                if (wait.subset || state.accounting == TaskAccounting::Scope)
+                    && state.initialized
+                    && !state.taken
+                {
                     state.taken = true;
                     state.initialized = false;
                     values.push((state.result, *state.layout));
@@ -604,7 +674,10 @@ pub unsafe extern "C-unwind" fn hew_checked_scope_wait_take_fault(
     for task in &wait.tasks {
         // SAFETY: the drain retains the task.
         let mut state = unsafe { checked(task.task) }.lock_or_recover();
-        if !state.taken && state.status != 0 {
+        if (wait.subset || state.accounting == TaskAccounting::Scope)
+            && !state.taken
+            && state.status != 0
+        {
             state.taken = true;
             let mut owner = std::mem::replace(&mut state.fault, ptr::null_mut());
             if wait.cancellation == ScopeCancellation::RaceLosers {

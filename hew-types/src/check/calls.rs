@@ -2989,6 +2989,7 @@ impl Checker {
             for (arg, part) in args.iter().zip(parts.iter()) {
                 let (expr, sp) = arg.expr();
                 let actual = self.check_against(expr, sp, part);
+                self.record_task_actor_transfer(expr, sp);
                 self.enforce_lambda_actor_message_send(&actual, sp);
             }
             parts
@@ -2998,6 +2999,7 @@ impl Checker {
             if let Some(arg) = args.first() {
                 let (expr, sp) = arg.expr();
                 let actual = self.check_against(expr, sp, &msg_ty);
+                self.record_task_actor_transfer(expr, sp);
                 self.enforce_lambda_actor_message_send(&actual, sp);
             }
             vec![msg_ty]

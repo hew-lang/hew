@@ -672,6 +672,12 @@ pub enum PhysicalOp {
     TaskScopeClose {
         scope: hew_sir::TaskScopeId,
     },
+    TaskRace {
+        scope: hew_sir::TaskScopeId,
+        members: Vec<StorageId>,
+        dest: StorageId,
+        output: Option<PhysicalValueRecipe>,
+    },
     TaskSpawn {
         scope: hew_sir::TaskScopeId,
         callable: StorageId,

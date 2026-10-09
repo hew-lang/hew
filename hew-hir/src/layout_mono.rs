@@ -609,7 +609,11 @@ fn walk_expr(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             walk_expr(value, subst, residual_domain, disc);
         }
-        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
+        HirExprKind::TaskRace {
+            members: elements, ..
+        }
+        | HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 walk_expr(elem, subst, residual_domain, disc);
             }
@@ -642,8 +646,7 @@ fn walk_expr(
         HirExprKind::FieldAccess { object, .. } => {
             walk_expr(object, subst, residual_domain, disc);
         }
-        HirExprKind::Scope { body }
-        | HirExprKind::Race { body }
+        HirExprKind::Scope { body, .. }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::Loop { body, .. } => {
             walk_block(body, subst, residual_domain, disc);
@@ -657,7 +660,7 @@ fn walk_expr(
             disc.visit_ty(&error.ty, &error.span, subst, residual_domain);
             walk_expr(handler, subst, residual_domain, disc);
         }
-        HirExprKind::ScopeDeadline { duration, body } => {
+        HirExprKind::ScopeDeadline { duration, body, .. } => {
             walk_expr(duration, subst, residual_domain, disc);
             walk_block(body, subst, residual_domain, disc);
         }

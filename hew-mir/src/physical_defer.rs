@@ -233,6 +233,10 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive physical operation payload visitor"
+)]
 fn operation_storage(
     operation: &PhysicalOp,
     used: &mut BTreeSet<StorageId>,
@@ -276,7 +280,12 @@ fn operation_storage(
             defined.insert(*dest);
             used.extend([*lhs, *rhs]);
         }
-        PhysicalOp::TupleMake { dest, elements } => {
+        PhysicalOp::TaskRace {
+            dest,
+            members: elements,
+            ..
+        }
+        | PhysicalOp::TupleMake { dest, elements } => {
             defined.insert(*dest);
             used.extend(elements);
         }

@@ -806,6 +806,9 @@ impl LowerCtx {
                 }
             }
             Expr::Scope { body } => {
+                if !self.task_scope_results.contains(&self.mk_key(&span)) {
+                    return self.unsupported_expr(span, "scope lacks its checked result lifetime");
+                }
                 let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
                     return self.unsupported_expr(span, "scope has no checked result type");
                 };
@@ -815,9 +818,19 @@ impl LowerCtx {
                 self.scope_depth += 1;
                 let hir_body = self.lower_block(body, &result_ty);
                 self.scope_depth -= 1;
-                (HirExprKind::Scope { body: hir_body }, result_ty)
+                (
+                    HirExprKind::Scope {
+                        body: hir_body,
+                        result_lifetime: crate::HirTaskScopeResult::checked(),
+                    },
+                    result_ty,
+                )
             }
             Expr::ForkChild { expr } => {
+                if !self.task_result_lifetimes.contains(&self.mk_key(&span)) {
+                    return self.unsupported_expr(span, "fork lacks its checked result lifetime");
+                }
+                let result_lifetime = crate::HirTaskScopeResult::checked();
                 let array_branches: Option<Vec<Spanned<Expr>>> = match &expr.0 {
                     Expr::Array(elements) => Some(
                         elements
@@ -838,15 +851,19 @@ impl LowerCtx {
                     let Ok(output_ty) = ResolvedTy::from_ty(output) else {
                         return self.unsupported_expr(span, "fork batch result type is unresolved");
                     };
-                    let batch = self.lower_fork_batch(branches, output_ty, span.clone());
+                    let batch =
+                        self.lower_fork_batch(branches, output_ty, span.clone(), result_lifetime);
                     (batch.kind, batch.ty)
                 } else {
-                    let child = self.lower_fork_invocation(expr);
+                    let child = self.lower_fork_invocation(expr, result_lifetime);
                     (child.kind, child.ty)
                 }
             }
 
             Expr::ForkBlock { body } => {
+                if !self.task_result_lifetimes.contains(&self.mk_key(&span)) {
+                    return self.unsupported_expr(span, "fork lacks its checked result lifetime");
+                }
                 let checker_key = self.mk_key(&span);
                 let Some(Ty::Task(output)) = self.expr_types.get(&checker_key) else {
                     return self.unsupported_expr(span, "fork block has no checked task result");
@@ -873,12 +890,16 @@ impl LowerCtx {
                     HirExprKind::ForkBlock {
                         body: lowered_body,
                         task_ty: task_ty.clone(),
+                        result_lifetime: crate::HirTaskScopeResult::checked(),
                         captures,
                     },
                     task_ty,
                 )
             }
             Expr::ScopeDeadline { duration, body } => {
+                if !self.task_scope_results.contains(&self.mk_key(&span)) {
+                    return self.unsupported_expr(span, "scope lacks its checked result lifetime");
+                }
                 let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
                     return self.unsupported_expr(span, "scope has no checked result type");
                 };
@@ -893,6 +914,7 @@ impl LowerCtx {
                     HirExprKind::ScopeDeadline {
                         duration: Box::new(duration),
                         body,
+                        result_lifetime: crate::HirTaskScopeResult::checked(),
                     },
                     result_ty,
                 )
@@ -967,7 +989,7 @@ impl LowerCtx {
                             },
                             span.clone(),
                             "`await` requires a task handle (`Task<T>`). \
-                             Hint: did you mean to bind a task with `fork name = call(...)` first?",
+                             Hint: did you mean to bind a task with `let name = fork call(...)` first?",
                         ));
                         (
                             HirExprKind::Unsupported("`await` on non-task".to_string()),

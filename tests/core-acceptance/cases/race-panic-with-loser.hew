@@ -18,9 +18,9 @@ fn slow(parked: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
-    race {
+    await race [
         boom(parked),
         slow(parked_tx, gate),
-    };
+    ];
     println("unreachable");
 }

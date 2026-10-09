@@ -157,6 +157,7 @@ pub fn migrate_syntax(source: &str) -> Result<String, MigrationError> {
                         | ParseDiagnosticKind::LegacyTurbofish
                         | ParseDiagnosticKind::UnitFailsArrow
                         | ParseDiagnosticKind::LegacySerialSpelling
+                        | ParseDiagnosticKind::LegacyRaceBraces
                         | ParseDiagnosticKind::WireVariantTagMissing
                 )
         })
@@ -4009,6 +4010,16 @@ impl<'a> Formatter<'a> {
     // Expressions
     // ------------------------------------------------------------------
 
+    fn format_task_operand(&mut self, operand: &Spanned<Expr>) {
+        if matches!(operand.0, Expr::PostfixTry(_)) && !self.source_parenthesizes(&operand.1) {
+            self.write("(");
+            self.format_expr(operand);
+            self.write(")");
+        } else {
+            self.format_expr_prec(operand, 26, false);
+        }
+    }
+
     /// Return `true` when `expr` must be parenthesised before a postfix operator
     /// (`.field`, `.method()`, `[index]`, `?`).
     ///
@@ -4516,7 +4527,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::ForkChild { expr } => {
                 self.write("fork ");
-                self.format_expr(expr);
+                self.format_task_operand(expr);
             }
             Expr::ForkBlock { body } => {
                 self.write("fork ");
@@ -4635,7 +4646,7 @@ impl<'a> Formatter<'a> {
                 self.write("}");
             }
             Expr::Race(exprs) => {
-                self.write("race {\n");
+                self.write("race [\n");
                 self.indent += 1;
                 for e in exprs {
                     self.write_indent();
@@ -4644,7 +4655,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.indent -= 1;
                 self.write_indent();
-                self.write("}");
+                self.write("]");
             }
             Expr::UnsafeBlock(block) => {
                 self.write("unsafe ");
@@ -4766,7 +4777,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Await(inner) => {
                 self.write("await ");
-                self.format_expr_prec(inner, 25, false);
+                self.format_task_operand(inner);
             }
             Expr::RegexLiteral(_) | Expr::ByteStringLiteral(_)
                 if self.literal_spelling(&expr.1).is_some() =>

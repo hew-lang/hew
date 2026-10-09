@@ -591,11 +591,14 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             writeln!(out, "{pad}  field-access .{field}").expect("write to string");
             dump_expr(defs, out, object, indent + 4);
         }
-        HirExprKind::Race { body } => {
-            writeln!(out, "{pad}  race scope={}", body.scope).expect("write to string");
-            dump_block(defs, out, body, indent + 4);
+        HirExprKind::TaskRace { members, .. } => {
+            writeln!(out, "{pad}  task-race").expect("write to string");
+            for member in members {
+                dump_expr(defs, out, member, indent + 4);
+            }
         }
-        HirExprKind::Scope { body } => {
+
+        HirExprKind::Scope { body, .. } => {
             writeln!(out, "{pad}  scope scope={}", body.scope).expect("write to string");
             for stmt in &body.statements {
                 match &stmt.kind {
@@ -692,7 +695,7 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             dump_expr(defs, out, scope, indent + 4);
             dump_expr(defs, out, handler, indent + 4);
         }
-        HirExprKind::ScopeDeadline { duration, body } => {
+        HirExprKind::ScopeDeadline { duration, body, .. } => {
             writeln!(out, "{pad}  scope-deadline").expect("write to string");
             dump_expr(defs, out, duration, indent + 4);
             for stmt in &body.statements {

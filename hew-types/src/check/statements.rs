@@ -245,7 +245,6 @@ impl Checker {
                 | Expr::Scope { .. }
                 | Expr::ScopeDeadline { .. }
                 | Expr::Select { .. }
-                | Expr::Race(_)
                 | Expr::GenBlock { .. }
         ) {
             return;
@@ -731,6 +730,13 @@ impl Checker {
     /// The return *type* of the construct itself is always `Ty::Never` (a
     /// `return` diverges); callers assign that directly.
     pub(super) fn check_return_operand(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
+        self.check_return_operand_inner(value, span);
+        if let Some(value) = value {
+            self.record_task_return(value);
+        }
+    }
+
+    fn check_return_operand_inner(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
         if self.deferred_body.is_some() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,

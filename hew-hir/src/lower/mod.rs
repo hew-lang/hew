@@ -1066,6 +1066,9 @@ struct LowerCtx {
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
     select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
+    race_operands: HashMap<SpanKey, Vec<hew_types::check::RaceOperandKind>>,
+    task_scope_results: HashSet<SpanKey>,
+    task_result_lifetimes: HashSet<SpanKey>,
     checked_fork_transfers: HashMap<SpanKey, hew_types::check::effects::ForkTransferFact>,
     fork_call_inputs: Option<fork::ForkCallInputs>,
     /// Checker-owned method-call receiver classifications. These facts prevent

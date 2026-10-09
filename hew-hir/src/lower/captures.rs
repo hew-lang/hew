@@ -101,7 +101,11 @@ pub(super) fn collect_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
+        HirExprKind::TaskRace {
+            members: elements, ..
+        }
+        | HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_captures_walk(elem, param_ids, seen, captures, self_id);
             }
@@ -149,8 +153,7 @@ pub(super) fn collect_captures_walk(
             collect_captures_walk(msg, param_ids, seen, captures, self_id);
         }
         HirExprKind::Block(block)
-        | HirExprKind::Scope { body: block }
-        | HirExprKind::Race { body: block }
+        | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
@@ -172,7 +175,7 @@ pub(super) fn collect_captures_walk(
             handler_locals.insert(error.id);
             collect_captures_walk(handler, &handler_locals, seen, captures, self_id);
         }
-        HirExprKind::ScopeDeadline { duration, body } => {
+        HirExprKind::ScopeDeadline { duration, body, .. } => {
             collect_captures_walk(duration, param_ids, seen, captures, self_id);
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
@@ -356,7 +359,11 @@ pub(super) fn collect_general_closure_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
-        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
+        HirExprKind::TaskRace {
+            members: elements, ..
+        }
+        | HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_general_closure_captures_walk(elem, outer_bindings, seen, captures);
             }
@@ -404,8 +411,7 @@ pub(super) fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
         }
         HirExprKind::Block(block)
-        | HirExprKind::Scope { body: block }
-        | HirExprKind::Race { body: block }
+        | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
@@ -421,7 +427,7 @@ pub(super) fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(scope, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(handler, outer_bindings, seen, captures);
         }
-        HirExprKind::ScopeDeadline { duration, body } => {
+        HirExprKind::ScopeDeadline { duration, body, .. } => {
             collect_general_closure_captures_walk(duration, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }

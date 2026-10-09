@@ -491,6 +491,23 @@ impl Verifier {
                     ));
                 }
             }
+            HirExprKind::TaskRace { members, .. } => {
+                if members.is_empty()
+                    || !matches!(&expr.ty, ResolvedTy::Task(output) if members.iter().all(|member| member.ty == expr.ty || member.ty == ResolvedTy::Task(Box::new(ResolvedTy::Never))) && !matches!(**output, ResolvedTy::Task(_)))
+                {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "race".into(),
+                            reason: "race requires homogeneous scoped tasks".into(),
+                        },
+                        expr.span.clone(),
+                        "invalid race operands",
+                    ));
+                }
+                for member in members {
+                    self.expr(member);
+                }
+            }
             HirExprKind::ArrayLiteral { elements } => {
                 if !matches!(&expr.ty, ResolvedTy::Array(element, len)
                     if usize::try_from(*len).ok() == Some(elements.len())
@@ -702,8 +719,7 @@ impl Verifier {
             | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::Continue { .. }
             | HirExprKind::ActorSelf => {}
-            HirExprKind::Scope { body }
-            | HirExprKind::Race { body }
+            HirExprKind::Scope { body, .. }
             | HirExprKind::ForkBlock { body, .. }
             | HirExprKind::Loop { body, .. } => self.block(body),
             HirExprKind::ScopeRecovery {
@@ -715,7 +731,7 @@ impl Verifier {
                 self.binding(error.id, error.span.clone());
                 self.expr(handler);
             }
-            HirExprKind::ScopeDeadline { duration, body } => {
+            HirExprKind::ScopeDeadline { duration, body, .. } => {
                 self.expr(duration);
                 self.block(body);
             }

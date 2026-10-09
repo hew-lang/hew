@@ -784,6 +784,7 @@ pub enum ParseDiagnosticKind {
     /// A retired `#[json(..)]`/`#[yaml(..)]` attribute or `json(..)`/`yaml(..)`
     /// wire modifier; `#[serial(..)]` replaces them.
     LegacySerialSpelling,
+    LegacyRaceBraces,
     /// A `#[wire]` enum variant without its stable `@N` tag.
     WireVariantTagMissing,
     /// A token was present but a different token was required.
@@ -833,6 +834,7 @@ impl ParseDiagnosticKind {
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
+            Self::LegacyRaceBraces => "E_RACE_LEGACY_BRACES",
             Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",

@@ -896,7 +896,7 @@ pub enum TypeErrorKind {
     /// User wrote `Task<T>` in a source type position (annotation, return type,
     /// parameter type, struct field). `Task<T>` is a compiler-internal type; it
     /// cannot be named in user source. Bindings of this type are inferred from
-    /// `fork name = expr` context only.
+    /// `let name = fork expr` context only.
     TaskNotNameable,
     /// A retired actor-handle spelling (`LocalPid<A>`, `Pid<A>`,
     /// `LambdaPid<M, R>`) was written in a type position. An actor is the type

@@ -438,7 +438,7 @@ fn migrate_moves_failing_callables_to_their_edge() {
         "fn total(items: Vec<string>) -> i64 fails string {",
         "        value + 1\n",
         "    sum\n",
-        "receive fn load(text: string) -> i64 fails string {",
+        "receive fn load(text: string) -> Result<i64, string> {",
     ] {
         assert!(
             migrated.contains(spelling),
@@ -446,11 +446,6 @@ fn migrate_moves_failing_callables_to_their_edge() {
         );
     }
     assert!(!migrated.contains(".Ok(())"), "{migrated}");
-    assert!(
-        stderr(&output).contains("`receive fn load` now fails through its edge"),
-        "{}",
-        stderr(&output)
-    );
 
     let again = migrate(&["--check"], dir.path());
     assert!(again.status.success(), "{}", stderr(&again));
@@ -580,10 +575,8 @@ fn edge_rewrites_keep_the_program_well_formed() {
     );
 }
 
-/// A converted `receive fn` names every caller that matched its old reply
-/// envelope, in whichever file it is.
 #[test]
-fn a_converted_handler_names_its_callers() {
+fn a_migrated_handler_preserves_its_reply_envelope() {
     let dir = support::tempdir();
     std::fs::write(
         dir.path().join("store.hew"),
@@ -618,11 +611,5 @@ fn a_converted_handler_names_its_callers() {
     .unwrap();
     let output = migrate(&[], dir.path());
     assert!(output.status.success(), "{}", stderr(&output));
-    let report = slashes(&stderr(&output));
-    assert!(
-        report.contains("`receive fn load` now fails through its edge")
-            && report.contains("review its callers at")
-            && report.contains("main.hew:4:11"),
-        "{report}"
-    );
+    assert_runs(dir.path(), "main.hew", "ok 7\n");
 }

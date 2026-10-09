@@ -17,11 +17,15 @@
 //! A closure with no declared return whose body uses `?` on a `Result` or
 //! `return error` takes its edge from them, so only its exits are rewritten;
 //! a `?` on an `Option` is no failure exit. A `-> Result` callable with
-//! neither is a value return and is left alone. Types come from the checker;
-//! a file keeps its rewrite only when the re-check reports no diagnostic it
-//! did not already have and no failure exit still lacking its edge.
+//! neither is a value return and is left alone.
+//!
+//! A `receive fn` keeps its value form, since its edge would change what its
+//! callers receive: each `?` on a `Result` in its body becomes the `match`
+//! that returns the error as the reply's `.Err`, and its callers are left as
+//! they are. Types come from the checker; a file keeps its rewrite only when
+//! the re-check reports no diagnostic it did not already have and no failure
+//! exit still lacking its edge. A new style-lint warning does not count.
 
-use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,24 +38,21 @@ use hew_parser::ast::{
 use hew_types::check::scope::Resolution;
 use hew_types::check::TypeCheckOutput;
 use hew_types::error::TypeErrorKind;
-use hew_types::{ActorMethodKind, BuiltinType, NodeVisitor, SpanKey, Ty};
+use hew_types::{BuiltinType, NodeVisitor, SpanKey, Ty};
 
-/// A file the pass left unconverted, or a converted handler whose callers
-/// need review, at its first location.
+/// A file the pass left unconverted, at its first location.
 pub(crate) struct EdgeReport {
     pub file: PathBuf,
     pub line: usize,
     pub column: usize,
     pub message: String,
-    /// For a converted handler, every caller that may match its old reply.
-    pub callers: Option<Vec<Location>>,
 }
 
 /// Convert the failure edges of every file in `files` (path, migrated text),
-/// in place. Returns the refusals and the converted handlers to review.
+/// in place. Returns the refused files and the notes on files it could not
+/// check.
 ///
-/// Converting a callable keeps its type, except a `receive fn`'s reply: its
-/// callers are reported, never rewritten. So each check unit — a directory
+/// Converting a callable keeps its type, so each check unit — a directory
 /// module, or a file of its own — is checked against the other units'
 /// unconverted text, and units convert in parallel.
 pub(crate) fn convert_failure_edges(
@@ -77,26 +78,27 @@ pub(crate) fn convert_failure_edges(
         .min(units.len());
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                let unit = next.fetch_add(1, Ordering::Relaxed);
-                let Some((root, members)) = units.get(unit) else {
-                    break;
-                };
-                let members: Vec<_> = members
-                    .iter()
-                    .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
-                    .collect();
-                let outcome = convert_unit(root, &members, &documents);
-                *outcomes[unit]
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = outcome;
-            });
+            std::thread::Builder::new()
+                .stack_size(crate::COMPILER_STACK_SIZE)
+                .spawn_scoped(scope, || loop {
+                    let unit = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((root, members)) = units.get(unit) else {
+                        break;
+                    };
+                    let members: Vec<_> = members
+                        .iter()
+                        .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
+                        .collect();
+                    let outcome = convert_unit(root, &members, &documents);
+                    *outcomes[unit]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = outcome;
+                })
+                .expect("spawn a migration worker");
         }
     });
     let mut refusals = Vec::new();
-    let mut handlers = Vec::new();
     let mut notes = Vec::new();
-    let mut asks: HashMap<HandlerSite, Vec<Location>> = HashMap::new();
     for outcome in outcomes {
         let outcome = outcome
             .into_inner()
@@ -106,15 +108,7 @@ pub(crate) fn convert_failure_edges(
         }
         refusals.extend(outcome.refusals);
         notes.extend(outcome.notes);
-        handlers.extend(outcome.handlers);
-        for (site, callers) in outcome.asks {
-            asks.entry(site).or_default().extend(callers);
-        }
     }
-    notes.extend(handlers.into_iter().map(|handler| {
-        let callers = asks.get(&handler.site).map_or(&[][..], Vec::as_slice);
-        handler.notice(callers)
-    }));
     (refusals, notes)
 }
 
@@ -124,55 +118,8 @@ struct UnitOutcome {
     /// Members that converted cleanly, by index in the caller's files.
     converted: Vec<(usize, String)>,
     refusals: Vec<EdgeReport>,
-    /// Converted `receive fn`s.
-    handlers: Vec<ConvertedHandler>,
-    /// Every ask the unit makes of a `receive fn`, by the handler's site.
-    asks: HashMap<HandlerSite, Vec<Location>>,
     /// Members the pass could not check.
     notes: Vec<EdgeReport>,
-}
-
-/// A `receive fn` by where it is declared: its file, where its actor's item
-/// starts and its index among the actor's handlers. One site names one
-/// handler in every unit's check.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct HandlerSite {
-    file: PathBuf,
-    actor: usize,
-    index: u32,
-}
-
-/// A source location, one-based.
-#[derive(Clone)]
-pub(crate) struct Location {
-    pub file: PathBuf,
-    pub line: usize,
-    pub column: usize,
-}
-
-/// A `receive fn` the pass converted: its reply moves from `.Ok(.Err(e))` to
-/// `.Err(.Failed(e))`, so every caller that matched the old envelope needs
-/// review.
-struct ConvertedHandler {
-    site: HandlerSite,
-    name: String,
-    at: Location,
-}
-
-impl ConvertedHandler {
-    fn notice(self, callers: &[Location]) -> EdgeReport {
-        EdgeReport {
-            file: self.at.file,
-            line: self.at.line,
-            column: self.at.column,
-            message: format!(
-                "`receive fn {}` now fails through its edge: a caller that matched \
-                 `.Ok(.Err(e))` receives `.Err(.Failed(e))`",
-                self.name
-            ),
-            callers: Some(callers.to_vec()),
-        }
-    }
 }
 
 /// Convert the members of one check unit. A member keeps its conversion only
@@ -186,7 +133,6 @@ fn convert_unit(
     let mut documents = documents.clone();
     let mut outcome = UnitOutcome::default();
     let before = check_unit(root, &documents);
-    outcome.asks = before.asks(&documents);
     let mut candidates = Vec::new();
     for &(index, path, text) in members {
         let Some(file) = before.file_index(path, root) else {
@@ -198,15 +144,14 @@ fn convert_unit(
                 column: 1,
                 message: "its failure edges were not converted: its module did not load"
                     .to_string(),
-                callers: None,
             });
             continue;
         };
-        let plan = plan_file(text, file, &before);
-        if plan.edits.is_empty() {
+        let edits = plan_file(text, file, &before);
+        if edits.is_empty() {
             continue;
         }
-        let rewrite = match render(text, plan.edits) {
+        let rewrite = match render(text, edits) {
             Ok(rewrite) => rewrite,
             Err(offset) => {
                 let (line, column) = crate::diagnostic::offset_to_line_col(text, offset);
@@ -217,40 +162,18 @@ fn convert_unit(
                     message: "its failure-edge rewrites overlap here; convert this callable \
                               by hand"
                         .to_string(),
-                    callers: None,
                 });
                 continue;
             }
         };
         documents.insert(path.to_path_buf(), rewrite.text.clone());
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let handlers = plan
-            .handlers
-            .into_iter()
-            .map(|handler| {
-                let (line, column) = crate::diagnostic::offset_to_line_col(text, handler.offset);
-                ConvertedHandler {
-                    site: HandlerSite {
-                        file: canonical.clone(),
-                        actor: handler.actor,
-                        index: handler.index,
-                    },
-                    name: handler.name,
-                    at: Location {
-                        file: path.to_path_buf(),
-                        line,
-                        column,
-                    },
-                }
-            })
-            .collect::<Vec<_>>();
-        candidates.push((index, path, rewrite, handlers));
+        candidates.push((index, path, rewrite));
     }
     if candidates.is_empty() {
         return outcome;
     }
     let after = check_unit(root, &documents);
-    for (index, path, rewrite, handlers) in candidates {
+    for (index, path, rewrite) in candidates {
         if let Some(diagnostic) = first_new_diagnostic(
             &before.reported_in(path),
             &after.reported_in(path),
@@ -272,11 +195,11 @@ fn convert_unit(
                     "converting its failure edges would leave `{}`: {}",
                     diagnostic.code, diagnostic.message
                 ),
-                callers: None,
             });
         } else {
-            outcome.handlers.extend(handlers);
-            outcome.converted.push((index, rewrite.text));
+            let parsed = hew_parser::parse(&rewrite.text);
+            let formatted = hew_parser::fmt::format_source(&rewrite.text, &parsed.program);
+            outcome.converted.push((index, formatted));
         }
     }
     outcome
@@ -287,8 +210,6 @@ struct UnitCheck {
     diagnostics: Vec<(Option<PathBuf>, FileDiagnostic)>,
     output: Option<TypeCheckOutput>,
     indices: hew_parser::module::FileSpanIndices,
-    /// Each checked source file by its span-key index.
-    sources: HashMap<u32, PathBuf>,
 }
 
 #[derive(Clone)]
@@ -297,6 +218,9 @@ struct FileDiagnostic {
     code: String,
     message: String,
     span: Range<usize>,
+    /// A style lint reported as a warning: the rewrite may trigger one (an
+    /// `else` after a branch that now returns) without changing behaviour.
+    style: bool,
 }
 
 impl FileDiagnostic {
@@ -317,20 +241,6 @@ fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
         .as_ref()
         .map(hew_parser::module::ModuleGraph::file_span_indices)
         .unwrap_or_default();
-    let sources = state
-        .program
-        .module_graph
-        .iter()
-        .flat_map(|graph| graph.modules.values())
-        .flat_map(|module| module.source_paths.iter())
-        .filter_map(|path| Some((indices.path_index(path)?, path.clone())))
-        .collect::<HashMap<_, _>>();
-    // The root compilation unit is index 0 whether or not its graph module
-    // lists its source.
-    let mut sources = sources;
-    if let Ok(root) = std::fs::canonicalize(root) {
-        sources.entry(0).or_insert(root);
-    }
     let canonical = |file: Option<String>| file.and_then(|file| std::fs::canonicalize(file).ok());
     let mut diagnostics: Vec<(Option<PathBuf>, FileDiagnostic)> = state
         .diagnostics
@@ -340,6 +250,8 @@ fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
             let reported = match diagnostic.kind {
                 FrontendDiagnosticKind::Type(error) => FileDiagnostic {
                     code: error.kind.as_kind_str().to_string(),
+                    style: matches!(error.kind, TypeErrorKind::Lint(_))
+                        && error.severity == hew_types::error::Severity::Warning,
                     message: error.message,
                     span: error.span,
                 },
@@ -347,16 +259,19 @@ fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
                     code: format!("parse {:?}", error.kind),
                     message: error.message,
                     span: error.span,
+                    style: false,
                 },
                 FrontendDiagnosticKind::Message(message) => FileDiagnostic {
                     code: message.code,
                     message: message.message,
                     span: message.span?,
+                    style: false,
                 },
                 FrontendDiagnosticKind::Hir(error) => FileDiagnostic {
                     code: format!("hir {:?}", error.kind),
                     message: error.note,
                     span: error.span,
+                    style: false,
                 },
             };
             Some((file, reported))
@@ -383,6 +298,7 @@ fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
                     code: format!("hir {:?}", error.kind),
                     message: error.note,
                     span: error.span,
+                    style: false,
                 },
             ));
         }
@@ -391,7 +307,6 @@ fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
         diagnostics,
         output,
         indices,
-        sources,
     }
 }
 
@@ -457,59 +372,12 @@ impl UnitCheck {
                 .is_some_and(|ty| ty.as_result().is_some());
         resolved || type_receiver
     }
-
-    /// Every ask of a source `receive fn`, by the handler's declaration site,
-    /// at the caller's location.
-    fn asks(&self, documents: &DocumentSet) -> HashMap<HandlerSite, Vec<Location>> {
-        let mut asks: HashMap<HandlerSite, Vec<Location>> = HashMap::new();
-        let Some(output) = &self.output else {
-            return asks;
-        };
-        for (key, kind) in &output.actor_method_dispatch {
-            let ActorMethodKind::Ask { method, .. } = kind else {
-                continue;
-            };
-            let Some(site) = output.defs.site(*method) else {
-                continue;
-            };
-            if site.kind() != hew_types::DeclarationKind::ActorReceive {
-                continue;
-            }
-            let Some(file) = site
-                .module()
-                .and_then(|module| output.defs.module_source(module))
-            else {
-                continue;
-            };
-            let Some(caller) = self.sources.get(&key.module_idx) else {
-                continue;
-            };
-            let Some(text) = documents.get(caller) else {
-                continue;
-            };
-            let (line, column) = crate::diagnostic::offset_to_line_col(text, key.start);
-            asks.entry(HandlerSite {
-                file: file.to_path_buf(),
-                actor: site.span().start,
-                index: site.ordinal(),
-            })
-            .or_default()
-            .push(Location {
-                file: caller.clone(),
-                line,
-                column,
-            });
-        }
-        for callers in asks.values_mut() {
-            callers.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
-        }
-        asks
-    }
 }
 
 /// The first diagnostic the conversion leaves in its file: one the file did
 /// not have before, matched by kind, message and the original position it
-/// maps back to, or a failure exit that still has no edge.
+/// maps back to, or a failure exit that still has no edge. A new style-lint
+/// warning is no refusal.
 fn first_new_diagnostic<'a>(
     before: &[FileDiagnostic],
     after: &'a [FileDiagnostic],
@@ -519,6 +387,9 @@ fn first_new_diagnostic<'a>(
     after.iter().find(|diagnostic| {
         if diagnostic.is_missing_edge() {
             return true;
+        }
+        if diagnostic.style {
+            return false;
         }
         let start = rewrite.original_offset(diagnostic.span.start);
         match unmatched.iter().position(|old| {
@@ -552,6 +423,7 @@ impl Edit {
 
 /// Part of a replacement: new text, or a range of the source carried over,
 /// which an edit nested inside it rewrites in turn.
+#[derive(PartialEq, Eq)]
 enum Piece {
     Text(String),
     Source(Range<usize>),
@@ -585,7 +457,7 @@ impl Rewrite {
 /// in text the outer edit replaces, cannot compose and reports its offset.
 fn render(source: &str, mut edits: Vec<Edit>) -> Result<Rewrite, usize> {
     edits.sort_by_key(|edit| (edit.range.start, std::cmp::Reverse(edit.range.end)));
-    edits.dedup_by(|a, b| a.range == b.range);
+    edits.dedup_by(|a, b| a.range == b.range && a.pieces == b.pieces);
     let mut rewrite = Rewrite {
         text: String::new(),
         segments: Vec::new(),
@@ -647,68 +519,54 @@ fn copy(source: &str, range: Range<usize>, rewrite: &mut Rewrite) {
         .push((start..rewrite.text.len(), range, true));
 }
 
-/// The rewrite of one file.
-#[derive(Default)]
-struct Plan {
-    edits: Vec<Edit>,
-    /// Converted `receive fn`s.
-    handlers: Vec<PlannedHandler>,
-}
-
-/// A `receive fn` the plan converts: its name's offset and name, where its
-/// actor's item starts and its index among the actor's handlers.
-struct PlannedHandler {
-    offset: usize,
-    name: String,
-    actor: usize,
-    index: u32,
-}
-
 /// Which body a callable has.
 enum Body<'a> {
     Block(&'a Block),
     Expr(&'a Spanned<Expr>),
 }
 
-fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Plan {
+/// The rewrites of one file.
+fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
     let parsed = hew_parser::parse(source);
-    let mut plan = Plan::default();
+    let mut edits = Vec::new();
     if !parsed.errors.is_empty() {
-        return plan;
+        return edits;
     }
     let planner = Planner { source, file, unit };
     let mut lambdas = LambdaFinder::default();
-    for (item, item_span) in &parsed.program.items {
-        let mut callable = |annotation: Option<&Spanned<TypeExpr>>,
-                            body: &Block,
-                            handler: Option<PlannedHandler>,
-                            plan: &mut Plan| {
-            hew_types::walk_block(body, &mut lambdas);
-            if planner.convert_declared(annotation, &Body::Block(body), plan) {
-                if let Some(handler) = handler {
-                    plan.handlers.push(handler);
-                }
-            }
-        };
+    // A handler's reply is its callers' contract, so a `receive fn` keeps
+    // its value form.
+    let mut callable = |annotation: Option<&Spanned<TypeExpr>>,
+                        body: &Block,
+                        handler: Option<&Span>,
+                        edits: &mut Vec<Edit>| {
+        hew_types::walk_block(body, &mut lambdas);
+        if let Some(span) = handler {
+            planner.keep_value_form(annotation, body, span, edits);
+        } else {
+            planner.convert_declared(annotation, &Body::Block(body), edits);
+        }
+    };
+    for (item, _) in &parsed.program.items {
         match item {
             Item::Function(function) if !function.is_generator => {
                 callable(
                     function.return_type.as_ref(),
                     &function.body,
                     None,
-                    &mut plan,
+                    &mut edits,
                 );
             }
             Item::Impl(implementation) => {
                 for method in implementation.methods.iter().filter(|m| !m.is_generator) {
-                    callable(method.return_type.as_ref(), &method.body, None, &mut plan);
+                    callable(method.return_type.as_ref(), &method.body, None, &mut edits);
                 }
             }
             Item::Trait(declaration) => {
                 for trait_item in &declaration.items {
                     if let TraitItem::Method(method) = trait_item {
                         if let Some(body) = &method.body {
-                            callable(method.return_type.as_ref(), body, None, &mut plan);
+                            callable(method.return_type.as_ref(), body, None, &mut edits);
                         }
                     }
                 }
@@ -717,30 +575,21 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Plan {
                 for body_item in &declaration.body {
                     if let TypeBodyItem::Method(method) = body_item {
                         if !method.is_generator {
-                            callable(method.return_type.as_ref(), &method.body, None, &mut plan);
+                            callable(method.return_type.as_ref(), &method.body, None, &mut edits);
                         }
                     }
                 }
             }
             Item::Actor(actor) => {
                 for method in actor.methods.iter().filter(|m| !m.is_generator) {
-                    callable(method.return_type.as_ref(), &method.body, None, &mut plan);
+                    callable(method.return_type.as_ref(), &method.body, None, &mut edits);
                 }
-                for (index, handler) in actor.receive_fns.iter().enumerate() {
-                    if handler.is_generator {
-                        continue;
-                    }
-                    let handler_plan = PlannedHandler {
-                        offset: handler.span.start,
-                        name: handler.name.to_string(),
-                        actor: item_span.start,
-                        index: u32::try_from(index).unwrap_or(u32::MAX),
-                    };
+                for handler in actor.receive_fns.iter().filter(|h| !h.is_generator) {
                     callable(
                         handler.return_type.as_ref(),
                         &handler.body,
-                        Some(handler_plan),
-                        &mut plan,
+                        Some(&handler.span),
+                        &mut edits,
                     );
                 }
             }
@@ -750,12 +599,12 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Plan {
     for (span, return_type, body) in std::mem::take(&mut lambdas.found) {
         let (return_type, body) = (return_type.as_ref(), &body);
         if return_type.is_some() {
-            planner.convert_declared(return_type, &Body::Expr(body), &mut plan);
+            planner.convert_declared(return_type, &Body::Expr(body), &mut edits);
         } else {
-            planner.convert_closure(&span, &Body::Expr(body), &mut plan);
+            planner.convert_closure(&span, &Body::Expr(body), &mut edits);
         }
     }
-    plan
+    edits
 }
 
 /// Every closure literal, with its declared return and body, cloned so the
@@ -780,9 +629,9 @@ impl NodeVisitor for LambdaFinder {
 /// The exits a body spells outside any nested callable.
 #[derive(Default)]
 struct Exits {
-    return_error: bool,
-    /// The operand of every postfix `?`; only one on a `Result` fails.
-    tries: Vec<Span>,
+    return_errors: Vec<(Span, Spanned<Expr>)>,
+    /// Every postfix `?` and its operand; only one on a `Result` fails.
+    tries: Vec<(Span, Span)>,
     returns: Vec<(Span, Spanned<Expr>)>,
 }
 
@@ -795,8 +644,8 @@ impl NodeVisitor for Exits {
 
     fn visit_expr(&mut self, expr: &Expr, span: &Span) {
         match expr {
-            Expr::ReturnError(_) => self.return_error = true,
-            Expr::PostfixTry(operand) => self.tries.push(operand.1.clone()),
+            Expr::ReturnError(value) => self.return_errors.push((span.clone(), (**value).clone())),
+            Expr::PostfixTry(operand) => self.tries.push((span.clone(), operand.1.clone())),
             Expr::Return(Some(value)) => self.returns.push((span.clone(), (**value).clone())),
             _ => {}
         }
@@ -815,24 +664,17 @@ struct Planner<'a> {
 
 impl Planner<'_> {
     /// Convert a callable declared `-> Result<T, E>` whose body needs an edge.
-    /// Returns whether it was converted.
     fn convert_declared(
         &self,
         annotation: Option<&Spanned<TypeExpr>>,
         body: &Body<'_>,
-        plan: &mut Plan,
-    ) -> bool {
-        let Some(annotation) = annotation else {
-            return false;
-        };
-        if matches!(annotation.0, TypeExpr::Fallible { .. }) {
-            return false;
-        }
-        let Some(declared) = self.unit.annotation_type(&annotation.1, self.file) else {
-            return false;
+        edits: &mut Vec<Edit>,
+    ) {
+        let Some((annotation, declared)) = self.declared_result(annotation) else {
+            return;
         };
         let Some((success, _)) = declared.as_result() else {
-            return false;
+            return;
         };
         let exits = Self::exits(body);
         let leaves = Self::tail_leaves(body);
@@ -845,21 +687,147 @@ impl Planner<'_> {
                     .is_some_and(|ty| *ty != declared && ty == success)
         });
         if !self.fails(&exits) && !wraps_tail {
-            return false;
+            return;
         }
         let Some(edit) = self.annotation_edit(annotation) else {
-            return false;
+            return;
         };
-        plan.edits.push(edit);
-        self.rewrite_exits(&declared, &exits, &leaves, plan);
-        true
+        edits.push(edit);
+        self.rewrite_exits(&declared, &exits, &leaves, edits);
+    }
+
+    /// A callable's `-> Result<T, E>` annotation, with the type it names; a
+    /// declared failure edge is none.
+    fn declared_result<'t>(
+        &self,
+        annotation: Option<&'t Spanned<TypeExpr>>,
+    ) -> Option<(&'t Spanned<TypeExpr>, Ty)> {
+        let annotation = annotation?;
+        if matches!(annotation.0, TypeExpr::Fallible { .. }) {
+            return None;
+        }
+        let declared = self.unit.annotation_type(&annotation.1, self.file)?;
+        declared.as_result()?;
+        Some((annotation, declared))
+    }
+
+    /// Keep a `receive fn` declared `-> Result<T, E>` in its value form: each
+    /// `?` on a `Result` in its body becomes the `match` that returns its
+    /// error as the reply's `.Err`, through `E.from` when the error types
+    /// differ, as `?` converted it.
+    fn keep_value_form(
+        &self,
+        annotation: Option<&Spanned<TypeExpr>>,
+        body: &Block,
+        handler_span: &Span,
+        edits: &mut Vec<Edit>,
+    ) {
+        let Some((annotation, declared)) = self.declared_result(annotation) else {
+            return;
+        };
+        let Some((success, error)) = declared.as_result() else {
+            return;
+        };
+        let exits = Self::exits(&Body::Block(body));
+        for (whole, payload) in &exits.return_errors {
+            edits.push(self.carry(whole, &payload.1, "return .Err(", ")"));
+        }
+        for leaf in Self::tail_leaves(&Body::Block(body)) {
+            if !Self::is_exit(&leaf.expr)
+                && self.variant_payload(&leaf.expr).is_none()
+                && self
+                    .unit
+                    .expr_type(&leaf.expr.1, self.file)
+                    .is_some_and(|ty| ty == success || *ty == Ty::Error)
+            {
+                edits.push(self.carry(&leaf.expr.1, &leaf.expr.1, ".Ok(", ")"));
+            }
+        }
+        if *success == Ty::Unit
+            && body.trailing_expr.is_none()
+            && !matches!(
+                body.stmts.last().map(|(stmt, _)| stmt),
+                Some(Stmt::Return(_))
+            )
+        {
+            if let Some(end) = self
+                .source
+                .get(handler_span.clone())
+                .and_then(|text| text.rfind('}'))
+            {
+                let end = handler_span.start + end;
+                edits.push(Edit::text(end..end, "\n.Ok(())\n"));
+            }
+        }
+        for (whole, operand) in exits.tries {
+            let Some((_, from)) = self
+                .unit
+                .expr_type(&operand, self.file)
+                .and_then(Ty::as_result)
+            else {
+                continue;
+            };
+            let returned = if from == error {
+                "error".to_string()
+            } else {
+                let Some(target) = self.error_text(annotation) else {
+                    continue;
+                };
+                format!("{target}.from(error)")
+            };
+            let whole = self.trimmed(&whole);
+            let (open, close) = if self.delimited(&whole) {
+                ("", "")
+            } else {
+                ("(", ")")
+            };
+            edits.push(Edit {
+                range: whole,
+                pieces: vec![
+                    Piece::Text(format!("{open}match ")),
+                    Piece::Source(self.trimmed(&operand)),
+                    Piece::Text(format!(
+                        " {{ .Ok(value) => value, .Err(error) => return .Err({returned}) }}{close}"
+                    )),
+                ],
+            });
+        }
+    }
+
+    /// Whether an expression standing at `range` ends where the expression
+    /// around it does: before `;`, `,` or a closing bracket. A `match` written
+    /// there needs no parentheses.
+    fn delimited(&self, range: &Range<usize>) -> bool {
+        self.source
+            .get(range.end..)
+            .and_then(|rest| rest.trim_start().chars().next())
+            .is_some_and(|next| matches!(next, ';' | ',' | ')' | ']' | '}'))
+    }
+
+    /// The source text of a `Result<T, E>` annotation's `E`.
+    fn error_text(&self, annotation: &Spanned<TypeExpr>) -> Option<&str> {
+        let (_, err) = Self::result_arguments(annotation)?;
+        self.text(&err.1)
+    }
+
+    fn result_arguments(
+        annotation: &Spanned<TypeExpr>,
+    ) -> Option<(&Spanned<TypeExpr>, &Spanned<TypeExpr>)> {
+        match &annotation.0 {
+            TypeExpr::Result { ok, err } => Some((ok.as_ref(), err.as_ref())),
+            TypeExpr::Named {
+                type_args: Some(args),
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
+            _ => None,
+        }
     }
 
     /// Rewrite the exits of a closure without a declared return whose body
     /// fails: such a closure takes a failure edge, so its `Ok`/`Err` exits
     /// become the value and `return error`. A `Result`-valued exit gains `?`
     /// when the checker typed the closure's `Result`.
-    fn convert_closure(&self, span: &Span, body: &Body<'_>, plan: &mut Plan) {
+    fn convert_closure(&self, span: &Span, body: &Body<'_>, edits: &mut Vec<Edit>) {
         let exits = Self::exits(body);
         if !self.fails(&exits) {
             return;
@@ -873,14 +841,14 @@ impl Planner<'_> {
             _ => Ty::Error,
         };
         let leaves = Self::tail_leaves(body);
-        self.rewrite_exits(&declared, &exits, &leaves, plan);
+        self.rewrite_exits(&declared, &exits, &leaves, edits);
     }
 
     /// Whether a body leaves through a failure edge: `return error`, or a
     /// `?` on an operand the checker did not type as an `Option`.
     fn fails(&self, exits: &Exits) -> bool {
-        exits.return_error
-            || exits.tries.iter().any(|operand| {
+        !exits.return_errors.is_empty()
+            || exits.tries.iter().any(|(_, operand)| {
                 self.unit
                     .expr_type(operand, self.file)
                     .is_none_or(|ty| ty.as_option().is_none())
@@ -896,15 +864,15 @@ impl Planner<'_> {
         exits
     }
 
-    fn rewrite_exits(&self, declared: &Ty, exits: &Exits, leaves: &[Leaf], plan: &mut Plan) {
+    fn rewrite_exits(&self, declared: &Ty, exits: &Exits, leaves: &[Leaf], edits: &mut Vec<Edit>) {
         for (span, value) in &exits.returns {
             if let Some(edit) = self.return_edit(span, value, declared) {
-                plan.edits.push(edit);
+                edits.push(edit);
             }
         }
         for leaf in leaves {
             if let Some(edit) = self.leaf_edit(leaf, declared) {
-                plan.edits.push(edit);
+                edits.push(edit);
             }
         }
     }
@@ -913,14 +881,7 @@ impl Planner<'_> {
     /// becomes `fails E`. A function-typed `T` is parenthesized, since
     /// `fails` would otherwise bind to its own return.
     fn annotation_edit(&self, annotation: &Spanned<TypeExpr>) -> Option<Edit> {
-        let (ok, err) = match &annotation.0 {
-            TypeExpr::Result { ok, err } => (ok.as_ref(), err.as_ref()),
-            TypeExpr::Named {
-                type_args: Some(args),
-                ..
-            } if args.len() == 2 => (&args[0], &args[1]),
-            _ => return None,
-        };
+        let (ok, err) = Self::result_arguments(annotation)?;
         let error = self.text(&err.1)?;
         let unit = matches!(&ok.0, TypeExpr::Tuple(elements) if elements.is_empty());
         if unit {
@@ -975,6 +936,11 @@ impl Planner<'_> {
             }
             Some((Variant::Ok, payload)) if Self::is_unit(payload) => {
                 Some(Edit::text(self.trimmed(&expr.1), "()"))
+            }
+            Some((Variant::Ok, payload)) if leaf.block_tail && Self::led_by_block(&payload.0) => {
+                // `match v { .. } == 10` at the start of a statement would end
+                // at the `match`'s `}`.
+                Some(self.carry(&expr.1, &payload.1, "(", ")"))
             }
             Some((Variant::Ok, payload)) => Some(self.carry(&expr.1, &payload.1, "", "")),
             Some((Variant::Err, payload)) => {
@@ -1082,6 +1048,38 @@ impl Planner<'_> {
             [CallArg::Positional(payload)] => Some((variant, payload)),
             _ => None,
         }
+    }
+
+    /// Whether `expr` is an operator or postfix chain whose leftmost operand
+    /// is a block-like expression.
+    fn led_by_block(expr: &Expr) -> bool {
+        let leftmost = match expr {
+            Expr::Binary { left: inner, .. }
+            | Expr::MethodCall {
+                receiver: inner, ..
+            }
+            | Expr::FieldAccess { object: inner, .. }
+            | Expr::Index { object: inner, .. }
+            | Expr::Cast { expr: inner, .. }
+            | Expr::Call {
+                function: inner, ..
+            }
+            | Expr::Coalesce { left: inner, .. }
+            | Expr::Is { lhs: inner, .. }
+            | Expr::PostfixTry(inner) => &inner.0,
+            Expr::Range {
+                start: Some(inner), ..
+            } => &inner.0,
+            _ => return false,
+        };
+        matches!(
+            leftmost,
+            Expr::Block(_)
+                | Expr::UnsafeBlock(_)
+                | Expr::If { .. }
+                | Expr::IfLet { .. }
+                | Expr::Match { .. }
+        ) || Self::led_by_block(leftmost)
     }
 
     fn is_unit(expr: &Spanned<Expr>) -> bool {
@@ -1251,6 +1249,7 @@ mod tests {
             code: code.to_string(),
             message: message.to_string(),
             span,
+            style: false,
         }
     }
 

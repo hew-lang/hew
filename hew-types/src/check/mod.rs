@@ -2596,7 +2596,7 @@ impl Checker {
             deferred_vec_admission: self.deferred_vec_admission.clone(),
             deferred_builtin_clone_admission: self.deferred_builtin_clone_admission.clone(),
             shadowed_method_type_param_reports: self.shadowed_method_type_param_reports.clone(),
-            eq_requirements: self.eq_requirements.clone(),
+            generic_requirements: self.generic_requirements.clone(),
             generic_fn_instantiation_sites: self.generic_fn_instantiation_sites.clone(),
             method_call_rewrites: self.method_call_rewrites.clone(),
             serial_layouts: self.serial_layouts.clone(),
@@ -3473,7 +3473,7 @@ impl Checker {
         self.finalize_hashmap_admission();
         self.finalize_hashset_admission();
         self.finalize_vec_admission();
-        self.finalize_eq_requirements();
+        self.finalize_generic_requirements();
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();

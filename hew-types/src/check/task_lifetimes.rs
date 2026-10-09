@@ -411,11 +411,10 @@ impl Checker {
             .map(|(binding, candidates)| (*binding, candidates.clone()))
             .collect();
         environment.sort_by_key(|(binding, _)| binding.0);
-        // An unresolved formal follows the program-wide flow graph. Recursive
-        // calls can project that same binding indefinitely without introducing
-        // a new value source. Concrete actuals retain their full projection key.
-        let visit_projections = if matches!(candidate, CallableCandidate::Formal(formal) if !actuals.contains_key(formal))
-        {
+        // Recursive calls can project the same checked formal indefinitely
+        // without introducing another value source. The actual environment
+        // still distinguishes nested applications at different call sites.
+        let visit_projections = if matches!(candidate, CallableCandidate::Formal(_)) {
             Vec::new()
         } else {
             projections.to_vec()

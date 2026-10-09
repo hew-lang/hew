@@ -2339,18 +2339,25 @@ impl ImplAssociatedType {
     }
 }
 
-/// An equality demand in the existing generic instantiation graph.
-/// Concrete comparisons are checked after registration and inference; generic
-/// comparisons use the same selected Eq authority after substitution.
+/// A type demand in the existing generic instantiation graph.
+/// Concrete demands are checked after registration and inference; abstract
+/// demands use the same type facts after call-site substitution.
 #[derive(Debug, Clone)]
-pub(super) struct EqRequirement {
+pub(super) struct GenericRequirement {
+    pub(super) kind: GenericRequirementKind,
     pub(super) ty: Ty,
     pub(super) owner_type_params: Vec<crate::ParamHead>,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
 }
 
-/// One generic function call site, recorded so structural-equality obligations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GenericRequirementKind {
+    Eq,
+    BorrowedTransfer { root: String },
+}
+
+/// One generic function call site, recorded so type obligations
 /// can be discharged per instantiation.
 ///
 #[derive(Debug, Clone)]
@@ -2361,7 +2368,7 @@ pub(super) struct GenericFnInstantiationSite {
     /// Partial, name-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
-    /// [`Checker::finalize_eq_requirements`] walk generic → generic call
+    /// [`Checker::finalize_generic_requirements`] walk generic → generic call
     /// edges from a concrete root instead of stopping at the first hop.
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     pub(super) span: Span,
@@ -2407,7 +2414,7 @@ pub(super) struct GenericCallEdge {
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
-/// One instantiation queued for structural-equality discharge.
+/// One instantiation queued for type-requirement discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
     pub(super) callee: String,
@@ -3281,11 +3288,11 @@ pub struct Checker {
     /// registering-module key emitted the same diagnostic once per module — the
     /// second copy landing at unrelated lines in the implementor's file.
     pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
-    /// Equality demands grouped by owning function; None covers expressions
+    /// Type demands grouped by owning function; None covers expressions
     /// outside a function. Resolved once concretely or through generic calls.
-    pub(super) eq_requirements: HashMap<Option<String>, Vec<EqRequirement>>,
+    pub(super) generic_requirements: HashMap<Option<String>, Vec<GenericRequirement>>,
     /// Every generic function call site observed while checking bodies, in
-    /// source order. Consumed alongside `eq_requirements`.
+    /// source order. Consumed alongside `generic_requirements`.
     pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
@@ -4374,7 +4381,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
             shadowed_method_type_param_reports: HashSet::new(),
-            eq_requirements: HashMap::new(),
+            generic_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
             method_call_rewrites: HashMap::new(),
             serial_layouts: HashMap::new(),

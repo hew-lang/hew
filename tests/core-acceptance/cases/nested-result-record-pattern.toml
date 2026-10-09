@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-result-record-pattern"
+intent = "Result payloads match checked generic record variants recursively, preserving declaration-order fields, literal predicates, guard fallthrough and managed payload cleanup."
+source = "cases/nested-result-record-pattern.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "filemissing\nfile:missing\nfile:missing\nother=broken\nOFFLINE\nREADY\nfile=missing\nother\nfile\noffline\nfile:GONE:7\nfile:retry\nfile:denied\ndetail-offline\nok4\n25890\n"
+exit = 0

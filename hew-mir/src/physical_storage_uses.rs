@@ -1,5 +1,9 @@
 use super::{ArgumentTransfer, BTreeSet, PhysicalOp, PhysicalTerminator, StorageId};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive physical storage reference contract"
+)]
 pub(super) fn operation_storage(
     operation: &PhysicalOp,
     used: &mut BTreeSet<StorageId>,
@@ -43,20 +47,20 @@ pub(super) fn operation_storage(
             defined.insert(*dest);
             used.extend([*lhs, *rhs]);
         }
-        PhysicalOp::TaskRace {
-            dest,
-            members: elements,
-            ..
-        }
-        | PhysicalOp::TupleMake { dest, elements } => {
-            defined.insert(*dest);
-            used.extend(elements);
-        }
         PhysicalOp::TupleGet { dest, tuple, .. } => {
             defined.insert(*dest);
             used.insert(*tuple);
         }
-        PhysicalOp::AggregateMake { dest, fields, .. }
+        PhysicalOp::TaskRace {
+            dest,
+            members: fields,
+            ..
+        }
+        | PhysicalOp::TupleMake {
+            dest,
+            elements: fields,
+        }
+        | PhysicalOp::AggregateMake { dest, fields, .. }
         | PhysicalOp::ArrayMake { dest, fields, .. }
         | PhysicalOp::VariantMake { dest, fields, .. }
         | PhysicalOp::ClosureMake { dest, fields, .. } => {

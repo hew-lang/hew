@@ -38,6 +38,48 @@ impl Checker {
             self.record_pattern_candidate_sources(right, ty, source);
             return;
         }
+        if let Pattern::RecordShorthand { fields, .. } = &pattern.0 {
+            let key = SpanKey::in_module(&pattern.1, self.current_module_idx);
+            let Some(plan) = self.pending_pattern_plans.get(&key).cloned() else {
+                return;
+            };
+            let crate::Ty::Named { head, .. } = self.subst.resolve(ty) else {
+                return;
+            };
+            let Some(owner) = head.nominal() else {
+                return;
+            };
+            for field in plan.fields {
+                let candidates = IndirectCallCandidates {
+                    known: source
+                        .known
+                        .iter()
+                        .map(|receiver| CallableCandidate::Field {
+                            receiver: Box::new(receiver.clone()),
+                            owner,
+                            index: field.decl_idx,
+                        })
+                        .collect(),
+                    may_be_unknown: source.may_be_unknown,
+                };
+                match field.sub {
+                    super::types::PlanSub::Binding(_) => {
+                        self.bind_pattern_candidates(&field.span, candidates);
+                    }
+                    super::types::PlanSub::Nested(_) => {
+                        if let Some(pattern) = fields
+                            .iter()
+                            .find(|source| source.name.name.as_str() == field.name)
+                            .and_then(|source| source.pattern.as_ref())
+                        {
+                            self.record_pattern_candidate_sources(pattern, &field.ty, &candidates);
+                        }
+                    }
+                    super::types::PlanSub::Wildcard | super::types::PlanSub::Literal(_) => {}
+                }
+            }
+            return;
+        }
         self.record_arm_resolution(&pattern.0, &pattern.1, ty);
         let key = SpanKey::in_module(&pattern.1, self.current_module_idx);
         let Some(resolution) = self.pending_pattern_resolutions.get(&key).cloned() else {

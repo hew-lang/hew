@@ -129,31 +129,32 @@ pub fn find_enclosing_hew_root(from: &std::path::Path) -> Option<PathBuf> {
 ///
 /// Each candidate counts only when it holds `std/builtins.hew`. The
 /// executable path is canonicalized first, so a `build/bin/hew` or Homebrew
-/// symlink resolves through to the real binary. No project path, working
-/// directory or environment variable participates; `HEW_STD` is applied by
+/// symlink resolves through to the real binary. If the running file has been
+/// replaced or unlinked, its canonical parent still identifies the toolchain.
+/// No project path, working directory or environment variable participates;
+/// `HEW_STD` is applied by
 /// [`stdlib_search_paths`]. When nothing matches, authority is unavailable
 /// and callers fail closed.
 #[must_use]
 pub fn compiler_stdlib_root() -> Option<PathBuf> {
-    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
-    compiler_stdlib_root_for_executable(&executable)
+    let directory = compiler_executable_directory()?;
+    compiler_stdlib_root_impl(&directory, &development_anchor())
 }
 
 /// The directories [`compiler_stdlib_root`] probes, in order, for a
 /// diagnostic that has to say where the std was looked for.
 #[must_use]
 pub fn compiler_stdlib_root_candidates() -> Vec<PathBuf> {
-    let Some(executable) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.canonicalize().ok())
-    else {
+    let Some(directory) = compiler_executable_directory() else {
         return Vec::new();
     };
-    stdlib_root_candidates(&executable, &development_anchor())
+    stdlib_root_candidates(&directory, &development_anchor())
 }
 
-fn compiler_stdlib_root_for_executable(executable: &std::path::Path) -> Option<PathBuf> {
-    compiler_stdlib_root_impl(executable, &development_anchor())
+fn compiler_executable_directory() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let resolved = executable.canonicalize().unwrap_or(executable);
+    resolved.parent()?.canonicalize().ok()
 }
 
 /// The checkout this crate was compiled from, and the build-profile
@@ -189,11 +190,11 @@ fn profile_dir_of_out_dir(out_dir: &std::path::Path) -> PathBuf {
 }
 
 fn stdlib_root_candidates(
-    executable: &std::path::Path,
+    executable_dir: &std::path::Path,
     anchor: &DevelopmentAnchor,
 ) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(prefix) = executable.parent().and_then(std::path::Path::parent) {
+    if let Some(prefix) = executable_dir.parent() {
         candidates.push(prefix.join("share/hew"));
         candidates.push(prefix.to_path_buf());
     }
@@ -203,18 +204,17 @@ fn stdlib_root_candidates(
     let canonical =
         |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let profile_dir = canonical(&anchor.profile_dir);
-    let executable_dir = executable.parent().map(canonical);
-    if executable_dir.is_some_and(|dir| dir.starts_with(&profile_dir)) {
+    if canonical(executable_dir).starts_with(&profile_dir) {
         candidates.push(anchor.checkout.clone());
     }
     candidates
 }
 
 fn compiler_stdlib_root_impl(
-    executable: &std::path::Path,
+    executable_dir: &std::path::Path,
     anchor: &DevelopmentAnchor,
 ) -> Option<PathBuf> {
-    stdlib_root_candidates(executable, anchor)
+    stdlib_root_candidates(executable_dir, anchor)
         .into_iter()
         .find(|root| root.join("std/builtins.hew").is_file())
         .and_then(|root| root.canonicalize().ok())
@@ -1803,7 +1803,7 @@ mod tests {
         let fhs = dir.root.join("fhs");
         ship_std(&fhs.join("share/hew"));
         assert_eq!(
-            compiler_stdlib_root_impl(&fhs.join("bin/hew"), &anchor),
+            compiler_stdlib_root_impl(&fhs.join("bin"), &anchor),
             fhs.join("share/hew").canonicalize().ok()
         );
 
@@ -1820,7 +1820,7 @@ mod tests {
             std::os::unix::fs::symlink(keg.join("bin/hew"), linked.join("hew")).unwrap();
             let resolved = linked.join("hew").canonicalize().unwrap();
             assert_eq!(
-                compiler_stdlib_root_impl(&resolved, &anchor),
+                compiler_stdlib_root_impl(resolved.parent().unwrap(), &anchor),
                 keg.join("share/hew").canonicalize().ok()
             );
         }
@@ -1829,13 +1829,13 @@ mod tests {
         let tarball = dir.root.join("hew-v0.6.0-linux-x86_64");
         ship_std(&tarball);
         assert_eq!(
-            compiler_stdlib_root_impl(&tarball.join("bin/hew"), &anchor),
+            compiler_stdlib_root_impl(&tarball.join("bin"), &anchor),
             tarball.canonicalize().ok()
         );
         let zip = dir.root.join("hew-v0.6.0-windows-x86_64");
         ship_std(&zip);
         assert_eq!(
-            compiler_stdlib_root_impl(&zip.join("bin").join("hew.exe"), &anchor),
+            compiler_stdlib_root_impl(&zip.join("bin"), &anchor),
             zip.canonicalize().ok()
         );
     }
@@ -1852,14 +1852,13 @@ mod tests {
             checkout: checkout.clone(),
             profile_dir: profile_dir.clone(),
         };
-        let built = profile_dir.join("hew");
         assert_eq!(
-            compiler_stdlib_root_impl(&built, &anchor),
+            compiler_stdlib_root_impl(&profile_dir, &anchor),
             checkout.canonicalize().ok(),
             "a binary inside its own build output resolves its checkout's std"
         );
         assert_eq!(
-            compiler_stdlib_root_impl(&profile_dir.join("deps/hew_types-abc123"), &anchor),
+            compiler_stdlib_root_impl(&profile_dir.join("deps"), &anchor),
             checkout.canonicalize().ok(),
             "a test executable in deps/ resolves it too"
         );
@@ -1899,11 +1898,11 @@ mod tests {
         let anchor = unrelated_anchor(&dir);
         let copied = dir.root.join("somewhere/else/hew");
         assert_eq!(
-            compiler_stdlib_root_impl(&copied, &anchor),
+            compiler_stdlib_root_impl(copied.parent().unwrap(), &anchor),
             None,
             "a binary copied outside any layout finds no std"
         );
-        let candidates = stdlib_root_candidates(&copied, &anchor);
+        let candidates = stdlib_root_candidates(copied.parent().unwrap(), &anchor);
         assert_eq!(
             candidates,
             vec![
@@ -1926,7 +1925,7 @@ mod tests {
             profile_dir: dir.root.join("build-checkout/target/release"),
         };
         assert_eq!(
-            compiler_stdlib_root_impl(&extracted, &anchor),
+            compiler_stdlib_root_impl(extracted.parent().unwrap(), &anchor),
             None,
             "the enclosing checkout's std is never used"
         );

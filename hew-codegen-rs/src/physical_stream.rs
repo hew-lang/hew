@@ -526,7 +526,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(at_capacity);
         self.emit_edge(full)?;
         self.builder.position_at_end(write_failed);
-        let fault = coro::external(
+        let fault = get_or_declare_external(
             self.llvm,
             "hew_stream_take_error_fault",
             pointer.fn_type(&[], false),

@@ -881,7 +881,7 @@ fn release_sink<'ctx>(
         .build_load(pointer, source, "sink.release.owner")
         .llvm_ctx("take sink owner for release")?
         .into_pointer_value();
-    let begin = coro::external(
+    let begin = get_or_declare_external(
         values.llvm,
         "hew_sink_release_begin",
         pointer.fn_type(&[pointer.into(); 2], false),
@@ -893,7 +893,7 @@ fn release_sink<'ctx>(
         "sink.release.cursor",
     )?
     .into_pointer_value();
-    let waker = coro::external(
+    let waker = get_or_declare_external(
         values.llvm,
         "hew_coro_state_waker",
         pointer.fn_type(&[pointer.into()], false),
@@ -904,7 +904,7 @@ fn release_sink<'ctx>(
         &[frame.state.into()],
         "sink.release.waker",
     )?;
-    let finish = coro::external(
+    let finish = get_or_declare_external(
         values.llvm,
         "hew_async_sink_finish",
         pointer.fn_type(&[pointer.into(); 2], false),

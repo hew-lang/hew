@@ -305,7 +305,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("resume successful I/O")?;
         self.builder.position_at_end(error);
         if operation.resume() == AsyncIoResume::Unit {
-            let fault = coro::external(
+            let fault = get_or_declare_external(
                 self.llvm,
                 "hew_stream_take_error_fault",
                 pointer.fn_type(&[], false),

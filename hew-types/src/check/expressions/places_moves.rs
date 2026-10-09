@@ -16,8 +16,8 @@ use super::super::types::GenericLambdaSig;
 use super::super::*;
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericRequirement, PendingInstantiation,
 };
 use crate::env::{LoopCarriedMove, PlaceConflict, PlacePath};
 use crate::BuiltinType;

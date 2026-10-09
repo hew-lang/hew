@@ -1,0 +1,13 @@
+[[case]]
+id = "generic-borrowed-return-callable"
+intent = "A concrete affine instantiation cannot return a borrowed generic parameter; admission reports the ownership error before lowering."
+source = "cases/generic-borrowed-return-callable.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+severity = "error"
+line = 8
+column = 20

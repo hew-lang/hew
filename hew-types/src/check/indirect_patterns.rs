@@ -38,81 +38,101 @@ impl Checker {
             self.record_pattern_candidate_sources(right, ty, source);
             return;
         }
-        if let Pattern::RecordShorthand { fields, .. } = &pattern.0 {
-            let key = SpanKey::in_module(&pattern.1, self.current_module_idx);
-            let Some(plan) = self.pending_pattern_plans.get(&key).cloned() else {
+        let key = SpanKey::in_module(&pattern.1, self.current_module_idx);
+        if let Some(resolution) = self.pending_pattern_resolutions.get(&key).cloned() {
+            if resolution.pattern_kind == PatternKind::Binding {
+                self.bind_pattern_candidates(&pattern.1, source.clone());
                 return;
+            }
+            let owner = if resolution.pattern_kind == PatternKind::StructPattern {
+                match self.subst.resolve(ty) {
+                    crate::Ty::Named { head, .. } => head.nominal(),
+                    _ => None,
+                }
+            } else {
+                None
             };
-            let crate::Ty::Named { head, .. } = self.subst.resolve(ty) else {
-                return;
-            };
-            let Some(owner) = head.nominal() else {
-                return;
-            };
-            for field in plan.fields {
-                let candidates = IndirectCallCandidates {
-                    known: source
-                        .known
-                        .iter()
-                        .map(|receiver| CallableCandidate::Field {
-                            receiver: Box::new(receiver.clone()),
-                            owner,
-                            index: field.decl_idx,
-                        })
-                        .collect(),
-                    may_be_unknown: source.may_be_unknown,
-                };
-                match field.sub {
-                    super::types::PlanSub::Binding(_) => {
-                        self.bind_pattern_candidates(&field.span, candidates);
-                    }
-                    super::types::PlanSub::Nested(_) => {
-                        if let Some(pattern) = fields
-                            .iter()
-                            .find(|source| source.name.name.as_str() == field.name)
-                            .and_then(|source| source.pattern.as_ref())
-                        {
-                            self.record_pattern_candidate_sources(pattern, &field.ty, &candidates);
-                        }
-                    }
-                    super::types::PlanSub::Wildcard | super::types::PlanSub::Literal(_) => {}
+            self.record_payload_candidate_sources(
+                &resolution.payload_bindings,
+                &resolution.payload_variant_patterns,
+                owner,
+                source,
+            );
+            return;
+        }
+        if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+            self.record_planned_pattern_candidates(pattern, ty, &plan, source);
+            return;
+        }
+        match (&pattern.0, self.subst.resolve(ty)) {
+            (Pattern::Tuple(patterns), crate::Ty::Tuple(types)) => {
+                for (index, (pattern, ty)) in patterns.iter().zip(types).enumerate() {
+                    let candidates = Self::project_pattern_candidates(source, None, index);
+                    self.record_pattern_candidate_sources(pattern, &ty, &candidates);
                 }
             }
-            return;
-        }
-        self.record_arm_resolution(&pattern.0, &pattern.1, ty);
-        let key = SpanKey::in_module(&pattern.1, self.current_module_idx);
-        let Some(resolution) = self.pending_pattern_resolutions.get(&key).cloned() else {
-            return;
-        };
-        if resolution.pattern_kind == PatternKind::Binding {
-            self.bind_pattern_candidates(&pattern.1, source.clone());
-            return;
-        }
-        let owner = if resolution.pattern_kind == PatternKind::StructPattern {
-            match self.subst.resolve(ty) {
-                crate::Ty::Named { head, .. } => head.nominal(),
-                _ => None,
+            (Pattern::Identifier(_), _) => {
+                self.bind_pattern_candidates(&pattern.1, source.clone());
             }
-        } else {
-            None
-        };
-        self.record_payload_candidate_sources(
-            &resolution.payload_bindings,
-            &resolution.payload_variant_patterns,
-            owner,
-            source,
-        );
+            _ => {}
+        }
     }
 
-    fn record_payload_candidate_sources(
+    fn record_planned_pattern_candidates(
         &mut self,
-        bindings: &[PayloadBinding],
-        nested: &[PayloadVariantPattern],
-        owner: Option<crate::NominalId>,
+        pattern: &Spanned<Pattern>,
+        ty: &crate::Ty,
+        plan: &super::types::PatternPlan,
         source: &IndirectCallCandidates,
     ) {
-        let project = |index: usize| IndirectCallCandidates {
+        let fields = match &pattern.0 {
+            Pattern::RecordShorthand { fields, .. }
+            | Pattern::NominalPath {
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+                ..
+            } => fields,
+            Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => fields,
+                _ => return,
+            },
+            _ => return,
+        };
+        let crate::Ty::Named { head, .. } = self.subst.resolve(ty) else {
+            return;
+        };
+        let Some(owner) = head.nominal() else {
+            return;
+        };
+        for field in &plan.fields {
+            let candidates = Self::project_pattern_candidates(
+                source,
+                Some(owner),
+                usize::try_from(field.decl_idx).expect("checked field index"),
+            );
+            match &field.sub {
+                super::types::PlanSub::Binding(_) => {
+                    self.bind_pattern_candidates(&field.span, candidates);
+                }
+                super::types::PlanSub::Nested(_) => {
+                    if let Some(pattern) = fields
+                        .iter()
+                        .find(|source| source.name.name.as_str() == field.name)
+                        .and_then(|source| source.pattern.as_ref())
+                    {
+                        self.record_pattern_candidate_sources(pattern, &field.ty, &candidates);
+                    }
+                }
+                super::types::PlanSub::Wildcard | super::types::PlanSub::Literal(_) => {}
+            }
+        }
+    }
+
+    fn project_pattern_candidates(
+        source: &IndirectCallCandidates,
+        owner: Option<crate::NominalId>,
+        index: usize,
+    ) -> IndirectCallCandidates {
+        IndirectCallCandidates {
             known: source
                 .known
                 .iter()
@@ -129,10 +149,22 @@ impl Checker {
                 })
                 .collect(),
             may_be_unknown: source.may_be_unknown,
-        };
+        }
+    }
+
+    fn record_payload_candidate_sources(
+        &mut self,
+        bindings: &[PayloadBinding],
+        nested: &[PayloadVariantPattern],
+        owner: Option<crate::NominalId>,
+        source: &IndirectCallCandidates,
+    ) {
         for binding in bindings {
             if let Some(span) = &binding.def_span {
-                self.bind_pattern_candidates(span, project(binding.field_idx));
+                self.bind_pattern_candidates(
+                    span,
+                    Self::project_pattern_candidates(source, owner, binding.field_idx),
+                );
             }
         }
         for pattern in nested {
@@ -140,7 +172,7 @@ impl Checker {
                 &pattern.bindings,
                 &pattern.nested,
                 None,
-                &project(pattern.field_idx),
+                &Self::project_pattern_candidates(source, owner, pattern.field_idx),
             );
         }
     }

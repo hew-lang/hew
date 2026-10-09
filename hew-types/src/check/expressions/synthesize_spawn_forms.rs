@@ -16,8 +16,8 @@ use super::super::types::GenericLambdaSig;
 use super::super::*;
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation, SpawnKey, SpawnSlot,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericRequirement, PendingInstantiation, SpawnKey, SpawnSlot,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
@@ -553,6 +553,7 @@ impl Checker {
                 scrutinee_place.clone(),
                 scrutinee_loan.clone(),
             );
+            self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
             self.record_pattern_value_sources(&arm.pattern, scrutinee_ty, scrutinee);
 
             let mut guard_diverges = false;

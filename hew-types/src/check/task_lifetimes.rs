@@ -31,6 +31,7 @@ pub(super) struct TaskLifetimes {
     scopes: Vec<LifetimeScope>,
     producers: HashMap<SpanKey, (TaskLifetime, IndirectCallCandidates)>,
     pub(super) scope_results: HashSet<SpanKey>,
+    pub(super) discarded_values: HashSet<SpanKey>,
     escapes: Vec<(SpanKey, IndirectCallCandidates, Boundary, Option<String>)>,
 }
 
@@ -143,16 +144,20 @@ impl Checker {
     }
 
     pub(super) fn leave_task_lifetime_scope(&mut self, block: &Block, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let discarded = self.task_lifetimes.discarded_values.contains(&key);
         if let Some(tail) = &block.trailing_expr {
-            self.record_task_escape(
-                tail,
-                Boundary::Return(TaskLifetime {
-                    owner: self.effect_graph.current_body.clone(),
-                    scope: Some(SpanKey::in_module(span, self.current_module_idx)),
-                }),
-            );
+            if !discarded {
+                self.record_task_escape(
+                    tail,
+                    Boundary::Return(TaskLifetime {
+                        owner: self.effect_graph.current_body.clone(),
+                        scope: Some(SpanKey::in_module(span, self.current_module_idx)),
+                    }),
+                );
+            }
         }
-        if block.trailing_expr.is_none() {
+        if block.trailing_expr.is_none() || discarded {
             self.task_lifetimes
                 .scope_results
                 .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -406,7 +411,15 @@ impl Checker {
             .map(|(binding, candidates)| (*binding, candidates.clone()))
             .collect();
         environment.sort_by_key(|(binding, _)| binding.0);
-        let visit = (candidate.clone(), projections.to_vec(), environment);
+        // Recursive calls can project the same checked formal indefinitely
+        // without introducing another value source. The actual environment
+        // still distinguishes nested applications at different call sites.
+        let visit_projections = if matches!(candidate, CallableCandidate::Formal(_)) {
+            Vec::new()
+        } else {
+            projections.to_vec()
+        };
+        let visit = (candidate.clone(), visit_projections, environment);
         if !seen.insert(visit.clone()) {
             return Vec::new();
         }

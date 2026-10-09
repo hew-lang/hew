@@ -282,7 +282,7 @@ impl Checker {
                 // satisfy the bound — so an affine resource can never reach a
                 // `T: Clone` position. This is the single template-capability
                 // authority for Clone. Equality demands use
-                // `finalize_eq_requirements` to select the exact concrete Eq
+                // `finalize_generic_requirements` to select the exact concrete Eq
                 // implementation at each instantiation.
                 if let Some(capability) = self.type_param_template_clone_capability(&resolved) {
                     return if capability {

@@ -40,6 +40,36 @@ mod removal;
 mod route_refusal;
 mod teardown;
 
+/// A connection actor with a real Noise channel whose peer half is dropped;
+/// for tests that never read what the actor sends.
+fn test_actor(conn_id: c_int) -> ConnectionActor {
+    ConnectionActor::new(conn_id, Arc::new(ChannelProtection::test_noise_pair().0))
+}
+
+/// A connection actor with a real Noise channel, plus the peer's half to open
+/// the frames it sends.
+fn test_actor_with_peer(conn_id: c_int) -> (ConnectionActor, snow::TransportState) {
+    let (channel, peer) = ChannelProtection::test_noise_pair();
+    (ConnectionActor::new(conn_id, Arc::new(channel)), peer)
+}
+
+/// A connection actor on a quic-mesh channel, whose frames pass through
+/// unchanged because the transport's TLS protects them.
+#[cfg(feature = "quic")]
+fn test_mesh_actor(conn_id: c_int) -> ConnectionActor {
+    ConnectionActor::new(conn_id, Arc::new(ChannelProtection::QuicMeshTls))
+}
+
+/// Open one recorded sealed frame with the peer's half of the channel.
+fn open_sent_frame(peer: &mut snow::TransportState, sealed: &[u8]) -> Vec<u8> {
+    let mut frame = vec![0u8; sealed.len()];
+    let n = peer
+        .read_message(sealed, &mut frame)
+        .expect("recorded frame opens with the peer's channel half");
+    frame.truncate(n);
+    frame
+}
+
 fn last_error_string() -> String {
     let error_ptr = crate::hew_last_error();
     assert!(!error_ptr.is_null(), "expected a last-error diagnostic");
@@ -81,7 +111,7 @@ unsafe fn free_test_manager_and_transport(mgr: *mut HewConnMgr, transport: *mut 
 #[test]
 fn connection_actor_drop_reports_reader_panic() {
     crate::hew_clear_error();
-    let mut actor = ConnectionActor::new(17);
+    let mut actor = test_actor(17);
     actor.reader_handle = Some(std::thread::spawn(|| panic!("reader intentional panic")));
 
     drop(actor);
@@ -258,12 +288,12 @@ fn test_node_session(route_slot: u16) -> crate::envelope::NodeSessionIdentity {
 #[cfg(feature = "profiler")]
 #[test]
 fn snapshot_connections_json_emits_expected_array() {
-    let mut active = ConnectionActor::new(7);
+    let mut active = test_actor(7);
     active.peer_node_id = 42;
     active.state.store(CONN_STATE_ACTIVE, Ordering::Relaxed);
     active.last_activity_ms.store(123, Ordering::Relaxed);
 
-    let mut draining = ConnectionActor::new(8);
+    let mut draining = test_actor(8);
     draining.peer_node_id = 9;
     draining.state.store(CONN_STATE_DRAINING, Ordering::Relaxed);
     draining.last_activity_ms.store(456, Ordering::Relaxed);
@@ -304,7 +334,7 @@ fn snapshot_connections_json_emits_expected_array() {
 
 #[test]
 fn conn_actor_states() {
-    let actor = ConnectionActor::new(0);
+    let actor = test_actor(0);
     assert_eq!(actor.state.load(Ordering::Relaxed), CONN_STATE_CONNECTING);
     actor.state.store(CONN_STATE_ACTIVE, Ordering::Relaxed);
     assert_eq!(actor.state.load(Ordering::Relaxed), CONN_STATE_ACTIVE);
@@ -316,7 +346,7 @@ fn conn_actor_states() {
 
 #[test]
 fn conn_actor_reader_stop_flag() {
-    let actor = ConnectionActor::new(5);
+    let actor = test_actor(5);
     let stop = Arc::clone(&actor.reader_stop);
     assert_eq!(stop.load(Ordering::Relaxed), 0);
     stop.store(1, Ordering::Relaxed);
@@ -356,7 +386,7 @@ fn swim_control_frame_bytes(payload: &SwimControlPayload) -> Vec<u8> {
 /// does mid-admission. Split out so the pre-install-window test can defer
 /// it until after the gate is already waiting.
 fn install_strict_conn(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, token: u64) {
-    let mut strict = ConnectionActor::new(conn_id);
+    let mut strict = test_actor(conn_id);
     strict.peer_node_id = node_id;
     strict.peer_identity = Some(test_node_identity(node_id));
     strict.peer_session_incarnation = 1;

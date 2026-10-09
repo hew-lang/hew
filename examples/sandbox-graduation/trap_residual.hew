@@ -16,14 +16,14 @@ fn result_err() -> Result<i64, string> {
     .Err("boom")
 }
 
-fn try_result_ok() -> Result<i64, string> {
+fn try_result_ok() -> i64 fails string {
     let value = result_ok()?;
-    .Ok(value + 1)
+    value + 1
 }
 
-fn try_result_err() -> Result<i64, string> {
+fn try_result_err() -> i64 fails string {
     let value = result_err()?;
-    .Ok(value + 1)
+    value + 1
 }
 
 fn try_option_some() -> Option<i64> {

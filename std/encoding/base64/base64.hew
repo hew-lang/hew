@@ -14,8 +14,9 @@
 //!     data.push(105);  // i
 //!     let s = base64.encode(data);
 //!     println(s);   // "SGk="
-//!     let back = base64.decode(s);
+//!     let back = base64.decode(s).expect("encoded text is Base64");
 //!     println(back.len());  // 2
+//!     println(f"{base64.decode("!!!!").is_err()}");  // true
 //! }
 //! ```
 
@@ -31,10 +32,20 @@ pub fn encode_url(data: bytes) -> string {
     encode_impl(data, true)
 }
 
-/// Decode a Base64 string to binary data.
-///
-/// Returns an empty `bytes` buffer if the input is not valid Base64.
-pub fn decode(s: string) -> bytes {
+/// Text that is not Base64.
+pub enum DecodeError {
+    /// The length cannot hold whole bytes: padded text that is not a multiple
+    /// of four characters, or one character left after the last full group.
+    InvalidLength(i64);
+    /// The character at `index` is not in the Base64 alphabet.
+    InvalidCharacter { index: i64; text: string; }
+}
+
+impl Error for DecodeError {}
+
+/// Decode a standard or URL-safe Base64 string to binary data. The empty
+/// string decodes to no bytes; any other text that is not Base64 fails.
+pub fn decode(s: string) -> bytes fails DecodeError {
     let slen = s.len();
     var out: bytes = bytes.new();
     if slen == 0 {
@@ -42,7 +53,7 @@ pub fn decode(s: string) -> bytes {
     }
     let has_padding = s.slice(slen - 1, slen) == "=";
     if has_padding && slen % 4 != 0 {
-        return bytes.new();
+        return error .InvalidLength(slen);
     }
     // Strip trailing '=' padding
     var data_len = slen;
@@ -58,7 +69,7 @@ pub fn decode(s: string) -> bytes {
         let ch = s.slice(i, i + 1);
         let v = decode_char(ch);
         if v < 0 {
-            return bytes.new();
+            return error .InvalidCharacter { index: i, text: ch };
         }
         vals.push(v as u8);
     }
@@ -78,7 +89,7 @@ pub fn decode(s: string) -> bytes {
     // Handle remaining values (from stripped padding)
     let remaining = nvals - i;
     if remaining == 1 {
-        return bytes.new();
+        return error .InvalidLength(slen);
     }
     if remaining == 2 {
         let a = vals[i];

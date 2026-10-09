@@ -129,7 +129,7 @@ struct SuspensionObligation {
 }
 
 /// The written boundary a body is supplied to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ObligationSlot {
     /// A callable type that never suspends, as the user wrote it.
     Callable(String),
@@ -380,11 +380,19 @@ impl Checker {
     ) {
         match (&self.subst.resolve(expected), &self.subst.resolve(actual)) {
             (Ty::Function { capabilities, .. }, Ty::Closure { identity, .. }) => {
-                if !capabilities.suspends {
+                let slot = ObligationSlot::Callable(expected.user_facing().to_string());
+                // A function tail is checked against its return and then the
+                // body against it again; one closure owes one slot once.
+                let owed = self
+                    .effect_graph
+                    .obligations
+                    .iter()
+                    .any(|owed| owed.body == *identity && owed.slot == slot);
+                if !capabilities.suspends && !owed {
                     self.effect_graph.obligations.push(SuspensionObligation {
                         body: identity.clone(),
                         key: SpanKey::in_module(span, self.current_module_idx),
-                        slot: ObligationSlot::Callable(expected.user_facing().to_string()),
+                        slot,
                         source_module: self.current_module.clone(),
                     });
                 }

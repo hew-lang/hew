@@ -72,6 +72,7 @@ pub(super) fn build_module_with_host<'ctx>(
     if let Some(debug) = &emitter.debug {
         debug.finalize();
     }
+    c_abi::seal_c_scalar_widening(&emitter.llvm)?;
     emitter
         .llvm
         .verify()

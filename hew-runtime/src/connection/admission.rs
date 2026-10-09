@@ -5,31 +5,27 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 
-#[cfg(feature = "encryption")]
-use zeroize::Zeroizing;
-
 use crate::node_identity::NodeId;
-use crate::peer_binding::{ClaimState, LiveClaim, PeerCredential, Posture};
+use crate::peer_binding::{ClaimState, LiveClaim, Posture};
 use crate::routing::hew_routing_remove_route_if_conn;
 use crate::set_last_error;
 use crate::util::MutexExt;
 
+use super::channel::{
+    channel_kind, establish as establish_channel, local_channel_key, ChannelRefusal,
+};
 use super::handshake::{
     close_transport_conn, handshake_exchange, local_handshake, peer_identity_compatible,
 };
-#[cfg(feature = "encryption")]
-use super::handshake::{supports_encryption, upgrade_noise};
 use super::identity_claim::{
     abort_identity_claim, publish_identity_connection_established, reserve_identity_claim,
     retire_identity_connection_publication, ClaimReservation,
 };
 use super::reader::reader_loop;
 use super::reconnect::next_publication_token;
-#[cfg(feature = "encryption")]
-use super::NOISE_PATTERN;
 use super::{
     ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr, SendConnMgr,
-    SendTransport, CONN_STATE_ACTIVE, CONN_STATE_CLOSED, NOISE_STATIC_PUBKEY_LEN,
+    SendTransport, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
 };
 
 pub(super) fn install_connection_actor(
@@ -137,57 +133,23 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     }
 
-    #[cfg_attr(
-        not(feature = "encryption"),
-        allow(
-            unused_mut,
-            reason = "filled by copy_from_slice only in the encryption-gated keypair block"
-        )
-    )]
-    let mut local_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
-    #[cfg(feature = "encryption")]
-    let local_noise_private = {
-        #[cfg(feature = "quic")]
-        let skip_noise = {
-            // SAFETY: mgr.transport is valid while the connection manager is alive.
-            unsafe {
-                crate::quic_transport::hew_transport_is_quic(mgr.transport)
-                    || crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
-            }
-        };
-        #[cfg(not(feature = "quic"))]
-        let skip_noise = false;
-        if skip_noise {
-            Zeroizing::new(Vec::new())
-        } else {
-            let Ok(pattern) = NOISE_PATTERN.parse() else {
-                // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-                unsafe { close_transport_conn(mgr.transport, conn_id) };
-                set_last_error("hew_connmgr_add: invalid noise pattern");
-                return -1;
-            };
-            if let Some(identity) = mgr.auth.noise_identity() {
-                // Stable per-node Noise identity (issue #2652, D1): present the same
-                // static key on every connection and across restarts so peers can
-                // pin it via `Node::allow_peer`. Retires per-connection keypair
-                // churn, which made a node's Noise public key unbindable.
-                local_noise_pubkey.copy_from_slice(&identity.public());
-                Zeroizing::new(identity.private().to_vec())
-            } else {
-                // No stable identity loaded (unconfigured / loopback-dev node): fall
-                // back to an ephemeral keypair. Such a node is `Unverified`
-                // (delivery-only); no peer pins its key, so churn is harmless.
-                let builder = snow::Builder::new(pattern);
-                let Ok(keypair) = builder.generate_keypair() else {
-                    // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-                    unsafe { close_transport_conn(mgr.transport, conn_id) };
-                    set_last_error("hew_connmgr_add: failed to generate noise keypair");
-                    return -1;
-                };
-                local_noise_pubkey.copy_from_slice(&keypair.public);
-                Zeroizing::new(keypair.private)
-            }
-        }
+    // The transport's ops identity alone decides the channel (#3332): TCP is
+    // Noise-protected, quic-mesh is TLS-protected, and any other transport
+    // carries no node traffic. Nothing the peer sends can select plaintext.
+    let refuse_channel = |refusal: ChannelRefusal| {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!("hew_connmgr_add: {refusal} (conn {conn_id})"));
+        -1
+    };
+    // SAFETY: mgr.transport is valid while the connection manager is alive.
+    let Some(channel) = (unsafe { channel_kind(mgr.transport) }) else {
+        return refuse_channel(ChannelRefusal::UnprotectedTransport);
+    };
+    // A stable per-node key (issue #2652, D1) so peers can pin it.
+    let (local_noise_pubkey, local_noise_private) = match local_channel_key(channel, &mgr.auth) {
+        Ok(key) => key,
+        Err(refusal) => return refuse_channel(refusal),
     };
 
     let (Some(local_identity), Some(local_session_incarnation)) =
@@ -228,11 +190,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     // `Unverified` connection (demonstrated-loopback dev, or the explicit
     // opt-out) is delivery-only. Credential-free posture rejects fire here,
     // before the credential is resolved:
-    //   * an unconfigured node (no peer bindings or stable credential) on a
-    //     non-loopback/Unknown endpoint has no way to authenticate the peer, so
-    //     the strict connection is rejected rather than silently admitted;
-    //   * a strict connection over a transport with no peer-credential channel
-    //     (plain quic / stub / Unknown) is rejected fail-closed.
+    // an unconfigured node (no peer bindings or stable credential) has no way
+    // to authenticate the peer, so the strict connection is rejected rather
+    // than silently admitted. A transport with no channel was refused above.
     // SAFETY: mgr.transport is valid while the manager is alive; conn_id is the
     // live handle being admitted.
     let remote_ip_class =
@@ -258,147 +218,26 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             ));
             return -1;
         }
-        if remote_ip_class == crate::peer_binding::RemoteIpClass::Unknown {
-            // Unknown transport class (plain quic / stub) has no peer-credential
-            // mechanism — a strict admission cannot be authenticated.
-            // SAFETY: mgr.transport and conn_id are valid per caller contract.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error(format!(
-                "hew_connmgr_add: strict binding unsupported on plain quic transport (use quic-mesh or tcp-noise) (conn {conn_id})"
-            ));
-            return -1;
-        }
     }
 
-    #[cfg(feature = "encryption")]
-    let skip_noise = {
-        #[cfg(feature = "quic")]
-        {
-            // QUIC provides TLS 1.3 encryption — skip Noise when using QUIC transport.
-            // SAFETY: mgr.transport is valid while the connection manager is alive.
-            unsafe {
-                crate::quic_transport::hew_transport_is_quic(mgr.transport)
-                    || crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
-            }
-        }
-        #[cfg(not(feature = "quic"))]
-        {
-            false
-        }
-    };
-
-    #[cfg(feature = "encryption")]
-    let upgraded_noise = if !skip_noise
-        && supports_encryption(local_hs.feature_flags)
-        && supports_encryption(peer_hs.feature_flags)
-    {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract;
-        // local_hs, peer_hs, and local_noise_private are valid stack-local references.
-        unsafe {
-            upgrade_noise(
-                mgr.transport,
-                conn_id,
-                &local_hs,
-                &peer_hs,
-                &local_noise_private,
-            )
-        }
-    } else {
-        None
-    };
-
-    // The authenticated peer credential this connection presents (issue #2652),
-    // used to bind the claimed `NodeId` in the claim machine below. Populated
-    // from the Noise static key for tcp-noise; mesh SPKI extraction is wired in
-    // a later slice. `None` under `Unverified` posture (loopback / opt-out).
-    #[cfg(feature = "encryption")]
-    let mut peer_credential: Option<PeerCredential> = None;
-
-    #[cfg(feature = "encryption")]
-    let upgraded_noise = if !skip_noise
-        && supports_encryption(local_hs.feature_flags)
-        && supports_encryption(peer_hs.feature_flags)
-    {
-        let Some((noise, peer_static_pubkey)) = upgraded_noise else {
-            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error(format!(
-                "hew_connmgr_add: noise upgrade failed for conn {conn_id}"
-            ));
-            return -1;
-        };
-        if posture == Posture::Strict && !mgr.auth.noise_pubkey_allowlisted(&peer_static_pubkey) {
-            // Per-node Noise pre-gate (issue #2652, D14): under strict posture
-            // the peer's stable Noise static key must be bound in THIS node's
-            // snapshot (via `allow_peer`) — not a process-global allowlist.
-            // `authorize` below then binds the key to the *claimed* NodeId; this
-            // pre-gate rejects an entirely unknown key early, before a claim is
-            // reserved. Under `Unverified` posture (loopback dev / opt-out)
-            // delivery is allowed without a binding.
-            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error(format!(
-                "hew_connmgr_add: peer key not allowlisted for conn {conn_id}"
-            ));
-            return -1;
-        }
-        if peer_hs.static_noise_pubkey != peer_static_pubkey {
-            // SAFETY: mgr.transport and conn_id are valid per caller contract.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error(format!(
-                "hew_connmgr_add: authenticated Noise key does not match the v2 handshake key for conn {conn_id}"
-            ));
-            return -1;
-        }
-        peer_credential = Some(PeerCredential::NoiseKey(peer_static_pubkey));
-        Some(noise)
-    } else {
-        None
-    };
-
-    // Resolve the credential for the claim machine (issue #2652, D2/D6):
-    //  - tcp-noise: the Noise static key recovered above (encryption build);
-    //  - quic-mesh: the peer's leaf-certificate SPKI (D6) — the mTLS handshake
-    //    already pinned the SPKI at the transport layer, so binding it here ties
-    //    the *claimed* NodeId to that authenticated key (an allowlisted key must
-    //    not claim a NodeId bound to a different key);
-    //  - otherwise (plain tcp without encryption / plain quic / Unknown):
-    //    credential-free (delivery-only / loopback dev).
-    #[cfg(feature = "encryption")]
-    let noise_credential: Option<PeerCredential> = peer_credential;
-    #[cfg(not(feature = "encryption"))]
-    let noise_credential: Option<PeerCredential> = None;
-
-    #[cfg(feature = "quic")]
-    // SAFETY: mgr.transport is valid while the manager is alive; conn_id is the
-    // live handle being admitted. A non-mesh/unknown conn yields None.
-    let peer_credential: Option<PeerCredential> = if unsafe {
-        crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
+    // Establish the channel and recover the authenticated peer credential
+    // (issue #2652, D2/D6): the Noise static key on TCP, the pinned leaf SPKI on
+    // quic-mesh. Claim reservation below binds it to the claimed NodeId.
+    // SAFETY: mgr.transport and conn_id are valid per caller contract; the
+    // records and the private key are stack-local.
+    let (protection, peer_credential) = match unsafe {
+        establish_channel(
+            channel,
+            mgr.transport,
+            conn_id,
+            &mgr.auth,
+            &local_hs,
+            &peer_hs,
+            &local_noise_private,
+        )
     } {
-        if peer_hs.static_noise_pubkey != [0; NOISE_STATIC_PUBKEY_LEN] {
-            // SAFETY: mgr.transport and conn_id are valid per caller contract.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error(format!(
-                    "hew_connmgr_add: quic-mesh v2 handshake carried a non-zero Noise key for conn {conn_id}"
-                ));
-            return -1;
-        }
-        // SAFETY: same caller contract as above.
-        unsafe { crate::quic_mesh::hew_transport_quic_mesh_peer_spki(mgr.transport, conn_id) }
-            .map(PeerCredential::Spki)
-    } else {
-        noise_credential
-    };
-    #[cfg(not(feature = "quic"))]
-    let peer_credential: Option<PeerCredential> = noise_credential;
-
-    let Some(peer_credential) = peer_credential else {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: authenticated transport credential unavailable for conn {conn_id}"
-        ));
-        return -1;
+        Ok(established) => established,
+        Err(refusal) => return refuse_channel(refusal),
     };
     let derived_peer_identity = peer_credential.node_id();
     if derived_peer_identity != peer_hs.node_id {
@@ -456,7 +295,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     };
 
-    let mut actor = ConnectionActor::new(conn_id);
+    let mut actor = ConnectionActor::new(conn_id, Arc::new(protection));
     actor.transport = mgr.transport;
     actor.publication_token = claim_token;
     // Stash the superseded claim on the actor so hew_connmgr_remove can
@@ -473,16 +312,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     actor.peer_feature_flags = peer_hs.feature_flags;
     actor.posture = posture;
     actor.credential = Some(peer_credential);
-    #[cfg(feature = "encryption")]
-    if let Some(noise) = upgraded_noise {
-        let Ok(mut guard) = actor.noise_transport.lock() else {
-            // Policy: per-connection state (C-ABI) — poisoned noise transport
-            // means this connection's encryption state is corrupted.
-            set_last_error("hew_connmgr_add: noise_transport mutex poisoned (a thread panicked)");
-            return -1;
-        };
-        *guard = Some(noise);
-    }
     actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
 
     // SAFETY: hew_now_ms has no preconditions.
@@ -501,8 +330,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let mgr_send = SendConnMgr(mgr_ptr);
     let peer_feature_flags = actor.peer_feature_flags;
     let reader_lifecycle_guard = mgr.reader_lifecycle.register();
-    #[cfg(feature = "encryption")]
-    let noise_transport = Arc::clone(&actor.noise_transport);
+    let channel = Arc::clone(&actor.channel);
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
@@ -517,8 +345,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
                 activity_send,
                 router,
                 peer_feature_flags,
-                #[cfg(feature = "encryption")]
-                noise_transport,
+                channel,
             );
         });
 

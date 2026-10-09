@@ -160,6 +160,27 @@ to routing, registry gossip, SWIM, asks, monitors, or links.
 An unbound credential, mismatched credential, duplicate identity owner,
 retired-identity replay, malformed key, or identity collision MUST fail closed.
 
+### 3.1 Channel protection
+
+Every node connection is authenticated and encrypted. No plaintext node
+transport exists, and the transport alone selects the protection; nothing a
+peer sends can select a weaker one.
+
+- **TCP** runs `Noise_XX_25519_ChaChaPoly_BLAKE2s` with the node's stable
+  static key directly after the record of §4. A TCP peer whose record does not
+  set feature bit `0` (Noise) MUST be refused before any actor traffic, as MUST
+  a failed Noise handshake.
+- **quic-mesh** relies on its mutually pinned TLS 1.3 session. Its record
+  carries a zero Noise key.
+- **Any other transport**, including plain QUIC and Unix sockets, carries no
+  node traffic.
+
+Every frame is sealed when sent and opened when received. A frame that fails
+authentication, or a TCP send that fails after spending its nonce, ends the
+connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
+carries at most 65 519 bytes. A dial that is refused returns
+`Err(NodeError.Config)` from `Node.connect`.
+
 ## 4. Protocol-epoch 2 handshake
 
 Every connection exchanges exactly 72 bytes before actor traffic:

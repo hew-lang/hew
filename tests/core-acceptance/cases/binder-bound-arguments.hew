@@ -58,9 +58,9 @@ fn read(n: i64) -> Result<i64, IoError> {
     if n > 0 { .Ok(n) } else { .Err(IoError { code: n }) }
 }
 
-fn checked<F: From<LowError> + From<IoError>>(n: i64) -> Result<i64, F> {
+fn checked<F: From<LowError> + From<IoError>>(n: i64) -> i64 fails F {
     let v = read(n)?;
-    .Ok(v)
+    v
 }
 
 trait Make {

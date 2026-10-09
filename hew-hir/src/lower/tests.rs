@@ -2431,9 +2431,9 @@ fn assert_option_try_match(expr: &HirExpr) {
 fn postfix_try_result_lowers_to_enum_match_returning_err() {
     let (_, _, lowered) = parse_typecheck_and_lower(
         r"
-            fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
+            fn pass(r: Result<i64, i64>) -> i64 fails i64 {
                 let x: i64 = r?;
-                .Ok(x)
+                x
             }
             ",
     );
@@ -2449,9 +2449,9 @@ fn postfix_try_result_lowers_to_enum_match_returning_err() {
 #[test]
 fn postfix_try_missing_checker_expr_type_is_diagnosed_and_unsupported() {
     let source = r"
-            fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
+            fn pass(r: Result<i64, i64>) -> i64 fails i64 {
                 let x: i64 = r?;
-                .Ok(x)
+                x
             }
         ";
     let parsed = hew_parser::parse(source);
@@ -2498,9 +2498,9 @@ fn postfix_try_preserves_opaque_payload_representation() {
             #[opaque]
             type Handle {}
 
-            fn pass(r: Result<Handle, string>) -> Result<Handle, string> {
+            fn pass(r: Result<Handle, string>) -> Handle fails string {
                 let handle = r?;
-                .Ok(handle)
+                handle
             }
             ",
     );
@@ -2635,9 +2635,9 @@ fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() 
                         .Err(error) => .Err(error),
                     }}
                 }}
-                fn result_probe(obj: Value) -> Result<Value, string> {{
+                fn result_probe(obj: Value) -> Value fails string {{
                     let child = required_field(obj, "field")?;
-                    .Ok(child)
+                    child
                 }}
                 fn option_probe(value: Option<Value>) -> Option<Value> {{
                     let child = value?;
@@ -2833,10 +2833,10 @@ fn postfix_try_in_non_result_returning_fn_stays_fail_closed() {
     assert!(
         lowered.diagnostics.iter().any(|d| matches!(
             &d.kind,
-            HirDiagnosticKind::NotYetImplemented { owning_pass, .. }
-                if owning_pass == "question-operator"
+            HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                if name == "`?` expression"
         )),
-        "HIR must fail closed for rejected `?`; got {:#?}",
+        "HIR must fail closed on a `?` the checker refused; got {:#?}",
         lowered.diagnostics
     );
 }

@@ -51,14 +51,27 @@ pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
     }
 }
 
+/// A random-byte request that could not be served.
+pub enum RandomError {
+    /// The requested length, which is negative.
+    NegativeLength(i64);
+    /// The requested length, which exceeds `max_random_bytes_len()`.
+    TooLong { len: i64; max: i64; }
+    /// The system entropy source failed.
+    EntropyUnavailable;
+    /// The native draw failed with an unrecognized status.
+    Failed(i64);
+}
+
+impl Error for RandomError {}
+
 /// Generate `len` cryptographically random bytes, reporting a request that
 /// could not be served.
 ///
 /// An empty result is only ever a `len == 0` draw. A negative length, a length
-/// above `max_random_bytes_len()`, and an entropy-source failure are reported as
-/// `Err` rather than returned as an empty buffer or answered by terminating
-/// the process.
-pub fn random_bytes(len: i64) -> Result<bytes, string> {
+/// above `max_random_bytes_len()`, and an entropy-source failure fail rather
+/// than return an empty buffer or terminate the process.
+pub fn random_bytes(len: i64) -> bytes fails RandomError {
     let drawn = unsafe {
         hew_random_bytes_hew(len)
     };
@@ -66,11 +79,11 @@ pub fn random_bytes(len: i64) -> Result<bytes, string> {
         hew_random_last_error_code()
     };
     match code {
-        0 => .Ok(drawn),
-        1 => .Err(f"crypto.random_bytes: invalid length {len} (must be >= 0)"),
-        2 => .Err(f"crypto.random_bytes: length {len} exceeds the public maximum {max_random_bytes_len()}"),
-        3 => .Err("crypto.random_bytes: the system entropy source failed"),
-        _ => .Err(f"crypto.random_bytes: failed with status {code}"),
+        0 => drawn,
+        1 => return error .NegativeLength(len),
+        2 => return error .TooLong { len: len, max: max_random_bytes_len() },
+        3 => return error .EntropyUnavailable,
+        _ => return error .Failed(code as i64),
     }
 }
 

@@ -22,7 +22,7 @@ fn classify(s: string) -> ParseOutcome {
     } else {
         match xml.parse(s) {
             .Ok(node) => ParseOutcome.Parsed(node),
-            .Err(message) => ParseOutcome.Failed(ParseError { message: message, offset: 0 }),
+            .Err(.Malformed(message)) => ParseOutcome.Failed(ParseError { message: message, offset: 0 }),
         }
     }
 }
@@ -38,7 +38,7 @@ fn result_resource_and_string_variants() {
             node.close();
             assert(false);
         }
-        .Err(message) => assert(message.starts_with("xml:")),
+        .Err(.Malformed(message)) => assert(message.starts_with("xml:")),
     }
 }
 
@@ -74,7 +74,7 @@ fn user_enum_resource_and_heap_siblings() {
 fn scalar_sibling_control() {
     let value = match xml.parse("<x/>") {
         .Ok(node) => ScalarSibling.Loaded(node),
-        .Err(reason) => panic(reason),
+        .Err(reason) => panic(f"{reason}"),
     };
     match value {
         ScalarSibling.Loaded(node) => assert(node.get_tag() == "x"),

@@ -55,20 +55,23 @@ pub(crate) fn respell_bare_variants(files: &mut [(PathBuf, String)]) -> Vec<Vari
         .min(units.len());
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                let unit = next.fetch_add(1, Ordering::Relaxed);
-                let Some((root, members)) = units.get(unit) else {
-                    break;
-                };
-                let members: Vec<_> = members
-                    .iter()
-                    .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
-                    .collect();
-                let outcome = respell_unit(root, &members, &documents);
-                *outcomes[unit]
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = outcome;
-            });
+            std::thread::Builder::new()
+                .stack_size(crate::COMPILER_STACK_SIZE)
+                .spawn_scoped(scope, || loop {
+                    let unit = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((root, members)) = units.get(unit) else {
+                        break;
+                    };
+                    let members: Vec<_> = members
+                        .iter()
+                        .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
+                        .collect();
+                    let outcome = respell_unit(root, &members, &documents);
+                    *outcomes[unit]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = outcome;
+                })
+                .expect("spawn a migration worker");
         }
     });
     let mut refusals = Vec::new();

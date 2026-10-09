@@ -827,6 +827,10 @@ pub enum TypeErrorKind {
     /// function's error type, erasable into its `dyn` error type, nor covered
     /// by a declared `impl From<E> for F`.
     ErrorNoConversion,
+    /// A failure exit (`return error`, or `?` on a `Result`) in a body with
+    /// no failure edge. A failure leaves only through a declared `fails E`;
+    /// a `-> Result<T, E>` return is a value its body produces (D578).
+    NoFailureEdge,
     /// An `impl From<S> for T` that the failure-edge rule cannot use: the
     /// identity conversion, a `dyn` target, or a bare type-parameter source.
     FromInvalid,
@@ -1550,6 +1554,7 @@ impl TypeErrorKind {
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::ResultDropped => "E_RESULT_DROPPED",
             Self::ErrorNoConversion => "E_ERROR_NO_CONVERSION",
+            Self::NoFailureEdge => "E_NO_FAILURE_EDGE",
             Self::FromInvalid => "E_FROM_INVALID",
             Self::BlockStatementValue => "E_BLOCK_STATEMENT_VALUE",
             Self::ActorRefCycle => "ActorRefCycle",

@@ -2,7 +2,6 @@
 
 use super::*;
 
-#[cfg(feature = "encryption")]
 #[test]
 fn two_node_remote_send_delivery() {
     let _guard = crate::runtime_test_guard();
@@ -926,7 +925,6 @@ fn two_node_worker_limit_still_reports_worker_at_capacity() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
     let _guard = crate::runtime_test_guard();
@@ -1072,7 +1070,6 @@ fn two_node_remote_nonvoid_empty_reply_returns_null() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn two_node_remote_ask_timeout_reports_timeout() {
     let _guard = crate::runtime_test_guard();
@@ -1139,7 +1136,6 @@ fn two_node_remote_ask_timeout_reports_timeout() {
 /// V2 distributed admission rejects a pair with local identities but no
 /// configured peer bindings before either side can install a route or create
 /// an outbound ask.
-#[cfg(feature = "encryption")]
 #[test]
 fn unconfigured_peer_pair_rejected_during_connection_admission() {
     let _guard = crate::runtime_test_guard();
@@ -1195,7 +1191,6 @@ fn unconfigured_peer_pair_rejected_during_connection_admission() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn node_stop_wakes_pending_remote_ask() {
     let _guard = crate::runtime_test_guard();
@@ -1270,7 +1265,6 @@ fn node_stop_wakes_pending_remote_ask() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn connection_drop_wakes_pending_remote_ask() {
     let _guard = crate::runtime_test_guard();
@@ -1380,7 +1374,6 @@ fn connection_drop_wakes_pending_remote_ask() {
 /// node-side fan-out (`fail_remote_asks_for_node`), with the socket left
 /// open so the only thing that resolves the ask is the failure-detector
 /// verdict — distinct from `ConnectionDropped`.
-#[cfg(feature = "encryption")]
 #[test]
 fn swim_dead_wakes_pending_remote_ask_with_partition() {
     let _guard = crate::runtime_test_guard();

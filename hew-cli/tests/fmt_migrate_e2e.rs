@@ -1,7 +1,7 @@
 //! `hew fmt --migrate` rewrites retired spellings: punctuation and paths
 //! syntactically, bare variants by the type the checker says their context
-//! expects. Type errors never block it, and any refusal leaves every file as
-//! it was.
+//! expects. Type errors never block it, a file that does not parse is
+//! skipped, and any other refusal leaves every file as it was.
 mod support;
 
 use std::path::Path;
@@ -93,40 +93,33 @@ fn migrate_does_not_type_check_what_it_rewrites() {
     assert!(migrated.contains("\"text\""), "{migrated}");
 }
 
+/// A file the migrator cannot read is named and left as it is; the rest of
+/// the tree still migrates, and the run reports the failure.
 #[test]
-fn a_refused_file_leaves_every_file_unwritten() {
+fn a_file_that_does_not_parse_is_skipped_and_the_rest_migrate() {
     let dir = support::tempdir();
     legacy_tree(dir.path());
     let bad = dir.path().join("greeting/bad.hew");
     std::fs::write(&bad, "import std::*;\npub fn broken() {}\n").unwrap();
-    let before = [
-        "greeting/greeting.hew",
-        "greeting/dog.hew",
-        "main.hew",
-        "greeting/bad.hew",
-    ]
-    .map(|file| std::fs::read(dir.path().join(file)).unwrap());
+    let before = std::fs::read(&bad).unwrap();
 
     let output = migrate(&[], dir.path());
     assert!(
         !output.status.success(),
-        "a removed glob import must refuse"
-    );
-    assert!(
-        stderr(&output).contains("migration refused")
-            && slashes(&stderr(&output))
-                .contains(&format!("{}:1:", slashes(&bad.display().to_string()))),
-        "a refusal names the file, line and column: {}",
+        "a skipped file fails the run: {}",
         stderr(&output)
     );
-    let after = [
-        "greeting/greeting.hew",
-        "greeting/dog.hew",
-        "main.hew",
-        "greeting/bad.hew",
-    ]
-    .map(|file| std::fs::read(dir.path().join(file)).unwrap());
-    assert_eq!(before, after);
+    assert!(
+        stderr(&output).contains("migration skipped")
+            && slashes(&stderr(&output))
+                .contains(&format!("{}:1:", slashes(&bad.display().to_string())))
+            && stderr(&output).contains("1 skipped"),
+        "a skip names the file, line and column: {}",
+        stderr(&output)
+    );
+    assert_eq!(std::fs::read(&bad).unwrap(), before);
+    let main = std::fs::read_to_string(dir.path().join("main.hew")).unwrap();
+    assert!(main.contains("import greeting.{empty_labels};"), "{main}");
 }
 
 /// Compare paths the way the report prints them on every host.
@@ -361,4 +354,264 @@ fn an_error_inside_a_payload_still_migrates() {
     assert!(output.status.success(), "{}", stderr(&output));
     let migrated = std::fs::read_to_string(&path).unwrap();
     assert!(migrated.contains(".Some(missing)"), "{migrated}");
+}
+
+/// A callable that fails through `?` or `return error`, or whose tail relied
+/// on the retired success wrapping, moves to its failure edge with its exits;
+/// a `-> Result` value return is left alone, and a second pass changes
+/// nothing (D578).
+#[test]
+fn migrate_moves_failing_callables_to_their_edge() {
+    let dir = support::tempdir();
+    let path = dir.path().join("edges.hew");
+    std::fs::write(
+        &path,
+        concat!(
+            "fn parse(text: string) -> Result<i64, string> {\n",
+            "    if text == \"\" {\n",
+            "        return .Err(\"empty\");\n",
+            "    }\n",
+            "    .Ok(1)\n",
+            "}\n",
+            "\n",
+            "fn twice(text: string) -> Result<i64, string> {\n",
+            "    let value = parse(text)?;\n",
+            "    if value > 9 {\n",
+            "        return .Err(\"too big\");\n",
+            "    }\n",
+            "    .Ok(value * 2)\n",
+            "}\n",
+            "\n",
+            "fn check(text: string) -> Result<(), string> {\n",
+            "    let _ = parse(text)?;\n",
+            "    if text == \"skip\" {\n",
+            "        return .Ok(());\n",
+            "    }\n",
+            "    .Ok(())\n",
+            "}\n",
+            "\n",
+            "fn forward(text: string) -> Result<i64, string> {\n",
+            "    let value = twice(text)?;\n",
+            "    match value {\n",
+            "        0 => parse(text),\n",
+            "        _ => .Ok(value),\n",
+            "    }\n",
+            "}\n",
+            "\n",
+            "fn total(items: Vec<string>) -> Result<i64, string> {\n",
+            "    let parsed = items.map(|text| {\n",
+            "        let value = parse(text)?;\n",
+            "        .Ok(value + 1)\n",
+            "    });\n",
+            "    var sum = 0;\n",
+            "    for item in parsed {\n",
+            "        sum = sum + item?;\n",
+            "    }\n",
+            "    .Ok(sum)\n",
+            "}\n",
+            "\n",
+            "actor Store {\n",
+            "    receive fn load(text: string) -> Result<i64, string> {\n",
+            "        let value = parse(text)?;\n",
+            "        .Ok(value)\n",
+            "    }\n",
+            "}\n",
+            "\n",
+            "fn main() {}\n",
+        ),
+    )
+    .unwrap();
+
+    let output = migrate(&[], dir.path());
+    assert!(output.status.success(), "{}", stderr(&output));
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    for spelling in [
+        // A value return without a failure exit keeps its form.
+        "fn parse(text: string) -> Result<i64, string> {",
+        "        return .Err(\"empty\");\n",
+        "fn twice(text: string) -> i64 fails string {",
+        "        return error \"too big\";\n",
+        "    value * 2\n",
+        "fn check(text: string) fails string {",
+        "        return;\n",
+        "fn forward(text: string) -> i64 fails string {",
+        "        0 => parse(text)?,\n",
+        "        _ => value,\n",
+        "fn total(items: Vec<string>) -> i64 fails string {",
+        "        value + 1\n",
+        "    sum\n",
+        "receive fn load(text: string) -> Result<i64, string> {",
+    ] {
+        assert!(
+            migrated.contains(spelling),
+            "missing `{spelling}`:\n{migrated}"
+        );
+    }
+    assert!(!migrated.contains(".Ok(())"), "{migrated}");
+
+    let again = migrate(&["--check"], dir.path());
+    assert!(again.status.success(), "{}", stderr(&again));
+}
+
+fn write_and_migrate(dir: &Path, name: &str, source: &str) -> (Output, String) {
+    let path = dir.join(name);
+    std::fs::write(&path, source).unwrap();
+    let output = migrate(&[], dir);
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    (output, migrated)
+}
+
+fn assert_runs(dir: &Path, name: &str, stdout: &str) {
+    let run = Command::new(hew_binary())
+        .arg("run")
+        .arg(dir.join(name))
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{}", stderr(&run));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), stdout);
+}
+
+/// An exit nested in another rewritten exit is rewritten inside it, and a
+/// qualified `Result.Ok`/`Result.Err` moves like the contextual spelling.
+#[test]
+fn nested_and_qualified_exits_move_to_the_edge() {
+    let dir = support::tempdir();
+    let (output, migrated) = write_and_migrate(
+        dir.path(),
+        "nested.hew",
+        concat!(
+            "fn parse(t: string) -> i64 fails string {\n",
+            "    if t == \"\" { return error \"empty\"; }\n",
+            "    7\n",
+            "}\n",
+            "fn pick(t: string, k: i64) -> Result<i64, string> {\n",
+            "    let base = parse(t)?;\n",
+            "    .Ok(match k {\n",
+            "        0 => return .Err(\"zero\"),\n",
+            "        n => n + base,\n",
+            "    })\n",
+            "}\n",
+            "fn qualified(t: string) -> Result<i64, string> {\n",
+            "    let n = parse(t)?;\n",
+            "    if n > 5 { return Result.Err(\"big\"); }\n",
+            "    Result.Ok(n)\n",
+            "}\n",
+            "fn main() {\n",
+            "    println(f\"{pick(\"a\", 0):?} {pick(\"a\", 2):?} {qualified(\"a\"):?}\");\n",
+            "}\n",
+        ),
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    for spelling in [
+        "fn pick(t: string, k: i64) -> i64 fails string {",
+        "        0 => return error \"zero\",\n",
+        "fn qualified(t: string) -> i64 fails string {",
+        "        return error \"big\";\n",
+        "    n\n",
+    ] {
+        assert!(
+            migrated.contains(spelling),
+            "missing `{spelling}`:\n{migrated}"
+        );
+    }
+    assert_runs(dir.path(), "nested.hew", "Err(zero) Ok(9) Err(big)\n");
+}
+
+/// A unit `Ok` that was an `else` branch's whole value leaves with its
+/// `else`, an `Err` tail becomes a `return error` statement, a `?` on an
+/// `Option` is no failure exit, and a function-typed success keeps its
+/// parentheses.
+#[test]
+fn edge_rewrites_keep_the_program_well_formed() {
+    let dir = support::tempdir();
+    let (output, migrated) = write_and_migrate(
+        dir.path(),
+        "shapes.hew",
+        concat!(
+            "fn parse(t: string) -> i64 fails string {\n",
+            "    if t == \"\" { return error \"empty\"; }\n",
+            "    3\n",
+            "}\n",
+            "fn send(t: string, status: i64) -> Result<(), string> {\n",
+            "    let d = parse(t)?;\n",
+            "    if status == d {\n",
+            "        .Err(\"absent\")\n",
+            "    } else {\n",
+            "        .Ok(())\n",
+            "    }\n",
+            "}\n",
+            "fn positive(v: i64) -> Option<i64> { if v > 0 { .Some(v) } else { .None } }\n",
+            "fn bump(xs: Vec<Option<i64>>) -> Vec<Option<i64>> {\n",
+            "    xs.map(|o| positive(o? + 1))\n",
+            "}\n",
+            "fn scale(t: string) -> Result<fn(i64) -> i64, string> {\n",
+            "    let k = parse(t)?;\n",
+            "    .Ok(|n: i64| n * k)\n",
+            "}\n",
+            "fn main() {\n",
+            "    println(f\"{send(\"a\", 3):?} {send(\"a\", 1):?}\");\n",
+            "    println(f\"{bump([.Some(1), .None]):?}\");\n",
+            "    match scale(\"a\") {\n",
+            "        .Ok(f) => println(f\"{f(2)}\"),\n",
+            "        .Err(e) => println(e),\n",
+            "    }\n",
+            "}\n",
+        ),
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    for spelling in [
+        "fn send(t: string, status: i64) fails string {",
+        "        return error \"absent\";\n    }\n}",
+        "    xs.map(|o| positive(o? + 1))\n",
+        "fn scale(t: string) -> (fn(i64) -> i64) fails string {",
+    ] {
+        assert!(
+            migrated.contains(spelling),
+            "missing `{spelling}`:\n{migrated}"
+        );
+    }
+    assert_runs(
+        dir.path(),
+        "shapes.hew",
+        "Err(absent) Ok(())\n[Some(2), None]\n6\n",
+    );
+}
+
+#[test]
+fn a_migrated_handler_preserves_its_reply_envelope() {
+    let dir = support::tempdir();
+    std::fs::write(
+        dir.path().join("store.hew"),
+        concat!(
+            "fn parse(t: string) -> i64 fails string {\n",
+            "    if t == \"\" { return error \"empty\"; }\n",
+            "    7\n",
+            "}\n",
+            "pub actor Store {\n",
+            "    receive fn load(text: string) -> Result<i64, string> {\n",
+            "        let value = parse(text)?;\n",
+            "        .Ok(value)\n",
+            "    }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("main.hew"),
+        concat!(
+            "import store;\n",
+            "fn main() {\n",
+            "    let s = spawn store.Store();\n",
+            "    match s.load(\"x\") {\n",
+            "        .Ok(.Ok(v)) => println(f\"ok {v}\"),\n",
+            "        .Ok(.Err(e)) => println(f\"err {e}\"),\n",
+            "        .Err(_) => println(\"ask failed\"),\n",
+            "    }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let output = migrate(&[], dir.path());
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_runs(dir.path(), "main.hew", "ok 7\n");
 }

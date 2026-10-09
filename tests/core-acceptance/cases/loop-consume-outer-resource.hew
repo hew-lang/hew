@@ -1,0 +1,19 @@
+// Closing a resource declared outside a loop on every iteration closes it
+// twice; the checker refuses the second iteration's use.
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+fn main() {
+    let t = Ticket { id: 1 };
+    for i in 0..2 {
+        t.close();
+    }
+}

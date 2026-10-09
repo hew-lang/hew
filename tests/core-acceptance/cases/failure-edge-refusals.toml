@@ -1,0 +1,31 @@
+[[case]]
+id = "failure-edge-refusals"
+intent = "A `-> Result` return is a value: its success value is not wrapped, and `?` or `return error` there, or in any body without `fails`, is `E_NO_FAILURE_EDGE`; the edge and value spellings are one fn type."
+source = "cases/failure-edge-refusals.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 15
+column = 5
+message = "expected `Result<i64, string>`, found `i64`"
+
+[[case.expected.diagnostics]]
+code = "E_NO_FAILURE_EDGE"
+line = 20
+column = 5
+message = "this body returns `Result<i64, string>` as a value"
+
+[[case.expected.diagnostics]]
+code = "E_NO_FAILURE_EDGE"
+line = 24
+column = 5
+message = "`return error` leaves through a failure edge"
+
+[[case.expected.diagnostics]]
+code = "E_NO_FAILURE_EDGE"
+line = 28
+column = 5
+message = "which this body does not declare"

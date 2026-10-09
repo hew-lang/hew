@@ -581,7 +581,6 @@ fn node_stop_unregisters_local_names() {
     crate::registry::hew_registry_clear();
 }
 
-#[cfg(feature = "encryption")]
 #[test]
 fn two_node_connect_and_handshake() {
     let _guard = crate::runtime_test_guard();

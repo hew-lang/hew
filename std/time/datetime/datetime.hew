@@ -30,17 +30,26 @@ pub fn now_secs() -> i64 {
     now_ms() / 1000
 }
 
+/// A timestamp that could not be formatted or text that could not be parsed,
+/// with the native reason.
+pub enum DateTimeError {
+    Format(string);
+    Parse(string);
+}
+
+impl Error for DateTimeError {}
+
 /// Format an epoch-millisecond timestamp using a strftime-style format string.
 ///
-/// Returns `Err(string)` when the epoch or format string is invalid.
-pub fn format(epoch_ms: i64, fmt: string) -> Result<string, string> {
+/// Fails with `DateTimeError.Format` when the epoch or format string is
+/// invalid.
+pub fn format(epoch_ms: i64, fmt: string) -> string fails DateTimeError {
     let formatted = format_raw(epoch_ms, fmt);
     let err = datetime_error_message();
-    if err.len() == 0 {
-        .Ok(formatted)
-    } else {
-        .Err(err)
+    if err.len() != 0 {
+        return error DateTimeError.Format(err);
     }
+    formatted
 }
 
 fn datetime_error_message() -> string {
@@ -66,17 +75,17 @@ fn component_or_panic(value: i64) -> i64 {
 /// Parse a datetime string using the given format and return epoch
 /// milliseconds.
 ///
-/// Returns `Err(string)` with the native parser message when parsing fails.
-pub fn parse(s: string, fmt: string) -> Result<i64, string> {
+/// Fails with `DateTimeError.Parse` and the native parser message when
+/// parsing fails.
+pub fn parse(s: string, fmt: string) -> i64 fails DateTimeError {
     let epoch_ms = unsafe {
         hew_datetime_parse(s, fmt) as i64
     };
     let err = datetime_error_message();
-    if err.len() == 0 {
-        .Ok(epoch_ms)
-    } else {
-        .Err(err)
+    if err.len() != 0 {
+        return error DateTimeError.Parse(err);
     }
+    epoch_ms
 }
 
 /// Extract the year component from an epoch-millisecond timestamp.

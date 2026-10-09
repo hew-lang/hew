@@ -357,6 +357,16 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
         Some(name) => {
             let remote = resolve_named_registry_or_exit(name);
             let mut c = client::RegistryClient::with_url(remote.api);
+            if let Some(mode) = remote.wire_names {
+                c = c.with_wire_names(mode);
+            }
+            if let Some(fallback) = remote.fallback_api {
+                c = if let Some(mode) = remote.fallback_wire_names {
+                    c.with_fallback_wire_names(fallback, mode)
+                } else {
+                    c.with_fallback(fallback)
+                };
+            }
             let cred_path = credentials::credentials_path();
             if let Ok(token) = credentials::get_named_token(&cred_path, name) {
                 c = c.with_token(token);
@@ -1313,6 +1323,7 @@ fn fetch_missing_packages(
         let version = &resolved.version;
 
         validate_registry_identity(name, version)?;
+        verify_supplied_package_signatures(&api_client, name, &resolved)?;
         if let Some(verified) =
             registry.verified_online_cache_entry(registry_id, name, version, &resolved.checksum)?
         {
@@ -1336,7 +1347,7 @@ fn fetch_missing_packages(
         };
 
         // Download the tarball.
-        let tarball_data = match api_client.download_tarball(dl_url) {
+        let tarball_data = match api_client.download_package_tarball(name, version, dl_url) {
             Ok(data) => data,
             Err(e) => {
                 eprintln!("download failed");
@@ -1356,44 +1367,6 @@ fn fetch_missing_packages(
             return Err(format!(
                 "tarball integrity check failed for {name}@{version}"
             ));
-        }
-
-        // Verify Ed25519 signature over the checksum.
-        if !resolved.sig.is_empty() && !resolved.key_fp.is_empty() {
-            match verify_package_signature(
-                &api_client,
-                &resolved.checksum,
-                &resolved.sig,
-                &resolved.key_fp,
-            ) {
-                Ok(()) => {}
-                Err(msg) => {
-                    eprintln!("SIGNATURE VERIFICATION FAILED");
-                    return Err(msg);
-                }
-            }
-        } else {
-            eprintln!("warning: package {name}@{version} is unsigned");
-        }
-
-        // Verify registry counter-signature if present (warn-only).
-        if let Some(ref reg_sig) = resolved.registry_sig {
-            if let Some(ref published_at) = resolved.published_at {
-                match verify_registry_signature(
-                    &api_client,
-                    name,
-                    version,
-                    &resolved.checksum,
-                    &resolved.sig,
-                    published_at,
-                    reg_sig,
-                ) {
-                    Ok(()) => {}
-                    Err(msg) => {
-                        eprintln!("warning: registry signature verification failed for {name}@{version}: {msg}");
-                    }
-                }
-            }
         }
 
         validate_downloaded_registry_manifest(&tarball_data, name)?;
@@ -1586,6 +1559,45 @@ fn validate_registry_identity(name: &str, version: &str) -> Result<(), String> {
 
 /// Verify an Ed25519 signature over a checksum by fetching the public key
 /// from the registry.
+fn verify_supplied_package_signatures(
+    api_client: &client::RegistryClient,
+    name: &str,
+    entry: &resolver::ResolvedEntry,
+) -> Result<(), String> {
+    match (entry.sig.is_empty(), entry.key_fp.is_empty()) {
+        (true, true) => eprintln!("warning: package {name}@{} is unsigned", entry.version),
+        (false, false) => {
+            verify_package_signature(api_client, &entry.checksum, &entry.sig, &entry.key_fp)?;
+        }
+        _ => {
+            return Err(format!(
+                "incomplete publisher signature for {name}@{}",
+                entry.version
+            ))
+        }
+    }
+    match (&entry.registry_sig, &entry.published_at) {
+        (None, None) => {}
+        (Some(signature), Some(timestamp)) => verify_registry_signature(
+            api_client,
+            &entry.registry_name,
+            &entry.version,
+            &entry.checksum,
+            &entry.sig,
+            timestamp,
+            signature,
+        )?,
+        _ => {
+            return Err(format!(
+                "incomplete registry signature for {name}@{}",
+                entry.version
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// Verify the publisher's checksum signature using the registered public key.
 fn verify_package_signature(
     api_client: &client::RegistryClient,
     checksum: &str,
@@ -2702,8 +2714,7 @@ fn cmd_deprecate(
     let api_client = client::RegistryClient::new().with_token(token);
 
     if undo {
-        // Undo deprecation — pass None for both.
-        match api_client.deprecate(&name, None, None) {
+        match api_client.set_deprecation(&name, false, None, None) {
             Ok(()) => println!("Undid deprecation of {name}"),
             Err(e) => {
                 eprintln!("hew deprecate: {e}");

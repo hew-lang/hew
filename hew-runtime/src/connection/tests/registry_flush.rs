@@ -45,6 +45,11 @@ unsafe extern "C" fn fail_once_then_record_send(
 /// cluster's registered names (the third lookup-unresolved mechanism): the
 /// failed frames are PARKED, a stale admission token cannot consume them,
 /// and the connection's next inbound-frame retry delivers them.
+// Retrying on the same connection needs a channel without nonce state: a
+// failed send on a Noise channel faults it (see
+// `channel::tests::noise_send_failure_faults_the_channel_without_reusing_a_nonce`),
+// so the retry tests run over the quic-mesh channel.
+#[cfg(feature = "quic")]
 #[test]
 fn failed_gossip_flush_parks_frames_and_retry_delivers() {
     let state = Box::into_raw(Box::new(FailingOnceSends {
@@ -77,7 +82,7 @@ fn failed_gossip_flush_parks_frames_and_retry_delivers() {
         let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
         assert!(!mgr.is_null());
 
-        let mut peer = ConnectionActor::new(10);
+        let mut peer = test_mesh_actor(10);
         peer.peer_node_id = 2;
         peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         peer.posture = crate::peer_binding::Posture::Strict;
@@ -149,6 +154,7 @@ fn failed_gossip_flush_parks_frames_and_retry_delivers() {
 /// broadcast REMOVE for a name whose ADD is still parked must queue BEHIND
 /// the parked ADD, and the retry must deliver both in original order — the
 /// receiver's final state is the REMOVE, never a replayed stale ADD.
+#[cfg(feature = "quic")]
 #[test]
 fn broadcast_parks_behind_undelivered_flush_preserving_order() {
     let state = Box::into_raw(Box::new(FailingOnceSends {
@@ -181,7 +187,7 @@ fn broadcast_parks_behind_undelivered_flush_preserving_order() {
         let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
         assert!(!mgr.is_null());
 
-        let mut peer = ConnectionActor::new(10);
+        let mut peer = test_mesh_actor(10);
         peer.peer_node_id = 2;
         peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         peer.posture = crate::peer_binding::Posture::Strict;
@@ -288,7 +294,7 @@ fn retry_attempts_ceiling_drops_parked_frames() {
         let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
         assert!(!mgr.is_null());
 
-        let mut peer = ConnectionActor::new(10);
+        let mut peer = test_actor(10);
         peer.peer_node_id = 2;
         peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         peer.posture = crate::peer_binding::Posture::Strict;
@@ -460,7 +466,7 @@ fn control_frame_before_install_applies_registry_event_after_real_publish() {
 
         // Steps 3+4 (real): install, then publish, exactly as
         // hew_connmgr_add does after spawning the reader.
-        let mut actor = ConnectionActor::new(30);
+        let mut actor = test_actor(30);
         actor.peer_node_id = 5;
         actor.publication_token = token;
         actor.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;

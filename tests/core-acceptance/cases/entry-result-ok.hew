@@ -20,9 +20,8 @@ fn check(value: i64) -> Result<(), AppError> {
     .Ok(())
 }
 
-fn main() -> Result<(), AppError> {
+fn main() fails AppError {
     let held = "held:" + "ok";
     check(1)?;
     println(held);
-    .Ok(())
 }

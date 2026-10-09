@@ -913,44 +913,28 @@ impl Checker {
         self.check_function_as(fd, &fn_name);
     }
 
-    /// Check a function body with the tail Ok-coercion armed for an explicit
-    /// `Result<_, _>` return.
-    ///
-    /// Arms `tail_ok_armed` only when `resolved_expected_ret` is `Result<_, _>`
-    /// and the function is not a generator (whose body yields Unit, not the
-    /// declared type). `check_block` and `synthesize` disarm the flag everywhere
-    /// but genuine function-return tail positions, so the coercion performed in
-    /// `check_against` is strictly tail-only and never fires in a non-tail
-    /// expression position.
-    fn check_body_with_tail_ok_coercion(
-        &mut self,
-        fd: &FnDecl,
-        resolved_expected_ret: &Ty,
-        block_expected: Option<&Ty>,
-    ) -> Ty {
-        let prev_tail_ok_armed = self.tail_ok_armed;
-        if self.current_fails {
-            self.tail_ok_armed = false;
-            let actual = self.check_block(&fd.body, block_expected);
-            if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
-                if let Some(tail) = &fd.body.trailing_expr {
-                    self.tail_ok_coercions
-                        .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
-                } else if actual == Ty::Unit {
-                    if let Some(annotation) = &fd.return_type {
-                        self.result_return_coercions.insert(
-                            SpanKey::in_module(&annotation.1, self.current_module_idx),
-                            super::ResultReturnKind::Success,
-                        );
-                    }
+    /// Check a function body. A body with a failure edge produces its
+    /// success value: the tail is wrapped as `Ok(tail)`, and a unit body that
+    /// falls off its end returns `Ok(())`. Every other body is checked as
+    /// written; a `-> Result<T, E>` return is a value the body produces.
+    fn check_function_block(&mut self, fd: &FnDecl, block_expected: Option<&Ty>) -> Ty {
+        let actual = self.check_block(&fd.body, block_expected);
+        if self.current_failure_edge.is_some()
+            && !fd.is_generator
+            && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error)
+        {
+            if let Some(tail) = &fd.body.trailing_expr {
+                self.tail_ok_coercions
+                    .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
+            } else if actual == Ty::Unit {
+                if let Some(annotation) = &fd.return_type {
+                    self.result_return_coercions.insert(
+                        SpanKey::in_module(&annotation.1, self.current_module_idx),
+                        super::ResultReturnKind::Success,
+                    );
                 }
             }
-            self.tail_ok_armed = prev_tail_ok_armed;
-            return actual;
         }
-        self.tail_ok_armed = !fd.is_generator && resolved_expected_ret.as_result().is_some();
-        let actual = self.check_block(&fd.body, block_expected);
-        self.tail_ok_armed = prev_tail_ok_armed;
         actual
     }
 
@@ -1105,11 +1089,8 @@ impl Checker {
         };
         // Generator bodies don't return the declared type — they yield it.
         // The body itself should return Unit (falls off the end).
-        let prev_fails = self.current_fails;
-        self.current_fails = matches!(
-            fd.return_type.as_ref().map(|ty| &ty.0),
-            Some(TypeExpr::Fallible { .. })
-        );
+        let edge = self.function_failure_edge(fd, &declared_ret);
+        let prev_failure_edge = std::mem::replace(&mut self.current_failure_edge, edge);
         let expected_ret = self.function_body_return_type(fd, &declared_ret);
         // Store the declared yields type so Expr::Yield can check against it.
         self.current_return_type = Some(declared_ret);
@@ -1131,8 +1112,7 @@ impl Checker {
         } else {
             Some(&expected_ret)
         };
-        let actual =
-            self.check_body_with_tail_ok_coercion(fd, &resolved_expected_ret, block_expected);
+        let actual = self.check_function_block(fd, block_expected);
         // A completely empty body on a method whose `Self` is a compiler
         // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
@@ -1189,7 +1169,7 @@ impl Checker {
         self.classify_stack_hints(fd);
 
         self.in_generator = prev_in_generator;
-        self.current_fails = prev_fails;
+        self.current_failure_edge = prev_failure_edge;
         self.current_return_type = None;
         self.current_function = prev_function;
         if in_actor {
@@ -1200,13 +1180,32 @@ impl Checker {
         self.machine_body_owner = prev_machine_body_owner;
     }
 
+    /// The failure edge `fd` declares. A failing generator's edge is its
+    /// item type's error, since each item is a `Result<Y, E>`; such a
+    /// generator is published for HIR.
+    fn function_failure_edge(&mut self, fd: &FnDecl, declared: &Ty) -> Option<Ty> {
+        let edge_carrier = if fd.is_generator {
+            declared
+                .as_generator()
+                .map_or(Ty::Error, |(yields, _)| yields.clone())
+        } else {
+            declared.clone()
+        };
+        let edge = failure_edge(fd.return_type.as_ref(), &edge_carrier);
+        if fd.is_generator && edge.is_some() {
+            self.failing_generators
+                .insert(SpanKey::in_module(&fd.fn_span, self.current_module_idx));
+        }
+        edge
+    }
+
     fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {
-        if self.current_fails {
+        if fd.is_generator {
+            Ty::Unit
+        } else if self.current_failure_edge.is_some() {
             declared
                 .as_result()
                 .map_or(Ty::Error, |(success, _)| success.clone())
-        } else if fd.is_generator {
-            Ty::Unit
         } else {
             declared.clone()
         }
@@ -1794,11 +1793,14 @@ impl Checker {
         }
     }
 
-    /// Close the innermost loop boundary and report deferred fields whose
-    /// initialization differs between its entry and its exits.
-    pub(super) fn exit_loop_checked(&mut self) {
-        let conflicts = self.env.exit_loop();
-        self.report_deferred_init_conflicts(&conflicts);
+    /// Close the innermost loop boundary. Reports deferred fields whose
+    /// initialization differs between its entry and its exits, and values an
+    /// iteration consumes that the next iteration uses again. `body_ty` is
+    /// the checked body's type: a `!` body never reaches its back edge.
+    pub(super) fn exit_loop_checked(&mut self, body_ty: &Ty) {
+        let exit = self.env.exit_loop(!Self::arm_skips_join(body_ty));
+        self.report_deferred_init_conflicts(&exit.deferred_init_conflicts);
+        self.report_loop_carried_moves(&exit.carried_moves);
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when
@@ -2597,15 +2599,13 @@ impl Checker {
         // `return error e`, `?`, and a bare success tail the compiler wraps.
         // The body is checked against the success type, and the declared
         // `Result` stays in `current_return_type` for `return` and `?`.
-        let prev_fails = self.current_fails;
-        self.current_fails = !rf.is_generator
-            && matches!(
-                rf.return_type.as_ref().map(|ty| &ty.0),
-                Some(TypeExpr::Fallible { .. })
-            );
+        // A failing stream handler's edge is its item type's error, as a
+        // failing `gen fn`'s is.
+        let edge = failure_edge(rf.return_type.as_ref(), &declared_ret);
+        let prev_failure_edge = std::mem::replace(&mut self.current_failure_edge, edge);
         let expected_ret = if rf.is_generator {
             Ty::Unit
-        } else if self.current_fails {
+        } else if self.current_failure_edge.is_some() {
             declared_ret
                 .as_result()
                 .map_or(Ty::Error, |(success, _)| success.clone())
@@ -2639,12 +2639,11 @@ impl Checker {
         } else {
             Some(&expected_ret)
         };
-        let prev_tail_ok_armed = self.tail_ok_armed;
-        if self.current_fails {
-            self.tail_ok_armed = false;
-        }
         let actual = self.check_block(&rf.body, block_expected);
-        if self.current_fails && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+        if self.current_failure_edge.is_some()
+            && !rf.is_generator
+            && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error)
+        {
             if let Some(tail) = &rf.body.trailing_expr {
                 self.tail_ok_coercions
                     .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
@@ -2657,7 +2656,6 @@ impl Checker {
                 }
             }
         }
-        self.tail_ok_armed = prev_tail_ok_armed;
         if !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
             self.expect_type(
                 &expected_ret,
@@ -2669,7 +2667,7 @@ impl Checker {
             );
         }
 
-        self.current_fails = prev_fails;
+        self.current_failure_edge = prev_failure_edge;
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;
         self.in_actor_handler_context = prev_actor_handler_context;
@@ -2787,8 +2785,9 @@ impl Checker {
         span: &Span,
     ) {
         let trait_display = self.defs.display(trait_id).to_string();
+        let target = self.normalize_for_use(target);
         for super_trait in self.trait_closure(trait_id).into_iter().skip(1) {
-            if self.has_trait_impl(target, super_trait) {
+            if self.has_trait_impl(&target, super_trait) {
                 continue;
             }
             let super_display = self.defs.display(super_trait).to_string();
@@ -3038,6 +3037,21 @@ fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
         Ty::Named { head, args }
             if args.is_empty() && !head.is_param() && head.registry_key() == source_identity
     )
+}
+
+/// The failure edge a callable's return annotation declares: the `E` of
+/// `-> T fails E`, or `None` for a value return. An annotation whose types
+/// failed to resolve keeps an edge of `Ty::Error`, so its body's exits are
+/// not refused a second time.
+pub(super) fn failure_edge(
+    annotation: Option<&hew_parser::ast::Spanned<TypeExpr>>,
+    declared: &Ty,
+) -> Option<Ty> {
+    matches!(annotation.map(|ty| &ty.0), Some(TypeExpr::Fallible { .. })).then(|| {
+        declared
+            .as_result()
+            .map_or(Ty::Error, |(_, error)| error.clone())
+    })
 }
 
 /// The machine whose generated body `fd` is, if any.

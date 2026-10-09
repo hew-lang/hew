@@ -1,0 +1,14 @@
+// A task's result is delivered once: awaiting a task declared outside a loop
+// on every iteration is refused.
+fn work() -> i64 {
+    7
+}
+
+fn main() {
+    scope {
+        let job = fork work();
+        for i in 0..2 {
+            println(await job);
+        }
+    }
+}

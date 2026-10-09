@@ -3,15 +3,12 @@
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
-#[cfg(feature = "encryption")]
-use std::sync::Mutex;
 
 use crate::envelope::{decode_wire_frame, WireFrame};
 use crate::set_last_error;
-#[cfg(feature = "encryption")]
-use crate::util::MutexExt;
 
 use super::admission::hew_connmgr_remove;
+use super::channel::ChannelProtection;
 use super::control::{
     authenticated_peer_identity, handle_control_frame, location_matches_local_session,
     location_matches_node_session,
@@ -56,9 +53,6 @@ pub(super) fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &A
     clippy::needless_pass_by_value,
     reason = "SendTransport and Arc values are moved into this thread from spawn closure"
 )]
-// Eight arguments even without the `encryption` feature (`noise_transport`
-// is the ninth), so the arg list exceeds the lint threshold in both feature
-// configurations and the expectation is unconditional.
 #[expect(
     clippy::too_many_arguments,
     reason = "reader_loop captures all per-connection state; splitting into a struct \
@@ -77,7 +71,7 @@ pub(super) fn reader_loop(
     last_activity: Arc<AtomicU64>,
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
-    #[cfg(feature = "encryption")] noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
+    channel: Arc<ChannelProtection>,
 ) {
     let mgr = mgr.0;
     let transport = transport.0;
@@ -107,26 +101,16 @@ pub(super) fn reader_loop(
         #[expect(clippy::cast_sign_loss, reason = "bytes_read > 0 checked above")]
         let read_len = bytes_read as usize;
 
-        // Decrypt in place when encryption is on; `buf.as_mut_ptr()` is stable
-        // across the in-place copy, so only the length can change.
-        #[cfg(feature = "encryption")]
-        let payload_len = {
-            let mut len = read_len;
-            let mut decrypted = vec![0u8; read_len];
-            let mut guard = noise_transport.lock_or_recover();
-            if let Some(noise) = guard.as_mut() {
-                let Ok(n) = noise.read_message(&buf[..read_len], &mut decrypted) else {
-                    set_last_error("connection decrypt failure".to_string());
-                    reader_cleanup(mgr, conn_id, &stop_flag);
-                    break;
-                };
-                len = n;
-                buf[..len].copy_from_slice(&decrypted[..len]);
+        // Every frame passes through the connection's channel; a message that
+        // fails authentication ends the connection, never a plaintext retry.
+        let payload_len = match channel.open(&mut buf[..read_len]) {
+            Ok(len) => len,
+            Err(err) => {
+                set_last_error(format!("connection reader: {err}"));
+                reader_cleanup(mgr, conn_id, &stop_flag);
+                break;
             }
-            len
         };
-        #[cfg(not(feature = "encryption"))]
-        let payload_len = read_len;
         let payload_ptr = buf.as_mut_ptr();
 
         // Update heartbeat.

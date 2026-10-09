@@ -20,7 +20,8 @@ fn one_frame() -> i64 {
     };
     let codec_len = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(data) => data.len(),
-        .Err(reason) => reason.len(),
+        .Err(.Decompress(reason)) => reason.len(),
+        .Err(.Compress(reason)) => reason.len(),
     };
     let process_discard = match process.run("printf discarded") {
         .Ok(_) => 1,

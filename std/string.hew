@@ -68,13 +68,32 @@ pub fn from_char(code: i64) -> string {
     }
 }
 
+/// Text that is not the number `to_int` or `to_float` was asked to read.
+pub enum NumberError {
+    /// The text, which is not a number literal.
+    Invalid(string);
+    /// The text, a well-formed integer outside the `i64` range.
+    OutOfRange(string);
+}
+
+impl Display for NumberError {
+    fn fmt(self) -> string {
+        match self {
+            .Invalid(text) => f"invalid number literal: `{text}`",
+            .OutOfRange(text) => f"integer literal outside the i64 range: `{text}`",
+        }
+    }
+}
+
+impl Error for NumberError {}
+
 /// Unlike C's `atoi`, this function does **not** stop at the first non-digit
 /// character — any non-digit anywhere in the string (after an optional leading
 /// sign) returns a structured error.
-pub fn to_int(s: string) -> Result<i64, string> {
+pub fn to_int(s: string) -> i64 fails NumberError {
     let slen = s.len();
     if slen == 0 {
-        return .Err("string.to_int: invalid integer literal");
+        return error .Invalid(s);
     }
     var start = 0;
     var negative = false;
@@ -86,7 +105,7 @@ pub fn to_int(s: string) -> Result<i64, string> {
         start = 1;
     }
     if start >= slen {
-        return .Err("string.to_int: invalid integer literal");
+        return error .Invalid(s);
     }
     // i64::MIN / 10 truncated toward zero (-9223372036854775808 / 10 = -922337203685477580).
     // If the accumulator goes below this cutoff, the next digit would overflow i64.
@@ -103,27 +122,26 @@ pub fn to_int(s: string) -> Result<i64, string> {
         let digit = s.slice(i, i + 1);
         let d = digit_value(digit);
         if d < 0 {
-            return .Err("string.to_int: invalid integer literal");
+            return error .Invalid(s);
         }
         if result < cutoff || result == cutoff && d > max_last_digit {
-            return .Err("string.to_int: integer out of range");
+            return error .OutOfRange(s);
         }
         result = result * 10 - d;
     }
     if negative {
-        .Ok(result)
+        result
     } else {
-        .Ok(0 - result)
+        0 - result
     }
 }
 
-/// Parse a string as a float, returning a structured error on failure.
-pub fn to_float(s: string) -> Result<f64, string> {
-    if is_valid_float_literal(s) {
-        .Ok(parse_valid_float_literal(s))
-    } else {
-        .Err("string.to_float: invalid float literal")
+/// Parse a string as a float, failing on text that is not a float literal.
+pub fn to_float(s: string) -> f64 fails NumberError {
+    if !is_valid_float_literal(s) {
+        return error .Invalid(s);
     }
+    parse_valid_float_literal(s)
 }
 
 fn is_valid_float_literal(s: string) -> bool {

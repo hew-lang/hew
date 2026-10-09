@@ -691,7 +691,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             return Ok(function);
         }
         let status = if body.is_resumable {
-            let new_child = coro::external(
+            let new_child = get_or_declare_external(
                 &self.llvm,
                 "hew_coro_state_child",
                 pointer.fn_type(&[pointer.into()], false),
@@ -731,7 +731,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .build_call(drop, &[receiver.unwrap().into()], "")
                 .llvm_ctx("dispose weakened once receiver on either outcome")?;
         }
-        let finish = coro::external(
+        let finish = get_or_declare_external(
             &self.llvm,
             "hew_coro_state_finish",
             self.ctx
@@ -987,7 +987,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("indirect invocation requires a resumable caller".into())
         })?;
-        let new_child = coro::external(
+        let new_child = get_or_declare_external(
             self.llvm,
             "hew_coro_state_child",
             pointer.fn_type(&[pointer.into()], false),

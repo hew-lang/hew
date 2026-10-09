@@ -18,7 +18,7 @@ fn parse(text: string) -> i64 fails dyn Error {
     return text.len();
 }
 
-fn main() -> Result<(), dyn Error> {
+fn main() fails dyn Error {
     let recovered = parse("") handle problem {
         println(f"handled: {problem.fmt()}");
         0
@@ -28,5 +28,4 @@ fn main() -> Result<(), dyn Error> {
     println(f"width={width}");
     let missing = parse("")?;
     println(f"unreachable={missing}");
-    .Ok(())
 }

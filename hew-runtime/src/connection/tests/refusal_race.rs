@@ -189,7 +189,7 @@ impl TeardownRace {
     /// until a close wakes it into the real `reader_cleanup`.
     fn stage_connection(&self, conn_id: c_int, route_slot: u16, reader: bool) -> StagedConn {
         let mgr = self.mgr();
-        let mut actor = ConnectionActor::new(conn_id);
+        let mut actor = test_actor(conn_id);
         let token =
             next_publication_token(mgr).expect("the publication token space is not exhausted");
         actor.publication_token = token;

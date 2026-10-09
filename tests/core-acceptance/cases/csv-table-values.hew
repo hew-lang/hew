@@ -10,7 +10,7 @@ fn main() {
             println(table.data[0][1]);
             println(table.get(1, 0));
         }
-        .Err(error) => panic(error),
+        .Err(error) => panic(f"{error}"),
     }
     match csv.parse("name\n\"unterminated") {
         .Ok(_) => panic("malformed CSV accepted"),

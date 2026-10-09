@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn link_controls_from_wrong_authenticated_peer_are_rejected() {
     let _guard = crate::runtime_test_guard();
-    let mut peer = ConnectionActor::new(10);
+    let mut peer = test_actor(10);
     peer.peer_node_id = 2;
     peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
     let mgr = HewConnMgr {
@@ -134,7 +134,7 @@ fn registry_gossip_broadcast_targets_only_active_gossip_peers() {
         );
         assert!(!mgr.is_null());
 
-        let mut gossip_peer = ConnectionActor::new(10);
+        let (mut gossip_peer, mut gossip_peer_channel) = test_actor_with_peer(10);
         gossip_peer.peer_node_id = 2;
         gossip_peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         gossip_peer.posture = crate::peer_binding::Posture::Strict;
@@ -142,13 +142,13 @@ fn registry_gossip_broadcast_targets_only_active_gossip_peers() {
             .state
             .store(CONN_STATE_ACTIVE, Ordering::Release);
 
-        let mut old_peer = ConnectionActor::new(11);
+        let mut old_peer = test_actor(11);
         old_peer.peer_node_id = 3;
         old_peer.peer_feature_flags = 0;
         old_peer.posture = crate::peer_binding::Posture::Strict;
         old_peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
 
-        let mut draining_peer = ConnectionActor::new(12);
+        let mut draining_peer = test_actor(12);
         draining_peer.peer_node_id = 4;
         draining_peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         draining_peer.posture = crate::peer_binding::Posture::Strict;
@@ -182,8 +182,8 @@ fn registry_gossip_broadcast_targets_only_active_gossip_peers() {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(sends_guard.len(), 1);
             assert_eq!(sends_guard[0].0, 10);
-            let WireFrame::Control(control) =
-                decode_wire_frame(&sends_guard[0].1).expect("control frame")
+            let sent = open_sent_frame(&mut gossip_peer_channel, &sends_guard[0].1);
+            let WireFrame::Control(control) = decode_wire_frame(&sent).expect("control frame")
             else {
                 panic!("registry gossip broadcast must send a control frame");
             };
@@ -235,7 +235,7 @@ fn swim_ping_is_acked_and_cross_attribution_is_rejected() {
         assert!(!mgr.is_null());
 
         // Active gossip-capable peer node 2 on conn 10.
-        let mut peer = ConnectionActor::new(10);
+        let (mut peer, mut peer_channel) = test_actor_with_peer(10);
         peer.peer_node_id = 2;
         peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         peer.posture = Posture::Strict;
@@ -266,8 +266,8 @@ fn swim_ping_is_acked_and_cross_attribution_is_rejected() {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(guard.len(), 1, "PING must produce exactly one ACK send");
             assert_eq!(guard[0].0, 10);
-            let WireFrame::Control(ctrl) = decode_wire_frame(&guard[0].1).expect("ack frame")
-            else {
+            let sent = open_sent_frame(&mut peer_channel, &guard[0].1);
+            let WireFrame::Control(ctrl) = decode_wire_frame(&sent).expect("ack frame") else {
                 panic!("ack must be a control frame");
             };
             assert_eq!(ctrl.ctrl_kind, CTRL_SWIM);
@@ -355,7 +355,7 @@ fn swim_frame_imports_piggybacked_gossip() {
         let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
         assert!(!mgr.is_null());
 
-        let mut peer = ConnectionActor::new(10);
+        let mut peer = test_actor(10);
         peer.peer_node_id = 2;
         peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
         peer.posture = Posture::Strict;

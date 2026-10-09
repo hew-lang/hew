@@ -34,7 +34,7 @@ fn conn_actor_drop_closes_transport_before_join() {
     });
     let transport_ptr = Box::into_raw(transport);
 
-    let mut actor = ConnectionActor::new(99);
+    let mut actor = test_actor(99);
     actor.transport = transport_ptr;
     // Spawn a synthetic reader that blocks on close_rx, simulating a
     // reader thread blocked inside transport recv().  When close_conn(99)
@@ -141,7 +141,7 @@ fn connmgr_remove_releases_connections_lock_before_reader_wake() {
             .store(mgr, Ordering::Release);
     }
 
-    let mut actor = ConnectionActor::new(41);
+    let mut actor = test_actor(41);
     actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
     actor.reader_handle = Some(std::thread::spawn(move || {
         close_rx.recv().expect("reader should observe close");
@@ -214,7 +214,7 @@ fn install_connection_actor_shutdown_releases_lock_before_reader_wake() {
         (&*mgr).reconnect_shutdown.store(true, Ordering::Release);
     }
 
-    let mut actor = ConnectionActor::new(52);
+    let mut actor = test_actor(52);
     let mgr_send = SendConnMgr(mgr);
     actor.reader_handle = Some(std::thread::spawn(move || {
         let mgr = mgr_send;
@@ -475,7 +475,7 @@ fn connmgr_remove_skips_stale_route_cleanup_after_replacement() {
         let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
         assert!(!mgr.is_null());
 
-        let mut old_actor = ConnectionActor::new(11);
+        let mut old_actor = test_actor(11);
         let old_token =
             next_publication_token(&*mgr).expect("the publication token space is not exhausted");
         old_actor.publication_token = old_token;
@@ -519,7 +519,7 @@ fn connmgr_remove_skips_stale_route_cleanup_after_replacement() {
         );
 
         let mut replacement_actor = Some({
-            let mut actor = ConnectionActor::new(22);
+            let mut actor = test_actor(22);
             actor.publication_token = next_publication_token(&*mgr)
                 .expect("the publication token space is not exhausted");
             actor.peer_node_id = 2;

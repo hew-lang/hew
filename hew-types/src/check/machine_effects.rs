@@ -54,7 +54,7 @@ pub(super) fn validate(
     output: &TypeCheckOutput,
     resource_closes: &HashMap<crate::NominalId, DefId>,
 ) -> Vec<TypeError> {
-    let Some(normalized) = &output.normalized_machines else {
+    let Some(normalized) = &output.normalized_program else {
         return Vec::new();
     };
     let mut bodies = HashMap::new();
@@ -173,7 +173,7 @@ fn staging_refusals(
     sites: &BTreeMap<ResolvedTy, Span>,
     source_module: Option<&str>,
     output: &TypeCheckOutput,
-    normalized: &super::machine_normalize::NormalizedMachines,
+    normalized: &super::machine_normalize::NormalizedProgram,
     facts: &mut TypeFactService,
 ) -> Vec<TypeError> {
     let transitions = normalized.transitions.get(&(

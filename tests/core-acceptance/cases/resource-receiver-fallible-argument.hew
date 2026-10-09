@@ -8,12 +8,12 @@ fn text(ok: bool) -> Result<string, string> {
     }
 }
 
-fn capture(ok: bool) -> Result<bool, string> {
+fn capture(ok: bool) -> bool fails string {
     let pattern = regex.new("scope gate");
     if pattern.capture(text(ok)?, 0).is_none() {
-        return .Ok(false);
+        return false;
     }
-    .Ok(true)
+    true
 }
 
 fn main() {

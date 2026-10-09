@@ -311,12 +311,13 @@ impl Parser<'_> {
                 }
                 self.expect(&Token::RightParen)?;
 
-                let return_type = if self.eat(&Token::Arrow) {
-                    Box::new(self.parse_type_with_context(context)?)
-                } else {
-                    // Default to unit type
-                    Box::new((TypeExpr::Tuple(Vec::new()), 0..0))
-                };
+                // A fn type spells its return exactly as a declaration does,
+                // `-> T fails E` and `fails E` included; an omitted return is
+                // unit.
+                let return_type = Box::new(
+                    self.parse_opt_return_type_with_context(context)?
+                        .unwrap_or((TypeExpr::Tuple(Vec::new()), 0..0)),
+                );
 
                 TypeExpr::Function {
                     capabilities,

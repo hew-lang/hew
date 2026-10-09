@@ -35,6 +35,13 @@ pub enum ParseError {
     Invalid(string);
 }
 
+/// A value that TOML cannot represent. Carries the native serializer message.
+pub enum EncodeError {
+    Invalid(string);
+}
+
+impl Error for EncodeError {}
+
 impl Display for ParseError {
     fn fmt(self) -> string {
         match self {
@@ -304,7 +311,7 @@ pub fn parse(s: string) -> Result<Value, ParseError> {
 /// A TOML document root must be a table. An integer, string, or array root
 /// serializes to no text at all, which is exactly what an empty table
 /// serializes to, so the two are only distinguishable through this result.
-pub fn stringify(val: Value) -> Result<string, string> {
+pub fn stringify(val: Value) -> string fails EncodeError {
     let text = unsafe {
         hew_toml_stringify(val)
     };
@@ -312,10 +319,9 @@ pub fn stringify(val: Value) -> Result<string, string> {
         hew_toml_last_serialize_error()
     };
     if reason.len() > 0 {
-        .Err(reason)
-    } else {
-        .Ok(text)
+        return error .Invalid(reason);
     }
+    text
 }
 
 /// Create a new empty TOML table.

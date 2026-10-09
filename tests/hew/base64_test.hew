@@ -9,6 +9,17 @@ fn assert_bytes_eq(actual: bytes, expected: bytes) {
     }
 }
 
+fn decode_error(text: string) -> string {
+    match base64.decode(text) {
+        .Ok(_) => "decoded",
+        .Err(e) => f"{e}",
+    }
+}
+
+fn must_decode(text: string) -> bytes {
+    base64.decode(text).expect("valid Base64")
+}
+
 // ── Happy-path ────────────────────────────────────────────────────────
 #[test]
 fn test_encode_known_value() {
@@ -21,7 +32,7 @@ fn test_encode_known_value() {
 
 #[test]
 fn test_decode_known_value() {
-    let result = base64.decode("SGk=");
+    let result = must_decode("SGk=");
     var expected: bytes = bytes.new();
     expected.push(72); // 0x48
     expected.push(105); // 0x69
@@ -39,7 +50,7 @@ fn test_round_trip_nonempty() {
     original.push(4);
     original.push(5);
     let encoded = base64.encode(original);
-    let decoded = base64.decode(encoded);
+    let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, original);
 }
 
@@ -47,16 +58,22 @@ fn test_round_trip_nonempty() {
 fn test_round_trip_empty() {
     let original: bytes = bytes.new();
     let encoded = base64.encode(original);
-    let decoded = base64.decode(encoded);
+    let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, original);
 }
 
 // ── Error / boundary ─────────────────────────────────────────────────
 #[test]
-fn test_decode_invalid_returns_empty() {
-    // Characters outside the Base64 alphabet → empty bytes
-    let result = base64.decode("!!!!");
-    assert(result.len() == 0);
+fn test_decode_invalid_fails() {
+    // A character outside the Base64 alphabet fails at its index.
+    assert(decode_error("!!!!") == "InvalidCharacter: index: 0, text: !");
+}
+
+#[test]
+fn test_decode_partial_group_fails() {
+    // One character after the last full group cannot hold a byte.
+    assert(decode_error("QUJDR") == "InvalidLength: 5");
+    assert(decode_error("QQ=") == "InvalidLength: 3");
 }
 
 #[test]
@@ -71,7 +88,7 @@ fn test_encode_url_safe_differs_from_standard() {
     var decoded: bytes = bytes.new();
     decoded.push(251);
     decoded.push(255);
-    let rt = base64.decode(url_safe);
+    let rt = must_decode(url_safe);
     assert_bytes_eq(rt, decoded);
     // Sanity: the two encodings differ for inputs that produce '+'/'-' or '/''_'
     assert(!(standard == url_safe));
@@ -111,7 +128,7 @@ fn test_encode_3_bytes_produces_no_padding() {
 #[test]
 fn test_decode_double_padding_round_trip() {
     // decode of a double-padded string recovers the single byte
-    let result = base64.decode("QQ==");
+    let result = must_decode("QQ==");
     var expected: bytes = bytes.new();
     expected.push(65); // 0x41
     assert_bytes_eq(result, expected);
@@ -120,7 +137,7 @@ fn test_decode_double_padding_round_trip() {
 #[test]
 fn test_decode_single_padding_round_trip() {
     // decode of a single-padded string recovers the two bytes
-    let result = base64.decode("QUI=");
+    let result = must_decode("QUI=");
     var expected: bytes = bytes.new();
     expected.push(65); // 0x41
     expected.push(66); // 0x42
@@ -130,7 +147,7 @@ fn test_decode_single_padding_round_trip() {
 #[test]
 fn test_decode_no_padding_round_trip() {
     // decode of a non-padded 4-char block recovers the three bytes
-    let result = base64.decode("QUJD");
+    let result = must_decode("QUJD");
     var expected: bytes = bytes.new();
     expected.push(65); // 0x41
     expected.push(66); // 0x42
@@ -143,7 +160,7 @@ fn test_decode_no_padding_round_trip() {
 fn test_round_trip_all_zeros_length_1() {
     var data: bytes = bytes.new();
     data.push(0);
-    assert_bytes_eq(base64.decode(base64.encode(data)), data);
+    assert_bytes_eq(must_decode(base64.encode(data)), data);
 }
 
 #[test]
@@ -151,7 +168,7 @@ fn test_round_trip_all_zeros_length_2() {
     var data: bytes = bytes.new();
     data.push(0);
     data.push(0);
-    assert_bytes_eq(base64.decode(base64.encode(data)), data);
+    assert_bytes_eq(must_decode(base64.encode(data)), data);
 }
 
 #[test]
@@ -160,7 +177,7 @@ fn test_round_trip_all_zeros_length_3() {
     data.push(0);
     data.push(0);
     data.push(0);
-    assert_bytes_eq(base64.decode(base64.encode(data)), data);
+    assert_bytes_eq(must_decode(base64.encode(data)), data);
 }
 
 #[test]
@@ -169,14 +186,14 @@ fn test_round_trip_all_zeros_length_16() {
     for _i in 0 .. 16 {
         buf.push(0);
     }
-    assert_bytes_eq(base64.decode(base64.encode(buf)), buf);
+    assert_bytes_eq(must_decode(base64.encode(buf)), buf);
 }
 
 #[test]
 fn test_round_trip_all_0xff_length_1() {
     var data: bytes = bytes.new();
     data.push(255);
-    assert_bytes_eq(base64.decode(base64.encode(data)), data);
+    assert_bytes_eq(must_decode(base64.encode(data)), data);
 }
 
 #[test]
@@ -184,7 +201,7 @@ fn test_round_trip_all_0xff_length_2() {
     var data: bytes = bytes.new();
     data.push(255);
     data.push(255);
-    assert_bytes_eq(base64.decode(base64.encode(data)), data);
+    assert_bytes_eq(must_decode(base64.encode(data)), data);
 }
 
 #[test]
@@ -193,7 +210,7 @@ fn test_round_trip_all_0xff_length_3() {
     data.push(255);
     data.push(255);
     data.push(255);
-    assert_bytes_eq(base64.decode(base64.encode(data)), data);
+    assert_bytes_eq(must_decode(base64.encode(data)), data);
 }
 
 #[test]
@@ -202,7 +219,7 @@ fn test_round_trip_all_0xff_length_16() {
     for _i in 0 .. 16 {
         buf.push(255);
     }
-    assert_bytes_eq(base64.decode(base64.encode(buf)), buf);
+    assert_bytes_eq(must_decode(base64.encode(buf)), buf);
 }
 
 // ── Multi-byte property round-trip ────────────────────────────────────
@@ -215,7 +232,7 @@ fn test_round_trip_multi_byte_64() {
         buf.push((i * 31 % 256) as u8);
     }
     let encoded = base64.encode(buf);
-    let decoded = base64.decode(encoded);
+    let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, buf);
 }
 
@@ -251,25 +268,20 @@ fn test_decode_url_safe_encoded_string() {
     var expected: bytes = bytes.new();
     expected.push(251); // 0xfb
     expected.push(255); // 0xff
-    let result_standard = base64.decode("+_8=");
+    let result_standard = must_decode("+_8=");
     assert_bytes_eq(result_standard, expected);
-    let result_url_safe = base64.decode("-_8=");
+    let result_url_safe = must_decode("-_8=");
     assert_bytes_eq(result_url_safe, expected);
 }
 
 // ── Invalid input boundary ────────────────────────────────────────────
 #[test]
-fn test_decode_invalid_single_char_returns_empty() {
-
-    // A single character after padding strip gives remainder == 1, which the
-    // decoder does not emit — result is empty bytes.
-    // Contract: "Q" → strips no '=', 1 value remaining, no output → 0 bytes.
-    let result = base64.decode("Q");
-    assert(result.len() == 0);
+fn test_decode_single_char_fails() {
+    // One character cannot hold a byte.
+    assert(decode_error("Q") == "InvalidLength: 1");
 }
 
 #[test]
 fn test_decode_rejects_trailing_single_base64_digit() {
-    let result = base64.decode("AAAAA");
-    assert(result.len() == 0);
+    assert(decode_error("AAAAA") == "InvalidLength: 5");
 }

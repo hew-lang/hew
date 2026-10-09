@@ -38,6 +38,7 @@ mod help;
 mod host;
 mod link;
 mod machine;
+mod migrate_fails;
 mod migrate_variants;
 mod native_link;
 mod package;
@@ -66,7 +67,7 @@ use hew_types::error::DiagChannel;
 /// Compilation is recursive in several phases, so the platform thread default
 /// is not sufficient for larger programs. Keep every compiler entry point on
 /// the same explicit budget.
-const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
+pub(crate) const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
 
 fn main() {
     // Spawn the real entry point on a thread with a large stack so deeply
@@ -2295,9 +2296,17 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         ));
     }
 
-    let mut files = Vec::new();
+    // A file reached through a symbolic link as well as directly migrates
+    // once, under the path that is not a link.
+    let mut by_identity = std::collections::BTreeMap::<PathBuf, PathBuf>::new();
     let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
+    let mut linked = Vec::new();
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(dir) = pending.pop().or_else(|| linked.pop()) {
+        let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited.insert(identity) {
+            continue;
+        }
         let entries = std::fs::read_dir(&dir)
             .map_err(|error| format!("cannot read `{}`: {error}", dir.display()))?;
         for entry in entries {
@@ -2305,13 +2314,29 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
             let path = entry.path();
             if path.is_dir() {
                 if !skip_format_directory(&path) {
-                    pending.push(path);
+                    if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                        linked.push(path);
+                    } else {
+                        pending.push(path);
+                    }
                 }
             } else if path.extension().is_some_and(|extension| extension == "hew") {
-                files.push(path);
+                let identity = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                let direct = std::path::absolute(&path).is_ok_and(|path| path == identity);
+                match by_identity.entry(identity) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(path);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut slot) => {
+                        if direct {
+                            slot.insert(path);
+                        }
+                    }
+                }
             }
         }
     }
+    let mut files: Vec<_> = by_identity.into_values().collect();
     files.sort();
     if files.is_empty() {
         return Err(format!(
@@ -2324,14 +2349,14 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// Rewrite each file's retired syntax to its current spelling.
 ///
-/// The rewrite is syntactic, so each file migrates on its own: nothing is
-/// type-checked, and a deliberately invalid program migrates like any other.
-/// Files at or below an `exclude` path are left out. Every selected file is
-/// migrated in memory first; a refusal, or a file that changed on disk while
-/// it was being migrated, leaves every file unwritten. `check` previews the
-/// same report without writing. Each file is replaced atomically; an I/O
-/// failure stops the run and names what was and was not written. A second
-/// run changes nothing.
+/// Files at or below an `exclude` path are left out. A file that does not
+/// parse is skipped, and one whose rewrite the checker refuses is left as it
+/// is; both are named while the others migrate, and the run then fails.
+/// Every selected file is migrated in memory first; a file that changed on
+/// disk while it was being migrated leaves every file unwritten. `check`
+/// previews the same report without writing. Each file is replaced
+/// atomically; an I/O failure stops the run and names what was and was not
+/// written. A second run changes nothing.
 fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<bool, ()> {
     let excluded_roots = exclude
         .iter()
@@ -2345,8 +2370,8 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut excluded = 0usize;
+    let mut skipped = 0usize;
     let mut planned = Vec::new();
-    let mut refused = false;
     for file in files {
         let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
         if excluded_roots
@@ -2360,22 +2385,24 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             eprintln!("Error: cannot read {}: {error}", file.display());
         })?;
         let Ok(source) = std::str::from_utf8(&original) else {
+            skipped += 1;
             eprintln!(
-                "Error: migration refused {}: not UTF-8 text",
+                "Error: migration skipped {}: not UTF-8 text",
                 file.display()
             );
-            refused = true;
             continue;
         };
         match hew_parser::fmt::migrate_syntax(source) {
             Ok(migrated) => planned.push((file, original, migrated)),
             Err(error) => {
-                refused = true;
+                // A file the migrator cannot read is left as it is; the
+                // others migrate without it.
+                skipped += 1;
                 for site in error.refusals {
                     let (line, column) =
                         crate::diagnostic::offset_to_line_col(source, site.span.start);
                     eprintln!(
-                        "Error: migration refused {}:{line}:{column}: {}",
+                        "Error: migration skipped {}:{line}:{column}: {}",
                         file.display(),
                         site.reason
                     );
@@ -2383,52 +2410,201 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             }
         }
     }
-    // Bare variants respell by the type their context expects, so they wait
-    // for the checker, which reads every file's syntax-migrated text.
-    if !refused {
-        let mut texts: Vec<(PathBuf, String)> = planned
-            .iter()
-            .map(|(file, _, migrated)| ((*file).clone(), migrated.clone()))
-            .collect();
-        for refusal in migrate_variants::respell_bare_variants(&mut texts) {
-            refused = true;
-            eprintln!(
-                "Error: migration refused {}:{}:{}: {}",
-                refusal.file.display(),
-                refusal.line,
-                refusal.column,
-                refusal.reason
-            );
-        }
-        for ((_, _, migrated), (_, respelled)) in planned.iter_mut().zip(texts) {
-            *migrated = respelled;
-        }
-    }
+    let refused_files = migrate_by_the_checker(&mut planned);
+    let refused = refused_files.len();
     let (changed, unchanged): (Vec<_>, Vec<_>) = planned
         .into_iter()
+        .filter(|(file, _, _)| !refused_files.contains(*file))
         .partition(|(_, original, migrated)| migrated.as_bytes() != original.as_slice());
     let unchanged = unchanged.len();
     let summary = |verb: &str| {
+        let skipped = if skipped == 0 {
+            String::new()
+        } else {
+            format!(", {skipped} skipped")
+        };
+        let refused = if refused == 0 {
+            String::new()
+        } else {
+            format!(", {refused} refused")
+        };
         eprintln!(
-            "migration: {} {verb}, {unchanged} unchanged, {excluded} excluded",
+            "migration: {} {verb}, {unchanged} unchanged, {excluded} excluded{skipped}{refused}",
             changed.len()
         );
     };
-    if refused {
-        summary("migratable");
-        eprintln!("no files were written");
-        return Err(());
-    }
     if check {
         for (file, _, _) in &changed {
             eprintln!("{}: needs migration", file.display());
         }
         summary("to migrate");
-        return Ok(!changed.is_empty());
+        return if skipped == 0 && refused == 0 {
+            Ok(!changed.is_empty())
+        } else {
+            Err(())
+        };
     }
     apply_migrations(&changed)?;
     summary("migrated");
+    if skipped > 0 {
+        eprintln!("the skipped files do not parse; fix them and run the migration again");
+    }
+    if refused > 0 {
+        eprintln!(
+            "the refused files are left as they are; convert them by hand or fix the \
+             reported sites and run the migration again"
+        );
+    }
+    if skipped > 0 || refused > 0 {
+        return Err(());
+    }
     Ok(false)
+}
+
+/// The checker-driven passes over every file's syntax-migrated text: bare
+/// variants respell by the type their context expects, then failing
+/// callables move to their failure edge. Returns the files either pass
+/// refused, which keep their text on disk.
+fn migrate_by_the_checker(
+    planned: &mut [(&PathBuf, Vec<u8>, String)],
+) -> std::collections::BTreeSet<PathBuf> {
+    let mut texts: Vec<(PathBuf, String)> = planned
+        .iter()
+        .map(|(file, _, migrated)| ((*file).clone(), migrated.clone()))
+        .collect();
+    let sources: Vec<(&Path, &[u8])> = planned
+        .iter()
+        .map(|(file, original, _)| (file.as_path(), original.as_slice()))
+        .collect();
+    let mut refused = std::collections::BTreeSet::new();
+    for refusal in migrate_variants::respell_bare_variants(&mut texts) {
+        eprintln!(
+            "Error: migration refused {}: {}",
+            refusal_site(
+                &sources,
+                &texts,
+                &refusal.file,
+                refusal.line,
+                refusal.column
+            ),
+            refusal.reason
+        );
+        refused.insert(refusal.file);
+    }
+    // A callable that fails through `?` or `return error` declares its
+    // failure edge; which exits move with it is the checker's call too.
+    let unconverted = texts.clone();
+    let (refusals, notes) = migrate_fails::convert_failure_edges(&mut texts);
+    for (refusal, prefix) in refusals
+        .iter()
+        .map(|refusal| (refusal, "Error: migration refused"))
+        .chain(notes.iter().map(|note| (note, "note:")))
+    {
+        eprintln!(
+            "{prefix} {}: {}",
+            refusal_site(
+                &sources,
+                &unconverted,
+                &refusal.file,
+                refusal.line,
+                refusal.column
+            ),
+            refusal.message
+        );
+    }
+    refused.extend(refusals.into_iter().map(|refusal| refusal.file));
+    for ((_, _, migrated), (_, respelled)) in planned.iter_mut().zip(texts) {
+        *migrated = respelled;
+    }
+    refused
+}
+
+/// Where a position in a file's migrated text sits in the file itself. The
+/// migrated text holds the file's tokens, reformatted and with retired
+/// spellings respelled, so the two token streams are walked together.
+fn refusal_site(
+    sources: &[(&Path, &[u8])],
+    texts: &[(PathBuf, String)],
+    file: &Path,
+    line: usize,
+    column: usize,
+) -> String {
+    let canonical = |path: &Path| std::fs::canonicalize(path).ok();
+    let wanted_file = canonical(file);
+    let Some(index) = sources.iter().position(|(path, _)| {
+        *path == file || (wanted_file.is_some() && canonical(path) == wanted_file)
+    }) else {
+        return format!("{}:{line}:{column}", file.display());
+    };
+    let (shown, original) = sources[index];
+    let position = std::str::from_utf8(original).ok().and_then(|original| {
+        let (_, migrated) = texts.get(index)?;
+        let offset = line_col_to_offset(migrated, line, column);
+        let offset = original_offset(original, migrated, offset)?;
+        Some(crate::diagnostic::offset_to_line_col(original, offset))
+    });
+    match position {
+        Some((line, column)) => format!("{}:{line}:{column}", shown.display()),
+        None => format!(
+            "{}:{line}:{column} (in the formatted text)",
+            shown.display()
+        ),
+    }
+}
+
+/// The byte offset of a one-based line and column in `text`.
+fn line_col_to_offset(text: &str, line: usize, column: usize) -> usize {
+    let start = if line <= 1 {
+        0
+    } else {
+        text.match_indices('\n')
+            .nth(line - 2)
+            .map_or(text.len(), |(offset, _)| offset + 1)
+    };
+    let line_text = text[start..].split('\n').next().unwrap_or_default();
+    let within = line_text
+        .char_indices()
+        .nth(column.saturating_sub(1))
+        .map_or(line_text.len(), |(offset, _)| offset);
+    start + within
+}
+
+/// The offset in `original` of the token `offset` in `migrated` came from.
+/// The token streams agree apart from the syntax migration's respellings; a
+/// short look-ahead resynchronizes them past each one.
+fn original_offset(original: &str, migrated: &str, offset: usize) -> Option<usize> {
+    const LOOK_AHEAD: usize = 12;
+    let tokens = |text: &str| -> Vec<std::ops::Range<usize>> {
+        hew_lexer::Lexer::new(text)
+            .map(|(_, span)| span.start..span.end)
+            .collect()
+    };
+    let (from, to) = (tokens(original), tokens(migrated));
+    let same = |i: usize, j: usize| match (from.get(i), to.get(j)) {
+        (Some(a), Some(b)) => original[a.clone()] == migrated[b.clone()],
+        _ => false,
+    };
+    let (mut i, mut j) = (0, 0);
+    while let Some(token) = to.get(j) {
+        if same(i, j) {
+            if offset < token.end {
+                let within = offset.saturating_sub(token.start);
+                return Some(from[i].start + within.min(from[i].len()));
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+        let (skip_from, skip_to) = (0..=LOOK_AHEAD * 2)
+            .flat_map(|total| (0..=total).map(move |a| (a, total - a)))
+            .find(|&(a, b)| a <= LOOK_AHEAD && b <= LOOK_AHEAD && same(i + a, j + b))?;
+        if to[j..j + skip_to].iter().any(|token| offset < token.end) {
+            return from.get(i).map(|token| token.start);
+        }
+        i += skip_from;
+        j += skip_to;
+    }
+    Some(original.len())
 }
 
 /// Apply a migration plan: nothing is written unless every planned file still

@@ -848,6 +848,18 @@ static TCP_OPS: HewTransportOps = HewTransportOps {
     destroy: Some(tcp_destroy),
 };
 
+/// Whether `transport` is the native TCP transport, by ops identity.
+///
+/// # Safety
+/// `transport` is null or valid for the duration of the call.
+pub(crate) unsafe fn hew_transport_is_tcp(transport: *const HewTransport) -> bool {
+    if transport.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `transport` is valid for the duration of this helper.
+    std::ptr::eq(unsafe { &*transport }.ops, &raw const TCP_OPS)
+}
+
 /// The port a TCP transport's listener is bound to, or `None` for another
 /// transport or before it listens.
 ///

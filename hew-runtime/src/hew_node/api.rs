@@ -9,7 +9,6 @@ use super::{
 };
 use crate::connection;
 use crate::node_identity::{HewNodeId, HewRemotePid};
-#[cfg(any(feature = "quic", feature = "encryption"))]
 use crate::peer_binding::TransportSelection as PeerTransport;
 use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
 use crate::set_last_error;
@@ -1085,33 +1084,21 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
     };
     match selection {
         TransportSelection::Tcp => {
-            #[cfg(feature = "encryption")]
-            {
-                match crate::encryption::noise_identity_load_or_create(std::path::Path::new(p)) {
-                    Ok(identity) => {
-                        let node_id =
-                            crate::node_identity::NodeId::from_noise_static_key(&identity.public());
-                        stage_loaded_identity(
-                            std::path::Path::new(p),
-                            node_id,
-                            |cfg| cfg.noise_identity = Some(identity),
-                            PeerTransport::Tcp,
-                        )
-                    }
-                    Err(err) => {
-                        node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
-                        -1
-                    }
+            match crate::encryption::noise_identity_load_or_create(std::path::Path::new(p)) {
+                Ok(identity) => {
+                    let node_id =
+                        crate::node_identity::NodeId::from_noise_static_key(&identity.public());
+                    stage_loaded_identity(
+                        std::path::Path::new(p),
+                        node_id,
+                        |cfg| cfg.noise_identity = Some(identity),
+                        PeerTransport::Tcp,
+                    )
                 }
-            }
-            #[cfg(not(feature = "encryption"))]
-            {
-                let _ = p;
-                node_peer_auth_setup_failed(
-                    "Node::load_keys: tcp-noise identity requires the hew-runtime encryption \
-                     feature (peer auth unavailable)",
-                );
-                -1
+                Err(err) => {
+                    node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+                    -1
+                }
             }
         }
         #[cfg(feature = "quic")]
@@ -1151,7 +1138,6 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
 /// public node lifecycle owns the state (`Starting`/`Running`) so a load never
 /// races a running node. Returns `0` on success, `-1` after marking the
 /// peer-auth setup failed when the config is locked.
-#[cfg(any(feature = "quic", feature = "encryption"))]
 fn stage_loaded_identity(
     identity_path: &std::path::Path,
     node_identity: crate::node_identity::NodeId,

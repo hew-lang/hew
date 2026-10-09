@@ -27,7 +27,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let count = u64::try_from(sources.len()).map_err(|_| {
             CodegenError::FailClosed("selection exceeds its source operand capacity".into())
         })?;
-        let waker_fn = coro::external(
+        let waker_fn = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
             pointer.fn_type(&[pointer.into()], false),
@@ -38,7 +38,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[frame.state.into()],
             "select.waker",
         )?;
-        let start = coro::external(
+        let start = get_or_declare_external(
             self.llvm,
             "hew_checked_task_select_new",
             pointer.fn_type(&[pointer.into()], false),
@@ -46,7 +46,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let operation =
             suspend::call_value(&self.builder, start, &[waker.into()], "select.operation")?
                 .into_pointer_value();
-        let context = coro::external(
+        let context = get_or_declare_external(
             self.llvm,
             "hew_checked_task_select_set_context",
             self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
@@ -66,7 +66,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 PhysicalSelectSource::StreamNext(_) => "hew_checked_task_select_add_stream",
                 PhysicalSelectSource::ActorCall(_) => "hew_checked_task_select_add_actor",
             };
-            let add = coro::external(
+            let add = get_or_declare_external(
                 self.llvm,
                 symbol,
                 self.ctx
@@ -80,7 +80,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         // The timer starts only after every observation is registered.
         if let Some(duration) = timeout {
-            let arm = coro::external(
+            let arm = get_or_declare_external(
                 self.llvm,
                 "hew_checked_task_select_arm_timer",
                 self.ctx
@@ -123,7 +123,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(cancellation, cancelled, inspect)
             .llvm_ctx("select cancellation cleanup")?;
         self.builder.position_at_end(inspect);
-        let poll_fn = coro::external(
+        let poll_fn = get_or_declare_external(
             self.llvm,
             match order {
                 hew_mir::physical::TaskSelectionOrder::Source => "hew_checked_task_select_poll",
@@ -179,7 +179,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(cycle);
-        let fault = coro::external(
+        let fault = get_or_declare_external(
             self.llvm,
             "hew_checked_task_select_fault",
             pointer.fn_type(&[pointer.into()], false),

@@ -11,8 +11,8 @@
 //! ```
 //! import std.encoding.binary;
 //!
-//! fn parse(record: bytes) -> Result<(i64, f64), binary.BinaryError> {
-//!     .Ok((binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?))
+//! fn parse(record: bytes) -> (i64, f64) fails binary.BinaryError {
+//!     (binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?)
 //! }
 //!
 //! fn main() {
@@ -142,10 +142,10 @@ pub fn slice(data: bytes, start: i64, end: i64) -> Result<bytes, BinaryError> {
 
 // ── Checked integer reads and writes ───────────────────────────────────
 
-fn read_uint(data: bytes, at: i64, width: i64, order: ByteOrder) -> Result<i64, BinaryError> {
+fn read_uint(data: bytes, at: i64, width: i64, order: ByteOrder) -> i64 fails BinaryError {
     check_width(width)?;
     check_range(data, at, width)?;
-    .Ok(decode(data, at, width, order))
+    decode(data, at, width, order)
 }
 
 /// Read an unsigned little-endian integer of `width` bytes (0 to 8) at `at`.
@@ -164,22 +164,22 @@ pub fn read_uint_be(data: bytes, at: i64, width: i64) -> Result<i64, BinaryError
 
 /// Read a two's-complement little-endian integer of `width` bytes at `at`,
 /// sign-extended to `i64`.
-pub fn read_int_le(data: bytes, at: i64, width: i64) -> Result<i64, BinaryError> {
-    .Ok(sign_extend(read_uint(data, at, width, ByteOrder.Little)?, width))
+pub fn read_int_le(data: bytes, at: i64, width: i64) -> i64 fails BinaryError {
+    sign_extend(read_uint(data, at, width, ByteOrder.Little)?, width)
 }
 
 /// Read a two's-complement big-endian integer of `width` bytes at `at`,
 /// sign-extended to `i64`.
-pub fn read_int_be(data: bytes, at: i64, width: i64) -> Result<i64, BinaryError> {
-    .Ok(sign_extend(read_uint(data, at, width, ByteOrder.Big)?, width))
+pub fn read_int_be(data: bytes, at: i64, width: i64) -> i64 fails BinaryError {
+    sign_extend(read_uint(data, at, width, ByteOrder.Big)?, width)
 }
 
-fn put_uint(value: i64, width: i64, order: ByteOrder) -> Result<bytes, BinaryError> {
+fn put_uint(value: i64, width: i64, order: ByteOrder) -> bytes fails BinaryError {
     check_width(width)?;
     if width < 8 && (value < 0 || value >= 1 << (8 * width)) {
-        return .Err(BinaryError.Overflow);
+        return error BinaryError.Overflow;
     }
-    .Ok(encode(value, width, order))
+    encode(value, width, order)
 }
 
 /// Encode `value` as an unsigned little-endian integer of `width` bytes.
@@ -257,31 +257,31 @@ fn f64_to_f32_bits(value: f64) -> Result<i64, BinaryError> {
 /// Read a little-endian binary32 at `at` as an `f64`.
 ///
 /// `NonFinite` for an infinity or NaN pattern.
-pub fn read_f32_le(data: bytes, at: i64) -> Result<f64, BinaryError> {
-    f32_bits_to_f64(read_uint(data, at, 4, ByteOrder.Little)?)
+pub fn read_f32_le(data: bytes, at: i64) -> f64 fails BinaryError {
+    f32_bits_to_f64(read_uint(data, at, 4, ByteOrder.Little)?)?
 }
 
 /// Read a big-endian binary32 at `at` as an `f64`.
 ///
 /// `NonFinite` for an infinity or NaN pattern.
-pub fn read_f32_be(data: bytes, at: i64) -> Result<f64, BinaryError> {
-    f32_bits_to_f64(read_uint(data, at, 4, ByteOrder.Big)?)
+pub fn read_f32_be(data: bytes, at: i64) -> f64 fails BinaryError {
+    f32_bits_to_f64(read_uint(data, at, 4, ByteOrder.Big)?)?
 }
 
 /// Encode `value`, rounded to the nearest binary32, as 4 little-endian bytes.
 ///
 /// `NonFinite` for an infinity or NaN; `Overflow` when the value rounds past
 /// the largest finite binary32.
-pub fn put_f32_le(value: f64) -> Result<bytes, BinaryError> {
-    .Ok(encode(f64_to_f32_bits(value)?, 4, ByteOrder.Little))
+pub fn put_f32_le(value: f64) -> bytes fails BinaryError {
+    encode(f64_to_f32_bits(value)?, 4, ByteOrder.Little)
 }
 
 /// Encode `value`, rounded to the nearest binary32, as 4 big-endian bytes.
 ///
 /// `NonFinite` for an infinity or NaN; `Overflow` when the value rounds past
 /// the largest finite binary32.
-pub fn put_f32_be(value: f64) -> Result<bytes, BinaryError> {
-    .Ok(encode(f64_to_f32_bits(value)?, 4, ByteOrder.Big))
+pub fn put_f32_be(value: f64) -> bytes fails BinaryError {
+    encode(f64_to_f32_bits(value)?, 4, ByteOrder.Big)
 }
 
 // ── Fixed-width writes (keep the low bits) ─────────────────────────────

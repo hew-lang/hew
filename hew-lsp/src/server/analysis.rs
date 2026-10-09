@@ -1573,14 +1573,14 @@ pub(super) mod tests {
         let sig = surface_sighelp(&doc, source, "template.render");
         assert!(
             sig.iter()
-                .any(|s| s.contains("render(") && s.contains("Result<string,")),
-            "signature help should label template.render -> Result<string, ...>, got: {sig:?}",
+                .any(|s| s.contains("render(") && s.contains("TemplateError")),
+            "signature help should label template.render's TemplateError failure, got: {sig:?}",
         );
         assert!(
             surface_inlays(&doc)
                 .iter()
                 .any(|l| l.contains("Result<string,")),
-            "inlay hint for `out` should show the Result<string, string> type",
+            "inlay hint for `out` should show the Result<string, template.TemplateError> type",
         );
     }
 

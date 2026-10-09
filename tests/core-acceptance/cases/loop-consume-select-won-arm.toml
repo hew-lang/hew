@@ -1,0 +1,14 @@
+[[case]]
+id = "loop-consume-select-won-arm"
+intent = "A winning task arm consumes the task; an arm that wins without leaving the loop is refused at the next iteration's select source."
+source = "cases/loop-consume-select-won-arm.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 12
+column = 24
+message = "use of moved value `job`"

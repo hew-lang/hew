@@ -341,9 +341,9 @@ LINUX_CROSS_AVAILABLE := $(if $(wildcard $(LINUX_CROSS_SYSROOT)),$(LINUX_CROSS_L
 CROSS_NATIVE_LIB_TRIPLES := $(filter-out $(HOST_TRIPLE),$(DARWIN_NATIVE_LIB_TRIPLES) $(LINUX_CROSS_AVAILABLE))
 NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(CROSS_NATIVE_LIB_TRIPLES)
 
-# Sanitizer targets for the Rust runtime. The dedicated codegen sanitizer
-# lane was retired together with the C++/MLIR subtree; the runtime ASan
-# and TSan lanes here remain as local entry points for nightly coverage.
+# Local sanitizer targets for the Rust runtime. `make asan` also runs in
+# release and nightly CI. `make tsan` remains a local entry point; current
+# workflows provide no TSan job.
 #
 # Default to the host triple so `make asan` works on any sanitizer-capable
 # host (darwin-arm64, linux-x86_64, ...). CI selects its explicit runner target
@@ -1186,7 +1186,8 @@ perf-verify-linear: hew ## Test: physical lowering stays linear in awaits per fu
 	HEW_BIN="$(HEW_BIN)" bash tests/perf/verify-linear.sh
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
-# QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).
+# QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper). Noise (snow) is
+# unconditional, so the TCP-Noise channel is tested here too.
 # Compile time is ~3× lower than the default-features build (measured: ~32s vs ~85s per binary).
 # Profiler allocator tests in transport.rs are skipped (they require feature = "profiler").
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
@@ -1317,12 +1318,11 @@ asan:
 	LSAN_OPTIONS="$(ASAN_LSAN_OPTIONS)" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime $(ASAN_TEST_ARGS) -- $(ASAN_TEST_FILTER) --test-threads=1
 
-# Nightly rust-runtime TSan command (Linux/nightly toolchain required).
+# Local rust-runtime TSan command (Linux/nightly toolchain required).
 #
-# TSan is not currently supported on darwin-arm64 by the upstream Rust
-# nightly toolchain (build-std + TSan link failures, mirrored by the
-# nightly-sanitizers.yml advisory lane).  Skip with a clear message so
-# the make target is a usable signal rather than a confusing failure.
+# The local target skips darwin-arm64 because of upstream Rust nightly
+# build-std + TSan link limits. No current CI workflow executes this target.
+# Keep the target available for fresh local investigation.
 tsan:
 ifeq ($(shell uname -sm),Darwin arm64)
 	@echo "tsan: skipped on darwin-arm64 (upstream Rust nightly TSan not supported on this target — see the rust-runtime-tsan advisory job in nightly-sanitizers.yml)"
@@ -1349,8 +1349,8 @@ endif
 # them — they pull in async + network FFI that Miri cannot interpret.
 #
 # One-time setup:  rustup component add --toolchain $(MIRI_TOOLCHAIN) miri rust-src
-# CI pins nightly-2026-06-14 (see .github/workflows/nightly-sanitizers.yml); the
-# default floats to the host `nightly` so a dev box with Miri installed just works.
+# No current CI workflow runs this target. The default uses the host `nightly`;
+# select MIRI_TOOLCHAIN explicitly when collecting release evidence.
 #
 # MIRIFLAGS:
 #   -Zmiri-disable-isolation       — timer/clock/random reads need host time/entropy.
@@ -1466,7 +1466,7 @@ test-migrate-corpus: hew-native
 		echo "error: migration accepted the removed glob import" >&2; \
 		exit 1; \
 	fi; \
-	grep -F 'migration refused' "$$migration_refusal" | grep -F 'removed_glob.hew'; \
+	grep -F 'migration skipped' "$$migration_refusal" | grep -F 'removed_glob.hew'; \
 	diff -u tests/corpus/migrate/reject/removed_glob.hew "$$migration_root/reject/removed_glob.hew"; \
 	echo "4/6 prove the migrated sources type-check"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \

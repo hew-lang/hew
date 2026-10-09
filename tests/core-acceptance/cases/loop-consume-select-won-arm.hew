@@ -1,0 +1,17 @@
+// A winning task arm consumes the task. An arm that wins without leaving the
+// loop hands the next iteration a consumed task.
+fn slow() -> i64 {
+    42
+}
+
+fn main() {
+    scope {
+        let job = fork slow();
+        for i in 0..3 {
+            select {
+                v from job => println(v),
+                after 50ms => println("tick"),
+            }
+        }
+    }
+}

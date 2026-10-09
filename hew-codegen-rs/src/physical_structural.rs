@@ -175,7 +175,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                     .build_load(values.ctx.i32_type(), status, "structural.status")
                     .llvm_ctx("load rendering status")?;
                 if let Some(frame) = &emitter.frame {
-                    let finish_state = coro::external(
+                    let finish_state = get_or_declare_external(
                         values.llvm,
                         "hew_coro_state_finish",
                         values
@@ -278,16 +278,18 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
         &self,
         symbol: &str,
         parameter: BasicMetadataTypeEnum<'ctx>,
+        widen: Option<Widen>,
         builder: PointerValue<'ctx>,
         value: BasicMetadataValueEnum<'ctx>,
     ) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let append = get_or_declare_external(
+        let append = get_or_declare_external_widened(
             self.llvm,
             symbol,
             self.ctx
                 .void_type()
                 .fn_type(&[ptr.into(), parameter], false),
+            &widen.map(|kind| (1, kind)).into_iter().collect::<Vec<_>>(),
         )?;
         self.builder
             .build_call(append, &[builder.into(), value], "")
@@ -435,6 +437,7 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
         self.append_scalar(
             "hew_string_builder_append_string",
             ptr.into(),
+            None,
             builder,
             text.into(),
         )?;
@@ -718,7 +721,7 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
                             .llvm_ctx("widen unsigned structural integer")?,
                     )
                 };
-                self.append_scalar(symbol, i64_ty.into(), builder, widened.into())
+                self.append_scalar(symbol, i64_ty.into(), None, builder, widened.into())
             }
             PhysicalStructuralShape::Float => {
                 let layout = self.structural_layout(glue)?;
@@ -738,6 +741,7 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
                 self.append_scalar(
                     "hew_string_builder_append_f64",
                     self.ctx.f64_type().into(),
+                    None,
                     builder,
                     widened.into(),
                 )
@@ -756,6 +760,7 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
                 self.append_scalar(
                     "hew_string_builder_append_bool",
                     self.ctx.i8_type().into(),
+                    Some(Widen::Zero),
                     builder,
                     byte.into(),
                 )
@@ -774,6 +779,7 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
                 self.append_scalar(
                     "hew_string_builder_append_char",
                     self.ctx.i32_type().into(),
+                    None,
                     builder,
                     scalar.into(),
                 )
@@ -786,6 +792,7 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
                 self.append_scalar(
                     "hew_string_builder_append_string",
                     ptr.into(),
+                    None,
                     builder,
                     loaded.into(),
                 )

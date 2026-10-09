@@ -36,6 +36,20 @@ pub type Url {
     handle: UrlHandle;
 }
 
+pub enum UrlError {
+    Resolve { path: string; base: string; }
+}
+
+impl Display for UrlError {
+    fn fmt(self) -> string {
+        match self {
+            .Resolve { path, base } => f"url.resolve: cannot resolve `{path}` against `{base}`",
+        }
+    }
+}
+
+impl Error for UrlError {}
+
 /// Methods available on a parsed `Url`.
 trait UrlMethods {
     /// Return the URL scheme (e.g. `"https"`).
@@ -60,7 +74,7 @@ trait UrlMethods {
     fn to_string(self) -> string;
 
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(self, path: string) -> Result<Url, string>;
+    fn resolve(self, path: string) -> Url fails UrlError;
 }
 
 impl UrlMethods for Url {
@@ -113,10 +127,10 @@ impl UrlMethods for Url {
     }
     /// Resolve a relative path onto this URL, returning a new `Url`.
     ///
-    /// Returns `Err(string)` when the path cannot be resolved against this
+    /// Fails with `UrlError.Resolve` when the path cannot be resolved against this
     /// base. A failed join produces a null handle, which is otherwise
     /// indistinguishable from a resolved URL until the handle is read.
-    fn resolve(self, path: string) -> Result<Url, string> {
+    fn resolve(self, path: string) -> Url fails UrlError {
         let handle = unsafe {
             hew_url_join(self.handle, path)
         };
@@ -124,9 +138,9 @@ impl UrlMethods for Url {
             hew_url_is_valid(handle)
         };
         if ok {
-            .Ok(Url { handle: handle })
+            Url { handle: handle }
         } else {
-            .Err(f"url.resolve: cannot resolve `{path}` against this base")
+            return error .Resolve { path: path, base: self.to_string() };
         }
     }
 }

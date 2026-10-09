@@ -39,6 +39,12 @@ pub struct RegistryConfig {
     /// Fallback registry API URL used when the primary is unavailable.
     #[serde(default, rename = "fallback-api")]
     pub fallback_api: Option<String>,
+    /// Package-name encoding at the selected primary API.
+    #[serde(default, rename = "wire-names")]
+    pub wire_names: Option<WireNames>,
+    /// Package-name encoding at the explicitly selected fallback API.
+    #[serde(default, rename = "fallback-wire-names")]
+    pub fallback_wire_names: Option<WireNames>,
 }
 
 /// A named remote registry.
@@ -48,6 +54,39 @@ pub struct RemoteRegistry {
     pub index: String,
     /// URL of the registry API.
     pub api: String,
+    /// Package-name encoding; custom registries default to dotted names.
+    #[serde(default, rename = "wire-names")]
+    pub wire_names: Option<WireNames>,
+    /// Explicit fallback for this source; global fallbacks are not inherited.
+    #[serde(default, rename = "fallback-api")]
+    pub fallback_api: Option<String>,
+    /// Package-name encoding at this source's fallback API.
+    #[serde(default, rename = "fallback-wire-names")]
+    pub fallback_wire_names: Option<WireNames>,
+}
+
+/// Package-name encoding at a registry protocol boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireNames {
+    /// Keep authored dotted names in HTTP paths and response identities.
+    #[default]
+    Dotted,
+    /// Use slash-separated package paths and signed registry identities.
+    Slash,
+}
+
+impl WireNames {
+    pub(crate) fn for_api(api: &str) -> Self {
+        let identity = registry_identity(api);
+        if identity == registry_identity(DEFAULT_REGISTRY_API)
+            || DEFAULT_FALLBACK_API.is_some_and(|fallback| identity == registry_identity(fallback))
+        {
+            Self::Slash
+        } else {
+            Self::Dotted
+        }
+    }
 }
 
 /// Default registry API URL.
@@ -157,21 +196,25 @@ pub struct RegistryEndpoints {
     /// Base URL for the registry API (e.g. `https://registry.hewpkg.com/api/v1`).
     pub api: String,
     /// Base URL for the package CDN (e.g. `https://cdn.hewpkg.com`).
-    pub cdn: String,
+    pub cdn: Option<String>,
     /// Optional fallback API URL for read operations when the primary is down.
     pub fallback_api: Option<String>,
 }
 
 /// Return the registry endpoints: `HEW_REGISTRY` overrides the compiled-in
-/// default API URL when set (the CDN and fallback stay compiled-in — a
-/// registry override has no way to name its own CDN or mirror).
+/// default API URL when set. Built-in CDN and mirror endpoints belong only to
+/// the official primary; custom sources require an explicit fallback.
 #[must_use]
 pub fn discover_registry() -> RegistryEndpoints {
     let api = std::env::var("HEW_REGISTRY").unwrap_or_else(|_| DEFAULT_REGISTRY_API.to_string());
+    let official = registry_identity(&api) == registry_identity(DEFAULT_REGISTRY_API);
     RegistryEndpoints {
         api,
-        cdn: DEFAULT_REGISTRY_CDN.to_string(),
-        fallback_api: DEFAULT_FALLBACK_API.map(std::string::ToString::to_string),
+        cdn: official.then(|| DEFAULT_REGISTRY_CDN.to_string()),
+        fallback_api: official
+            .then_some(DEFAULT_FALLBACK_API)
+            .flatten()
+            .map(std::string::ToString::to_string),
     }
 }
 
@@ -318,6 +361,31 @@ path = "/custom/packages"
         assert_eq!(defaults.author.as_deref(), Some("Bob"));
         assert!(defaults.license.is_none());
         assert!(config.registry.is_none());
+    }
+
+    #[test]
+    fn wire_name_modes_are_explicit_and_unknown_modes_fail() {
+        let config: PkgConfig = toml::from_str(
+            r#"
+[registry]
+wire-names = "slash"
+fallback-api = "https://mirror.example/api/v1"
+fallback-wire-names = "dotted"
+[registries.internal]
+index = "https://git.example/index"
+api = "https://registry.example/api/v1"
+wire-names = "slash"
+"#,
+        )
+        .unwrap();
+        let primary = config.registry.unwrap();
+        assert_eq!(primary.wire_names, Some(WireNames::Slash));
+        assert_eq!(primary.fallback_wire_names, Some(WireNames::Dotted));
+        assert_eq!(
+            config.registries.unwrap()["internal"].wire_names,
+            Some(WireNames::Slash)
+        );
+        assert!(toml::from_str::<PkgConfig>("[registry]\nwire-names = 'automatic'\n").is_err());
     }
 
     #[test]

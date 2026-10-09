@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::time::{Duration, Instant};
 
 mod api;
+mod channel_security;
 mod dist_probes;
 mod inbound;
 mod lifecycle;
@@ -359,7 +360,6 @@ impl TestNode {
     unsafe fn new(node_id: u16, bind_addr: &CString) -> Self {
         // SAFETY: Caller guarantees bind_addr is a valid C string.
         let node = unsafe { hew_node_new(node_id, bind_addr.as_ptr()) };
-        #[cfg(feature = "encryption")]
         if !node.is_null() {
             let dir = tempfile::tempdir().expect("test node identity directory");
             let path = dir.path().join("node.key");
@@ -396,13 +396,11 @@ impl Drop for TestNode {
     }
 }
 
-#[cfg(feature = "encryption")]
 struct PublicApiTestIdentity {
     dir: tempfile::TempDir,
     saved_transport: Option<std::ffi::OsString>,
 }
 
-#[cfg(feature = "encryption")]
 impl Drop for PublicApiTestIdentity {
     fn drop(&mut self) {
         crate::env::ENV_LOCK.access(|()| {
@@ -420,7 +418,6 @@ impl Drop for PublicApiTestIdentity {
 
 /// Stage a real stable TCP identity for a public `Node::start` test and keep
 /// its tempfile-backed key path alive until the public node is shut down.
-#[cfg(feature = "encryption")]
 fn stage_public_api_test_identity() -> PublicApiTestIdentity {
     let saved_transport = crate::env::ENV_LOCK.read_access(|()| std::env::var_os("HEW_TRANSPORT"));
     let identity = PublicApiTestIdentity {
@@ -462,12 +459,10 @@ fn start_tcp_test_listener_node(node_id: u16) -> (TestNode, u16) {
 
 /// Environment key naming the pre-generated Noise keyfile a two-process
 /// helper loads its stable identity from (brokered by the parent test).
-#[cfg(feature = "encryption")]
 const TWO_PROCESS_KEYFILE_ENV: &str = "HEW_2P_KEYFILE";
 
 /// Environment key carrying the peer's Noise static pubkey (lowercase hex)
 /// for the helper to bind via its per-node snapshot before connecting.
-#[cfg(feature = "encryption")]
 const TWO_PROCESS_PEER_PUBKEY_ENV: &str = "HEW_2P_PEER_PUBKEY";
 
 /// Start a **credentialed, Strict-authorized** TCP-Noise listener node for a
@@ -481,7 +476,6 @@ const TWO_PROCESS_PEER_PUBKEY_ENV: &str = "HEW_2P_PEER_PUBKEY";
 /// authenticates the peer and the claim machine binds its `NodeId`. This is a
 /// genuine authorized connection — there is no test-only posture promotion:
 /// a peer presenting an unbound Noise key fails the pre-gate and admission.
-#[cfg(feature = "encryption")]
 fn start_authorized_tcp_node(
     node_id: u16,
     peer_node: u16,
@@ -538,6 +532,55 @@ fn start_authorized_tcp_node(
     (node, port, peer_identity)
 }
 
+/// Start one TCP-Noise node with a stable identity that pins each
+/// `(route slot, Noise static key)` in `pins`.
+fn start_tcp_node_pinning(
+    node_id: u16,
+    identity: crate::peer_binding::StableNoiseIdentity,
+    identity_path: &std::path::Path,
+    pins: &[(u16, [u8; crate::peer_binding::NOISE_KEY_LEN])],
+) -> (TestNode, u16) {
+    let mut config = crate::peer_binding::PeerAuthConfig::default();
+    config.local_route_slot = std::num::NonZeroU16::new(node_id);
+    config.node_identity = Some(crate::node_identity::NodeId::from_noise_static_key(
+        &identity.public(),
+    ));
+    config.identity_path = Some(identity_path.to_path_buf());
+    config.noise_identity = Some(identity);
+    for &(peer_id, peer_pub) in pins {
+        config
+            .pin_peer(peer_id, PeerCredential::NoiseKey(peer_pub))
+            .expect("distinct authorized TCP peer pin");
+    }
+    let snapshot = config
+        .snapshot_for_start()
+        .expect("acquire authorized TCP session");
+    let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+    // SAFETY: bind_addr is a valid C string for the duration of this helper.
+    let node = unsafe { TestNode::new(node_id, &bind_addr) };
+    assert!(
+        !node.as_ptr().is_null(),
+        "authorized tcp node {node_id} alloc failed"
+    );
+    // SAFETY: node is freshly created (STOPPED); install before start.
+    let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+    assert_eq!(set_rc, 0, "install auth snapshot on node {node_id}");
+    // SAFETY: node pointer is valid; start selects TCP + Noise from the
+    // snapshot and reads the installed strict bindings.
+    let rc = unsafe { hew_node_start(node.as_ptr()) };
+    assert_eq!(
+        rc,
+        0,
+        "authorized tcp start({node_id}) failed: {:?}",
+        crate::stream_error::take_last_error()
+    );
+    // SAFETY: node started successfully on the TCP transport.
+    let port =
+        unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
+            .expect("authorized tcp node must expose its bound listener port");
+    (node, port)
+}
+
 /// Start two mutually-authenticated in-process nodes on the native TCP
 /// (Noise) transport. Each mints a stable Noise identity and pins the
 /// other's real static public key to the peer's `NodeId`, so the loopback
@@ -547,10 +590,7 @@ fn start_authorized_tcp_node(
 /// posture promotion; it mirrors [`start_authorized_quic_mesh_pair`] for the
 /// cases that must exercise TCP-specific pending-ask / connection behaviour
 /// now that an unverified outbound ask fails closed before it is ever sent.
-#[cfg(feature = "encryption")]
 fn start_authorized_tcp_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, u16) {
-    use crate::peer_binding::{PeerAuthConfig, StableNoiseIdentity, NOISE_KEY_LEN};
-
     let dir = tempfile::tempdir().expect("authorized tcp pair keydir");
     let path_a = dir.path().join("node-a.key");
     let path_b = dir.path().join("node-b.key");
@@ -561,53 +601,8 @@ fn start_authorized_tcp_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, 
     let pub_a = identity_a.public();
     let pub_b = identity_b.public();
 
-    let start_one = |node_id: u16,
-                     peer_id: u16,
-                     identity: StableNoiseIdentity,
-                     identity_path: &std::path::Path,
-                     peer_pub: [u8; NOISE_KEY_LEN]|
-     -> (TestNode, u16) {
-        let mut config = PeerAuthConfig::default();
-        config.local_route_slot = std::num::NonZeroU16::new(node_id);
-        config.node_identity = Some(crate::node_identity::NodeId::from_noise_static_key(
-            &identity.public(),
-        ));
-        config.identity_path = Some(identity_path.to_path_buf());
-        config.noise_identity = Some(identity);
-        config
-            .pin_peer(peer_id, PeerCredential::NoiseKey(peer_pub))
-            .expect("distinct authorized TCP peer pin");
-        let snapshot = config
-            .snapshot_for_start()
-            .expect("acquire authorized TCP session");
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is a valid C string for the duration of this closure.
-        let node = unsafe { TestNode::new(node_id, &bind_addr) };
-        assert!(
-            !node.as_ptr().is_null(),
-            "authorized tcp node {node_id} alloc failed"
-        );
-        // SAFETY: node is freshly created (STOPPED); install before start.
-        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
-        assert_eq!(set_rc, 0, "install auth snapshot on node {node_id}");
-        // SAFETY: node pointer is valid; start selects TCP + Noise from the
-        // snapshot and reads the installed strict bindings.
-        let rc = unsafe { hew_node_start(node.as_ptr()) };
-        assert_eq!(
-            rc,
-            0,
-            "authorized tcp start({node_id}) failed: {:?}",
-            crate::stream_error::take_last_error()
-        );
-        // SAFETY: node started successfully on the TCP transport.
-        let port =
-            unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
-                .expect("authorized tcp node must expose its bound listener port");
-        (node, port)
-    };
-
-    let (node_a, port_a) = start_one(id_a, id_b, identity_a, &path_a, pub_b);
-    let (node_b, port_b) = start_one(id_b, id_a, identity_b, &path_b, pub_a);
+    let (node_a, port_a) = start_tcp_node_pinning(id_a, identity_a, &path_a, &[(id_b, pub_b)]);
+    let (node_b, port_b) = start_tcp_node_pinning(id_b, identity_b, &path_b, &[(id_a, pub_a)]);
     (node_a, port_a, node_b, port_b)
 }
 

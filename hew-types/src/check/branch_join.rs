@@ -41,8 +41,11 @@
 //! Loops use the same ownership snapshots to join body completion, early loop
 //! edges and the possible zero-iteration path. Reinitialization can remove a
 //! moved-place fact, so the body's final state alone does not describe those
-//! paths. The source checker walks the body once; SIR checks ownership across
-//! repeated execution.
+//! paths. The source checker walks the body once. The body's end and every
+//! `continue` are back edges: a use the next iteration makes before
+//! re-initialising a value is checked against the state those edges carry
+//! (`TypeEnv::exit_loop`), so a value consumed on every iteration is refused
+//! here rather than at SIR verification.
 //!
 //! Fork and spawn children are not join sites either: they run concurrently, not
 //! alternatively, so a binding moved into one child and used in another is a

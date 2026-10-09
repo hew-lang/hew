@@ -1,0 +1,13 @@
+[[case]]
+id = "failing-generator-refusals"
+intent = "Each item of a failing generator is a `Result`: using it as the success value without `?` or a handler is a mismatch."
+source = "cases/failing-generator-refusals.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 13
+column = 28
+message = "expected `string`, found `Result<string, string>`"

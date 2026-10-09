@@ -16,6 +16,7 @@ pub(super) struct Frame<'ctx> {
     exit: BasicBlock<'ctx>,
     invalid_destroy: BasicBlock<'ctx>,
     carried: RefCell<BTreeSet<usize>>,
+    child: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
 }
 
 const _: () = {
@@ -157,6 +158,7 @@ pub(super) fn begin<'ctx>(
         exit,
         invalid_destroy,
         carried: RefCell::new(BTreeSet::new()),
+        child: Cell::new(None),
     };
     frame.carry(ctx, builder, state, "invocation.state.slot")?;
     Ok(frame)
@@ -170,6 +172,22 @@ fn mark(ctx: &Context, slot: PointerValue<'_>, name: &str) -> CodegenResult<()> 
 }
 
 impl<'ctx> Frame<'ctx> {
+    pub fn child_storage(
+        &self,
+        ctx: &'ctx Context,
+    ) -> CodegenResult<(PointerValue<'ctx>, PointerValue<'ctx>)> {
+        if let Some(slots) = self.child.get() {
+            return Ok(slots);
+        }
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let slots = (
+            self.storage(ctx, pointer.into(), "call.child.state")?,
+            self.storage(ctx, pointer.into(), "call.child.frame")?,
+        );
+        self.child.set(Some(slots));
+        Ok(slots)
+    }
+
     pub fn carry<T: inkwell::values::BasicValue<'ctx> + Copy>(
         &self,
         ctx: &'ctx Context,

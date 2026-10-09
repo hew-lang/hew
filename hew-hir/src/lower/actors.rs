@@ -358,7 +358,7 @@ impl LowerCtx {
                     deferred: self
                         .actor_deferred_field_decls
                         .contains(&self.mk_key(&f.ty.1)),
-                    span: f.span.clone(),
+                    span: f.name_span.clone(),
                 }
             })
             .collect();

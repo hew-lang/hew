@@ -14,7 +14,7 @@ actor Vault {
 }
 
 fn main() {
-    let vault = spawn Vault();
+    let vault = spawn Vault;
     match vault.withdraw(30) {
         .Ok(left) => println(left),
         .Err(e) => match e {

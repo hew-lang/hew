@@ -15,7 +15,7 @@ actor Describer {
 }
 
 fn main() -> i64 {
-    let d = spawn Describer(name: "widget");
+    let d = spawn Describer { name: "widget" };
     var i: i64 = 0;
     var sink: i64 = 0;
     while i < 50 {

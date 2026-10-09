@@ -17,7 +17,7 @@ actor Counter {
 }
 
 fn main() {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     let _ = c.increment(10);
     let _ = c.increment(20);
     let _ = c.increment(12);

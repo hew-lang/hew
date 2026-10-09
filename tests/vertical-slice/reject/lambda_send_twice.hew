@@ -8,7 +8,7 @@ fn main() {
     let w = actor |x: i64| {
         println(x);
     };
-    let r = spawn Relay();
+    let r = spawn Relay;
     let _ = r.go(w);
     let _ = r.go(w);
     let _ = w.send(1);

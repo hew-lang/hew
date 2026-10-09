@@ -68,7 +68,7 @@ fn actor_bare_send_no_handler_rejected_at_typecheck() {
 }
 
 fn main() {
-    let w = spawn Worker(count: 0);
+    let w = spawn Worker { count: 0 };
     w.send(7);
 }
 ",
@@ -99,7 +99,7 @@ fn actor_bare_send_non_unit_named_handler_rejected_at_typecheck() {
 }
 
 fn main() {
-    let c = spawn Calculator(total: 0);
+    let c = spawn Calculator { total: 0 };
     c.send(3);
 }
 ",
@@ -139,7 +139,7 @@ machine M {
     state Idle;
 
     on Tick: Active => Active reenter {
-        let c = spawn Calculator(total: 0);
+        let c = spawn Calculator { total: 0 };
         c.send(3);
         Active
     }
@@ -172,7 +172,7 @@ fn actor_ask_non_unit_handler_accepted() {
 }
 
 fn main() {
-    let c = spawn Calculator(total: 0);
+    let c = spawn Calculator { total: 0 };
     let _ = c.compute(3);
 }
 ",

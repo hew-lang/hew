@@ -67,8 +67,8 @@ actor Classifier {
 
 #[test]
 fn multi_return_value_handler_deposits_each_path() {
-    let counter = spawn Counter(n: 0);
-    let c = spawn Classifier(counter: counter);
+    let counter = spawn Counter { n: 0 };
+    let c = spawn Classifier { counter: counter };
     // step() yields 1,2,3,4: the `return v` path for the first three calls,
     // then the early `return 100` once the value exceeds 3.
     expect_classify(c, 1);
@@ -86,8 +86,8 @@ fn expect_classify(c: Classifier, want: i64) {
 
 #[test]
 fn early_return_out_of_loop_after_await_returns_stop_value() {
-    let counter = spawn Counter(n: 0);
-    let c = spawn Classifier(counter: counter);
+    let counter = spawn Counter { n: 0 };
+    let c = spawn Classifier { counter: counter };
     // step() yields 1,2,3,...; scan returns the value the first time it reaches
     // 3 (the early `return v` inside the loop), proving the in-loop early
     // return deposits its value through the shared block.

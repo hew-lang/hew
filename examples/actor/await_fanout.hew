@@ -19,8 +19,8 @@ actor Hub {
 }
 
 fn main() {
-    let w = spawn Worker(base: 100);
-    let h = spawn Hub(worker: w);
+    let w = spawn Worker { base: 100 };
+    let h = spawn Hub { worker: w };
     var total = 0;
     for i in 0..5 {
         let r = h.relay(i);

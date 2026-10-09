@@ -40,7 +40,7 @@ fn main() {
         after 10s => println("main: timer beat a file"),
     };
     source.close();
-    let watcher = spawn Watcher();
+    let watcher = spawn Watcher;
     match watcher.watch(open()) {
         .Ok(report) => println(report),
         .Err(_) => println("watcher crashed"),

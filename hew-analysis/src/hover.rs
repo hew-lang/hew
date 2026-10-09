@@ -2534,7 +2534,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(),\n",
+            "    child w: Worker,\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);

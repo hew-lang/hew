@@ -19,8 +19,8 @@ actor Worker {
 }
 
 supervisor Team(port: i64) {
-    child first: Worker(name: "first", port: port) stop: 30s;
-    child second: Worker(name: "second", port: port) stop: 30s;
+    child first: Worker { name: "first", port: port } stop: 30s;
+    child second: Worker { name: "second", port: port } stop: 30s;
 }
 
 fn release(listener: net.Listener) {
@@ -31,7 +31,7 @@ fn release(listener: net.Listener) {
 
 fn main() {
     let listener = net.listen("127.0.0.1:0").expect("listen");
-    let team = spawn Team(port: listener.local_port());
+    let team = spawn Team { port: listener.local_port() };
     let second = team.second;
     stop(team);
     println("stop returned");

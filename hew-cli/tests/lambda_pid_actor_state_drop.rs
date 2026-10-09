@@ -23,7 +23,7 @@ fn lambda_pid_actor_state_runs_and_tears_down() {
 
 fn main() {
     let pid = actor |_n: i64| {};
-    let _holder = spawn Holder(pid: pid);
+    let _holder = spawn Holder { pid: pid };
     println("ok");
 }
 "#,

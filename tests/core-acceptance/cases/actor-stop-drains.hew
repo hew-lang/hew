@@ -19,7 +19,7 @@ actor Worker {
 }
 
 fn main() {
-    let worker = spawn Worker();
+    let worker = spawn Worker;
     let (open, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let _ = mailbox(worker).hold(gate);
     let _ = mailbox(worker).job(1);

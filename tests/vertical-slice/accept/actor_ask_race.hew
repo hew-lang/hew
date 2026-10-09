@@ -39,7 +39,7 @@ actor SlowWorker {
 fn main() -> i64 {
     let fast = spawn FastWorker;
     let (release, gate) = stream.pipe(1).expect("gate");
-    let slow = spawn SlowWorker(gate: gate);
+    let slow = spawn SlowWorker { gate: gate };
     // Ask both workers the same query. Select picks the first reply.
     let winner = select {
         reply from fast.compute(42) => reply.expect("ask reply"),

@@ -25,7 +25,7 @@ fn assert_faithful(source: &str) {
 #[test]
 fn issue_repro_keeps_comment_in_main_and_hook_before_handler() {
     assert_faithful(
-        "actor W {\n    var n: i64;\n    #[on(start)]\n    fn started() {\n        println(\"s\");\n    }\n    receive fn boom() {\n        panic(\"x\");\n    }\n}\n\nfn main() {\n    let w = spawn W(n: 1);\n    // note about the next line\n    let _ = w.boom();\n}\n",
+        "actor W {\n    var n: i64;\n    #[on(start)]\n    fn started() {\n        println(\"s\");\n    }\n    receive fn boom() {\n        panic(\"x\");\n    }\n}\n\nfn main() {\n    let w = spawn W { n: 1 };\n    // note about the next line\n    let _ = w.boom();\n}\n",
     );
 }
 
@@ -209,7 +209,7 @@ fn comments_between_actor_members_and_attributes() {
 }
 
 fn main() {
-    let w = spawn W(n: 1);
+    let w = spawn W { n: 1 };
     // note about the next line
     let _ = w.boom();
 }
@@ -734,7 +734,7 @@ fn a_separator_the_formatter_adds_beside_a_comment_is_accepted() {
 #[test]
 fn grouping_parentheses_and_empty_argument_lists_are_kept() {
     assert_faithful(
-        "actor W {\n    receive fn go() {}\n}\n\nfn main() {\n    let w = spawn W();\n    let x = (1 + 2);\n    let y = -(-(3));\n    println(x + y);\n}\n",
+        "actor W {\n    receive fn go() {}\n}\n\nfn main() {\n    let w = spawn W;\n    let x = (1 + 2);\n    let y = -(-(3));\n    println(x + y);\n}\n",
     );
 }
 

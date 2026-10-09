@@ -127,7 +127,7 @@ fn main() -> i64 {
         .Ok(_) => {}
         .Err(_) => return 1,
     }
-    let store = spawn Store(entries: HashMap.new());
+    let store = spawn Store { entries: HashMap.new() };
     if Node.register("store", store) != 0 {
         return 2;
     }
@@ -143,7 +143,7 @@ fn main() -> i64 {
     println(get(target, "colour"));
 
     // A clean exit reaches a monitor as the DOWN of a remote location.
-    let watcher = spawn Watcher(active: .Err(LinkError.NoContext));
+    let watcher = spawn Watcher { active: .Err(LinkError.NoContext) };
     match watcher.arm(target) {
         .Ok(0) => {}
         .Ok(_) => return 5,
@@ -173,7 +173,7 @@ fn main() -> i64 {
     }
     // A MonitorLost link to a local target leaves the linker running when
     // the target exits.
-    let partner = spawn Store(entries: HashMap.new());
+    let partner = spawn Store { entries: HashMap.new() };
     if Node.register("partner", partner) != 0 {
         return 8;
     }
@@ -196,7 +196,7 @@ fn main() -> i64 {
         .Err(_) => println("linker gone"),
     }
     // A new session makes every pid from the earlier one stale.
-    let live = spawn Store(entries: HashMap.new());
+    let live = spawn Store { entries: HashMap.new() };
     if Node.register("live", live) != 0 {
         return 12;
     }
@@ -216,7 +216,7 @@ fn main() -> i64 {
     }
     println(get(old, "colour"));
     // A stale pid is not an error: the monitor answers with a lost DOWN.
-    let late_watcher = spawn Watcher(active: .Err(LinkError.NoContext));
+    let late_watcher = spawn Watcher { active: .Err(LinkError.NoContext) };
     match late_watcher.arm(old) {
         .Ok(0) => println("monitor registered"),
         .Ok(_) => println("monitor refused"),

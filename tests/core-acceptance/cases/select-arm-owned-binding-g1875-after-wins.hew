@@ -13,7 +13,7 @@ actor SlowReplier {
 
 fn main() -> i64 {
     let (open, gate) = stream.pipe(1).expect("gate");
-    let slow = spawn SlowReplier(gate: gate);
+    let slow = spawn SlowReplier { gate: gate };
     let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(error) => panic(error),

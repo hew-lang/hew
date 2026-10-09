@@ -27,7 +27,7 @@ actor Producer {
 
 fn main() -> i64 {
     let (sink, data) = stream.pipe(4).expect("pipe");
-    let p = spawn Producer(out: sink);
+    let p = spawn Producer { out: sink };
     match p.go() {
         .Ok(_v) => println("handler returned"),
         .Err(_e) => println("handler crashed"),

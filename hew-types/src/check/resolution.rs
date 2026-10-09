@@ -2753,7 +2753,7 @@ impl Checker {
                 // the reservation does not fire — the user's declaration shadows
                 // the compiler-internal name (local-shadows-global rule).
                 // The retired actor-handle spellings. An actor is the type of
-                // its handle, so `spawn Orders(...)` has type `Orders` and a
+                // its handle, so `spawn Orders { ... }` has type `Orders` and a
                 // field, parameter or element that holds an actor is written
                 // with the actor's own name. A user declaration of the same
                 // name shadows the reservation.

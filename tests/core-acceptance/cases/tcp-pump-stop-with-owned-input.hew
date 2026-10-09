@@ -45,9 +45,9 @@ fn main() {
         .Ok(value) => value,
         .Err(_) => panic("pipe failed"),
     };
-    let receiver = spawn AttachedInput(ready: tx, never: never);
+    let receiver = spawn AttachedInput { ready: tx, never: never };
     let server = listener.accept();
-    let pump = spawn Pump(conn: server, target: receiver);
+    let pump = spawn Pump { conn: server, target: receiver };
     mailbox(pump, on_full: .Wait).run().expect("start pump");
     match client.send("owned\0input".to_bytes()) {
         .Ok(()) => {}

@@ -36,7 +36,7 @@ fn main() -> i64 {
         xs.push(Item { name: "beta-owned-element" });
         let g = BatchGood { items: xs, tail: "owned-tail-value" };
         let raw = cbor.encode(g);
-        let a = spawn Decoder(seq: i);
+        let a = spawn Decoder { seq: i };
         let r = a.decode_it(raw);
         match r {
             .Ok(v) => {

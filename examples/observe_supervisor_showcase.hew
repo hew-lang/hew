@@ -89,9 +89,9 @@ supervisor WorkerPool {
     strategy: one_for_one;
     intensity: 10 within 60s;
 
-    child alpha: Worker(id: 1, processed: 0);
-    child beta: Worker(id: 2, processed: 0);
-    child gamma: Worker(id: 3, processed: 0);
+    child alpha: Worker { id: 1, processed: 0 };
+    child beta: Worker { id: 2, processed: 0 };
+    child gamma: Worker { id: 3, processed: 0 };
 }
 
 // one_for_all: when ANY child crashes, the supervisor restarts ALL of them.
@@ -102,8 +102,8 @@ supervisor ServiceStack {
     strategy: one_for_all;
     intensity: 5 within 30s;
 
-    child api: Service(port: 8080, requests: 0);
-    child cache: Service(port: 6379, requests: 0);
+    child api: Service { port: 8080, requests: 0 };
+    child cache: Service { port: 6379, requests: 0 };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────

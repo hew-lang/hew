@@ -1,11 +1,11 @@
 [
   {
     "id": "actor",
-    "snippet": "actor Counter {\n    var count: i64;\n    receive fn increment(by: i64) -> i64 {\n        count = count + by;\n        count\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    let _ = c.increment(5);\n}\n"
+    "snippet": "actor Counter {\n    var count: i64;\n    receive fn increment(by: i64) -> i64 {\n        count = count + by;\n        count\n    }\n}\n\nfn main() {\n    let c = spawn Counter { count: 0 };\n    let _ = c.increment(5);\n}\n"
   },
   {
     "id": "spawn",
-    "snippet": "let counter = spawn Counter(count: 0);\n"
+    "snippet": "let counter = spawn Counter { count: 0 };\n"
   },
   {
     "id": "send-message",
@@ -13,11 +13,11 @@
   },
   {
     "id": "receive",
-    "snippet": "actor Greeter {\n    let name: string;\n    receive fn greet() -> i64 {\n        println(f\"Hello from {name}\");\n        0\n    }\n}\n\nfn main() {\n    let g = spawn Greeter(name: \"Hew\");\n    let _ = g.greet();\n}\n"
+    "snippet": "actor Greeter {\n    let name: string;\n    receive fn greet() -> i64 {\n        println(f\"Hello from {name}\");\n        0\n    }\n}\n\nfn main() {\n    let g = spawn Greeter { name: \"Hew\" };\n    let _ = g.greet();\n}\n"
   },
   {
     "id": "supervisor",
-    "snippet": "actor Worker {\n    let id: i64;\n\n    receive fn work(x: i64) -> i64 {\n        println(f\"Worker {id} processing {x}\");\n        x * 2\n    }\n}\n\nsupervisor WorkerPool {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n    child w1: Worker(id: 1);\n    child w2: Worker(id: 2);\n}\n\nfn main() {\n    let workers = spawn WorkerPool;\n    let w1 = workers.w1;\n    let _ = w1.work(10);\n}\n"
+    "snippet": "actor Worker {\n    let id: i64;\n\n    receive fn work(x: i64) -> i64 {\n        println(f\"Worker {id} processing {x}\");\n        x * 2\n    }\n}\n\nsupervisor WorkerPool {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n    child w1: Worker { id: 1 };\n    child w2: Worker { id: 2 };\n}\n\nfn main() {\n    let workers = spawn WorkerPool;\n    let w1 = workers.w1;\n    let _ = w1.work(10);\n}\n"
   },
   {
     "id": "machine",

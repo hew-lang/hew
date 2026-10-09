@@ -69,7 +69,7 @@ generate_record() {
         echo "}"
         echo
         echo "fn main() {"
-        echo "    let gate = spawn Gate();"
+        echo "    let gate = spawn Gate;"
         printf '    var value = Payload {'
         for i in 0 1 2 3 4 5 6 7; do printf ' f%s: "ok",' "$i"; done
         echo " };"
@@ -106,7 +106,7 @@ generate_owners() {
         echo "fn width(text: string, n: i64) -> i64 { text.len() + n }"
         echo
         echo "fn main() {"
-        echo "    let gate = spawn Gate();"
+        echo "    let gate = spawn Gate;"
         echo "    var total = 0;"
         for ((i = 1; i <= n; i++)); do
             echo "    var lease$i = Lease { id: $i };"

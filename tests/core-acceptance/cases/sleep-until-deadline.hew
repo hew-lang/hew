@@ -17,8 +17,8 @@ fn main() {
     let past = instant.now() - 1s;
     sleep_until(past);
     println("past deadline returned");
-    let a = spawn Sleeper();
-    let b = spawn Sleeper();
+    let a = spawn Sleeper;
+    let b = spawn Sleeper;
     let start = instant.now();
     let first = fork a.nap();
     let second = fork b.nap();

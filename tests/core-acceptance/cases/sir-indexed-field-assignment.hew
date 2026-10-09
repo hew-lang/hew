@@ -34,6 +34,6 @@ fn local_rows() -> string {
 
 fn main() {
     println(local_rows());
-    let ledger = spawn Ledger(rows: rows());
+    let ledger = spawn Ledger { rows: rows() };
     println(ledger.close(1, "shut".to_upper()).expect("close"));
 }

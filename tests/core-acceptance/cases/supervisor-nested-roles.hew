@@ -17,16 +17,16 @@ actor Worker<T> {
 
 supervisor Inner<T>(seed: T) {
     intensity: 1 within 60s;
-    child leaf: Worker<T>(seed: seed);
+    child leaf: Worker<T> { seed: seed };
 }
 
 supervisor Outer<T>(seed: T) {
     intensity: 3 within 60s;
-    child inner: Inner<T>(seed: seed);
+    child inner: Inner<T> { seed: seed };
 }
 
 supervisor Root<T>(seed: T) {
-    child outer: Outer<T>(seed: seed);
+    child outer: Outer<T> { seed: seed };
 }
 
 fn read_leaf(inner: ChildRef<Inner<string>>) -> string {
@@ -34,7 +34,7 @@ fn read_leaf(inner: ChildRef<Inner<string>>) -> string {
 }
 
 fn main() {
-    let root = spawn Root(seed: "nested\0config".to_upper());
+    let root = spawn Root { seed: "nested\0config".to_upper() };
     let inner = root.outer.inner;
     let leaf = inner.leaf;
     assert(read_leaf(inner) == "NESTED\0CONFIG");

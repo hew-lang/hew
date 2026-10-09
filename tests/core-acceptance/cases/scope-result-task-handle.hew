@@ -24,7 +24,7 @@ actor Driver {
 }
 
 fn main() {
-    let driver = spawn Driver(left: spawn Worker, right: spawn Worker);
+    let driver = spawn Driver { left: spawn Worker, right: spawn Worker };
     match driver.drive(4) {
         .Ok(total) => println(total),
         .Err(_) => println("drive failed"),

@@ -30,7 +30,7 @@ actor Keeper {
 }
 
 fn main() {
-    let keeper = spawn Keeper(ledger: Ledger { name: "ledger" });
+    let keeper = spawn Keeper { ledger: Ledger { name: "ledger" } };
     match keeper.ping() {
         .Ok(value) => println(value),
         .Err(_) => panic("ping failed"),

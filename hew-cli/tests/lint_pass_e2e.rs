@@ -345,9 +345,9 @@ fn sleep_loop_blocks_mailbox_inline_directive_suppresses() {
 
 // ── receive-handler lint: actor_handle_builtin_shadow ─────────────────
 
-const ACTOR_HANDLE_BUILTIN_SHADOW: &str = "actor Counter {\n    var count: i64;\n    receive fn send(n: i64) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let counter = spawn Counter(count: 0);\n    let _ = counter.send(1);\n}\n";
+const ACTOR_HANDLE_BUILTIN_SHADOW: &str = "actor Counter {\n    var count: i64;\n    receive fn send(n: i64) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let counter = spawn Counter { count: 0 };\n    let _ = counter.send(1);\n}\n";
 
-const ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED: &str = "actor Counter {\n    var count: i64;\n    // hew:allow(actor_handle_builtin_shadow)\n    receive fn send(n: i64) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let counter = spawn Counter(count: 0);\n    let _ = counter.send(1);\n}\n";
+const ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED: &str = "actor Counter {\n    var count: i64;\n    // hew:allow(actor_handle_builtin_shadow)\n    receive fn send(n: i64) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let counter = spawn Counter { count: 0 };\n    let _ = counter.send(1);\n}\n";
 
 const ACTOR_HANDLE_BUILTIN_SHADOW_MESSAGE: &str =
     "`receive fn send` shadows builtin actor-handle method";

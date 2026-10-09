@@ -1962,7 +1962,7 @@ fn read(account: Account) -> i64 {
             "{LEDGER}
 #[test]
 fn concurrent_deposits_are_not_lost() {{
-    let account = spawn Account(balance: 0);
+    let account = spawn Account {{ balance: 0 }};
     scope {{
         let first = fork {deposit}(account, 10);
         let second = fork {deposit}(account, 20);

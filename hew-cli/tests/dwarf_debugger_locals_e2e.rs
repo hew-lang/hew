@@ -107,7 +107,7 @@ actor Handler {
 
 fn main() {
     let source = spawn Source;
-    let handler = spawn Handler(source: source);
+    let handler = spawn Handler { source: source };
     let _ = handler.run();
 }
 ";

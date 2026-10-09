@@ -698,7 +698,7 @@ fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
          }\n\
          fn check() -> Result<(), string> { closed(7, \"ok\")?; .Ok(()) }\n\
          fn main() {\n\
-             let worker = spawn Worker();\n\
+             let worker = spawn Worker;\n\
              let _sent = worker.ping();\n\
              stop(worker);\n\
              let _checked = check();\n\
@@ -712,7 +712,7 @@ fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
 fn an_undeclared_stop_and_stopped_take_a_handle() {
     let source = "actor Worker { receive fn ping() {} }\n\
          fn main() {\n\
-             let worker = spawn Worker();\n\
+             let worker = spawn Worker;\n\
              let _sent = worker.ping();\n\
              stop(worker);\n\
              stopped(worker);\n\

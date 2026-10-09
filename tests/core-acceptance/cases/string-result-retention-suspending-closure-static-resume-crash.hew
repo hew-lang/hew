@@ -51,7 +51,7 @@ fn main() {
     let _ = observe.barrier();
     let frame_baseline = observe.read("coroutines.frame_bytes_live") ?? 0;
     let gate = spawn Gate;
-    let runner = spawn Runner(gate: gate);
+    let runner = spawn Runner { gate: gate };
     let r = runner.go(0);
     match r {
         .Ok(_) => println("unexpected-ok"),

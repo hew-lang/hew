@@ -14,7 +14,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let sink = spawn Keeper(seen: 0, last: "seed");
+    let sink = spawn Keeper { seen: 0, last: "seed" };
     var i: i64 = 0;
     while i < 50 {
         let _ = sink.take("state".to_upper(), i % 2 == 0);

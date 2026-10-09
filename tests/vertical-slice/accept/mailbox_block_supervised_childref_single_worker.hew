@@ -30,6 +30,6 @@ actor Driver {
 
 fn main() {
     let app = spawn App;
-    let driver = spawn Driver(worker: app.worker);
+    let driver = spawn Driver { worker: app.worker };
     let _ = driver.run();
 }

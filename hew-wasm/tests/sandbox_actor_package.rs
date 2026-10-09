@@ -33,7 +33,7 @@ const COUNTER: &str = r"actor Counter {
 }
 
 fn main() {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     println(match c.bump(3) {
         .Ok(v) => v,
         .Err(_e) => 0 - 1,
@@ -162,7 +162,7 @@ fn actor_state_is_shared_between_completed_turns() {
 }
 
 fn main() {
-    let counter = spawn Counter(count: 2);
+    let counter = spawn Counter { count: 2 };
     println(match counter.bump(3) {
         .Ok(n) => n,
         .Err(_) => -1,
@@ -201,7 +201,7 @@ actor Relay {
 
 fn main() {
     let worker = spawn Doubler;
-    let relay = spawn Relay(worker: worker, calls: 0);
+    let relay = spawn Relay { worker: worker, calls: 0 };
     println(match relay.forward(5) {
         .Ok(n) => n,
         .Err(_) => -1,
@@ -267,7 +267,7 @@ fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
 supervisor Tree {
     strategy: one_for_one;
     intensity: 3 within 10s;
-    child worker: Worker(count: 10);
+    child worker: Worker { count: 10 };
 }
 
 fn main() {
@@ -387,8 +387,8 @@ fn select_waits_on_actor_completions() {
 }
 
 fn main() {
-    let slow = spawn Worker(delay: 20ms);
-    let fast = spawn Worker(delay: 1ms);
+    let slow = spawn Worker { delay: 20ms };
+    let fast = spawn Worker { delay: 1ms };
     select {
         result from slow.work(2) => println(result.expect("slow")),
         result from fast.work(1) => println(result.expect("fast")),
@@ -1373,7 +1373,7 @@ actor Owner {
 
 fn main() {
     let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
-    let owner = spawn Owner(output: output, ticket: Ticket { id: 7 });
+    let owner = spawn Owner { output: output, ticket: Ticket { id: 7 } };
     owner.ready().expect("ready");
     scope {
         stop(owner);
@@ -1418,7 +1418,7 @@ actor Owner {
 }
 
 fn main() {
-    let owner = spawn Owner(ticket: Ticket { name: "actor owner closed" });
+    let owner = spawn Owner { ticket: Ticket { name: "actor owner closed" } };
     owner.ready().expect("ready");
     let _local = Ticket { name: "main owner closed" };
     panic("main failed");

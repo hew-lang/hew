@@ -57,8 +57,8 @@ supervisor WorkerPool {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child w1: Worker(id: 1, count: 0);
-    child w2: Worker(id: 2, count: 0);
+    child w1: Worker { id: 1, count: 0 };
+    child w2: Worker { id: 2, count: 0 };
 }
 
 // Inner supervisor: manages cache actors
@@ -66,7 +66,7 @@ supervisor CacheManager {
     strategy: one_for_one;
     intensity: 2 within 60s;
 
-    child cache: Cache(capacity: 1000, entries: 0);
+    child cache: Cache { capacity: 1000, entries: 0 };
 }
 
 // Root supervisor: manages the inner supervisors

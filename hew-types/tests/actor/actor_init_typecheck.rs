@@ -59,7 +59,7 @@ fn test_actor_init_valid_field_access() {
 }
 
 fn main() {
-    let _w = spawn Worker(id: 1);
+    let _w = spawn Worker { id: 1 };
 }
 ",
     );
@@ -101,7 +101,7 @@ fn test_actor_no_init_still_works() {
 }
 
 fn main() {
-    let _c = spawn Counter(count: 0);
+    let _c = spawn Counter { count: 0 };
 }
 ",
     );
@@ -336,7 +336,7 @@ fn ask_method_form_rejected_by_typechecker() {
 }
 
 fn main() {
-    let c = spawn Counter();
+    let c = spawn Counter;
     let _ = c.ask(1);
 }
 ",
@@ -364,7 +364,7 @@ fn init_parameter_named_like_a_state_field_is_refused() {
 }
 
 fn main() {
-    let _w = spawn Widget(n: 7);
+    let _w = spawn Widget { n: 7 };
 }
 ",
     );
@@ -403,7 +403,8 @@ const PAIR: &str = "actor Pair {
 
 #[test]
 fn spawn_key_unknown_to_the_actor_is_reported_at_the_key() {
-    let source = format!("{PAIR}\nfn main() {{\n    let _p = spawn Pair(a: 1, b: 2, c: 3);\n}}\n");
+    let source =
+        format!("{PAIR}\nfn main() {{\n    let _p = spawn Pair {{ a: 1, b: 2, c: 3 }};\n}}\n");
     let output = typecheck(&source);
     let key = source.find("c: 3").expect("fixture key");
     assert_eq!(
@@ -420,7 +421,7 @@ fn spawn_key_unknown_to_the_actor_is_reported_at_the_key() {
 #[test]
 fn misspelt_spawn_shorthand_reports_the_unknown_and_the_missing_keys() {
     let source = format!(
-        "{PAIR}\nfn main() {{\n    let x = 1;\n    let y = 2;\n    let _p = spawn Pair(x, y);\n}}\n"
+        "{PAIR}\nfn main() {{\n    let x = 1;\n    let y = 2;\n    let _p = spawn Pair {{ x, y }};\n}}\n"
     );
     let output = typecheck(&source);
     let messages: Vec<_> = spawn_errors(&output)
@@ -452,7 +453,8 @@ fn misspelt_spawn_shorthand_reports_the_unknown_and_the_missing_keys() {
 
 #[test]
 fn spawn_key_named_twice_is_reported_at_the_second_key() {
-    let source = format!("{PAIR}\nfn main() {{\n    let _p = spawn Pair(a: 1, a: 2, b: 3);\n}}\n");
+    let source =
+        format!("{PAIR}\nfn main() {{\n    let _p = spawn Pair {{ a: 1, a: 2, b: 3 }};\n}}\n");
     let output = typecheck(&source);
     let second = source.find("a: 2").expect("fixture key");
     assert_eq!(
@@ -480,7 +482,7 @@ fn spawn_key_suggests_the_init_parameter_it_misspells() {
 }
 
 fn main() {
-    let _l = spawn Loader(sed: 1);
+    let _l = spawn Loader { sed: 1 };
 }
 ",
     );
@@ -510,18 +512,18 @@ fn supervisor_spawn_keys_are_its_parameters() {
         "{PAIR}
 supervisor Solo {{
     strategy: one_for_one;
-    child p: Pair(a: 1, b: 2);
+    child p: Pair {{ a: 1, b: 2 }};
 }}
 
 supervisor Pool(a: i64, b: i64) {{
     strategy: one_for_one;
-    child p: Pair(a: b, b: a);
+    child p: Pair {{ a: b, b: a }};
 }}
 
 fn main() {{
-    let _s = spawn Solo(x: 1);
-    let _m = spawn Pool(a: 1);
-    let _ok = spawn Pool(b: 2, a: 1);
+    let _s = spawn Solo {{ x: 1 }};
+    let _m = spawn Pool {{ a: 1 }};
+    let _ok = spawn Pool {{ b: 2, a: 1 }};
 }}
 "
     );

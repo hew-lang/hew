@@ -197,7 +197,7 @@ is a cost detail, so an identity answer would report the copy-on-write tier
 rather than anything about your program. Compare values with `==`.
 
 ```hew,ignore
-let p = spawn Worker();
+let p = spawn Worker;
 let q = p;
 println(f"{p is q}");   // true — one actor, two names
 ```

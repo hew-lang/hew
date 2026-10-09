@@ -1,6 +1,6 @@
 //! Tests for qualified actor identity through `lower_spawn`.
 //!
-//! A module-qualified spawn (`spawn bank.Account(...)`) lowers a
+//! A module-qualified spawn (`spawn bank.Account { ... }`) lowers a
 //! `HirExprKind::Spawn` whose `actor_name` is the checker-resolved dotted
 //! identity (`bank.Account`), and the expression type is the dotted
 //! `bank.Account` — the same key the MIR actor-layout registry
@@ -120,13 +120,13 @@ fn actor_handle_name(defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<Stri
         .map(|instance| defs.path(instance.nominal.declaration()).to_string())
 }
 
-/// `spawn bank.Account()` carries the dotted identity on both the lowered
+/// `spawn bank.Account` carries the dotted identity on both the lowered
 /// `Spawn` node and its handle type.
 #[test]
 fn qualified_spawn_lowers_dotted_actor_name_and_handle_type() {
     let program = build_program(
         "fn main() {\n\
-         \x20   let a = spawn bank.Account();\n\
+         \x20   let a = spawn bank.Account;\n\
          }\n",
     );
     let (output, tco) = lower_with_checker(&program);
@@ -151,7 +151,7 @@ fn qualified_spawn_lowers_dotted_actor_name_and_handle_type() {
 #[test]
 fn root_spawn_keeps_bare_actor_name_and_handle_type() {
     let program = build_program(
-        "actor Local {\n    var total: i64 = 0;\n    receive fn poke() {\n        total = total + 1;\n    }\n}\n\nfn main() {\n    let l = spawn Local();\n}\n",
+        "actor Local {\n    var total: i64 = 0;\n    receive fn poke() {\n        total = total + 1;\n    }\n}\n\nfn main() {\n    let l = spawn Local;\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);

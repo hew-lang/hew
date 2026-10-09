@@ -40,7 +40,7 @@ actor StringCoalescer {
 
 #[test]
 fn coalesce_string_key_latest_wins_and_distinct_keys_survive() {
-    let worker = spawn StringCoalescer(processed: 0, latest_one: -1, latest_two: -1);
+    let worker = spawn StringCoalescer { processed: 0, latest_one: -1, latest_two: -1 };
     let intake = mailbox(worker);
     let (started_tx, started) = stream.pipe(1).expect("started");
     let (release, gate) = stream.pipe(1).expect("gate");

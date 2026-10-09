@@ -216,7 +216,7 @@ actor Counter {
     receive fn total() -> i64 { count }
 }
 fn main() {
-    let counter = spawn Counter();
+    let counter = spawn Counter;
     counter.add(42) handle error {
         println(f"update failed: {error}");
         return;

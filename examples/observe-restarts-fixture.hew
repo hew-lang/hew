@@ -11,8 +11,8 @@ supervisor Pair {
     strategy: one_for_one;
     intensity: 10 within 60s;
 
-    child a: Fragile(id: 1);
-    child b: Fragile(id: 2);
+    child a: Fragile { id: 1 };
+    child b: Fragile { id: 2 };
 }
 
 fn main() {

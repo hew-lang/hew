@@ -1,6 +1,6 @@
 // Pool arity is a per-child clause, not an init field (#3253).
 //
-// `pool tickers: Ticker(count: 9) count: 2;` sets the actor's OWN field named
+// `pool tickers: Ticker { count: 9 } count: 2;` sets the actor's OWN field named
 // `count` to 9 through the parenthesised list and declares an arity of 2
 // through the clause. The two namespaces are separate, so an actor with a
 // field named `count` pools like any other — under the retired spelling this
@@ -21,7 +21,7 @@ supervisor Farm {
     strategy: simple_one_for_one;
     intensity: 3 within 60s;
 
-    pool tickers: Ticker(count: 9) count: 2;
+    pool tickers: Ticker { count: 9 } count: 2;
 }
 
 fn main() -> i64 {

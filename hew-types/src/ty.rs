@@ -1348,7 +1348,7 @@ impl Ty {
 
     /// Construct the handle type of actor `name` with its own type arguments.
     ///
-    /// An actor is the type of its handle (D489): `spawn Orders(...)` has type
+    /// An actor is the type of its handle (D489): `spawn Orders { ... }` has type
     /// `Orders`, and `Orders` written in a field, parameter, return or element
     /// position is this type. The actor's declaration name and type arguments
     /// ride the `Named` carrier, so every consumer that reads a nominal's name

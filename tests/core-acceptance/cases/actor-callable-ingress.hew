@@ -61,10 +61,10 @@ fn main() {
     for text in worker.labels(|index| f"{prefix}{index}", 2) {
         println(text);
     }
-    let numbers = spawn Transform<i64>(current: 0);
+    let numbers = spawn Transform<i64> { current: 0 };
     mailbox(numbers, on_full: .Wait).apply(|value| value + 1, 41).expect("generic number");
     assert(numbers.get().expect("number") == 42);
-    let words = spawn Transform<string>(current: "initial");
+    let words = spawn Transform<string> { current: "initial" };
     mailbox(words, on_full: .Wait).apply(|value| prefix + value, "generic").expect("generic text");
     assert(words.get().expect("word") == "CAPTURED generic");
     stop(numbers);

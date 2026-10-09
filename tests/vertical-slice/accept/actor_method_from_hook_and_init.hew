@@ -30,6 +30,6 @@ actor Greeter {
 }
 
 fn main() {
-    let g = spawn Greeter(prefix: "hello ");
+    let g = spawn Greeter { prefix: "hello " };
     let _ = g.greet("world");
 }

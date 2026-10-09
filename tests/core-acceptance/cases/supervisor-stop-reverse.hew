@@ -7,12 +7,12 @@ actor Worker {
 }
 
 supervisor Team(grace: duration) {
-    child first: Worker(name: "first") stop: 100ms;
-    child second: Worker(name: "second") stop: grace;
+    child first: Worker { name: "first" } stop: 100ms;
+    child second: Worker { name: "second" } stop: grace;
 }
 
 fn main() {
-    let team = spawn Team(grace: 100ms);
+    let team = spawn Team { grace: 100ms };
     stop(team);
     stopped(team);
     println("after stopped");

@@ -31,8 +31,8 @@ actor Watcher {
 }
 
 fn main() {
-    let target = spawn Target();
-    let watcher = spawn Watcher();
+    let target = spawn Target;
+    let watcher = spawn Watcher;
     let observation = watcher.watch(target).expect("watch target");
     terminate(target);
     stopped(target);

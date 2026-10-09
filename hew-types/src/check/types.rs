@@ -3083,7 +3083,7 @@ pub(super) struct DeferredBoundCheck {
     pub(super) required_by: Option<String>,
 }
 
-/// Result of resolving a bare actor reference (`spawn Account(...)`, or the
+/// Result of resolving a bare actor reference (`spawn Account { ... }`, or the
 /// bare name carried by `Account`'s own actor-handle type) against the
 /// local-first identity policy.
 ///

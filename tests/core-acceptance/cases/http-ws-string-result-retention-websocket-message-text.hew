@@ -35,7 +35,7 @@ fn drive_client(client: Client) -> i64 {
 fn main() {
     match websocket.listen("127.0.0.1:0") {
         .Ok(server) => {
-            let client = spawn Client(url: f"ws://127.0.0.1:{server.port()}/retention", frames: 50, complete: 0);
+            let client = spawn Client { url: f"ws://127.0.0.1:{server.port()}/retention", frames: 50, complete: 0 };
             // The client's turn sends every frame and fills the socket buffer
             // long before it returns, so it runs alongside the reads below.
             // Calling it inline would leave nobody to accept or drain.

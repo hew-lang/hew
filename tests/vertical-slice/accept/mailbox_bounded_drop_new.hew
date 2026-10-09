@@ -19,7 +19,7 @@ actor MailboxWorker {
 }
 
 fn main() -> i64 {
-    let w = spawn MailboxWorker(processed: 0);
+    let w = spawn MailboxWorker { processed: 0 };
     let inbox = mailbox(w, on_full: .DropNewest);
     let (release, gate) = stream.pipe(1).expect("gate");
     let _ = inbox.hold(gate);

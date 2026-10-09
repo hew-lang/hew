@@ -31,7 +31,7 @@ actor Worker {
 }
 
 fn main() {
-    let w = spawn Worker(fired: 0);
+    let w = spawn Worker { fired: 0 };
     let r = w.guarded();
     match r {
         .Ok(v) => println(f"guarded={v}"),

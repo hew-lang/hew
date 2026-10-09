@@ -43,7 +43,7 @@ actor KindCoalescer {
 
 #[test]
 fn coalesce_same_key_different_message_types_do_not_merge() {
-    let worker = spawn KindCoalescer(alpha_count: 0, beta_count: 0, alpha_latest: -1);
+    let worker = spawn KindCoalescer { alpha_count: 0, beta_count: 0, alpha_latest: -1 };
     let intake = mailbox(worker);
     let (started_tx, started) = stream.pipe(1).expect("started");
     let (release, gate) = stream.pipe(1).expect("gate");

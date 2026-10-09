@@ -24,7 +24,7 @@ impl ActorMsg for Adder {
 }
 
 fn main() -> i64 {
-    let a = spawn Adder(count: 0);
+    let a = spawn Adder { count: 0 };
     a.send(Job { n: 10 });
     0
 }

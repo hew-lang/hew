@@ -14,7 +14,7 @@ actor Adder {
 }
 
 fn main() -> i64 {
-    let a = spawn Adder(count: 0);
+    let a = spawn Adder { count: 0 };
     let _ = a.add(10);
     let _ = a.add(32);
     match a.get() {

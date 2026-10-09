@@ -131,7 +131,7 @@ actor Keeper {{
 #[test]
 #[real_time]
 fn colliding_resource_closes_once() {{
-    let keeper = spawn Keeper(handle: unsafe {{ hew_deque_new() }});
+    let keeper = spawn Keeper {{ handle: unsafe {{ hew_deque_new() }} }};
     match keeper.ping() {{
         .Ok(n) => assert(n == 1),
         .Err(_) => assert(false),
@@ -225,7 +225,7 @@ extern "C" {{
         r#"{import}
 
 fn main() {{
-    let keeper = spawn {actor}();
+    let keeper = spawn {actor};
     match keeper.ping() {{
         .Ok(n) => if n != 1 {{ panic("wrong reply") }}
         .Err(_) => panic("ask failed"),
@@ -263,7 +263,7 @@ fn direct_resource_actor_state_closes_once_on_teardown() {
     }
 }
 ",
-        "spawn Keeper(dq: unsafe { hew_deque_new() })",
+        "spawn Keeper { dq: unsafe { hew_deque_new() } }",
     );
 }
 
@@ -278,7 +278,7 @@ fn wrapped_resource_actor_state_still_closes_once_on_teardown() {
     }
 }
 ",
-        "spawn Keeper(holder: Holder { dq: unsafe { hew_deque_new() } })",
+        "spawn Keeper { holder: Holder { dq: unsafe { hew_deque_new() } } }",
     );
 }
 

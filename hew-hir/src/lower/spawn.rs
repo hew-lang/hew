@@ -74,7 +74,7 @@ impl LowerCtx {
         // The checker's handle type names the actor's resolved identity:
         // dotted (`bank.Account`) for module actors, bare for root/flat
         // actors. It already encodes the local-first bare-name resolution (a
-        // bare `spawn Account()` inside module `bank` resolves to
+        // bare `spawn Account` inside module `bank` resolves to
         // `bank.Account`), so it overrides the syntactic spelling. MIR actor
         // layouts key on the same identity (`qualified_name()`).
         if let Some(inner) = Self::actor_handle_identity(&ty) {

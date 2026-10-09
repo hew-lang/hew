@@ -41,7 +41,7 @@ actor Streamer {
 }
 
 fn main() {
-    let streamer = spawn Streamer(state: "actor-state".to_upper());
+    let streamer = spawn Streamer { state: "actor-state".to_upper() };
     var total: i64 = 0;
     var frame: i64 = 0;
     while frame < 50 {

@@ -9,7 +9,7 @@ fn link_monitor_probe() -> i32 {
 }
 
 fn link_monitor() -> i32 {
-    let worker = spawn LinkWorker();
+    let worker = spawn LinkWorker;
     let _ = link(worker);
     let _ = monitor(worker);
     link_monitor_probe()

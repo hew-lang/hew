@@ -13,7 +13,7 @@ actor Keeper {
 
 fn main() {
     // `close` waits: the stop hook has run by the time it returns.
-    let waited = spawn Keeper(name: "waited");
+    let waited = spawn Keeper { name: "waited" };
     match waited.bump() {
         .Ok(count) => println(count),
         .Err(_) => panic("bump failed"),
@@ -23,7 +23,7 @@ fn main() {
     println("after close");
 
     // `fork close` requests without waiting; `await` joins the same point.
-    let forked = spawn Keeper(name: "forked");
+    let forked = spawn Keeper { name: "forked" };
     let request = fork {
         stop(forked);
         stopped(forked);
@@ -32,7 +32,7 @@ fn main() {
     println("after join");
 
     // `closed` waits for a stop another party requested.
-    let observed = spawn Keeper(name: "observed");
+    let observed = spawn Keeper { name: "observed" };
     fork {
         stop(observed);
         stopped(observed);

@@ -21,7 +21,7 @@ actor Gate {
 }
 
 fn main() {
-    let gate = spawn Gate();
+    let gate = spawn Gate;
     let value0 = Payload { f0: "ok", f1: "ok", f2: "ok", f3: "ok", f4: "ok", f5: "ok", f6: "ok", f7: "ok" };
     let value1 = gate.pass(value0).expect("reply");
     let value2 = gate.pass(value1).expect("reply");

@@ -2570,7 +2570,7 @@ pub fn lower_program_with_mono_cap(
                         // Emit `HirItem::Actor` entries for imported actors
                         // so MIR's actor-layout pass (which walks `module.items`)
                         // builds a layout keyed by the actor's bare name. Without
-                        // it, `spawn module.Actor(...)` and the subsequent
+                        // it, `spawn module.Actor { ... }` and the subsequent
                         // `receive fn` calls fail closed at MIR with
                         // `spawn of unknown actor` / `actor call on unknown actor`,
                         // even though HIR/types resolved the cross-module

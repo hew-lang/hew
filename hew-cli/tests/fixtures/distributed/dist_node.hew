@@ -756,7 +756,7 @@ actor LinkSetupRaceProbe {
     var down_count: i64 = 0;
     var down_reason: i64 = 100;
     receive fn arm(peer: RemotePid<KeyValue>) -> i64 {
-        let linker = spawn Linker(policy_sel: 0);
+        let linker = spawn Linker { policy_sel: 0 };
         active_monitor = monitor(linker);
         expected_monitor_id = local_registration_id(active_monitor);
         if expected_monitor_id == 0 {
@@ -1001,20 +1001,20 @@ fn run_server(scenario: string) {
     };
     start_pinned(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
-    let kv = spawn KeyValue(store: s);
+    let kv = spawn KeyValue { store: s };
     Node.register("kv", kv);
-    let wp = spawn WireProbe(calls: 0);
+    let wp = spawn WireProbe { calls: 0 };
     Node.register("wire", wp);
     let identity = spawn IdentityProbe;
     Node.register("identity", identity);
     if scenario == "remote_setup_exit_race" {
         let monitor_store: HashMap<string, string> = HashMap.new();
-        let monitor_target = spawn KeyValue(store: monitor_store);
+        let monitor_target = spawn KeyValue { store: monitor_store };
         Node.register("monitor-race", monitor_target);
         let link_store: HashMap<string, string> = HashMap.new();
-        let link_target = spawn KeyValue(store: link_store);
+        let link_target = spawn KeyValue { store: link_store };
         Node.register("link-race", link_target);
-        let stopper = spawn SetupRaceStopper(monitor_target: monitor_target, link_target: link_target);
+        let stopper = spawn SetupRaceStopper { monitor_target: monitor_target, link_target: link_target };
         let _ = fork stopper.run();
     }
     let port = signal_server_listening(kx);
@@ -1038,7 +1038,7 @@ fn run_server(scenario: string) {
                 let _ = wait_for_file(f"{kx}/client.seeded");
                 // Registering the name again re-points it to the new actor.
                 let s2: HashMap<string, string> = HashMap.new();
-                let kv2 = spawn KeyValue(store: s2);
+                let kv2 = spawn KeyValue { store: s2 };
                 Node.register("kv", kv2);
                 println("SERVER_REPOINTED repoint_preserves_ref");
                 sleep(2m);
@@ -1251,7 +1251,7 @@ fn scenario_identity_display(identity: RemotePid<IdentityProbe>, scenario: strin
 }
 
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe { active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100 };
     let armed = probe.arm(kv, drive);
     let arm_status = match armed {
         Result.Ok(status) => status,
@@ -1355,7 +1355,7 @@ fn wait_for_down(probe: MonitorProbe) -> i64 {
 fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
     // The first monitor observes the route teardown; a monitor set up after it
     // is not an error and answers with an immediate MonitorLost DOWN.
-    let before = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext));
+    let before = spawn MonitorProbe { active_monitor: .Err(LinkError.NoContext) };
     match before.arm(kv, 2) {
         Result.Ok(0) => {}
         _ => {
@@ -1368,7 +1368,7 @@ fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
         println("FAIL remote_monitor_setup_after_drop no-teardown");
         return 3;
     }
-    let after = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext));
+    let after = spawn MonitorProbe { active_monitor: .Err(LinkError.NoContext) };
     match after.arm(kv, 2) {
         Result.Ok(0) => {}
         _ => {
@@ -1390,7 +1390,7 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
     if monitor_status != 0 {
         return monitor_status;
     }
-    let probe = spawn LinkSetupRaceProbe(active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn LinkSetupRaceProbe { active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100 };
     let armed = probe.arm(link_target);
     let linker_id = match armed {
         Result.Ok(value) => value,
@@ -1660,7 +1660,7 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 }
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe { active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100 };
     match probe.arm(kv, 2) {
         Result.Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
@@ -1679,7 +1679,7 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
 }
 
 fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string) -> i64 {
-    let linker = spawn Linker(policy_sel: 0);
+    let linker = spawn Linker { policy_sel: 0 };
     let linker_id = linker.link_go(kv);
     let lid = match linker_id {
         Result.Ok(id) => id,
@@ -1764,7 +1764,7 @@ fn scenario_link_remote_partition(kv: RemotePid<KeyValue>) -> i64 {
 }
 
 fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
-    let linker = spawn Linker(policy_sel: 1);
+    let linker = spawn Linker { policy_sel: 1 };
     let linker_id = linker.link_go(kv);
     let lid = match linker_id {
         Result.Ok(id) => id,
@@ -1811,7 +1811,7 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
 // results a peer gives, and the peer's actor stays reachable alongside.
 fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
     let local_store: HashMap<string, string> = HashMap.new();
-    Node.register("kv-local", spawn KeyValue(store: local_store));
+    Node.register("kv-local", spawn KeyValue { store: local_store });
     let local = match lookup_with_retry("kv-local") {
         Result.Ok(pid) => pid,
         Result.Err(_) => {
@@ -1848,7 +1848,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
             return 6;
         }
     }
-    let probe = spawn MonitorProbe(active_monitor: .Err(LinkError.NoContext));
+    let probe = spawn MonitorProbe { active_monitor: .Err(LinkError.NoContext) };
     match probe.arm(local, 0) {
         Result.Ok(0) => {}
         _ => {
@@ -1873,7 +1873,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
     }
     println("PASS local_route monitor-down=exited");
     let doomed_store: HashMap<string, string> = HashMap.new();
-    Node.register("kv-doomed", spawn KeyValue(store: doomed_store));
+    Node.register("kv-doomed", spawn KeyValue { store: doomed_store });
     let doomed = match lookup_with_retry("kv-doomed") {
         Result.Ok(pid) => pid,
         Result.Err(_) => {
@@ -1881,7 +1881,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
             return 9;
         }
     };
-    let linker = spawn Linker(policy_sel: 0);
+    let linker = spawn Linker { policy_sel: 0 };
     match linker.link_go(doomed) {
         Result.Ok(id) if id != 0 => {}
         _ => {
@@ -1910,7 +1910,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
 }
 
 fn scenario_linker_local_crash() -> i64 {
-    let linker = spawn Linker(policy_sel: 0);
+    let linker = spawn Linker { policy_sel: 0 };
     match linker.crash_local() {
         Result.Ok(_) => {
             println("FAIL linker_local_crash linker-survived");
@@ -2046,7 +2046,7 @@ fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
 }
 
 fn scenario_client_monitor_leak(kv: RemotePid<KeyValue>, kx: string, scenario: string, iterations: i64) -> i64 {
-    let probe = spawn MonitorLeakProbe(down_count: 0);
+    let probe = spawn MonitorLeakProbe { down_count: 0 };
     match probe.run(kv, iterations) {
         Result.Err(_) => {
             println(f"FAIL {scenario} probe-ask-error");

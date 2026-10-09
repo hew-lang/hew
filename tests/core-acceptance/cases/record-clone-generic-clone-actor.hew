@@ -16,7 +16,7 @@ actor Keeper {
 fn main() -> i64 {
     var total: i64 = 0;
     for i in 0 .. 64 {
-        let k = spawn Keeper();
+        let k = spawn Keeper;
         let base = "row";
         let tag = base + "-x";
         match k.store(i, tag) {

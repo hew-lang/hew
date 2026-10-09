@@ -58,7 +58,7 @@ actor Acceptor {
         for index in 1..4 {
             let conn = listener.accept();
             if index <= 2 {
-                let session = spawn Session(conn: conn, events: events);
+                let session = spawn Session { conn: conn, events: events };
                 // Submitting `run` starts the session's pump in its own actor
                 // without waiting for it, so this loop returns to `accept`.
                 mailbox(session, on_full: .Wait).run().expect("start session");
@@ -86,7 +86,7 @@ actor Probe {
 supervisor Service(events: Events) {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child acceptor: Acceptor(address: "127.0.0.1:0", events: events);
+    child acceptor: Acceptor { address: "127.0.0.1:0", events: events };
 }
 
 fn next(events: stream.Stream<string>) -> string {
@@ -109,8 +109,8 @@ fn expect_server_closed(consume conn: net.Connection) {
 
 fn main() {
     let (event_output, event_input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(8).expect("event pipe");
-    let events = spawn Events(output: event_output);
-    let service = spawn Service(events: events);
+    let events = spawn Events { output: event_output };
+    let service = spawn Service { events: events };
     let probe = spawn Probe;
     mailbox(service.acceptor, on_full: .Wait).start().expect("start acceptor");
     let port_event = next(event_input);

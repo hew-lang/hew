@@ -365,6 +365,9 @@ impl Checker {
         seen: &mut HashSet<CallableCandidate>,
         environments: &mut OriginEnvironments,
     ) -> bool {
+        if self.task_lifetimes.producers.is_empty() {
+            return false;
+        }
         self.task_value_origins(
             candidates,
             actuals,

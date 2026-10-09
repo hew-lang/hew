@@ -24,7 +24,7 @@ fn main() {
     let flag = 3 > 2;
     println(flag);
     println(f"{flag}");
-    var data = bytes::new();
+    var data = bytes.new();
     data.push(7);
     let narrow = unsafe { widening_probe(flag, 1, -1, 2, -2, 3) };
     let truth = unsafe { widening_truth() };
@@ -32,25 +32,28 @@ fn main() {
 }
 "#;
 
-fn emit_ir(source: &str) -> String {
+/// Emit the fixture's pre-optimization IR for `target`, or the host when `None`.
+fn emit_ir(target: Option<&str>) -> String {
     require_codegen();
     let dir = tempdir().expect("temporary emit directory");
     let path = dir.path().join("widening.hew");
-    std::fs::write(&path, source).expect("write Hew source");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-llvm",
-            "--emit-dir",
-            dir.path().to_str().expect("emit directory is UTF-8"),
-            path.to_str().expect("source path is UTF-8"),
-        ])
+    std::fs::write(&path, SOURCE).expect("write Hew source");
+    let object = dir.path().join("widening.o");
+    let mut command = Command::new(hew_binary());
+    command.args(["build", "--emit-obj", "--emit-llvm"]);
+    if let Some(target) = target {
+        command.args(["--target", target]);
+    }
+    let output = command
+        .arg("-o")
+        .arg(&object)
+        .arg(&path)
         .current_dir(repo_root())
         .output()
-        .expect("run hew compile");
+        .expect("run hew build");
     assert!(
         output.status.success(),
-        "widening fixture must compile:\n{}",
+        "widening fixture must compile for {target:?}:\n{}",
         describe_output(&output)
     );
     std::fs::read_to_string(dir.path().join("widening.ll")).expect("read emitted LLVM IR")
@@ -86,32 +89,48 @@ fn expected_extension(c_type: &str) -> Option<&'static str> {
 }
 
 #[test]
-fn narrow_extern_arguments_carry_their_c_widening() {
-    let ir = emit_ir(SOURCE);
-
-    assert_eq!(
-        declaration(&ir, "hew_bool_to_string"),
-        "declare ptr @hew_bool_to_string(i8 zeroext)"
-    );
-    assert_eq!(
-        declaration(&ir, "widening_probe"),
-        "declare i8 @widening_probe(i8 zeroext, i8 zeroext, i8 signext, i16 zeroext, i16 signext, i32)",
-        "a narrow extern return stays unmarked: the caller masks it"
-    );
-    assert_eq!(
-        declaration(&ir, "widening_truth"),
-        "declare i8 @widening_truth()"
-    );
-    assert!(
-        ir.lines()
-            .any(|line| line.contains("call ptr @hew_bool_to_string(i8 zeroext %")),
-        "the call site carries the declaration's widening:\n{ir}"
-    );
+fn narrow_extern_arguments_carry_their_c_widening_on_every_target() {
+    for target in [
+        None,
+        Some("x86_64-unknown-linux-gnu"),
+        Some("aarch64-unknown-linux-gnu"),
+        Some("aarch64-apple-darwin"),
+        Some("x86_64-pc-windows-msvc"),
+        Some("x86_64-unknown-freebsd"),
+        Some("wasm32-wasip1"),
+    ] {
+        let ir = emit_ir(target);
+        assert_eq!(
+            declaration(&ir, "hew_bool_to_string"),
+            "declare ptr @hew_bool_to_string(i8 zeroext)",
+            "{target:?}"
+        );
+        assert_eq!(
+            declaration(&ir, "hew_print_value"),
+            "declare void @hew_print_value(i8 zeroext, i64, i1 zeroext)",
+            "{target:?}"
+        );
+        assert_eq!(
+            declaration(&ir, "widening_probe"),
+            "declare i8 @widening_probe(i8 zeroext, i8 zeroext, i8 signext, i16 zeroext, i16 signext, i32)",
+            "{target:?}: a narrow extern return stays unmarked, so the caller masks it"
+        );
+        assert_eq!(
+            declaration(&ir, "widening_truth"),
+            "declare i8 @widening_truth()",
+            "{target:?}"
+        );
+        assert!(
+            ir.lines()
+                .any(|line| line.contains("call ptr @hew_bool_to_string(i8 zeroext %")),
+            "{target:?}: the call site carries the declaration's widening:\n{ir}"
+        );
+    }
 }
 
 #[test]
 fn every_runtime_declaration_widens_as_its_rust_signature_requires() {
-    let ir = emit_ir(SOURCE);
+    let ir = emit_ir(None);
     let surface: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(Path::new(repo_root()).join("scripts/cabi-surface.json"))
             .expect("read the C ABI surface"),

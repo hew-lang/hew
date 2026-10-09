@@ -2,7 +2,7 @@ import std.stream;
 
 fn wait_one(s: Stream<i64>) -> bool {
     select {
-        _ from s.recv() => true,
+        r from s.recv() => r.is_some(),
         after 10ms => false,
     }
 }

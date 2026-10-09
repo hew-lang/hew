@@ -9,7 +9,7 @@
 //! declaration name while the import path retires that bare `type_defs` row
 //! once the module-qualified owner is published.
 
-import tests.hew.machine_context_variant_support.light_defs;
+import machine_context_variant_support.light_defs;
 
 #[test]
 fn contextual_transition_bodies_run_after_the_module_is_imported() {

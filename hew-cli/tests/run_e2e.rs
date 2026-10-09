@@ -2659,9 +2659,8 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     require_codegen();
 
     let dir = support::tempdir();
-    std::fs::create_dir_all(dir.path().join("src/reasons")).unwrap();
     std::fs::write(
-        dir.path().join("src/reasons/reasons.hew"),
+        dir.path().join("reasons.hew"),
         "pub const MAX_RETRIES: i64 = 5;\n\
          pub fn retries_label() -> string {\n\
          \x20   \"retries\"\n\
@@ -2671,7 +2670,7 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import src.reasons.{MAX_RETRIES, retries_label};\n\
+        "import reasons.{MAX_RETRIES, retries_label};\n\
          fn main() {\n\
          \x20   println(retries_label());\n\
          \x20   println(f\"max: {MAX_RETRIES}\");\n\
@@ -2874,6 +2873,8 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_the_actor_type() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("conn");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("conn.hew"),
         "pub actor Inner {\n    receive fn ping() -> i64 {\n        41\n    }\n}\n\npub actor Outer {\n    let inner: Inner;\n    receive fn go() -> i64 {\n        match inner.ping() {\n            .Ok(v) => v + 1,\n            .Err(_) => -1,\n        }\n    }\n}\n",
@@ -2923,6 +2924,8 @@ fn run_local_record_shadows_imported_actor_short_name() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("m");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("m.hew"),
         "pub actor Inner {\n\
@@ -2961,6 +2964,8 @@ fn run_non_pub_imported_actor_fails_closed() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("secret");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("secret.hew"),
         "actor Hidden {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
@@ -3013,6 +3018,8 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
     for (pkg, tag) in [("bank", 1_i64), ("store", 2_i64)] {
         let pkg_dir = dir.path().join("hew").join(pkg);
         std::fs::create_dir_all(&pkg_dir).unwrap();
+        // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+        std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
         std::fs::write(
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
@@ -3070,6 +3077,8 @@ fn run_root_and_package_same_actor_name_route_independently() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("bank");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("bank.hew"),
         "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        999\n    }\n}\n",
@@ -3111,6 +3120,8 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
     for (pkg, tag) in [("bank", 1_i64), ("store", 2_i64)] {
         let pkg_dir = dir.path().join("hew").join(pkg);
         std::fs::create_dir_all(&pkg_dir).unwrap();
+        // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+        std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
         std::fs::write(
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
@@ -3254,6 +3265,8 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("secret");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     // Note: no `pub` — the actor is private to its module.
     std::fs::write(
         pkg_dir.join("secret.hew"),
@@ -3306,6 +3319,8 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("secret");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     // `secret` exports a public *non-actor* type named `Account`.
     std::fs::write(
         pkg_dir.join("secret.hew"),

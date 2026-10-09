@@ -88,13 +88,22 @@ What to check:
 
 - Run `hew check <file.hew>` or `hew compile <file.hew>` against the real
   entry file, not a peer file inside a module directory.
-- For `import greeting;`, Hew looks for `greeting.hew` beside the importer or
-  `greeting/greeting.hew` in a directory-form module. The entry file stem must
-  match the directory name. If both spellings exist, the import fails with
-  ``import `greeting` is ambiguous: both ... exist`` — remove or rename one.
+- For `import greeting;`, Hew looks for `greeting.hew` beside the importer or,
+  inside a package, `greeting/greeting.hew` in a directory-form module. The
+  entry file stem must match the directory name. If both spellings exist, the
+  import fails with ``import `greeting` is ambiguous: both ... exist`` —
+  remove or rename one.
+- Directory-form modules belong to a package. Without a `hew.toml` the import
+  is not found, and the error says `greeting/greeting.hew forms a directory
+module, and directory modules belong to a package`: run `hew init` in the
+  project directory.
 - Other top-level `.hew` files in that directory merge into the same module
   automatically. Subdirectories do not; import child modules explicitly, for
   example `import text_stats.words;`.
+- Imports use paths relative to the importing file or its package root, never
+  the working directory. A test in `tests/` can use the package's name
+  (`import acme.http;`) or a path from its root (`import client;`). When a local
+  path and a package-root path name distinct files, the import is ambiguous.
 - Standard library imports are available under the last path segment:
   `import std.fs;` gives `fs`, and `import std.encoding.json;` gives `json`.
 - Every `std.*` module resolves from one root: `HEW_STD` (the path to

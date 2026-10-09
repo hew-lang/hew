@@ -4148,9 +4148,11 @@ A quoted string path (`import "relative/path.hew";`) pulls in a sibling
 source file directly — no project layout is required. This is the fastest
 way to split a script into files.
 
-For a project with a `src/` tree, `import src.a.b.c;` addresses
-`src/a/b/c.hew` by dotted path and binds the module under its last
-segment (`c` here) — call its public items as `c.function_name()` /
+A dotted import names a module by its path: `import a.b.c;` finds
+`a/b/c.hew` beside the importing file or from its package root (never in the
+working directory). Distinct files answering the same import make it ambiguous.
+The import binds the module under its last segment (`c` here) — call its public items
+as `c.function_name()` /
 `c.CONST_NAME`, the same dotted-access form used for `std.string`,
 `std.math`, and every other stdlib module:
 
@@ -4176,13 +4178,24 @@ and writing `machine.Thing` is then a parse error
 (``unexpected `.` in block``). The same is true of `actor`. Use the
 selective (`.{Name}`) form for a keyword-named module, or reach it via the quoted string-path import form above. Wildcard imports are retired.
 
-**Directory-form modules.** A directory whose entry file's stem matches
+**Directory-form modules.** Inside a package (a directory with a
+`hew.toml`, made by `hew init`), a directory whose entry file's stem matches
 the directory name (`greeting/greeting.hew`) is one module spanning every
 `.hew` file in that directory — its peer files see each other's
 declarations without any imports between them. A peer file has no import
 identity of its own; reach its declarations through the directory module
-(`import greeting;`), not the peer file directly. Imports between
-modules, directory-form or single-file, must not form a cycle.
+(`import greeting;`), not the peer file directly. Files outside a package are
+always single-file modules, so a multi-file module starts with `hew init`.
+Imports between modules, directory-form or single-file, must not form a
+cycle.
+
+**Packages name their own modules.** A file in package `acme.http` can import
+any module of its package by the package's name, wherever the file sits:
+`import acme.http;` is the root module `http.hew` (the last segment of the
+name), and `import acme.http.client;` is `client.hew` beside it. Tests and
+examples in a package's `tests/` and `examples/` directories import it this
+way. The checkout directory's name never matters: a package means the same
+thing checked out as `http/`, as `my-http/` or installed as a dependency.
 
 ### `pub const` — module-level constants
 

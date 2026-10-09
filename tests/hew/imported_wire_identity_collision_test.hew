@@ -5,9 +5,9 @@
 //! schemas — a shared bare layout/signature key would reject one of them or
 //! silently serialize it through the other's schema.
 
-import tests.hew.imported_wire_support.env_a.{Env, label_a};
+import imported_wire_support.env_a.{Env, label_a};
 
-import tests.hew.imported_wire_support.env_b.{Env as BEnv, label_b};
+import imported_wire_support.env_b.{Env as BEnv, label_b};
 
 import std.encoding.cbor;
 

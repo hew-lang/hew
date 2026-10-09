@@ -12,7 +12,7 @@ use std::path::Path;
 /// Write the two-file package used by both tests. `mid.hew` reaches the
 /// directory module through `spelling`.
 fn write_package(root: &Path, spelling: &str) {
-    fs::create_dir_all(root.join("src/lib")).expect("create package directories");
+    fs::create_dir_all(root.join("lib")).expect("create package directories");
     fs::write(
         root.join("hew.toml"),
         "[package]\nname = \"probe\"\nedition = \"2026\"\nversion = \"0.1.0\"\n\n[dependencies]\n",
@@ -24,17 +24,17 @@ fn write_package(root: &Path, spelling: &str) {
     )
     .expect("write root module");
     fs::write(
-        root.join("src/mid.hew"),
+        root.join("mid.hew"),
         format!("import {spelling};\n\npub fn through() -> string {{ \"/mid\" }}\n"),
     )
     .expect("write second importer");
     fs::write(
-        root.join("src/lib/lib.hew"),
+        root.join("lib/lib.hew"),
         "fn tag() -> string { \"lib\" }\n\npub fn describe() -> string { tag() + peer_note() }\n",
     )
     .expect("write entry file");
     fs::write(
-        root.join("src/lib/lib_notes.hew"),
+        root.join("lib/lib_notes.hew"),
         "pub fn peer_note() -> string { \"+peer\" }\n",
     )
     .expect("write peer file");
@@ -80,21 +80,21 @@ fn directory_spelling_of_the_same_package_checks() {
 }
 
 /// Negative control: a repeated last segment is not by itself the entry-file
-/// spelling. `probe.probe` names the directory module `src/probe/`, whose name
+/// spelling. `probe.probe` names the directory module `probe/`, whose name
 /// happens to match its package; the import resolves through that directory,
 /// not through a shorter path's entry file, so it stays accepted.
 #[test]
 fn namesake_directory_module_is_the_directory_spelling() {
     let workspace = support::tempdir();
     let root = workspace.path();
-    fs::create_dir_all(root.join("src/probe")).expect("create package directories");
+    fs::create_dir_all(root.join("probe")).expect("create package directories");
     fs::write(
         root.join("hew.toml"),
         "[package]\nname = \"probe\"\nedition = \"2026\"\nversion = \"0.1.0\"\n\n[dependencies]\n",
     )
     .expect("write manifest");
     fs::write(
-        root.join("src/probe/probe.hew"),
+        root.join("probe/probe.hew"),
         "fn tag() -> string { \"namesake\" }\n\npub fn describe() -> string { tag() }\n",
     )
     .expect("write entry file");

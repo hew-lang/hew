@@ -280,6 +280,8 @@ pub struct HewSink {
     channel_core: *const std::ffi::c_void,
     /// Borrowed transport handle owned by a TCP backing, cleared on close.
     native_connection: Option<i32>,
+    #[cfg(windows)]
+    native_pipe_handle: Option<usize>,
 }
 
 impl std::fmt::Debug for HewSink {
@@ -289,6 +291,23 @@ impl std::fmt::Debug for HewSink {
 }
 
 impl HewSink {
+    /// Borrow the pipe backing's identity through its exclusive native I/O loan.
+    ///
+    /// # Safety
+    /// The backing owns this live handle until close. Native I/O lends it
+    /// exclusively until its producer is quiescent.
+    #[cfg(windows)]
+    pub unsafe fn set_native_pipe_handle(&mut self, handle: usize) {
+        self.native_pipe_handle = Some(handle);
+    }
+
+    /// Borrow the pipe identity while retaining the sink's backing loan.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn native_pipe_handle(&self) -> Option<usize> {
+        self.native_pipe_handle
+    }
+
     /// Associate the TCP backing's live transport handle with native I/O.
     /// The backing remains the sole resource owner.
     pub fn set_native_connection(&mut self, connection: i32) {
@@ -368,6 +387,10 @@ impl HewSink {
         // (fail-closed) path instead of dereferencing a possibly-freed core.
         self.channel_core = std::ptr::null();
         self.native_connection = None;
+        #[cfg(windows)]
+        {
+            self.native_pipe_handle = None;
+        }
         let Some(mut inner) = self.inner.take() else {
             return;
         };
@@ -398,6 +421,8 @@ pub fn into_sink_ptr<T: Send + 'static>(
         })),
         channel_core: std::ptr::null(),
         native_connection: None,
+        #[cfg(windows)]
+        native_pipe_handle: None,
     }))
 }
 
@@ -421,6 +446,8 @@ pub fn into_nonblocking_sink_ptr<T: Send + 'static>(
         })),
         channel_core: std::ptr::null(),
         native_connection: None,
+        #[cfg(windows)]
+        native_pipe_handle: None,
     }))
 }
 
@@ -459,6 +486,8 @@ pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink
         })),
         channel_core: std::ptr::null(),
         native_connection: None,
+        #[cfg(windows)]
+        native_pipe_handle: None,
     }))
 }
 
@@ -518,6 +547,8 @@ pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut H
         inner: Some(Box::new(ChannelSinkBacking { tx })),
         channel_core: std::ptr::null(),
         native_connection: None,
+        #[cfg(windows)]
+        native_pipe_handle: None,
     }))
 }
 

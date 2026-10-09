@@ -1030,6 +1030,7 @@ fn reactor_pipe_close(pipe: &mut ReactorPipe) {
 #[derive(Debug)]
 struct BlockingPipe {
     pipe: Option<fs::File>,
+    mode_error: Option<std::io::Error>,
 }
 
 /// Bytes one blocking pipe read takes.
@@ -1083,6 +1084,10 @@ impl StreamBacking for BlockingPipe {
 
 #[cfg(windows)]
 fn blocking_pipe_write(pipe: &mut BlockingPipe, data: &[u8]) {
+    if let Some(error) = &pipe.mode_error {
+        record_pipe_error("restore child process pipe wait mode", error);
+        return;
+    }
     let Some(file) = pipe.pipe.as_mut() else {
         record_pipe_error(
             "write child process pipe",
@@ -1090,8 +1095,22 @@ fn blocking_pipe_write(pipe: &mut BlockingPipe, data: &[u8]) {
         );
         return;
     };
-    if let Err(error) = file.write_all(data) {
-        record_pipe_error("write child process pipe", &error);
+    let mut remaining = data;
+    while !remaining.is_empty() {
+        match file.write(remaining) {
+            Ok(0) => {
+                record_pipe_error(
+                    "write child process pipe",
+                    &std::io::ErrorKind::WriteZero.into(),
+                );
+                return;
+            }
+            Ok(count) => remaining = &remaining[count..],
+            Err(error) => {
+                record_pipe_error("write child process pipe", &error);
+                return;
+            }
+        }
     }
 }
 
@@ -1104,7 +1123,14 @@ fn blocking_pipe_write_pending(pipe: &mut BlockingPipe, data: &[u8]) -> bool {
 #[cfg(windows)]
 fn blocking_pipe_try_write(pipe: &mut BlockingPipe, data: &[u8]) -> std::io::Result<usize> {
     use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
     use windows_sys::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
+    if let Some(error) = &pipe.mode_error {
+        return Err(error.raw_os_error().map_or_else(
+            || std::io::Error::new(error.kind(), error.to_string()),
+            std::io::Error::from_raw_os_error,
+        ));
+    }
     let file = pipe
         .pipe
         .as_mut()
@@ -1112,12 +1138,38 @@ fn blocking_pipe_try_write(pipe: &mut BlockingPipe, data: &[u8]) -> std::io::Res
     let handle = file.as_raw_handle();
     // SAFETY: this exclusive loan owns the pipe's write handle and mode.
     if unsafe { SetNamedPipeHandleState(handle, &PIPE_NOWAIT, ptr::null(), ptr::null()) } == 0 {
-        return Err(std::io::Error::last_os_error());
+        let error = std::io::Error::last_os_error();
+        return Err(if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) {
+            std::io::ErrorKind::WouldBlock.into()
+        } else {
+            error
+        });
     }
-    let result = file.write(data);
+    let mut attempt = data.len();
+    let result = loop {
+        match file.write(&data[..attempt]) {
+            Ok(0) if attempt > 1 => attempt /= 2,
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                if attempt > 1 {
+                    attempt /= 2;
+                } else {
+                    break Err(std::io::ErrorKind::WouldBlock.into());
+                }
+            }
+            result => break result,
+        }
+    };
     // SAFETY: restore the ordinary write contract before releasing the loan.
     if unsafe { SetNamedPipeHandleState(handle, &PIPE_WAIT, ptr::null(), ptr::null()) } == 0 {
-        return Err(std::io::Error::last_os_error());
+        let error = std::io::Error::last_os_error();
+        let errno = error.raw_os_error();
+        pipe.mode_error = Some(error);
+        if !matches!(result, Ok(count) if count > 0) {
+            return Err(errno.map_or_else(
+                || std::io::Error::other("failed to restore child process pipe wait mode"),
+                std::io::Error::from_raw_os_error,
+            ));
+        }
     }
     result
 }
@@ -1127,6 +1179,9 @@ fn blocking_pipe_flush(_pipe: &mut BlockingPipe) {}
 
 #[cfg(windows)]
 fn blocking_pipe_close(pipe: &mut BlockingPipe) {
+    if let Some(error) = &pipe.mode_error {
+        record_pipe_error("restore child process pipe wait mode", error);
+    }
     pipe.pipe = None;
 }
 
@@ -1136,7 +1191,10 @@ pub(crate) fn child_pipe_stream(pipe: fs::File) -> *mut HewStreamPair {
     #[cfg(unix)]
     let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe)));
     #[cfg(windows)]
-    let stream = into_stream_ptr(BlockingPipe { pipe: Some(pipe) });
+    let stream = into_stream_ptr(BlockingPipe {
+        pipe: Some(pipe),
+        mode_error: None,
+    });
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
         sink: ptr::null_mut(),
@@ -1163,13 +1221,23 @@ pub(crate) fn child_pipe_sink(pipe: fs::File) -> *mut HewStreamPair {
         sink
     };
     #[cfg(windows)]
-    let sink = into_nonblocking_sink_ptr(
-        BlockingPipe { pipe: Some(pipe) },
-        blocking_pipe_write_pending,
-        blocking_pipe_try_write,
-        blocking_pipe_flush,
-        blocking_pipe_close,
-    );
+    let sink = {
+        use std::os::windows::io::AsRawHandle;
+        let handle = pipe.as_raw_handle() as usize;
+        let sink = into_nonblocking_sink_ptr(
+            BlockingPipe {
+                pipe: Some(pipe),
+                mode_error: None,
+            },
+            blocking_pipe_write_pending,
+            blocking_pipe_try_write,
+            blocking_pipe_flush,
+            blocking_pipe_close,
+        );
+        // SAFETY: the new backing owns this pipe identity until close.
+        unsafe { (*sink).set_native_pipe_handle(handle) };
+        sink
+    };
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
         sink,

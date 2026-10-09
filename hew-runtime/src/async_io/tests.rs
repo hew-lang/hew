@@ -629,7 +629,10 @@ fn reactor_shutdown_cancels_and_notifies_a_standalone_read() {
             hew_async_io_status(operation),
             AsyncIoStatus::Cancelled as i32
         );
-        assert_eq!(hew_async_io_errno(operation), libc::ECANCELED);
+        assert_eq!(
+            hew_async_io_errno(operation),
+            crate::stream_error::CANCELLED_ERRNO
+        );
         hew_async_io_free(operation);
     }
     assert_eq!(*signal.notifications.lock().unwrap(), 1);
@@ -753,7 +756,10 @@ fn close_while_waiting_completes_the_waiter_with_ecanceled() {
         assert_eq!(crate::transport::hew_tcp_close(handle), 0);
         await_ready(&signal);
         assert_eq!(hew_async_io_status(operation), AsyncIoStatus::Error as i32);
-        assert_eq!(hew_async_io_errno(operation), libc::ECANCELED);
+        assert_eq!(
+            hew_async_io_errno(operation),
+            crate::stream_error::CANCELLED_ERRNO
+        );
         hew_async_io_free(operation);
     }
     assert_eq!(crate::reactor::waiter_count(), 0);
@@ -1163,7 +1169,7 @@ fn closed_root_admission_admits_waits_on_held_handles_and_refuses_connects() {
         assert_eq!(hew_async_io_status(connect), AsyncIoStatus::Error as i32);
         assert_eq!(
             hew_async_io_errno(connect),
-            crate::shutdown::SHUTDOWN_REFUSAL_ERRNO
+            crate::stream_error::CANCELLED_ERRNO
         );
         hew_async_io_free(connect);
     }

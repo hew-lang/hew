@@ -284,7 +284,10 @@ fn busy() -> IoFailure {
 }
 
 pub(crate) fn cancelled_failure(operation: &str) -> IoFailure {
-    IoFailure::from_io(operation, &io::Error::from_raw_os_error(libc::ECANCELED))
+    IoFailure::from_io(
+        operation,
+        &io::Error::from_raw_os_error(crate::stream_error::CANCELLED_ERRNO),
+    )
 }
 
 impl Slot {

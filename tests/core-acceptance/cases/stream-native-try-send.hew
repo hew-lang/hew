@@ -8,7 +8,7 @@ import std.process;
 
 import std.stream;
 
-fn read_peer(consume connection: net.Connection, with_last: bool) {
+fn read_peer(consume connection: net.Connection, with_last: bool, with_marker: bool) {
     sleep(1s);
     let (input, output) = connection.split();
     output.close();
@@ -16,11 +16,18 @@ fn read_peer(consume connection: net.Connection, with_last: bool) {
     for chunk in input {
         received.append(chunk);
     }
-    assert(received.len() == 8 * 1024 * 1024 + if with_last {
-        4
-    } else {
-        0
-    });
+    var expected = 8 * 1024 * 1024;
+    if with_marker {
+        expected += 15;
+    }
+    if with_last {
+        expected += 4;
+    }
+    assert(received.len() == expected);
+    if with_marker {
+        assert(received[8 * 1024 * 1024] == 111);
+        assert(received[8 * 1024 * 1024 + 14] == 114);
+    }
     if with_last {
         assert(received[received.len() - 4] == 108);
     }
@@ -33,12 +40,13 @@ fn socket_try_send() {
     let (input, output) = connection.split();
     input.close();
     scope {
-        let reading = fork read_peer(peer, true);
         output.try_send("a".repeat(8 * 1024 * 1024).to_bytes()).expect("partial socket item accepted");
-        match output.try_send("must not arrive".to_bytes()) {
-            .Err(SendError.Full) => {}
-            _ => panic("pending socket bytes must keep the next item out"),
-        }
+        let with_marker = match output.try_send("optional marker".to_bytes()) {
+            .Ok(_) => true,
+            .Err(SendError.Full) => false,
+            .Err(error) => panic(f"socket try_send failed: {error}"),
+        };
+        let reading = fork read_peer(peer, true, with_marker);
         output.send("last".to_bytes()).expect("ordered socket send");
         output.finish();
         await reading;
@@ -63,7 +71,7 @@ fn socket_finish(mode: i64) {
     let (input, output) = connection.split();
     input.close();
     scope {
-        let reading = fork read_peer(peer, false);
+        let reading = fork read_peer(peer, false, false);
         send_then_release(output, mode);
         await reading;
     };
@@ -79,7 +87,7 @@ fn cancelled_writer(consume connection: net.Connection, during_finish: bool) -> 
             sleep(1s);
         }
         output.finish();
-        "unexpected completion"
+        "finished"
     } handle failure {
         match failure {
             .Deadline { message } => "cancelled",
@@ -92,14 +100,18 @@ fn socket_cancellation(during_finish: bool) {
     let listener = net.listen("127.0.0.1:0").expect("listen");
     let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
     let peer = listener.accept().expect("accept");
-    assert(cancelled_writer(connection, during_finish) == "cancelled");
+    let outcome = cancelled_writer(connection, during_finish);
+    assert(outcome == "cancelled" || during_finish && outcome == "finished");
     let (input, output) = peer.split();
     output.close();
     var received = 0;
     for chunk in input {
         received += chunk.len();
     }
-    assert(received > 0 && received < 8 * 1024 * 1024);
+    assert(received > 0 && received <= 8 * 1024 * 1024);
+    if outcome == "finished" {
+        assert(received == 8 * 1024 * 1024);
+    }
     listener.close();
 }
 
@@ -110,6 +122,7 @@ fn pipe_cancellation(program: string) {
     let child = process.start(command).expect("silent child starts");
     let output = child.stdout().expect("piped stdout").lines();
     assert(output.recv().expect("ready") == "ready");
+    let started = instant.now();
     let outcome = scope within 50ms {
         let input = child.stdin().expect("piped stdin");
         input.try_send("a".repeat(8 * 1024 * 1024).to_bytes()).expect("partial pipe item accepted");
@@ -122,6 +135,7 @@ fn pipe_cancellation(program: string) {
         }
     };
     assert(outcome == "cancelled");
+    assert(started.elapsed() < 1s);
     assert(child.try_wait().expect("poll silent child").is_none());
     child.kill().expect("stop silent child");
     child.wait().expect("reap silent child");

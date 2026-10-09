@@ -8,6 +8,6 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "Mismatch"
-line = 38
+line = 36
 column = 10
 message = "expected `High`, found `Low`"

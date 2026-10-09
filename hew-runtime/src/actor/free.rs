@@ -813,23 +813,23 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     // the suspended-turn and dispatch paths.
     // SAFETY: the actor retains its mailbox until terminal cleanup finishes.
     if unsafe { mailbox::mailbox_terminate_requested(a.mailbox.cast::<HewMailbox>()) } {
-        a.terminate_finished.store(true, Ordering::Release);
         // SAFETY: no lifecycle callback borrows this terminal state.
-        unsafe { crate::actor_native::finish_native_terminal(a) };
+        unsafe { crate::actor_native::finish_native_terminal_after_terminate(a) };
+        a.terminate_finished.store(true, Ordering::Release);
         return;
     }
 
     let Some(terminate_fn) = a.terminate_fn else {
-        a.terminate_finished.store(true, Ordering::Release);
         // SAFETY: no lifecycle callback or handler borrows this terminal state.
-        unsafe { crate::actor_native::finish_native_terminal(a) };
+        unsafe { crate::actor_native::finish_native_terminal_after_terminate(a) };
+        a.terminate_finished.store(true, Ordering::Release);
         return;
     };
 
     if a.state.is_null() {
-        a.terminate_finished.store(true, Ordering::Release);
         // SAFETY: no lifecycle callback or handler borrows this terminal state.
-        unsafe { crate::actor_native::finish_native_terminal(a) };
+        unsafe { crate::actor_native::finish_native_terminal_after_terminate(a) };
+        a.terminate_finished.store(true, Ordering::Release);
         return;
     }
 
@@ -883,11 +883,11 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
         crate::util::quarantine_panic_payload(panic_payload);
     }
 
-    a.terminate_finished.store(true, Ordering::Release);
     // SAFETY: the lifecycle callback has returned and the native turn is finished.
-    unsafe { crate::actor_native::finish_native_terminal(a) };
+    unsafe { crate::actor_native::finish_native_terminal_after_terminate(a) };
     let restored_context = crate::execution_context::set_current_context(prev_context);
     debug_assert_eq!(restored_context, &raw mut execution_context);
+    a.terminate_finished.store(true, Ordering::Release);
 }
 
 /// Free an actor and all associated resources.
@@ -919,6 +919,10 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
     if hew_actor_self() == actor {
         let state = a.actor_state.load(Ordering::Acquire);
         if state == HewActorState::Stopping as i32 || actor_free_state_is_quiescent(state) {
+            if !live_actors::is_actor_live(actor) {
+                // Retirement already gave reclamation to the outer finalizer.
+                return 0;
+            }
             return defer_actor_free_on_background_thread(actor);
         }
         crate::set_last_error("hew_actor_free: current actor is still dispatching");

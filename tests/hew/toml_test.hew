@@ -245,7 +245,7 @@ fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
     let val = toml.from_float(1.5);
     match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare float root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => assert(reason.contains("unsupported")),
+        .Err(reason) => assert(f"{reason}".contains("unsupported")),
     }
     val.free();
 }
@@ -255,7 +255,7 @@ fn test_try_stringify_rejects_a_bare_integer_root() {
     let val = toml.from_int(7);
     match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare integer root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => assert(reason.len() > 0),
+        .Err(reason) => assert(f"{reason}".starts_with("Invalid: ")),
     }
     val.free();
 }
@@ -266,7 +266,7 @@ fn test_try_stringify_rejects_a_bare_array_root() {
     val.push_int(1);
     match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare array root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => assert(reason.len() > 0),
+        .Err(reason) => assert(f"{reason}".starts_with("Invalid: ")),
     }
     val.free();
 }

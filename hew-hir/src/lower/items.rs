@@ -1018,9 +1018,15 @@ impl LowerCtx {
         // candidates. See `collect_gen_captures`.
         let outer_bindings = self.visible_outer_bindings();
         self.generator_yield_tys.push(yield_ty.clone());
+        let failing = self
+            .failing_generators
+            .contains(&self.mk_key(&func.fn_span))
+            .then(|| yield_ty.clone());
+        let enclosing_failing = std::mem::replace(&mut self.failing_generator_item, failing);
         let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
             ctx.lower_block(&func.body, &gen_return_ty)
         });
+        self.failing_generator_item = enclosing_failing;
         self.generator_yield_tys.pop();
         let captures = Self::collect_gen_captures(&gen_body, &outer_bindings);
 

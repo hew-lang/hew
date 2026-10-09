@@ -594,6 +594,52 @@ impl Checker {
                 return;
             }
             self.report_type_mismatch(&expected_resolved, &actual_resolved, span);
+            self.suggest_success_value_repair(&expected_resolved, &actual_resolved);
+            self.suggest_result_value_repair(&expected_resolved, &actual_resolved, span);
+        }
+    }
+
+    fn suggest_result_value_repair(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if !self.direct_call_targets.contains_key(&key)
+            && !self.resolved_calls.contains_key(&key)
+            && !self.dyn_trait_method_calls.contains_key(&key)
+            && !self.method_call_rewrites.contains_key(&key)
+        {
+            return;
+        }
+        let Some((success, failure)) = actual.as_result() else {
+            return;
+        };
+        if *success != expected.materialize_literal_defaults() {
+            return;
+        }
+        let propagates = self
+            .current_failure_edge
+            .as_ref()
+            .is_some_and(|edge| self.normalize_for_use(edge) == *failure);
+        if let Some(error) = self.errors.last_mut() {
+            error.suggestions.push(if propagates {
+                "propagate the failure with `?`, or recover with `handle`, `match` or `.expect(...)`".to_string()
+            } else {
+                "recover with `handle` or `match`, or use `.expect(...)` when failure should stop the program".to_string()
+            });
+        }
+    }
+
+    /// A success value where a `Result` is expected: a value return builds
+    /// the `Result` itself, and a failure edge returns the value.
+    fn suggest_success_value_repair(&mut self, expected: &Ty, actual: &Ty) {
+        let Some((success, _)) = expected.as_result() else {
+            return;
+        };
+        if actual.materialize_literal_defaults() != *success {
+            return;
+        }
+        if let Some(error) = self.errors.last_mut() {
+            error
+                .suggestions
+                .push("build the `Result`: `.Ok(value)`".to_string());
         }
     }
 
@@ -849,6 +895,24 @@ impl Checker {
                     })
             }
         };
+        // An enum with exactly one variant carrying the error alone wraps it;
+        // two such variants have no single meaning and refuse.
+        let conversion = match conversion {
+            Some(conversion) => Some(conversion),
+            None => match self.single_payload_variant(&target, &source) {
+                Ok(index) => index.map(|index| ErrorConversion::Variant { index }),
+                Err(candidates) => {
+                    self.report_ambiguous_variant_conversion(
+                        edge,
+                        &source,
+                        &target,
+                        &candidates,
+                        span,
+                    );
+                    return false;
+                }
+            },
+        };
         // A binder bounded `F: From<E>` converts through the bound; each
         // instantiation of `F` supplies the impl.
         let conversion = conversion.or_else(|| {
@@ -867,6 +931,209 @@ impl Checker {
         false
     }
 
+    /// The declaration index of the one variant of enum `target` whose sole
+    /// payload is exactly `source`, or every candidate when more than one
+    /// variant carries it. A payload that is one of the enum's own type
+    /// parameters never matches: the conversion is read from the declaration.
+    fn single_payload_variant(&self, target: &Ty, source: &Ty) -> Result<Option<u32>, Vec<String>> {
+        let Ty::Named { head, args } = target else {
+            return Ok(None);
+        };
+        let Some(nominal) = head.nominal() else {
+            return Ok(None);
+        };
+        let Some(definition) = self.head_type_def(*head) else {
+            return Ok(None);
+        };
+        if definition.kind != TypeDefKind::Enum {
+            return Ok(None);
+        }
+        let source = self
+            .normalize_for_use(source)
+            .materialize_literal_defaults();
+        let mut candidates: Vec<(String, u32)> = self
+            .defs
+            .members_of_kind(nominal.declaration(), crate::DeclarationKind::Variant)
+            .filter_map(|variant| {
+                let name = self.defs.name(variant);
+                let ordinal = self.defs.site(variant)?.ordinal();
+                match definition.variants.get(name.as_str())? {
+                    VariantDef::Tuple(payloads) => match payloads.as_slice() {
+                        [payload] if Self::bare_param(payload).is_none() => {
+                            let payload = Self::instantiate_type_def_member(
+                                payload,
+                                &definition.type_params,
+                                args,
+                            );
+                            (self.normalize_for_use(&payload) == source)
+                                .then(|| (name.to_string(), ordinal))
+                        }
+                        _ => None,
+                    },
+                    VariantDef::Unit | VariantDef::Struct(_) => None,
+                }
+            })
+            .collect();
+        candidates.sort_by_key(|(_, ordinal)| *ordinal);
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [(_, ordinal)] => Ok(Some(*ordinal)),
+            _ => Err(candidates.into_iter().map(|(name, _)| name).collect()),
+        }
+    }
+
+    fn report_ambiguous_variant_conversion(
+        &mut self,
+        edge: FailureEdge,
+        source: &Ty,
+        target: &Ty,
+        candidates: &[String],
+        span: &Span,
+    ) {
+        let edge_name = edge.spelling();
+        let source_name = source.user_facing().to_string();
+        let target_name = target.user_facing().to_string();
+        let code = TypeErrorKind::ErrorNoConversion.as_kind_str();
+        let variants = candidates
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let carry = if candidates.len() == 2 {
+            "both carry"
+        } else {
+            "all carry"
+        };
+        self.report_error_with_suggestions(
+            TypeErrorKind::ErrorNoConversion,
+            span,
+            format!(
+                "{code}: {edge_name} cannot choose a variant of `{target_name}`: \
+                 {variants} {carry} `{source_name}`"
+            ),
+            vec![format!(
+                "declare which one: `impl From<{source_name}> for {target_name} \
+                 {{ fn from(value: {source_name}) -> {target_name} {{ ... }} }}`"
+            )],
+        );
+    }
+
+    /// The repair a contextual `Result` constructor needs in a body that
+    /// fails through its edge: the body produces the success value itself.
+    pub(super) fn context_variant_edge_hint(&self) -> Vec<String> {
+        if self.current_failure_edge.is_none() {
+            return Vec::new();
+        }
+        vec![
+            "this body fails through its failure edge, so it produces the success value \
+              itself: write `v` for `.Ok(v)` and `return error e` for `.Err(e)`"
+                .to_string(),
+        ]
+    }
+
+    /// A failure exit in a body with no failure edge (D578). The fix-it
+    /// declares the edge the body needs: a `-> Result<T, E>` value return
+    /// becomes `-> T fails E`, any other return `T` gains `fails E` with the
+    /// exit's own error type. A `gen {}` block has no edge to declare.
+    pub(super) fn report_no_failure_edge(&mut self, edge: FailureEdge, error: &Ty, span: &Span) {
+        let edge_name = edge.spelling();
+        let code = TypeErrorKind::NoFailureEdge.as_kind_str();
+        let recover = "recover here: `value handle e { ... }` or `match` on the `Result`";
+        if matches!(
+            self.effect_graph.current_body,
+            Some(super::effects::EffectBody::GeneratorBlock(_))
+        ) {
+            let suggestion = match edge {
+                FailureEdge::Try => recover.to_string(),
+                FailureEdge::ReturnError => {
+                    "move the generator into a `gen fn ... -> T fails E`, whose \
+                     `return error` ends it with a failure"
+                        .to_string()
+                }
+            };
+            self.report_error_with_suggestions(
+                TypeErrorKind::NoFailureEdge,
+                span,
+                format!(
+                    "{code}: {edge_name} leaves through a failure edge, and a `gen {{}}` block \
+                     has none"
+                ),
+                vec![suggestion],
+            );
+            return;
+        }
+        let error = self.subst.resolve(error).materialize_literal_defaults();
+        let declared = self
+            .current_return_type
+            .as_ref()
+            .map(|ret| self.subst.resolve(ret));
+        let (success, failure, value_result) = match &declared {
+            Some(ret) if self.in_generator => (
+                ret.as_generator()
+                    .map_or(Ty::Unit, |(yields, _)| yields.clone()),
+                error.clone(),
+                false,
+            ),
+            Some(ret) => match ret.as_result() {
+                Some((success, failure)) => (success.clone(), failure.clone(), true),
+                None => (ret.clone(), error.clone(), false),
+            },
+            None => (Ty::Unit, error.clone(), false),
+        };
+        // A declared error the exit does not carry would not compile under
+        // the suggested edge; the exit's own error does.
+        let keeps_declared_error = self.subst.resolve(&failure) == error;
+        let edge_error = if keeps_declared_error {
+            &failure
+        } else {
+            &error
+        };
+        let clause = fails_clause(&success, edge_error);
+        let message = if value_result {
+            format!(
+                "{code}: {edge_name} leaves through a failure edge, but this body returns \
+                 `{}` as a value",
+                declared
+                    .as_ref()
+                    .map_or_else(String::new, |ret| ret.user_facing().to_string())
+            )
+        } else {
+            format!("{code}: {edge_name} leaves through a failure edge, which this body does not declare")
+        };
+        let contextual_closure = matches!(
+            self.effect_graph.current_body,
+            Some(super::effects::EffectBody::Closure(_))
+        ) && self.inferred_lambda.is_none();
+        let mut suggestions = if contextual_closure {
+            Vec::new()
+        } else {
+            vec![format!(
+                "declare the edge: `{clause}`; the body then produces the success value itself"
+            )]
+        };
+        if !keeps_declared_error && !contextual_closure {
+            suggestions.push(format!(
+                "or keep `{}` and give the exit a `{}`: `{}`",
+                failure.user_facing(),
+                failure.user_facing(),
+                fails_clause(&success, &failure)
+            ));
+        }
+        if edge == FailureEdge::Try {
+            suggestions.push(if suggestions.is_empty() {
+                recover.to_string()
+            } else {
+                format!("or {recover}")
+            });
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::NoFailureEdge,
+            span,
+            message,
+            suggestions,
+        );
+    }
+
     fn report_error_no_conversion(
         &mut self,
         edge: FailureEdge,
@@ -878,7 +1145,7 @@ impl Checker {
         let source_name = source.user_facing().to_string();
         let target_name = target.user_facing().to_string();
         let code = TypeErrorKind::ErrorNoConversion.as_kind_str();
-        let (message, suggestions) = if matches!(target, Ty::TraitObject { .. }) {
+        let (message, mut suggestions) = if matches!(target, Ty::TraitObject { .. }) {
             (
                 format!("{code}: {edge_name} cannot erase `{source_name}` into `{target_name}`"),
                 vec![format!(
@@ -908,6 +1175,12 @@ impl Checker {
                 ],
             )
         };
+        if self.failure_edge_inferred {
+            suggestions.push(format!(
+                "the closure fails with `{target_name}`, inferred from its first failure exit; \
+                 declare `-> T fails E` on the closure to choose its error type"
+            ));
+        }
         self.report_error_with_suggestions(
             TypeErrorKind::ErrorNoConversion,
             span,
@@ -1038,4 +1311,18 @@ fn disambiguate_mismatch_labels(expected: &Ty, actual: &Ty) -> (String, String) 
         qualify(expected, &expected_label),
         qualify(actual, &actual_label),
     )
+}
+
+/// The return clause `-> T fails E` for a success `T` and error `E`, or
+/// `fails E` for a unit success. A function-typed success is parenthesized:
+/// `fails` would otherwise bind to its own return.
+pub(super) fn fails_clause(success: &Ty, error: &Ty) -> String {
+    let error = error.user_facing();
+    match success {
+        Ty::Unit => format!("fails {error}"),
+        Ty::Function { .. } | Ty::Closure { .. } => {
+            format!("-> ({}) fails {error}", success.user_facing())
+        }
+        _ => format!("-> {} fails {error}", success.user_facing()),
+    }
 }

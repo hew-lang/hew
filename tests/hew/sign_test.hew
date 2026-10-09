@@ -5,7 +5,7 @@ import std.crypto.sign;
 import std.encoding.hex;
 
 fn h(text: string) -> bytes {
-    hex.decode(text)
+    hex.decode(text).expect("valid hex")
 }
 
 // RFC 8032 §7.1, TEST 2.

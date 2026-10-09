@@ -554,13 +554,6 @@ impl Checker {
         let const_values_snapshot: HashMap<String, ConstValue> = self.const_values.clone();
         let num_stmts = block.stmts.len();
         let mut terminated = false;
-        // Tail Ok-coercion is armed by the enclosing `check_fn_decl` only when
-        // this block sits in function-return tail position. Every non-tail
-        // statement in this block (and any sub-block reached for a non-tail
-        // statement) must NOT coerce, so clear the flag for the statement loop
-        // and restore it only for the block's own tail computation (the
-        // `is_last` If/Match/Return arm and the trailing expression).
-        let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         for (i, (stmt, span)) in block.stmts.iter().enumerate() {
             // If a previous statement was terminal, warn about this unreachable code
             if terminated {
@@ -587,9 +580,6 @@ impl Checker {
 
             let is_last = i + 1 == num_stmts && block.trailing_expr.is_none();
             if is_last {
-                // Re-arm tail Ok-coercion for the block's tail statement so
-                // If/Match arm bodies that flow to return can Ok-coerce.
-                self.tail_ok_armed = tail_ok_armed;
                 let ty = self.check_last_stmt_type(stmt, span, expected);
                 if !matches!(ty, Ty::Never) {
                     self.recheck_current_scope_defers();
@@ -635,12 +625,6 @@ impl Checker {
             // materialization. For all other expressions check_against falls
             // through to synthesize + expect_type, producing the same result as
             // before.
-            //
-            // Re-arm the tail Ok-coercion: a trailing expression is this block's
-            // value-producing tail, so it inherits the enclosing function's
-            // armed state. `check_against` is the type-directed propagation site
-            // that performs the actual Ok-wrap.
-            self.tail_ok_armed = tail_ok_armed;
             let ty = if let Some(exp) = expected {
                 self.check_against(&expr.0, &expr.1, exp)
             } else {
@@ -746,12 +730,12 @@ impl Checker {
             );
             return;
         }
-        if self.inferred_lambda_returns.is_some() {
+        if self.inferred_lambda.is_some() {
             let ty = value.map_or(Ty::Unit, |(expr, span)| self.synthesize(expr, span));
-            self.inferred_lambda_returns
+            self.inferred_lambda
                 .as_mut()
                 .expect("inferred return context")
-                .push(ty);
+                .push_return(ty, span.clone());
             if let Some((expr, span)) = value {
                 self.record_value_transfer(expr, span);
             }
@@ -766,7 +750,13 @@ impl Checker {
             // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
             // not the full Generator type, so `return 1` inside gen{} unifies
             // against i64 rather than Generator<Y, i64>.
-            let effective_expected = if self.current_fails {
+            let effective_expected = if self.in_generator {
+                let resolved = self.subst.resolve(&expected);
+                match resolved.as_generator() {
+                    Some((_, ret)) => ret.clone(),
+                    None => expected,
+                }
+            } else if self.current_failure_edge.is_some() {
                 self.result_return_coercions.insert(
                     SpanKey::in_module(span, self.current_module_idx),
                     super::ResultReturnKind::Success,
@@ -775,12 +765,6 @@ impl Checker {
                     .resolve(&expected)
                     .as_result()
                     .map_or(Ty::Error, |(success, _)| success.clone())
-            } else if self.in_generator {
-                let resolved = self.subst.resolve(&expected);
-                match resolved.as_generator() {
-                    Some((_, ret)) => ret.clone(),
-                    None => expected,
-                }
             } else {
                 expected
             };

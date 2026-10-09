@@ -18,11 +18,11 @@ actor Store {
     }
 }
 
-fn pair(first: Store, second: Store) -> Result<i64, ActorError> {
+fn pair(first: Store, second: Store) -> i64 fails ActorError {
     let lease = Lease { name: "a" };
     let one = first.get("k")?;
     let two = second.get("jj")?;
-    .Ok(one + two)
+    one + two
 }
 
 fn show(label: string, result: Result<i64, ActorError>) {

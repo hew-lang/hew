@@ -1059,6 +1059,13 @@ struct LowerCtx {
     /// constructor so it returns the declared `Result`. See
     /// `TypeCheckOutput::tail_ok_coercions`.
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
+    /// See `TypeCheckOutput::yield_ok_coercions`.
+    yield_ok_coercions: std::collections::HashSet<SpanKey>,
+    /// See `TypeCheckOutput::failing_generators`.
+    failing_generators: std::collections::HashSet<SpanKey>,
+    /// The item type, `Result<Y, E>`, of the failing generator whose body is
+    /// being lowered; `None` in any other body, nested callables included.
+    failing_generator_item: Option<ResolvedTy>,
     result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
     /// Checker-bound parameter slot of each source argument, for calls whose
@@ -1123,6 +1130,7 @@ struct LowerCtx {
     /// source annotation and `Ty::Named` expression spelling cannot carry.
     type_declarations:
         std::collections::BTreeMap<hew_types::NominalId, hew_types::value_class::DeclaredType>,
+    display_facts: hew_types::TypeFactService,
     interpolation_display_types: HashMap<SpanKey, Ty>,
     unrendered_assertion_operands: HashSet<SpanKey>,
     /// Depth of `defer` bodies being lowered. A deferred body runs on every

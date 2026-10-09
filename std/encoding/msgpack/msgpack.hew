@@ -25,12 +25,22 @@
 
 import std.encoding.wire;
 
+/// A conversion the codec refused, with its reason.
+pub enum MsgpackError {
+    /// The JSON text was invalid or could not be encoded.
+    Encode(string);
+    /// The bytes were not valid MessagePack or could not become JSON.
+    Decode(string);
+}
+
+impl Error for MsgpackError {}
+
 /// Encode a JSON string to MessagePack binary.
 ///
-/// Returns `Err(reason)` on invalid JSON or serialization failure. The codec's
+/// Fails with `MsgpackError.Encode` on invalid JSON or serialization failure. The codec's
 /// own reason slot decides success, not the length of the result, so a
 /// legitimately short encoding is never mistaken for a failure.
-pub fn from_json(json: string) -> Result<bytes, string> {
+pub fn from_json(json: string) -> bytes fails MsgpackError {
     let data = unsafe {
         hew_msgpack_from_json_hew(json)
     };
@@ -38,16 +48,16 @@ pub fn from_json(json: string) -> Result<bytes, string> {
         hew_msgpack_last_error()
     };
     if reason.len() > 0 {
-        .Err(reason)
-    } else {
-        .Ok(data)
+        return error MsgpackError.Encode(reason);
     }
+    data
 }
 
 /// Decode a MessagePack `bytes` buffer to a JSON string.
 ///
-/// Returns `Err(reason)` on invalid input or deserialization failure.
-pub fn to_json(data: bytes) -> Result<string, string> {
+/// Fails with `MsgpackError.Decode` on invalid input or deserialization
+/// failure.
+pub fn to_json(data: bytes) -> string fails MsgpackError {
     let json = unsafe {
         hew_msgpack_to_json_hew(data)
     };
@@ -55,10 +65,9 @@ pub fn to_json(data: bytes) -> Result<string, string> {
         hew_msgpack_last_error()
     };
     if reason.len() > 0 {
-        .Err(reason)
-    } else {
-        .Ok(json)
+        return error MsgpackError.Decode(reason);
     }
+    json
 }
 
 /// Encode any data value as MessagePack bytes. Records encode as objects keyed by

@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "unicode.codepoint_at: index out of bounds\nunicode.codepoint_at: index out of bounds\nunicode.rune_len: invalid rune\nunicode.rune_len: invalid rune\nsentinels=-1,-1\n"
+stdout = "IndexOutOfBounds: 2\nIndexOutOfBounds: -1\nInvalidRune: -1\nInvalidRune: 1114112\nsentinels=-1,-1\n"
 exit = 0

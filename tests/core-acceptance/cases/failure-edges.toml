@@ -1,0 +1,11 @@
+[[case]]
+id = "failure-edges"
+intent = "`fails E` is the one failure edge and `-> Result<T, E>` a value return of the same type: fn types and traits accept either spelling, the two forms nest, `?` leaves through the edge, and a failing `main` prints the error."
+source = "../../examples/sandbox-graduation/failure_edges.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Ok(8080) Err(empty)\nOk(Ok(1)) Ok(Err(zero)) Err(refused)\nOk(abc) Err(nothing to read)\nOk(16160)\n"
+stderr = "error: no setting host\n"
+exit = 1

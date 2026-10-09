@@ -42,18 +42,17 @@ fn required_field(obj: Value, key: string) -> Result<Value, string> {
     }
 }
 
-fn print_field(obj: Value, key: string) -> Result<(), string> {
+fn print_field(obj: Value, key: string) fails string {
     let child = required_field(obj, key)?;
     match child.get_string() {
         .Ok(value) => {
             println(f"{key}:  {value}");
-            .Ok(())
         }
-        .Err(error) => .Err(f"{key}: {error}"),
+        .Err(error) => return error f"{key}: {error}",
     }
 }
 
-fn print_slideshow(root: Value) -> Result<(), string> {
+fn print_slideshow(root: Value) fails string {
     let slideshow = required_field(root, "slideshow")?;
     print_field(slideshow, "title")?;
     print_field(slideshow, "author")?;
@@ -62,9 +61,8 @@ fn print_slideshow(root: Value) -> Result<(), string> {
     match slides.array_len() {
         .Ok(count) => {
             println(f"slides: {count}");
-            .Ok(())
         }
-        .Err(error) => .Err(f"slides: {error}"),
+        .Err(error) => return error f"slides: {error}",
     }
 }
 

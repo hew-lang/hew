@@ -1632,7 +1632,7 @@ fn main() {
 
 #[test]
 fn tail_ok_publication_preserves_the_source_payload_type() {
-    let source = "fn wrap(value: i64) -> Result<i64, string> {\n    value\n}\n";
+    let source = "fn wrap(value: i64) -> i64 fails string {\n    value\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let start = source.rfind("value\n").expect("tail identifier");

@@ -167,11 +167,11 @@ impl TlsStreamMethods for TlsStream {
             hew_tls_write_result(self, data)
         })
     }
-    fn read(self, size: i64) -> Result<bytes, net.NetError> {
+    fn read(self, size: i64) -> bytes fails net.NetError {
         let checked = net.size_arg("tls.TlsStream.read", size)?;
         tls_read_result(unsafe {
             hew_tls_read_result(self, checked as i32) // INTERNAL-ABI: range-checked above
-        })
+        })?
     }
     /// Compiler-lowered active-mode attach.
     ///
@@ -203,7 +203,7 @@ const TLS_CONNECT_OS: i32 = 3;
 /// host or port is `InvalidArgument`; a certificate the trust does not
 /// accept, or a hostname mismatch, is `Other` with the alert in
 /// `last_error()`. Each call blocks its worker until it finishes.
-pub fn connect(host: string, port: i64, options: TlsOptions) -> Result<TlsStream, net.NetError> {
+pub fn connect(host: string, port: i64, options: TlsOptions) -> TlsStream fails net.NetError {
     let checked = net.port_arg("tls.connect", port)?;
     let handshake_ms = net.duration_ms("tls.connect handshake_timeout", options.handshake_timeout.millis())?;
     let io_ms = net.duration_ms("tls.connect io_timeout", options.io_timeout.millis())?;
@@ -214,18 +214,18 @@ pub fn connect(host: string, port: i64, options: TlsOptions) -> Result<TlsStream
     unsafe {
         let stream = hew_tls_connect(host, checked as i32, trust, pem, handshake_ms, io_ms); // INTERNAL-ABI: port range-checked above
         if hew_tls_is_valid(stream) {
-            return .Ok(stream);
+            return stream;
         }
         let failure = hew_tls_connect_failure();
         let errno = hew_tls_connect_errno();
         if failure == TLS_CONNECT_INVALID_ARGUMENT {
-            .Err(NetError.InvalidArgument(hew_tls_last_error()))
+            return error NetError.InvalidArgument(hew_tls_last_error());
         } else if failure == TLS_CONNECT_TIMED_OUT {
-            .Err(NetError.TimedOut(errno))
+            return error NetError.TimedOut(errno);
         } else if failure == TLS_CONNECT_OS {
-            .Err(net.net_error_from_errno(errno))
+            return error net.net_error_from_errno(errno);
         } else {
-            .Err(NetError.Other(errno))
+            return error NetError.Other(errno);
         }
     }
 }

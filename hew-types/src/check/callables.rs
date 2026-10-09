@@ -183,19 +183,30 @@ impl Checker {
         }
     }
 
+    /// Infer the result of a closure without a declared or expected return.
+    /// Its failure edge opens at the first `?` on a `Result` or `return
+    /// error`; then the joined exits are the success and the closure returns
+    /// `Result<success, E>`. A closure that never opens one returns its exits'
+    /// join, so a `?` on an `Option` propagates absence.
     pub(super) fn infer_lambda_result(&mut self, body: &Spanned<Expr>) -> Ty {
         let inferred = Ty::Var(crate::ty::TypeVar::fresh());
         self.current_return_type = Some(inferred.clone());
-        self.inferred_lambda_returns = Some(Vec::new());
+        self.inferred_lambda = Some(InferredLambda::default());
         let tail = self.synthesize(&body.0, &body.1);
-        let mut returns = self
-            .inferred_lambda_returns
+        let InferredLambda {
+            mut returns,
+            option_tries,
+        } = self
+            .inferred_lambda
             .take()
             .expect("inferred lambda return context");
-        returns.push(tail);
+        let tail_produces = !matches!(self.subst.resolve(&tail), Ty::Never | Ty::Error);
+        returns.push((tail, body.1.clone()));
         let mut result = Ty::Never;
-        for ty in returns {
-            let ty = self.subst.resolve(&ty);
+        let mut refused_exit = false;
+        for (ty, _) in &returns {
+            let ty = self.subst.resolve(ty);
+            refused_exit |= matches!(ty, Ty::Error);
             if matches!(ty, Ty::Never | Ty::Error) {
                 continue;
             }
@@ -207,12 +218,81 @@ impl Checker {
                 result = self.unify_branches(&result, &ty, &body.1);
             }
         }
-        self.expect_type(&inferred, &result, &body.1);
-        if result == Ty::Never {
-            result
-        } else {
-            self.subst.resolve(&inferred)
+        if result != Ty::Never {
+            self.expect_type(&inferred, &result, &body.1);
         }
+        let Some(error) = self.current_failure_edge.clone() else {
+            return if result == Ty::Never {
+                result
+            } else {
+                self.subst.resolve(&inferred)
+            };
+        };
+        // The closure fails: every `return v` and the produced tail are its
+        // success, and absence has no exit to leave through.
+        for span in option_tries {
+            self.report_option_try_on_failing_closure(&span);
+        }
+        returns.pop();
+        for (_, span) in returns {
+            self.result_return_coercions.insert(
+                super::SpanKey::in_module(&span, self.current_module_idx),
+                super::ResultReturnKind::Success,
+            );
+        }
+        if tail_produces {
+            self.tail_ok_coercions
+                .insert(super::SpanKey::in_module(&body.1, self.current_module_idx));
+        }
+        // An exit already refused leaves nothing to infer the success from.
+        let success = match self.subst.resolve(&inferred) {
+            Ty::Var(_) if refused_exit => Ty::Error,
+            success => success,
+        };
+        self.refuse_nested_failure_success(&success, &error, tail_exit_span(body));
+        Ty::result(success, self.subst.resolve(&error))
+    }
+
+    /// A failing closure whose success would be a `Result` carrying the edge's
+    /// own error almost always meant to propagate that `Result`, not to
+    /// return it as data.
+    fn refuse_nested_failure_success(&mut self, success: &Ty, error: &Ty, span: &Span) {
+        let Some((_, inner_error)) = success.as_result() else {
+            return;
+        };
+        let error = self.subst.resolve(error);
+        if self.subst.resolve(inner_error) != error || matches!(error, Ty::Var(_) | Ty::Error) {
+            return;
+        }
+        let success = success.user_facing();
+        let error = error.user_facing();
+        self.report_error_with_suggestions(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "this closure fails with `{error}`, so its `{success}` result would be \
+                 returned as data inside another `Result`"
+            ),
+            vec![
+                "propagate it with `?` on the result".to_string(),
+                format!("or keep it as data: annotate the closure `-> {success} fails {error}`"),
+            ],
+        );
+    }
+
+    /// `?` on an `Option` in a closure that fails through an edge: absence
+    /// has no `Option` return to leave through.
+    pub(super) fn report_option_try_on_failing_closure(&mut self, span: &Span) {
+        self.report_error_with_suggestions(
+            TypeErrorKind::InvalidOperation,
+            span,
+            "`?` cannot propagate absence here: this closure fails through a failure \
+             edge inferred from its `?` on a `Result` or `return error`"
+                .to_string(),
+            vec!["handle the absence here (`??`, `match`), or convert it: \
+                 `.ok_or(<error>)?`"
+                .to_string()],
+        );
     }
 
     pub(super) fn resolve_private_captures(
@@ -906,6 +986,120 @@ impl Checker {
                     .map(|ty| Ty::Array(Box::new(ty), *left_len))
             }
             _ => None,
+        }
+    }
+}
+
+/// The exits a closure body spells outside any nested callable that may
+/// leave through a failure edge: `return error` and the postfix `?`. Only
+/// a closure checked against an expected `Result` decides from them; a `?`
+/// may be on an `Option`, so an inferred closure opens its edge from types.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct FailureExits {
+    pub return_error: bool,
+    pub try_operator: bool,
+}
+
+impl FailureExits {
+    pub(super) fn of(body: &Spanned<Expr>) -> Self {
+        let mut exits = Self::default();
+        super::lints::walk_expr(&body.0, &body.1, &mut exits);
+        exits
+    }
+
+    pub(super) fn any(self) -> bool {
+        self.return_error || self.try_operator
+    }
+}
+
+impl super::lints::NodeVisitor for FailureExits {
+    fn visit_expr(&mut self, expr: &Expr, _span: &Span) {
+        self.return_error |= matches!(expr, Expr::ReturnError(_));
+        self.try_operator |= matches!(expr, Expr::PostfixTry(_));
+    }
+
+    fn enters_nested_callables(&self) -> bool {
+        false
+    }
+}
+
+/// The exits of a closure whose result is being inferred: its `return v`
+/// values and sites, and the `?` on an `Option` seen before it may open a
+/// failure edge.
+#[derive(Debug, Clone, Default)]
+pub(super) struct InferredLambda {
+    returns: Vec<(Ty, Span)>,
+    option_tries: Vec<Span>,
+}
+
+impl InferredLambda {
+    pub(super) fn push_return(&mut self, ty: Ty, span: Span) {
+        self.returns.push((ty, span));
+    }
+
+    pub(super) fn push_option_try(&mut self, span: Span) {
+        self.option_tries.push(span);
+    }
+}
+
+/// The span of a closure body's produced value: a block's trailing
+/// expression, or the whole body.
+fn tail_exit_span(body: &Spanned<Expr>) -> &Span {
+    match &body.0 {
+        Expr::Block(block) => block.trailing_expr.as_ref().map_or(&body.1, |tail| &tail.1),
+        _ => &body.1,
+    }
+}
+
+impl Checker {
+    /// Open an inferred closure's failure edge at its first `Result` `?` or
+    /// `return error`, and give the edge in force.
+    pub(super) fn failure_edge_or_open(&mut self) -> Option<Ty> {
+        if self.current_failure_edge.is_none() && self.inferred_lambda.is_some() {
+            self.current_failure_edge = Some(Ty::Var(crate::ty::TypeVar::fresh()));
+            self.failure_edge_inferred = true;
+        }
+        self.current_failure_edge.clone()
+    }
+
+    /// The `Result` a closure checked against an expected `Result` fails
+    /// through, when its body spells a failure exit. Any `?` on an `Option`
+    /// in it is refused: the closure returns a `Result`.
+    pub(super) fn expected_lambda_failure_return(
+        &mut self,
+        expected_ret: &Ty,
+        exits: FailureExits,
+    ) -> Option<Ty> {
+        let resolved = self.subst.resolve(expected_ret);
+        (resolved.as_result().is_some() && exits.any()).then_some(resolved)
+    }
+
+    /// Check a closure body that fails through `result`'s error type: the
+    /// body produces the success value and its exits leave through the edge.
+    pub(super) fn check_expected_failing_lambda(
+        &mut self,
+        body: &Spanned<Expr>,
+        result: &Ty,
+    ) -> Ty {
+        let (success, error) = result
+            .as_result()
+            .map(|(success, error)| (success.clone(), error.clone()))
+            .expect("a failing closure returns a Result");
+        self.failure_edge_inferred = matches!(self.subst.resolve(&error), Ty::Var(_));
+        self.current_return_type = Some(result.clone());
+        self.current_failure_edge = Some(error);
+        self.check_failing_lambda_body(body, &success);
+        self.subst.resolve(result)
+    }
+
+    /// Check a failing closure's body against its success type. The whole
+    /// body is the closure's tail, so a value it produces is wrapped as the
+    /// success; a diverging body needs no wrap.
+    pub(super) fn check_failing_lambda_body(&mut self, body: &Spanned<Expr>, success: &Ty) {
+        let actual = self.check_against(&body.0, &body.1, success);
+        if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+            self.tail_ok_coercions
+                .insert(super::SpanKey::in_module(&body.1, self.current_module_idx));
         }
     }
 }

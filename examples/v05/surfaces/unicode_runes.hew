@@ -30,7 +30,7 @@ fn main() {
         let upper = unicode.to_upper(cp);
         let width = match unicode.rune_len(cp) {
             .Ok(width) => width,
-            .Err(error) => panic(error),
+            .Err(error) => panic(f"{error}"),
         };
         println(f"cp={cp} width={width} kind={kind} upper_cp={upper}");
     }

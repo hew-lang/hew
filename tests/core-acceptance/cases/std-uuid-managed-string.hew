@@ -38,7 +38,8 @@ fn main() {
     // A borrowed format string with an owned result, and a text transform.
     match datetime.format(0, "%Y-%m-%dT%H:%M:%SZ") {
         .Ok(text) => println(text),
-        .Err(reason) => println("format failed: " + reason),
+        .Err(.Format(reason)) => println("format failed: " + reason),
+        .Err(.Parse(reason)) => println("parse failed: " + reason),
     }
     println(markdown.to_html_safe("# title").trim());
 

@@ -4,8 +4,8 @@
 //! an error is a value that can say what went wrong. Two checker facts follow
 //! and are pinned here.
 //!
-//! * `impl Error for X {}` requires `impl Display for X`. The obligation is
-//!   reported where the promise is made, in either declaration order.
+//! * `impl Error for X {}` supplies X's Display when X declares none (D577);
+//!   a declared Display, in either order, is the one used.
 //! * A type that implements `Error` coerces to `dyn Error` at every error
 //!   position - `return error e`, `?` into a `fails dyn Error` caller and
 //!   `Err(e)`. The failure-edge refusals live in `try_conversion.rs`.
@@ -16,30 +16,24 @@ use common::typecheck;
 use hew_types::error::TypeErrorKind;
 
 #[test]
-fn impl_error_without_display_is_refused() {
+fn impl_error_without_display_supplies_the_implied_display() {
     let output = typecheck(
-        r"type ParseFailure {
+        r#"type ParseFailure {
     detail: string;
 }
 
 impl Error for ParseFailure {
 }
-",
+
+fn describe(failure: ParseFailure) -> string {
+    f"{failure}"
+}
+"#,
     );
-    let error = output
-        .errors
-        .iter()
-        .find(|err| err.kind == TypeErrorKind::BoundsNotSatisfied)
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a supertrait obligation, got: {:#?}",
-                output.errors
-            )
-        });
     assert!(
-        error.message.contains("supertrait `Display`") && error.message.contains("ParseFailure"),
-        "diagnostic should name the missing supertrait and the type: {}",
-        error.message
+        output.errors.is_empty(),
+        "an Error impl alone renders: {:#?}",
+        output.errors
     );
 }
 

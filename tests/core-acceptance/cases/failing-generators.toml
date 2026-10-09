@@ -1,0 +1,10 @@
+[[case]]
+id = "failing-generators"
+intent = "A `gen fn .. fails E` yields `Result<Y, E>` items: `yield y` is `Ok(y)`, `return error` and a failing `?` yield `Err(e)` last and complete, and a consumer takes each item with `?` or `handle`."
+source = "../../examples/sandbox-graduation/failing_generators.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Ok(line 0)\nOk(line 1)\nvalue 0\nvalue 10\nvalue 20\nvalue 30\nskipped: four is unlucky\nvalue -1\nline 0\nline 1\ncounted 2\nline 0\nline 1\nline 2\nstopped: Corrupt: 3\n"
+exit = 0

@@ -159,11 +159,18 @@ impl<'a> InstanceService<'a> {
         if self.structural_display.contains_key(key) {
             return Ok(());
         }
-        let ty = &key.value;
-        self.require_type_facts(ty)?;
-        // Reserve the type before descending through recursive variants.
+        self.require_type_facts(&key.value)?;
         self.structural_display
             .insert(key.clone(), crate::SemStructuralRender::default());
+        let result = self.select_structural_rendering(key);
+        if result.is_err() {
+            self.structural_display.remove(key);
+        }
+        result
+    }
+
+    fn select_structural_rendering(&mut self, key: &crate::StructuralType) -> Result<(), String> {
+        let ty = &key.value;
         if let Some((method, type_args)) = self
             .checked_facts
             .display_method_for_type(ty, &key.source)

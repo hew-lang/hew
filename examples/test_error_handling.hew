@@ -71,9 +71,9 @@ fn test_option_none() -> i32 {
 }
 
 // ? operator propagation
-fn try_divide(a: i64, b: i64) -> Result<i64, string> {
+fn try_divide(a: i64, b: i64) -> i64 fails string {
     let x = divide(a, b)?;
-    .Ok(x * 2)
+    x * 2
 }
 
 fn test_try_ok() -> i32 {
@@ -105,10 +105,10 @@ fn test_try_err() -> i32 {
 }
 
 // Chained ? operator
-fn chain_divide(a: i64, b: i64, c: i64) -> Result<i64, string> {
+fn chain_divide(a: i64, b: i64, c: i64) -> i64 fails string {
     let x = divide(a, b)?;
     let y = divide(x, c)?;
-    .Ok(y)
+    y
 }
 
 fn test_chained_try() -> i32 {

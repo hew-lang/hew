@@ -623,19 +623,17 @@ fn try_quic_deadline_ms(context: string, deadline_ms: i64) -> Result<i64, net.Ne
 ///
 /// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError.TimedOut(0))`
 /// on deadline expiry, `Err(NetError.Other(0))` on transport error.
-pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> Result<(), net.NetError> {
+pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) fails net.NetError {
     let deadline = try_quic_deadline_ms("quic.stream_send_timeout", deadline_ms)?;
     let status: i32 = unsafe { // INTERNAL-ABI: 0=ok, -1=error, -2=timeout, -3=absent handle; deadline range-checked above
         hew_quic_stream_send_timeout_hew(strm, data, deadline as i32)
     };
     if status == QUIC_ABSENT_HANDLE {
-        .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+        return error NetError.InvalidArgument("this QUIC stream was never opened");
     } else if status == -2 {
-        .Err(net.net_error_timed_out())
+        return error net.net_error_timed_out();
     } else if status < 0 {
-        .Err(net.net_error_from_errno(0))
-    } else {
-        .Ok(())
+        return error net.net_error_from_errno(0);
     }
 }
 
@@ -643,7 +641,7 @@ pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> R
 ///
 /// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError.TimedOut(0))`
 /// on deadline expiry. On success returns the bytes (may be empty for EOF).
-pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, net.NetError> {
+pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> bytes fails net.NetError {
     let deadline = try_quic_deadline_ms("quic.stream_recv_timeout", deadline_ms)?;
     let payload: bytes = unsafe { // INTERNAL-ABI: deadline range-checked above
         hew_quic_stream_recv_timeout_hew(strm, deadline as i32)
@@ -652,13 +650,13 @@ pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, 
         hew_quic_stream_last_recv_status()
     };
     if status == QUIC_ABSENT_HANDLE {
-        .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+        return error NetError.InvalidArgument("this QUIC stream was never opened");
     } else if status == -2 {
-        .Err(net.net_error_timed_out())
+        return error net.net_error_timed_out();
     } else if status < 0 {
-        .Err(net.net_error_from_errno(0))
+        return error net.net_error_from_errno(0);
     } else {
-        .Ok(payload)
+        payload
     }
 }
 

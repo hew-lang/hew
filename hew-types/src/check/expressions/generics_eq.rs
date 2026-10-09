@@ -118,63 +118,6 @@ impl Checker {
         }
     }
 
-    /// Attempt the function-tail Ok-coercion described in
-    /// [`TypeCheckOutput::tail_ok_coercions`].
-    ///
-    /// `expected` must be the (already substitution-resolved) declared return
-    /// type and `actual` the synthesized tail expression type. Returns
-    /// `Some(expected.clone())` — the full `Result` type — when the tail is
-    /// Ok-wrapped, recording the coercion at `span` for HIR lowering. Returns
-    /// `None` when no coercion applies (expected is not `Result`, the tail
-    /// already unifies with the full `Result`, or the tail does not unify with
-    /// the `Ok` payload); the caller then runs its normal unify-and-diagnose
-    /// path. Probes are snapshot-guarded so a failed trial unification leaves
-    /// the substitution untouched.
-    pub(super) fn try_tail_ok_coercion(
-        &mut self,
-        expected: &Ty,
-        actual: &Ty,
-        span: &Span,
-    ) -> Option<Ty> {
-        let (ok_ty, err_ty) = expected.as_result()?;
-        let ok_ty = ok_ty.clone();
-        let err_ty = err_ty.clone();
-
-        // Probe 1 — does the tail already produce the FULL `Result<Ok, Err>`?
-        // If so this is `fn f() -> Result<..> { g() }` where `g()` returns the
-        // Result directly: no coercion, fall back to the normal path (which
-        // re-unifies). Roll the probe back so it commits nothing.
-        let snapshot = self.subst.snapshot();
-        let full_result = Ty::result(ok_ty.clone(), err_ty.clone());
-        let unifies_full = self.try_unify_with_owner_identity(&full_result, actual);
-        self.subst.restore(snapshot);
-        if unifies_full {
-            return None;
-        }
-
-        // Probe 2 — does the tail produce the `Ok` payload? If so, Ok-wrap it.
-        // Commit this unification (it is the path we take) so the tail
-        // expression's recorded type and any inference variables settle against
-        // the `Ok` payload.
-        let snapshot = self.subst.snapshot();
-        if self.try_unify_with_owner_identity(&ok_ty, actual) {
-            self.record_suspension_obligations(&ok_ty, actual, span);
-            self.tail_ok_coercions
-                .insert(SpanKey::in_module(span, self.current_module_idx));
-            // Return the full `Result` as this expression's check-against
-            // result so the block / function-return type-check sees a satisfied
-            // return. Do NOT overwrite the recorded type at `span` with the
-            // `Result`: the tail and its inner expression (e.g. the `?`
-            // expression) share this span, and HIR lowering reads the inner
-            // `Ok`-payload type back at lowering time. `wrap_tail_ok` supplies
-            // the outer `Result` type when it wraps the lowered value in
-            // `Ok(..)`, so the recorded span type must stay the inner payload.
-            return Some(expected.clone());
-        }
-        self.subst.restore(snapshot);
-        None
-    }
-
     /// If `expr` is a bare identifier bound (via an unannotated `let`) to a
     /// still-open literal-defaulting `TypeVar`, return that var.
     ///

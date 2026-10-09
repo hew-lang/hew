@@ -2970,7 +2970,6 @@ impl<'a> Formatter<'a> {
     // Types
     // ------------------------------------------------------------------
 
-    /// One parameter list and optional reply, shared by `fn` and `actor` types.
     /// Write a declaration's return clause. A function that only fails
     /// prints the short form `fails E`; everything else prints `-> T`.
     fn format_return_clause(&mut self, ret: &Spanned<TypeExpr>) {
@@ -2993,6 +2992,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// One parameter list and optional reply, shared by `fn` and `actor` types.
     fn format_callable_type(
         &mut self,
         head: &str,
@@ -3010,9 +3010,26 @@ impl<'a> Formatter<'a> {
             .is_some_and(|t| t.split_whitespace().collect::<String>() == "()");
         if written_unit || !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty())
         {
-            self.write(" -> ");
-            self.format_type_expr(&return_type.0);
+            self.format_return_clause(return_type);
         }
+    }
+
+    /// `T fails E`. A callable success type groups, or the clause would be
+    /// read as its own return's.
+    fn format_fallible_type(&mut self, success: &Spanned<TypeExpr>, error: &Spanned<TypeExpr>) {
+        let grouped = matches!(
+            success.0,
+            TypeExpr::Function { .. } | TypeExpr::ActorFn { .. }
+        );
+        if grouped {
+            self.write("(");
+        }
+        self.format_type_expr(&success.0);
+        if grouped {
+            self.write(")");
+        }
+        self.write(" fails ");
+        self.format_type_expr(&error.0);
     }
 
     fn format_type_expr(&mut self, ty: &TypeExpr) {
@@ -3043,11 +3060,7 @@ impl<'a> Formatter<'a> {
                 self.format_type_expr(&err.0);
                 self.write(">");
             }
-            TypeExpr::Fallible { success, error } => {
-                self.format_type_expr(&success.0);
-                self.write(" fails ");
-                self.format_type_expr(&error.0);
-            }
+            TypeExpr::Fallible { success, error } => self.format_fallible_type(success, error),
             TypeExpr::Option(inner) => {
                 self.write("Option<");
                 self.format_type_expr(&inner.0);
@@ -5899,6 +5912,19 @@ trait Fluent {
         // A success type other than unit keeps its arrow.
         let valued = "fn load(path: string) -> string fails LoadError {\n    path\n}\n";
         assert_eq!(migrate_syntax(valued).unwrap(), valued);
+    }
+
+    #[test]
+    fn fn_types_spell_the_failure_edge_like_declarations() {
+        for source in [
+            "fn apply(f: fn(i64) -> i64 fails string, x: i64) -> i64 fails string {\n    f(x)?\n}\n",
+            "fn run(step: fn() fails string) fails string {\n    step()?\n}\n",
+            // A callable success type groups, or the clause would be its own.
+            "fn make() -> (fn(i64) -> i64) fails string {\n    return error \"none\";\n}\n",
+            "fn make() -> fn(i64) -> i64 fails string {\n    |x| x\n}\n",
+        ] {
+            assert_eq!(roundtrip_source(source), source);
+        }
     }
 
     #[test]

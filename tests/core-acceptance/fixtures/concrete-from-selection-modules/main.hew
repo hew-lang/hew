@@ -9,9 +9,9 @@ fn read(n: i64) -> Result<i64, IoError> {
     if n > 0 { .Ok(n) } else { .Err(IoError { code: n }) }
 }
 
-fn checked(n: i64) -> Result<i64, AppError> {
+fn checked(n: i64) -> i64 fails AppError {
     let v = read(n)?;
-    .Ok(v)
+    v
 }
 
 fn main() {

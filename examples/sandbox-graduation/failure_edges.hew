@@ -1,0 +1,69 @@
+// A failure leaves a callable only through its declared edge, `fails E`. A
+// `-> Result<T, E>` return is a value the body builds. Both spell one type,
+// so callers, fn types and traits accept either.
+
+fn parse(text: string) -> i64 fails string {
+    if text == "" {
+        return error "empty";
+    }
+    text.len()
+}
+
+// A value return: the body builds the Result itself.
+fn lookup(key: string) -> Result<i64, string> {
+    if key == "port" {
+        .Ok(8080)
+    } else {
+        .Err(f"no setting {key}")
+    }
+}
+
+// Both forms nest: the success value of this edge is itself a Result.
+fn checked(x: i64) -> Result<i64, string> fails string {
+    if x < 0 {
+        return error "refused";
+    }
+    if x == 0 {
+        .Err("zero")
+    } else {
+        .Ok(x)
+    }
+}
+
+trait Source {
+    fn read(self) -> Result<string, string>;
+}
+
+type Fixed {
+    text: string;
+}
+
+// A trait method declared one way may be implemented the other.
+impl Source for Fixed {
+    fn read(self) -> string fails string {
+        if self.text == "" {
+            return error "nothing to read";
+        }
+        self.text
+    }
+}
+
+fn total(keys: Vec<string>) -> i64 fails string {
+    var sum = 0;
+    for key in keys {
+        sum = sum + lookup(key)?;
+    }
+    sum
+}
+
+fn main() fails string {
+    let edge: fn(string) -> i64 fails string = lookup;
+    let value: fn(string) -> Result<i64, string> = parse;
+    println(f"{edge("port"):?} {value(""):?}");
+    println(f"{checked(1):?} {checked(0):?} {checked(-1):?}");
+    let source = Fixed { text: "abc" };
+    println(f"{source.read():?} {Fixed { text: "" }.read():?}");
+    println(f"{total(["port", "port"]):?}");
+    let sum = total(["port", "host"])?;
+    println(f"unreachable {sum}");
+}

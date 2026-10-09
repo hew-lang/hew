@@ -13,12 +13,12 @@ fn check(n: i64) -> Result<i64, string> {
     return .Ok(n);
 }
 
-fn frame() -> Result<i64, string> {
+fn frame() -> i64 fails string {
     for word in make_vec() {
         let n = check(word.len())?;
-        return .Ok(n);
+        return n;
     }
-    return .Ok(0);
+    return 0;
 }
 
 fn main() {

@@ -2,8 +2,8 @@
 // bit pattern, at O0 and O2.
 import std.encoding.binary;
 
-fn parse(record: bytes) -> Result<(i64, f64), binary.BinaryError> {
-    .Ok((binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?))
+fn parse(record: bytes) -> (i64, f64) fails binary.BinaryError {
+    (binary.read_uint_le(record, 0, 2)?, binary.read_f32_le(record, 2)?)
 }
 
 fn pattern(bits: i64) -> bytes {

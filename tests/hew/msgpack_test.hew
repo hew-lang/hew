@@ -43,8 +43,8 @@ fn test_try_from_json_invalid_surfaces_reason() {
     match result {
         .Ok(_) => panic("expected invalid JSON to fail"),
         .Err(msg) => {
-            assert(msg.contains("msgpack:"));
-            assert(msg.contains("parse JSON"));
+            assert(f"{msg}".contains("msgpack:"));
+            assert(f"{msg}".contains("parse JSON"));
         }
     }
 }
@@ -56,7 +56,7 @@ fn test_try_to_json_empty_surfaces_reason() {
     let result = msgpack.to_json(bytes []);
     match result {
         .Ok(_) => panic("expected empty input to fail"),
-        .Err(msg) => assert(msg.contains("invalid input buffer")),
+        .Err(msg) => assert(f"{msg}".contains("invalid input buffer")),
     }
 }
 
@@ -294,6 +294,6 @@ fn test_try_to_json_rejects_a_truncated_buffer() {
     truncated.push(146);
     match msgpack.to_json(truncated) {
         .Ok(json) => panic(f"expected a truncated buffer to fail, got {json}"),
-        .Err(reason) => assert(reason.contains("msgpack:")),
+        .Err(reason) => assert(f"{reason}".contains("msgpack:")),
     }
 }

@@ -11,14 +11,14 @@ fn statement_match(ok: bool, stop: bool) -> string {
     "continued"
 }
 
-fn try_comparison(ok: bool, stop: bool) -> Result<string, string> {
+fn try_comparison(ok: bool, stop: bool) -> string fails string {
     if producer.text_result(ok)? != "ready" {
-        return .Err("unexpected");
+        return error "unexpected";
     }
     if stop {
-        return .Ok("stopped");
+        return "stopped";
     }
-    .Ok("continued")
+    "continued"
 }
 
 fn nested_match(some: bool, ok: bool) -> string {

@@ -1,0 +1,31 @@
+[[case]]
+id = "closure-edge-refusals"
+intent = "A closure's inferred failure edge keeps the error type of its first exit, refuses an `Option` `?` once it is open and a `Result` tail that would nest its own error, and a closure declaring a value return has no edge for `return error`."
+source = "cases/closure-edge-refusals.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_ERROR_NO_CONVERSION"
+line = 15
+column = 20
+message = "`?` cannot convert `std.fs.IoError` into `string`"
+
+[[case.expected.diagnostics]]
+code = "E_NO_FAILURE_EDGE"
+line = 21
+column = 13
+message = "`return error` leaves through a failure edge, which this body does not declare"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 29
+column = 13
+message = "`?` cannot propagate absence here"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 35
+column = 9
+message = "this closure fails with `string`, so its `Result<i64, string>` result would be returned as data"

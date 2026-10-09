@@ -631,7 +631,7 @@ impl Ctx {
 // DEPRECATED: use `parse` + `render_try` for the typed compiled-template API.
 /// Render `tmpl` against `ctx`, returning the substituted string on success.
 ///
-/// Returns `Err(message)` if the template is malformed (unclosed `{{`,
+/// Fails with a `TemplateError` if the template is malformed (unclosed `{{`,
 /// unmatched `{{end}}`, or `{{.}}` outside a `{{range}}` block).
 ///
 /// # Examples
@@ -653,18 +653,7 @@ impl Ctx {
 ///     }
 /// }
 /// ```
-pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
-    // Bound before the match: `parse` forwards its parameter into the
-    // result, so matching the call directly would alias `tmpl` (caller-owned).
-    let parsed = parse(tmpl);
-    match parsed {
-        .Ok(t) => {
-            let rendered = render_segment(t.src, ctx, "", false);
-            match rendered {
-                .Ok(s) => .Ok(s),
-                .Err(err) => .Err(to_string(err)),
-            }
-        }
-        .Err(err) => .Err(to_string(err)),
-    }
+pub fn render(tmpl: string, ctx: Ctx) -> string fails TemplateError {
+    let parsed = parse(tmpl)?;
+    render_segment(parsed.src, ctx, "", false)?
 }

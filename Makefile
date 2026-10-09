@@ -1466,7 +1466,7 @@ test-migrate-corpus: hew-native
 		echo "error: migration accepted the removed glob import" >&2; \
 		exit 1; \
 	fi; \
-	grep -F 'migration refused' "$$migration_refusal" | grep -F 'removed_glob.hew'; \
+	grep -F 'migration skipped' "$$migration_refusal" | grep -F 'removed_glob.hew'; \
 	diff -u tests/corpus/migrate/reject/removed_glob.hew "$$migration_root/reject/removed_glob.hew"; \
 	echo "4/6 prove the migrated sources type-check"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \

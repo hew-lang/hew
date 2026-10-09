@@ -108,7 +108,7 @@ impl Rng {
 pub fn crypto_bytes(n: i64) -> bytes {
     match crypto.random_bytes(n) {
         .Ok(b) => b,
-        .Err(e) => panic(e),
+        .Err(e) => panic(f"crypto.random_bytes: {e}"),
     }
 }
 

@@ -1,0 +1,19 @@
+[[case]]
+id = "variant-edge-refusals"
+intent = "A failure edge wraps an error only in the single variant that carries it alone: two such variants refuse naming both, and a payload that is the enum's own type parameter never converts."
+source = "cases/variant-edge-refusals.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_ERROR_NO_CONVERSION"
+line = 27
+column = 5
+message = "`First` and `Second` both carry `ParseError`"
+
+[[case.expected.diagnostics]]
+code = "E_ERROR_NO_CONVERSION"
+line = 31
+column = 5
+message = "cannot convert `ParseError` into `Wrapper<ParseError>`"

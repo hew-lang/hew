@@ -401,13 +401,7 @@ impl LowerCtx {
             // user named-type Display impl. The `_` fail-closed arm below
             // would otherwise reject it (checker–HIR contract violation)
             // even though the checker admitted it.
-            ResolvedTy::Duration => self.dispatch_display_to_named_impl(
-                "std.builtins.duration",
-                &[],
-                &method_name,
-                value,
-                span,
-            ),
+            ResolvedTy::Duration => self.dispatch_display_to_named_impl(&ty, value, span),
             ResolvedTy::Named {
                 head: hew_types::TypeHead::Builtin(BuiltinType::NodeId),
                 ..
@@ -420,8 +414,7 @@ impl LowerCtx {
                 head: hew_types::TypeHead::Builtin(BuiltinType::RemotePid),
                 ..
             } => self.build_catalog_call("hew_remote_pid_display", vec![value], span),
-            ResolvedTy::Named { head, args, .. } => {
-                let name = head.registry_key();
+            ResolvedTy::Named { head, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
                 // dispatch; a concrete user type calls its `impl Display` fmt
@@ -434,9 +427,7 @@ impl LowerCtx {
                         span,
                     );
                 }
-                let name = name.to_string();
-                let type_args = args.clone();
-                self.dispatch_display_to_named_impl(&name, &type_args, &method_name, value, span)
+                self.dispatch_display_to_named_impl(&ty, value, span)
             }
             ResolvedTy::TypeParam { name } => {
                 // Abstract type parameter `T` carrying a `Display` bound — the
@@ -529,37 +520,34 @@ impl LowerCtx {
         self.build_catalog_call(builtin, vec![argument], span)
     }
 
-    /// Dispatch a `Display::fmt` call to a concrete named/builtin type's impl
-    /// symbol (`<type>::fmt`).
-    ///
-    /// Shared by the duration and concrete-named-type arms of
-    /// [`Self::lower_display_dispatch`]. The checker's `require_display_impl`
-    /// gate guarantees the impl exists; reaching the `else` here means the
-    /// symbol is absent from the HIR fn registry — a checker–HIR contract
-    /// violation surfaced fail-closed rather than fabricating an empty string.
     pub(super) fn dispatch_display_to_named_impl(
         &mut self,
-        type_name: &str,
-        type_args: &[ResolvedTy],
-        method_name: &str,
+        ty: &ResolvedTy,
         value: HirExpr,
         span: Span,
     ) -> HirExpr {
-        let symbol = crate::node::HirImplBlock::method_symbol(type_name, method_name);
-        if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
-            self.register_display_impl_monomorphisation(&symbol, type_args, &span, call.site);
-            return call;
+        let selected = self
+            .display_facts
+            .display_method_for_checked_type(&value.ty, ty);
+        if let Ok(Some((method, type_args))) = &selected {
+            if let Some(symbol) = self.registered_impl_method_symbol(*method) {
+                if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
+                    self.register_display_impl_monomorphisation(
+                        &symbol, type_args, &span, call.site,
+                    );
+                    return call;
+                }
+            }
         }
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::CheckerBoundaryViolation {
-                name: symbol.clone(),
-                reason: format!("no fn_registry entry for display impl `{symbol}`"),
+                name: format!("Display for {}", ty.user_facing()),
+                reason: format!("selected Display has no emitted callable: {selected:?}"),
             },
             span.clone(),
-            "checker accepted a Display interpolant but HIR has no \
-             corresponding impl symbol — checker–HIR contract violation",
+            "checker accepted a Display interpolant but HIR has no corresponding impl body",
         ));
-        self.unsupported_expr(span, format!("display dispatch: missing {symbol}"))
+        self.unsupported_expr(span, "display dispatch: missing implementation")
     }
 
     /// Interpolating a value whose `impl Display` block is generic

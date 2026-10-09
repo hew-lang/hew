@@ -1,0 +1,63 @@
+// A generator that can fail declares its edge like a function: `gen fn f() ->
+// Y fails E`. Each item is a `Result<Y, E>`; `yield y` produces `Ok(y)`, and
+// `return error e` or a failing `?` produces `Err(e)` as the last item. The
+// consumer takes each item with `?`, or handles it.
+
+enum ReadError {
+    Corrupt(i64);
+}
+
+impl Error for ReadError {}
+
+fn checked(n: i64) -> i64 fails string {
+    if n == 4 {
+        return error "four is unlucky";
+    }
+    n
+}
+
+gen fn lines(limit: i64) -> string fails ReadError {
+    for i in 0..limit {
+        if i == 3 {
+            return error .Corrupt(i);
+        }
+        yield f"line {i}";
+    }
+}
+
+gen fn scaled(limit: i64) -> i64 fails string {
+    for i in 0..limit {
+        yield checked(i)? * 10;
+    }
+}
+
+fn count_lines(limit: i64) -> i64 fails dyn Error {
+    var count = 0;
+    for item in lines(limit) {
+        let line = item?;
+        println(line);
+        count = count + 1;
+    }
+    count
+}
+
+fn main() {
+    for item in lines(2) {
+        println(f"{item:?}");
+    }
+    for item in scaled(6) {
+        let value = item handle e {
+            println(f"skipped: {e}");
+            -1
+        };
+        println(f"value {value}");
+    }
+    match count_lines(2) {
+        .Ok(n) => println(f"counted {n}"),
+        .Err(e) => println(f"stopped: {e}"),
+    }
+    match count_lines(10) {
+        .Ok(n) => println(f"counted {n}"),
+        .Err(e) => println(f"stopped: {e}"),
+    }
+}

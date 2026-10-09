@@ -213,6 +213,8 @@ pub(crate) fn link_executable_with_hew_lib(
         )?,
     };
 
+    refuse_runtime_symbol_redefinitions(std::path::Path::new(&hew_lib), extra_libs)?;
+
     let mut cmd = std::process::Command::new(&compiler.program);
 
     // ── lld selection (host-driven) ────────────────────────────────────
@@ -1210,16 +1212,7 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     // statically embedded a runtime symbol that libhew.a already owns. This is a
     // mis-shaped native package; emit the supported build recipe (fail-closed).
     if !dup_hew.is_empty() {
-        let list = dup_hew.into_iter().collect::<Vec<_>>().join(", ");
-        hints.push(format!(
-            "hint: duplicate Hew runtime symbol(s): {list}\n      \
-             A library linked via --link-lib bundles its own copy of a symbol that libhew.a \
-             already provides. A native Hew package must depend on `hew-cabi` for shared ABI \
-             types (hew-cabi declares runtime symbols as imports) and must NOT statically embed \
-             hew-runtime or hew-lib.\n      \
-             Build the package as a `staticlib` with `panic = \"abort\"`, then link it with \
-             --link-lib; do not re-export or bundle the runtime."
-        ));
+        hints.push(runtime_redefinition_hint(&dup_hew));
     } else if dup_rust_internal {
         hints.push(
             "hint: duplicate Rust-internal symbol(s) (libstd / personality) during link. \
@@ -1240,6 +1233,89 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     }
 
     hints
+}
+
+/// The fail-closed recipe for a linked library that defines symbols libhew.a
+/// already owns.
+fn runtime_redefinition_hint(symbols: &std::collections::BTreeSet<String>) -> String {
+    let list = symbols
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "hint: duplicate Hew runtime symbol(s): {list}\n      \
+         A library linked via --link-lib bundles its own copy of a symbol that libhew.a \
+         already provides. A native Hew package must depend on `hew-cabi` for shared ABI \
+         types (hew-cabi declares runtime symbols as imports) and must NOT statically embed \
+         hew-runtime or hew-lib.\n      \
+         Build the package as a `staticlib` with `panic = \"abort\"`, then link it with \
+         --link-lib; do not re-export or bundle the runtime."
+    )
+}
+
+/// Fail the link, with the package recipe, when a library on the link line
+/// redefines a runtime symbol.
+fn refuse_runtime_symbol_redefinitions(
+    hew_lib: &std::path::Path,
+    extra_libs: &[String],
+) -> Result<(), String> {
+    let redefined = runtime_symbol_redefinitions(hew_lib, extra_libs);
+    if redefined.is_empty() {
+        return Ok(());
+    }
+    emit_plain_diagnostic_line(&runtime_redefinition_hint(&redefined));
+    Err("linking failed".into())
+}
+
+/// The `hew_*` runtime symbols a library archive on the link line defines but
+/// libhew.a already owns.
+///
+/// Archive linkers disagree about such a pair. ELF and COFF links fail, but
+/// Mach-O resolves archives as a set and binds whichever copy it loads first,
+/// so a mis-shaped package can silently replace runtime code. Reading the
+/// archives' symbol indexes before any linker runs gives every platform the
+/// same fail-closed answer. Rust std symbols overlap legitimately (each
+/// staticlib carries its own std), so only `hew_*` names count. A library the
+/// scan cannot read, such as a `-l` search, stays with the linker's own
+/// duplicate report and `diagnose_linker_errors`.
+fn runtime_symbol_redefinitions(
+    hew_lib: &std::path::Path,
+    extra_libs: &[String],
+) -> std::collections::BTreeSet<String> {
+    let libraries: Vec<_> = extra_libs
+        .iter()
+        .filter(|lib| !lib.starts_with('-'))
+        .filter_map(|lib| archive_hew_symbols(std::path::Path::new(lib)))
+        .collect();
+    if libraries.is_empty() {
+        return std::collections::BTreeSet::new();
+    }
+    let Some(runtime) = archive_hew_symbols(hew_lib) else {
+        return std::collections::BTreeSet::new();
+    };
+    libraries
+        .iter()
+        .flat_map(|defined| defined.intersection(&runtime))
+        .map(|name| name.strip_prefix('_').unwrap_or(name).to_string())
+        .collect()
+}
+
+/// Raw runtime names from the archive index, retaining platform decoration
+/// for exact comparison. The index is read without loading archive members.
+fn archive_hew_symbols(path: &std::path::Path) -> Option<std::collections::BTreeSet<String>> {
+    let file = std::fs::File::open(path).ok()?;
+    let data = object::ReadCache::new(file);
+    let archive = object::read::archive::ArchiveFile::parse(&data).ok()?;
+    let symbols = archive.symbols().ok()??;
+    Some(
+        symbols
+            .filter_map(Result::ok)
+            .filter_map(|symbol| std::str::from_utf8(symbol.name()).ok())
+            .filter(|name| name.starts_with("hew_") || name.starts_with("_hew_"))
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// Classify a duplicate NON-`hew_*` symbol as belonging to the Rust toolchain

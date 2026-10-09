@@ -81,7 +81,7 @@ fn test_parse_file_missing_path_returns_err() {
     let _ = fs.delete(path);
     match csv.parse_file(path) {
         .Ok(_) => panic("expected missing CSV path to return Err"),
-        .Err(.Io(error)) => assert(f"{error}".contains("NotFound")),
+        .Err(.Io { path: failed_path, cause }) => assert(failed_path == path && f"{cause}".contains("NotFound")),
         .Err(other) => panic(f"expected an I/O failure, got {other}"),
     }
 }

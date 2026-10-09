@@ -89,7 +89,7 @@ pub enum CsvError {
     /// The input ended inside a quoted field.
     UnterminatedQuote;
     /// The file could not be read.
-    Io(fs.IoError);
+    Io { path: string; cause: fs.IoError; }
 }
 
 impl Error for CsvError {}
@@ -116,7 +116,9 @@ pub fn parse_no_headers(data: string) -> Table fails CsvError {
 /// Fails with `CsvError.Io` if the file cannot be read, or another
 /// `CsvError` if the input is not well-formed CSV.
 pub fn parse_file(path: string) -> Table fails CsvError {
-    let content = fs.read(path)?;
+    let content = fs.read(path) handle cause {
+        return error .Io { path: path, cause: cause };
+    };
     parse_impl(content, true)?
 }
 // ── Internal parsing ──────────────────────────────────────────────────

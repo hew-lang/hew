@@ -35,9 +35,9 @@ pub fn encode_upper(data: bytes) -> string {
 /// Text that is not hexadecimal.
 pub enum DecodeError {
     /// The text has an odd number of digits, so its last byte is incomplete.
-    OddLength(i64);
+    InvalidLength(i64);
     /// The character at `index` is not a hex digit.
-    InvalidDigit { index: i64; text: string; }
+    InvalidCharacter { index: i64; text: string; }
 }
 
 impl Error for DecodeError {}
@@ -48,16 +48,16 @@ pub fn decode(s: string) -> bytes fails DecodeError {
     let slen = s.len();
     var out: bytes = bytes.new();
     if slen % 2 != 0 {
-        return error .OddLength(slen);
+        return error .InvalidLength(slen);
     }
     for i in (0..slen).step_by(2) {
         let hi = hex_char_to_nibble(s.slice(i, i + 1));
         if hi < 0 {
-            return error .InvalidDigit { index: i, text: s.slice(i, i + 1) };
+            return error .InvalidCharacter { index: i, text: s.slice(i, i + 1) };
         }
         let lo = hex_char_to_nibble(s.slice(i + 1, i + 2));
         if lo < 0 {
-            return error .InvalidDigit { index: i + 1, text: s.slice(i + 1, i + 2) };
+            return error .InvalidCharacter { index: i + 1, text: s.slice(i + 1, i + 2) };
         }
         out.push((hi * 16 + lo) as u8);
     }

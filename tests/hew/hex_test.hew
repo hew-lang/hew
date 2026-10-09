@@ -70,13 +70,13 @@ fn test_round_trip_empty() {
 // ── Error / boundary ─────────────────────────────────────────────────
 #[test]
 fn test_decode_invalid_chars_fails() {
-    assert(decode_error("zzzz") == "InvalidDigit: index: 0, text: z");
+    assert(decode_error("zzzz") == "InvalidCharacter: index: 0, text: z");
 }
 
 #[test]
 fn test_decode_odd_length_fails() {
     // An odd number of hex digits leaves the last byte incomplete.
-    assert(decode_error("abc") == "OddLength: 3");
+    assert(decode_error("abc") == "InvalidLength: 3");
 }
 
 // ── Boundary bytes ────────────────────────────────────────────────────
@@ -139,13 +139,13 @@ fn test_encode_upper_round_trip_via_decode() {
 // ── Invalid character positions ───────────────────────────────────────
 #[test]
 fn test_decode_invalid_char_at_position_0_fails() {
-    assert(decode_error("zead") == "InvalidDigit: index: 0, text: z");
+    assert(decode_error("zead") == "InvalidCharacter: index: 0, text: z");
 }
 
 #[test]
 fn test_decode_invalid_char_at_last_nibble_fails() {
     // "deaG": the fourth digit is not a hex digit.
-    assert(decode_error("deaG") == "InvalidDigit: index: 3, text: G");
+    assert(decode_error("deaG") == "InvalidCharacter: index: 3, text: G");
 }
 
 // ── Multi-byte property round-trip ────────────────────────────────────

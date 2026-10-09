@@ -119,14 +119,14 @@ fn test_to_int_accepts_i64_bounds() {
 
 #[test]
 fn test_to_int_rejects_overflow() {
-    assert_int_result_err(string.to_int("9223372036854775808"), "OutOfRange: 9223372036854775808");
-    assert_int_result_err(string.to_int("-9223372036854775809"), "OutOfRange: -9223372036854775809");
+    assert_int_result_err(string.to_int("9223372036854775808"), "integer literal outside the i64 range: `9223372036854775808`");
+    assert_int_result_err(string.to_int("-9223372036854775809"), "integer literal outside the i64 range: `-9223372036854775809`");
 }
 
 #[test]
 fn test_to_int_rejects_sign_only_and_partial_parse_inputs() {
-    assert_int_result_err(string.to_int("-"), "Invalid: -");
-    assert_int_result_err(string.to_int("12x"), "Invalid: 12x");
+    assert_int_result_err(string.to_int("-"), "invalid number literal: `-`");
+    assert_int_result_err(string.to_int("12x"), "invalid number literal: `12x`");
 }
 
 #[test]
@@ -145,8 +145,8 @@ fn test_to_float_accepts_leading_and_trailing_decimal_forms() {
 
 #[test]
 fn test_to_float_returns_error_for_invalid_literals() {
-    assert_float_result_err(string.to_float("4.5x"), "Invalid: 4.5x");
-    assert_float_result_err(string.to_float("+"), "Invalid: +");
+    assert_float_result_err(string.to_float("4.5x"), "invalid number literal: `4.5x`");
+    assert_float_result_err(string.to_float("+"), "invalid number literal: `+`");
 }
 
 #[test]
@@ -166,9 +166,9 @@ fn test_try_to_float_round_trips_from_float_output() {
 
 #[test]
 fn test_to_float_rejects_invalid_literals() {
-    assert_float_result_err(string.to_float("1.2.3"), "Invalid: 1.2.3");
-    assert_float_result_err(string.to_float("9e2ms"), "Invalid: 9e2ms");
-    assert_float_result_err(string.to_float("-"), "Invalid: -");
+    assert_float_result_err(string.to_float("1.2.3"), "invalid number literal: `1.2.3`");
+    assert_float_result_err(string.to_float("9e2ms"), "invalid number literal: `9e2ms`");
+    assert_float_result_err(string.to_float("-"), "invalid number literal: `-`");
 }
 
 #[test]

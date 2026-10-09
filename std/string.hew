@@ -76,6 +76,15 @@ pub enum NumberError {
     OutOfRange(string);
 }
 
+impl Display for NumberError {
+    fn fmt(self) -> string {
+        match self {
+            .Invalid(text) => f"invalid number literal: `{text}`",
+            .OutOfRange(text) => f"integer literal outside the i64 range: `{text}`",
+        }
+    }
+}
+
 impl Error for NumberError {}
 
 /// Unlike C's `atoi`, this function does **not** stop at the first non-digit

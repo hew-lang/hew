@@ -46,7 +46,11 @@ impl From<string> for Boxed {
 }
 
 fn read(n: i64) -> Result<i64, IoError> {
-    if n > 0 { .Ok(n) } else { .Err(IoError { code: n }) }
+    if n > 0 {
+        .Ok(n)
+    } else {
+        .Err(IoError { code: n })
+    }
 }
 
 fn checked(n: i64) -> i64 fails AppError {

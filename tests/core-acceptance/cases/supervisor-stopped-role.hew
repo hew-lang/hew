@@ -28,7 +28,7 @@ fn main() {
     let role = root.branch;
     stop(role);
     println("requested");
-    let gate = listener.accept();
+    let gate = listener.accept().expect("accept");
     gate.send("go".to_bytes()).expect("open the gate");
     gate.close();
     stopped(role);

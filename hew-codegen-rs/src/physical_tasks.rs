@@ -15,6 +15,11 @@ impl ModuleEmitter<'_, '_> {
                     dest,
                     output: Some(output),
                     ..
+                }
+                | PhysicalOp::TaskRace {
+                    dest,
+                    output: Some(output),
+                    ..
                 } = op
                 {
                     self.emit_value_descriptor(
@@ -117,14 +122,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.free_handle("hew_checked_scope_close", self.task_scope_handle(scope)?)
     }
 
-    pub(super) fn emit_task_spawn(
-        &self,
-        scope: TaskScopeId,
-        callable: StorageId,
-        dest: StorageId,
-    ) -> CodegenResult<()> {
-        let descriptor = self
-            .llvm
+    fn task_result_descriptor(&self, dest: StorageId) -> CodegenResult<PointerValue<'ctx>> {
+        self.llvm
             .get_global(&result_descriptor(self.function.callable, dest))
             .map(|global| global.as_pointer_value())
             .or_else(|| {
@@ -134,7 +133,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             })
             .ok_or_else(|| {
                 CodegenError::FailClosed("task result lacks its exact value descriptor".into())
-            })?;
+            })
+    }
+
+    pub(super) fn emit_task_spawn(
+        &self,
+        scope: TaskScopeId,
+        callable: StorageId,
+        dest: StorageId,
+    ) -> CodegenResult<()> {
+        let descriptor = self.task_result_descriptor(dest)?;
         let task = self.task_pointer_call(
             "hew_checked_task_spawn",
             &[
@@ -145,6 +153,66 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         self.clear_owned(callable)?;
         self.store(dest, task.into())
+    }
+
+    pub(super) fn emit_task_race(
+        &self,
+        scope: TaskScopeId,
+        members: &[StorageId],
+        dest: StorageId,
+    ) -> CodegenResult<()> {
+        let count = u32::try_from(members.len())
+            .map_err(|_| CodegenError::FailClosed("too many race members".into()))?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let array = self
+            .value_emitter()
+            .entry_scratch(pointer.array_type(count).into(), "race.members")?;
+        for (index, member) in members.iter().enumerate() {
+            let slot = unsafe {
+                self.builder.build_gep(
+                    pointer,
+                    array,
+                    &[self.ctx.i64_type().const_int(index as u64, false)],
+                    "race.member",
+                )
+            }
+            .llvm_ctx("address race member")?;
+            self.builder
+                .build_store(slot, self.load(*member, "race.task")?)
+                .llvm_ctx("write race member")?;
+        }
+        let descriptor = self.task_result_descriptor(dest)?;
+        let constructor = get_or_declare_external(
+            self.llvm,
+            "hew_checked_task_race",
+            pointer.fn_type(
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    self.ctx.i32_type().into(),
+                    pointer.into(),
+                ],
+                false,
+            ),
+        )?;
+        let group = suspend::call_value(
+            &self.builder,
+            constructor,
+            &[
+                self.task_scope_handle(scope)?.into(),
+                array.into(),
+                self.ctx
+                    .i32_type()
+                    .const_int(u64::from(count), false)
+                    .into(),
+                descriptor.into(),
+            ],
+            "race.group",
+        )?;
+        for member in members {
+            self.clear_owned(*member)?;
+        }
+        self.store(dest, group)
     }
 
     /// Premature frame destruction and a successful uninhabited result both
@@ -186,6 +254,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_task_wait_new",
             &[task_value.into(), waker.into()],
         )?;
+        frame.carry(self.ctx, &self.builder, wait, "await.operation.slot")?;
         self.clear_owned(*task)?;
         let poll = self.ctx.append_basic_block(self.value, "await.poll");
         let request_cancel = self
@@ -239,7 +308,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, complete, pending)
             .llvm_ctx("wait for task cleanup")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(complete);
@@ -279,6 +348,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "await.outcome",
         )?
         .into_int_value();
+        frame.carry(self.ctx, &self.builder, taken, "await.outcome.slot")?;
         let cleanup = self
             .builder
             .build_load(pointer, cleanup, "await.result.cursor")
@@ -341,9 +411,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_scope_wait_new",
             &[handle.into(), waker.into(), frame.state.into()],
         )?;
-        if mode.cancels_losers() {
-            self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
-        } else if mode.preserves_fault() {
+        frame.carry(self.ctx, &self.builder, wait, "scope.wait.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "scope.handle.slot")?;
+        if mode.preserves_fault() {
             self.free_handle("hew_checked_scope_cancel", handle)?;
         }
         let poll = self.ctx.append_basic_block(self.value, "scope.poll");
@@ -393,7 +463,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, complete, pending)
             .llvm_ctx("wait for all child cleanup")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(complete);

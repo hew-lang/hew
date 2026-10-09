@@ -141,6 +141,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Diagnostics_Debug",
   "Win32_System_IO",
   "Win32_System_Kernel",
+  "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }
 # hew_glob's Windows path: implements the same recursive (`**`) glob syntax

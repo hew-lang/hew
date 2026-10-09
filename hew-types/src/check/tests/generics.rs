@@ -4474,9 +4474,10 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     // Without the module in the visited-set key the second one is swallowed.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let type_param = Ty::param(crate::ParamHead::for_test("T"));
-    checker.eq_requirements.insert(
+    checker.generic_requirements.insert(
         Some("same".to_string()),
-        vec![crate::check::types::EqRequirement {
+        vec![crate::check::types::GenericRequirement {
+            kind: crate::check::types::GenericRequirementKind::Eq,
             ty: Ty::builtin_named(crate::BuiltinType::Option, vec![type_param]),
             owner_type_params: vec![crate::ParamHead::for_test("T")],
             span: 0..1,
@@ -4501,7 +4502,7 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
         );
     }
 
-    checker.finalize_eq_requirements();
+    checker.finalize_generic_requirements();
 
     let modules: Vec<Option<String>> = checker
         .errors

@@ -645,7 +645,7 @@ actor Acceptor {
         println(f"[listener] MQTT broker ready on {addr}");
         var next_id: i32 = 1;
         loop {
-            let conn = lst.accept();
+            let conn = lst.accept().expect("accept");
             let cid = f"client-{next_id}";
             let (input, sink) = conn.split();
             let handler = spawn ClientHandler { sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false };

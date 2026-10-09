@@ -167,6 +167,7 @@ interface RoleSlot {
 }
 
 interface TaskEntry {
+  grouped: boolean;
   id: string;
   done: boolean;
   finishing: boolean;
@@ -979,6 +980,111 @@ class ExecutorV1 {
         this.define(act, op.dst, { kind: "generator", id });
         return;
       }
+      case "task.race": {
+        const scope = act.scopes.get(op.scope);
+        if (!scope) throw new Error("race has no task scope");
+        const members = op.members.map((operand) => {
+          const member = this.taskFor(this.read(act, operand));
+          this.invalidate(act, operand);
+          if (member.grouped) throw new Error("race reuses a task handle");
+          member.grouped = true;
+          return member;
+        });
+        if (!members.length) throw new Error("race requires members");
+        const task = this.newTask();
+        scope.tasks.push(task);
+        let selected = false;
+        let winner: TaskEntry | null = null;
+        let value: VmValue = UNIT;
+        let failure: Fault | null = null;
+        let cancelled = false;
+        const losersCancelled = new Set<TaskEntry>();
+        const ready = () => {
+          if (task.done || task.finishing) return;
+          if (!selected) {
+            const first = members
+              .filter((member) => member.done)
+              .sort((a, b) => a.completedAt - b.completedAt)[0];
+            if (!first) return;
+            selected = true;
+            if (!first.fault) {
+              winner = first;
+              value = first.value;
+              first.value = UNIT;
+            }
+          }
+          if (!cancelled) {
+            cancelled = true;
+            for (const member of members)
+              if (!member.done) {
+                losersCancelled.add(member);
+                member.cancel();
+              }
+          }
+          if (members.some((member) => !member.done)) return;
+          task.finishing = true;
+          for (const member of members) {
+            const index = member.changed.indexOf(ready);
+            if (index >= 0) member.changed.splice(index, 1);
+          }
+          for (const member of [...members].sort(
+            (a, b) => a.completedAt - b.completedAt,
+          )) {
+            if (
+              member.fault &&
+              !(
+                member.fault.kind === "panic" &&
+                member.fault.cancelled &&
+                losersCancelled.has(member)
+              )
+            )
+              failure = combineFaults(failure, member.fault);
+            member.fault = null;
+          }
+          const losers = members
+            .filter((member) => member !== winner)
+            .map((member) => {
+              const result = member.value;
+              member.value = UNIT;
+              return result;
+            });
+          this.closeValueAsync(
+            { kind: "vector", elementType: "race result", items: losers },
+            this.faultText(failure),
+            (closeFault) => {
+              failure = combineFaults(failure, closeFault);
+              const finish = (releaseFault: Fault | null = null) => {
+                failure = combineFaults(failure, releaseFault);
+                this.settleTask(task, failure ? UNIT : value, failure);
+                for (const changed of [...scope.changed]) changed();
+              };
+              if (failure && winner)
+                this.closeValueAsync(
+                  value,
+                  this.faultText(failure),
+                  finish,
+                  act.context.actor,
+                );
+              else finish();
+            },
+            act.context.actor,
+          );
+        };
+        task.cancel = () => {
+          if (task.done || task.finishing) return;
+          failure ??= {
+            kind: "panic",
+            message: "task cancelled",
+            cancelled: true,
+          };
+          selected = true;
+          ready();
+        };
+        for (const member of members) member.changed.push(ready);
+        this.define(act, op.dst, { kind: "task", id: task.id });
+        ready();
+        return;
+      }
       case "task.spawn": {
         const group = act.scopes.get(op.scope);
         if (!group) throw new Error(`task scope ${op.scope} is missing`);
@@ -1004,7 +1110,11 @@ class ExecutorV1 {
               if (!fault || (fault.kind === "panic" && fault.cancelled))
                 fault = closeFault ?? fault;
               this.settleTask(task, value, fault);
-              if (fault && !(fault.kind === "panic" && fault.cancelled)) {
+              if (
+                !task.grouped &&
+                fault &&
+                !(fault.kind === "panic" && fault.cancelled)
+              ) {
                 for (const sibling of group.tasks)
                   if (!sibling.done) sibling.cancel();
                 if (!group.joining) act.context.cancel?.(fault);
@@ -1897,15 +2007,11 @@ class ExecutorV1 {
             group.deadline ??
             group.tasks.find(
               (task) =>
+                !task.grouped &&
                 task.fault &&
                 !(task.fault.kind === "panic" && task.fault.cancelled),
             )?.fault;
-          wake(
-            UNIT,
-            mode === "propagate_fault" || mode === "cancel_losers_after_fault"
-              ? null
-              : (failure ?? null),
-          );
+          wake(UNIT, mode === "propagate_fault" ? null : (failure ?? null));
         };
         // Cancellation requests descendant cleanup; it cannot bypass the
         // join barrier and let the parent retire their captured resources.
@@ -1992,7 +2098,12 @@ class ExecutorV1 {
         return;
       }
       case "NativeIo": {
-        // Admission passed only `StdinReadLine`. The record is the raw line,
+        if (term.detail?.operation === "SinkFinish") {
+          this.host.pipes!.close(this.boundary(act, term.inputs[0]!));
+          this.park(act, term)(UNIT);
+          return;
+        }
+        // Admission passed `StdinReadLine`. The record is the raw line,
         // so the records concatenate to the stdin the program consumed.
         const line = this.stdin.readLine() ?? new Uint8Array();
         this.trace.recordReplayInput(
@@ -2274,6 +2385,7 @@ class ExecutorV1 {
   private newTask(): TaskEntry {
     const task: TaskEntry = {
       id: this.ids.task(),
+      grouped: false,
       done: false,
       finishing: false,
       value: UNIT,
@@ -3791,8 +3903,6 @@ function sendErrorRole(reason: string): RuntimeVariantRole {
       return "SendErrorCancelled";
     case "VersionMismatch":
       return "SendErrorVersionMismatch";
-    case "Unauthorized":
-      return "SendErrorUnauthorized";
     case "Backpressure":
       return "SendErrorBackpressure";
     case "Dead":

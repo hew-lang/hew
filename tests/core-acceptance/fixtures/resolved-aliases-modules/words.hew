@@ -19,7 +19,7 @@ pub type Envelope<T> {
 pub enum Delivery<T> {
     Empty;
     Label(Value);
-    Bundle { value: T; names: Names; order: Number;  }
+    Bundle { value: T; names: Names; order: Number; }
 }
 
 pub type Cargo<T>(T, Names);

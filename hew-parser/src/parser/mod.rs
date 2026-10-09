@@ -786,6 +786,7 @@ pub enum ParseDiagnosticKind {
     /// A retired `#[json(..)]`/`#[yaml(..)]` attribute or `json(..)`/`yaml(..)`
     /// wire modifier; `#[serial(..)]` replaces them.
     LegacySerialSpelling,
+    LegacyRaceBraces,
     /// A `#[wire]` enum variant without its stable `@N` tag.
     WireVariantTagMissing,
     /// `spawn A { k: v }`: spawn keys are written in braces.
@@ -827,6 +828,8 @@ pub enum ParseDiagnosticKind {
     DuplicateRecordBase,
     /// A testing attribute has an invalid literal, arity or named argument.
     AttributeArgument,
+    DeferredDeclType,
+    DeferredDeclPattern,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -845,6 +848,7 @@ impl ParseDiagnosticKind {
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
+            Self::LegacyRaceBraces => "E_RACE_LEGACY_BRACES",
             Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
             Self::LegacySpawnArgs => "E_SPAWN_PAREN_ARGS",
             Self::LegacyChildArgs => "E_CHILD_PAREN_ARGS",
@@ -861,6 +865,8 @@ impl ParseDiagnosticKind {
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
             Self::ReservedName => "E_RESERVED_NAME",
             Self::AttributeArgument => "E_ATTRIBUTE_ARGUMENT",
+            Self::DeferredDeclType => "E_DEFERRED_DECL_TYPE",
+            Self::DeferredDeclPattern => "E_DEFERRED_DECL_PATTERN",
             Self::Other => "Other",
         }
     }

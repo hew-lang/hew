@@ -45,7 +45,7 @@ fn main() {
 
     // Repeated production and release inside a loop leaves the producer usable.
     var total = 0;
-    for i in 0 .. 4 {
+    for i in 0..4 {
         total = total + uuid.v4().len();
     }
     println(total);

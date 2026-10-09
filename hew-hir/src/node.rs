@@ -1230,6 +1230,18 @@ pub enum HirVarSelfMethodTarget {
     },
 }
 
+/// The checker proved that a scope result retains no child of that scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HirTaskScopeResult {
+    checked: (),
+}
+
+impl HirTaskScopeResult {
+    pub(crate) const fn checked() -> Self {
+        Self { checked: () }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirExprKind {
     Literal(HirLiteral),
@@ -1480,16 +1492,19 @@ pub enum HirExprKind {
     /// Normal exits join children before publishing the body's result.
     Scope {
         body: HirBlock,
+        result_lifetime: HirTaskScopeResult,
     },
     /// Race owns its children and drains losers before publishing the result.
-    Race {
-        body: HirBlock,
+    TaskRace {
+        members: Vec<HirExpr>,
+        result_lifetime: HirTaskScopeResult,
     },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.
     ForkBlock {
         body: HirBlock,
         task_ty: ResolvedTy,
+        result_lifetime: HirTaskScopeResult,
         /// Free variables transferred into the scope-owned task environment.
         /// Non-Copy fields use `Move`; borrowed captures are rejected before
         /// HIR lowering.
@@ -1499,6 +1514,7 @@ pub enum HirExprKind {
     ScopeDeadline {
         duration: Box<HirExpr>,
         body: HirBlock,
+        result_lifetime: HirTaskScopeResult,
     },
     /// Recover this scope's own deadline or logical fault after child drain and
     /// lexical cleanup. Parent cancellation bypasses the handler.

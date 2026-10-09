@@ -604,7 +604,6 @@ pub enum RuntimeVariantRole {
     SendErrorLocalShutdown,
     SendErrorCancelled,
     SendErrorVersionMismatch,
-    SendErrorUnauthorized,
     SendErrorBackpressure,
     SendErrorDead,
     SendErrorWriteTimedOut,
@@ -1272,6 +1271,10 @@ pub enum SemOpKind {
         scope: crate::TaskScopeId,
         callable: Operand,
     },
+    TaskRace {
+        scope: crate::TaskScopeId,
+        members: Vec<Operand>,
+    },
     /// Reserve the exact free places for an action, without borrowing them.
     RegisterDefer {
         defer: DeferId,
@@ -1552,7 +1555,10 @@ impl SemOpKind {
             | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::EndLifetime { .. } => {}
-            Self::TupleMake { elements } => {
+            Self::TaskRace {
+                members: elements, ..
+            }
+            | Self::TupleMake { elements } => {
                 for (index, element) in elements.iter().enumerate() {
                     visit(
                         OperandSlot(
@@ -1647,7 +1653,10 @@ impl SemOpKind {
             | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::EndLifetime { .. } => {}
-            Self::TupleMake { elements } => {
+            Self::TaskRace {
+                members: elements, ..
+            }
+            | Self::TupleMake { elements } => {
                 for (index, element) in elements.iter_mut().enumerate() {
                     visit(
                         OperandSlot(
@@ -1727,6 +1736,7 @@ impl SemOpKind {
             | Self::TaskScopeEnter { .. }
             | Self::TaskScopeClose { .. }
             | Self::TaskSpawn { .. }
+            | Self::TaskRace { .. }
             | Self::GeneratorMake { .. }
             | Self::StreamPipe { .. }
             | Self::FunctionMake { .. }
@@ -1803,6 +1813,7 @@ impl SemOpKind {
             | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::TaskSpawn { .. }
+            | Self::TaskRace { .. }
             | Self::GeneratorMake { .. }
             | Self::StreamPipe { .. }
             | Self::ClosureMake { .. }
@@ -1866,6 +1877,7 @@ impl SemOpKind {
                 | Self::TaskScopeClose { .. }
                 | Self::RegisterDefer { .. }
                 | Self::TaskSpawn { .. }
+                | Self::TaskRace { .. }
                 | Self::GeneratorMake { .. }
                 | Self::StreamPipe { .. }
                 | Self::ClosureMake { .. }

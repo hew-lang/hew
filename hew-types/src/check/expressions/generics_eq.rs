@@ -16,8 +16,8 @@ use super::super::types::GenericLambdaSig;
 use super::super::*;
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericRequirement, GenericRequirementKind, PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
@@ -326,20 +326,31 @@ impl Checker {
     /// Concrete demands are checked once declarations and inference settle;
     /// abstract demands are substituted at the graph's concrete call roots.
     pub(in crate::check) fn record_eq_requirement(&mut self, ty: &Ty, span: &Span) {
+        self.record_generic_requirement(GenericRequirementKind::Eq, ty, span);
+    }
+
+    pub(in crate::check) fn record_generic_requirement(
+        &mut self,
+        kind: GenericRequirementKind,
+        ty: &Ty,
+        span: &Span,
+    ) {
         let owner = self.current_function.clone();
         let params = owner
             .as_ref()
             .and_then(|key| self.fn_sig(key))
             .map_or_else(Vec::new, |sig| sig.type_params.clone());
-        let requirements = self.eq_requirements.entry(owner).or_default();
+        let requirements = self.generic_requirements.entry(owner).or_default();
         if requirements.iter().any(|existing| {
-            existing.ty == *ty
+            existing.kind == kind
+                && existing.ty == *ty
                 && existing.span == *span
                 && existing.source_module == self.current_module
         }) {
             return;
         }
-        requirements.push(EqRequirement {
+        requirements.push(GenericRequirement {
+            kind,
             ty: ty.clone(),
             owner_type_params: params,
             span: span.clone(),
@@ -349,12 +360,10 @@ impl Checker {
 
     /// The single recording authority for a generic application.
     ///
-    /// Every application shape — free function, module-qualified function,
-    /// method, actor method, trait-impl method — funnels through
-    /// `apply_instantiated_call_signature_with_assoc`, and that is the only
-    /// caller of this function. Recording anywhere else would reintroduce the
-    /// exact gap this closes: obligations discharged for direct calls only,
-    /// while a method instantiation walked straight into codegen.
+    /// Calls record their application through the shared instantiated-signature
+    /// checker; taking a declaration as a value records the same application
+    /// when its signature is instantiated. Both consume the body's demands
+    /// through this graph, including method and actor applications.
     ///
     /// Two independent sources pin the callee's parameters and BOTH are merged
     /// by binder identity: the signature instantiation (method-level parameters) and the
@@ -534,7 +543,7 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
             format!(
-                "structural-equality obligations for this instantiation could not be \
+                "type obligations for this instantiation could not be \
                  discharged: the generic instantiation chain exceeded {budget} hops \
                  ({chain}). The checker refuses rather than hand an unanalysed \
                  instantiation to codegen.",
@@ -542,7 +551,7 @@ impl Checker {
         )
         .with_suggestion(
             "break the generic call chain — give an intermediate function a concrete type \
-             argument, or move the comparison to a non-generic helper"
+             argument, or move the operation to a non-generic helper"
                 .to_string(),
         );
         if let Some(module) = pending.report_module.clone() {
@@ -551,9 +560,9 @@ impl Checker {
         err
     }
 
-    pub(super) fn check_concrete_eq_requirements(
+    pub(super) fn check_concrete_generic_requirements(
         &self,
-        requirements: &HashMap<Option<String>, Vec<EqRequirement>>,
+        requirements: &HashMap<Option<String>, Vec<GenericRequirement>>,
         service: &mut TypeFactService,
     ) -> Vec<crate::error::TypeError> {
         let mut new_errors = Vec::new();
@@ -570,38 +579,71 @@ impl Checker {
             {
                 continue;
             }
-            if !Self::selected_eq_available(service, &concrete) {
-                let mut error = crate::error::TypeError::new(
-                    TypeErrorKind::InvalidOperation,
-                    requirement.span.clone(),
-                    format!(
-                        "`{}` has no selected Eq implementation for equality comparison",
-                        concrete.user_facing()
-                    ),
-                );
-                if let Some(module) = &requirement.source_module {
-                    error = error.with_source_module(module.clone());
-                }
+            if let Some(error) =
+                self.generic_requirement_error(requirement, &concrete, service, None)
+            {
                 new_errors.push(error);
             }
         }
         new_errors
     }
 
-    /// Discharge concrete comparisons and the generic Eq obligations reachable
+    fn generic_requirement_error(
+        &self,
+        requirement: &GenericRequirement,
+        concrete: &Ty,
+        service: &mut TypeFactService,
+        pending: Option<&PendingInstantiation>,
+    ) -> Option<TypeError> {
+        let span = pending.map_or(&requirement.span, |site| &site.report_span);
+        let module = pending.map_or(&requirement.source_module, |site| &site.report_module);
+        let mut error = match &requirement.kind {
+            GenericRequirementKind::Eq if !Self::selected_eq_available(service, concrete) => {
+                if let Some(pending) = pending {
+                    return Some(Self::generic_structural_eq_instantiation_error(
+                        &requirement.ty, concrete, pending,
+                    ));
+                }
+                TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!("`{}` has no selected Eq implementation for equality comparison", concrete.user_facing()),
+                )
+            }
+            GenericRequirementKind::BorrowedTransfer { root }
+                if self.place_read_transfers_ownership(concrete) =>
+            {
+                TypeError::new(
+                    TypeErrorKind::OwnConsumeBorrowed,
+                    span.clone(),
+                    format!(
+                        "E_OWN_CONSUME_BORROWED: cannot consume `{}` through borrowed parameter `{root}` in this instantiation",
+                        concrete.user_facing(),
+                    ),
+                ).with_suggestion(format!(
+                    "declare the parameter `consume {root}: ...` before consuming it"
+                ))
+            }
+            GenericRequirementKind::Eq | GenericRequirementKind::BorrowedTransfer { .. } => return None,
+        };
+        error.source_module.clone_from(module);
+        Some(error)
+    }
+
+    /// Discharge concrete demands and the generic type obligations reachable
     /// through the program's instantiation graph.
     ///
     /// The walk starts at applications whose substitution is concrete in the
     /// caller's terms and follows generic → generic call edges, so an obligation
     /// raised two hops down still lands on the concrete application the
-    /// programmer wrote. Every demand uses the same selected Eq authority.
-    pub(in crate::check) fn finalize_eq_requirements(&mut self) {
-        // WHY a hop budget: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
+    /// programmer wrote. Each demand consumes its existing semantic authority.
+    pub(in crate::check) fn finalize_generic_requirements(&mut self) {
+        // Polymorphic recursion (`fn f<T>() { g<Vec<T>>() }`)
         // generates an unbounded instantiation chain. Exceeding it is reported,
         // never skipped — see `generic_structural_eq_depth_error`.
         const MAX_INSTANTIATION_DEPTH: u32 = 64;
 
-        let mut requirements = std::mem::take(&mut self.eq_requirements);
+        let mut requirements = std::mem::take(&mut self.generic_requirements);
         for requirement in requirements.values_mut().flatten() {
             requirement.ty = self
                 .normalize_for_use(&requirement.ty)
@@ -613,7 +655,7 @@ impl Checker {
         }
 
         let mut service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
-        let mut new_errors = self.check_concrete_eq_requirements(&requirements, &mut service);
+        let mut new_errors = self.check_concrete_generic_requirements(&requirements, &mut service);
         requirements.retain(|_, demands| {
             demands.retain(|demand| {
                 Self::ty_mentions_type_params(&demand.ty, &demand.owner_type_params)
@@ -674,15 +716,13 @@ impl Checker {
                 if Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params) {
                     continue;
                 }
-                if !Self::selected_eq_available(
+                if let Some(error) = self.generic_requirement_error(
+                    requirement,
+                    &concrete,
                     &mut service,
-                    &concrete.materialize_literal_defaults(),
+                    Some(&pending),
                 ) {
-                    new_errors.push(Self::generic_structural_eq_instantiation_error(
-                        &requirement.ty,
-                        &concrete,
-                        &pending,
-                    ));
+                    new_errors.push(error);
                 }
             }
 

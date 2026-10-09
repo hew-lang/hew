@@ -45,7 +45,7 @@ fn main() {
     }
     var accepted = 0;
     while accepted < READER_COUNT {
-        let client = listener.accept();
+        let client = listener.accept().expect("accept");
         let _ = client.send(f"payload-{accepted}".to_bytes());
         accepted = accepted + 1;
     }

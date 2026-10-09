@@ -23,14 +23,14 @@ actor Driver {
         let second_addr = f"127.0.0.1:{second_listener.local_port()}";
         scope {
             fork {
-                let conn = first_listener.accept();
+                let conn = first_listener.accept().expect("accept");
                 let _ = conn.send("ready".to_bytes());
                 let _ = conn.recv();
                 println("first-end");
                 let _ = conn.send("done".to_bytes());
             };
             fork {
-                let conn = second_listener.accept();
+                let conn = second_listener.accept().expect("accept");
                 let _ = conn.send("ready".to_bytes());
                 let _ = conn.recv();
                 println("second-end");

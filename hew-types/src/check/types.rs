@@ -386,12 +386,21 @@ pub enum VecCursorMode {
     Take,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaceOperandKind {
+    Invocation,
+    Task,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_program: Option<std::sync::Arc<super::machine_normalize::NormalizedProgram>>,
     pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
+    pub race_operands: HashMap<SpanKey, Vec<RaceOperandKind>>,
+    pub task_scope_results: HashSet<SpanKey>,
+    pub task_result_lifetimes: HashSet<SpanKey>,
     /// Checked local recovery semantics; HIR must consume this fact.
     pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     /// The parameter slot of each source argument, for every call whose
@@ -439,9 +448,8 @@ pub struct TypeCheckOutput {
     /// Type-annotation spans of actor state fields that `init` initializes
     /// (D447). Their storage is uninitialized until init's first store.
     pub actor_deferred_field_decls: HashSet<SpanKey>,
-    /// Target spans of the assignments in `init` that are a deferred field's
-    /// first store. Every other assignment to a state field replaces a value.
-    pub actor_init_first_stores: HashSet<SpanKey>,
+    /// Assignment target spans that initialize a local or actor state seat.
+    pub first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops whose element type has no clone, so each
     /// element is bound as a loan of the slot the sequence still owns (D432).
     /// The checker decides borrow versus clone once, here; no lowering stage
@@ -707,11 +715,11 @@ pub struct TypeCheckOutput {
     /// selected concrete impl may depend on type substitution downstream.
     pub generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     /// Binder identities of each checked callable body, in parameter order.
-    pub callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    pub callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,
     /// Exact field writes of an authored aggregate constructor.
     pub aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
     /// Symbolic return origins of checker-owned function bodies.
-    pub callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
+    pub callable_return_candidates: HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
@@ -1002,6 +1010,7 @@ pub struct TypeCheckOutput {
 pub struct ClosureCaptureFact {
     /// Checker-local identity of the captured lexical binding.
     pub binding_id: TypeBindingId,
+    pub value_candidates: IndirectCallCandidates,
     /// Surface name used at the capture site.
     pub name: String,
     /// Fully resolved captured type at checker-output time.
@@ -1097,6 +1106,13 @@ pub enum CallableCandidate {
     Declaration(crate::DefId),
     /// A closure literal in the checked source module.
     Closure(SpanKey),
+    TaskProducer(SpanKey),
+    TaskResult(Box<CallableCandidate>),
+    Sequence(Vec<IndirectCallCandidates>),
+    Element {
+        receiver: Box<CallableCandidate>,
+        index: usize,
+    },
     /// A checker-bound formal supplied by a caller at the selected call site.
     Formal(TypeBindingId),
     /// Intermediate value origin: an authored aggregate constructor.
@@ -1148,21 +1164,27 @@ pub struct ImportedImplBodyFact {
 }
 
 #[derive(Debug, Clone)]
+pub(super) enum PendingCallableTarget {
+    Declaration(crate::DefId),
+    Indirect(IndirectCallCandidates),
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct PendingCallableArguments {
-    pub(super) callee: crate::DefId,
+    pub(super) callee: PendingCallableTarget,
     pub(super) receiver: Option<IndirectCallCandidates>,
     pub(super) arguments: Vec<IndirectCallCandidates>,
 }
 
 /// Possible indirect callees and whether an opaque source may also arrive.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IndirectCallCandidates {
     pub known: Vec<CallableCandidate>,
     pub may_be_unknown: bool,
 }
 
 impl IndirectCallCandidates {
-    pub(super) fn unknown() -> Self {
+    pub(crate) fn unknown() -> Self {
         Self {
             known: Vec::new(),
             may_be_unknown: true,
@@ -1176,7 +1198,16 @@ impl IndirectCallCandidates {
         }
     }
 
-    pub(super) fn join(&mut self, other: Self) {
+    pub(super) fn task_results(mut self) -> Self {
+        self.known = self
+            .known
+            .into_iter()
+            .map(|candidate| CallableCandidate::TaskResult(Box::new(candidate)))
+            .collect();
+        self
+    }
+
+    pub(crate) fn join(&mut self, other: Self) {
         for candidate in other.known {
             if !self.known.contains(&candidate) {
                 self.known.push(candidate);
@@ -2345,18 +2376,25 @@ impl ImplAssociatedType {
     }
 }
 
-/// An equality demand in the existing generic instantiation graph.
-/// Concrete comparisons are checked after registration and inference; generic
-/// comparisons use the same selected Eq authority after substitution.
+/// A type demand in the existing generic instantiation graph.
+/// Concrete demands are checked after registration and inference; abstract
+/// demands use the same type facts after call-site substitution.
 #[derive(Debug, Clone)]
-pub(super) struct EqRequirement {
+pub(super) struct GenericRequirement {
+    pub(super) kind: GenericRequirementKind,
     pub(super) ty: Ty,
     pub(super) owner_type_params: Vec<crate::ParamHead>,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
 }
 
-/// One generic function call site, recorded so structural-equality obligations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GenericRequirementKind {
+    Eq,
+    BorrowedTransfer { root: String },
+}
+
+/// One generic function call site, recorded so type obligations
 /// can be discharged per instantiation.
 ///
 #[derive(Debug, Clone)]
@@ -2367,7 +2405,7 @@ pub(super) struct GenericFnInstantiationSite {
     /// Partial, name-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
-    /// [`Checker::finalize_eq_requirements`] walk generic → generic call
+    /// [`Checker::finalize_generic_requirements`] walk generic → generic call
     /// edges from a concrete root instead of stopping at the first hop.
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     pub(super) span: Span,
@@ -2413,7 +2451,7 @@ pub(super) struct GenericCallEdge {
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
-/// One instantiation queued for structural-equality discharge.
+/// One instantiation queued for type-requirement discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
     pub(super) callee: String,
@@ -3215,8 +3253,8 @@ pub struct Checker {
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
     /// See [`TypeCheckOutput::actor_deferred_field_decls`].
     pub(super) actor_deferred_field_decls: HashSet<SpanKey>,
-    /// See [`TypeCheckOutput::actor_init_first_stores`].
-    pub(super) actor_init_first_stores: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::first_stores`].
+    pub(super) first_stores: HashSet<SpanKey>,
     /// Deferred field names per actor identity, in declaration order,
     /// decided at registration from the init body's assignment targets.
     pub(super) actor_deferred_fields: HashMap<String, Vec<String>>,
@@ -3287,11 +3325,11 @@ pub struct Checker {
     /// registering-module key emitted the same diagnostic once per module — the
     /// second copy landing at unrelated lines in the implementor's file.
     pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
-    /// Equality demands grouped by owning function; None covers expressions
+    /// Type demands grouped by owning function; None covers expressions
     /// outside a function. Resolved once concretely or through generic calls.
-    pub(super) eq_requirements: HashMap<Option<String>, Vec<EqRequirement>>,
+    pub(super) generic_requirements: HashMap<Option<String>, Vec<GenericRequirement>>,
     /// Every generic function call site observed while checking bodies, in
-    /// source order. Consumed alongside `eq_requirements`.
+    /// source order. Consumed alongside `generic_requirements`.
     pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
@@ -3380,12 +3418,13 @@ pub struct Checker {
     pub(super) effect_graph: super::effects::EffectGraph,
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     pub(super) indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
-    pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
-    pub(super) callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    pub(super) expression_value_candidates: HashMap<SpanKey, IndirectCallCandidates>,
+    pub(super) callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,
     pub(super) generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
     pub(super) aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
-    pub(super) callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
+    pub(super) callable_return_candidates:
+        HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
@@ -3663,6 +3702,8 @@ pub struct Checker {
     /// Binding-accurate closure capture facts keyed by closure literal span.
     pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
     pub(super) select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
+    pub(super) race_operands: HashMap<SpanKey, Vec<RaceOperandKind>>,
+    pub(super) task_lifetimes: super::task_lifetimes::TaskLifetimes,
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
@@ -4356,7 +4397,7 @@ impl Checker {
             flat_file_import_module_names: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
             actor_deferred_field_decls: HashSet::new(),
-            actor_init_first_stores: HashSet::new(),
+            first_stores: HashSet::new(),
             actor_deferred_fields: HashMap::new(),
             checking_actor_init: false,
             borrowed_element_for_loops: HashSet::new(),
@@ -4383,7 +4424,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
             shadowed_method_type_param_reports: HashSet::new(),
-            eq_requirements: HashMap::new(),
+            generic_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
             method_call_rewrites: HashMap::new(),
             serial_layouts: HashMap::new(),
@@ -4420,7 +4461,7 @@ impl Checker {
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
             indirect_call_candidates: HashMap::new(),
-            callable_binding_candidates: HashMap::new(),
+            expression_value_candidates: HashMap::new(),
             callable_formals: HashMap::new(),
             generic_trait_call_arguments: HashMap::new(),
             pending_callable_arguments: HashMap::new(),
@@ -4501,6 +4542,8 @@ impl Checker {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
             select_sources: HashMap::new(),
+            race_operands: HashMap::new(),
+            task_lifetimes: super::task_lifetimes::TaskLifetimes::default(),
             closure_escape_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
             actor_spawn_args: HashMap::new(),

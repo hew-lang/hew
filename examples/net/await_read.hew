@@ -37,7 +37,7 @@ fn main() {
     };
     let reader = spawn Reader { port: "18077" };
     fork reader.go(0);
-    let client = listener.accept();
+    let client = listener.accept().expect("accept");
     let _ = client.send("hello-from-server".to_bytes());
     sleep(500ms);
     let _ = client.close();

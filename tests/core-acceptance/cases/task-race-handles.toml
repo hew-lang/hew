@@ -1,0 +1,10 @@
+[[case]]
+id = "task-race-handles"
+intent = "Race adopts completed and nested task groups, joins background work and propagates an awaited ordinary error."
+source = "../../examples/sandbox-graduation/task_race.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "7\ncreated\n7\n7\nbackground\njoined\n11\nordinary error\n"
+exit = 0

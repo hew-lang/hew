@@ -123,9 +123,8 @@ message on stderr under a program that keeps running.
 ```text
 NodeConfig {
     bind: string,          // listen address
-    transport: string,     // "tcp" | "quic-mesh"
+    transport: NodeTransport, // Tcp | QuicMesh
     key: string,           // path to the stable credential
-    trust: string,         // "pinned"
     peers: Vec<string>,    // pinned peer credentials, slot = position
     seeds: Vec<string>     // addresses dialled once at start
 }
@@ -138,9 +137,10 @@ NodeConfig {
 No field is inert. `Node.start` loads or creates the stable credential named by
 `key` for the transport named by `transport`, pins every `peers` entry to the
 route slot that is its one-based position in that vector, dials every `seeds`
-entry once while skipping its own `bind` address, and admits `trust = "pinned"`
-only, returning `Err(NodeError.Config)` for any other value. Re-dial with
-backoff is v0.8.0.
+entry once while skipping its own `bind` address. Both transports authenticate
+pinned peers. `NodeError.Config` reports invalid configuration, `Key` invalid
+identity or peer credentials, `Unreachable` a failed dial, and `Refused` denied
+admission or an unavailable node or transport. Re-dial with backoff is v0.8.0.
 
 `Node::identity_key()` returns the local public credential as lowercase
 hexadecimal for out-of-band exchange. There is no separate `Node::load_keys`,

@@ -357,7 +357,7 @@ fn main() {{
     scope {{
         let _client_turn = fork client.connect_send_and_read(0);
 
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         let request = match conn.recv() {{ .Some(data) => utf8.decode(data).expect("server read is valid UTF-8"), .None => panic("server read hit end of data"), }};
         println(f"server-read={{request}}");
         conn.send("tcp-echo:hew-net-r319".to_bytes()).expect("send");
@@ -483,7 +483,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
 }
 
 fn main() {
-    let config = NodeConfig { bind: "127.0.0.1:0", transport: "quic-mesh", key: "node.key", trust: "pinned", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),
@@ -542,13 +542,7 @@ fn main() {
     );
 }
 
-/// F6 fail-closed: a bad-hex peer credential in `NodeConfig.peers` is rejected
-/// and surfaced (`hew_last_error` + a `hew:` stderr diagnostic) while staging
-/// the config; `Node::start` never reaches the low-level bind because the
-/// staged config transaction short-circuits on the first failing field,
-/// rather than silently coming up with an incomplete peer allowlist. The Hew
-/// call form discards the returned `Result`, so the operator-visible signal
-/// is the stderr diagnostic.
+/// Invalid peer credentials return a typed error before the node starts.
 #[test]
 fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     require_codegen();
@@ -561,15 +555,14 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "",
-                trust: "pinned",
                 peers: ["zznothexzz"],
                 seeds: [],
             };
             match Node.start(config) {
                 .Ok(_) => println("started"),
-                .Err(_) => println("refused"),
+                .Err(error) => println(f"refused: {error}"),
             }
         }
         "#,
@@ -581,10 +574,12 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
     assert!(
-        stderr.contains("Node::allow_peer")
-            && stderr.contains("hex-encoded SPKI")
-            && stderr.contains("fail-closed"),
-        "bad-hex allow_peer must be surfaced on stderr, fail-closed; stderr: {stderr}"
+        output.status.success(),
+        "typed refusal should complete: {stderr}"
+    );
+    assert!(
+        stdout.contains("Key: the node identity or peer key is invalid"),
+        "bad peer credentials must return their typed reason; stdout: {stdout}"
     );
     assert!(
         stdout.contains("refused") && !stdout.contains("started"),
@@ -612,9 +607,8 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "node.key",
-                trust: "pinned",
                 peers: [],
                 seeds: [],
             };
@@ -658,9 +652,8 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "no_such_dir/node.key",
-                trust: "pinned",
                 peers: [],
                 seeds: [],
             };
@@ -1196,41 +1189,6 @@ fn main() -> i64 {
     );
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, "42\ntrue\n", "stdout mismatch");
-}
-
-/// Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
-/// UPSTREAM by the channel element-layout witness — the existing check-time
-/// diagnostic, not a new one. No recv surface can type this element class
-/// today, so the recv-`Some` release seam is unreachable for it; this guard
-/// pins the witness so a future weakening cannot silently open the recv
-/// path into the Vec-element release seam.
-#[test]
-fn check_channel_vec_indirect_enum_rejected_by_layout_witness() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/reject/channel_vec_indirect_enum.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("cannot ride the element-layout queue witness"),
-        "expected the upstream element-layout witness diagnostic; got: {combined}"
-    );
 }
 
 /// A generator OWNS what its body reads from the enclosing frame: the capture

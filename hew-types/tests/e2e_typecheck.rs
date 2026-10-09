@@ -1009,29 +1009,6 @@ fn stream_dot_stream_int_element_now_admitted() {
     );
 }
 
-#[test]
-fn stream_dot_stream_container_element_reports_user_facing_type() {
-    // Container elements have no clone/drop thunk path — the fail-closed
-    // diagnostic must name the user-facing element type.
-    let output = typecheck_inline(
-        r"
-        import std.stream;
-
-        fn close_rows(s: stream.Stream<Vec<i64>>) {
-            s.close();
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("`Stream<Vec<i64>>` is not supported")),
-        "expected Stream<Vec<i64>> fail-closed diagnostic, got: {:#?}",
-        output.errors
-    );
-}
-
 // The old bare `stream.decode()` / `sink.encode()` fail-closed carve-outs are
 // gone along with `stream.bytes_pipe`: decoding/encoding now goes through the
 // `Codec<T>` trait (`Lines`, `LengthPrefixed`), never a method directly on
@@ -1141,70 +1118,6 @@ fn main() {
     assert!(
         output.errors.is_empty(),
         "Stream<Row> for-await must be admitted by the layout witness, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `for item in input` over a container element (`Stream<Vec<i64>>`)
-/// must fail closed at the stream element validation boundary.
-#[test]
-fn for_stream_container_element_errors() {
-    let output = typecheck_inline(
-        r#"
-        import std.stream;
-
-        extern "C" {
-            fn fake_stream() -> Stream<Vec<i64>>;
-        }
-
-        fn main() {
-            let input = unsafe { fake_stream() };
-            for rows in input {
-                println("seen");
-            }
-        }
-        "#,
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Vec<i64>>` is not supported")
-        }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Unsupported first-class `Stream<T>` element types in `for` must fail
-/// closed without cascading into loop-body field/type errors.
-#[test]
-fn for_stream_unsupported_type_does_not_cascade() {
-    let output = typecheck_inline(
-        r#"
-        extern "C" {
-            fn fake_stream() -> Stream<Vec<i64>>;
-        }
-
-        fn main() {
-            let input = unsafe { fake_stream() };
-            for rows in input {
-                println(rows.missing);
-            }
-        }
-        "#,
-    );
-    assert_eq!(
-        output.errors.len(),
-        1,
-        "expected only the fail-closed Stream<Vec<i64>> error, got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Vec<i64>>` is not supported")
-        }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }
@@ -5752,80 +5665,6 @@ fn main() {
     assert!(
         output.errors.is_empty(),
         "monomorphic machine pipe element must be admitted; got: {:#?}",
-        output.errors
-    );
-}
-
-/// A GENERIC machine instantiation as a pipe element stays refused:
-/// the machine substrate canonicalizes instantiations to one bare-named
-/// decl layout, so the recv binding's `Option<T>` has no
-/// per-instantiation layout to land in. The imported spelling resolves
-/// through the generic no-thunk-path clause (the tailored bare-canon
-/// clause fires for locally declared generic machines, whose type defs
-/// resolve by bare name).
-#[test]
-fn generic_machine_instantiation_pipe_element_refused() {
-    let output = typecheck_inline(
-        r"
-        import std.concurrency.lifecycle;
-        import std.stream;
-
-        fn main() {
-            let (tx, rx): (stream.Sink<lifecycle.Lifecycle<i64>>, stream.Stream<lifecycle.Lifecycle<i64>>) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            tx.close();
-            let _ = rx.recv();
-            rx.close();
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("Lifecycle<i64>") && e.message.contains("is not supported")),
-        "generic machine instantiation element must be refused; got: {:#?}",
-        output.errors
-    );
-}
-
-/// A machine whose state payload carries a container (`Vec<i64>`) stays
-/// refused exactly as a container-bearing enum would — the machine
-/// admission rides the same transitive container walk.
-#[test]
-fn container_bearing_machine_pipe_element_refused() {
-    let output = typecheck_inline(
-        r"import std.stream;
-
-machine Buffered {
-    events {
-        Load { items: Vec<i64>; }
-    }
-    state Empty;
-    state Loaded { items: Vec<i64>; }
-    on Load: Empty => Loaded { items: event.items }
-    on Load: _ => _ {
-        state
-    }
-}
-
-fn main() {
-    let (tx, rx): (stream.Sink<Buffered>, stream.Stream<Buffered>) = match stream.pipe(2) {
-        .Ok(pair) => pair,
-        .Err(error) => panic(error),
-    };
-    let _ = tx.send(Buffered.Empty);
-    tx.close();
-    let _ = rx.recv();
-    rx.close();
-}
-",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("is not supported")),
-        "container-bearing machine element must stay refused; got: {:#?}",
         output.errors
     );
 }

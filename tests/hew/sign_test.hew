@@ -2,6 +2,7 @@
 //! constructors and verification.
 
 import std.crypto.sign;
+
 import std.encoding.hex;
 
 fn h(text: string) -> bytes {

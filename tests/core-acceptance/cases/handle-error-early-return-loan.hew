@@ -49,7 +49,7 @@ fn main() {
     // The early return leaves this chunk unread.
     sink.send("never read".to_bytes()).expect("send");
     sink.close();
-    for _i in 0 .. 2 {
+    for _i in 0..2 {
         if let .Some(msg) = rx.recv() {
             println(msg);
         }

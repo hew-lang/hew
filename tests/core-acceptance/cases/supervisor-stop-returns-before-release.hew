@@ -24,7 +24,7 @@ supervisor Team(port: i64) {
 }
 
 fn release(listener: net.Listener) {
-    let hook = listener.accept();
+    let hook = listener.accept().expect("accept");
     hook.send("go".to_bytes()).expect("release hook");
     hook.close();
 }
@@ -35,7 +35,7 @@ fn main() {
     let second = team.second;
     stop(team);
     println("stop returned");
-    let hook = listener.accept();
+    let hook = listener.accept().expect("accept");
     match mailbox(second).ping() {
         .Ok(_) => println("stopping child accepted mail"),
         .Err(_) => println("stopping child refused mail"),

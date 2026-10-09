@@ -53,7 +53,7 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::ffi::c_void;
 use std::fs;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(windows, test)))]
 use std::io::Write;
 use std::io::{BufReader, Read};
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,6 +69,8 @@ pub use crate::stream_error::{
     hew_stream_has_error, hew_stream_last_error, io_error_kind_tag, set_last_error,
     set_last_error_with_errno, set_last_error_with_errno_and_kind, take_last_error,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use hew_cabi::sink::into_nonblocking_sink_ptr;
 pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink, TrySendResult};
 
 // hew_stream_last_error / hew_stream_last_errno are defined in crate::stream_error
@@ -192,6 +194,7 @@ pub struct HewStream {
     inner: Box<dyn StreamBacking>,
     /// Whether `close()` has already been called on the backing.
     closed: bool,
+    remaining: Option<usize>,
     /// The suspending channel core (NEW-7) when this stream is the read half of
     /// an in-memory pipe; `None` for every other backing. Shared by `Arc` with
     /// the paired sink so `await stream.recv()` can park + be woken by the
@@ -201,6 +204,38 @@ pub struct HewStream {
 }
 
 impl HewStream {
+    pub(crate) fn exhausted(&self) -> bool {
+        self.closed || self.remaining == Some(0)
+    }
+
+    fn received(&mut self) {
+        if let Some(remaining) = &mut self.remaining {
+            *remaining = remaining.saturating_sub(1);
+        }
+    }
+
+    fn next(&mut self) -> Option<Item> {
+        if self.exhausted() {
+            return None;
+        }
+        let item = self.inner.next();
+        if item.is_some() {
+            self.received();
+        }
+        item
+    }
+
+    fn try_next(&mut self, layout: &crate::vec::HewValueLayout) -> Option<Item> {
+        if self.exhausted() {
+            return None;
+        }
+        let item = self.inner.try_next(layout);
+        if item.is_some() {
+            self.received();
+        }
+        item
+    }
+
     /// How a native receive reaches this stream's reactor handle, if any.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native_read(&self) -> Option<NativeRead> {
@@ -212,14 +247,14 @@ impl HewStream {
     #[must_use]
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pipe_core(&self) -> Option<&Arc<crate::channel_core::ChannelCore>> {
-        self.channel.as_ref()
+        self.channel.as_ref().filter(|_| !self.exhausted())
     }
 
     /// How a selection observes this content stream. A closed stream answers
     /// its next read at once.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn select_readiness(&self) -> SelectReadiness {
-        if self.closed {
+        if self.exhausted() {
             SelectReadiness::Ready
         } else {
             self.inner.select_readiness()
@@ -660,6 +695,7 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
         // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Box::new(backing),
         closed: false,
+        remaining: None,
         channel: None,
     }))
 }
@@ -681,13 +717,21 @@ unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking>
         let _ = ptr::read(&raw const (*stream).closed);
         drop(ptr::read(&raw const (*stream).channel));
     }
+    // SAFETY: stream is still live and the limit is a Copy field.
+    let remaining = unsafe { (*stream).remaining };
     // SAFETY: stream was allocated via Box::into_raw(Box::new(HewStream { .. })),
     // so deallocating with Layout::new::<HewStream>() is correct. We use dealloc
     // instead of Box::from_raw to avoid running Drop (which would double-free inner).
     unsafe {
         std::alloc::dealloc(stream.cast::<u8>(), std::alloc::Layout::new::<HewStream>());
     }
-    inner
+    match remaining {
+        Some(remaining) => Box::new(TakeStream {
+            upstream: inner,
+            remaining,
+        }),
+        None => inner,
+    }
 }
 
 // into_sink_ptr is defined in hew_cabi::sink and re-exported above.
@@ -856,14 +900,29 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tcp_sink_write(backing: &mut TcpStreamBacking, data: &[u8]) {
-    if crate::runtime::rt_current_opt().is_some() {
-        native::blocking_tcp_write(backing.connection, data);
-    } else if let Some(mut stream) = crate::transport::tcp_clone_stream(backing.connection) {
-        if let Err(error) = stream.write_all(data) {
-            set_last_error(format!("TCP sink write failed: {error}"));
-        }
+fn tcp_sink_write_pending(backing: &mut TcpStreamBacking, data: &[u8]) -> bool {
+    native::blocking_tcp_write(backing.connection, data);
+    !hew_stream_has_error()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn try_write_handle(handle: i32, data: &[u8]) -> std::io::Result<usize> {
+    let slot = crate::reactor::lookup(handle)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))?;
+    slot.ensure_nonblocking()?;
+    let channel = slot
+        .bytes()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))?;
+    let count = channel.write(data)?;
+    if channel.is_tcp() {
+        crate::transport::count_written(count);
     }
+    Ok(count)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tcp_sink_try_write(backing: &mut TcpStreamBacking, data: &[u8]) -> std::io::Result<usize> {
+    try_write_handle(backing.connection, data)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -873,7 +932,11 @@ fn tcp_sink_flush(_backing: &mut TcpStreamBacking) {}
 fn tcp_sink_close(backing: &mut TcpStreamBacking) {
     if let Some(stream) = crate::transport::tcp_clone_stream(backing.connection) {
         if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
-            set_last_error(format!("TCP sink shutdown failed: {error}"));
+            // A reset peer can retire the TCP connection before its sink is
+            // released. There is then no connected write half left to finish.
+            if error.kind() != std::io::ErrorKind::NotConnected {
+                set_last_error(format!("TCP sink shutdown failed: {error}"));
+            }
         }
     }
 }
@@ -946,10 +1009,14 @@ impl StreamBacking for ReactorPipe {
 }
 
 #[cfg(unix)]
-fn reactor_pipe_write(pipe: &mut ReactorPipe, data: &[u8]) {
-    if !pipe_without_runtime() {
-        native::blocking_tcp_write(pipe.handle, data);
-    }
+fn reactor_pipe_write_pending(pipe: &mut ReactorPipe, data: &[u8]) -> bool {
+    native::blocking_tcp_write(pipe.handle, data);
+    !hew_stream_has_error()
+}
+
+#[cfg(unix)]
+fn reactor_pipe_try_write(pipe: &mut ReactorPipe, data: &[u8]) -> std::io::Result<usize> {
+    try_write_handle(pipe.handle, data)
 }
 
 #[cfg(unix)]
@@ -967,6 +1034,7 @@ fn reactor_pipe_close(pipe: &mut ReactorPipe) {
 #[derive(Debug)]
 struct BlockingPipe {
     pipe: Option<fs::File>,
+    mode_error: Option<std::io::Error>,
 }
 
 /// Bytes one blocking pipe read takes.
@@ -1020,6 +1088,10 @@ impl StreamBacking for BlockingPipe {
 
 #[cfg(windows)]
 fn blocking_pipe_write(pipe: &mut BlockingPipe, data: &[u8]) {
+    if let Some(error) = &pipe.mode_error {
+        record_pipe_error("restore child process pipe wait mode", error);
+        return;
+    }
     let Some(file) = pipe.pipe.as_mut() else {
         record_pipe_error(
             "write child process pipe",
@@ -1027,9 +1099,83 @@ fn blocking_pipe_write(pipe: &mut BlockingPipe, data: &[u8]) {
         );
         return;
     };
-    if let Err(error) = file.write_all(data) {
-        record_pipe_error("write child process pipe", &error);
+    let mut remaining = data;
+    while !remaining.is_empty() {
+        match file.write(remaining) {
+            Ok(0) => {
+                record_pipe_error(
+                    "write child process pipe",
+                    &std::io::ErrorKind::WriteZero.into(),
+                );
+                return;
+            }
+            Ok(count) => remaining = &remaining[count..],
+            Err(error) => {
+                record_pipe_error("write child process pipe", &error);
+                return;
+            }
+        }
     }
+}
+
+#[cfg(windows)]
+fn blocking_pipe_write_pending(pipe: &mut BlockingPipe, data: &[u8]) -> bool {
+    blocking_pipe_write(pipe, data);
+    !hew_stream_has_error()
+}
+
+#[cfg(windows)]
+fn blocking_pipe_try_write(pipe: &mut BlockingPipe, data: &[u8]) -> std::io::Result<usize> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
+    if let Some(error) = &pipe.mode_error {
+        return Err(error.raw_os_error().map_or_else(
+            || std::io::Error::new(error.kind(), error.to_string()),
+            std::io::Error::from_raw_os_error,
+        ));
+    }
+    let file = pipe
+        .pipe
+        .as_mut()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+    let handle = file.as_raw_handle();
+    // SAFETY: this exclusive loan owns the pipe's write handle and mode.
+    if unsafe { SetNamedPipeHandleState(handle, &PIPE_NOWAIT, ptr::null(), ptr::null()) } == 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) {
+            std::io::ErrorKind::WouldBlock.into()
+        } else {
+            error
+        });
+    }
+    let mut attempt = data.len();
+    let result = loop {
+        match file.write(&data[..attempt]) {
+            Ok(0) if attempt > 1 => attempt /= 2,
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                if attempt > 1 {
+                    attempt /= 2;
+                } else {
+                    break Err(std::io::ErrorKind::WouldBlock.into());
+                }
+            }
+            result => break result,
+        }
+    };
+    // SAFETY: restore the ordinary write contract before releasing the loan.
+    if unsafe { SetNamedPipeHandleState(handle, &PIPE_WAIT, ptr::null(), ptr::null()) } == 0 {
+        let error = std::io::Error::last_os_error();
+        let errno = error.raw_os_error();
+        pipe.mode_error = Some(error);
+        if !matches!(result, Ok(count) if count > 0) {
+            return Err(errno.map_or_else(
+                || std::io::Error::other("failed to restore child process pipe wait mode"),
+                std::io::Error::from_raw_os_error,
+            ));
+        }
+    }
+    result
 }
 
 #[cfg(windows)]
@@ -1037,6 +1183,9 @@ fn blocking_pipe_flush(_pipe: &mut BlockingPipe) {}
 
 #[cfg(windows)]
 fn blocking_pipe_close(pipe: &mut BlockingPipe) {
+    if let Some(error) = &pipe.mode_error {
+        record_pipe_error("restore child process pipe wait mode", error);
+    }
     pipe.pipe = None;
 }
 
@@ -1046,7 +1195,10 @@ pub(crate) fn child_pipe_stream(pipe: fs::File) -> *mut HewStreamPair {
     #[cfg(unix)]
     let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe)));
     #[cfg(windows)]
-    let stream = into_stream_ptr(BlockingPipe { pipe: Some(pipe) });
+    let stream = into_stream_ptr(BlockingPipe {
+        pipe: Some(pipe),
+        mode_error: None,
+    });
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
         sink: ptr::null_mut(),
@@ -1061,9 +1213,10 @@ pub(crate) fn child_pipe_sink(pipe: fs::File) -> *mut HewStreamPair {
     let sink = {
         let backing = ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe));
         let handle = backing.handle;
-        let sink = into_sink_ptr(
+        let sink = into_nonblocking_sink_ptr(
             backing,
-            reactor_pipe_write,
+            reactor_pipe_write_pending,
+            reactor_pipe_try_write,
             reactor_pipe_flush,
             reactor_pipe_close,
         );
@@ -1072,12 +1225,23 @@ pub(crate) fn child_pipe_sink(pipe: fs::File) -> *mut HewStreamPair {
         sink
     };
     #[cfg(windows)]
-    let sink = into_sink_ptr(
-        BlockingPipe { pipe: Some(pipe) },
-        blocking_pipe_write,
-        blocking_pipe_flush,
-        blocking_pipe_close,
-    );
+    let sink = {
+        use std::os::windows::io::AsRawHandle;
+        let handle = pipe.as_raw_handle() as usize;
+        let sink = into_nonblocking_sink_ptr(
+            BlockingPipe {
+                pipe: Some(pipe),
+                mode_error: None,
+            },
+            blocking_pipe_write_pending,
+            blocking_pipe_try_write,
+            blocking_pipe_flush,
+            blocking_pipe_close,
+        );
+        // SAFETY: the new backing owns this pipe identity until close.
+        unsafe { (*sink).set_native_pipe_handle(handle) };
+        sink
+    };
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
         sink,
@@ -1524,9 +1688,10 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
     // observable to the peer without disturbing the live read half.
     let write_backing = TcpStreamBacking::new(write_stream);
     let write_connection = write_backing.connection;
-    let sink_ptr = into_sink_ptr(
+    let sink_ptr = into_nonblocking_sink_ptr(
         write_backing,
-        tcp_sink_write,
+        tcp_sink_write_pending,
+        tcp_sink_try_write,
         tcp_sink_flush,
         tcp_sink_close,
     );
@@ -1680,7 +1845,7 @@ pub unsafe extern "C" fn hew_stream_next_sized(
     cabi_guard!(stream.is_null(), ptr::null_mut());
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &mut *stream };
-    if let Some(item) = s.inner.next() {
+    if let Some(item) = s.next() {
         let len = item.len();
         if !out_size.is_null() {
             // SAFETY: Caller guarantees out_size is valid.
@@ -1737,7 +1902,7 @@ pub unsafe extern "C" fn hew_stream_next_view(
     }
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &mut *stream };
-    let Some(item) = s.inner.next() else {
+    let Some(item) = s.next() else {
         return -1;
     };
     let len = item.len();
@@ -1953,6 +2118,13 @@ pub unsafe extern "C" fn hew_sink_release_begin(
     // SAFETY: the consuming callback retains its invocation through this call.
     let owner = unsafe { crate::coro_state::cleanup_fault_owner(state) }
         .or_else(crate::fault::crashing_owner);
+    // SAFETY: the consuming invocation and sink remain live during cleanup.
+    if unsafe { crate::coro_state::cleanup_abandons_io(state) } || owner.is_some() {
+        // SAFETY: the caller retains this optional sink through cleanup.
+        if let Some(sink) = unsafe { sink.as_mut() } {
+            drop(sink.take_pending());
+        }
+    }
     let (layout, discarded) = if let Some(actor) = owner {
         // SAFETY: a live channel sink retains its core through cursor completion.
         unsafe { sink_channel_core(sink) }
@@ -2119,7 +2291,7 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
     // SAFETY: sink is non-null (checked above) and valid per caller contract.
     let k = unsafe { &mut *sink };
 
-    while let Some(item) = s.inner.next() {
+    while let Some(item) = s.next() {
         k.write_item(&item);
     }
     k.close();
@@ -2206,7 +2378,7 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     let mut owned = unsafe { Box::from_raw(stream) }; // ALLOCATOR-PAIRING: GlobalAlloc
     let mut buffer = Vec::new();
-    while let Some(chunk) = owned.inner.next() {
+    while let Some(chunk) = owned.next() {
         if hew_stream_has_error() {
             break;
         }
@@ -2284,7 +2456,7 @@ pub unsafe extern "C" fn hew_stream_count(stream: *mut HewStream) -> i64 {
     let mut owned = unsafe { Box::from_raw(stream) }; // ALLOCATOR-PAIRING: GlobalAlloc
     let mut count = 0;
 
-    while owned.inner.next().is_some() {
+    while owned.next().is_some() {
         count += 1;
     }
     count
@@ -2320,7 +2492,7 @@ pub unsafe extern "C" fn hew_stream_is_closed(stream: *mut HewStream) -> i32 {
 
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &*stream };
-    i32::from(s.inner.is_closed())
+    i32::from(s.exhausted() || s.inner.is_closed())
 }
 
 /// Wrap a stream with a take adapter that yields at most `n` items.
@@ -2334,12 +2506,10 @@ pub unsafe extern "C" fn hew_stream_is_closed(stream: *mut HewStream) -> i32 {
 pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut HewStream {
     cabi_guard!(stream.is_null(), ptr::null_mut());
     let limit = usize::try_from(n.max(0)).unwrap_or(0);
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    into_stream_ptr(TakeStream {
-        upstream,
-        remaining: limit,
-    })
+    // SAFETY: the consuming call transfers the original handle and its backing.
+    let stream_ref = unsafe { &mut *stream };
+    stream_ref.remaining = Some(stream_ref.remaining.map_or(limit, |prior| prior.min(limit)));
+    stream
 }
 
 // ── Bytes bridge: HewVec ↔ raw-byte marshalling ──────────────────────────────
@@ -2426,7 +2596,8 @@ pub unsafe extern "C" fn hew_stream_await_next(
     actor: *mut crate::actor::HewActor,
     slot: *mut crate::read_slot::HewReadSlot,
 ) -> i32 {
-    if stream.is_null() {
+    // SAFETY: the caller retains this optional stream until the wait drains.
+    if stream.is_null() || unsafe { (*stream).exhausted() } {
         return crate::channel_core::STREAM_AWAIT_READY;
     }
     // SAFETY: stream is a valid HewStream per caller contract.
@@ -2524,7 +2695,7 @@ pub unsafe extern "C" fn hew_stream_next_layout(
     let layout =
         unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_next_layout") };
     // SAFETY: stream is valid and exclusively borrowed per caller contract.
-    let item = unsafe { (*stream).inner.next() };
+    let item = unsafe { (*stream).next() };
     // SAFETY: out points to one writable element slot per caller contract.
     unsafe {
         crate::channel_common::decode_elem_envelope(item, out, layout, "hew_stream_next_layout")
@@ -2552,12 +2723,21 @@ pub unsafe extern "C" fn hew_stream_pop_layout(
     let layout =
         unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_pop_layout") };
     // SAFETY: stream is valid per caller contract.
-    let channel = unsafe { (*stream).channel.as_ref() };
-    let item = match channel {
-        Some(core) => core.pop(),
+    let stream_ref = unsafe { &mut *stream };
+    if stream_ref.exhausted() {
+        return 0;
+    }
+    let item = match stream_ref.channel.as_ref() {
+        Some(core) => {
+            let item = core.pop();
+            if item.is_some() {
+                stream_ref.received();
+            }
+            item
+        }
         // SAFETY: stream is valid; the blocking read is the status-quo path
         // for non-channel backings (file / TCP / adapters).
-        None => unsafe { (*stream).inner.next() },
+        None => unsafe { (*stream).next() },
     };
     // SAFETY: out points to one writable element slot per caller contract.
     unsafe {
@@ -2589,7 +2769,7 @@ pub unsafe extern "C" fn hew_stream_try_next_layout(
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_try_next_layout")
     };
     // SAFETY: stream is valid and exclusively borrowed per caller contract.
-    let item = unsafe { (*stream).inner.try_next(layout) };
+    let item = unsafe { (*stream).try_next(layout) };
     // SAFETY: out points to one writable element slot per caller contract.
     unsafe {
         crate::channel_common::decode_elem_envelope(item, out, layout, "hew_stream_try_next_layout")
@@ -2670,8 +2850,8 @@ unsafe fn sink_channel_core<'a>(
 /// `Sink.try_send`: deposit one element of any witness-describable type
 /// without waiting. Returns `0` (accepted), `1` (`SendError.Closed`: the sink
 /// finished or the reader left) or `2` (`SendError.Full`: the pipe is at
-/// capacity). An open content sink (file, socket) has no bounded queue to
-/// observe, so its write completes in place and reports `0`.
+/// capacity), or `3` (failed with a recorded diagnostic). Socket and process
+/// pipe sinks retain any accepted remainder without blocking.
 ///
 /// # Safety
 ///
@@ -2741,6 +2921,7 @@ pub unsafe extern "C" fn hew_stream_try_send_move_release(
 ) -> i32 {
     use crate::channel_common::{move_elem_envelope, move_elem_layout_witness};
     use crate::release_walker::HewReleaseCursor;
+    let _ = take_last_error();
     // SAFETY: the caller supplies a checked descriptor and one transferred owner.
     unsafe {
         *release_out = std::ptr::null_mut();
@@ -2769,6 +2950,14 @@ pub unsafe extern "C" fn hew_stream_try_send_move_release(
         }
         status.into_abi_code()
     }
+}
+
+#[no_mangle]
+pub extern "C" fn hew_stream_take_error_fault() -> *mut crate::fault::HewFault {
+    Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+        crate::internal::types::HEW_TRAP_USER_PANIC,
+        take_last_error().unwrap_or_else(|| "stream write failed".into()),
+    )))
 }
 
 #[cfg(test)]

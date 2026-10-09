@@ -60,7 +60,7 @@ fn main() -> i64 {
     }
     let remote_addr = f"{server_addr}:{port}";
     println(f"[kv-client] starting node, will connect to {remote_addr}");
-    let config = NodeConfig { bind: "0.0.0.0:0", transport: "tcp", key: "kv-client.key", trust: "pinned", peers: [], seeds: [] };
+    let config = NodeConfig { bind: "0.0.0.0:0", transport: NodeTransport.Tcp, key: "kv-client.key", peers: [], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),

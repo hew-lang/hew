@@ -185,7 +185,7 @@ fn main() {
     let listener = net.listen("127.0.0.1:0").expect("listen");
     unsafe { close(fd) };
     let client = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
-    let server = listener.accept();
+    let server = listener.accept().expect("accept");
     let got = scope within 5s {
         let reader = fork client.recv();
         sleep(50ms);

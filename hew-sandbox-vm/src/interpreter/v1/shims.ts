@@ -164,10 +164,10 @@ export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "StreamNext",
 ]);
 
-/// The `NativeIo` operations the VM serves. A standard input line comes from
-/// the replay stdin; every file and socket operation stays native.
+/// The VM serves replay standard input and in-memory sink closure.
 export const SUPPORTED_NATIVE_IO: ReadonlySet<string> = new Set([
   "StdinReadLine",
+  "SinkFinish",
 ]);
 
 // ── families ────────────────────────────────────────────────────────────────
@@ -213,10 +213,6 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   SinkClone: (host, args) => host.pipes!.cloneSink(arg(args, 0)),
   SinkClose: (host, args) => {
     host.closePipe!(arg(args, 0));
-    return UNIT;
-  },
-  SinkFinish: (host, args) => {
-    host.pipes!.close(arg(args, 0));
     return UNIT;
   },
   StreamClose: (host, args) => {

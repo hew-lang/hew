@@ -889,7 +889,7 @@ fn wait_for_file(path: string) -> string {
 // as route slot 1.
 fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     let key = f"{kx}/{my_role}.key";
-    let mint = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: key, trust: "pinned", peers: [], seeds: [] };
+    let mint = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key, peers: [], seeds: [] };
     match Node.start(mint) {
         Result.Ok(_) => {}
         Result.Err(_) => {
@@ -906,7 +906,7 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     } else {
         peer_key
     };
-    let config = NodeConfig { bind: bind, transport: "tcp", key: key, trust: "pinned", peers: [configured_peer_key], seeds: [] };
+    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: [configured_peer_key], seeds: [] };
     match Node.start(config) {
         Result.Ok(_) => {}
         Result.Err(_) => {
@@ -1857,7 +1857,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
         }
     }
     var down: i64 = 100;
-    for _ in 0 .. 100 {
+    for _ in 0..100 {
         down = match probe.status() {
             Result.Ok(value) => value,
             Result.Err(_) => -100,
@@ -1891,7 +1891,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
     }
     let _ = doomed.send(KvReq.CrashSelf);
     var linker_alive = true;
-    for _ in 0 .. 100 {
+    for _ in 0..100 {
         linker_alive = match linker.ping() {
             Result.Ok(_) => true,
             Result.Err(_) => false,

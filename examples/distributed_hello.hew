@@ -25,7 +25,7 @@ fn main() {
     // process's receiver-local route slots, in array order starting at 1; the
     // numeric slot is not identity. A peer presenting any other credential is
     // rejected before it is routable.
-    let config = NodeConfig { bind: "127.0.0.1:0", transport: "quic-mesh", key: "node.key", trust: "pinned", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),

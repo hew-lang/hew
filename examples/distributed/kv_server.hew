@@ -69,7 +69,7 @@ fn main() {
     }
     let addr = f"0.0.0.0:{port}";
     println(f"[kv-server] starting on {addr}");
-    let config = NodeConfig { bind: addr, transport: "tcp", key: "kv-server.key", trust: "pinned", peers: [], seeds: [] };
+    let config = NodeConfig { bind: addr, transport: NodeTransport.Tcp, key: "kv-server.key", peers: [], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),

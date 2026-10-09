@@ -29,7 +29,7 @@ fn main() {
         .Ok(conn) => conn,
         .Err(_) => exit(3),
     };
-    let peer = listener.accept();
+    let peer = listener.accept().expect("accept");
     // Bound the wait so a full send buffer fails fast instead of blocking.
     let _ = conn.set_write_timeout(100);
     // A small write fits in the send buffer and succeeds immediately.

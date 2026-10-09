@@ -28,10 +28,10 @@ fn produce_after(label: string, parked: stream.Sink<i64>, gate: stream.Stream<i6
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
-    let winner = race {
+    let winner = await race [
         produce_after("loser", parked_tx, gate),
         produce("winner", parked),
-    };
+    ];
     println("selected");
     match winner.next() {
         .Some(value) => println(value),

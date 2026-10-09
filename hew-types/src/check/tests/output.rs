@@ -415,7 +415,10 @@ fn imported_generic_trait_call_publishes_receiver_actual_for_concrete_impl() {
         })
         .expect("concrete Map.run declaration");
     assert_eq!(
-        output.callable_formals.get(&map_method).map(Vec::len),
+        output
+            .callable_formals
+            .get(&crate::check::effects::EffectBody::Declaration(map_method))
+            .map(Vec::len),
         Some(1)
     );
     assert!(!actuals[0].candidates.may_be_unknown);
@@ -441,7 +444,9 @@ fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
         .find(|key| key.start == aggregate_start)
         .expect("checked Map constructor");
     assert_eq!(
-        output.callable_return_candidates.get(&map_decl),
+        output
+            .callable_return_candidates
+            .get(&crate::check::effects::EffectBody::Declaration(map_decl)),
         Some(&IndirectCallCandidates {
             known: vec![CallableCandidate::Aggregate(aggregate.clone())],
             may_be_unknown: false,
@@ -515,7 +520,7 @@ fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
 }
 
 #[test]
-fn reassigned_function_value_keeps_every_possible_closure() {
+fn reassigned_function_value_keeps_the_current_closure() {
     let source = "fn main() { \
         var f: fn() -> i64 = || 1; \
         f = || 2; \
@@ -541,7 +546,7 @@ fn reassigned_function_value_keeps_every_possible_closure() {
     assert_eq!(
         output.indirect_call_candidates.get(call),
         Some(&IndirectCallCandidates {
-            known: vec![closure("|| 1"), closure("|| 2")],
+            known: vec![closure("|| 2")],
             may_be_unknown: false,
         })
     );

@@ -1,5 +1,5 @@
 pub enum Parcel {
-    Full { count: i64; label: string;  }
+    Full { count: i64; label: string; }
     Empty;
 }
 

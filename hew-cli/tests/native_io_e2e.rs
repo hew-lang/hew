@@ -166,7 +166,7 @@ fn main() {
         .Ok(listener) => {
             let port = listener.local_port();
             let _announced = fs.write("port", f"{port}");
-            let conn = listener.accept();
+            let conn = listener.accept().expect("accept");
             match conn.recv() {
                 .Some(data) => {
                     match utf8.decode(data) {

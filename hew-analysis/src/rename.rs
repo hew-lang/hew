@@ -93,11 +93,11 @@ pub fn prepare_rename(
 
 /// Recognize local annotation and field roles without resolving imports.
 ///
-/// This only preserves eligibility for the existing syntactic rename planner.
+/// This preserves eligibility for local edits when project imports are incomplete.
 /// A same-spelled declaration alone cannot prove an imported function reference
 /// is local: the selected token must occupy the parsed non-function role.
-/// Because the legacy planner collects names, unproved same-spelled expression
-/// leaves and named imports keep the operation in the conservative refusal path.
+/// Unproved expression leaves and named imports still require complete project
+/// function identities and keep the operation in the conservative refusal path.
 #[must_use]
 pub fn is_local_non_function_reference(
     source: &str,
@@ -373,7 +373,6 @@ impl<'ast> AstVisitor<'ast> for LocalNonFunctionRoles<'_> {
         let local_field = binding
             .and_then(|binding| self.typed_bindings.get(&binding.span.start))
             .is_some_and(|nominal| self.nominal_has_field(nominal));
-        // The legacy planner collects same-spelled expression occurrences.
         // Any unproved leaf could be an exported function, so do not let a
         // proved local field lend its role to those other occurrences.
         self.ambiguous |= !local_field;
@@ -426,87 +425,84 @@ pub fn plan_rename(
     new_name: &str,
 ) -> Result<Vec<RenameEdit>, RenameError> {
     validate_new_name(new_name)?;
+    if simple_word_at_offset(source, offset).is_none_or(|(name, _)| name == new_name) {
+        return Ok(Vec::new());
+    }
+    let output = crate::identity::source_identities(parse_result);
+    plan_rename_with_output(source, parse_result, &output, offset, new_name)
+}
 
-    let Some((name, def_word_span)) = simple_word_at_offset(source, offset) else {
+/// Plan a rename using the checker's recoverable declaration identities.
+///
+/// Diagnostics elsewhere in the document do not invalidate published facts.
+/// A token without a checked identity produces no edits.
+/// The output must describe this parsed buffer, focused to source module 0.
+///
+/// # Errors
+///
+/// Returns the same identifier and capture errors as [`plan_rename`].
+pub fn plan_rename_with_output(
+    source: &str,
+    parse_result: &ParseResult,
+    output: &hew_types::TypeCheckOutput,
+    offset: usize,
+    new_name: &str,
+) -> Result<Vec<RenameEdit>, RenameError> {
+    use hew_types::check::scope::Resolution;
+
+    validate_new_name(new_name)?;
+    let Some((name, token)) = simple_word_at_offset(source, offset) else {
         return Ok(Vec::new());
     };
-
-    // Renaming to the same name is a no-op.
     if name == new_name {
         return Ok(Vec::new());
     }
-
-    let mut spans = find_all_references(source, parse_result, offset)
-        .map(|(_, spans)| spans)
-        .unwrap_or_default();
-
-    // Classify the rename target to scope conflict detection correctly.
-    let is_local = find_local_binding_definition(source, parse_result, &name, offset).is_some()
-        || find_param_definition(parse_result, &name, offset).is_some();
-
-    // A local's own binding site is among its references; the module-scope
-    // declaration of the same spelling is a different name.
-    if !is_local {
-        if let Some(def_span) = find_definition(source, parse_result, &name) {
-            if !spans
-                .iter()
-                .any(|s| s.start == def_span.start && s.end == def_span.end)
+    let Some((_, resolution)) = crate::identity::resolution_at(output, 0, offset)
+        .filter(|(span, _)| *span == token)
+        .or_else(|| crate::identity::declaration_at(output, source, parse_result, offset))
+    else {
+        return Ok(Vec::new());
+    };
+    let is_local = matches!(resolution, Resolution::Local(_));
+    let target = crate::identity::declaration_target(output, resolution);
+    if !is_local && target.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut spans = crate::identity::reference_spans(output, 0, resolution);
+    if let Some(target) = target {
+        if target.occurrence.module() == output.defs.root_module() {
+            if let Some(span) =
+                crate::identity::declaration_name_span(source, parse_result, &target)
             {
-                spans.push(def_span);
+                spans.push(span);
             }
         }
     }
-
-    if spans.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut conflicts = detect_conflicts(source, parse_result, &spans, new_name, is_local);
-    // If the cursor is on a reference-only site with no corresponding
-    // declaration in `spans`, re-check at the cursor offset itself so a
-    // shadow in the cursor's scope is not missed.
-    if conflicts.is_empty() && !spans.iter().any(|s| s.start == def_word_span.start) {
-        conflicts = detect_conflicts(
-            source,
-            parse_result,
-            std::slice::from_ref(&def_word_span),
-            new_name,
-            is_local,
-        );
-    }
-
+    let shorthand = crate::identity::all_shorthand_label_spans(output, resolution)
+        .into_iter()
+        .filter_map(|(module, span)| (module == 0).then_some(span))
+        .collect::<Vec<_>>();
+    spans.extend(&shorthand);
+    spans.sort_by_key(|span| (span.start, span.end));
+    spans.dedup();
+    let conflicts = detect_conflicts(source, parse_result, &spans, new_name, is_local);
     if !conflicts.is_empty() {
         return Err(RenameError::Conflicts { conflicts });
     }
-
-    // A shorthand field token also labels the field, so the label is
-    // written out: `Point { x }` becomes `Point { x: y }`.
-    let shorthand = crate::references::shorthand_field_spans(parse_result);
-    let mut edits: Vec<RenameEdit> = spans
+    Ok(spans
         .into_iter()
-        .map(|span| {
-            // Binding-pattern spans can include trivia before the next token.
-            // Keep the parsed occurrence, but replace only its identifier.
-            let span = simple_word_at_offset(source, span.start)
-                .filter(|(spelling, token)| {
-                    spelling == &name && token.start == span.start && token.end <= span.end
-                })
-                .map_or(span, |(_, token)| token);
-            RenameEdit {
-                new_text: if shorthand.contains(&span) {
-                    format!("{name}: {new_name}")
-                } else {
-                    new_name.to_string()
-                },
-                span,
-            }
+        .filter(|span| source.get(span.start..span.end) == Some(name.as_str()))
+        .map(|span| RenameEdit {
+            new_text: if shorthand.contains(&span) {
+                format!("{new_name}: {name}")
+            } else if crate::identity::is_shorthand_label(output, 0, span) {
+                format!("{name}: {new_name}")
+            } else {
+                new_name.to_string()
+            },
+            span,
         })
-        .collect();
-
-    edits.sort_by_key(|e| (e.span.start, e.span.end));
-    edits.dedup_by(|a, b| a.span.start == b.span.start && a.span.end == b.span.end);
-
-    Ok(edits)
+        .collect())
 }
 
 /// Detect whether applying the rename at `sites` would collide with an

@@ -47,7 +47,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.0-rc7",
+  "compiler_version": "hew-wasm-0.6.0-rc8",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -782,7 +782,7 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.0-rc7",
+  "hew_version": "0.6.0-rc8",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],
@@ -927,10 +927,6 @@
         },
         {
           "fields": [],
-          "name": "Unauthorized"
-        },
-        {
-          "fields": [],
           "name": "Backpressure"
         },
         {
@@ -947,17 +943,16 @@
       "id": 3,
       "name": "SendError",
       "runtime_tags": {
-        "SendErrorBackpressure": 8,
+        "SendErrorBackpressure": 7,
         "SendErrorCancelled": 5,
         "SendErrorClosed": 1,
-        "SendErrorDead": 9,
+        "SendErrorDead": 8,
         "SendErrorFull": 0,
         "SendErrorLocalShutdown": 4,
         "SendErrorPartition": 2,
         "SendErrorStaleRef": 3,
-        "SendErrorUnauthorized": 7,
         "SendErrorVersionMismatch": 6,
-        "SendErrorWriteTimedOut": 10
+        "SendErrorWriteTimedOut": 9
       }
     }
   ],

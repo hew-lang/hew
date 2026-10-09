@@ -32,7 +32,7 @@ fn main() {
         .Ok(_) => println("unexpected-ok"),
         .Err(_) => println("crash-fallback"),
     }
-    let peer = listener.accept();
+    let peer = listener.accept().expect("accept");
     // `recv()` is blocking and traps the calling actor on a transport
     // failure instead of returning an `Err`, unlike the deleted
     // `try_read()`; `None` is the orderly-EOF witness this probe needs.

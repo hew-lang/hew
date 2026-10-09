@@ -1,0 +1,40 @@
+import std.stream;
+
+actor Counter {
+    var calls: i64 = 0;
+
+    receive fn ping() -> i64 {
+        calls += 1;
+        calls
+    }
+}
+
+fn actor_pipe() -> (stream.Sink<Counter>, stream.Stream<Counter>) {
+    stream.pipe(2).expect("pipe")
+}
+
+fn main() {
+    let counter = spawn Counter;
+    {
+        let (tx, rx) = actor_pipe();
+        tx.send(counter).expect("send actor");
+        tx.send(counter).expect("send actor again");
+        tx.finish();
+        let received = rx.recv().expect("receive actor");
+        assert(received.ping().expect("received actor ping") == 1);
+        assert(counter.ping().expect("original actor ping") == 2);
+        let duplicate = rx.recv().expect("receive duplicate actor");
+        assert(duplicate.ping().expect("duplicate actor ping") == 3);
+        assert(rx.recv().is_none());
+    }
+    {
+        let (tx, unread) = actor_pipe();
+        tx.send(counter).expect("send unread actor");
+        tx.finish();
+        unread.close();
+    }
+    assert(counter.ping().expect("actor survives pipe release") == 4);
+    stop(counter);
+    stopped(counter);
+    println("local actor identities cross pipes and survive queued release");
+}

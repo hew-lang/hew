@@ -403,9 +403,7 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 SemTerminator::Suspend {
                     kind:
                         crate::SuspendKind::Join {
-                            mode:
-                                crate::TaskScopeJoinMode::PropagateFault
-                                | crate::TaskScopeJoinMode::CancelLosersAfterFault,
+                            mode: crate::TaskScopeJoinMode::PropagateFault,
                             ..
                         },
                     resumes,
@@ -1243,9 +1241,7 @@ impl<'a> Flow<'a> {
             SemTerminator::Suspend {
                 kind:
                     crate::SuspendKind::Join {
-                        mode:
-                            crate::TaskScopeJoinMode::PropagateFault
-                            | crate::TaskScopeJoinMode::CancelLosersAfterFault,
+                        mode: crate::TaskScopeJoinMode::PropagateFault,
                         ..
                     },
                 resumes,
@@ -2127,6 +2123,7 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
         kind,
         SemOpKind::GeneratorMake { .. }
             | SemOpKind::TaskSpawn { .. }
+            | SemOpKind::TaskRace { .. }
             | SemOpKind::ClosureMake { .. }
             | SemOpKind::GeneratorCoerce { .. }
             | SemOpKind::CallableCoerce { .. }

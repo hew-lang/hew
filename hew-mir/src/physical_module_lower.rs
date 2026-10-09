@@ -291,7 +291,19 @@ pub fn lower_physical_module(
             .is_resumable = is_resumable;
     }
     physical.releases = ReleaseEffects::compute(&physical);
-    verify_physical_module(&physical)?;
+    let retained = physical
+        .functions
+        .iter()
+        .map(|function| super::frame::retained_storage(&physical, function))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (function, retained) in physical.functions.iter_mut().zip(retained) {
+        function.frame_storage = retained;
+    }
+    for (callable, available) in verify_physical_module(&physical)? {
+        if let Some(debug) = physical.debug.functions.get_mut(&callable) {
+            debug.available = available;
+        }
+    }
     Ok(VerifiedPhysicalModule(physical))
 }
 
@@ -1237,6 +1249,7 @@ pub(crate) fn lower_function(
             parameters,
             place_storage,
             storage: lowerer.storage,
+            frame_storage: BTreeSet::new(),
             blocks,
         },
         attribution,
@@ -1290,6 +1303,7 @@ pub(crate) fn function_attribution(
         decl: u32::try_from(function.span.start).unwrap_or(u32::MAX),
         end: u32::try_from(function.span.end).unwrap_or(u32::MAX),
         locals,
+        available: BTreeMap::new(),
         sites,
     })
 }

@@ -214,7 +214,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         for (code, from) in &join.exits {
             selected.add_incoming(&[(code, *from)]);
         }
-        Ok(selected.as_basic_value().into_int_value())
+        let selected = selected.as_basic_value().into_int_value();
+        if let Some(frame) = &self.frame {
+            frame.carry(self.ctx, &self.builder, selected, "operation.exit.slot")?;
+        }
+        Ok(selected)
     }
 
     /// Dispatch on `selected` into one block per `(code, name)` arm; every
@@ -352,6 +356,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "sleep.operation",
         )?
         .into_pointer_value();
+        frame.carry(self.ctx, &self.builder, operation, "sleep.operation.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "sleep.poll");
         let poll_status = self.ctx.append_basic_block(self.value, "sleep.poll.status");
         let waiting = self.ctx.append_basic_block(self.value, "sleep.pending");
@@ -389,7 +394,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select sleep outcome")?;
         self.builder.position_at_end(waiting);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
             .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
@@ -483,13 +488,26 @@ pub(super) fn await_child<'ctx>(
     child: PointerValue<'ctx>,
     child_frame: PointerValue<'ctx>,
 ) -> CodegenResult<IntValue<'ctx>> {
+    let (state_slot, frame_slot) = frame.child_storage(ctx)?;
+    builder
+        .build_store(state_slot, child)
+        .llvm_ctx("publish current child state")?;
+    builder
+        .build_store(frame_slot, child_frame)
+        .llvm_ctx("publish current child frame")?;
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let state_value = |name: &str, state: PointerValue<'ctx>| -> CodegenResult<IntValue<'ctx>> {
+    let state_value = |name: &str| -> CodegenResult<IntValue<'ctx>> {
+        let state = builder
+            .build_load(pointer, state_slot, "call.child.state")
+            .llvm_ctx("restore current child state")?;
         let function =
             get_or_declare_external(llvm, name, ctx.i32_type().fn_type(&[pointer.into()], false))?;
         Ok(call_value(builder, function, &[state.into()], "child.status")?.into_int_value())
     };
-    let free_handle = |name: &str, handle: PointerValue<'ctx>| -> CodegenResult<()> {
+    let free_handle = |name: &str, slot: PointerValue<'ctx>| -> CodegenResult<()> {
+        let handle = builder
+            .build_load(pointer, slot, "call.child.handle")
+            .llvm_ctx("restore current child handle")?;
         let function = get_or_declare_external(
             llvm,
             name,
@@ -510,7 +528,7 @@ pub(super) fn await_child<'ctx>(
         .build_unconditional_branch(poll)
         .llvm_ctx("poll child call")?;
     builder.position_at_end(poll);
-    let status = state_value("hew_coro_state_status", child)?;
+    let status = state_value("hew_coro_state_status")?;
     let pending = builder
         .build_int_compare(
             IntPredicate::EQ,
@@ -523,9 +541,9 @@ pub(super) fn await_child<'ctx>(
         .build_conditional_branch(pending, wait, done)
         .llvm_ctx("select child call completion")?;
     builder.position_at_end(wait);
-    frame.suspend(ctx, llvm, builder, resume, destroy, false)?;
+    frame.suspend(ctx, builder, resume, destroy)?;
     builder.position_at_end(resume);
-    free_handle("hew_cont_resume", child_frame)?;
+    free_handle("hew_cont_resume", frame_slot)?;
     builder
         .build_unconditional_branch(poll)
         .llvm_ctx("poll resumed child")?;
@@ -533,18 +551,18 @@ pub(super) fn await_child<'ctx>(
     builder
         .build_store(frame.destroying, ctx.bool_type().const_int(1, false))
         .llvm_ctx("mark destroyed caller")?;
-    free_handle("hew_cont_destroy", child_frame)?;
+    free_handle("hew_cont_destroy", frame_slot)?;
     builder
         .build_unconditional_branch(outcome)
         .llvm_ctx("finish cancelled child")?;
     builder.position_at_end(done);
-    free_handle("hew_cont_destroy", child_frame)?;
+    free_handle("hew_cont_destroy", frame_slot)?;
     builder
         .build_unconditional_branch(outcome)
         .llvm_ctx("finish completed child")?;
     builder.position_at_end(outcome);
-    let status = state_value("hew_coro_state_private_status", child)?;
-    free_handle("hew_coro_state_free", child)?;
+    let status = state_value("hew_coro_state_private_status")?;
+    free_handle("hew_coro_state_free", state_slot)?;
     Ok(status)
 }
 

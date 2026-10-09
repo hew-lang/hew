@@ -387,15 +387,6 @@ fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
         errors.is_empty(),
         "the lowered `chunks`/`take` adaptors must type-check; got errors: {errors:?}"
     );
-    // Negative control: `take` admits any content element (i64 included) but
-    // still reads the content-layout witness, so a container element is
-    // refused before lowering.
-    let (errors, _warnings) =
-        parse_and_check("fn use_stream(s: Stream<Vec<i64>>) {\n    let _t = s.take(2);\n}\n");
-    assert!(
-        !errors.is_empty(),
-        "`Stream<Vec<i64>>.take` must be refused: the adaptors need a content element"
-    );
 }
 
 #[test]

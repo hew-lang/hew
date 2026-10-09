@@ -574,13 +574,8 @@ pub enum Ty {
         traits: Vec<TraitObjectBound>,
     },
 
-    /// Compiler-internal type for a running child task whose result has type
-    /// `T`. Produced exclusively by HIR lowering of `fork name = call_expr`
-    /// inside a `fork{}` body; never user-nameable (see `E_TASK_NOT_NAMEABLE`
-    /// in HIR diagnostics). The user writes `fork name = expr`, not
-    /// `let name: Task<T> = expr`.
-    ///
-    /// Display: `<task<T>>` (angle brackets signal compiler-internal origin).
+    /// Inferred scoped task handle produced by `fork` or `race`.
+    /// Source annotations cannot name this type.
     Task(Box<Ty>),
 
     /// Deferred associated-type projection: `T::Bar` where `T` is a generic
@@ -1267,6 +1262,11 @@ impl Ty {
         let a_bare = a.rsplit_once('.').map_or(a, |(_, leaf)| leaf);
         let b_bare = b.rsplit_once('.').map_or(b, |(_, leaf)| leaf);
         a_bare == b_bare
+    }
+
+    #[must_use]
+    pub fn contains_task(&self) -> bool {
+        matches!(self, Ty::Task(_)) || self.any_child(&Ty::contains_task)
     }
 
     #[must_use]

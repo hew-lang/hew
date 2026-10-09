@@ -1,5 +1,5 @@
 //! Status: runnable
-//! Description: Crash Cascade Prevention
+//! Description: Crash Cascade Prevention (exits 1 after exhausting recovery)
 
 // Crash Cascade Prevention
 //
@@ -27,7 +27,7 @@ actor Fragile {
     }
 }
 
-// Only allow 3 restarts in 60 seconds — after that, stop escalating
+// Allow three restarts in 60 seconds; a fourth crash exhausts recovery.
 supervisor FragilePool {
     strategy: one_for_one;
     intensity: 3 within 60s;
@@ -38,47 +38,31 @@ supervisor FragilePool {
 
 fn main() {
     let sup = spawn FragilePool;
-    sleep(30ms);
-    var f1 = sup.f1;
+    let f1 = sup.f1;
     let f2 = sup.f2;
-    // Both workers operational
-    let _ = f1.work();
-    sleep(10ms);
-    let _ = f2.work();
-    sleep(30ms);
+    f1.work().expect("first worker ready");
+    f2.work().expect("second worker ready");
 
-    // Crash f1 — first restart.
-    // First crash: restart_delay_ms starts at 0 (immediate restart, no backoff).
-    // 500 ms is a conservative margin; the restart typically completes in < 1 ms.
-    println("");
-    println("--- crash 1 ---");
-    let _ = f1.break_it();
-    sleep(500ms);
-    f1 = sup.f1;
-    let _ = f1.work();
-    sleep(20ms);
-
-    // Crash again — second restart.
-    // Second crash: apply_restart_backoff doubles restart_delay_ms to 200 ms,
-    // so the child is unavailable for ~200 ms. 1000 ms gives a safe 5× margin.
-    println("");
-    println("--- crash 2 ---");
-    let _ = f1.break_it();
-    sleep(1s);
-    f1 = sup.f1;
-    let _ = f1.work();
-    sleep(20ms);
-
-    // Crash again — third restart (at the budget limit)
-    println("");
-    println("--- crash 3 (budget exhausted) ---");
-    let _ = f1.break_it();
-    sleep(200ms);
-
-    // f2 should still work — supervision budget is per-supervisor but
-    // f2 never crashed
-    let _ = f2.work();
-    sleep(50ms);
-    println("");
-    println("Restart budget prevented infinite crash loop.");
+    // Wait for each failed call's actual recovery, including backoff, before
+    // sending more work through the same stable role.
+    for crash in 1..4 {
+        println(f"--- crash {crash}: permitted restart ---");
+        assert(f1.break_it().is_err());
+        restarted(f1);
+        f1.work().expect("failed worker restarted");
+        f2.work().expect("one-for-one preserves the sibling");
+    }
+    // The fourth crash exceeds the supervisor's budget. The restart barrier
+    // also completes when a role is permanently unavailable.
+    println("--- crash 4: restart budget exhausted ---");
+    assert(f1.break_it().is_err());
+    restarted(f1);
+    match f1.work() {
+        .Err(ActorError.Dead) => {}
+        _ => panic("an exhausted child role must be dead"),
+    }
+    stop(sup);
+    stopped(sup);
+    println("Restart budget exhausted; failed child is unavailable.");
+    // No supervisor recovered the fourth fault, so this program exits 1.
 }

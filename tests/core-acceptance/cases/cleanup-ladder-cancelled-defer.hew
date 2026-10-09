@@ -30,9 +30,9 @@ fn winner(ready: stream.Stream<i64>) -> i64 {
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let (ready_tx, ready): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready");
-    let picked = race {
+    let picked = await race [
         winner(ready),
         parked(ready_tx, gate),
-    };
+    ];
     println("picked " + to_string(picked));
 }

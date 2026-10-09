@@ -1,0 +1,13 @@
+[[case]]
+id = "local_conditional_init"
+intent = "A first store in one reaching arm is rejected at the branch, even for a constant condition."
+source = "../vertical-slice/reject/local_conditional_init.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_LOCAL_CONDITIONAL_INIT"
+line = 3
+column = 5
+message = "local `x` is initialized on only some reaching paths"

@@ -1013,6 +1013,83 @@ fn lsp_exported_function_rename_refuses_incomplete_importers_and_capture_atomica
 }
 
 #[test]
+fn lsp_binding_rename_preserves_fields_and_expands_parameter_shorthand() {
+    let cases = [
+        (
+            "type Endpoint { port: i64; }\nfn main() {\n    let port = 5432;\n    let e = Endpoint { port: port };\n    { let port = 80; println(port); }\n    println(e.port);\n    println(port);\n}\n",
+            "port = 5432",
+            "pp",
+            "type Endpoint { port: i64; }\nfn main() {\n    let pp = 5432;\n    let e = Endpoint { port: pp };\n    { let port = 80; println(port); }\n    println(e.port);\n    println(pp);\n}\n",
+        ),
+        (
+            "type Win { lo: i64; hi: i64; }\nfn widen(w: Win, lo: i64) -> Win { Win { ..w, lo } }\nfn main() { let w = Win { lo: 1, hi: 2 }; println(widen(w, 3).lo); }\n",
+            "lo: i64) ->",
+            "low",
+            "type Win { lo: i64; hi: i64; }\nfn widen(w: Win, low: i64) -> Win { Win { ..w, lo: low } }\nfn main() { let w = Win { lo: 1, hi: 2 }; println(widen(w, 3).lo); }\n",
+        ),
+    ];
+    for (source, needle, new_name, expected) in cases {
+        for prefix in ["", "import missing;\n"] {
+            let source = format!("{prefix}{source}");
+            let expected = format!("{prefix}{expected}");
+            let parsed = hew_parser::parse(&source);
+            assert!(parsed.errors.is_empty());
+            let mut edits = hew_analysis::rename::plan_rename(
+                &source,
+                &parsed,
+                source.find(needle).expect("selected declaration"),
+                new_name,
+            )
+            .expect("standalone planner can use recoverable checker identities");
+            edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.start));
+            let mut standalone = source.clone();
+            for edit in edits {
+                standalone.replace_range(edit.span.start..edit.span.end, &edit.new_text);
+            }
+            assert_eq!(
+                standalone, expected,
+                "standalone rename must match the protocol edits"
+            );
+
+            let uri = "untitled:binding-identity";
+            let mut session = RenameSession::new(None, &[]);
+            let original = session.open_uri(uri, &source, 1);
+            if prefix.is_empty() {
+                assert_clean(&original);
+            }
+            let response = session.request(
+                "textDocument/rename",
+                json!({"textDocument":{"uri":uri},"position":position_of(&source, needle),"newName":new_name}),
+            );
+            assert_eq!(
+                session.apply(&response),
+                [uri.to_string()].into_iter().collect()
+            );
+            assert_eq!(session.buffers[uri].0, expected);
+            let mut verification = RenameSession::new(None, &[]);
+            let publish = verification.open_uri(uri, &expected, 2);
+            if prefix.is_empty() {
+                assert_clean(&publish);
+            } else {
+                let errors: Vec<_> = publish["params"]["diagnostics"]
+                    .as_array()
+                    .expect("diagnostics")
+                    .iter()
+                    .filter(|diagnostic| diagnostic["severity"] == 1)
+                    .collect();
+                assert!(!errors.is_empty(), "missing import remains visible");
+                assert!(
+                    errors
+                        .iter()
+                        .all(|diagnostic| diagnostic["code"] == "E_MODULE_NOT_FOUND"),
+                    "rename must preserve all binding and field identities: {errors:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn lsp_untitled_local_rename_preserves_fresh_buffers_without_project_roots() {
     let uri = "untitled:Untitled-1";
     let source = "fn main() { let answer = 7; println(answer); }\n";

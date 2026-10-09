@@ -598,6 +598,7 @@
             "task_scope.enter",
             "task_scope.close",
             "task.spawn",
+            "task.race",
             "actor.ingress_adapter"
           ]
         },

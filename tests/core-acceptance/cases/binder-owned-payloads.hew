@@ -50,11 +50,19 @@ impl<T> Make for Bag<T> {
 }
 
 fn read(path: string) -> Result<string, IoError> {
-    if path.is_empty() { .Err(IoError { path: "<empty>" }) } else { .Ok(path + "!") }
+    if path.is_empty() {
+        .Err(IoError { path: "<empty>" })
+    } else {
+        .Ok(path + "!")
+    }
 }
 
 fn parse(text: string) -> Result<i64, ParseError> {
-    if text.len() > 4 { .Err(ParseError { line: text }) } else { .Ok(text.len()) }
+    if text.len() > 4 {
+        .Err(ParseError { line: text })
+    } else {
+        .Ok(text.len())
+    }
 }
 
 fn load<F: From<IoError> + From<ParseError>>(path: string) -> i64 fails F {

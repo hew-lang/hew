@@ -1,0 +1,10 @@
+[[case]]
+id = "if-expression-arm-precedence"
+intent = "Operators and postfixes apply to the complete if or if-let value, including else-if chains; an else arm cannot absorb the following addition."
+source = "cases/if-expression-arm-precedence.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "8388608\n8388608\n8388612\n8388612\n8388623\n8388623\n8388627\n8388627\n32\n21\n17\n29\n14\n32\n21\n17\n22\n11\n7\n4\n"
+exit = 0

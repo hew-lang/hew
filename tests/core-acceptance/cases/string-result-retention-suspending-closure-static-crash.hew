@@ -36,7 +36,7 @@ fn main() {
     let port = listener.local_port();
     let reader = spawn Reader { addr: f"127.0.0.1:{port}" };
     let result = reader.go(0);
-    let peer = listener.accept();
+    let peer = listener.accept().expect("accept");
     peer.close();
     listener.close();
     match result {
@@ -49,7 +49,7 @@ fn main() {
     // balance until it settles, bounded, so a real leak still prints its
     // retained bytes and fails the case.
     var retained = (observe.read("coroutines.frame_bytes_live") ?? 0) - frame_baseline;
-    for _ in 0 .. 200 {
+    for _ in 0..200 {
         if retained == 0 {
             break;
         }

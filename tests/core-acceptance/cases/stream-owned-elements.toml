@@ -1,6 +1,6 @@
 [[case]]
 id = "stream-owned-elements"
-intent = "Actor-produced records transfer strings, bytes and nested collection owners through one stream descriptor; early consumer close releases untaken records and stops the producer."
+intent = "Actor-produced records transfer strings, bytes and nested collection owners through one stream descriptor; take limits owned items while releasing untaken records and stopping the producer on early close."
 source = "cases/stream-owned-elements.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

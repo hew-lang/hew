@@ -10,4 +10,4 @@ kind = "check"
 code = "InvalidOperation"
 line = 10
 column = 21
-message = "E_ACTOR_FIELD_UNINITIALIZED: state field `label` is read before `init`"
+message = "E_ACTOR_FIELD_UNINITIALIZED: state field `label` is read before initialization; assign it first"

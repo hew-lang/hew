@@ -91,7 +91,6 @@ export type RuntimeVariantRole =
   | "SendErrorLocalShutdown"
   | "SendErrorCancelled"
   | "SendErrorVersionMismatch"
-  | "SendErrorUnauthorized"
   | "SendErrorBackpressure"
   | "SendErrorDead"
   | "SendErrorWriteTimedOut"
@@ -367,6 +366,12 @@ export type OpV1 =
       duration: Operand | null;
     })
   | (OpBase & { op: "task_scope.close"; scope: number })
+  | (OpBase & {
+      op: "task.race";
+      dst: number;
+      scope: number;
+      members: Operand[];
+    })
   | (OpBase & {
       op: "task.spawn";
       dst: number;

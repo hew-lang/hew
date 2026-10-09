@@ -43,7 +43,7 @@ actor Handler {{
     receive fn run(unused: i64) {{
         let listener = match net.listen(addr) {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
         println("READY");
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         listener.close();
         println("HANDLER_WAITING");
         let data = match conn.recv() {{ .Some(data) => data, .None => panic("connection closed"), }};
@@ -355,7 +355,7 @@ actor Acceptor {{
     receive fn start() {{
         let listener = match net.listen(addr) {{ .Ok(value) => value, .Err(_) => panic("listen failed") }};
         println("READY");
-        let _conn = listener.accept();
+        let _conn = listener.accept().expect("accept");
         println("UNREACHABLE");
     }}
 }}

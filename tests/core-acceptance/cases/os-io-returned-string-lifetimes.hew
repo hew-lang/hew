@@ -52,7 +52,7 @@ fn exercise() {
 }
 
 fn main() {
-    for _ in 0 .. 4 {
+    for _ in 0..4 {
         exercise();
     }
     println("returned strings survive subsequent calls");

@@ -51,6 +51,7 @@ COV_DIR="${COV_DIR:-coverage-out}"
 RT_DIR="$COV_DIR/runtime-e2e"
 BIN_DIR="$RT_DIR/bins"
 PROFRAW_DIR="$RT_DIR/profraw"
+LOG_DIR="$RT_DIR/logs"
 PROFDATA="$RT_DIR/runtime.profdata"
 PER_PROG_TIMEOUT="${PER_PROG_TIMEOUT:-15}"
 WANT_HTML=0
@@ -122,7 +123,7 @@ cargo build -p hew-cli --bin hew
 
 echo "==> Phase 3: compile + run self-contained example programs (HEW_COVERAGE=1)"
 rm -rf "$RT_DIR"
-mkdir -p "$BIN_DIR" "$PROFRAW_DIR"
+mkdir -p "$BIN_DIR" "$PROFRAW_DIR" "$LOG_DIR"
 
 # Inputs for command-style examples in the otherwise self-contained corpus.
 # Keep these deterministic and local: coverage must not depend on the caller's
@@ -137,23 +138,44 @@ RUN_FAILURES=()
 for f in "${PROGRAMS[@]}"; do
     stem="$(basename "$f" .hew)"
     bin="$BIN_DIR/$stem.bin"
-    if HEW_COVERAGE=1 "$HEW_BIN" build "$f" -o "$bin" >/dev/null 2>&1; then
-        built=$((built + 1))
-    else
+    build_status=0
+    HEW_COVERAGE=1 "$HEW_BIN" build "$f" -o "$bin" \
+        >"$LOG_DIR/$stem.build.stdout" 2>"$LOG_DIR/$stem.build.stderr" || build_status=$?
+    printf '%s\n' "$build_status" >"$LOG_DIR/$stem.build.exit"
+    if [ "$build_status" -ne 0 ]; then
         BUILD_FAILURES+=("$f")
         continue
     fi
+    built=$((built + 1))
     # %m = binary signature (distinct per program), %p = pid → no collisions.
-    if coverage_runtime_run_program \
+    run_status=0
+    coverage_runtime_run_program \
         "$stem" \
         "$PROFRAW_DIR/${stem}-%m-%p.profraw" \
         "$(command -v timeout)" \
         "$PER_PROG_TIMEOUT" \
         "$bin" \
         "$GREP_INPUT" \
-        >/dev/null 2>&1; then
+        >"$LOG_DIR/$stem.run.stdout" 2>"$LOG_DIR/$stem.run.stderr" || run_status=$?
+    printf '%s\n' "$run_status" >"$LOG_DIR/$stem.run.exit"
+    expected_status=0
+    completion_marker=""
+    if [ "$stem" = supervisor_crash_budget ]; then
+        # Exhausting a root supervisor's budget leaves an unrecovered fault.
+        # Require the final observation too: an earlier assertion panic also
+        # exits 1, but does not demonstrate the intended terminal role.
+        expected_status=1
+        completion_marker="Restart budget exhausted; failed child is unavailable."
+    fi
+    if [ "$run_status" -eq "$expected_status" ] && {
+        [ -z "$completion_marker" ] || grep -Fxq "$completion_marker" "$LOG_DIR/$stem.run.stdout"
+    }; then
         ran=$((ran + 1))
     else
+        printf 'error: %s exited %s; expected %s\n' "$f" "$run_status" "$expected_status" >&2
+        if [ -n "$completion_marker" ]; then
+            printf '  required completion: %s\n' "$completion_marker" >&2
+        fi
         RUN_FAILURES+=("$f")
     fi
 done
@@ -165,11 +187,25 @@ echo "    programs: enumerated=${#PROGRAMS[@]} built=$built ran=$ran"
 if [ "${#BUILD_FAILURES[@]}" -ne 0 ] || [ "${#RUN_FAILURES[@]}" -ne 0 ]; then
     if [ "${#BUILD_FAILURES[@]}" -ne 0 ]; then
         echo "error: ${#BUILD_FAILURES[@]} runtime-coverage program(s) failed to build:" >&2
-        printf '  build: %s\n' "${BUILD_FAILURES[@]}" >&2
+        for f in "${BUILD_FAILURES[@]}"; do
+            stem="$(basename "$f" .hew)"
+            printf '  build: %s (exit %s)\n' "$f" "$(cat "$LOG_DIR/$stem.build.exit")" >&2
+            printf '  stdout (%s):\n' "$LOG_DIR/$stem.build.stdout" >&2
+            cat "$LOG_DIR/$stem.build.stdout" >&2
+            printf '  stderr (%s):\n' "$LOG_DIR/$stem.build.stderr" >&2
+            cat "$LOG_DIR/$stem.build.stderr" >&2
+        done
     fi
     if [ "${#RUN_FAILURES[@]}" -ne 0 ]; then
         echo "error: ${#RUN_FAILURES[@]} runtime-coverage program(s) failed or timed out:" >&2
-        printf '  run:   %s\n' "${RUN_FAILURES[@]}" >&2
+        for f in "${RUN_FAILURES[@]}"; do
+            stem="$(basename "$f" .hew)"
+            printf '  run: %s (exit %s)\n' "$f" "$(cat "$LOG_DIR/$stem.run.exit")" >&2
+            printf '  stdout (%s):\n' "$LOG_DIR/$stem.run.stdout" >&2
+            cat "$LOG_DIR/$stem.run.stdout" >&2
+            printf '  stderr (%s):\n' "$LOG_DIR/$stem.run.stderr" >&2
+            cat "$LOG_DIR/$stem.run.stderr" >&2
+        done
     fi
     exit 1
 fi

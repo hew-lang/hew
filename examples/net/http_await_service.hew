@@ -14,7 +14,7 @@ import std.string;
 
 fn serve(consume listener: net.Listener, requests: i64) {
     for r in 0..requests {
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         var raw = "";
         var reads = 0;
         var done = false;

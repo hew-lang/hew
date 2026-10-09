@@ -16,8 +16,8 @@ use super::super::types::GenericLambdaSig;
 use super::super::*;
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation, SpawnKey, SpawnSlot,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericRequirement, PendingInstantiation, SpawnKey, SpawnSlot,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
@@ -554,6 +554,7 @@ impl Checker {
                 scrutinee_loan.clone(),
             );
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
+            self.record_pattern_value_sources(&arm.pattern, scrutinee_ty, scrutinee);
 
             let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
@@ -605,7 +606,7 @@ impl Checker {
             );
             self.env.pop_scope();
         }
-        self.join_branch_ownership(&ownership_entry, &arm_exits);
+        self.join_branch_ownership(&ownership_entry, &arm_exits, span);
         // Exhaustiveness check for enums/Option/Result
         self.check_exhaustiveness(scrutinee_ty, arms, span);
 
@@ -756,7 +757,7 @@ impl Checker {
             self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
             self.env.pop_scope();
         }
-        self.join_branch_ownership(&entry, &arm_exits);
+        self.join_branch_ownership(&entry, &arm_exits, span);
         // No typed body: `!` only when every body diverges; otherwise each
         // body already reported its error, and `Error` keeps uses quiet.
         result_ty.unwrap_or_else(|| {
@@ -824,6 +825,7 @@ impl Checker {
             is_actor_body,
             is_fork_body,
         );
+        self.record_task_return(body);
         self.effect_graph.current_body = previous;
         result
     }
@@ -985,6 +987,7 @@ impl Checker {
             self.env
                 .define_param_with_span(p.name, ty.clone(), false, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);
+            self.record_callable_formal_candidate(p.name);
             param_tys.push(ty);
         }
 
@@ -1081,6 +1084,22 @@ impl Checker {
                 });
                 self.generic_ctx.pop();
             }
+        }
+
+        if let Some(owner) = self.effect_graph.current_body.clone() {
+            let formals = params
+                .iter()
+                .filter_map(|param| {
+                    match self.scopes.resolutions().get(&SpanKey::in_module(
+                        &param.name_span,
+                        self.current_module_idx,
+                    )) {
+                        Some(super::scope::Resolution::Local(id)) => Some(*id),
+                        _ => None,
+                    }
+                })
+                .collect();
+            self.callable_formals.insert(owner, formals);
         }
 
         let body_environment = std::mem::replace(&mut self.env, outer_environment);

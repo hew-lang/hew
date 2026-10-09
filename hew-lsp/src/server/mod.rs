@@ -7969,7 +7969,7 @@ fn label(colour: Colour) -> string {
     fn v05_index_trait_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_index_trait",
-            include_str!("../../tests/fixtures/v05_index_trait.hew"),
+            include_str!("../../tests/fixtures/v05_index_trait_reject.hew"),
             "index_probe",
             &[
                 "Bag",

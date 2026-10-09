@@ -16,6 +16,10 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        test_name: "task_race",
+        source_rel: "examples/sandbox-graduation/task_race.hew",
+    },
+    ParityCase {
         // A lambda built, passed to a function taking a callable, and called
         // there through the same indirect path both engines use.
         test_name: "closure_values",
@@ -551,6 +555,10 @@ const PARITY_CASES: &[ParityCase] = &[
         // postfix-try covers Result and Option success plus early propagation.
         test_name: "trap_residual",
         source_rel: "examples/sandbox-graduation/trap_residual.hew",
+    },
+    ParityCase {
+        test_name: "deferred_locals",
+        source_rel: "examples/sandbox-graduation/deferred_locals.hew",
     },
     ParityCase {
         // `f"{v:?}"` over scalars, strings, tuples, records, enums, Vec,

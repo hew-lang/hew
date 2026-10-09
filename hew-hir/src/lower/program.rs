@@ -196,7 +196,7 @@ pub fn lower_program_with_mono_cap(
     for name in hew_types::actor_delivery::DECLARATIONS
         .iter()
         .map(|known| known.path().trim_start_matches("std.builtins."))
-        .chain(["ScopeFailure"])
+        .chain(SOURCE_PRELUDE_ENUMS.iter().copied())
     {
         let canonical = format!("std.builtins.{name}");
         ctx.source_type_identities.insert(canonical.clone());
@@ -1866,47 +1866,51 @@ pub fn lower_program_with_mono_cap(
     // the full path keeps source attribution aligned with checker facts.
     // Prelude declarations must precede lazy body checking, independently of
     // whether their executable methods are needed or have checked successfully.
-    let scope_failure = builtin_declarations.as_ref().and_then(|builtins| {
-        let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
-            Item::TypeDecl(decl) if decl.name == Ident::new("ScopeFailure") => Some((decl, span)),
-            _ => None,
-        })?;
-        let canonical_name = "std.builtins.ScopeFailure";
-        let Some(declaration) = ctx.defs.lookup_path(canonical_name) else {
-            ctx.unsupported(
-                span.clone(),
-                "scope failure declaration identity",
-                "checker-boundary",
+    let prelude_enums: Vec<_> = SOURCE_PRELUDE_ENUMS
+        .iter()
+        .copied()
+        .filter_map(|name| {
+            let builtins = builtin_declarations.as_ref()?;
+            let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
+                Item::TypeDecl(decl) if decl.name.name.as_str() == name => Some((decl, span)),
+                _ => None,
+            })?;
+            let canonical_name = format!("std.builtins.{name}");
+            let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
+                ctx.unsupported(
+                    span.clone(),
+                    "prelude enum declaration identity",
+                    "checker-boundary",
+                );
+                return None;
+            };
+            let mut source = source.clone();
+            // The lowered declaration carries its canonical owner spelling.
+            source.name = Ident::new(&canonical_name);
+            let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)?;
+            ctx.type_classes
+                .insert(canonical_name.clone(), (decl.marker, None));
+            ctx.type_member_tys.insert(
+                canonical_name.clone(),
+                decl.variants
+                    .iter()
+                    .flat_map(hew_hir_variant_field_tys)
+                    .collect(),
             );
-            return None;
-        };
-        let mut source = source.clone();
-        // The lowered declaration carries its canonical owner spelling.
-        source.name = Ident::new(canonical_name); // TRANSITION(P1): deleted by A1 commit 2
-        let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)?;
-        ctx.type_classes
-            .insert(canonical_name.to_string(), (decl.marker, None));
-        ctx.type_member_tys.insert(
-            canonical_name.to_string(),
-            decl.variants
-                .iter()
-                .flat_map(hew_hir_variant_field_tys)
-                .collect(),
-        );
-        ctx.enum_variants_by_name
-            .insert(canonical_name.to_string(), decl.variants.clone());
-        ctx.enum_type_params
-            .insert(canonical_name.to_string(), decl.type_params.clone());
-        ctx.enum_item_ids
-            .insert(canonical_name.to_string(), decl.id);
-        for (index, variant) in decl.variants.iter().enumerate() {
-            ctx.machine_ctor_registry.insert(
-                format!("{canonical_name}::{}", variant.name),
-                (canonical_name.to_string(), index),
-            );
-        }
-        Some(decl)
-    });
+            ctx.enum_variants_by_name
+                .insert(canonical_name.clone(), decl.variants.clone());
+            ctx.enum_type_params
+                .insert(canonical_name.clone(), decl.type_params.clone());
+            ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
+            for (index, variant) in decl.variants.iter().enumerate() {
+                ctx.machine_ctor_registry.insert(
+                    format!("{canonical_name}::{}", variant.name),
+                    (canonical_name.clone(), index),
+                );
+            }
+            Some(decl)
+        })
+        .collect();
     let mut delivery_declarations = Vec::new();
     if let Some(builtins) = builtin_declarations.as_ref() {
         for known in hew_types::actor_delivery::DECLARATIONS {
@@ -2895,7 +2899,7 @@ pub fn lower_program_with_mono_cap(
         }));
     }
     items.extend(delivery_declarations.into_iter().map(HirItem::TypeDecl));
-    if let Some(decl) = scope_failure {
+    for decl in prelude_enums {
         items.push(HirItem::TypeDecl(decl));
     }
 
@@ -3101,6 +3105,8 @@ pub fn lower_program_with_mono_cap(
         diagnostics: ctx.diagnostics,
     }
 }
+
+const SOURCE_PRELUDE_ENUMS: &[&str] = &["ScopeFailure", "NodeTransport"];
 
 pub(super) fn finalize_user_record_value_classes(
     record_registry: &HashMap<String, RecordEntry>,

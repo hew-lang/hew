@@ -1,0 +1,102 @@
+#[resource]
+type Connection {
+    id: i64;
+}
+
+impl Connection {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+fn classify(status: i64) -> (string, bool) {
+    let label: string;
+    let retry: bool;
+    match status {
+        200 => {
+            label = "ok";
+            retry = false;
+        }
+        429 => {
+            label = "busy";
+            retry = true;
+        }
+        _ => {
+            label = f"status {status}";
+            retry = false;
+        }
+    }
+    (label, retry)
+}
+
+fn collect(flag: bool) -> string {
+    var names: Vec<string>;
+    if flag {
+        names = ["north"];
+    } else {
+        names = ["south"];
+    }
+    names.push("done");
+    names[0]
+}
+
+fn open(flag: bool) -> i64 {
+    let connection: Connection;
+    if !flag {
+        return 0;
+    }
+    connection = Connection { id: 7 };
+    connection.id
+}
+
+fn pause() {}
+
+actor Session {
+    let peer: string;
+    init() {
+        let scheme: string;
+        if true {
+            scheme = "tls";
+        } else {
+            scheme = "tcp";
+        }
+        peer = f"{scheme}://example";
+    }
+    receive fn address() -> string {
+        let prefix: string;
+        prefix = "address";
+        let suffix: string;
+        scope {
+            let task = fork pause();
+            await task;
+        };
+        suffix = peer;
+        f"{prefix}:{suffix}"
+    }
+}
+
+fn main() {
+    for status in [200, 429, 404] {
+        let (label, retry) = classify(status);
+        println(f"{label}:{retry}");
+    }
+    println(collect(true));
+    println(collect(false));
+    println(open(false));
+    println(open(true));
+    let values = gen {
+        let text: string;
+        text = "across";
+        yield "first";
+        yield text;
+    };
+    for value in values {
+        println(value);
+    }
+    let _unused_connection: Connection;
+    let session = spawn Session;
+    match session.address() {
+        .Ok(address) => println(address),
+        .Err(_) => println("session failed"),
+    }
+}

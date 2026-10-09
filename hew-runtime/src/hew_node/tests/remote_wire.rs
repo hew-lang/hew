@@ -268,7 +268,8 @@ fn two_node_remote_send_quic_mesh_rejects_unknown_peer() {
         thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(
-        last_rc, -1,
+        last_rc,
+        hew_cabi::node::NodeFailure::Refused as i32,
         "quic_mesh connect to an SPKI-unpinned peer must fail-closed"
     );
 
@@ -1158,7 +1159,7 @@ fn unconfigured_peer_pair_rejected_during_connection_admission() {
     let connect_rc = unsafe { hew_node_connect(node1.as_ptr(), connect_addr.as_ptr()) };
     assert_eq!(
         connect_rc,
-        -1,
+        hew_cabi::node::NodeFailure::Refused as i32,
         "unconfigured v2 peers must be rejected during connection admission: {:?}",
         crate::stream_error::take_last_error()
     );

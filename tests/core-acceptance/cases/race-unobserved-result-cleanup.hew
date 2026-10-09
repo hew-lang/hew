@@ -20,7 +20,7 @@ fn fast() -> Handle {
 
 fn slow_uncancellable() -> Handle {
     var total: i64 = 0;
-    for i in 0 .. 150000000 {
+    for i in 0..150000000 {
         total = total + (i % 7);
     }
     println("slow done " + to_string(total));
@@ -28,10 +28,10 @@ fn slow_uncancellable() -> Handle {
 }
 
 fn main() {
-    let winner = race {
+    let winner = await race [
         fast(),
         slow_uncancellable(),
-    };
+    ];
     println("picked " + winner.label);
     winner.close();
 }

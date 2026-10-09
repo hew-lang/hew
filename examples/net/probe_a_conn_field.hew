@@ -40,7 +40,7 @@ fn main() {
     // `fork` starts the session concurrently: an ordinary call would wait for
     // the handler's read to finish before main accepts and writes.
     fork session.pump(0);
-    let client = listener.accept();
+    let client = listener.accept().expect("accept");
     let _ = client.send("hello".to_bytes());
     sleep(300ms);
     let _ = client.close();

@@ -1614,14 +1614,6 @@ impl Checker {
                 Ty::option(yield_ty)
             }
             // Stream<T> methods
-            //
-            // LIMITATION: Stream element-type validation only triggers here (on
-            // method resolution).  A function parameter typed `Stream<MyStruct>`
-            // passes typecheck if no stream methods are called on it.  Ideally
-            // we would reject unsupported element types in resolve_type_expr when
-            // the Stream<T> type is first formed, but that requires propagating
-            // the span and restructuring the named-type resolution path.  For
-            // now codegen will fail if the type is actually used.
             (
                 Ty::Named {
                     head: crate::TypeHead::Builtin(BuiltinType::Stream),
@@ -1640,22 +1632,18 @@ impl Checker {
                 _,
             ) => {
                 let inner = Self::stream_element_type(type_args);
-                // Gate 2: lowering-capability check.  Only string and bytes have
-                // runtime symbols; other Wire-capable types pass gate 1 but cannot
-                // be lowered yet.  Emit a user-facing diagnostic rather than the
-                // ICE-flavoured "missing runtime rewrite metadata" from
-                // require_builtin_runtime_symbol.
+                // Pipe sends use the same owned-element witness as receives.
+                // Admission waits until inference has resolved the element.
                 let resolved_inner = self.subst.resolve(&inner);
-                if !matches!(resolved_inner, Ty::Var(_))
-                    && !self.queue_elem_admissible(&resolved_inner)
-                {
-                    let reason = self.queue_elem_rejection_reason(&resolved_inner);
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!("`Sink<{}>` is not supported: {reason}", inner.user_facing()),
-                    );
-                    return Ty::Error;
+                if !matches!(resolved_inner, Ty::Var(_)) {
+                    if let Some((kind, reason)) = self.element_admission_refusal(&resolved_inner) {
+                        self.report_error(
+                            kind,
+                            span,
+                            format!("`Sink<{}>` is not supported: {reason}", inner.user_facing()),
+                        );
+                        return Ty::Error;
+                    }
                 }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
@@ -2442,7 +2430,7 @@ impl Checker {
                 // `clone` on a user-defined named type: intercept before
                 // `UndefinedMethod` for admissible records.
                 // This arm handles the (Ty::Named { head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. }, "clone")
-                // case where `try_resolve_named_method` found no `clone` in fn_sigs.
+                // case where `try_resolve_source_method` found no `clone` in fn_sigs.
                 if method == "clone" && args.is_empty() {
                     if let Ty::Named {
                         head:

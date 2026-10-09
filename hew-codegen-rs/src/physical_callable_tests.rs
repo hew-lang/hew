@@ -295,12 +295,9 @@ fn environment_llvm<'ctx>(ctx: &'ctx Context, physical: &PhysicalModule) -> Modu
     builder
         .build_return(Some(&descriptor.as_pointer_value()))
         .unwrap();
-    // Anchor the synthetic descriptor before coroutine lowering removes unused
-    // internal globals. Both pure and resumable capture recipes use this getter.
+    carries::materialize(ctx, &llvm).unwrap();
+    coro::lower(ctx, &llvm, &machine).unwrap();
     llvm.verify().unwrap();
-    if llvm.get_function("llvm.coro.id").is_some() {
-        coro::lower(&llvm, &machine).unwrap();
-    }
     llvm
 }
 

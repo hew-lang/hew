@@ -102,7 +102,7 @@ actor Linker {
 }
 
 fn config() -> NodeConfig {
-    NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: f"{os.temp_dir()}/hew-remote-pid-local-route-{os.pid()}.key", trust: "pinned", peers: Vec.new(), seeds: Vec.new() }
+    NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-remote-pid-local-route-{os.pid()}.key", peers: Vec.new(), seeds: Vec.new() }
 }
 
 fn lookup(name: string) -> Option<RemotePid<Store>> {

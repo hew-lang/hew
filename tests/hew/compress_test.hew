@@ -7,7 +7,7 @@ const DEFAULT_DECOMPRESS_LIMIT: i64 = 64 * 1024 * 1024;
 
 fn assert_bytes_eq(actual: bytes, expected: bytes) {
     assert(actual.len() == expected.len());
-    for i in 0 .. expected.len() {
+    for i in 0..expected.len() {
         assert(actual[i] == expected[i]);
     }
 }
@@ -181,7 +181,7 @@ fn test_decompress_rejects_a_negative_output_limit() {
 #[test]
 fn test_decompress_rejects_output_over_the_limit() {
     var input: bytes = bytes.new();
-    for _ in 0 .. 64 {
+    for _ in 0..64 {
         input.push(65);
     }
     let compressed = match compress.zlib_compress(input) {

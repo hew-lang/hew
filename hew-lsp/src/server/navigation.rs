@@ -655,7 +655,16 @@ pub(super) fn collect_local_rename_edits(
     offset: usize,
     new_name: &str,
 ) -> Result<Vec<hew_analysis::RenameEdit>, hew_analysis::RenameError> {
-    hew_analysis::rename::plan_rename(&doc.source, &doc.parse_result, offset, new_name)
+    match &doc.type_output {
+        Some(output) => hew_analysis::rename::plan_rename_with_output(
+            &doc.source,
+            &doc.parse_result,
+            output,
+            offset,
+            new_name,
+        ),
+        None => hew_analysis::rename::plan_rename(&doc.source, &doc.parse_result, offset, new_name),
+    }
 }
 
 pub(super) fn sort_and_dedup_rename_edits(edits: &mut Vec<hew_analysis::RenameEdit>) {
@@ -1261,11 +1270,11 @@ pub(super) fn plan_workspace_rename(
     }
     let importer_index = build_named_importer_index(documents);
 
-    match hew_analysis::rename::plan_rename(&doc.source, &doc.parse_result, offset, new_name) {
-        Ok(_edits) => {}
-        Err(err) => return Err(err),
-    }
-    if let Some(edits) = checked_local_rename_edits(doc, offset, new_name) {
+    let edits = collect_local_rename_edits(doc, offset, new_name)?;
+    if matches!(
+        checked_resolution_at(doc, offset),
+        Some((_, hew_types::check::scope::Resolution::Local(_)))
+    ) {
         return workspace_edit_from_changes(
             uri,
             doc,
@@ -1314,41 +1323,6 @@ pub(super) fn plan_workspace_rename(
     }
 
     build_workspace_edit(uri, doc, offset, new_name, documents)
-}
-
-/// Rename a checked local binding through the occurrences the checker
-/// resolved to it. Name-shadowing conflicts are refused by
-/// [`hew_analysis::rename::plan_rename`] before this runs. A shorthand field
-/// token also labels its field, so it is written out: `Point { x }` becomes
-/// `Point { x: y }`.
-fn checked_local_rename_edits(
-    doc: &DocumentState,
-    offset: usize,
-    new_name: &str,
-) -> Option<Vec<hew_analysis::RenameEdit>> {
-    let output = doc.type_output.as_ref()?;
-    let (selected, resolution @ hew_types::check::scope::Resolution::Local(_)) =
-        checked_resolution_at(doc, offset)?
-    else {
-        return None;
-    };
-    let old_name = doc.source.get(selected.start..selected.end)?;
-    if old_name == new_name {
-        return Some(Vec::new());
-    }
-    let edits = hew_analysis::identity::reference_spans(output, 0, resolution)
-        .into_iter()
-        .filter(|span| doc.source.get(span.start..span.end) == Some(old_name))
-        .map(|span| hew_analysis::RenameEdit {
-            new_text: if hew_analysis::identity::is_shorthand_label(output, 0, span) {
-                format!("{old_name}: {new_name}")
-            } else {
-                new_name.to_string()
-            },
-            span,
-        })
-        .collect();
-    Some(edits)
 }
 
 fn checked_field_index(index: usize, uri: &Url) -> Result<u32, hew_analysis::RenameError> {

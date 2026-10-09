@@ -6186,7 +6186,6 @@ fn statement_blocks_end_before_a_dotted_tail() {
         "unsafe { work(); }",
         "scope { work(); }",
         "select { after 1ms => 0 }",
-        "race { work(), }",
         "fork { work() }",
         "gen { yield 1; }",
         "if c { work(); }",

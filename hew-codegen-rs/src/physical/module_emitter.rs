@@ -68,6 +68,8 @@ pub(super) fn build_module_with_host<'ctx>(
     if let Some(export) = host {
         host::emit(&emitter, export)?;
     }
+    carries::materialize(ctx, &emitter.llvm)?;
+    coro::lower(ctx, &emitter.llvm, machine)?;
     // Forward references must resolve before the verifier walks the module.
     if let Some(debug) = &emitter.debug {
         debug.finalize();
@@ -77,9 +79,6 @@ pub(super) fn build_module_with_host<'ctx>(
         .llvm
         .verify()
         .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
-    if emitter.llvm.get_function("llvm.coro.id").is_some() {
-        coro::lower(&emitter.llvm, machine)?;
-    }
     Ok(emitter.llvm)
 }
 

@@ -2,6 +2,8 @@
 // into `dyn Error` for the report `main` prints.
 import std.fs;
 
+import std.os;
+
 import std.string;
 
 enum ConfigError {
@@ -36,7 +38,7 @@ fn read_port(path: string) -> i64 fails ConfigError {
 }
 
 fn main() fails dyn Error {
-    let port = read_port("/nonexistent-hew-config/app.conf").context("loading app.conf")?;
+    let port = read_port(f"{os.temp_dir()}/hew-missing-config-{os.pid()}.conf").context("loading app.conf")?;
     if port > 65535 {
         return error f"port {port} is out of range";
     }

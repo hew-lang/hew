@@ -2276,8 +2276,9 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     // once, under the path that is not a link.
     let mut by_identity = std::collections::BTreeMap::<PathBuf, PathBuf>::new();
     let mut pending = vec![root.to_path_buf()];
+    let mut linked = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
-    while let Some(dir) = pending.pop() {
+    while let Some(dir) = pending.pop().or_else(|| linked.pop()) {
         let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         if !visited.insert(identity) {
             continue;
@@ -2289,7 +2290,11 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
             let path = entry.path();
             if path.is_dir() {
                 if !skip_format_directory(&path) {
-                    pending.push(path);
+                    if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                        linked.push(path);
+                    } else {
+                        pending.push(path);
+                    }
                 }
             } else if path.extension().is_some_and(|extension| extension == "hew") {
                 let identity = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -2510,7 +2515,7 @@ fn refusal_site(
     let (shown, original) = sources[index];
     let position = std::str::from_utf8(original).ok().and_then(|original| {
         let (_, migrated) = texts.get(index)?;
-        let offset = line_col_to_offset(migrated, line, column)?;
+        let offset = line_col_to_offset(migrated, line, column);
         let offset = original_offset(original, migrated, offset)?;
         Some(crate::diagnostic::offset_to_line_col(original, offset))
     });
@@ -2524,7 +2529,7 @@ fn refusal_site(
 }
 
 /// The byte offset of a one-based line and column in `text`.
-fn line_col_to_offset(text: &str, line: usize, column: usize) -> Option<usize> {
+fn line_col_to_offset(text: &str, line: usize, column: usize) -> usize {
     let start = if line <= 1 {
         0
     } else {
@@ -2537,7 +2542,7 @@ fn line_col_to_offset(text: &str, line: usize, column: usize) -> Option<usize> {
         .char_indices()
         .nth(column.saturating_sub(1))
         .map_or(line_text.len(), |(offset, _)| offset);
-    Some(start + within)
+    start + within
 }
 
 /// The offset in `original` of the token `offset` in `migrated` came from.

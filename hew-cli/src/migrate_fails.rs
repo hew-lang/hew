@@ -38,7 +38,7 @@ use hew_parser::ast::{
 use hew_types::check::scope::Resolution;
 use hew_types::check::TypeCheckOutput;
 use hew_types::error::TypeErrorKind;
-use hew_types::{BuiltinType, NodeVisitor, SpanKey, Ty};
+use hew_types::{BuiltinType, CallTarget, MethodCallRewrite, NodeVisitor, SpanKey, Ty};
 
 /// A file the pass left unconverted, at its first location.
 pub(crate) struct EdgeReport {
@@ -147,11 +147,11 @@ fn convert_unit(
             });
             continue;
         };
-        let edits = plan_file(text, file, &before);
-        if edits.is_empty() {
+        let changes = plan_file(text, file, &before);
+        if changes.is_empty() {
             continue;
         }
-        let rewrite = match render(text, edits) {
+        let rewrite = match render(text, changes) {
             Ok(rewrite) => rewrite,
             Err(offset) => {
                 let (line, column) = crate::diagnostic::offset_to_line_col(text, offset);
@@ -259,7 +259,7 @@ fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
                     code: format!("parse {:?}", error.kind),
                     message: error.message,
                     span: error.span,
-                    style: false,
+                    style: error.severity == hew_parser::Severity::Warning,
                 },
                 FrontendDiagnosticKind::Message(message) => FileDiagnostic {
                     code: message.code,
@@ -452,20 +452,20 @@ impl Rewrite {
     }
 }
 
-/// Apply `edits` to `source`. An edit inside another applies to the source
+/// Apply `changes` to `source`. An edit inside another applies to the source
 /// that one carries over; an edit that crosses another's boundary, or lies
 /// in text the outer edit replaces, cannot compose and reports its offset.
-fn render(source: &str, mut edits: Vec<Edit>) -> Result<Rewrite, usize> {
-    edits.sort_by_key(|edit| (edit.range.start, std::cmp::Reverse(edit.range.end)));
-    edits.dedup_by(|a, b| a.range == b.range && a.pieces == b.pieces);
+fn render(source: &str, mut changes: Vec<Edit>) -> Result<Rewrite, usize> {
+    changes.sort_by_key(|edit| (edit.range.start, std::cmp::Reverse(edit.range.end)));
+    changes.dedup_by(|a, b| a.range == b.range && a.pieces == b.pieces);
     let mut rewrite = Rewrite {
         text: String::new(),
         segments: Vec::new(),
     };
-    let mut used = vec![false; edits.len()];
-    render_range(source, 0..source.len(), &edits, &mut used, &mut rewrite)?;
+    let mut used = vec![false; changes.len()];
+    render_range(source, 0..source.len(), &changes, &mut used, &mut rewrite)?;
     match used.iter().position(|used| !used) {
-        Some(stray) => Err(edits[stray].range.start),
+        Some(stray) => Err(changes[stray].range.start),
         None => Ok(rewrite),
     }
 }
@@ -473,12 +473,12 @@ fn render(source: &str, mut edits: Vec<Edit>) -> Result<Rewrite, usize> {
 fn render_range(
     source: &str,
     range: Range<usize>,
-    edits: &[Edit],
+    changes: &[Edit],
     used: &mut [bool],
     rewrite: &mut Rewrite,
 ) -> Result<(), usize> {
     let mut cursor = range.start;
-    for (index, edit) in edits.iter().enumerate() {
+    for (index, edit) in changes.iter().enumerate() {
         if used[index] || edit.range.start < cursor || edit.range.end > range.end {
             if !used[index] && edit.range.start < range.end && edit.range.end > range.end {
                 return Err(edit.range.start);
@@ -499,7 +499,9 @@ fn render_range(
                         .segments
                         .push((start..rewrite.text.len(), edit.range.clone(), false));
                 }
-                Piece::Source(inner) => render_range(source, inner.clone(), edits, used, rewrite)?,
+                Piece::Source(inner) => {
+                    render_range(source, inner.clone(), changes, used, rewrite)?;
+                }
             }
         }
         cursor = edit.range.end;
@@ -528,9 +530,13 @@ enum Body<'a> {
 /// The rewrites of one file.
 fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
     let parsed = hew_parser::parse(source);
-    let mut edits = Vec::new();
-    if !parsed.errors.is_empty() {
-        return edits;
+    let mut changes = Vec::new();
+    if parsed
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error)
+    {
+        return changes;
     }
     let planner = Planner { source, file, unit };
     let mut lambdas = LambdaFinder::default();
@@ -539,12 +545,12 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
     let mut callable = |annotation: Option<&Spanned<TypeExpr>>,
                         body: &Block,
                         handler: Option<&Span>,
-                        edits: &mut Vec<Edit>| {
+                        changes: &mut Vec<Edit>| {
         hew_types::walk_block(body, &mut lambdas);
         if let Some(span) = handler {
-            planner.keep_value_form(annotation, body, span, edits);
+            planner.keep_value_form(annotation, body, span, changes);
         } else {
-            planner.convert_declared(annotation, &Body::Block(body), edits);
+            planner.convert_declared(annotation, &Body::Block(body), changes);
         }
     };
     for (item, _) in &parsed.program.items {
@@ -554,19 +560,24 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
                     function.return_type.as_ref(),
                     &function.body,
                     None,
-                    &mut edits,
+                    &mut changes,
                 );
             }
             Item::Impl(implementation) => {
                 for method in implementation.methods.iter().filter(|m| !m.is_generator) {
-                    callable(method.return_type.as_ref(), &method.body, None, &mut edits);
+                    callable(
+                        method.return_type.as_ref(),
+                        &method.body,
+                        None,
+                        &mut changes,
+                    );
                 }
             }
             Item::Trait(declaration) => {
                 for trait_item in &declaration.items {
                     if let TraitItem::Method(method) = trait_item {
                         if let Some(body) = &method.body {
-                            callable(method.return_type.as_ref(), body, None, &mut edits);
+                            callable(method.return_type.as_ref(), body, None, &mut changes);
                         }
                     }
                 }
@@ -575,21 +586,31 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
                 for body_item in &declaration.body {
                     if let TypeBodyItem::Method(method) = body_item {
                         if !method.is_generator {
-                            callable(method.return_type.as_ref(), &method.body, None, &mut edits);
+                            callable(
+                                method.return_type.as_ref(),
+                                &method.body,
+                                None,
+                                &mut changes,
+                            );
                         }
                     }
                 }
             }
             Item::Actor(actor) => {
                 for method in actor.methods.iter().filter(|m| !m.is_generator) {
-                    callable(method.return_type.as_ref(), &method.body, None, &mut edits);
+                    callable(
+                        method.return_type.as_ref(),
+                        &method.body,
+                        None,
+                        &mut changes,
+                    );
                 }
                 for handler in actor.receive_fns.iter().filter(|h| !h.is_generator) {
                     callable(
                         handler.return_type.as_ref(),
                         &handler.body,
                         Some(&handler.span),
-                        &mut edits,
+                        &mut changes,
                     );
                 }
             }
@@ -599,12 +620,12 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
     for (span, return_type, body) in std::mem::take(&mut lambdas.found) {
         let (return_type, body) = (return_type.as_ref(), &body);
         if return_type.is_some() {
-            planner.convert_declared(return_type, &Body::Expr(body), &mut edits);
+            planner.convert_declared(return_type, &Body::Expr(body), &mut changes);
         } else {
-            planner.convert_closure(&span, &Body::Expr(body), &mut edits);
+            planner.convert_closure(&span, &Body::Expr(body), &mut changes);
         }
     }
-    edits
+    changes
 }
 
 /// Every closure literal, with its declared return and body, cloned so the
@@ -668,7 +689,7 @@ impl Planner<'_> {
         &self,
         annotation: Option<&Spanned<TypeExpr>>,
         body: &Body<'_>,
-        edits: &mut Vec<Edit>,
+        changes: &mut Vec<Edit>,
     ) {
         let Some((annotation, declared)) = self.declared_result(annotation) else {
             return;
@@ -692,8 +713,61 @@ impl Planner<'_> {
         let Some(edit) = self.annotation_edit(annotation) else {
             return;
         };
-        edits.push(edit);
-        self.rewrite_exits(&declared, &exits, &leaves, edits);
+        changes.push(edit);
+        self.preserve_datetime_string_errors(&declared, &exits, changes);
+        self.rewrite_exits(&declared, &exits, &leaves, changes);
+    }
+
+    fn preserve_datetime_string_errors(
+        &self,
+        declared: &Ty,
+        exits: &Exits,
+        changes: &mut Vec<Edit>,
+    ) {
+        if !declared
+            .as_result()
+            .is_some_and(|(_, error)| *error == Ty::String)
+        {
+            return;
+        }
+        let Some(output) = self.unit.output.as_ref() else {
+            return;
+        };
+        let error_name = self.fresh_name("_hew_migrate_error");
+        for (whole, operand) in &exits.tries {
+            if !self
+                .unit
+                .expr_type(operand, self.file)
+                .and_then(Ty::as_result)
+                .is_some_and(|(_, error)| *error != Ty::String)
+            {
+                continue;
+            }
+            let key = SpanKey::in_module(operand, self.file);
+            let target = output.direct_call_targets.get(&key).or_else(|| {
+                match output.method_call_rewrites.get(&key) {
+                    Some(MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                        target, ..
+                    }) => Some(target),
+                    _ => None,
+                }
+            });
+            let Some(CallTarget::User(declaration)) = target else {
+                continue;
+            };
+            if !matches!(
+                output.defs.path(*declaration),
+                "std.time.datetime.format" | "std.time.datetime.parse"
+            ) {
+                continue;
+            }
+            changes.push(self.carry(
+                whole,
+                operand,
+                "(",
+                &format!(").map_err(|{error_name}| f\"{{{error_name}}}\")?"),
+            ));
+        }
     }
 
     /// A callable's `-> Result<T, E>` annotation, with the type it names; a
@@ -720,7 +794,7 @@ impl Planner<'_> {
         annotation: Option<&Spanned<TypeExpr>>,
         body: &Block,
         handler_span: &Span,
-        edits: &mut Vec<Edit>,
+        changes: &mut Vec<Edit>,
     ) {
         let Some((annotation, declared)) = self.declared_result(annotation) else {
             return;
@@ -730,7 +804,7 @@ impl Planner<'_> {
         };
         let exits = Self::exits(&Body::Block(body));
         for (whole, payload) in &exits.return_errors {
-            edits.push(self.carry(whole, &payload.1, "return .Err(", ")"));
+            changes.push(self.carry(whole, &payload.1, "return .Err(", ")"));
         }
         for leaf in Self::tail_leaves(&Body::Block(body)) {
             if !Self::is_exit(&leaf.expr)
@@ -740,7 +814,7 @@ impl Planner<'_> {
                     .expr_type(&leaf.expr.1, self.file)
                     .is_some_and(|ty| ty == success || *ty == Ty::Error)
             {
-                edits.push(self.carry(&leaf.expr.1, &leaf.expr.1, ".Ok(", ")"));
+                changes.push(self.carry(&leaf.expr.1, &leaf.expr.1, ".Ok(", ")"));
             }
         }
         if *success == Ty::Unit
@@ -756,9 +830,11 @@ impl Planner<'_> {
                 .and_then(|text| text.rfind('}'))
             {
                 let end = handler_span.start + end;
-                edits.push(Edit::text(end..end, "\n.Ok(())\n"));
+                changes.push(Edit::text(end..end, "\n.Ok(())\n"));
             }
         }
+        let success_name = self.fresh_name("_hew_migrate_value");
+        let error_name = self.fresh_name("_hew_migrate_error");
         for (whole, operand) in exits.tries {
             let Some((_, from)) = self
                 .unit
@@ -768,12 +844,12 @@ impl Planner<'_> {
                 continue;
             };
             let returned = if from == error {
-                "error".to_string()
+                error_name.clone()
             } else {
                 let Some(target) = self.error_text(annotation) else {
                     continue;
                 };
-                format!("{target}.from(error)")
+                format!("{target}.from({error_name})")
             };
             let whole = self.trimmed(&whole);
             let (open, close) = if self.delimited(&whole) {
@@ -781,17 +857,27 @@ impl Planner<'_> {
             } else {
                 ("(", ")")
             };
-            edits.push(Edit {
+            changes.push(Edit {
                 range: whole,
                 pieces: vec![
                     Piece::Text(format!("{open}match ")),
                     Piece::Source(self.trimmed(&operand)),
                     Piece::Text(format!(
-                        " {{ .Ok(value) => value, .Err(error) => return .Err({returned}) }}{close}"
+                        " {{ .Ok({success_name}) => {success_name}, .Err({error_name}) => return .Err({returned}) }}{close}"
                     )),
                 ],
             });
         }
+    }
+
+    fn fresh_name(&self, base: &str) -> String {
+        let mut name = base.to_string();
+        let mut suffix = 0;
+        while self.source.contains(&name) {
+            suffix += 1;
+            name = format!("{base}{suffix}");
+        }
+        name
     }
 
     /// Whether an expression standing at `range` ends where the expression
@@ -827,7 +913,7 @@ impl Planner<'_> {
     /// fails: such a closure takes a failure edge, so its `Ok`/`Err` exits
     /// become the value and `return error`. A `Result`-valued exit gains `?`
     /// when the checker typed the closure's `Result`.
-    fn convert_closure(&self, span: &Span, body: &Body<'_>, edits: &mut Vec<Edit>) {
+    fn convert_closure(&self, span: &Span, body: &Body<'_>, changes: &mut Vec<Edit>) {
         let exits = Self::exits(body);
         if !self.fails(&exits) {
             return;
@@ -841,7 +927,7 @@ impl Planner<'_> {
             _ => Ty::Error,
         };
         let leaves = Self::tail_leaves(body);
-        self.rewrite_exits(&declared, &exits, &leaves, edits);
+        self.rewrite_exits(&declared, &exits, &leaves, changes);
     }
 
     /// Whether a body leaves through a failure edge: `return error`, or a
@@ -864,15 +950,21 @@ impl Planner<'_> {
         exits
     }
 
-    fn rewrite_exits(&self, declared: &Ty, exits: &Exits, leaves: &[Leaf], edits: &mut Vec<Edit>) {
+    fn rewrite_exits(
+        &self,
+        declared: &Ty,
+        exits: &Exits,
+        leaves: &[Leaf],
+        changes: &mut Vec<Edit>,
+    ) {
         for (span, value) in &exits.returns {
             if let Some(edit) = self.return_edit(span, value, declared) {
-                edits.push(edit);
+                changes.push(edit);
             }
         }
         for leaf in leaves {
             if let Some(edit) = self.leaf_edit(leaf, declared) {
-                edits.push(edit);
+                changes.push(edit);
             }
         }
     }
@@ -1066,8 +1158,8 @@ impl Planner<'_> {
             }
             | Expr::Coalesce { left: inner, .. }
             | Expr::Is { lhs: inner, .. }
-            | Expr::PostfixTry(inner) => &inner.0,
-            Expr::Range {
+            | Expr::PostfixTry(inner)
+            | Expr::Range {
                 start: Some(inner), ..
             } => &inner.0,
             _ => return false,
@@ -1230,7 +1322,7 @@ mod tests {
             6..13,
             vec![Piece::Text("error ".into()), Piece::Source(11..12)],
         );
-        let rewrite = render(source, vec![inner, outer]).expect("nested edits compose");
+        let rewrite = render(source, vec![inner, outer]).expect("nested changes compose");
         assert_eq!(rewrite.text, "f(error 1)");
         assert_eq!(rewrite.original_offset(0), 4);
         assert_eq!(rewrite.original_offset(8), 11);

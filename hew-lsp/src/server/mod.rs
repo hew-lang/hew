@@ -291,10 +291,6 @@ fn build_server_capabilities() -> ServerCapabilities {
     }
 }
 
-fn normalize_workspace_root(path: PathBuf) -> PathBuf {
-    std::fs::canonicalize(&path).unwrap_or(path)
-}
-
 fn internal_error(message: impl Into<String>) -> tower_lsp_server::jsonrpc::Error {
     use tower_lsp_server::jsonrpc::{Error, ErrorCode};
 
@@ -528,7 +524,7 @@ impl HewLanguageServer {
     /// task so the handler path returns immediately.
     fn reanalyze(&self, uri: &Url, source: &str) {
         self.test_diagnostics.remove(uri);
-        if let Some(path) = uri.to_file_path() {
+        if let Some(path) = uri.to_checked_file_path() {
             let prefix = format!("{}::", workspace::normalize_workspace_path(&path).display());
             self.test_seeds
                 .retain(|selector, _| !selector.starts_with(&prefix));

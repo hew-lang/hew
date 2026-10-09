@@ -118,7 +118,7 @@ impl DocumentSet {
     pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
         let path = path.into();
         let source = source.into();
-        if let Ok(canonical) = path.canonicalize() {
+        if let Some(canonical) = buffer_identity(&path) {
             if canonical != path {
                 self.sources.insert(canonical, source.clone());
             }
@@ -154,9 +154,18 @@ impl DocumentSet {
         if let Some(source) = self.sources.get(path) {
             return Some(source);
         }
-        let canonical = path.canonicalize().ok()?;
+        let canonical = buffer_identity(path)?;
         self.sources.get(&canonical).map(String::as_str)
     }
+}
+
+/// The canonical path of a buffer. An unsaved buffer has no file to resolve,
+/// but its directory does, so a spelling through a symlinked directory still
+/// names the same buffer.
+fn buffer_identity(path: &Path) -> Option<PathBuf> {
+    path.canonicalize()
+        .ok()
+        .or_else(|| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?)))
 }
 
 /// The overlay used when a caller supplies no [`FrontendOptions`].

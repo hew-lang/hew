@@ -270,17 +270,24 @@ fn duplicate_impl_cross_module_error_names_previous_source_without_artifacts() {
             describe_output(&output)
         );
         let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        // Imported modules are named by their resolved path: the temporary
+        // directory may be reached through a symlink (`/var` on macOS) or a
+        // Windows 8.3 short name, and the verbatim `\\?\` prefix is never shown.
+        let resolved = fs::canonicalize(dir.path()).expect("fixture directory resolves");
+        let resolved = resolved.display().to_string();
+        let resolved = resolved.strip_prefix(r"\\?\").unwrap_or(&resolved);
+        let module = |name: &str| std::path::Path::new(resolved).join(name);
         assert!(
             stderr.contains(&format!(
                 "{}:2:1: error: conflicting implementation",
-                dir.path().join("right.hew").display()
+                module("right.hew").display()
             )),
             "{stderr}"
         );
         assert!(
             stderr.contains(&format!(
                 "{}:2:1: note: previous implementation here",
-                dir.path().join("left.hew").display()
+                module("left.hew").display()
             )),
             "{stderr}"
         );

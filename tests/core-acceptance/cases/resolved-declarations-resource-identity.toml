@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "ResourceMissingClose"
-file = "resolved-declarations-resource-identity/src/unclosed.hew"
+file = "resolved-declarations-resource-identity/unclosed.hew"
 line = 1
 column = 1

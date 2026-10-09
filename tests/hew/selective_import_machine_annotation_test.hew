@@ -8,7 +8,7 @@
 //! type at the boundary. Inferred locals and module-qualified annotations
 //! were the working controls.
 
-import tests.hew.imported_machine_support.machine_defs.{PayloadLifecycle, make, bounce};
+import imported_machine_support.machine_defs.{PayloadLifecycle, make, bounce};
 
 fn carry(value: PayloadLifecycle) -> PayloadLifecycle {
     value

@@ -469,33 +469,33 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 
 ## Coverage matrix summary
 
-| Check                                | Where it runs                                                     | Blocking?                           |
-| ------------------------------------ | ----------------------------------------------------------------- | ----------------------------------- |
-| Clippy + rustfmt                     | ci.yml (every PR)                                                 | Yes                                 |
-| Rust workspace tests                 | ci.yml + release-gate.yml                                         | Yes                                 |
-| Codegen E2E (native)                 | ci.yml + release-gate.yml                                         | Yes                                 |
-| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                         | Yes                                 |
-| Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                             | Yes for PRs                         |
-| Smoke test (compile+run)             | release-gate.yml                                                  | Yes                                 |
-| Release-library consumer link+run    | release-gate.yml + release.yml (every platform/architecture lane) | Yes                                 |
-| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                         | Yes                                 |
-| Packaged archive smoke (Windows zip) | release.yml (Windows job)                                         | Yes                                 |
-| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 + aarch64)                        | Yes                                 |
-| Linux package install smoke          | release.yml (`linux-packages`)                                    | Yes for final tags; skipped for RCs |
-| Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                | Yes                                 |
-| Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                       | Yes                                 |
-| Full release DAG dry run             | release.yml on `release/**` pushes                                | Yes for release branches            |
-| macOS build + tests                  | ci.yml + release-gate.yml                                         | Yes                                 |
-| Windows build + tests                | ci.yml + release-gate.yml                                         | Yes                                 |
-| FreeBSD build + tests                | release-gate.yml (x86_64 + aarch64), freebsd.yml (nightly)        | Yes for release branches            |
-| Rust runtime ASan (`make asan`)       | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml     | Yes for release branches            |
-| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)           | Blocks nightly result; review before release |
-| Host and extern-byte safety         | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release |
-| Bounded parser fuzz smoke           | nightly-sanitizers.yml (`make fuzz-smoke`)                        | Blocks nightly result; review before release |
-| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                        | Current CI evidence unavailable; release decision required |
-| Miri                                | Local `make miri`; no current workflow job                        | Current CI evidence unavailable; release decision required |
-| Codegen silent-failure lint          | codegen-lint.yml (PR)                                             | Advisory                            |
-| Local cross-platform build           | `make pre-release`                                                | Recommended                         |
+| Check                                | Where it runs                                                           | Blocking?                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Clippy + rustfmt                     | ci.yml (every PR)                                                       | Yes                                                        |
+| Rust workspace tests                 | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Codegen E2E (native)                 | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                                   | Yes for PRs                                                |
+| Smoke test (compile+run)             | release-gate.yml                                                        | Yes                                                        |
+| Release-library consumer link+run    | release-gate.yml + release.yml (every platform/architecture lane)       | Yes                                                        |
+| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                               | Yes                                                        |
+| Packaged archive smoke (Windows zip) | release.yml (Windows job)                                               | Yes                                                        |
+| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 + aarch64)                              | Yes                                                        |
+| Linux package install smoke          | release.yml (`linux-packages`)                                          | Yes for final tags; skipped for RCs                        |
+| Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                      | Yes                                                        |
+| Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                             | Yes                                                        |
+| Full release DAG dry run             | release.yml on `release/**` pushes                                      | Yes for release branches                                   |
+| macOS build + tests                  | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Windows build + tests                | ci.yml + release-gate.yml                                               | Yes                                                        |
+| FreeBSD build + tests                | release-gate.yml (x86_64 + aarch64), freebsd.yml (nightly)              | Yes for release branches                                   |
+| Rust runtime ASan (`make asan`)      | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml           | Yes for release branches                                   |
+| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)                  | Blocks nightly result; review before release               |
+| Host and extern-byte safety          | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release               |
+| Bounded parser fuzz smoke            | nightly-sanitizers.yml (`make fuzz-smoke`)                              | Blocks nightly result; review before release               |
+| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                              | Current CI evidence unavailable; release decision required |
+| Miri                                 | Local `make miri`; no current workflow job                              | Current CI evidence unavailable; release decision required |
+| Codegen silent-failure lint          | codegen-lint.yml (PR)                                                   | Advisory                                                   |
+| Local cross-platform build           | `make pre-release`                                                      | Recommended                                                |
 
 ## Known gaps (tracked)
 

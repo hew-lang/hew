@@ -1853,6 +1853,7 @@ mod tests {
     #[test]
     fn directory_peer_function_keeps_its_physical_file_identity() {
         let project = Project::new(&[
+            ("hew.toml", "[package]\nname = \"app\"\n"),
             (
                 "greeting/greeting.hew",
                 "pub fn other() -> string { \"other\" }\n",

@@ -265,8 +265,6 @@ fn type_error_in_imported_module_reported_identically() {
     )
     .expect("write hew.toml");
 
-    fs::create_dir(workspace.path().join("src")).expect("create src directory");
-
     let main_hew = workspace.path().join("main.hew");
     fs::write(
         &main_hew,
@@ -275,10 +273,10 @@ fn type_error_in_imported_module_reported_identically() {
     .expect("write main.hew");
 
     fs::write(
-        workspace.path().join("src").join("helper.hew"),
+        workspace.path().join("helper.hew"),
         "pub fn value() -> i64 {\n    let x: i64 = \"not an integer\";\n    return x;\n}\n",
     )
-    .expect("write src/helper.hew");
+    .expect("write helper.hew");
 
     let path = main_hew.to_str().expect("valid UTF-8 path");
 

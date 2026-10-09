@@ -499,9 +499,9 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
     let (filename, content) = match template {
         manifest::ManifestTemplate::Lib => (
             // A package name is a module path. Its final segment names the
-            // directory entry (`hew.selfqualtype` installs at
-            // `hew/selfqualtype/selfqualtype.hew`). Scaffold that exact root so
-            // init, install, and import share one convention.
+            // root module, a single file beside `hew.toml` (`hew.selfqualtype`
+            // installs at `hew/selfqualtype/selfqualtype.hew`). Scaffold that
+            // exact root so init, install, and import share one convention.
             manifest::package_root_source(name),
             format!("// {name} library\n\npub fn add(a: i32, b: i32) -> i32 {{\n    a + b\n}}\n"),
         ),

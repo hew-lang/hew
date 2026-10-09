@@ -146,12 +146,15 @@ the tree.
 `hew doc` is different: it accepts either one `.hew` file or a directory tree
 of `.hew` files to document.
 
-- `import foo;` resolves to the directory-form module at `foo/foo.hew` or to
-  `foo.hew` beside the importer — whichever exists. If **both** exist the
-  import is a hard error (``import `foo` is ambiguous: both ... exist``);
-  rename or remove one.
-- Other top-level `.hew` files inside `foo/` merge into the same module
-  automatically.
+- `import foo;` resolves to `foo.hew` beside the importer or, inside a package
+  (a directory with `hew.toml`, made by `hew init`), to the directory-form
+  module at `foo/foo.hew` — whichever exists. If **both** exist the import is
+  a hard error (``import `foo` is ambiguous: both ... exist``); rename or
+  remove one.
+- Other top-level `.hew` files inside a package's `foo/` merge into the same
+  module automatically. Outside a package every file is a module of its own.
+- Imports never depend on the working directory or on the name of the
+  directory a project was checked out into.
 - Child directories stay separate submodules, so import them explicitly — for
   example `import foo.bar;`.
 - Start with

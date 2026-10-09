@@ -1618,12 +1618,14 @@ containing one — is a fail-closed compile error, never a silent copy.
 Hew uses a file-based module system inspired by Rust:
 
 - **File = module**: Each `.hew` file is a module. The file name is the module name.
-- **Directory = namespace**: Directories create nested namespaces.
+- **Directory = namespace**: Directories create nested namespaces. Inside a
+  package, a directory `D` holding `D/D.hew` is one module spread over its
+  files (§3.5.1).
 - **Visibility**: All declarations are private by default. Use `pub` to export.
 - **Imports form a DAG (normative)**: a module may not import itself, directly or through other modules, whatever the imported declarations are. The compiler reports the cycle with every import on its path; break it by moving the shared declarations into a module both sides import.
 
 ```hew
-// src/network/tcp.hew
+// network/tcp.hew
 // This is module network.tcp
 
 pub type Connection {
@@ -1717,19 +1719,28 @@ The same prefix applies to any item kind: `package type`, `package const`, `pack
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 
-A module may span multiple files inside a dedicated directory. When the
-compiler resolves `import greeting;` it looks for either:
+A module may span multiple files inside a dedicated directory. Which module a
+file belongs to depends only on where it sits relative to its **anchor**, a
+directory the code carries with it:
 
-1. A single file `greeting.hew` beside the importing file (**single-file form**), or
-2. A directory named `greeting/` that contains a file `greeting/greeting.hew`
-   (**directory form** — the entry file's stem must match the directory name).
+- the standard-library root, for a file under `<std root>/std/`;
+- otherwise the nearest directory at or above the file that holds `hew.toml`
+  (the file's package);
+- otherwise nothing: the file is **loose**.
 
-In directory form, **every other `.hew` file in that directory is a peer
-file**. The compiler parses all peer files and merges their items into the same
-module namespace, in deterministic (sorted) order.
+The anchor directory's own name is never read. Renaming a checkout, installing
+a package from the registry or linking it as a path dependency gives every
+file the same module.
+
+A directory `D` strictly below an anchor that contains `D/D.hew` is a
+**directory module**. `D/D.hew` is its **entry file**, and every other `.hew`
+file at the top level of `D`, except `*_test.hew` test files, is a **peer
+file**. The compiler parses the entry and its peers and merges their items
+into one module namespace, in deterministic (sorted) order.
 
 ```
 myapp/
+├── hew.toml           ← [package] name = "myapp"
 ├── main.hew           ← import greeting;
 └── greeting/
     ├── greeting.hew         ← entry (dir name == file stem)
@@ -1770,24 +1781,37 @@ statements.
 
 **Rules:**
 
-- The entry file is identified by `dir_name == file_stem` (e.g.
-  `greeting/greeting.hew`). If no such file exists, import resolution fails.
+- A package's **root module** is the single file `<leaf>.hew` in the package
+  directory, where `<leaf>` is the last segment of `[package] name`: package
+  `acme.http` has its root module in `http.hew`. Every other top-level file of
+  the package is a module of its own (`client.hew` is `acme.http.client`). A
+  multi-file module is always a named subdirectory.
+- Loose files never form directory modules; their directories are only
+  namespaces, so `import meshproto.radio` still finds `meshproto/radio.hew`.
+  A multi-file module needs a package (`hew init`).
 - The directory is the module's only import spelling. The entry file
   (`import greeting.greeting;`) is refused as `E_ENTRY_FILE_IMPORT`; a user
   package's peer file imported directly is refused as `E_PEER_IMPORT`. Both
-  name `greeting` as the fix.
-- All other `.hew` files at the **top level** of the directory are peer files.
-  Sub-directories are not automatically included; they must be imported
+  name `greeting` as the fix. A standard-library peer stays importable by file
+  (`std.net.http.http_client`) and loads the whole directory module.
+- Sub-directories are not automatically included; they must be imported
   explicitly.
 - Peer files are merged in sorted filename order (deterministic across
   platforms).
 - A peer file may itself contain `import` statements; those imports are
   resolved recursively.
-- Duplicate `pub` names across the entry and its peers are a **compile error**.
-  Each public symbol must have a unique name within the merged module.
+- Duplicate `pub` names across the entry and its peers are a **compile error**
+  that names both files. Each public symbol must have a unique name within the
+  merged module.
 - Peer files participate in the same module body. Private items remain private
   to the merged module from outside imports, but peer files are not isolated
   from one another.
+- A test file `foo_test.hew` compiles with the directory module it sits in, or
+  else with `foo.hew` beside it.
+- `hew check`, the language server, `hew test`, `hew build` and migration all
+  assign each file to the same module. Checking an entry or a peer checks the
+  whole directory module, and checking a package's root module checks it as
+  its importers see it.
 
 A working example is at
 [`examples/directory_module_demo/`](../../examples/directory_module_demo/README.md).
@@ -1823,7 +1847,36 @@ hew doc std/
 
 This produces an index plus per-module pages for the shipped `std/` sources.
 
-#### 3.5.3 Per-module type namespacing
+#### 3.5.3 Anchors and search roots
+
+A dotted import `a.b.c` written in file `F` is looked for in four places, in
+order:
+
+1. `std.*` resolves from the standard-library root only (§3.5.2).
+2. A path that starts with the whole dotted name of `F`'s package resolves
+   inside the package directory: the bare package name is its root module
+   (`<leaf>.hew`), and `acme.http.client` is `client.hew` in package
+   `acme.http`. Tests and examples in a package import it this way, whatever
+   directory they sit in.
+3. Paths relative to `F`'s directory: the flat form `a/b/c.hew`, and the
+   directory form `a/b/c/c.hew` when that file roots a module — a directory
+   module's entry, or the `c.hew` of a package whose `hew.toml` sits in
+   `a/b/c/`. A loose `a/b/c/c.hew` is reached only by its flat spelling
+   `a.b.c.c`. A file below its package's root also reaches the package's
+   modules by their path from the root: `import wire;` in
+   `meshproto/radio.hew` finds the package's `wire.hew`.
+4. Dependencies: the packages installed under the project's
+   `.hew/packages/`, then the `--pkg-path`, `hew.` and `ecosystem.` roots.
+
+The working directory is never searched, and neither is the
+standard-library root for a module outside `std`. When two different files
+answer one import, it is refused as ambiguous. Inside a package, an import
+that resolves from the standard library, from the package's own name, from the
+package root or beside the importing file needs no `[dependencies]` entry;
+anything else must be a
+declared dependency.
+
+#### 3.5.4 Per-module type namespacing
 
 Types defined in different modules are distinct even if they share a name. A
 `Point` defined in `geometry` and a `Point` defined in `graphics` are unrelated

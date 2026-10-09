@@ -1,6 +1,6 @@
 [[case]]
 id = "pipe-vec-elements"
-intent = "Pipe sends preserve vector value semantics, receives transfer owned vector elements, and closing the reader releases an unread vector with owned strings."
+intent = "Pipe sends preserve vector value semantics, receives and iteration transfer owned vector elements, and early loop closure releases an unread vector with owned strings."
 source = "cases/pipe-vec-elements.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

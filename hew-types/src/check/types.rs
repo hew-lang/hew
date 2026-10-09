@@ -386,12 +386,21 @@ pub enum VecCursorMode {
     Take,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaceOperandKind {
+    Invocation,
+    Task,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_program: Option<std::sync::Arc<super::machine_normalize::NormalizedProgram>>,
     pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
+    pub race_operands: HashMap<SpanKey, Vec<RaceOperandKind>>,
+    pub task_scope_results: HashSet<SpanKey>,
+    pub task_result_lifetimes: HashSet<SpanKey>,
     /// Checked local recovery semantics; HIR must consume this fact.
     pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     /// The parameter slot of each source argument, for every call whose
@@ -706,11 +715,11 @@ pub struct TypeCheckOutput {
     /// selected concrete impl may depend on type substitution downstream.
     pub generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     /// Binder identities of each checked callable body, in parameter order.
-    pub callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    pub callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,
     /// Exact field writes of an authored aggregate constructor.
     pub aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
     /// Symbolic return origins of checker-owned function bodies.
-    pub callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
+    pub callable_return_candidates: HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
@@ -1096,6 +1105,9 @@ pub enum CallableCandidate {
     Declaration(crate::DefId),
     /// A closure literal in the checked source module.
     Closure(SpanKey),
+    TaskProducer(SpanKey),
+    TaskResult(Box<CallableCandidate>),
+    Sequence(Vec<CallableCandidate>),
     /// A checker-bound formal supplied by a caller at the selected call site.
     Formal(TypeBindingId),
     /// Intermediate value origin: an authored aggregate constructor.
@@ -1147,8 +1159,14 @@ pub struct ImportedImplBodyFact {
 }
 
 #[derive(Debug, Clone)]
+pub(super) enum PendingCallableTarget {
+    Declaration(crate::DefId),
+    Indirect(IndirectCallCandidates),
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct PendingCallableArguments {
-    pub(super) callee: crate::DefId,
+    pub(super) callee: PendingCallableTarget,
     pub(super) receiver: Option<IndirectCallCandidates>,
     pub(super) arguments: Vec<IndirectCallCandidates>,
 }
@@ -1173,6 +1191,15 @@ impl IndirectCallCandidates {
             known: vec![candidate],
             may_be_unknown: false,
         }
+    }
+
+    pub(super) fn task_results(mut self) -> Self {
+        self.known = self
+            .known
+            .into_iter()
+            .map(|candidate| CallableCandidate::TaskResult(Box::new(candidate)))
+            .collect();
+        self
     }
 
     pub(super) fn join(&mut self, other: Self) {
@@ -3380,11 +3407,12 @@ pub struct Checker {
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     pub(super) indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
-    pub(super) callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    pub(super) callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,
     pub(super) generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
     pub(super) aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
-    pub(super) callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
+    pub(super) callable_return_candidates:
+        HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
@@ -3662,6 +3690,8 @@ pub struct Checker {
     /// Binding-accurate closure capture facts keyed by closure literal span.
     pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
     pub(super) select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
+    pub(super) race_operands: HashMap<SpanKey, Vec<RaceOperandKind>>,
+    pub(super) task_lifetimes: super::task_lifetimes::TaskLifetimes,
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
@@ -4500,6 +4530,8 @@ impl Checker {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
             select_sources: HashMap::new(),
+            race_operands: HashMap::new(),
+            task_lifetimes: super::task_lifetimes::TaskLifetimes::default(),
             closure_escape_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
             actor_spawn_args: HashMap::new(),

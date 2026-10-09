@@ -363,6 +363,23 @@ impl FunctionLowerer<'_> {
                     element: physical_value_recipe(self.module, self.glue_ids, element)?,
                 })
             }
+            SemOpKind::TaskRace { scope, members } => {
+                let dest = self.one_result(operation)?;
+                let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
+                    return Err(PhysicalError::new("race has no exact output type"));
+                };
+                one(PhysicalOp::TaskRace {
+                    scope: *scope,
+                    members: members
+                        .iter()
+                        .map(|member| self.value(member.value))
+                        .collect::<Result<_, _>>()?,
+                    dest,
+                    output: (output.as_ref() != &ResolvedTy::Never)
+                        .then(|| physical_value_recipe(self.module, self.glue_ids, output))
+                        .transpose()?,
+                })
+            }
             SemOpKind::TaskSpawn { scope, callable } => {
                 let dest = self.one_result(operation)?;
                 let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {

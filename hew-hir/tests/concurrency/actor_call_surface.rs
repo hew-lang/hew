@@ -68,8 +68,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(timeout_ms, out);
         }
         HirExprKind::Block(block)
-        | HirExprKind::Scope { body: block }
-        | HirExprKind::Race { body: block }
+        | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => visit_block(block, out),
         HirExprKind::Yield { value, .. }
@@ -87,7 +86,11 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(operand, out);
         }
         HirExprKind::SubsumedValue { source, .. } => visit_expr(source, out),
-        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
+        HirExprKind::TaskRace {
+            members: elements, ..
+        }
+        | HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 visit_expr(elem, out);
             }
@@ -126,7 +129,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(scope, out);
             visit_expr(handler, out);
         }
-        HirExprKind::ScopeDeadline { duration, body } => {
+        HirExprKind::ScopeDeadline { duration, body, .. } => {
             visit_expr(duration, out);
             visit_block(body, out);
         }

@@ -111,6 +111,11 @@ fn resolve_candidate(
         return vec![ResolvedValue::Unknown];
     }
     match candidate {
+        CallableCandidate::TaskProducer(_)
+        | CallableCandidate::TaskResult(_)
+        | CallableCandidate::Sequence(_) => {
+            vec![ResolvedValue::Unknown]
+        }
         CallableCandidate::Declaration(id) => vec![ResolvedValue::Declaration(*id)],
         CallableCandidate::Closure(span) => vec![ResolvedValue::Closure {
             span: span.clone(),
@@ -139,7 +144,10 @@ fn resolve_candidate(
             let Some(callee) = selected_call_declaration(output, span) else {
                 return vec![ResolvedValue::Unknown];
             };
-            let Some(returned) = output.callable_return_candidates.get(&callee) else {
+            let Some(returned) = output
+                .callable_return_candidates
+                .get(&hew_types::check::effects::EffectBody::Declaration(callee))
+            else {
                 return vec![ResolvedValue::Unknown];
             };
             let next_env = callee_env(output, span, callee, env, depth + 1);
@@ -196,7 +204,10 @@ fn callee_env(
     let Some(actuals) = output.generic_trait_call_arguments.get(span) else {
         return CandidateEnv::new();
     };
-    let Some(formals) = output.callable_formals.get(&callee) else {
+    let Some(formals) = output
+        .callable_formals
+        .get(&hew_types::check::effects::EffectBody::Declaration(callee))
+    else {
         return CandidateEnv::new();
     };
     actuals

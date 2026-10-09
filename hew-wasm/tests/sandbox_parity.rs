@@ -16,6 +16,10 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        test_name: "task_race",
+        source_rel: "examples/sandbox-graduation/task_race.hew",
+    },
+    ParityCase {
         // A lambda built, passed to a function taking a callable, and called
         // there through the same indirect path both engines use.
         test_name: "closure_values",

@@ -721,6 +721,7 @@ impl Checker {
         error_span: &Span,
         ty: &Ty,
     ) {
+        self.record_task_actor_transfer(expr, move_span);
         let ty = self.subst.resolve(ty);
         let boundary_ty = self.normalize_for_use(&ty);
         if !self.type_is_send(&boundary_ty) {

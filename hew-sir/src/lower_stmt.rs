@@ -536,25 +536,23 @@ impl Builder<'_, '_> {
                 self.lower_task_await(expr, operand)?;
                 return Ok(());
             }
-            HirExprKind::Race { body }
-                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
-                    || tasks::contains_task(&self.ty(&expr.ty)) =>
+            HirExprKind::Scope {
+                body,
+                result_lifetime,
+            } if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+                || tasks::contains_task(&self.ty(&expr.ty)) =>
             {
-                self.lower_race(body, false)?;
+                self.lower_task_scope(body, *result_lifetime, false)?;
                 return Ok(());
             }
-            HirExprKind::Scope { body }
-                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
-                    || tasks::contains_task(&self.ty(&expr.ty)) =>
+            HirExprKind::ScopeDeadline {
+                duration,
+                body,
+                result_lifetime,
+            } if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+                || tasks::contains_task(&self.ty(&expr.ty)) =>
             {
-                self.lower_task_scope(body, false)?;
-                return Ok(());
-            }
-            HirExprKind::ScopeDeadline { duration, body }
-                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
-                    || tasks::contains_task(&self.ty(&expr.ty)) =>
-            {
-                self.lower_task_scope_with_deadline(body, Some(duration), false)?;
+                self.lower_task_scope_with_deadline(body, Some(duration), *result_lifetime, false)?;
                 return Ok(());
             }
             HirExprKind::SubsumedValue { source } => {

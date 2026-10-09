@@ -33,7 +33,7 @@ pub(crate) fn verify(function: &SemFunction) -> Result<(), String> {
                     }
                     stack.push((scope, false));
                 }
-                SemOpKind::TaskSpawn { scope, .. } => {
+                SemOpKind::TaskSpawn { scope, .. } | SemOpKind::TaskRace { scope, .. } => {
                     if stack.last() != Some(&(scope, false)) {
                         return Err("task spawn requires the active innermost scope".into());
                     }

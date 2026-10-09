@@ -36,15 +36,26 @@ fn check_race(source: &str, check: impl Fn(&str)) {
 #[test]
 fn race_prepares_inputs_before_launch_and_drains_losers_before_an_err_result() {
     run_race(
-        r#"
-fn prepare(value: i64) -> i64 { println(value); value }
+        r#"fn prepare(value: i64) -> i64 {
+    println(value);
+    value
+}
+
 fn work(value: i64, delay: duration) -> Result<i64, string> {
     defer println(100 + value);
     sleep(delay);
-    if value == 2 { Result.Err("winner") } else { Result.Ok(value) }
+    if value == 2 {
+        Result.Err("winner")
+    } else {
+        Result.Ok(value)
+    }
 }
+
 fn main() {
-    let result = race { work(prepare(1), 5s), work(prepare(2), 50ms) };
+    let result = await race [
+        work(prepare(1), 5s),
+        work(prepare(2), 50ms),
+    ];
     match result {
         .Ok(value) => println(value),
         .Err(message) => println(message),
@@ -58,20 +69,24 @@ fn main() {
 #[test]
 fn race_closes_losing_generators_and_keeps_the_winner_usable() {
     run_race(
-        r#"
-gen fn held(label: string) -> string {
+        r#"gen fn held(label: string) -> string {
     defer println(label);
     yield label;
     yield "again";
 }
+
 fn produce(label: string, delay: duration) -> Generator<string, ()> {
     let values = held(label);
     let _first = values.next();
     sleep(delay);
     values
 }
+
 fn main() {
-    let winner = race { produce("loser", 5s), produce("winner", 20ms) };
+    let winner = await race [
+        produce("loser", 5s),
+        produce("winner", 20ms),
+    ];
     println("winner ready");
     match winner.next() {
         .Some(value) => println(value),
@@ -86,15 +101,18 @@ fn main() {
 #[test]
 fn parent_deadline_drains_all_race_children_before_recovery() {
     check_race(
-        r#"
-fn work(label: string) -> string {
+        r#"fn work(label: string) -> string {
     defer println(label);
     sleep(5s);
     "unreachable"
 }
+
 fn main() {
     scope within 20ms {
-        let result = race { work("first"), work("second") };
+        let result = await race [
+            work("first"),
+            work("second"),
+        ];
         println(result);
     } handle failure {
         match failure {
@@ -119,24 +137,37 @@ fn main() {
 #[test]
 fn loser_cleanup_fault_releases_the_selected_owner_before_recovery() {
     run_race(
-        r#"
-gen fn held(label: string) -> string { defer println(label); yield label; yield "again"; }
-gen fn broken() -> string { defer panic("loser cleanup"); yield "started"; }
+        r#"gen fn held(label: string) -> string {
+    defer println(label);
+    yield label;
+    yield "again";
+}
+
+gen fn broken() -> string {
+    defer panic("loser cleanup");
+    yield "started";
+}
+
 fn slow() -> Generator<string, ()> {
     let values = broken();
     let _first = values.next();
     sleep(5s);
     values
 }
+
 fn fast() -> Generator<string, ()> {
     let values = held("winner cleanup");
     let _first = values.next();
     sleep(20ms);
     values
 }
+
 fn main() {
     scope {
-        let _winner = race { slow(), fast() };
+        let _winner = await race [
+            slow(),
+            fast(),
+        ];
         println("unreachable");
     } handle failure {
         match failure {

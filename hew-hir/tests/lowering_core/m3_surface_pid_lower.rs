@@ -23,7 +23,7 @@ fn expr_contains_remote_actor_ask(expr: &HirExpr) -> bool {
             matches!(reply_ty, hew_types::ResolvedTy::I64)
         }
         HirExprKind::Block(block)
-        | HirExprKind::Scope { body: block }
+        | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => block_contains_remote_actor_ask(block),
         HirExprKind::Call { callee, args, .. } => {

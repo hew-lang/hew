@@ -824,6 +824,7 @@ impl Checker {
             is_actor_body,
             is_fork_body,
         );
+        self.record_task_return(body);
         self.effect_graph.current_body = previous;
         result
     }
@@ -985,6 +986,7 @@ impl Checker {
             self.env
                 .define_param_with_span(p.name, ty.clone(), false, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);
+            self.record_callable_formal_candidate(p.name);
             param_tys.push(ty);
         }
 
@@ -1081,6 +1083,22 @@ impl Checker {
                 });
                 self.generic_ctx.pop();
             }
+        }
+
+        if let Some(owner) = self.effect_graph.current_body.clone() {
+            let formals = params
+                .iter()
+                .filter_map(|param| {
+                    match self.scopes.resolutions().get(&SpanKey::in_module(
+                        &param.name_span,
+                        self.current_module_idx,
+                    )) {
+                        Some(super::scope::Resolution::Local(id)) => Some(*id),
+                        _ => None,
+                    }
+                })
+                .collect();
+            self.callable_formals.insert(owner, formals);
         }
 
         let body_environment = std::mem::replace(&mut self.env, outer_environment);

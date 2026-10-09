@@ -43,7 +43,12 @@ pub(super) fn operation_storage(
             defined.insert(*dest);
             used.extend([*lhs, *rhs]);
         }
-        PhysicalOp::TupleMake { dest, elements } => {
+        PhysicalOp::TaskRace {
+            dest,
+            members: elements,
+            ..
+        }
+        | PhysicalOp::TupleMake { dest, elements } => {
             defined.insert(*dest);
             used.extend(elements);
         }

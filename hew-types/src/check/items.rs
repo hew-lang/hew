@@ -1007,6 +1007,9 @@ impl Checker {
         self.checking_declaration = previous_declaration;
         if let Some(declaration) = declaration {
             self.record_callable_body_return(declaration, &fd.body);
+            if let Some(tail) = &fd.body.trailing_expr {
+                self.record_task_return(tail);
+            }
             let formals = fd
                 .params
                 .iter()
@@ -1019,7 +1022,10 @@ impl Checker {
                 })
                 .collect::<Option<Vec<_>>>();
             if let Some(formals) = formals {
-                self.callable_formals.insert(declaration, formals);
+                self.callable_formals.insert(
+                    super::effects::EffectBody::Declaration(declaration),
+                    formals,
+                );
             }
         }
         self.effect_graph.current_body = previous;

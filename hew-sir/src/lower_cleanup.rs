@@ -82,11 +82,10 @@ impl Builder<'_, '_> {
             .take_while(|frame| frame.depth >= floor)
             .map(|frame| ExitStep::JoinScope {
                 scope: frame.scope,
-                mode: match (frame.race, cancel) {
-                    (false, false) => TaskScopeJoinMode::Wait,
-                    (false, true) => TaskScopeJoinMode::PropagateFault,
-                    (true, false) => TaskScopeJoinMode::CancelLosers,
-                    (true, true) => TaskScopeJoinMode::CancelLosersAfterFault,
+                mode: if cancel {
+                    TaskScopeJoinMode::PropagateFault
+                } else {
+                    TaskScopeJoinMode::Wait
                 },
             })
             .collect()

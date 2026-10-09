@@ -413,9 +413,16 @@ impl Builder<'_, '_> {
         });
         let result_ty = self.ty(&whole.ty);
         let result = match &scope.kind {
-            hew_hir::HirExprKind::Scope { body } => self.lower_task_scope(body, true)?,
-            hew_hir::HirExprKind::ScopeDeadline { body, duration } => {
-                self.lower_task_scope_with_deadline(body, Some(duration), true)?
+            hew_hir::HirExprKind::Scope {
+                body,
+                result_lifetime,
+            } => self.lower_task_scope(body, *result_lifetime, true)?,
+            hew_hir::HirExprKind::ScopeDeadline {
+                body,
+                duration,
+                result_lifetime,
+            } => {
+                self.lower_task_scope_with_deadline(body, Some(duration), *result_lifetime, true)?
             }
             _ => return Err("scope recovery requires a checked lexical scope".into()),
         };
@@ -444,8 +451,7 @@ impl Builder<'_, '_> {
                 .and_then(|index| u32::try_from(index).ok())
                 .ok_or_else(|| format!("scope failure has no {name} variant"))
         };
-        let deadline_variant = tag("Deadline")?;
-        let fault_variant = tag("Fault")?;
+        let (deadline_variant, fault_variant) = (tag("Deadline")?, tag("Fault")?);
         let produced_failure = self.fresh_value();
         let failure = self.fresh_value();
         let normal = self.new_block(vec![crate::BlockArg {

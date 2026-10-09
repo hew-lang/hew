@@ -367,6 +367,12 @@ export type OpV1 =
     })
   | (OpBase & { op: "task_scope.close"; scope: number })
   | (OpBase & {
+      op: "task.race";
+      dst: number;
+      scope: number;
+      members: Operand[];
+    })
+  | (OpBase & {
       op: "task.spawn";
       dst: number;
       scope: number;

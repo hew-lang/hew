@@ -28,10 +28,10 @@ fn make_after(label: string, gate: stream.Stream<i64>) -> Handle {
 
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    let winner = race {
+    let winner = await race [
         make_after("slow", gate),
         make("fast"),
-    };
+    ];
     println(winner.describe());
     winner.close();
 }

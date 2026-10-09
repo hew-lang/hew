@@ -55,6 +55,36 @@ pub(crate) fn verify_operation_storage(
             }
         }
         PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskRace {
+            members,
+            dest,
+            output,
+            ..
+        } => {
+            let result = storage(function, *dest)?;
+            let ResolvedTy::Task(ty) = &result.ty else {
+                return Err(PhysicalError::new("race result is not a task"));
+            };
+            if members.is_empty() || result.own != OwnKind::Owned {
+                return Err(PhysicalError::new("race requires owned task handles"));
+            }
+            for member in members {
+                let member = storage(function, *member)?;
+                if member.own != OwnKind::Owned
+                    || (member.ty != result.ty
+                        && member.ty != ResolvedTy::Task(Box::new(ResolvedTy::Never)))
+                {
+                    return Err(PhysicalError::new(
+                        "race requires homogeneous owned task handles",
+                    ));
+                }
+            }
+            match output {
+                Some(output) if output.ty == **ty => verify_value_recipe(module, output)?,
+                None if **ty == ResolvedTy::Never => {}
+                _ => return Err(PhysicalError::new("race result layout disagrees")),
+            }
+        }
         PhysicalOp::TaskSpawn {
             callable,
             dest,
@@ -938,6 +968,13 @@ pub(crate) fn apply_operation(
             }
         }
         PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskRace { members, dest, .. } => {
+            for member in members {
+                initialized(function, state, *member, block, "race member")?;
+                consume_if_owned(function, borrows, state, *member)?;
+            }
+            define(function, borrows, state, *dest, block, "race handle")?;
+        }
         PhysicalOp::GeneratorMake { callable, dest, .. }
         | PhysicalOp::TaskSpawn { callable, dest, .. } => {
             initialized(function, state, *callable, block, "task callable")?;

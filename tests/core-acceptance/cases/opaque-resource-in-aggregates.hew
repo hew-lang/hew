@@ -67,9 +67,9 @@ fn main() {
     in_vector();
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
-    let picked = race {
+    let picked = await race [
         winner(parked),
         cancelled(parked_tx, gate),
-    };
+    ];
     println("picked " + to_string(picked));
 }

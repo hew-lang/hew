@@ -343,6 +343,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 duration,
             } => self.emit_task_scope_enter(*scope, *parent, *duration),
             PhysicalOp::TaskScopeClose { scope } => self.emit_task_scope_close(*scope),
+            PhysicalOp::TaskRace {
+                scope,
+                members,
+                dest,
+                ..
+            } => self.emit_task_race(*scope, members, *dest),
             PhysicalOp::TaskSpawn {
                 scope,
                 callable,

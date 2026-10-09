@@ -426,6 +426,9 @@ impl Parser<'_> {
                     continue;
                 }
                 Some(Token::Question) => {
+                    if min_bp > 25 {
+                        break;
+                    }
                     self.advance();
                     let end = self.peek_span().start;
                     lhs = (Expr::PostfixTry(Box::new(lhs)), start..end);
@@ -1487,7 +1490,7 @@ impl Parser<'_> {
                     }
                 } else {
                     Expr::ForkChild {
-                        expr: Box::new(self.parse_expr()?),
+                        expr: Box::new(self.parse_expr_bp(26)?),
                     }
                 }
             }
@@ -1545,16 +1548,34 @@ impl Parser<'_> {
             }
             Token::Race => {
                 self.advance();
-                self.expect(&Token::LeftBrace)?;
+                let legacy = self.peek() == Some(&Token::LeftBrace);
+                let open = self.peek_span().start;
+                let (left, right) = if legacy {
+                    (Token::LeftBrace, Token::RightBrace)
+                } else {
+                    (Token::LeftBracket, Token::RightBracket)
+                };
+                self.expect(&left)?;
                 let mut branches = Vec::new();
-                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                while !self.at_end() && self.peek() != Some(&right) {
                     branches.push(self.parse_expr()?);
                     if !self.eat(&Token::Comma) {
                         break;
                     }
                 }
-                self.expect(&Token::RightBrace)?;
-                Expr::Race(branches)
+                self.expect(&right)?;
+                if legacy {
+                    let end = self.peek_span().start;
+                    self.error_at_with_kind_and_hint(
+                        "race uses brackets and returns a task".into(),
+                        start..end,
+                        "use `await race [ ... ]` to wait for the winning result",
+                        ParseDiagnosticKind::LegacyRaceBraces,
+                    );
+                    Expr::Await(Box::new((Expr::Race(branches), open..end)))
+                } else {
+                    Expr::Race(branches)
+                }
             }
             Token::Yield => {
                 self.advance();

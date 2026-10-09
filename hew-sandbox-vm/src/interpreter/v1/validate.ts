@@ -73,6 +73,7 @@ const OPS = new Set([
   "task_scope.enter",
   "task_scope.close",
   "task.spawn",
+  "task.race",
 ]);
 const TERMS = new Set([
   "goto",

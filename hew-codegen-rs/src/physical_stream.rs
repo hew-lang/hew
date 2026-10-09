@@ -216,7 +216,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         handle: BasicValueEnum<'ctx>,
         slot: PointerValue<'ctx>,
-        element_ty: BasicTypeEnum<'ctx>,
+        element: &PhysicalLayout,
         witness: PointerValue<'ctx>,
         result: StorageId,
         option: PhysicalVariantId,
@@ -257,9 +257,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("dispatch non-parking stream receive outcome")?;
         self.builder.position_at_end(some);
         let value = self
-            .builder
-            .build_load(element_ty, slot, "stream.element")
-            .llvm_ctx("load transferred element")?;
+            .value_emitter()
+            .load_value(slot, element, "stream.element")?;
         self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;
@@ -313,9 +312,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         if !park {
             // A non-parking take never registers a waker or an in-flight read
             // request, so there is nothing to abandon on an empty stream.
-            return self.emit_stream_try_next(
-                handle, slot, element_ty, witness, result, option.id, normal,
-            );
+            return self
+                .emit_stream_try_next(handle, slot, element, witness, result, option.id, normal);
         }
         let frame = self.stream_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
@@ -419,9 +417,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         self.builder.position_at_end(some_block);
         let value = self
-            .builder
-            .build_load(element_ty, slot, "stream.element")
-            .llvm_ctx("load transferred element")?;
+            .value_emitter()
+            .load_value(slot, element, "stream.element")?;
         self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option.id)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;

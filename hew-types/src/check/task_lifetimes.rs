@@ -15,6 +15,12 @@ struct TaskLifetime {
 }
 
 #[derive(Clone, Debug)]
+struct LifetimeScope {
+    lifetime: TaskLifetime,
+    outer: Vec<TypeBindingId>,
+}
+
+#[derive(Clone, Debug)]
 enum Boundary {
     Actor(crate::Ty),
     Return(TaskLifetime),
@@ -22,7 +28,7 @@ enum Boundary {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct TaskLifetimes {
-    scopes: Vec<TaskLifetime>,
+    scopes: Vec<LifetimeScope>,
     producers: HashMap<SpanKey, (TaskLifetime, IndirectCallCandidates)>,
     pub(super) scope_results: HashSet<SpanKey>,
     escapes: Vec<(SpanKey, IndirectCallCandidates, Boundary, Option<String>)>,
@@ -78,8 +84,8 @@ impl Checker {
             .scopes
             .iter()
             .rev()
-            .find(|scope| scope.owner == owner)
-            .cloned()
+            .find(|scope| scope.lifetime.owner == owner)
+            .map(|scope| scope.lifetime.clone())
             .unwrap_or(TaskLifetime { owner, scope: None })
     }
 
@@ -123,9 +129,16 @@ impl Checker {
     }
 
     pub(super) fn enter_task_lifetime_scope(&mut self, span: &Span) {
-        self.task_lifetimes.scopes.push(TaskLifetime {
-            owner: self.effect_graph.current_body.clone(),
-            scope: Some(SpanKey::in_module(span, self.current_module_idx)),
+        self.task_lifetimes.scopes.push(LifetimeScope {
+            lifetime: TaskLifetime {
+                owner: self.effect_graph.current_body.clone(),
+                scope: Some(SpanKey::in_module(span, self.current_module_idx)),
+            },
+            outer: self
+                .env
+                .visible_bindings()
+                .map(|binding| binding.id)
+                .collect(),
         });
     }
 
@@ -144,10 +157,91 @@ impl Checker {
                 .scope_results
                 .insert(SpanKey::in_module(span, self.current_module_idx));
         }
-        self.task_lifetimes
+        let scope = self
+            .task_lifetimes
             .scopes
             .pop()
             .expect("entered task lifetime");
+        for id in scope.outer {
+            let Some(binding) = self.env.binding_by_id(id) else {
+                continue;
+            };
+            if binding.is_moved || binding.released_at.is_some() {
+                continue;
+            }
+            let candidates = self.live_task_value_candidates(
+                &binding.ty,
+                &binding.value_candidates,
+                &binding.moved_places,
+            );
+            self.task_lifetimes.escapes.push((
+                SpanKey::in_module(span, self.current_module_idx),
+                candidates,
+                Boundary::Return(scope.lifetime.clone()),
+                self.current_module.clone(),
+            ));
+        }
+    }
+
+    fn live_task_value_candidates(
+        &self,
+        ty: &crate::Ty,
+        source: &IndirectCallCandidates,
+        moved: &[crate::env::MovedPlace],
+    ) -> IndirectCallCandidates {
+        if moved.is_empty() {
+            return source.clone();
+        }
+        let ty = self.subst.resolve(ty);
+        let crate::Ty::Named { head, args } = &ty else {
+            return source.clone();
+        };
+        let (Some(owner), Some(definition)) = (head.nominal(), self.ty_type_def(&ty)) else {
+            return source.clone();
+        };
+        let substitutions: HashMap<_, _> = definition
+            .type_params
+            .iter()
+            .copied()
+            .zip(args.iter().cloned())
+            .collect();
+        let mut retained = Vec::new();
+        for (index, name) in definition.field_order.iter().enumerate() {
+            let selected: Vec<_> = moved
+                .iter()
+                .filter(|place| place.path.first() == Some(name))
+                .collect();
+            if selected.iter().any(|place| place.path.len() == 1) {
+                continue;
+            }
+            let candidates = IndirectCallCandidates {
+                known: source
+                    .known
+                    .iter()
+                    .map(|receiver| CallableCandidate::Field {
+                        receiver: Box::new(receiver.clone()),
+                        owner,
+                        index: u32::try_from(index).expect("checked field index"),
+                    })
+                    .collect(),
+                may_be_unknown: source.may_be_unknown,
+            };
+            let nested: Vec<_> = selected
+                .iter()
+                .map(|place| crate::env::MovedPlace {
+                    path: place.path[1..].to_vec(),
+                    moved_at: place.moved_at.clone(),
+                })
+                .collect();
+            if let Some(field) = definition.fields.get(name) {
+                retained.push(self.live_task_value_candidates(
+                    &field.substitute_type_params_parallel(&substitutions),
+                    &candidates,
+                    &nested,
+                ));
+            }
+        }
+        IndirectCallCandidates::single(CallableCandidate::Sequence(retained))
     }
 
     pub(super) fn record_task_actor_transfer(&mut self, expr: &Expr, span: &Span) {

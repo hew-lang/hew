@@ -185,6 +185,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_task_wait_new",
             &[task_value.into(), waker.into()],
         )?;
+        frame.carry(self.ctx, &self.builder, wait, "await.operation.slot")?;
         self.clear_owned(*task)?;
         let poll = self.ctx.append_basic_block(self.value, "await.poll");
         let request_cancel = self
@@ -340,6 +341,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_scope_wait_new",
             &[handle.into(), waker.into(), frame.state.into()],
         )?;
+        frame.carry(self.ctx, &self.builder, wait, "scope.wait.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "scope.handle.slot")?;
         if mode.cancels_losers() {
             self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
         } else if mode.preserves_fault() {

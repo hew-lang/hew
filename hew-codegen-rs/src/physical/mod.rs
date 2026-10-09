@@ -31,6 +31,8 @@ mod tcp;
 
 #[path = "../physical_build_info.rs"]
 mod build_info;
+#[path = "../physical_carries.rs"]
+mod carries;
 #[path = "../physical_coro.rs"]
 mod coro;
 #[path = "../physical_debug.rs"]

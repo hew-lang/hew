@@ -287,6 +287,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let handle = self.load(*generator, "generator.receiver")?;
         let frame = self.generator_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
+        frame.carry(self.ctx, &self.builder, handle, "generator.receiver.slot")?;
         let option = self
             .module
             .variant_glue

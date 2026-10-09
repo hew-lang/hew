@@ -122,6 +122,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         waker: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let frame = self.stream_frame()?;
+        frame.carry(
+            self.ctx,
+            &self.builder,
+            request,
+            "stream.drain.request.slot",
+        )?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.drain.waker.slot")?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let poll = self.ctx.append_basic_block(self.value, "stream.drain.poll");
         let pending = self
@@ -324,6 +331,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.read.operation",
         )?
         .into_pointer_value();
+        frame.carry(self.ctx, &self.builder, request, "stream.read.request.slot")?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.read.waker.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "stream.read.handle.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "stream.next.poll");
         let inspect = self
             .ctx
@@ -576,6 +586,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?
         .into_pointer_value();
         self.clear_owned(*value)?;
+        frame.carry(
+            self.ctx,
+            &self.builder,
+            request,
+            "stream.write.request.slot",
+        )?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.write.waker.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "stream.write.handle.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "stream.send.poll");
         let inspect = self
             .ctx

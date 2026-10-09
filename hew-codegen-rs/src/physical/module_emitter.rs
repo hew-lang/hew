@@ -68,6 +68,7 @@ pub(super) fn build_module_with_host<'ctx>(
     if let Some(export) = host {
         host::emit(&emitter, export)?;
     }
+    carries::materialize(ctx, &emitter.llvm)?;
     // Forward references must resolve before the verifier walks the module.
     if let Some(debug) = &emitter.debug {
         debug.finalize();

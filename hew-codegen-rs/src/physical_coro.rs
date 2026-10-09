@@ -7,7 +7,7 @@ use inkwell::llvm_sys::core::{
 };
 use inkwell::llvm_sys::prelude::LLVMValueRef;
 use inkwell::types::AsTypeRef;
-use inkwell::values::AsValueRef;
+use inkwell::values::{AsValueRef, BasicValue};
 
 pub(super) struct Frame<'ctx> {
     pub handle: PointerValue<'ctx>,
@@ -16,6 +16,7 @@ pub(super) struct Frame<'ctx> {
     pub finish: BasicBlock<'ctx>,
     pub allocations: BasicBlock<'ctx>,
     exit: BasicBlock<'ctx>,
+    carried: std::cell::RefCell<BTreeSet<usize>>,
 }
 
 fn intrinsic<'ctx>(
@@ -159,6 +160,7 @@ pub(super) fn begin<'ctx>(
         finish: ctx.append_basic_block(function, "coro.finish"),
         allocations: body,
         exit: ctx.append_basic_block(function, "coro.exit"),
+        carried: std::cell::RefCell::new(BTreeSet::new()),
     };
     let final_suspend = ctx.append_basic_block(function, "coro.final");
     let invalid_resume = ctx.append_basic_block(function, "coro.invalid.resume");
@@ -232,6 +234,31 @@ pub(super) fn begin<'ctx>(
 }
 
 impl<'ctx> Frame<'ctx> {
+    pub fn carry<T: inkwell::values::BasicValue<'ctx> + Copy>(
+        &self,
+        ctx: &'ctx Context,
+        builder: &Builder<'ctx>,
+        value: T,
+        name: &str,
+    ) -> CodegenResult<T> {
+        let basic = value.as_basic_value_enum();
+        if basic.as_instruction_value().is_none()
+            || !self
+                .carried
+                .borrow_mut()
+                .insert(value.as_value_ref() as usize)
+        {
+            return Ok(value);
+        }
+        let slot = self.storage(ctx, basic.get_type(), name)?;
+        builder
+            .build_store(slot, value)
+            .llvm_ctx("retain emitter suspension carrier")?
+            .set_metadata(ctx.metadata_node(&[]), ctx.get_kind_id("hew.carry"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
+        Ok(value)
+    }
+
     pub fn storage(
         &self,
         ctx: &'ctx Context,
@@ -239,8 +266,14 @@ impl<'ctx> Frame<'ctx> {
         name: &str,
     ) -> CodegenResult<PointerValue<'ctx>> {
         let builder = ctx.create_builder();
-        if let Some(end) = self.allocations.get_terminator() {
-            builder.position_before(&end);
+        let mut first = self.allocations.get_first_instruction();
+        while first.is_some_and(|instruction| {
+            instruction.get_opcode() == inkwell::values::InstructionOpcode::Phi
+        }) {
+            first = first.and_then(inkwell::values::InstructionValue::get_next_instruction);
+        }
+        if let Some(first) = first {
+            builder.position_before(&first);
         } else {
             builder.position_at_end(self.allocations);
         }

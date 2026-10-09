@@ -62,6 +62,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "restart.wait",
         )?
         .into_pointer_value();
+        frame.carry(self.ctx, &self.builder, wait, "restart.wait.slot")?;
+        frame.carry(self.ctx, &self.builder, owner, "restart.owner.slot")?;
+        frame.carry(self.ctx, &self.builder, slot, "restart.role.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "restart.wait.poll");
         let pending = self
             .ctx
@@ -285,6 +288,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             (new, vec![target.into(), waker.into()])
         };
         let wait = call_value(&self.builder, new, &arguments, "actor.wait")?.into_pointer_value();
+        frame.carry(self.ctx, &self.builder, wait, "actor.wait.slot")?;
         let edge_new = coro::external(
             self.llvm,
             "hew_actor_wait_edge_new_for_wait",
@@ -302,6 +306,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?
         .into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "actor.wait.poll");
+        frame.carry(self.ctx, &self.builder, edge, "actor.wait.edge.slot")?;
         let inspect = self
             .ctx
             .append_basic_block(self.value, "actor.wait.inspect");
@@ -425,11 +430,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ),
         )?;
         let edge = self.new_actor_wait_edge(request[0], 1)?;
+        frame.carry(self.ctx, &self.builder, edge, "send.wait.edge.slot")?;
         let cycle = self.ctx.append_basic_block(self.value, "send.cycle.fault");
         let mut args = request.to_vec();
         args.push(waker.into());
         args.push(release.into());
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
+        frame.carry(self.ctx, &self.builder, wait, "send.wait.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "send.poll");
         let inspect = self.ctx.append_basic_block(self.value, "send.inspect");
         let pending = self.ctx.append_basic_block(self.value, "send.pending");

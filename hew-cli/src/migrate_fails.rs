@@ -62,7 +62,9 @@ pub(crate) fn convert_failure_edges(
     let mut units: Vec<(PathBuf, Vec<usize>)> = Vec::new();
     for (index, (path, text)) in files.iter().enumerate() {
         documents.insert(path.clone(), text.clone());
-        let root = hew_compile::directory_module_entry(path).unwrap_or_else(|| path.clone());
+        let root = hew_compile::module_membership(path, &FrontendOptions::default())
+            .filter(hew_types::module_registry::ModuleMembership::checks_as_directory_module)
+            .map_or_else(|| path.clone(), |membership| membership.entry);
         match units.iter_mut().find(|(known, _)| *known == root) {
             Some((_, members)) => members.push(index),
             None => units.push((root, vec![index])),

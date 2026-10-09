@@ -1,0 +1,10 @@
+[[case]]
+id = "pipe-actor-elements"
+intent = "A local pipe preserves actor identity across send and receive, publishes EOF after finish, and releases an unread actor reference without stopping the actor."
+source = "cases/pipe-actor-elements.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "local actor identities cross pipes and survive queued release\n"
+exit = 0

@@ -1296,13 +1296,13 @@ fn runtime_symbol_redefinitions(
     };
     libraries
         .iter()
-        .flat_map(|defined| defined.intersection(&runtime).cloned())
+        .flat_map(|defined| defined.intersection(&runtime))
+        .map(|name| name.strip_prefix('_').unwrap_or(name).to_string())
         .collect()
 }
 
-/// The `hew_*` names in an archive's symbol index, without Mach-O's leading
-/// underscore, or `None` when `path` is not an indexed archive. The index is
-/// read lazily, so a large runtime archive costs only its symbol table.
+/// Raw runtime names from the archive index, retaining platform decoration
+/// for exact comparison. The index is read without loading archive members.
 fn archive_hew_symbols(path: &std::path::Path) -> Option<std::collections::BTreeSet<String>> {
     let file = std::fs::File::open(path).ok()?;
     let data = object::ReadCache::new(file);
@@ -1312,8 +1312,7 @@ fn archive_hew_symbols(path: &std::path::Path) -> Option<std::collections::BTree
         symbols
             .filter_map(Result::ok)
             .filter_map(|symbol| std::str::from_utf8(symbol.name()).ok())
-            .map(|name| name.strip_prefix('_').unwrap_or(name))
-            .filter(|name| name.starts_with("hew_"))
+            .filter(|name| name.starts_with("hew_") || name.starts_with("_hew_"))
             .map(str::to_string)
             .collect(),
     )

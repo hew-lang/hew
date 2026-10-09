@@ -28,7 +28,7 @@ const PRINT_I64 = { id: 0, family: "Print", detail: { kind: "I64", newline: true
 function closurePackage(captureAt = 1) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.0-rc7",
+    hew_version: "0.6.0-rc8",
     compiler_version: "v1-closure-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

@@ -58,13 +58,13 @@ fn success(value: i64) -> Result<i64, string> {
     .Ok(value)
 }
 
-fn propagated(marker: bool) -> Result<i64, string> {
+fn propagated(marker: bool) -> i64 fails string {
     let value = if marker {
         success(15)
     } else {
         success(4)
     }?;
-    .Ok(value + 7)
+    value + 7
 }
 
 fn length(marker: bool) -> i64 {

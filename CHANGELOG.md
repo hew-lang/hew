@@ -12,6 +12,8 @@
 - Complete typed failure edges, owned stream composition and nonblocking
   partial-write handling.
 - Correct actor teardown, binding-aware rename and registry wire identities.
+- Reduce migration memory use and preserve debugger-local lifetimes across
+  suspension.
 
 See the [candidate notes](docs/releases/v0.6.0-rc8.md) for migration guidance.
 

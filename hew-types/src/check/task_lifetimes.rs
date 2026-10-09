@@ -262,17 +262,13 @@ impl Checker {
                         .get(site)
                         .is_some_and(|captures| {
                             captures.iter().any(|capture| {
-                                self.callable_binding_candidates
-                                    .get(&capture.binding_id)
-                                    .is_some_and(|candidates| {
-                                        self.task_candidates_escape(
-                                            candidates,
-                                            boundary,
-                                            &origin.actuals,
-                                            flows,
-                                            seen,
-                                        )
-                                    })
+                                self.task_candidates_escape(
+                                    &capture.value_candidates,
+                                    boundary,
+                                    &origin.actuals,
+                                    flows,
+                                    seen,
+                                )
                             })
                         }),
                     _ => false,

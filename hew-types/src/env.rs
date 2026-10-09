@@ -215,6 +215,7 @@ fn loop_carried_moves(scope: &LoopScope) -> Vec<LoopCarriedMove> {
 pub struct Binding {
     /// Stable checker-local identity for this lexical binding.
     pub id: TypeBindingId,
+    pub(crate) value_candidates: crate::check::IndirectCallCandidates,
     /// The type of the bound value
     pub ty: Ty,
     /// Whether the binding is mutable (var vs let)
@@ -384,6 +385,7 @@ impl Binding {
 /// erase reads and writes that genuinely happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipState {
+    pub(crate) value_candidates: crate::check::IndirectCallCandidates,
     /// Parameter places definitely replaced by private values on this path.
     pub parameter_replacements: Vec<PlacePath>,
     /// A non-copy value loaned by a collection, rather than owned by this binding.
@@ -810,6 +812,7 @@ impl TypeEnv {
                 name,
                 Binding {
                     id,
+                    value_candidates: crate::check::IndirectCallCandidates::unknown(),
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
@@ -881,6 +884,7 @@ impl TypeEnv {
                 name,
                 Binding {
                     id,
+                    value_candidates: crate::check::IndirectCallCandidates::unknown(),
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
@@ -978,6 +982,7 @@ impl TypeEnv {
                 name,
                 Binding {
                     id,
+                    value_candidates: crate::check::IndirectCallCandidates::unknown(),
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
@@ -1250,6 +1255,7 @@ impl TypeEnv {
                 states.insert(
                     binding.id,
                     OwnershipState {
+                        value_candidates: binding.value_candidates.clone(),
                         parameter_replacements: binding.parameter_replacements.clone(),
                         collection_borrow: binding.collection_borrow.clone(),
                         is_moved: binding.is_moved,
@@ -1331,6 +1337,9 @@ impl TypeEnv {
             // Joining only reaching exits lets every arm repair a moved field.
             let mut state = reaching.next().unwrap_or(entry_state).clone();
             for exit_state in reaching {
+                state
+                    .value_candidates
+                    .join(exit_state.value_candidates.clone());
                 if state.deferred_init && exit_state.is_moved != state.is_moved {
                     conflicts.push(*id);
                 }
@@ -1376,6 +1385,7 @@ impl TypeEnv {
         for scope in scopes.iter_mut() {
             for binding in scope.values_mut() {
                 if let Some(state) = states.get(&binding.id) {
+                    binding.value_candidates.clone_from(&state.value_candidates);
                     binding
                         .parameter_replacements
                         .clone_from(&state.parameter_replacements);
@@ -1688,6 +1698,33 @@ impl TypeEnv {
             .iter()
             .rev()
             .flat_map(|scope| scope.keys().map(|key| key.name))
+    }
+
+    pub(crate) fn value_candidates(
+        &self,
+        id: TypeBindingId,
+    ) -> Option<&crate::check::IndirectCallCandidates> {
+        self.binding_by_id(id)
+            .map(|binding| &binding.value_candidates)
+    }
+
+    pub(crate) fn set_value_candidates(
+        &mut self,
+        id: TypeBindingId,
+        candidates: crate::check::IndirectCallCandidates,
+    ) {
+        if let Some(binding) = self
+            .scopes
+            .iter_mut()
+            .flat_map(HashMap::values_mut)
+            .find(|binding| binding.id == id)
+        {
+            binding.value_candidates = candidates;
+        }
+    }
+
+    pub(crate) fn visible_bindings(&self) -> impl Iterator<Item = &Binding> {
+        self.scopes.iter().flat_map(HashMap::values)
     }
 
     /// Yield `(name, binding id)` for every binding in the innermost (current)

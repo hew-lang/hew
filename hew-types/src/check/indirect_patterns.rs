@@ -23,10 +23,7 @@ impl Checker {
     ) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         if let Some(Resolution::Local(binding)) = self.scopes.resolutions().get(&key) {
-            self.callable_binding_candidates
-                .entry(*binding)
-                .and_modify(|existing| existing.join(candidates.clone()))
-                .or_insert(candidates);
+            self.env.set_value_candidates(*binding, candidates);
         }
     }
 

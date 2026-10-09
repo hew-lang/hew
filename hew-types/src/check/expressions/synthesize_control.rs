@@ -2358,6 +2358,11 @@ impl Checker {
         self.record_aggregate_field_sources(expr, span);
         self.record_call_argument_sources(expr, span);
         self.check_receiver_whole_at_expr(expr, span, &result);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.expression_value_candidates.remove(&key);
+        let candidates = self.callable_candidates_for_expr(expr, span);
+        self.expression_value_candidates.insert(key, candidates);
+
         result
     }
 }

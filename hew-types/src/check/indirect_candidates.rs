@@ -16,8 +16,8 @@ impl Checker {
         let key = SpanKey::in_module(span, self.current_module_idx);
         match self.scopes.resolutions().get(&key) {
             Some(Resolution::Local(id)) => self
-                .callable_binding_candidates
-                .get(id)
+                .env
+                .value_candidates(*id)
                 .cloned()
                 .unwrap_or_else(IndirectCallCandidates::unknown),
             Some(Resolution::Def(id) | Resolution::Member(id))
@@ -42,6 +42,13 @@ impl Checker {
         expr: &Expr,
         span: &Span,
     ) -> IndirectCallCandidates {
+        if let Some(candidates) = self
+            .expression_value_candidates
+            .get(&SpanKey::in_module(span, self.current_module_idx))
+        {
+            return candidates.clone();
+        }
+
         match expr {
             Expr::ForkChild { .. } | Expr::ForkBlock { .. } | Expr::Race(_) => {
                 IndirectCallCandidates::single(CallableCandidate::TaskProducer(SpanKey::in_module(
@@ -191,7 +198,7 @@ impl Checker {
             })
     }
 
-    pub(super) fn record_callable_binding_candidates(
+    pub(super) fn record_binding_value_candidates(
         &mut self,
         name: Ident,
         value: Option<&Spanned<Expr>>,
@@ -203,11 +210,11 @@ impl Checker {
             return;
         };
         let candidates = self.callable_candidates_for_expr(&value.0, &value.1);
-        self.callable_binding_candidates
-            .insert(binding.id, candidates);
+        let id = binding.id;
+        self.env.set_value_candidates(id, candidates);
     }
 
-    pub(super) fn join_assigned_callable_candidates(
+    pub(super) fn record_assigned_value_candidates(
         &mut self,
         target: &Spanned<Expr>,
         value: &Spanned<Expr>,
@@ -220,10 +227,7 @@ impl Checker {
         };
         let id = binding.id;
         let value_candidates = self.callable_candidates_for_expr(&value.0, &value.1);
-        self.callable_binding_candidates
-            .entry(id)
-            .or_insert_with(IndirectCallCandidates::unknown)
-            .join(value_candidates);
+        self.env.set_value_candidates(id, value_candidates);
     }
 
     pub(super) fn record_indirect_call_candidates(&mut self, span: &Span, callee: &Spanned<Expr>) {
@@ -248,9 +252,10 @@ impl Checker {
         let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
             return;
         };
-        self.callable_binding_candidates.insert(
-            binding.id,
-            IndirectCallCandidates::single(CallableCandidate::Formal(binding.id)),
+        let id = binding.id;
+        self.env.set_value_candidates(
+            id,
+            IndirectCallCandidates::single(CallableCandidate::Formal(id)),
         );
     }
 

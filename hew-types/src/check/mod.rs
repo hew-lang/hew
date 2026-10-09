@@ -2631,7 +2631,7 @@ impl Checker {
             effect_graph: self.effect_graph.clone(),
             direct_call_targets: self.direct_call_targets.clone(),
             indirect_call_candidates: self.indirect_call_candidates.clone(),
-            callable_binding_candidates: self.callable_binding_candidates.clone(),
+            expression_value_candidates: self.expression_value_candidates.clone(),
             callable_formals: self.callable_formals.clone(),
             generic_trait_call_arguments: self.generic_trait_call_arguments.clone(),
             pending_callable_arguments: self.pending_callable_arguments.clone(),

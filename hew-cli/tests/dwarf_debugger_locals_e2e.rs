@@ -112,10 +112,7 @@ fn main() {
 }
 ";
 
-/// A receive handler that assigns a local AFTER a real suspend point. The
-/// handler cannot take `optnone` (`CoroSplit` must run), so `y`'s slot store is
-/// free to lag its source line — the case where a whole-scope `dbg.declare`
-/// would let the debugger print stale garbage as if it were `y`.
+/// A receive handler whose local becomes initialized after a real suspension.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const SLEEP_SRC: &str = "\
 actor Worker {

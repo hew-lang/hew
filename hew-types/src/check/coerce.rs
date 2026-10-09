@@ -601,19 +601,16 @@ impl Checker {
     /// A success value where a `Result` is expected: a value return builds
     /// the `Result` itself, and a failure edge returns the value.
     fn suggest_success_value_repair(&mut self, expected: &Ty, actual: &Ty) {
-        let Some((success, failure)) = expected.as_result() else {
+        let Some((success, _)) = expected.as_result() else {
             return;
         };
         if actual.materialize_literal_defaults() != *success {
             return;
         }
-        let success = success.user_facing().to_string();
-        let failure = failure.user_facing().to_string();
         if let Some(error) = self.errors.last_mut() {
-            error.suggestions.push(format!(
-                "build the `Result`: `.Ok(value)`, or declare the failure edge \
-                 `-> {success} fails {failure}` to return the value itself"
-            ));
+            error
+                .suggestions
+                .push("build the `Result`: `.Ok(value)`".to_string());
         }
     }
 
@@ -922,7 +919,9 @@ impl Checker {
         if definition.kind != TypeDefKind::Enum {
             return Ok(None);
         }
-        let source = source.materialize_literal_defaults();
+        let source = self
+            .normalize_for_use(source)
+            .materialize_literal_defaults();
         let mut candidates: Vec<(String, u32)> = self
             .defs
             .members_of_kind(nominal.declaration(), crate::DeclarationKind::Variant)
@@ -937,7 +936,7 @@ impl Checker {
                                 &definition.type_params,
                                 args,
                             );
-                            (self.subst.resolve(&payload) == source)
+                            (self.normalize_for_use(&payload) == source)
                                 .then(|| (name.to_string(), ordinal))
                         }
                         _ => None,
@@ -1072,10 +1071,18 @@ impl Checker {
         } else {
             format!("{code}: {edge_name} leaves through a failure edge, which this body does not declare")
         };
-        let mut suggestions = vec![format!(
-            "declare the edge: `{clause}`; the body then produces the success value itself"
-        )];
-        if !keeps_declared_error {
+        let contextual_closure = matches!(
+            self.effect_graph.current_body,
+            Some(super::effects::EffectBody::Closure(_))
+        ) && self.inferred_lambda.is_none();
+        let mut suggestions = if contextual_closure {
+            Vec::new()
+        } else {
+            vec![format!(
+                "declare the edge: `{clause}`; the body then produces the success value itself"
+            )]
+        };
+        if !keeps_declared_error && !contextual_closure {
             suggestions.push(format!(
                 "or keep `{}` and give the exit a `{}`: `{}`",
                 failure.user_facing(),

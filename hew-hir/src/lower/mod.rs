@@ -1130,6 +1130,7 @@ struct LowerCtx {
     /// source annotation and `Ty::Named` expression spelling cannot carry.
     type_declarations:
         std::collections::BTreeMap<hew_types::NominalId, hew_types::value_class::DeclaredType>,
+    display_facts: hew_types::TypeFactService,
     interpolation_display_types: HashMap<SpanKey, Ty>,
     unrendered_assertion_operands: HashSet<SpanKey>,
     /// Depth of `defer` bodies being lowered. A deferred body runs on every

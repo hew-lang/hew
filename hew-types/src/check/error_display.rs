@@ -7,13 +7,10 @@
 //! impl, written beside it and checked like source, so interpolation, bounds,
 //! `dyn Error`, `expect` and a failing `main` all see one impl.
 //!
-//! Which impls exist is decided by identity: impl admission resolves each
-//! impl's trait and target, aliases included, and the decision reads its
-//! rows. The implied impl copies the `impl Error` header — its generics,
-//! bounds and target as written — and names `Display` and `string` in an
-//! expansion context, so no binder of the user's spelling captures them. The
-//! rendering spells the payload as `{value:?}`, whose checked meaning is
-//! exactly the rule above, so nothing here inspects a payload's type.
+//! Impl admission selects the trait and resolved receiver, including aliases.
+//! The generated body keeps the source header's binders and bounds, with its
+//! resolved target; `Display` and `string` use an expansion context. Payload
+//! rendering uses the checked structural-formatting contract.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -131,7 +128,7 @@ impl Checker {
         }
         let sites = self.item_sites(program);
 
-        let wanted = needed.values().copied().collect();
+        let wanted = needed.values().map(|(nominal, _)| *nominal).collect();
         let declarations = self.type_declarations(&sites, &wanted);
 
         // Each needed impl's header, in program order so the output is
@@ -141,14 +138,14 @@ impl Checker {
             let Item::Impl(implementation) = site.item else {
                 continue;
             };
-            let Some(&nominal) = self
+            let Some((nominal, target)) = self
                 .impl_declaration_at(site)
                 .and_then(|id| needed.get(&id))
             else {
                 continue;
             };
             let Some(&(declaration, declaration_span, declaration_file)) =
-                declarations.get(&nominal)
+                declarations.get(nominal)
             else {
                 continue;
             };
@@ -159,6 +156,18 @@ impl Checker {
             } else {
                 site.span.clone()
             };
+            let mut implementation = implementation.clone();
+            let target_source = format!("fn target(value: {}) {{}}", target.user_facing());
+            let parsed_target = hew_parser::parse(&target_source);
+            let Some((Item::Function(function), _)) =
+                parsed_target.program.items.into_iter().next()
+            else {
+                continue;
+            };
+            let Some(parameter) = function.params.into_iter().next() else {
+                continue;
+            };
+            implementation.target_type = parameter.ty;
             headers.push((site, implementation, declaration, origin));
         }
         if headers.is_empty() {
@@ -203,7 +212,7 @@ impl Checker {
                 return None;
             };
             let mut cursor = SpanCursor { next: header_start };
-            let header = copy_header(implementation, &mut cursor);
+            let header = copy_header(&implementation, &mut cursor);
             debug_assert!(cursor.next <= end, "the reserved header spans fit");
             rendering.type_params = header.type_params;
             rendering.where_clause = header.where_clause;
@@ -230,7 +239,7 @@ impl Checker {
 
     /// Each source `impl Error` no `Display` impl of its type overlaps, by
     /// its declaration, with the nominal it renders.
-    fn impls_needing_display(&self) -> Option<HashMap<crate::DefId, crate::NominalId>> {
+    fn impls_needing_display(&self) -> Option<HashMap<crate::DefId, (crate::NominalId, Ty)>> {
         let error_trait = self.lang_items.get(crate::LangItem::Error.key())?.trait_id;
         let display_trait = self
             .lang_items
@@ -251,7 +260,9 @@ impl Checker {
                     .any(|display| heads_overlap(&row.head, display))
             })
             .filter_map(|row| match &row.head.target {
-                Ty::Named { head, .. } => Some((row.declaration, head.nominal()?)),
+                Ty::Named { head, .. } => {
+                    Some((row.declaration, (head.nominal()?, row.head.target.clone())))
+                }
                 _ => None,
             })
             .collect();

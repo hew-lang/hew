@@ -176,6 +176,34 @@ impl ImplMethodBinders {
         registry: &TraitRegistry,
         decide: &mut dyn FnMut(&ResolvedTy, ImplMethodObligation) -> Result<bool, ClassError>,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
+        let type_args = self.arguments(defs, method, receiver)?;
+        let refusal = || ClassError::UnknownDeclaration {
+            name: defs.display(method).to_string(),
+        };
+        for (param, obligation) in self.obligations.as_ref().ok_or_else(refusal)? {
+            let position = self
+                .impl_params
+                .iter()
+                .position(|name| name.id == *param)
+                .ok_or_else(refusal)?;
+            let satisfied = match obligation {
+                ImplMethodObligation::Marker(marker) => {
+                    registry.implements_marker(&type_args[position].to_ty(), *marker)
+                }
+                other => decide(&type_args[position], *other)?,
+            };
+            if !satisfied {
+                return Err(refusal());
+            }
+        }
+        Ok(type_args)
+    }
+    fn arguments(
+        &self,
+        defs: &crate::DefTable,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
         if let Some(name) = self.method_params.first() {
             return Err(ClassError::TypeParam { param: *name });
         }
@@ -218,25 +246,6 @@ impl ImplMethodBinders {
                 Err(ClassError::TypeParam { param: *name })
             })
             .collect::<Result<_, _>>()?;
-        let refusal = || ClassError::UnknownDeclaration {
-            name: defs.display(method).to_string(),
-        };
-        for (param, obligation) in self.obligations.as_ref().ok_or_else(refusal)? {
-            let position = self
-                .impl_params
-                .iter()
-                .position(|name| name.id == *param)
-                .ok_or_else(refusal)?;
-            let satisfied = match obligation {
-                ImplMethodObligation::Marker(marker) => {
-                    registry.implements_marker(&type_args[position].to_ty(), *marker)
-                }
-                other => decide(&type_args[position], *other)?,
-            };
-            if !satisfied {
-                return Err(refusal());
-            }
-        }
         Ok(type_args)
     }
 }
@@ -651,6 +660,36 @@ impl TypeFactService {
         self.select_display_method(value, source, &mut HashSet::new())
     }
 
+    /// Select a Display implementation whose bounds the live checker admitted.
+    ///
+    /// # Errors
+    /// Refuses missing registration facts or inconsistent implementation binders.
+    pub fn display_method_for_checked_type(
+        &self,
+        value: &ResolvedTy,
+        source: &ResolvedTy,
+    ) -> Result<Option<(crate::DefId, Vec<ResolvedTy>)>, ClassError> {
+        let Some(method) = self.selected_display_method(source) else {
+            return Ok(None);
+        };
+        let binders = self.context.method_binders.get(&method).ok_or_else(|| {
+            ClassError::UnknownDeclaration {
+                name: self.context.defs.display(method).to_string(),
+            }
+        })?;
+        binders
+            .arguments(&self.context.defs, method, value)
+            .map(|args| Some((method, args)))
+    }
+
+    fn selected_display_method(&self, source: &ResolvedTy) -> Option<crate::DefId> {
+        let slot = ImplMethodSlot::Declared(self.context.display_method?);
+        selected_impl_method(&self.context.method_ids, source, slot).or_else(|| {
+            let expanded = self.rendering_source(source).ok()?;
+            selected_impl_method(&self.context.method_ids, &expanded, slot)
+        })
+    }
+
     fn select_display_method(
         &self,
         ty: &ResolvedTy,
@@ -661,13 +700,7 @@ impl TypeFactService {
         if !visiting.insert(ty.clone()) {
             return Ok(None);
         }
-        let method = self.context.display_method.and_then(|slot| {
-            selected_impl_method(
-                &self.context.method_ids,
-                source,
-                ImplMethodSlot::Declared(slot),
-            )
-        });
+        let method = self.selected_display_method(source);
         let Some(method) = method else {
             visiting.remove(ty);
             return Ok(None);
@@ -688,9 +721,13 @@ impl TypeFactService {
                     .select_display_method(ty, ty, visiting)
                     .map(|selected| selected.is_some()),
             },
-        )?;
+        );
         visiting.remove(ty);
-        Ok(Some((method, args)))
+        match args {
+            Ok(args) => Ok(Some((method, args))),
+            Err(ClassError::UnknownDeclaration { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Expand only a source alias's head through its checked declaration.

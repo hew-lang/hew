@@ -2785,8 +2785,9 @@ impl Checker {
         span: &Span,
     ) {
         let trait_display = self.defs.display(trait_id).to_string();
+        let target = self.normalize_for_use(target);
         for super_trait in self.trait_closure(trait_id).into_iter().skip(1) {
-            if self.has_trait_impl(target, super_trait) {
+            if self.has_trait_impl(&target, super_trait) {
                 continue;
             }
             let super_display = self.defs.display(super_trait).to_string();

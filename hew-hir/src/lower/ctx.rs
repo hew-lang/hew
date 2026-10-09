@@ -79,6 +79,10 @@ impl LowerCtx {
             expr_types: tc_output.expr_types.clone(),
             type_facts: tc_output.type_facts.clone(),
             type_declarations: tc_output.type_fact_context.declarations().clone(),
+            display_facts: hew_types::TypeFactService::new(
+                tc_output.type_fact_context.clone(),
+                std::collections::BTreeMap::new(),
+            ),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             unrendered_assertion_operands: tc_output.unrendered_assertion_operands.clone(),
             defer_body_depth: 0,

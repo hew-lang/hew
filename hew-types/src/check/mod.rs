@@ -2511,8 +2511,6 @@ impl Checker {
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
         self.prepare_program(checked, false);
-        // Every impl is admitted: an `impl Error` no `Display` impl overlaps
-        // gets its implied one, and the program is prepared again with it.
         let normalized_program = match self.synthesize_error_displays(checked) {
             Some(displays) => {
                 let normalized =
@@ -2520,10 +2518,15 @@ impl Checker {
                         normalized_program.as_deref(),
                         displays,
                     ));
-                self.reset_for_program();
-                self.errors.extend(normalization_errors);
                 self.implied_display_context = normalized.implied_context;
-                self.prepare_program(&normalized.program, false);
+                self.mint_source_declaration_identities(&normalized.program);
+                if let Some(graph) = &normalized.program.module_graph {
+                    self.module_item_sources.clone_from(&graph.item_sources);
+                }
+                self.collect_function_signatures(
+                    &normalized.program,
+                    Some(&normalized.implied_displays),
+                );
                 Some(normalized)
             }
             None => normalized_program,
@@ -2910,12 +2913,6 @@ impl Checker {
         self.capture_protected_prelude_bindings();
         self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
-        // Implied Display impls name `Display` in the expansion context the
-        // first preparation minted; the second mints the same row first.
-        if let Some(context) = self.implied_display_context {
-            let minted = self.mint_implied_display_context();
-            debug_assert_eq!(minted, Some(context), "the re-check mints the same context");
-        }
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so
         // later trait/source identity normalization can relate prelude traits

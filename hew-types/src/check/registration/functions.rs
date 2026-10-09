@@ -154,11 +154,22 @@ impl Checker {
     }
 
     /// Pass 2: Collect function signatures
+    pub(in crate::check) fn collect_functions(&mut self, program: &Program) {
+        self.collect_function_signatures(program, None);
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "signature collection maintains one ordered registration walk"
     )]
-    pub(in crate::check) fn collect_functions(&mut self, program: &Program) {
+    pub(in crate::check) fn collect_function_signatures(
+        &mut self,
+        program: &Program,
+        generated: Option<&[(Span, Span)]>,
+    ) {
+        let selected = |span: &Span| {
+            generated.is_none_or(|ranges| ranges.iter().any(|(range, _)| range == span))
+        };
         let flat_file_import_modules = flat_file_import_module_ids(program);
         self.flat_file_import_module_names = flat_file_import_modules
             .iter()
@@ -219,6 +230,9 @@ impl Checker {
 
                     let item_sources = self.module_item_sources.get(&module_name).cloned();
                     for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        if !selected(span) {
+                            continue;
+                        }
                         // Per-item defining-file identity (rc1-F1 stage C):
                         // registration-time facts (extern contracts, their
                         // conflict diagnostics) attribute to the item's own
@@ -280,6 +294,9 @@ impl Checker {
             })
             .unwrap_or_default();
         for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            if !selected(span) {
+                continue;
+            }
             self.current_item_ordinal = item_ordinal;
             self.collect_function_item(item, span);
         }

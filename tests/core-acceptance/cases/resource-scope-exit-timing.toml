@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-scope-exit-timing"
+intent = "A resource closes at its lexical scope exit, after two observable statements following its last field access (#3071)."
+source = "cases/resource-scope-exit-timing.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "used 1\nfirst marker\nsecond marker\nclosed 1\nafter scope\n"
+stderr = ""
+exit = 0

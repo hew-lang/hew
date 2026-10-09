@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-mailbox-scope-exit-timing"
+intent = "A resource transferred through an actor mailbox closes at the receive scope exit, after two observable statements following its last field access and before the reply (#3071)."
+source = "cases/resource-mailbox-scope-exit-timing.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "used 2\nfirst marker\nsecond marker\nclosed 2\nafter reply\n"
+stderr = ""
+exit = 0

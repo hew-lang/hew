@@ -927,10 +927,6 @@
         },
         {
           "fields": [],
-          "name": "Unauthorized"
-        },
-        {
-          "fields": [],
           "name": "Backpressure"
         },
         {
@@ -947,17 +943,16 @@
       "id": 3,
       "name": "SendError",
       "runtime_tags": {
-        "SendErrorBackpressure": 8,
+        "SendErrorBackpressure": 7,
         "SendErrorCancelled": 5,
         "SendErrorClosed": 1,
-        "SendErrorDead": 9,
+        "SendErrorDead": 8,
         "SendErrorFull": 0,
         "SendErrorLocalShutdown": 4,
         "SendErrorPartition": 2,
         "SendErrorStaleRef": 3,
-        "SendErrorUnauthorized": 7,
         "SendErrorVersionMismatch": 6,
-        "SendErrorWriteTimedOut": 10
+        "SendErrorWriteTimedOut": 9
       }
     }
   ],

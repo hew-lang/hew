@@ -12,15 +12,7 @@ fn scratch<'ctx>(
     ty: BasicTypeEnum<'ctx>,
     name: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
-    let builder = values.ctx.create_builder();
-    if let Some(end) = frame.allocations.get_terminator() {
-        builder.position_before(&end);
-    } else {
-        builder.position_at_end(frame.allocations);
-    }
-    builder
-        .build_alloca(ty, name)
-        .llvm_ctx("allocate release continuation storage")
+    frame.storage(values.ctx, ty, name)
 }
 
 pub(super) fn callback<'ctx>(
@@ -939,6 +931,12 @@ fn drain_operation<'ctx>(
     fault_name: &str,
 ) -> CodegenResult<()> {
     let pointer = values.ctx.ptr_type(AddressSpace::default());
+    frame.carry(
+        values.ctx,
+        values.builder,
+        owner,
+        "release.operation.owner.slot",
+    )?;
     let poll = values
         .ctx
         .append_basic_block(values.value, "release.operation.poll");
@@ -973,14 +971,7 @@ fn drain_operation<'ctx>(
         .build_switch(status, done, &[(values.ctx.i32_type().const_zero(), wait)])
         .llvm_ctx("wait for operation cleanup")?;
     values.builder.position_at_end(wait);
-    frame.suspend(
-        values.ctx,
-        values.llvm,
-        values.builder,
-        poll,
-        invalid,
-        false,
-    )?;
+    frame.suspend(values.ctx, values.builder, poll, invalid)?;
     values.builder.position_at_end(invalid);
     values
         .builder
@@ -1112,6 +1103,7 @@ fn drain_cursor_inline<'ctx>(
     cursor: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
     let pointer = values.ctx.ptr_type(AddressSpace::default());
+    frame.carry(values.ctx, values.builder, cursor, "release.cursor.slot")?;
     let next = values
         .ctx
         .append_basic_block(values.value, "release.cursor.next");
@@ -1265,6 +1257,12 @@ fn generator<'ctx>(
         .builder
         .build_load(pointer, source, "release.generator")
         .llvm_ctx("consume generator")?;
+    frame.carry(
+        values.ctx,
+        values.builder,
+        owner,
+        "release.generator.owner.slot",
+    )?;
     let fault = scratch(values, frame, pointer.into(), "release.generator.fault")?;
     let poll = values
         .ctx
@@ -1304,14 +1302,7 @@ fn generator<'ctx>(
         .build_switch(status, done, &[(values.ctx.i32_type().const_zero(), wait)])
         .llvm_ctx("wait for generator cleanup")?;
     values.builder.position_at_end(wait);
-    frame.suspend(
-        values.ctx,
-        values.llvm,
-        values.builder,
-        poll,
-        invalid,
-        false,
-    )?;
+    frame.suspend(values.ctx, values.builder, poll, invalid)?;
     values.builder.position_at_end(invalid);
     values
         .builder

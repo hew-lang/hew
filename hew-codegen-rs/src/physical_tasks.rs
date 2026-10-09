@@ -186,6 +186,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_task_wait_new",
             &[task_value.into(), waker.into()],
         )?;
+        frame.carry(self.ctx, &self.builder, wait, "await.operation.slot")?;
         self.clear_owned(*task)?;
         let poll = self.ctx.append_basic_block(self.value, "await.poll");
         let request_cancel = self
@@ -239,7 +240,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, complete, pending)
             .llvm_ctx("wait for task cleanup")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(complete);
@@ -279,6 +280,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "await.outcome",
         )?
         .into_int_value();
+        frame.carry(self.ctx, &self.builder, taken, "await.outcome.slot")?;
         let cleanup = self
             .builder
             .build_load(pointer, cleanup, "await.result.cursor")
@@ -341,6 +343,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_scope_wait_new",
             &[handle.into(), waker.into(), frame.state.into()],
         )?;
+        frame.carry(self.ctx, &self.builder, wait, "scope.wait.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "scope.handle.slot")?;
         if mode.cancels_losers() {
             self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
         } else if mode.preserves_fault() {
@@ -393,7 +397,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, complete, pending)
             .llvm_ctx("wait for all child cleanup")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(complete);

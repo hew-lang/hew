@@ -122,6 +122,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         waker: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let frame = self.stream_frame()?;
+        frame.carry(
+            self.ctx,
+            &self.builder,
+            request,
+            "stream.drain.request.slot",
+        )?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.drain.waker.slot")?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let poll = self.ctx.append_basic_block(self.value, "stream.drain.poll");
         let pending = self
@@ -160,7 +167,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, drained, pending)
             .llvm_ctx("wait for stream producer release")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(drained);
@@ -324,6 +331,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.read.operation",
         )?
         .into_pointer_value();
+        frame.carry(self.ctx, &self.builder, request, "stream.read.request.slot")?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.read.waker.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "stream.read.handle.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "stream.next.poll");
         let inspect = self
             .ctx
@@ -362,7 +372,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("dispatch stream receive outcome")?;
         self.builder.position_at_end(wait);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         // Every exit converges on one release of the operation; its code
@@ -466,6 +476,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.try_send.status",
         )?
         .into_int_value();
+        if let Some(frame) = &self.frame {
+            frame.carry(
+                self.ctx,
+                &self.builder,
+                status,
+                "stream.try_send.status.slot",
+            )?;
+        }
         // The runtime copied the element into its envelope; the slot no
         // longer owns it on any outcome.
         self.clear_owned(value)?;
@@ -589,6 +607,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?
         .into_pointer_value();
         self.clear_owned(*value)?;
+        frame.carry(
+            self.ctx,
+            &self.builder,
+            request,
+            "stream.write.request.slot",
+        )?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.write.waker.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "stream.write.handle.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "stream.send.poll");
         let inspect = self
             .ctx
@@ -633,7 +659,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("dispatch stream send outcome")?;
         self.builder.position_at_end(wait);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         // Every exit converges on one release; peer closure reads the release

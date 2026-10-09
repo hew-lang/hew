@@ -214,7 +214,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         for (code, from) in &join.exits {
             selected.add_incoming(&[(code, *from)]);
         }
-        Ok(selected.as_basic_value().into_int_value())
+        let selected = selected.as_basic_value().into_int_value();
+        if let Some(frame) = &self.frame {
+            frame.carry(self.ctx, &self.builder, selected, "operation.exit.slot")?;
+        }
+        Ok(selected)
     }
 
     /// Dispatch on `selected` into one block per `(code, name)` arm; every
@@ -352,6 +356,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "sleep.operation",
         )?
         .into_pointer_value();
+        frame.carry(self.ctx, &self.builder, operation, "sleep.operation.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "sleep.poll");
         let poll_status = self.ctx.append_basic_block(self.value, "sleep.poll.status");
         let waiting = self.ctx.append_basic_block(self.value, "sleep.pending");
@@ -389,7 +394,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select sleep outcome")?;
         self.builder.position_at_end(waiting);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
             .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
@@ -483,6 +488,8 @@ pub(super) fn await_child<'ctx>(
     child: PointerValue<'ctx>,
     child_frame: PointerValue<'ctx>,
 ) -> CodegenResult<IntValue<'ctx>> {
+    frame.carry(ctx, builder, child, "call.child.state.slot")?;
+    frame.carry(ctx, builder, child_frame, "call.child.frame.slot")?;
     let pointer = ctx.ptr_type(AddressSpace::default());
     let state_value = |name: &str, state: PointerValue<'ctx>| -> CodegenResult<IntValue<'ctx>> {
         let function =
@@ -523,7 +530,7 @@ pub(super) fn await_child<'ctx>(
         .build_conditional_branch(pending, wait, done)
         .llvm_ctx("select child call completion")?;
     builder.position_at_end(wait);
-    frame.suspend(ctx, llvm, builder, resume, destroy, false)?;
+    frame.suspend(ctx, builder, resume, destroy)?;
     builder.position_at_end(resume);
     free_handle("hew_cont_resume", child_frame)?;
     builder

@@ -1,53 +1,30 @@
-//! LLVM coroutine mechanics; semantic cleanup edges are supplied by physical MIR.
+//! Plain continuation frames; semantic cleanup edges come from physical MIR.
 
 use super::*;
-use inkwell::attributes::{Attribute, AttributeLoc};
-use inkwell::llvm_sys::core::{
-    LLVMAddCase, LLVMBuildCall2, LLVMBuildSwitch, LLVMConstNull, LLVMTokenTypeInContext,
-};
-use inkwell::llvm_sys::prelude::LLVMValueRef;
-use inkwell::types::AsTypeRef;
-use inkwell::values::AsValueRef;
+use inkwell::attributes::AttributeLoc;
+use inkwell::values::{AsValueRef, BasicValue, InstructionValue};
+use std::cell::{Cell, RefCell};
 
 pub(super) struct Frame<'ctx> {
-    pub handle: PointerValue<'ctx>,
     pub state: PointerValue<'ctx>,
     pub destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
     pub allocations: BasicBlock<'ctx>,
+    index: PointerValue<'ctx>,
+    dispatch: InstructionValue<'ctx>,
+    next_state: Cell<u32>,
     exit: BasicBlock<'ctx>,
+    invalid_destroy: BasicBlock<'ctx>,
+    carried: RefCell<BTreeSet<usize>>,
 }
 
-fn intrinsic<'ctx>(
-    module: &Module<'ctx>,
-    name: &str,
-    types: &[BasicTypeEnum<'ctx>],
-) -> CodegenResult<FunctionValue<'ctx>> {
-    Intrinsic::find(name)
-        .and_then(|intrinsic| intrinsic.get_declaration(module, types))
-        .ok_or_else(|| CodegenError::FailClosed(format!("missing LLVM intrinsic {name}")))
-}
-
-/// inkwell does not wrap LLVM token values. Keep tokens opaque and pass them
-/// directly between the typed intrinsic declarations which produce/use them.
-unsafe fn raw_call(
-    builder: &Builder<'_>,
-    function: FunctionValue<'_>,
-    args: &mut [LLVMValueRef],
-    name: &std::ffi::CStr,
-) -> LLVMValueRef {
-    // SAFETY: callers supply the exact intrinsic signature and live LLVM values.
-    unsafe {
-        LLVMBuildCall2(
-            builder.as_mut_ptr(),
-            function.get_type().as_type_ref(),
-            function.as_value_ref(),
-            args.as_mut_ptr(),
-            args.len() as u32,
-            name.as_ptr(),
-        )
-    }
-}
+const _: () = {
+    assert!(std::mem::offset_of!(hew_runtime::cont::CoroFramePrefix, resume) == 0);
+    assert!(
+        std::mem::offset_of!(hew_runtime::cont::CoroFramePrefix, destroy)
+            == std::mem::size_of::<*const ()>()
+    );
+};
 
 pub(super) fn begin<'ctx>(
     ctx: &'ctx Context,
@@ -56,347 +33,242 @@ pub(super) fn begin<'ctx>(
     function: FunctionValue<'ctx>,
     state: PointerValue<'ctx>,
 ) -> CodegenResult<Frame<'ctx>> {
-    let attribute = Attribute::get_named_enum_kind_id("presplitcoroutine");
-    if attribute == 0 {
-        return Err(CodegenError::FailClosed(
-            "LLVM lacks presplitcoroutine".into(),
-        ));
-    }
     function.add_attribute(
         AttributeLoc::Function,
-        ctx.create_enum_attribute(attribute, 0),
+        ctx.create_string_attribute("hew.resumable", ""),
     );
-    let entry = builder
-        .get_insert_block()
-        .ok_or_else(|| CodegenError::FailClosed("coroutine has no entry block".into()))?;
-    let allocate = ctx.append_basic_block(function, "coro.allocate");
-    let body = ctx.append_basic_block(function, "coro.body");
-    let pointer = ctx.ptr_type(AddressSpace::default());
-    let null = pointer.const_null().as_value_ref();
-    let id_fn = intrinsic(module, "llvm.coro.id", &[])?;
-    // SAFETY: coro.id takes i32 plus three pointers and returns a token. Its
-    // promise is null; explicit result/fault slots carry all published values.
-    let id = unsafe {
-        raw_call(
-            builder,
-            id_fn,
-            &mut [ctx.i32_type().const_zero().as_value_ref(), null, null, null],
-            c"coro.id",
-        )
-    };
-    let alloc_fn = intrinsic(module, "llvm.coro.alloc", &[])?;
-    // SAFETY: coro.alloc consumes the id token and returns i1.
-    let needs_alloc =
-        unsafe { IntValue::new(raw_call(builder, alloc_fn, &mut [id], c"coro.needs.alloc")) };
-    builder
-        .build_conditional_branch(needs_alloc, allocate, body)
-        .llvm_ctx("select coroutine allocation")?;
-    builder.position_at_end(allocate);
-    let size_fn = intrinsic(module, "llvm.coro.size", &[ctx.i64_type().into()])?;
-    let size = builder
-        .build_call(size_fn, &[], "coro.size")
-        .llvm_ctx("measure coroutine frame")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("coro.size has no result".into()))?;
-    let alloc = get_or_declare_external(
-        module,
-        "hew_cont_frame_alloc",
-        pointer.fn_type(&[ctx.i64_type().into()], false),
-    )?;
-    let memory = builder
-        .build_call(alloc, &[size.into()], "coro.memory")
-        .llvm_ctx("allocate coroutine frame")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("frame allocation has no result".into()))?
-        .into_pointer_value();
-    builder
-        .build_unconditional_branch(body)
-        .llvm_ctx("enter coroutine body")?;
-    builder.position_at_end(body);
-    let allocation = builder
-        .build_phi(pointer, "coro.allocation")
-        .llvm_ctx("select frame memory")?;
-    allocation.add_incoming(&[(&pointer.const_null(), entry), (&memory, allocate)]);
-    let begin_fn = intrinsic(module, "llvm.coro.begin", &[])?;
-    // SAFETY: coro.begin consumes the id token and allocation pointer, returns ptr.
-    let handle = unsafe {
-        PointerValue::new(raw_call(
-            builder,
-            begin_fn,
-            &mut [id, allocation.as_basic_value().as_value_ref()],
-            c"coro.handle",
-        ))
-    };
+    let initial = function.get_first_basic_block().ok_or_else(|| {
+        CodegenError::FailClosed("resumable function lacks its initial block".into())
+    })?;
+    let insertion = builder.get_insert_block().ok_or_else(|| {
+        CodegenError::FailClosed("resumable function lacks an insertion point".into())
+    })?;
+    let handle = builder
+        .build_alloca(ctx.i8_type(), "frame.base")
+        .llvm_ctx("reserve continuation base")?;
+    mark(ctx, handle, "hew.frame.base")?;
+    let index = builder
+        .build_alloca(ctx.i32_type(), "frame.index")
+        .llvm_ctx("reserve continuation state")?;
+    mark(ctx, index, "hew.frame.index")?;
     let destroying = builder
-        .build_alloca(ctx.bool_type(), "coro.destroying")
-        .llvm_ctx("allocate coroutine destruction flag")?;
+        .build_alloca(ctx.bool_type(), "frame.destroying")
+        .llvm_ctx("reserve destruction entry")?;
+    mark(ctx, destroying, "hew.frame.destroying")?;
+    builder
+        .build_store(index, ctx.i32_type().const_zero())
+        .llvm_ctx("initialize continuation state")?;
     builder
         .build_store(destroying, ctx.bool_type().const_zero())
-        .llvm_ctx("initialize coroutine destruction flag")?;
-    let frame = Frame {
-        handle,
-        state,
-        destroying,
-        finish: ctx.append_basic_block(function, "coro.finish"),
-        allocations: body,
-        exit: ctx.append_basic_block(function, "coro.exit"),
-    };
-    let final_suspend = ctx.append_basic_block(function, "coro.final");
-    let invalid_resume = ctx.append_basic_block(function, "coro.invalid.resume");
-    let cleanup = ctx.append_basic_block(function, "coro.cleanup");
-    let free = ctx.append_basic_block(function, "coro.free");
-    builder.position_at_end(frame.finish);
+        .llvm_ctx("initialize destruction entry")?;
+    let allocations = ctx.append_basic_block(function, "frame.dispatch");
+    let invalid = ctx.append_basic_block(function, "frame.invalid");
+    let finish = ctx.append_basic_block(function, "frame.finish");
+    let final_block = ctx.append_basic_block(function, "frame.final");
+    let cleanup = ctx.append_basic_block(function, "frame.cleanup");
+    let exit = ctx.append_basic_block(function, "frame.exit");
+    let invalid_destroy = ctx.append_basic_block(function, "frame.invalid.destroy");
+    builder.position_at_end(allocations);
+    let selected = builder
+        .build_load(ctx.i32_type(), index, "frame.resume.index")
+        .llvm_ctx("read continuation state")?
+        .into_int_value();
+    let dispatch = builder
+        .build_switch(
+            selected,
+            invalid,
+            &[
+                (ctx.i32_type().const_zero(), initial),
+                (ctx.i32_type().const_int(1, false), cleanup),
+            ],
+        )
+        .llvm_ctx("dispatch continuation entry")?;
+    builder.position_at_end(finish);
     let is_destroying = builder
-        .build_load(ctx.bool_type(), destroying, "coro.is.destroying")
-        .llvm_ctx("load destruction phase")?
+        .build_load(ctx.bool_type(), destroying, "frame.is.destroying")
+        .llvm_ctx("inspect destruction entry")?
         .into_int_value();
     builder
-        .build_conditional_branch(is_destroying, cleanup, final_suspend)
-        .llvm_ctx("finish coroutine execution")?;
-    builder.position_at_end(final_suspend);
-    frame.suspend(ctx, module, builder, invalid_resume, cleanup, true)?;
-    builder.position_at_end(invalid_resume);
+        .build_conditional_branch(is_destroying, cleanup, final_block)
+        .llvm_ctx("settle continuation")?;
+    builder.position_at_end(final_block);
     builder
-        .build_unreachable()
-        .llvm_ctx("refuse final coroutine resume")?;
+        .build_store(handle, ctx.ptr_type(AddressSpace::default()).const_null())
+        .llvm_ctx("publish continuation completion")?;
+    builder
+        .build_store(index, ctx.i32_type().const_int(1, false))
+        .llvm_ctx("retain terminal continuation state")?;
+    builder
+        .build_unconditional_branch(exit)
+        .llvm_ctx("return completed continuation")?;
     builder.position_at_end(cleanup);
-    let free_fn = intrinsic(module, "llvm.coro.free", &[])?;
-    // SAFETY: coro.free consumes the original id token and live frame pointer.
-    let memory = unsafe {
-        PointerValue::new(raw_call(
-            builder,
-            free_fn,
-            &mut [id, handle.as_value_ref()],
-            c"coro.free.memory",
-        ))
-    };
-    let absent = builder
-        .build_is_null(memory, "coro.free.absent")
-        .llvm_ctx("test elided frame")?;
-    builder
-        .build_conditional_branch(absent, frame.exit, free)
-        .llvm_ctx("select frame release")?;
-    builder.position_at_end(free);
-    let dealloc = get_or_declare_external(
+    let free = get_or_declare_external(
         module,
         "hew_cont_frame_free",
-        ctx.void_type().fn_type(&[pointer.into()], false),
+        ctx.void_type()
+            .fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false),
     )?;
     builder
-        .build_call(dealloc, &[memory.into()], "")
-        .llvm_ctx("release coroutine frame")?;
+        .build_call(free, &[handle.into()], "")
+        .llvm_ctx("release completed continuation frame")?;
     builder
-        .build_unconditional_branch(frame.exit)
-        .llvm_ctx("finish frame release")?;
-    builder.position_at_end(frame.exit);
-    let end = intrinsic(module, "llvm.coro.end", &[])?;
-    // SAFETY: the one common exit owns the coroutine's fallthrough coro.end.
-    // LLVM's final operand is the token-none constant, not a pointer.
-    unsafe {
-        let none = LLVMConstNull(LLVMTokenTypeInContext(ctx.raw()));
-        raw_call(
-            builder,
-            end,
-            &mut [
-                handle.as_value_ref(),
-                ctx.bool_type().const_zero().as_value_ref(),
-                none,
-            ],
-            c"",
-        );
-    }
+        .build_unconditional_branch(exit)
+        .llvm_ctx("finish continuation destruction")?;
+    builder.position_at_end(exit);
     builder
         .build_return(Some(&handle))
-        .llvm_ctx("return continuation handle")?;
-    builder.position_at_end(body);
+        .llvm_ctx("return continuation to owner")?;
+    let abort = get_or_declare_external(module, "abort", ctx.void_type().fn_type(&[], false))?;
+    for block in [invalid, invalid_destroy] {
+        builder.position_at_end(block);
+        builder
+            .build_call(abort, &[], "")
+            .llvm_ctx("refuse invalid continuation entry")?;
+        builder
+            .build_unreachable()
+            .llvm_ctx("terminate invalid continuation entry")?;
+    }
+    builder.position_at_end(insertion);
+    let frame = Frame {
+        state,
+        destroying,
+        finish,
+        allocations,
+        index,
+        dispatch,
+        next_state: Cell::new(2),
+        exit,
+        invalid_destroy,
+        carried: RefCell::new(BTreeSet::new()),
+    };
+    frame.carry(ctx, builder, state, "invocation.state.slot")?;
     Ok(frame)
 }
 
+fn mark(ctx: &Context, slot: PointerValue<'_>, name: &str) -> CodegenResult<()> {
+    slot.as_instruction()
+        .ok_or_else(|| CodegenError::FailClosed("frame field lacks its instruction".into()))?
+        .set_metadata(ctx.metadata_node(&[]), ctx.get_kind_id(name))
+        .map_err(|error| CodegenError::FailClosed(error.to_string()))
+}
+
 impl<'ctx> Frame<'ctx> {
+    pub fn carry<T: inkwell::values::BasicValue<'ctx> + Copy>(
+        &self,
+        ctx: &'ctx Context,
+        builder: &Builder<'ctx>,
+        value: T,
+        name: &str,
+    ) -> CodegenResult<T> {
+        let basic = value.as_basic_value_enum();
+        if basic.as_instruction_value().is_none()
+            || !self
+                .carried
+                .borrow_mut()
+                .insert(value.as_value_ref() as usize)
+        {
+            return Ok(value);
+        }
+        let slot = self.storage(ctx, basic.get_type(), name)?;
+        builder
+            .build_store(slot, value)
+            .llvm_ctx("retain emitter suspension carrier")?
+            .set_metadata(ctx.metadata_node(&[]), ctx.get_kind_id("hew.carry"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
+        Ok(value)
+    }
+
+    pub fn storage(
+        &self,
+        ctx: &'ctx Context,
+        ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let builder = ctx.create_builder();
+        let mut first = self.allocations.get_first_instruction();
+        while first.is_some_and(|instruction| {
+            instruction.get_opcode() == inkwell::values::InstructionOpcode::Phi
+        }) {
+            first = first.and_then(inkwell::values::InstructionValue::get_next_instruction);
+        }
+        if let Some(first) = first {
+            builder.position_before(&first);
+        } else {
+            builder.position_at_end(self.allocations);
+        }
+        builder
+            .build_alloca(ty, name)
+            .llvm_ctx("allocate frame carrier")
+    }
+
+    pub fn stack(&self, ctx: &Context, slot: PointerValue<'ctx>) -> CodegenResult<()> {
+        mark(ctx, slot, "hew.stack")
+    }
+
     pub fn suspend(
         &self,
         ctx: &'ctx Context,
-        module: &Module<'ctx>,
         builder: &Builder<'ctx>,
         resumed: BasicBlock<'ctx>,
         destroyed: BasicBlock<'ctx>,
-        is_final: bool,
     ) -> CodegenResult<()> {
-        let save_fn = intrinsic(module, "llvm.coro.save", &[])?;
-        let suspend_fn = intrinsic(module, "llvm.coro.suspend", &[])?;
-        // SAFETY: LLVM tokens pass only from coro.save to coro.suspend. The
-        // returned i8 selects resumed(0), destroyed(1), or return-to-owner.
+        let next = self.next_state.get();
+        self.next_state
+            .set(next.checked_add(1).ok_or_else(|| {
+                CodegenError::FailClosed("continuation state exceeds u32".into())
+            })?);
+        let function = self.allocations.get_parent().ok_or_else(|| {
+            CodegenError::FailClosed("continuation dispatch has no function".into())
+        })?;
+        let arm = ctx.append_basic_block(function, "frame.resume");
+        let entry_builder = ctx.create_builder();
+        entry_builder.position_at_end(arm);
+        let destroying = entry_builder
+            .build_load(ctx.bool_type(), self.destroying, "frame.via.destroy")
+            .llvm_ctx("inspect continuation entry kind")?
+            .into_int_value();
+        entry_builder
+            .build_conditional_branch(destroying, destroyed, resumed)
+            .llvm_ctx("select continuation entry kind")?;
+        // SAFETY: dispatch is a live i32 switch and arm belongs to its function.
         unsafe {
-            let save = raw_call(
-                builder,
-                save_fn,
-                &mut [self.handle.as_value_ref()],
-                c"coro.save",
-            );
-            let status = raw_call(
-                builder,
-                suspend_fn,
-                &mut [
-                    save,
-                    ctx.bool_type()
-                        .const_int(u64::from(is_final), false)
-                        .as_value_ref(),
-                ],
-                c"coro.suspend",
-            );
-            let switch = LLVMBuildSwitch(builder.as_mut_ptr(), status, self.exit.as_mut_ptr(), 2);
-            LLVMAddCase(
-                switch,
-                ctx.i8_type().const_zero().as_value_ref(),
-                resumed.as_mut_ptr(),
-            );
-            LLVMAddCase(
-                switch,
-                ctx.i8_type().const_int(1, false).as_value_ref(),
-                destroyed.as_mut_ptr(),
+            inkwell::llvm_sys::core::LLVMAddCase(
+                self.dispatch.as_value_ref(),
+                ctx.i32_type()
+                    .const_int(u64::from(next), false)
+                    .as_value_ref(),
+                arm.as_mut_ptr(),
             );
         }
+        builder
+            .build_store(self.index, ctx.i32_type().const_int(u64::from(next), false))
+            .llvm_ctx("retain continuation resume point")?;
+        let destroying = builder
+            .build_load(ctx.bool_type(), self.destroying, "frame.suspend.destroying")
+            .llvm_ctx("guard synchronous destruction")?
+            .into_int_value();
+        builder
+            .build_conditional_branch(destroying, self.invalid_destroy, self.exit)
+            .llvm_ctx("return only a resumable continuation")?;
         Ok(())
     }
 }
 
-pub(super) fn lower(module: &Module<'_>, machine: &TargetMachine) -> CodegenResult<()> {
-    module
-        .run_passes(
-            "globaldce,coro-early,cgscc(coro-split),coro-cleanup",
-            machine,
-            inkwell::passes::PassBuilderOptions::create(),
-        )
-        .map_err(|error| CodegenError::Llvm(format!("coroutine lowering failed: {error}")))?;
-    module
-        .verify()
-        .map_err(|error| CodegenError::LlvmVerify(format!("coroutine lowering: {error}")))
-}
-
-#[cfg(test)]
-mod abi_tests {
-    use super::*;
-    use hew_runtime::cont::CoroFramePrefix;
-    use inkwell::values::{AnyValue, BasicValue, InstructionOpcode};
-    use std::mem::offset_of;
-
-    /// Split one suspending coroutine and return the frame offsets its ramp
-    /// stores the `.resume` and `.destroy` outlines at.
-    fn split_prefix_offsets() -> (u64, u64) {
-        let triple = crate::llvm::native_emission_triple();
-        let machine = crate::llvm::target_machine_for_triple_with_opt_level(
-            &triple,
-            crate::llvm::OptLevel::O0,
-        )
-        .unwrap();
-        let target = machine.get_target_data();
-        let ctx = Context::create();
-        let module = ctx.create_module("frame_prefix");
-        module.set_triple(&machine.get_triple());
-        module.set_data_layout(&target.get_data_layout());
-        let pointer = ctx.ptr_type(AddressSpace::default());
-        let function =
-            module.add_function("probe", pointer.fn_type(&[pointer.into()], false), None);
-        let builder = ctx.create_builder();
-        builder.position_at_end(ctx.append_basic_block(function, "entry"));
-        let state = function.get_first_param().unwrap().into_pointer_value();
-        let frame = begin(&ctx, &module, &builder, function, state).unwrap();
-        let resumed = ctx.append_basic_block(function, "resumed");
-        let destroyed = ctx.append_basic_block(function, "destroyed");
-        frame
-            .suspend(&ctx, &module, &builder, resumed, destroyed, false)
-            .unwrap();
-        builder.position_at_end(resumed);
-        builder.build_unconditional_branch(frame.finish).unwrap();
-        builder.position_at_end(destroyed);
-        builder
-            .build_store(frame.destroying, ctx.bool_type().const_int(1, false))
-            .unwrap();
-        builder.build_unconditional_branch(frame.finish).unwrap();
-        lower(&module, &machine).unwrap();
-
-        let layout = module
-            .get_struct_type("probe.Frame")
-            .expect("CoroSplit names the switched-resume frame");
-        let outline = |suffix: &str| {
-            module
-                .get_function(&format!("probe.{suffix}"))
-                .unwrap()
-                .as_global_value()
-                .as_pointer_value()
-        };
-        let (resume, destroy) = (outline("resume"), outline("destroy"));
-        let mut slots = (None, None);
-        let ramp = module.get_function("probe").unwrap();
-        for block in ramp.get_basic_blocks() {
-            for store in block.get_instructions() {
-                if store.get_opcode() != InstructionOpcode::Store {
-                    continue;
-                }
-                let stored = store.get_operand(0).unwrap().value().unwrap();
-                let address = store.get_operand(1).unwrap().value().unwrap();
-                // Slot zero is the frame base itself; a later slot is a
-                // constant struct GEP whose last index names the field.
-                let offset = match address.as_instruction_value() {
-                    Some(gep) if gep.get_opcode() == InstructionOpcode::GetElementPtr => {
-                        let last = gep.get_num_operands() - 1;
-                        let field = gep
-                            .get_operand(last)
-                            .unwrap()
-                            .value()
-                            .unwrap()
-                            .into_int_value()
-                            .get_zero_extended_constant()
-                            .unwrap();
-                        target
-                            .offset_of_element(&layout, u32::try_from(field).unwrap())
-                            .unwrap()
-                    }
-                    _ => 0,
-                };
-                // A frame that may be elided stores `select(alloc, destroy,
-                // cleanup)`: the heap-frame arm is the destroy outline.
-                let stored = match stored.as_instruction_value() {
-                    Some(select) if select.get_opcode() == InstructionOpcode::Select => {
-                        select.get_operand(1).unwrap().value().unwrap()
-                    }
-                    _ => stored,
-                }
-                .as_any_value_enum();
-                if stored == resume.as_any_value_enum() {
-                    slots.0 = Some(offset);
-                } else if stored == destroy.as_any_value_enum() {
-                    slots.1 = Some(offset);
-                }
-            }
-        }
-        (
-            slots.0.expect("the ramp stores the resume outline"),
-            slots.1.expect("the ramp stores the destroy outline"),
-        )
+pub(super) fn lower<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+    machine: &TargetMachine,
+) -> CodegenResult<()> {
+    let functions: Vec<_> = module
+        .get_functions()
+        .filter(|function| {
+            function
+                .get_string_attribute(AttributeLoc::Function, "hew.resumable")
+                .is_some()
+        })
+        .collect();
+    for function in functions {
+        super::frames::lower(ctx, module, &machine.get_target_data(), function)?;
     }
-
-    /// The runtime drives continuations through `CoroFramePrefix`, so its
-    /// fields must sit exactly where LLVM's split ramp stores the outlines.
-    #[test]
-    fn split_frame_prefix_matches_the_runtime_continuation_abi() {
-        let runtime = (
-            offset_of!(CoroFramePrefix, resume) as u64,
-            offset_of!(CoroFramePrefix, destroy) as u64,
-        );
-        assert_eq!(split_prefix_offsets(), runtime);
-    }
-
-    /// A prefix that swapped its two slots would read the destroy outline as
-    /// resume; the measured frame tells the two orders apart.
-    #[test]
-    fn a_swapped_frame_prefix_is_caught() {
-        let swapped = (
-            offset_of!(CoroFramePrefix, destroy) as u64,
-            offset_of!(CoroFramePrefix, resume) as u64,
-        );
-        assert_ne!(split_prefix_offsets(), swapped);
-    }
+    Ok(())
 }

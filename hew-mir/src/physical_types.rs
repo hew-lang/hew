@@ -1251,6 +1251,8 @@ pub struct PhysicalFunction {
     pub entry: BlockId,
     pub parameters: Vec<StorageId>,
     pub storage: Vec<PhysicalStorage>,
+    /// Storage conservatively retained across suspension; initialization stays CFG-owned.
+    pub frame_storage: BTreeSet<StorageId>,
     /// Verified root partitions and their target-realized projection paths.
     pub place_storage: BTreeMap<StorageId, PhysicalPlaceStorage>,
     pub blocks: Vec<PhysicalBlock>,

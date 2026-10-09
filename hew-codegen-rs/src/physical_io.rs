@@ -59,6 +59,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("native I/O requires a resumable body".into())
         })?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
+        frame.carry(self.ctx, &self.builder, request, "io.drain.request.slot")?;
+        frame.carry(self.ctx, &self.builder, waker, "io.drain.waker.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "io.drain.poll");
         let pending = self.ctx.append_basic_block(self.value, "io.drain.pending");
         let drained = self.ctx.append_basic_block(self.value, "io.drained");
@@ -94,7 +96,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, drained, pending)
             .llvm_ctx("wait for I/O producer release")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(drained);
@@ -186,6 +188,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("a waiting call requires a resumable body".into())
         })?;
+        frame.carry(self.ctx, &self.builder, request, "io.request.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "io.poll");
         let inspect = self.ctx.append_basic_block(self.value, "io.inspect");
         let pending = self.ctx.append_basic_block(self.value, "io.pending");
@@ -229,7 +232,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select I/O readiness")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         Ok((completed, cancelled))

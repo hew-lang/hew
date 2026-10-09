@@ -294,6 +294,9 @@ pub(super) fn slot<'ctx>(
     layout: &PhysicalLayout,
     action: DestroyAction,
 ) -> CodegenResult<()> {
+    if action == DestroyAction::Callable {
+        return callable_slot(values, frame, source, layout);
+    }
     if values.module.releases.suspends(action) {
         let callee = callback(values.ctx, values.llvm, values.module, layout, action)?;
         invoke(
@@ -314,6 +317,99 @@ pub(super) fn slot<'ctx>(
         values.destroy_loaded_value(value, layout, action)?;
         publish_fault(values, frame)
     }
+}
+
+fn callable_slot<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+    source: PointerValue<'ctx>,
+    layout: &PhysicalLayout,
+) -> CodegenResult<()> {
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let carrier = values
+        .builder
+        .build_load(
+            llvm_type(values.ctx, &layout.repr)?,
+            source,
+            "release.callable",
+        )
+        .llvm_ctx("read callable release contract")?
+        .into_struct_value();
+    let descriptor = values
+        .builder
+        .build_extract_value(carrier, 1, "release.callable.descriptor")
+        .llvm_ctx("read callable descriptor")?
+        .into_pointer_value();
+    let inspect = values
+        .ctx
+        .append_basic_block(values.value, "callable.release.inspect");
+    let synchronous = values
+        .ctx
+        .append_basic_block(values.value, "callable.release.sync");
+    let asynchronous = values
+        .ctx
+        .append_basic_block(values.value, "callable.release.async");
+    let done = values
+        .ctx
+        .append_basic_block(values.value, "callable.release.done");
+    let cleared = values
+        .builder
+        .build_is_null(descriptor, "callable.cleared")
+        .llvm_ctx("check cleared callable")?;
+    values
+        .builder
+        .build_conditional_branch(cleared, synchronous, inspect)
+        .llvm_ctx("select live callable descriptor")?;
+    values.builder.position_at_end(inspect);
+    // The descriptor's first field is its environment's authoritative layout.
+    let environment = values
+        .builder
+        .build_load(pointer, descriptor, "release.callable.layout")
+        .llvm_ctx("read callable environment layout")?
+        .into_pointer_value();
+    let start = descriptor_release_start(values, environment)?;
+    let suspends = values
+        .builder
+        .build_is_not_null(start, "callable.release.suspends")
+        .llvm_ctx("check callable release continuation")?;
+    values
+        .builder
+        .build_conditional_branch(suspends, asynchronous, synchronous)
+        .llvm_ctx("select callable release path")?;
+    values.builder.position_at_end(synchronous);
+    let drop = external_drop(values.ctx, values.llvm, "hew_callable_drop")?;
+    values.emit_release_in_sink(|| {
+        values
+            .builder
+            .build_call(drop, &[source.into()], "")
+            .llvm_ctx("release synchronous callable")?;
+        Ok(())
+    })?;
+    publish_fault(values, frame)?;
+    values
+        .builder
+        .build_unconditional_branch(done)
+        .llvm_ctx("finish synchronous callable release")?;
+    values.builder.position_at_end(asynchronous);
+    let callee = callback(
+        values.ctx,
+        values.llvm,
+        values.module,
+        layout,
+        DestroyAction::Callable,
+    )?;
+    invoke(
+        values,
+        frame,
+        callee.as_global_value().as_pointer_value(),
+        source,
+    )?;
+    values
+        .builder
+        .build_unconditional_branch(done)
+        .llvm_ctx("finish suspending callable release")?;
+    values.builder.position_at_end(done);
+    Ok(())
 }
 
 /// A runtime operation handle whose release drains the operation before it
@@ -1177,15 +1273,7 @@ fn descriptor_slot<'ctx>(
     let pointer = values.ctx.ptr_type(AddressSpace::default());
     let target = TargetData::create(&values.module.target.data_layout);
     let layout = value_descriptor_type(values.ctx, &target);
-    let address = values
-        .builder
-        .build_struct_gep(layout, descriptor, 5, "release.start.slot")
-        .llvm_ctx("address descriptor continuation")?;
-    let start = values
-        .builder
-        .build_load(pointer, address, "release.start")
-        .llvm_ctx("read descriptor continuation")?
-        .into_pointer_value();
+    let start = descriptor_release_start(values, descriptor)?;
     let asynchronous = values.ctx.append_basic_block(values.value, "release.async");
     let synchronous = values.ctx.append_basic_block(values.value, "release.sync");
     let done = values
@@ -1245,6 +1333,25 @@ fn descriptor_slot<'ctx>(
         .llvm_ctx("finish synchronous release")?;
     values.builder.position_at_end(done);
     Ok(())
+}
+
+fn descriptor_release_start<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    descriptor: PointerValue<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let target = TargetData::create(&values.module.target.data_layout);
+    let layout = value_descriptor_type(values.ctx, &target);
+    let address = values
+        .builder
+        .build_struct_gep(layout, descriptor, 5, "release.start.slot")
+        .llvm_ctx("address descriptor continuation")?;
+    let start = values
+        .builder
+        .build_load(pointer, address, "release.start")
+        .llvm_ctx("read descriptor continuation")?
+        .into_pointer_value();
+    Ok(start)
 }
 
 fn generator<'ctx>(

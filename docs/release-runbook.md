@@ -4,6 +4,9 @@ How a Hew release is prepared, tagged and shipped. A pushed `v*` tag is the
 only trigger: `.github/workflows/release.yml` builds every artefact once and
 publishes all of them, pausing only for environment approvals.
 
+For outstanding compiler/client and package qualification, see the
+[release and ecosystem readiness handoff](release-readiness.md).
+
 ## What happens on a `v*` tag
 
 ```
@@ -15,9 +18,9 @@ validate ─► build ─────────────► package and pro
    `docs/syntax-data.json`, `docs/releases/<tag>.md`), then runs
    `make release-checks` (dependency policy, notices, installer ordering).
 2. **build** produces, in parallel: the portable WASI libraries, the
-   cross-built FreeBSD and Windows libraries, the seven platform archives
+   cross-built FreeBSD and Windows libraries, the six current platform archives
    (Linux x86_64/aarch64, macOS arm64/x86_64 signed and notarized, Windows
-   x86_64, FreeBSD x86_64/aarch64), and the two npm tarballs
+   x86_64, FreeBSD x86_64), and the two npm tarballs
    (`@hew-lang/wasm` from `hew-wasm`, `@hew-lang/sandbox-vm`).
 3. **package and prove**: Linux distro packages with install smoke (final
    releases only; rpm and Arch versions cannot carry `-rcN`), the Docker image
@@ -54,7 +57,7 @@ and proves everything and publishes nothing; a dispatch from a branch with
 
 Release artefacts on the GitHub Release:
 
-- `hew-v<version>-<platform>.tar.gz` / `.zip`: the seven toolchain archives
+- `hew-v<version>-<platform>.tar.gz` / `.zip`: the six current toolchain archives
 - `hew-v<version>-wasm32-wasip1-libs.tar.gz`: the WASI runtime and standard
   library (`libhew_runtime.a`, `libhew_std.a`) that every archive also carries
 - `hew-lang-wasm-<version>.tgz`, `hew-lang-sandbox-vm-<version>.tgz`: the
@@ -435,7 +438,7 @@ macOS release notes:
 
 ## Phase 6 — Post-release verification
 
-- [ ] The GitHub Release has the seven platform archives, the WASI library
+- [ ] The GitHub Release has the six current platform archives, the WASI library
       archive, both npm tarballs, the checksum manifest and, for a final
       release, the Linux packages; `gh attestation verify <asset> --repo
 hew-lang/hew` passes for a downloaded archive
@@ -477,17 +480,18 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                         | Yes                                 |
 | Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                             | Yes for PRs                         |
 | Smoke test (compile+run)             | release-gate.yml                                                  | Yes                                 |
-| Release-library consumer link+run    | release-gate.yml + release.yml (every platform/architecture lane) | Yes                                 |
+| Release-library consumer link+run    | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane) | Yes                                 |
 | Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                         | Yes                                 |
 | Packaged archive smoke (Windows zip) | release.yml (Windows job)                                         | Yes                                 |
-| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 + aarch64)                        | Yes                                 |
+| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 only)                             | Yes                                 |
 | Linux package install smoke          | release.yml (`linux-packages`)                                    | Yes for final tags; skipped for RCs |
 | Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                | Yes                                 |
 | Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                       | Yes                                 |
 | Full release DAG dry run             | release.yml on `release/**` pushes                                | Yes for release branches            |
 | macOS build + tests                  | ci.yml + release-gate.yml                                         | Yes                                 |
 | Windows build + tests                | ci.yml + release-gate.yml                                         | Yes                                 |
-| FreeBSD build + tests                | release-gate.yml (x86_64 + aarch64), freebsd.yml (nightly)        | Yes for release branches            |
+| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                            | Yes for release branches            |
+| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                  | Yes for release branches            |
 | Rust runtime ASan (`make asan`)       | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml     | Yes for release branches            |
 | Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)           | Blocks nightly result; review before release |
 | Host and extern-byte safety         | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release |
@@ -544,9 +548,15 @@ that missing evidence or establish safety sign-off.
 - **linux-aarch64**: The pre-tag release gate builds and tests on a native
   Ubuntu 24.04 arm runner; the tag workflow additionally runs packaged-archive
   and clean-room smoke checks.
-- **FreeBSD**: Both x86_64 and aarch64 are blocking pre-tag build/test lanes and
-  blocking tag-time packaged-archive lanes. The nightly remains additional
-  early warning rather than the release authority.
+- **FreeBSD**: x86_64 has a full blocking pre-tag build/test lane; aarch64
+  proves only the release compiler build and compile/run smoke under emulation.
+  Its pre-tag lane does not build the LSP, observe tool or release library, or
+  execute the Rust/compiled-Hew suites. The current tag workflow builds and
+  requires only the x86_64 FreeBSD archive; no aarch64 archive job or required
+  asset exists. Restore and qualify that lane or record a release-owner decision
+  to defer it and align supported-platform claims before tagging. Cross-built
+  aarch64 libraries do not prove a shipped archive. The x86_64 nightly remains
+  additional early warning rather than the release authority.
 - **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
   publish the LLVM 22 packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04

@@ -58,6 +58,13 @@ thread_local! {
 // example `EISDIR`/`ENOTDIR` -> `IoError::Other(raw)`). Keep the tag values in
 // sync with `io_error_from_kind` in `std/fs.hew`.
 
+/// The platform's cancellation code for socket waits and refused admission.
+pub(crate) const CANCELLED_ERRNO: i32 = if cfg!(windows) {
+    10_103
+} else {
+    libc::ECANCELED
+};
+
 /// No canonical classification; the consumer falls back to raw-errno mapping.
 pub const IO_ERROR_KIND_UNCLASSIFIED: i32 = 0;
 /// Portable `std::io::ErrorKind::NotFound`.

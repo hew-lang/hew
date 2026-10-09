@@ -99,7 +99,7 @@ impl IoFailure {
     /// New root work that a termination request refused.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn shutting_down(operation: &str) -> Self {
-        let errno = crate::shutdown::SHUTDOWN_REFUSAL_ERRNO;
+        let errno = crate::stream_error::CANCELLED_ERRNO;
         Self {
             kind: crate::stream_error::io_error_kind_tag(
                 io::Error::from_raw_os_error(errno).kind(),
@@ -184,6 +184,8 @@ pub struct HewAsyncIo {
     #[cfg(not(target_arch = "wasm32"))]
     net: Option<net::NetOp>,
     cleanup: Mutex<Cleanup>,
+    #[cfg(windows)]
+    file_cancel: file::FileCancellation,
     #[cfg(not(target_arch = "wasm32"))]
     deadline: Mutex<Option<deadline::Deadline>>,
     /// The running pool job producing the result, told when its caller gives up.
@@ -291,6 +293,8 @@ impl HewAsyncIo {
             cleanup: Mutex::new(Cleanup::default()),
             deadline: Mutex::new(None),
             detach: Mutex::new(None),
+            #[cfg(windows)]
+            file_cancel: file::FileCancellation::default(),
         })
     }
 
@@ -428,6 +432,10 @@ impl HewAsyncIo {
                 }
             }
         }
+        #[cfg(windows)]
+        if won {
+            self.file_cancel.cancel();
+        }
         // Releasing a readiness target can call user-supplied runtime callbacks.
         // Never run those callbacks while holding the operation state lock.
         if let Some(waker) = waker {
@@ -510,6 +518,19 @@ pub unsafe extern "C" fn hew_async_io_cleanup_status(
             if matches!(*state, State::Ready(Ok(_))) {
                 *state = State::Ready(Err(failure));
             }
+        }
+    }
+    #[cfg(windows)]
+    if ready == 0
+        && matches!(*operation.state.lock_or_recover(), State::Cancelled)
+        && operation.file_cancel.cancel()
+    {
+        // A cancellation can precede kernel submission. Retry while this
+        // producer owns the registered handle, before allowing its loan to end.
+        // SAFETY: cleanup borrows the caller's live notification descriptor.
+        if let Some(waker) = unsafe { waker.as_ref() } {
+            // SAFETY: the descriptor stays live through this call.
+            unsafe { OwnedWaker::retain(waker) }.wake();
         }
     }
     ready
@@ -612,7 +633,9 @@ unsafe fn take_watch_item(
     match &*state {
         State::Pending(_) => return (0, None),
         State::Cancelled => return (2, None),
-        State::Ready(Err(failure)) if failure.errno == libc::ECANCELED => return (2, None),
+        State::Ready(Err(failure)) if failure.errno == crate::stream_error::CANCELLED_ERRNO => {
+            return (2, None)
+        }
         State::Ready(Ok(_)) => {}
         _ => return (3, None),
     }
@@ -931,7 +954,7 @@ pub unsafe extern "C" fn hew_async_io_errno(operation: *const HewAsyncIo) -> i32
     unsafe { operation.as_ref() }.map_or(libc::EINVAL, |operation| {
         match &*operation.state.lock_or_recover() {
             State::Ready(Err(error)) => error.errno,
-            State::Cancelled => libc::ECANCELED,
+            State::Cancelled => crate::stream_error::CANCELLED_ERRNO,
             _ => 0,
         }
     })

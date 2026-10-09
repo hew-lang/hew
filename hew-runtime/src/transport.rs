@@ -1175,7 +1175,7 @@ pub fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
 fn refuse_for_shutdown(operation: &str) {
     hew_cabi::sink::set_last_error_with_errno(
         crate::shutdown::refusal_message(operation),
-        crate::shutdown::SHUTDOWN_REFUSAL_ERRNO,
+        crate::stream_error::CANCELLED_ERRNO,
     );
 }
 

@@ -50,7 +50,9 @@ fn main() -> i64 {
         _ => return 5,
     }
     Node.shutdown();
-    let restart = configured_at("127.0.0.1:0");
+    var restart = configured_at("127.0.0.1:0");
+    restart.transport = NodeTransport.QuicMesh;
+    restart.key = f"{os.temp_dir()}/hew-node-config-atomic-lifecycle-mesh-{os.pid()}.key";
     if !starts(restart) {
         return 6;
     }

@@ -2585,7 +2585,7 @@ impl Checker {
             .map(|(depth, binding)| (depth, binding.clone()))
         {
             let recursive_actor_receiver = self.in_lambda_actor_body
-                && self.callable_binding_candidates.get(&binding.id).is_some_and(|origins| {
+                && Some(&binding.value_candidates).is_some_and(|origins| {
                     !origins.may_be_unknown
                         && matches!(origins.known.as_slice(), [super::types::CallableCandidate::Closure(site)]
                             if self.effect_graph.current_body.as_ref()

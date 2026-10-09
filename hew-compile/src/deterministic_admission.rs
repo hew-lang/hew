@@ -113,7 +113,8 @@ fn resolve_candidate(
     match candidate {
         CallableCandidate::TaskProducer(_)
         | CallableCandidate::TaskResult(_)
-        | CallableCandidate::Sequence(_) => {
+        | CallableCandidate::Sequence(_)
+        | CallableCandidate::Element { .. } => {
             vec![ResolvedValue::Unknown]
         }
         CallableCandidate::Declaration(id) => vec![ResolvedValue::Declaration(*id)],

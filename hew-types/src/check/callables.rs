@@ -340,6 +340,11 @@ impl Checker {
             if !seen.insert(fact.binding_id) {
                 continue;
             }
+            fact.value_candidates = self
+                .env
+                .value_candidates(fact.binding_id)
+                .cloned()
+                .unwrap_or_else(super::IndirectCallCandidates::unknown);
             fact.ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
             let fork_snapshot = is_fork_body
                 && !matches!(fact.ty, Ty::Borrow { .. })

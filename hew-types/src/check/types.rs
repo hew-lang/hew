@@ -1010,6 +1010,7 @@ pub struct TypeCheckOutput {
 pub struct ClosureCaptureFact {
     /// Checker-local identity of the captured lexical binding.
     pub binding_id: TypeBindingId,
+    pub value_candidates: IndirectCallCandidates,
     /// Surface name used at the capture site.
     pub name: String,
     /// Fully resolved captured type at checker-output time.
@@ -1107,7 +1108,11 @@ pub enum CallableCandidate {
     Closure(SpanKey),
     TaskProducer(SpanKey),
     TaskResult(Box<CallableCandidate>),
-    Sequence(Vec<CallableCandidate>),
+    Sequence(Vec<IndirectCallCandidates>),
+    Element {
+        receiver: Box<CallableCandidate>,
+        index: usize,
+    },
     /// A checker-bound formal supplied by a caller at the selected call site.
     Formal(TypeBindingId),
     /// Intermediate value origin: an authored aggregate constructor.
@@ -1172,14 +1177,14 @@ pub(super) struct PendingCallableArguments {
 }
 
 /// Possible indirect callees and whether an opaque source may also arrive.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IndirectCallCandidates {
     pub known: Vec<CallableCandidate>,
     pub may_be_unknown: bool,
 }
 
 impl IndirectCallCandidates {
-    pub(super) fn unknown() -> Self {
+    pub(crate) fn unknown() -> Self {
         Self {
             known: Vec::new(),
             may_be_unknown: true,
@@ -1202,7 +1207,7 @@ impl IndirectCallCandidates {
         self
     }
 
-    pub(super) fn join(&mut self, other: Self) {
+    pub(crate) fn join(&mut self, other: Self) {
         for candidate in other.known {
             if !self.known.contains(&candidate) {
                 self.known.push(candidate);
@@ -3406,7 +3411,7 @@ pub struct Checker {
     pub(super) effect_graph: super::effects::EffectGraph,
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     pub(super) indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
-    pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
+    pub(super) expression_value_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     pub(super) callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,
     pub(super) generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
@@ -4449,7 +4454,7 @@ impl Checker {
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
             indirect_call_candidates: HashMap::new(),
-            callable_binding_candidates: HashMap::new(),
+            expression_value_candidates: HashMap::new(),
             callable_formals: HashMap::new(),
             generic_trait_call_arguments: HashMap::new(),
             pending_callable_arguments: HashMap::new(),

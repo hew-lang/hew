@@ -1349,6 +1349,7 @@ impl Checker {
                     self.lambda_captures.push(ty.clone());
                     self.lambda_capture_facts.push(ClosureCaptureFact {
                         binding_id,
+                        value_candidates: IndirectCallCandidates::unknown(),
                         name: name.to_string(),
                         ty: ty.clone(),
                         acquisition: crate::ClosureCaptureAcquisition::Snapshot,

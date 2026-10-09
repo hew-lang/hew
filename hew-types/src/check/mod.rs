@@ -40,6 +40,7 @@ pub mod dispatch;
 pub mod dispatch_table;
 pub use dyn_layout::{DynReceiver, DynSlot, SlotEffect, TraitObjectLayout};
 mod indirect_candidates;
+mod indirect_patterns;
 pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
@@ -2657,7 +2658,7 @@ impl Checker {
             effect_graph: self.effect_graph.clone(),
             direct_call_targets: self.direct_call_targets.clone(),
             indirect_call_candidates: self.indirect_call_candidates.clone(),
-            callable_binding_candidates: self.callable_binding_candidates.clone(),
+            expression_value_candidates: self.expression_value_candidates.clone(),
             callable_formals: self.callable_formals.clone(),
             generic_trait_call_arguments: self.generic_trait_call_arguments.clone(),
             pending_callable_arguments: self.pending_callable_arguments.clone(),

@@ -102,7 +102,7 @@ pub struct FrontendOptions {
 /// the driver this set instead of running a frontend of their own.
 #[derive(Debug, Clone, Default)]
 pub struct DocumentSet {
-    sources: BTreeMap<PathBuf, String>,
+    sources: BTreeMap<PathBuf, std::sync::Arc<str>>,
 }
 
 impl DocumentSet {
@@ -117,7 +117,7 @@ impl DocumentSet {
     /// import resolver canonicalizes every candidate before loading it.
     pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
         let path = path.into();
-        let source = source.into();
+        let source: std::sync::Arc<str> = source.into().into();
         if let Some(canonical) = buffer_identity(&path) {
             if canonical != path {
                 self.sources.insert(canonical, source.clone());
@@ -155,7 +155,7 @@ impl DocumentSet {
             return Some(source);
         }
         let canonical = buffer_identity(path)?;
-        self.sources.get(&canonical).map(String::as_str)
+        self.sources.get(&canonical).map(AsRef::as_ref)
     }
 }
 

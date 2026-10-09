@@ -7,6 +7,7 @@ use super::{
 use crate::env::TypeBindingId;
 use hew_parser::ast::{Block, Expr, Span, Spanned};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TaskLifetime {
@@ -50,15 +51,37 @@ enum Projection {
     Element(usize),
 }
 
-type Visit = (
-    CallableCandidate,
-    Vec<Projection>,
-    Vec<(TypeBindingId, IndirectCallCandidates)>,
-);
+type Visit = (CallableCandidate, Vec<Projection>, usize);
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct ValueOrigin {
     candidate: CallableCandidate,
-    actuals: Actuals,
+    actuals: usize,
+}
+
+#[derive(Default)]
+struct OriginEnvironments {
+    values: Vec<Arc<Actuals>>,
+    identities: HashMap<Vec<(TypeBindingId, IndirectCallCandidates)>, usize>,
+    completed: HashMap<Visit, Vec<ValueOrigin>>,
+    cycles: usize,
+}
+
+impl OriginEnvironments {
+    fn intern(&mut self, actuals: Actuals) -> usize {
+        let mut identity: Vec<_> = actuals
+            .iter()
+            .map(|(binding, candidates)| (*binding, candidates.clone()))
+            .collect();
+        identity.sort_by_key(|(binding, _)| binding.0);
+        if let Some(id) = self.identities.get(&identity) {
+            return *id;
+        }
+        let id = self.values.len();
+        self.values.push(Arc::new(actuals));
+        self.identities.insert(identity, id);
+        id
+    }
 }
 
 fn formal_sources<'a>(
@@ -295,6 +318,8 @@ impl Checker {
         &mut self,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
     ) {
+        let mut environments = OriginEnvironments::default();
+        let actuals = environments.intern(Actuals::new());
         for (site, candidates, boundary, module) in std::mem::take(&mut self.task_lifetimes.escapes)
         {
             let structural =
@@ -303,9 +328,10 @@ impl Checker {
                 && !self.task_candidates_escape(
                     &candidates,
                     &boundary,
-                    &Actuals::new(),
+                    actuals,
                     flows,
                     &mut HashSet::new(),
+                    &mut environments,
                 )
             {
                 if let Boundary::Return(TaskLifetime {
@@ -334,64 +360,77 @@ impl Checker {
         &self,
         candidates: &IndirectCallCandidates,
         boundary: &Boundary,
-        actuals: &Actuals,
+        actuals: usize,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
         seen: &mut HashSet<CallableCandidate>,
+        environments: &mut OriginEnvironments,
     ) -> bool {
-        self.task_value_origins(candidates, actuals, flows, &[], &mut HashSet::new())
-            .into_iter()
-            .any(|origin| {
-                if !seen.insert(origin.candidate.clone()) {
-                    return false;
-                }
-                let escaped = match &origin.candidate {
-                    CallableCandidate::TaskProducer(site) => self
-                        .task_lifetimes
-                        .producers
-                        .get(site)
-                        .is_some_and(|(lifetime, _)| match boundary {
-                            Boundary::Actor(_) => true,
-                            Boundary::Return(closing) => {
-                                lifetime.owner == closing.owner
-                                    && (closing.scope.is_none() || lifetime.scope == closing.scope)
-                            }
-                        }),
-                    CallableCandidate::Closure(site) => self
-                        .closure_capture_facts
-                        .get(site)
-                        .is_some_and(|captures| {
-                            captures.iter().any(|capture| {
-                                self.task_candidates_escape(
-                                    &capture.value_candidates,
-                                    boundary,
-                                    &origin.actuals,
-                                    flows,
-                                    seen,
-                                )
-                            })
-                        }),
-                    _ => false,
-                };
-                seen.remove(&origin.candidate);
-                escaped
-            })
+        self.task_value_origins(
+            candidates,
+            actuals,
+            flows,
+            &[],
+            &mut HashSet::new(),
+            environments,
+        )
+        .into_iter()
+        .any(|origin| {
+            if !seen.insert(origin.candidate.clone()) {
+                return false;
+            }
+            let escaped = match &origin.candidate {
+                CallableCandidate::TaskProducer(site) => self
+                    .task_lifetimes
+                    .producers
+                    .get(site)
+                    .is_some_and(|(lifetime, _)| match boundary {
+                        Boundary::Actor(_) => true,
+                        Boundary::Return(closing) => {
+                            lifetime.owner == closing.owner
+                                && (closing.scope.is_none() || lifetime.scope == closing.scope)
+                        }
+                    }),
+                CallableCandidate::Closure(site) => self
+                    .closure_capture_facts
+                    .get(site)
+                    .is_some_and(|captures| {
+                        captures.iter().any(|capture| {
+                            self.task_candidates_escape(
+                                &capture.value_candidates,
+                                boundary,
+                                origin.actuals,
+                                flows,
+                                seen,
+                                environments,
+                            )
+                        })
+                    }),
+                _ => false,
+            };
+            seen.remove(&origin.candidate);
+            escaped
+        })
     }
 
     fn task_value_origins(
         &self,
         candidates: &IndirectCallCandidates,
-        actuals: &Actuals,
+        actuals: usize,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
         projections: &[Projection],
         seen: &mut HashSet<Visit>,
+        environments: &mut OriginEnvironments,
     ) -> Vec<ValueOrigin> {
-        candidates
+        let mut origins: Vec<_> = candidates
             .known
             .iter()
             .flat_map(|candidate| {
-                self.task_value_origin(candidate, actuals, flows, projections, seen)
+                self.task_value_origin(candidate, actuals, flows, projections, seen, environments)
             })
-            .collect()
+            .collect();
+        let mut unique = HashSet::new();
+        origins.retain(|origin| unique.insert(origin.clone()));
+        origins
     }
 
     #[expect(
@@ -401,16 +440,12 @@ impl Checker {
     fn task_value_origin(
         &self,
         candidate: &CallableCandidate,
-        actuals: &Actuals,
+        actuals: usize,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
         projections: &[Projection],
         seen: &mut HashSet<Visit>,
+        environments: &mut OriginEnvironments,
     ) -> Vec<ValueOrigin> {
-        let mut environment: Vec<_> = actuals
-            .iter()
-            .map(|(binding, candidates)| (*binding, candidates.clone()))
-            .collect();
-        environment.sort_by_key(|(binding, _)| binding.0);
         // Recursive calls can project the same checked formal indefinitely
         // without introducing another value source. The actual environment
         // still distinguishes nested applications at different call sites.
@@ -419,19 +454,36 @@ impl Checker {
         } else {
             projections.to_vec()
         };
-        let visit = (candidate.clone(), visit_projections, environment);
+        let visit = (candidate.clone(), visit_projections, actuals);
         if !seen.insert(visit.clone()) {
+            environments.cycles += 1;
             return Vec::new();
         }
+        let query = (candidate.clone(), projections.to_vec(), actuals);
+        if let Some(origins) = environments.completed.get(&query) {
+            seen.remove(&visit);
+            return origins.clone();
+        }
+        let cycles = environments.cycles;
         let result = match candidate {
-            CallableCandidate::Formal(formal) => formal_sources(*formal, actuals, flows)
-                .iter()
-                .flat_map(|candidates| {
-                    self.task_value_origins(candidates, actuals, flows, projections, seen)
-                })
-                .collect(),
+            CallableCandidate::Formal(formal) => {
+                let environment = Arc::clone(&environments.values[actuals]);
+                formal_sources(*formal, &environment, flows)
+                    .iter()
+                    .flat_map(|candidates| {
+                        self.task_value_origins(
+                            candidates,
+                            actuals,
+                            flows,
+                            projections,
+                            seen,
+                            environments,
+                        )
+                    })
+                    .collect()
+            }
             CallableCandidate::CallResult(site) => {
-                self.task_call_origins(site, actuals, flows, projections, seen)
+                self.task_call_origins(site, actuals, flows, projections, seen, environments)
             }
             CallableCandidate::Field {
                 receiver,
@@ -440,28 +492,35 @@ impl Checker {
             } => {
                 let mut path = projections.to_vec();
                 path.push(Projection::Field(*owner, *index));
-                self.task_value_origin(receiver, actuals, flows, &path, seen)
+                self.task_value_origin(receiver, actuals, flows, &path, seen, environments)
             }
             CallableCandidate::Element { receiver, index } => {
                 let mut path = projections.to_vec();
                 path.push(Projection::Element(*index));
-                self.task_value_origin(receiver, actuals, flows, &path, seen)
+                self.task_value_origin(receiver, actuals, flows, &path, seen, environments)
             }
             CallableCandidate::TaskResult(task) => {
                 let mut path = projections.to_vec();
                 path.push(Projection::TaskResult);
-                self.task_value_origin(task, actuals, flows, &path, seen)
+                self.task_value_origin(task, actuals, flows, &path, seen, environments)
             }
             CallableCandidate::Sequence(values) => {
                 if let Some((Projection::Element(index), rest)) = projections.split_last() {
                     values.get(*index).map_or_else(Vec::new, |value| {
-                        self.task_value_origins(value, actuals, flows, rest, seen)
+                        self.task_value_origins(value, actuals, flows, rest, seen, environments)
                     })
                 } else {
                     values
                         .iter()
                         .flat_map(|value| {
-                            self.task_value_origins(value, actuals, flows, projections, seen)
+                            self.task_value_origins(
+                                value,
+                                actuals,
+                                flows,
+                                projections,
+                                seen,
+                                environments,
+                            )
                         })
                         .collect()
                 }
@@ -487,6 +546,7 @@ impl Checker {
                                 flows,
                                 selected.map_or(projections, |(_, rest)| rest),
                                 seen,
+                                environments,
                             )
                         })
                         .collect()
@@ -504,6 +564,7 @@ impl Checker {
                             flows,
                             &projections[..projections.len() - 1],
                             seen,
+                            environments,
                         )
                     })
             }
@@ -514,22 +575,28 @@ impl Checker {
             {
                 vec![ValueOrigin {
                     candidate: candidate.clone(),
-                    actuals: actuals.clone(),
+                    actuals,
                 }]
             }
             _ => Vec::new(),
         };
         seen.remove(&visit);
+        // A cycle cut depends on the active path. Reuse only complete expansions,
+        // keyed by the full projection and exact argument environment.
+        if environments.cycles == cycles {
+            environments.completed.insert(query, result.clone());
+        }
         result
     }
 
     fn task_call_origins(
         &self,
         site: &SpanKey,
-        actuals: &Actuals,
+        actuals: usize,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
         projections: &[Projection],
         seen: &mut HashSet<Visit>,
+        environments: &mut OriginEnvironments,
     ) -> Vec<ValueOrigin> {
         let Some(pending) = self.pending_callable_arguments.get(site) else {
             return Vec::new();
@@ -540,7 +607,7 @@ impl Checker {
             }
             PendingCallableTarget::Indirect(callees) => callees.clone(),
         };
-        self.task_value_origins(&callees, actuals, flows, &[], seen)
+        self.task_value_origins(&callees, actuals, flows, &[], seen, environments)
             .into_iter()
             .flat_map(|callee| {
                 let owner = match callee.candidate {
@@ -551,7 +618,7 @@ impl Checker {
                 let Some(returns) = self.callable_return_candidates.get(&owner) else {
                     return Vec::new();
                 };
-                let mut call_actuals = callee.actuals;
+                let mut call_actuals = (*environments.values[callee.actuals]).clone();
                 if let Some(formals) = self.callable_formals.get(&owner) {
                     let offset = usize::from(
                         pending.receiver.is_some() && formals.len() == pending.arguments.len() + 1,
@@ -573,7 +640,15 @@ impl Checker {
                         }
                     }
                 }
-                self.task_value_origins(returns, &call_actuals, flows, projections, seen)
+                let call_actuals = environments.intern(call_actuals);
+                self.task_value_origins(
+                    returns,
+                    call_actuals,
+                    flows,
+                    projections,
+                    seen,
+                    environments,
+                )
             })
             .collect()
     }

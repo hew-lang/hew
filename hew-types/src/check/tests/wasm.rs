@@ -1249,8 +1249,7 @@ fn register() {
     receive fn ping() {}
 }
 
-fn register() {
-    let remote: RemotePid<Worker>;
+fn register(remote: RemotePid<Worker>) {
     let result: Result<MonitorRef, LinkError> = monitor(remote);
     match result {
         .Ok(m) => {
@@ -1586,7 +1585,7 @@ fn main() {}
             "actor Worker { receive fn ping(msg: Ping) {} }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
             "fn main() {\n",
-            "    let pid: RemotePid<Worker>;\n",
+            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
             "    let _ = pid.send(Ping { n: 0 });\n",
             "}\n",
         )
@@ -1598,7 +1597,7 @@ fn main() {}
             "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
             "fn main() {\n",
-            "    let pid: RemotePid<Worker>;\n",
+            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
             "    let _ = pid.ask(Ping { n: 0 }, 1000);\n",
             "}\n",
         )

@@ -5443,9 +5443,10 @@ fn main() {
     //         }
     //     }
     let accepted = scope within 50ms {
-        let conn = listener.accept();
-        conn.close();
-        true
+        match listener.accept() {
+            .Ok(conn) => { conn.close(); true },
+            .Err(_) => false,
+        }
     } handle failure {
         false
     };

@@ -20,6 +20,10 @@ struct IndexConfig {
 pub struct IndexEntry {
     /// Fully qualified package name (e.g. `"alice.router"`).
     pub name: String,
+    /// Exact validated API identity used for registry counter-signatures.
+    /// This transport fact is never written into the Git index or manifests.
+    #[serde(skip)]
+    pub registry_name: Option<String>,
     /// Exact version string.
     pub vers: String,
     /// Dependencies for this version.
@@ -332,6 +336,7 @@ mod tests {
     fn sample_entry(name: &str, vers: &str) -> IndexEntry {
         IndexEntry {
             name: name.to_string(),
+            registry_name: None,
             vers: vers.to_string(),
             deps: vec![],
             features: std::collections::BTreeMap::new(),

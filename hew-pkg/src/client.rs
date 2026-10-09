@@ -9,7 +9,9 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 use crate::config;
+use crate::config::WireNames;
 use crate::index::IndexEntry;
+use crate::package_name;
 
 /// Errors from registry API operations.
 #[derive(Debug)]
@@ -159,12 +161,19 @@ pub struct PublishMetadata {
 #[derive(Debug)]
 pub struct RegistryClient {
     api_url: String,
-    fallback_urls: Vec<String>,
+    wire_names: WireNames,
+    fallback_urls: Vec<RegistryEndpoint>,
     /// CDN base URL for package downloads.
     cdn_url: Option<String>,
     token: Option<String>,
     /// Shared HTTP agent with Happy Eyeballs TCP connector.
     agent: ureq::Agent,
+}
+
+#[derive(Debug)]
+struct RegistryEndpoint {
+    api_url: String,
+    wire_names: WireNames,
 }
 
 impl RegistryClient {
@@ -193,9 +202,21 @@ impl RegistryClient {
             .or(endpoints.fallback_api);
 
         let mut client = Self::with_url(endpoints.api);
-        client.cdn_url = Some(endpoints.cdn);
+        if let Some(mode) = cfg
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.wire_names)
+        {
+            client = client.with_wire_names(mode);
+        }
+        client.cdn_url = endpoints.cdn;
         if let Some(url) = fallback_api {
-            client = client.with_fallback(url);
+            let mode = cfg
+                .registry
+                .as_ref()
+                .and_then(|registry| registry.fallback_wire_names)
+                .unwrap_or_else(|| WireNames::for_api(&url));
+            client = client.with_fallback_wire_names(url, mode);
         }
         client
     }
@@ -205,6 +226,7 @@ impl RegistryClient {
     pub fn with_url(api_url: impl AsRef<str>) -> Self {
         Self {
             api_url: config::registry_identity(api_url.as_ref()),
+            wire_names: WireNames::for_api(api_url.as_ref()),
             fallback_urls: Vec::new(),
             cdn_url: None,
             token: None,
@@ -214,8 +236,28 @@ impl RegistryClient {
 
     /// Add a fallback URL to try when the primary is unavailable.
     #[must_use]
-    pub fn with_fallback(mut self, url: String) -> Self {
-        self.fallback_urls.push(url);
+    pub fn with_fallback(self, url: String) -> Self {
+        let wire_names = WireNames::for_api(&url);
+        self.with_fallback_wire_names(url, wire_names)
+    }
+
+    /// Select package-name encoding for this API without changing source identity.
+    #[must_use]
+    pub fn with_wire_names(mut self, mode: WireNames) -> Self {
+        self.wire_names = mode;
+        self
+    }
+
+    /// Add an explicitly selected mirror and its independent wire-name mode.
+    #[must_use]
+    pub fn with_fallback_wire_names(mut self, mut url: String, mode: WireNames) -> Self {
+        let identity = config::registry_identity(&url);
+        url.truncate(0);
+        url.push_str(&identity);
+        self.fallback_urls.push(RegistryEndpoint {
+            api_url: url,
+            wire_names: mode,
+        });
         self
     }
 
@@ -229,7 +271,9 @@ impl RegistryClient {
     /// Return the registry API URL used to query a package.
     #[must_use]
     pub fn package_url(&self, name: &str) -> String {
-        format!("{}/packages/{name}", self.api_url)
+        let wire_name =
+            package_name::to_wire(name, self.wire_names).unwrap_or_else(|_| percent_encode(name));
+        format!("{}/packages/{wire_name}", self.api_url)
     }
 
     /// Canonical source identity bound to this client's primary API URL.
@@ -291,7 +335,14 @@ impl RegistryClient {
         use base64::Engine as _;
 
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
-        let url = format!("{}/packages/{}/{}", self.api_url, name, version);
+        let wire_name = package_name::to_wire(name, self.wire_names).map_err(ApiError::Parse)?;
+        if request.metadata.name != name || request.metadata.vers != version {
+            return Err(ApiError::Parse(
+                "publish metadata identity does not match requested package/version".to_string(),
+            ));
+        }
+        validate_version(version)?;
+        let url = format!("{}/packages/{}/{}", self.api_url, wire_name, version);
 
         let metadata_json =
             serde_json::to_string(request).map_err(|e| ApiError::Parse(e.to_string()))?;
@@ -329,7 +380,9 @@ impl RegistryClient {
         reason: Option<&str>,
     ) -> Result<(), ApiError> {
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
-        let url = format!("{}/packages/{}/{}/yank", self.api_url, name, version);
+        let wire_name = package_name::to_wire(name, self.wire_names).map_err(ApiError::Parse)?;
+        validate_version(version)?;
+        let url = format!("{}/packages/{}/{}/yank", self.api_url, wire_name, version);
 
         let mut body = serde_json::json!({ "yanked": yanked });
         if let Some(r) = reason {
@@ -362,10 +415,18 @@ impl RegistryClient {
         page: u32,
         per_page: u32,
     ) -> Result<SearchResult, ApiError> {
-        self.try_with_fallback(|base_url| {
-            let mut url = format!("{base_url}/search?q={query}&page={page}&per_page={per_page}");
+        self.try_with_fallback(|base_url, mode| {
+            let query = if package_name::is_valid(query) && query.contains('.') {
+                package_name::to_wire(query, mode).map_err(ApiError::Parse)?
+            } else {
+                query.to_string()
+            };
+            let mut url = format!(
+                "{base_url}/search?q={}&page={page}&per_page={per_page}",
+                percent_encode(&query)
+            );
             if let Some(cat) = category {
-                let _ = write!(url, "&category={cat}");
+                let _ = write!(url, "&category={}", percent_encode(cat));
             }
 
             let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
@@ -374,9 +435,20 @@ impl RegistryClient {
                 return Err(self.parse_error_response(resp));
             }
 
-            resp.into_body()
+            let mut result: SearchResult = resp
+                .into_body()
                 .read_json()
-                .map_err(|e| ApiError::Parse(e.to_string()))
+                .map_err(|e| ApiError::Parse(e.to_string()))?;
+            let mut names = std::collections::HashSet::new();
+            for hit in &mut result.results {
+                hit.name = package_name::from_wire(&hit.name, mode).map_err(ApiError::Parse)?;
+                if !names.insert(hit.name.clone()) {
+                    return Err(ApiError::Parse(
+                        "duplicate package identity in search response".to_string(),
+                    ));
+                }
+            }
+            Ok(result)
         })
     }
 
@@ -386,13 +458,20 @@ impl RegistryClient {
     ///
     /// Returns [`ApiError`] on HTTP or parse failures.
     pub fn get_package(&self, name: &str) -> Result<Vec<IndexEntry>, ApiError> {
-        self.try_with_fallback(|base_url| {
+        self.try_with_fallback(|base_url, mode| {
             #[derive(Deserialize)]
             struct PackageRecord {
+                #[serde(default)]
+                metadata: Option<PackageMetadataIdentity>,
                 versions: Vec<IndexEntry>,
             }
+            #[derive(Deserialize)]
+            struct PackageMetadataIdentity {
+                name: String,
+            }
 
-            let url = format!("{base_url}/packages/{name}");
+            let wire_name = package_name::to_wire(name, mode).map_err(ApiError::Parse)?;
+            let url = format!("{base_url}/packages/{wire_name}");
 
             let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
@@ -400,10 +479,38 @@ impl RegistryClient {
                 return Err(self.parse_error_response(resp));
             }
 
-            let record: PackageRecord = resp
+            let mut record: PackageRecord = resp
                 .into_body()
                 .read_json()
                 .map_err(|e| ApiError::Parse(e.to_string()))?;
+            match record.metadata {
+                Some(metadata) if metadata_identity_matches(&metadata.name, name, mode) => {}
+                None if mode == WireNames::Dotted => {}
+                _ => {
+                    return Err(ApiError::Parse(
+                        "registry metadata identity does not match requested package".to_string(),
+                    ))
+                }
+            }
+            let mut versions = std::collections::HashSet::new();
+            for entry in &mut record.versions {
+                if entry.name != wire_name
+                    || package_name::from_wire(&entry.name, mode).map_err(ApiError::Parse)? != name
+                {
+                    return Err(ApiError::Parse(
+                        "registry version identity does not match requested package".to_string(),
+                    ));
+                }
+                validate_version(&entry.vers)?;
+                if !versions.insert(entry.vers.clone()) {
+                    return Err(ApiError::Parse(
+                        "duplicate version identity in registry response".to_string(),
+                    ));
+                }
+                entry.registry_name = Some(entry.name.clone());
+                entry.name = name.to_string();
+                normalize_dependencies(entry)?;
+            }
             Ok(record.versions)
         })
     }
@@ -415,7 +522,7 @@ impl RegistryClient {
     /// Returns [`ApiError`] on HTTP, auth, or server failures.
     pub fn register_namespace(&self, prefix: &str) -> Result<(), ApiError> {
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
-        let url = format!("{}/namespaces/{}", self.api_url, prefix);
+        let url = format!("{}/namespaces/{}", self.api_url, percent_encode(prefix));
 
         let resp = self
             .agent
@@ -437,8 +544,8 @@ impl RegistryClient {
     ///
     /// Returns [`ApiError`] on HTTP or parse failures.
     pub fn get_namespace(&self, prefix: &str) -> Result<NamespaceInfo, ApiError> {
-        self.try_with_fallback(|base_url| {
-            let url = format!("{base_url}/namespaces/{prefix}");
+        self.try_with_fallback(|base_url, _| {
+            let url = format!("{base_url}/namespaces/{}", percent_encode(prefix));
 
             let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
@@ -499,15 +606,35 @@ impl RegistryClient {
         message: Option<&str>,
         successor: Option<&str>,
     ) -> Result<(), ApiError> {
-        let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
-        let url = format!("{}/packages/{name}/deprecate", self.api_url);
+        self.set_deprecation(name, true, message, successor)
+    }
 
-        let mut body = serde_json::json!({ "deprecated": true });
+    /// Set or clear package deprecation without changing its wire identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] on invalid names, HTTP, auth, or server failures.
+    pub fn set_deprecation(
+        &self,
+        name: &str,
+        deprecated: bool,
+        message: Option<&str>,
+        successor: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
+        let wire_name = package_name::to_wire(name, self.wire_names).map_err(ApiError::Parse)?;
+        let successor = successor
+            .map(|name| package_name::to_wire(name, self.wire_names))
+            .transpose()
+            .map_err(ApiError::Parse)?;
+        let url = format!("{}/packages/{wire_name}/deprecate", self.api_url);
+
+        let mut body = serde_json::json!({ "deprecated": deprecated });
         if let Some(msg) = message {
             body["message"] = serde_json::Value::String(msg.to_string());
         }
         if let Some(succ) = successor {
-            body["successor"] = serde_json::Value::String(succ.to_string());
+            body["successor"] = serde_json::Value::String(succ);
         }
 
         let resp = self
@@ -534,6 +661,32 @@ impl RegistryClient {
     ///
     /// Returns [`ApiError`] on HTTP failures.
     pub fn download_tarball(&self, url: &str) -> Result<Vec<u8>, ApiError> {
+        self.download_tarball_with_package(url, None)
+    }
+
+    /// Download an identified package, using explicit CDN and mirror archive
+    /// routes on retriable failure. The primary URL remains the checked API's
+    /// supplied download URL; logical package names are never inferred from it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] on invalid identity or HTTP failures.
+    pub fn download_package_tarball(
+        &self,
+        name: &str,
+        version: &str,
+        url: &str,
+    ) -> Result<Vec<u8>, ApiError> {
+        package_name::to_wire(name, self.wire_names).map_err(ApiError::Parse)?;
+        validate_version(version)?;
+        self.download_tarball_with_package(url, Some((name, version)))
+    }
+
+    fn download_tarball_with_package(
+        &self,
+        url: &str,
+        package: Option<(&str, &str)>,
+    ) -> Result<Vec<u8>, ApiError> {
         let do_download = |download_url: &str| -> Result<Vec<u8>, ApiError> {
             use std::io::Read as _;
 
@@ -565,7 +718,17 @@ impl RegistryClient {
 
                 // Try CDN first (typically faster/more available).
                 if let Some(ref cdn) = self.cdn_url {
-                    let cdn_download = format!("{}{}", cdn.trim_end_matches('/'), path);
+                    let cdn_download = if let Some((name, version)) = package {
+                        let wire = package_name::to_wire(name, WireNames::Slash)
+                            .map_err(ApiError::Parse)?;
+                        format!(
+                            "{}/tarballs/{wire}/{}.tar.zst",
+                            cdn.trim_end_matches('/'),
+                            version
+                        )
+                    } else {
+                        format!("{}{}", cdn.trim_end_matches('/'), path)
+                    };
                     match do_download(&cdn_download) {
                         Ok(data) => return Ok(data),
                         Err(e) if Self::is_retriable(&e) => {
@@ -575,9 +738,12 @@ impl RegistryClient {
                     }
                 }
 
-                for fallback_url in &self.fallback_urls {
-                    let fallback_download =
-                        format!("{}{}", fallback_url.trim_end_matches('/'), path);
+                for endpoint in &self.fallback_urls {
+                    let fallback_download = if let Some((name, version)) = package {
+                        mirror_download_url(&endpoint.api_url, name, version, endpoint.wire_names)?
+                    } else {
+                        format!("{}{}", endpoint.api_url.trim_end_matches('/'), path)
+                    };
                     match do_download(&fallback_download) {
                         Ok(data) => return Ok(data),
                         Err(e) if Self::is_retriable(&e) => {
@@ -604,7 +770,7 @@ impl RegistryClient {
         // Fingerprints look like `SHA256:{base64}` — the `:` and
         // base64 chars like `/` and `+` must be encoded.
         let encoded_fp = percent_encode(fingerprint);
-        self.try_with_fallback(|base_url| {
+        self.try_with_fallback(|base_url, _| {
             let url = format!("{base_url}/keys/{encoded_fp}");
             let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
@@ -624,7 +790,7 @@ impl RegistryClient {
     ///
     /// Returns [`ApiError`] if the registry has no key configured or on HTTP failures.
     pub fn get_registry_key(&self) -> Result<RegistryKeyResponse, ApiError> {
-        self.try_with_fallback(|base_url| {
+        self.try_with_fallback(|base_url, _| {
             let url = format!("{base_url}/registry-key");
             let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
@@ -649,8 +815,11 @@ impl RegistryClient {
 
     /// Execute `f` against the primary URL, falling back to mirrors on
     /// retriable errors. Prints a warning on the first fallback attempt.
-    fn try_with_fallback<T>(&self, f: impl Fn(&str) -> Result<T, ApiError>) -> Result<T, ApiError> {
-        match f(&self.api_url) {
+    fn try_with_fallback<T>(
+        &self,
+        f: impl Fn(&str, WireNames) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        match f(&self.api_url, self.wire_names) {
             Ok(val) => Ok(val),
             Err(err) if Self::is_retriable(&err) => {
                 if self.fallback_urls.is_empty() {
@@ -658,8 +827,8 @@ impl RegistryClient {
                 }
                 eprintln!("warning: primary registry unavailable, trying fallback...");
                 let mut last_err = err;
-                for fallback_url in &self.fallback_urls {
-                    match f(fallback_url) {
+                for endpoint in &self.fallback_urls {
+                    match f(&endpoint.api_url, endpoint.wire_names) {
                         Ok(val) => return Ok(val),
                         Err(e) if Self::is_retriable(&e) => {
                             last_err = e;
@@ -699,6 +868,78 @@ impl Default for RegistryClient {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Historical metadata may retain an authored descriptive spelling. Bind it
+/// to the requested logical identity without admitting aliases in version
+/// entries, request paths, dependencies or signed registry identities.
+fn metadata_identity_matches(metadata: &str, name: &str, mode: WireNames) -> bool {
+    if mode == WireNames::Dotted {
+        return metadata == name;
+    }
+    if metadata.contains("::") {
+        if metadata.contains('.') || metadata.contains('/') {
+            return false;
+        }
+        let logical = metadata.replace("::", ".");
+        return package_name::is_valid(&logical) && logical == name;
+    }
+    package_name::dependency_from_wire(metadata).is_ok_and(|logical| logical == name)
+}
+
+fn validate_version(version: &str) -> Result<(), ApiError> {
+    // Valid SemVer is already safe in a path segment. Preserve its literal `+`:
+    // the registry wildcard parser uses the raw path as the version identity.
+    semver::Version::parse(version)
+        .map(|_| ())
+        .map_err(|error| ApiError::Parse(format!("invalid registry version `{version}`: {error}")))
+}
+
+fn normalize_dependencies(entry: &mut IndexEntry) -> Result<(), ApiError> {
+    let mut aliases = std::collections::HashMap::new();
+    let mut identities = std::collections::HashSet::new();
+    for dep in &mut entry.deps {
+        let logical = package_name::dependency_from_wire(&dep.name).map_err(ApiError::Parse)?;
+        if !identities.insert(logical.clone()) {
+            return Err(ApiError::Parse(
+                "duplicate dependency identity in registry response".to_string(),
+            ));
+        }
+        aliases.insert(dep.name.clone(), logical.clone());
+        dep.name = logical;
+    }
+    // Feature labels are not package names. Rewrite only implication values
+    // that refer to an actual dependency alias in this response.
+    for implications in entry.features.values_mut() {
+        for implication in implications {
+            if let Some(logical) = aliases.get(implication) {
+                implication.clone_from(logical);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mirror_download_url(
+    api: &str,
+    name: &str,
+    version: &str,
+    mode: WireNames,
+) -> Result<String, ApiError> {
+    let uri = api
+        .parse::<ureq::http::Uri>()
+        .map_err(|error| ApiError::Parse(format!("invalid mirror API URL: {error}")))?;
+    let scheme = uri
+        .scheme_str()
+        .filter(|scheme| matches!(*scheme, "http" | "https"))
+        .ok_or_else(|| ApiError::Parse("mirror API URL must use HTTP or HTTPS".to_string()))?;
+    let authority = uri
+        .authority()
+        .ok_or_else(|| ApiError::Parse("mirror API URL has no authority".to_string()))?;
+    let wire = package_name::to_wire(name, mode).map_err(ApiError::Parse)?;
+    Ok(format!(
+        "{scheme}://{authority}/packages/{wire}/{version}.tar.zst"
+    ))
 }
 
 /// Build a [`ureq::Agent`] whose TCP connector implements Happy Eyeballs
@@ -765,10 +1006,143 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn package_urls_preserve_dotted_names() {
+    fn descriptive_metadata_aliases_require_complete_matching_identity() {
+        let name = "hew.math.stats";
+        for alias in ["hew/math/stats", "hew.math.stats", "hew::math::stats"] {
+            assert!(
+                metadata_identity_matches(alias, name, WireNames::Slash),
+                "{alias}"
+            );
+        }
+        for alias in [
+            "hew::math.stats",
+            "hew/math::stats",
+            "hew.math/stats",
+            "hew::::math::stats",
+            "::hew::math::stats",
+            "hew::math::stats::",
+            "hew::..::stats",
+            "hew::%2e%2e::stats",
+            "hew::math::statistics",
+            "hew::math:stats",
+            "hew/../stats",
+            "hew//math/stats",
+            "hew.math..stats",
+            "hew.math.statistics",
+            "hew/math/statistics",
+        ] {
+            assert!(
+                !metadata_identity_matches(alias, name, WireNames::Slash),
+                "{alias}"
+            );
+        }
+        assert!(metadata_identity_matches(name, name, WireNames::Dotted));
+        assert!(!metadata_identity_matches(
+            "hew/math/stats",
+            name,
+            WireNames::Dotted
+        ));
+        assert!(!metadata_identity_matches(
+            "hew::math::stats",
+            name,
+            WireNames::Dotted
+        ));
+    }
+
+    #[test]
+    fn descriptive_metadata_does_not_relax_version_wire_identity() {
+        for (metadata, version_name, accepted) in [
+            ("hew/math/stats", "hew/math/stats", true),
+            ("hew.math.stats", "hew/math/stats", true),
+            ("hew::math::stats", "hew/math/stats", true),
+            ("hew::math::stats", "hew::math::stats", false),
+            ("hew.math.stats", "hew.math.stats", false),
+        ] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let api = format!("http://{}/api/v1", server.server_addr());
+            let handle = std::thread::spawn(move || {
+                let request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .expect("package request");
+                let path = request.url().to_string();
+                let response = serde_json::json!({
+                    "metadata": { "name": metadata }, "versions": [{
+                        "name": version_name, "vers": "0.2.0", "cksum": "sha256:fixture",
+                        "sig": "", "key_fp": ""
+                    }]
+                });
+                request
+                    .respond(tiny_http::Response::from_string(response.to_string()))
+                    .unwrap();
+                path
+            });
+            let result = RegistryClient::with_url(api)
+                .with_wire_names(WireNames::Slash)
+                .get_package("hew.math.stats");
+            assert_eq!(handle.join().unwrap(), "/api/v1/packages/hew/math/stats");
+            if accepted {
+                let entries = result.unwrap();
+                assert_eq!(entries[0].name, "hew.math.stats");
+                assert_eq!(entries[0].registry_name.as_deref(), Some("hew/math/stats"));
+            } else {
+                assert!(matches!(result, Err(ApiError::Parse(_))));
+            }
+        }
+    }
+
+    #[test]
+    fn response_dependency_aliases_preserve_feature_labels() {
+        let mut entry: IndexEntry = serde_json::from_value(serde_json::json!({
+            "name": "alice.router", "vers": "1.2.3", "cksum": "sha256:test",
+            "sig": "", "key_fp": "", "deps": [
+                { "name": "alice/helper", "req": "^1", "optional": true },
+                { "name": "bob.tools", "req": "^2" }
+            ], "features": {
+                "alice/helper": ["alice/helper", "bob.tools", "other/label"]
+            }
+        }))
+        .unwrap();
+        normalize_dependencies(&mut entry).unwrap();
+        assert_eq!(entry.deps[0].name, "alice.helper");
+        assert_eq!(
+            entry.features["alice/helper"],
+            ["alice.helper", "bob.tools", "other/label"]
+        );
+        entry.deps.push(entry.deps[0].clone());
+        entry.deps.last_mut().unwrap().name = "alice/helper".to_string();
+        assert!(normalize_dependencies(&mut entry).is_err());
+    }
+
+    #[test]
+    fn mirror_archive_routes_preserve_wire_mode_and_semver_identity() {
+        assert_eq!(
+            mirror_download_url(
+                "https://mirror.example/api/v1",
+                "alice.router",
+                "1.2.3+build.4",
+                WireNames::Slash
+            )
+            .unwrap(),
+            "https://mirror.example/packages/alice/router/1.2.3+build.4.tar.zst"
+        );
+        assert_eq!(
+            mirror_download_url(
+                "http://localhost:9000/api/v1",
+                "alice.router",
+                "1.2.3",
+                WireNames::Dotted
+            )
+            .unwrap(),
+            "http://localhost:9000/packages/alice.router/1.2.3.tar.zst"
+        );
+    }
+
+    #[test]
+    fn custom_package_urls_preserve_dotted_names() {
         let client = RegistryClient::with_url("https://registry.example.com");
         assert_eq!(
-            format!("{}/packages/{}", client.api_url, "alice.router"),
+            client.package_url("alice.router"),
             "https://registry.example.com/packages/alice.router"
         );
     }
@@ -779,6 +1153,11 @@ mod tests {
         std::env::remove_var("HEW_REGISTRY");
         let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         assert_eq!(client.api_url, config::DEFAULT_REGISTRY_API);
+        assert_eq!(client.wire_names, WireNames::Slash);
+        assert_eq!(
+            client.cdn_url.as_deref(),
+            Some(config::DEFAULT_REGISTRY_CDN)
+        );
         assert!(client.token.is_none());
     }
 
@@ -789,6 +1168,9 @@ mod tests {
         let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         std::env::remove_var("HEW_REGISTRY");
         assert_eq!(client.api_url, "https://registry.internal.example/api/v1");
+        assert_eq!(client.wire_names, WireNames::Dotted);
+        assert!(client.cdn_url.is_none());
+        assert!(client.fallback_urls.is_empty());
     }
 
     #[test]
@@ -876,9 +1258,14 @@ mod tests {
         let client = RegistryClient::with_url("https://primary.example.com/api/v1")
             .with_fallback("https://mirror.example.com/api/v1".to_string());
         assert_eq!(
-            client.fallback_urls,
+            client
+                .fallback_urls
+                .iter()
+                .map(|endpoint| endpoint.api_url.as_str())
+                .collect::<Vec<_>>(),
             vec!["https://mirror.example.com/api/v1"]
         );
+        assert_eq!(client.fallback_urls[0].wire_names, WireNames::Dotted);
     }
 
     #[test]

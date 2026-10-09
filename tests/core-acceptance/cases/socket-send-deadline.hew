@@ -52,8 +52,8 @@ fn main() {
     let peer = listener.accept().expect("accept");
     connection.set_write_timeout(30).expect("write timeout");
     let (input, output) = connection.split();
-    let writer = spawn Writer(output: output);
-    let healthy = spawn Healthy();
+    let writer = spawn Writer { output: output };
+    let healthy = spawn Healthy;
     println(writer.fill().expect("the writer answers instead of trapping"));
     let alive = healthy.ping().expect("sibling answers");
     println(f"sibling alive: {alive}");

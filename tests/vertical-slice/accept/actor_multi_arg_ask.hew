@@ -14,7 +14,7 @@ actor Adder {
 }
 
 fn main() {
-    let adder = spawn Adder(calls: 0);
+    let adder = spawn Adder { calls: 0 };
     let sum = adder.compute(3, 4);
     match sum {
         .Ok(v) => println(f"sum={v}"),

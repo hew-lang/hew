@@ -41,7 +41,7 @@ fn main() -> i64 {
     sink.send("one").expect("send");
     sink.send("two").expect("send");
     sink.close();
-    let c = spawn Consumer(input: input);
+    let c = spawn Consumer { input: input };
     let _ = c.drain();
     println("done");
     0

@@ -433,7 +433,7 @@ actor Worker {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 1 within 60s;
-    child worker: Worker();
+    child worker: Worker;
 }
 
 fn main() {

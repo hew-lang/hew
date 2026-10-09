@@ -47,7 +47,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    let _p = spawn Pulse(ready: ready_tx, count: 0);
+    let _p = spawn Pulse { ready: ready_tx, count: 0 };
     let _ = ready_rx.recv();
     sleep(200ms);
     println("main done");
@@ -125,7 +125,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    let pump = spawn Pump(out: tx);
+    let pump = spawn Pump { out: tx };
     let _ = fork pump.go(8);
     var seen: i64 = 0;
     for _i in 0 .. 8 {

@@ -27,7 +27,7 @@ fn main() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
             let port = http.server_port(server);
-            let client = spawn Client(url: f"http://127.0.0.1:{port}/retention", frames: 50, complete: 0);
+            let client = spawn Client { url: f"http://127.0.0.1:{port}/retention", frames: 50, complete: 0 };
             let _ = client.fetch(0);
             let request = server.accept();
             match request.respond(200, "application/retention", "response-owner") {

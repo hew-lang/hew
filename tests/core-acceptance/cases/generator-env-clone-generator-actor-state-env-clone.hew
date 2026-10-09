@@ -13,12 +13,12 @@ actor Reader {
 supervisor App(config: Config) {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child reader: Reader(name: config.label);
+    child reader: Reader { name: config.label };
 }
 
 fn main() {
     let config = Config { label: "actor-state" };
-    let app = spawn App(config: config);
+    let app = spawn App { config: config };
     let reader = app.reader;
     var seen: i64 = 0;
     var i: i64 = 0;

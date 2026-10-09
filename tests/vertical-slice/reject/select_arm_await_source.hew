@@ -25,6 +25,6 @@ actor Driver {
 
 fn main() {
     let worker = spawn Worker;
-    let _d = spawn Driver(worker: worker);
+    let _d = spawn Driver { worker: worker };
     sleep(20ms);
 }

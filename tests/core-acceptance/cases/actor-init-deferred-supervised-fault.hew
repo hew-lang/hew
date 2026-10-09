@@ -14,7 +14,7 @@ actor Worker {
 supervisor App {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child worker: Worker(name: "broken");
+    child worker: Worker { name: "broken" };
 }
 
 fn main() {

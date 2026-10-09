@@ -37,7 +37,7 @@ actor Keeper {
 
 supervisor Group {
     intensity: 1 within 60s;
-    child keeper: Keeper(table: Table { rows: [Row { x: 1, name: "a" }], cells: [0, 0], tag: "new" });
+    child keeper: Keeper { table: Table { rows: [Row { x: 1, name: "a" }], cells: [0, 0], tag: "new" } };
 }
 
 fn main() {

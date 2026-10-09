@@ -32,6 +32,6 @@ actor Vault {
 }
 
 fn main() {
-    let vault = spawn Vault(sock: Socket { label: "sock" }, log: Socket { label: "log" });
+    let vault = spawn Vault { sock: Socket { label: "sock" }, log: Socket { label: "log" } };
     println(vault.swap().expect("swap"));
 }

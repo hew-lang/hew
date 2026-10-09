@@ -1161,7 +1161,7 @@ fn main() {
 }
 
 fn main() {
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     let relay = actor |n: i64| {
         counter.increment(n);
     };

@@ -82,8 +82,8 @@ fn actor_ref_is_actor_ref_accepted() {
 }
 
 fn main() {
-    let a = spawn Worker(_id: 1);
-    let b = spawn Worker(_id: 2);
+    let a = spawn Worker { _id: 1 };
+    let b = spawn Worker { _id: 2 };
     let _eq: bool = a is b;
 }
 ",
@@ -170,8 +170,8 @@ fn negative_control_local_pid_still_accepted() {
 }
 
 fn main() {
-    let a = spawn Worker(_id: 1);
-    let b = spawn Worker(_id: 2);
+    let a = spawn Worker { _id: 1 };
+    let b = spawn Worker { _id: 2 };
     let _eq: bool = a is b;
 }
 ",
@@ -503,8 +503,8 @@ fn is_result_typed_as_bool() {
 }
 
 fn main() {
-    let a = spawn Worker(_id: 1);
-    let b = spawn Worker(_id: 2);
+    let a = spawn Worker { _id: 1 };
+    let b = spawn Worker { _id: 2 };
     if a is b {
         let _x: i64 = 1;
     }
@@ -594,8 +594,8 @@ actor Other {
 }
 
 fn main() {
-    let a = spawn Worker(_id: 1);
-    let b = spawn Other(_id: 1);
+    let a = spawn Worker { _id: 1 };
+    let b = spawn Other { _id: 1 };
     let _eq: bool = a is b;
 }
 ",
@@ -618,7 +618,7 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
 }
 
 fn main() {
-    let s = spawn SnapshotSink(_id: 0);
+    let s = spawn SnapshotSink { _id: 0 };
     let h = bytes.new();
     let q = bytes.new();
     let _ = s.consume(h);
@@ -748,8 +748,8 @@ fn is_on_an_actor_ref_through_an_inferred_closure_is_accepted() {
 
 fn main() {
     let same = |a, b| a is b;
-    let x = spawn Worker(_id: 1);
-    let y = spawn Worker(_id: 2);
+    let x = spawn Worker { _id: 1 };
+    let y = spawn Worker { _id: 2 };
     let _eq: bool = same(x, y);
 }
 ",
@@ -774,8 +774,8 @@ actor Other {
 
 fn main() {
     let same = |a, b| a is b;
-    let w = spawn Worker(_id: 1);
-    let o = spawn Other(_id: 1);
+    let w = spawn Worker { _id: 1 };
+    let o = spawn Other { _id: 1 };
     let _eq: bool = same(w, o);
 }
 ",

@@ -19,8 +19,8 @@ actor ProbeSink {
 }
 
 fn main() -> i64 {
-    let a = spawn ProbeSink(seen: 0);
-    let b = spawn ProbeSink(seen: 0);
+    let a = spawn ProbeSink { seen: 0 };
+    let b = spawn ProbeSink { seen: 0 };
     var sender_ok: i64 = 0;
     var i: i64 = 0;
     while i < 50 {

@@ -399,8 +399,8 @@ impl Checker {
                 target,
                 type_args,
                 args,
-                ..
-            } => self.check_spawn(target, type_args, args, span),
+                arg_labels,
+            } => self.check_spawn(target, type_args, args, arg_labels, span),
 
             // Lambda (synthesize mode — no expected type)
             Expr::Lambda {

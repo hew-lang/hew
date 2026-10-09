@@ -648,7 +648,7 @@ actor Acceptor {
             let conn = lst.accept().expect("accept");
             let cid = f"client-{next_id}";
             let (input, sink) = conn.split();
-            let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false);
+            let handler = spawn ClientHandler { sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false };
             let accepted = match handler.register() {
                 .Ok(value) => value,
                 .Err(_) => false,
@@ -656,7 +656,7 @@ actor Acceptor {
             if accepted {
                 // The pump runs as a forked task owned by this accept loop's
                 // scope, which never exits, so the loop returns to `accept`.
-                let reader = spawn ClientReader(input: input, client: handler);
+                let reader = spawn ClientReader { input: input, client: handler };
                 fork reader.start();
             }
             next_id = next_id + 1;
@@ -678,8 +678,8 @@ fn main() {
     let empty_sub_topics: Vec<string> = Vec.new();
     let empty_sub_sessions: Vec<string> = Vec.new();
     let empty_sub_qos: Vec<i32> = Vec.new();
-    let router = spawn Router(session_ids: empty_sessions, client_ids: empty_ids, clients: empty_clients, sub_topics: empty_sub_topics, sub_session_ids: empty_sub_sessions, sub_qos: empty_sub_qos);
-    let listener = spawn Acceptor(router: router, addr: addr);
+    let router = spawn Router { session_ids: empty_sessions, client_ids: empty_ids, clients: empty_clients, sub_topics: empty_sub_topics, sub_session_ids: empty_sub_sessions, sub_qos: empty_sub_qos };
+    let listener = spawn Acceptor { router: router, addr: addr };
     // The accept loop never returns; this call keeps the process alive.
     let _ = listener.start();
 }

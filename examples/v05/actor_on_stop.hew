@@ -25,7 +25,7 @@ actor Counter {
 }
 
 fn main() -> i64 {
-    let counter = spawn Counter(initial: 9);
+    let counter = spawn Counter { initial: 9 };
     let _ = counter.increment(32);
     match counter.total() {
         .Ok(v) => v,

@@ -30,7 +30,7 @@ actor Forwarder {
 
 fn main() -> i64 {
     let recipient = spawn Recipient;
-    let forwarder = spawn Forwarder(recipient: recipient);
+    let forwarder = spawn Forwarder { recipient: recipient };
     let false_ok = match forwarder.forward("false-path".to_bytes(), false) {
         .Ok(data) => data == "false-path".to_bytes(),
         .Err(_) => false,

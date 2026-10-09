@@ -76,7 +76,7 @@ fn main() {
     }
     println("[kv-server] node started");
     let s: HashMap<string, string> = HashMap.new();
-    let kv = spawn KeyValue(store: s);
+    let kv = spawn KeyValue { store: s };
     Node.register("kv", kv);
     println("[kv-server] 'kv' actor registered; waiting for client...");
 

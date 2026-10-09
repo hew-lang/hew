@@ -1170,7 +1170,7 @@ fn source_resolutions_join_actor_field_uses_across_handlers() {
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let declaration = output
         .resolutions
-        .get(&SpanKey::in_module(&actor.fields[0].span, 0));
+        .get(&SpanKey::in_module(&actor.fields[0].name_span, 0));
     assert!(matches!(
         declaration,
         Some(crate::check::scope::Resolution::Field(_, 0))
@@ -1654,7 +1654,7 @@ fn scope_body_with_spawned_call_and_trailing_value_checks_cleanly() {
 
         fn main() {
             scope {
-                let worker = spawn Worker();
+                let worker = spawn Worker;
                 let _ = worker.run();
                 0
             };

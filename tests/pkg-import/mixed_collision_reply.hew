@@ -11,7 +11,7 @@ type Colliding {
 fn main() {
     let root_c = Colliding { c: 1 };
     println(root_c.c);
-    let s = spawn mixreply.Src(seed: 4);
+    let s = spawn mixreply.Src { seed: 4 };
     match s.get() {
         .Ok(inner) => match inner {
             .Ok(u) => println(u.u),

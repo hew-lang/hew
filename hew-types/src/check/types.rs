@@ -68,6 +68,15 @@ impl ExecutionContextReader {
     }
 }
 
+/// One key a `spawn` accepts: a state field or an `init` or supervisor
+/// parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SpawnKey {
+    pub(super) name: Symbol,
+    /// False for a defaulted state field, which a spawn may omit.
+    pub(super) required: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ActorInitParamInfo {
     pub(super) name: String,
@@ -389,6 +398,12 @@ pub struct TypeCheckOutput {
     /// named arguments bind in an order other than the one written. A call
     /// absent here binds its arguments to parameters in source order.
     pub call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    /// Where each key of a checked `spawn` or supervisor child takes its
+    /// value, keyed by the spawn expression or child declaration. One slot
+    /// per key the target accepts, in declaration order: an actor's state
+    /// fields that `init` does not initialize, then its `init` parameters; a
+    /// supervisor's header parameters.
+    pub spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     pub expr_types: HashMap<SpanKey, Ty>,
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
@@ -1715,6 +1730,15 @@ impl SpanKey {
             module_idx,
         }
     }
+}
+
+/// The value one spawn key takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnSlot {
+    /// The value written at this index of the spawn's key list.
+    Written(usize),
+    /// The state field's declared default; the spawn omits the key.
+    Default,
 }
 
 /// Semantic authority for one checked `handle` or `??` expression.
@@ -3072,7 +3096,7 @@ pub(super) struct DeferredBoundCheck {
     pub(super) required_by: Option<String>,
 }
 
-/// Result of resolving a bare actor reference (`spawn Account(...)`, or the
+/// Result of resolving a bare actor reference (`spawn Account { ... }`, or the
 /// bare name carried by `Account`'s own actor-handle type) against the
 /// local-first identity policy.
 ///
@@ -3346,6 +3370,8 @@ pub struct Checker {
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    /// See [`TypeCheckOutput::spawn_argument_slots`].
+    pub(super) spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     /// Calls whose named arguments a callee rule has bound or refused. A
     /// call with named arguments outside this set reached a callee that
     /// takes positional arguments only.
@@ -3643,11 +3669,12 @@ pub struct Checker {
     ///
     /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
     pub(super) actor_init_params: HashMap<String, Vec<ActorInitParamInfo>>,
-    /// Spawn argument names and whether each one is required, keyed by the
-    /// actor declaration identity. State fields with defaults are optional;
-    /// fields initialized by `init` are absent; explicit `init` parameters
-    /// are always required.
-    pub(super) actor_spawn_args: HashMap<String, Vec<(String, bool)>>,
+    /// The keys a `spawn` of each actor or supervisor accepts, keyed by the
+    /// declaration identity, in slot order. An actor's keys are its state
+    /// fields that `init` does not initialize, then its `init` parameters; a
+    /// defaulted field is optional and every other key is required. A
+    /// supervisor's keys are its header parameters, all required.
+    pub(super) actor_spawn_args: HashMap<String, Vec<SpawnKey>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,
@@ -4387,6 +4414,7 @@ impl Checker {
             file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
             call_argument_slots: HashMap::new(),
+            spawn_argument_slots: HashMap::new(),
             named_argument_calls: HashSet::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),

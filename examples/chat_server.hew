@@ -147,18 +147,18 @@ fn main() {
     println(f"Listening on {addr}");
     let handlers: Vec<ClientHandler> = Vec.new();
     let names: Vec<string> = Vec.new();
-    let room = spawn ChatRoom(handlers: handlers, names: names);
+    let room = spawn ChatRoom { handlers: handlers, names: names };
     var next_id: i32 = 1;
     loop {
         let conn = listener.accept().expect("accept");
         let name = f"client-{next_id}";
         let (input, sink) = conn.split();
-        let handler = spawn ClientHandler(sink: sink, name: name.clone(), room: room, registered: true);
+        let handler = spawn ClientHandler { sink: sink, name: name.clone(), room: room, registered: true };
         let _ = room.register(handler, name);
         let _ = handler.welcome();
         // The pump runs as a forked task owned by this accept loop's scope,
         // which never exits, so the loop returns to `accept`.
-        let reader = spawn ClientReader(input: input, client: handler);
+        let reader = spawn ClientReader { input: input, client: handler };
         fork reader.start();
         next_id = next_id + 1;
     }

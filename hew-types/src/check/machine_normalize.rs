@@ -1720,7 +1720,7 @@ fn returns_variant(expr: &Expr, target: Ident, source: Ident, machine: Ident) ->
 /// and local bindings have nowhere else to live.
 ///
 /// Only an authored block can be redundant: the implicit and field-list forms
-/// name the target in the head, where it belongs. `on Append(item):` splices a
+/// name the target in the head, where it belongs. `on Append { item }:` splices a
 /// `let` prelude in front of the authored body, so the authored statements are
 /// the ones past that prelude.
 fn redundant_target_refusal(

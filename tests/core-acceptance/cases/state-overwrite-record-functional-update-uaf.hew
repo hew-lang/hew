@@ -22,7 +22,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let k = spawn Keeper(cur: Outer { label: "durable-label".to_upper(), payload: bytes.new(), inner: Inner { note: "first" }, count: 0 });
+    let k = spawn Keeper { cur: Outer { label: "durable-label".to_upper(), payload: bytes.new(), inner: Inner { note: "first" }, count: 0 } };
     var i: i64 = 0;
     while i < 50 {
         let _ = k.bump();

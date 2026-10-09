@@ -14,7 +14,7 @@ actor Worker<T> {
 }
 
 supervisor Group<T>(seed: T) {
-    child worker: Worker<T>(seed: seed);
+    child worker: Worker<T> { seed: seed };
 }
 
 actor Progress {
@@ -34,8 +34,8 @@ fn observe(group: Group<string>, progress: Progress) {
 }
 
 fn main() {
-    let group = spawn Group(seed: "owned".to_upper());
-    let progress = spawn Progress();
+    let group = spawn Group { seed: "owned".to_upper() };
+    let progress = spawn Progress;
     let observer = fork observe(group, progress);
     while progress.get().expect("progress") == 0 {}
     assert(progress.get().expect("pending observer") == 1);

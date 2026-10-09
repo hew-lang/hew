@@ -38,7 +38,7 @@ actor B {
 
 fn main() {
     let w = spawn W;
-    let b = spawn B(out: w);
+    let b = spawn B { out: w };
     let _ = b.go(42);
     let _ = b.go(8);
     match b.total() {

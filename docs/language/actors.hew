@@ -11,7 +11,7 @@
 //!     receive fn total() -> i64 { count }
 //! }
 //! fn main() {
-//!     let counter = spawn Counter();
+//!     let counter = spawn Counter;
 //!     counter.increment(42) handle error {
 //!         println(f"increment failed: {error}");
 //!         return;

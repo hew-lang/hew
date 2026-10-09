@@ -27,7 +27,7 @@ supervisor VecSetSupervisor {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child worker: VecSetCrasher(value: 1);
+    child worker: VecSetCrasher { value: 1 };
 }
 
 fn main() -> i64 {

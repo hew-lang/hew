@@ -18,7 +18,7 @@ fn main() -> i64 {
         row.push(i + 1);
         rows.push(row);
     }
-    let buckets = spawn Buckets(rows: rows);
+    let buckets = spawn Buckets { rows: rows };
     match buckets.sum_firsts() {
         .Ok(_) => 0,
         .Err(_) => -1,

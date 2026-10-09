@@ -57,7 +57,7 @@ actor Runner {
 }
 
 fn main() -> i64 {
-    let r = spawn Runner(total: 0);
+    let r = spawn Runner { total: 0 };
     // Value task: compute$$i64 + compute$$string both return 42 → sum 84
     let v = match r.run_value() {
         .Ok(n) => n,

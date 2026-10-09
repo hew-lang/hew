@@ -28,7 +28,7 @@ fn by_lambda_pid(step: LambdaPid<i64, i64>) -> i64 {
 }
 
 fn main() {
-    let g = spawn Greeter();
+    let g = spawn Greeter;
     println(by_local_pid(g) + by_pid(g) + by_lambda_pid(actor |n: i64| -> i64 {
         n
     }));

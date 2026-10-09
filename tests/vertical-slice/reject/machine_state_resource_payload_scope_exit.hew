@@ -18,7 +18,7 @@ machine ConnSession {
     state Idle;
     state Active { h: Handle; }
 
-    on Connect(fd): Idle => Active { h: Handle { fd: fd } }
+    on Connect { fd }: Idle => Active { h: Handle { fd: fd } }
     on Disconnect: Active => Idle;
 
     default { state }

@@ -79,8 +79,8 @@ fn is_value_pattern_lowers_to_identity_compare() {
 }
 
 fn main() {
-    let a = spawn Worker(_id: 1);
-    let b = spawn Worker(_id: 2);
+    let a = spawn Worker { _id: 1 };
+    let b = spawn Worker { _id: 2 };
     let _eq: bool = a is b;
 }
 ",

@@ -41,7 +41,7 @@ actor Vault {
 
 supervisor Group {
     intensity: 1 within 60s;
-    child vault: Vault(sock: .Some(Socket { label: "sock" }));
+    child vault: Vault { sock: .Some(Socket { label: "sock" }) };
 }
 
 fn main() {

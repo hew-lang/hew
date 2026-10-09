@@ -42,7 +42,7 @@ actor Counter {
 }
 
 fn main() {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     match c.increment(5) {
         .Ok(_) => {}
         .Err(_) => {

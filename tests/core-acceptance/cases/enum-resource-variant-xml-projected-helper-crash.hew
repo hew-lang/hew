@@ -39,7 +39,7 @@ actor Crasher {
 
 fn main() {
     let helper = spawn Helper;
-    let crasher = spawn Crasher(helper: helper);
+    let crasher = spawn Crasher { helper: helper };
     match crasher.run(0) {
         .Ok(value) => println(f"ok={value}"),
         .Err(_) => println("bad"),

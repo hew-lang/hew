@@ -33,8 +33,8 @@ actor Relay {
 }
 
 fn main() -> i64 {
-    let consumer = spawn Consumer(last: "empty");
-    let relay = spawn Relay(consumer: consumer, last: "empty");
+    let consumer = spawn Consumer { last: "empty" };
+    let relay = spawn Relay { consumer: consumer, last: "empty" };
     var sender_seen: i64 = 0;
     var i: i64 = 0;
     while i < 50 {

@@ -22,7 +22,7 @@ fn main() -> i64 {
         .Some(id) => id,
         .None => return 1,
     };
-    let worker = spawn Worker();
+    let worker = spawn Worker;
     Node.register("identity-worker", worker);
     let pid = match Node.lookup<Worker>("identity-worker") {
         .Ok(found) => found,

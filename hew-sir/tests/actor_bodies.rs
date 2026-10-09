@@ -33,7 +33,7 @@ const COUNTER: &str = r#"actor Counter {
 }
 
 fn main() {
-    let counter = spawn Counter();
+    let counter = spawn Counter;
     let _ = counter.increment(2);
     stop(counter);
     stopped(counter);
@@ -130,7 +130,7 @@ fn a_body_returning_an_owned_state_field_copies_it_out_of_the_seat() {
 }
 
 fn main() {
-    let ledger = spawn Ledger();
+    let ledger = spawn Ledger;
     match ledger.show() {
         .Ok(label) => println(label),
         .Err(_) => panic("show failed"),
@@ -247,7 +247,7 @@ const STREAM: &str = r"actor Source {
 }
 
 fn main() {
-    let source = spawn Source();
+    let source = spawn Source;
     for item in source.items(3) {
         println(item);
     }

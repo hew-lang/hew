@@ -1,4 +1,4 @@
-// An actor is the type of its handle: `spawn Orders(...)` has type `Orders`,
+// An actor is the type of its handle: `spawn Orders { ... }` has type `Orders`,
 // the annotation is optional, `self` inside a body is `Self` which is the
 // actor, and a parameter, return or field that holds an actor is written with
 // the actor's own name. Every call form is exercised here: the waiting send,
@@ -47,8 +47,8 @@ fn place(orders: Orders, item: string) -> i64 {
 }
 
 fn main() {
-    let auditor: Auditor = spawn Auditor(seen: 0);
-    let orders: Orders = spawn Orders(placed: 0, log: auditor);
+    let auditor: Auditor = spawn Auditor { seen: 0 };
+    let orders: Orders = spawn Orders { placed: 0, log: auditor };
     println(place(orders, "tea"));
 
     // A forked send is awaited later.

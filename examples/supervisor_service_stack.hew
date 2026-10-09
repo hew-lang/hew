@@ -67,7 +67,7 @@ supervisor ServiceStack {
     strategy: rest_for_one;
     intensity: 5 within 60s;
 
-    child cache: Cache(capacity: 1000, entries: 0);
+    child cache: Cache { capacity: 1000, entries: 0 };
     child db: Database;
     child api: ApiHandler;
 }

@@ -690,7 +690,29 @@ struct ShorthandFieldVisitor {
     spans: Vec<OffsetSpan>,
 }
 
+impl ShorthandFieldVisitor {
+    fn push_labels(&mut self, labels: &[hew_parser::ast::FieldLabel]) {
+        self.spans.extend(
+            labels
+                .iter()
+                .filter(|label| label.shorthand)
+                .map(|label| OffsetSpan {
+                    start: label.span.start,
+                    end: label.span.end,
+                }),
+        );
+    }
+}
+
 impl<'ast> AstVisitor<'ast> for ShorthandFieldVisitor {
+    fn visit_item(&mut self, item: &'ast Item, _span: &'ast Span, _ctx: VisitContext<'ast>) {
+        if let Item::Supervisor(supervisor) = item {
+            for child in &supervisor.children {
+                self.push_labels(&child.arg_labels);
+            }
+        }
+    }
+
     fn visit_expr(&mut self, expr: &'ast Expr, _span: &'ast Span, _ctx: VisitContext<'ast>) {
         let labels = match expr {
             Expr::StructInit { field_labels, .. } | Expr::MachineEmit { field_labels, .. } => {
@@ -703,15 +725,7 @@ impl<'ast> AstVisitor<'ast> for ShorthandFieldVisitor {
             },
             _ => return,
         };
-        self.spans.extend(
-            labels
-                .iter()
-                .filter(|label| label.shorthand)
-                .map(|label| OffsetSpan {
-                    start: label.span.start,
-                    end: label.span.end,
-                }),
-        );
+        self.push_labels(labels);
     }
 }
 
@@ -1428,7 +1442,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(init: make_config()),\n",
+            "    child w: Worker { init: make_config() },\n",
             "}",
         );
         let pr = parse(source);
@@ -1465,7 +1479,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(init: make_config());\n",
+            "    child w: Worker { init: make_config() };\n",
             "}",
         );
         let pr = parse(source);

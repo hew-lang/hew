@@ -31,7 +31,7 @@ actor Consumer {
 }
 
 fn main() {
-    let prod = spawn Producer(n: 0);
-    let cons = spawn Consumer(p: prod);
+    let prod = spawn Producer { n: 0 };
+    let cons = spawn Consumer { p: prod };
     let _ = cons.run(0);
 }

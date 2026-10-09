@@ -64,6 +64,8 @@ pub(crate) type StructInitFields = (
     Vec<FieldLabel>,
     Option<Box<Spanned<Expr>>>,
 );
+/// The keys of a `spawn` or supervisor child and their written labels.
+pub(crate) type ConstructionKeys = (Vec<(Ident, Spanned<Expr>)>, Vec<FieldLabel>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeParseContext {
@@ -786,6 +788,16 @@ pub enum ParseDiagnosticKind {
     LegacySerialSpelling,
     /// A `#[wire]` enum variant without its stable `@N` tag.
     WireVariantTagMissing,
+    /// `spawn A { k: v }`: spawn keys are written in braces.
+    LegacySpawnArgs,
+    /// `child c: A(k: v)`: supervisor child keys are written in braces.
+    LegacyChildArgs,
+    /// `on E { a, b }:`: a transition head binds event fields in braces.
+    LegacyEventHead,
+    /// `spawn A {}`: an empty key list is written without braces.
+    EmptyKeyBraces,
+    /// `spawn A { ..base }`: an actor has no value to spread from.
+    SpawnBase,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -836,6 +848,11 @@ impl ParseDiagnosticKind {
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
             Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
+            Self::LegacySpawnArgs => "E_SPAWN_PAREN_ARGS",
+            Self::LegacyChildArgs => "E_CHILD_PAREN_ARGS",
+            Self::LegacyEventHead => "E_EVENT_HEAD_PARENS",
+            Self::EmptyKeyBraces => "E_EMPTY_KEY_BRACES",
+            Self::SpawnBase => "E_SPAWN_BASE",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",

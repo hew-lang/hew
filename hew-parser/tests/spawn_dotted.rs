@@ -5,7 +5,7 @@ use hew_parser::ast::{Expr, Item};
 fn spawn_plain_actor() {
     let source = r#"
 fn main() {
-    let pid = spawn Worker(name: "test");
+    let pid = spawn Worker { name: "test" };
 }
 "#;
     let result = hew_parser::parse(source);
@@ -20,7 +20,7 @@ fn main() {
 fn spawn_dotted_actor() {
     let source = r#"
 fn main() {
-    let pid = spawn workers.Worker(name: "test");
+    let pid = spawn workers.Worker { name: "test" };
 }
 "#;
     let result = hew_parser::parse(source);
@@ -61,7 +61,7 @@ fn main() {
 fn spawn_dotted_no_args() {
     let source = r"
 fn main() {
-    let pid = spawn workers.Worker();
+    let pid = spawn workers.Worker;
 }
 ";
     let result = hew_parser::parse(source);

@@ -114,8 +114,8 @@ actor Client {
 
 fn main() {
     let (ready_tx, ready) = stream.pipe(1).expect("ready");
-    let s = spawn Server(addr: "127.0.0.1:18110", ready: ready_tx);
-    let c = spawn Client(url: "http://127.0.0.1:18110/hello");
+    let s = spawn Server { addr: "127.0.0.1:18110", ready: ready_tx };
+    let c = spawn Client { url: "http://127.0.0.1:18110/hello" };
     let serving = fork s.serve(0);
     ready.recv();
     let fetching = fork c.go(0);

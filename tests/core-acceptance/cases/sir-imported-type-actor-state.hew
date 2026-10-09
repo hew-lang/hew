@@ -11,7 +11,7 @@ actor Client {
 }
 
 fn drive() -> string {
-    let client = spawn Client(config: cfg.endpoint("h"), seen: "");
+    let client = spawn Client { config: cfg.endpoint("h"), seen: "" };
     client.probe().expect("probe")
 }
 

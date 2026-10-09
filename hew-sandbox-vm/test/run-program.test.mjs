@@ -45,7 +45,7 @@ actor Bounds {
 supervisor BoundsTree {
     strategy: one_for_one;
     intensity: 1 within 60s;
-    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808);
+    child bounds: Bounds { max: 9223372036854775807, min: -9223372036854775808 };
 }
 
 fn main() {

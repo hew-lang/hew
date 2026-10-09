@@ -333,7 +333,7 @@ fn fmt_totality_item_actor() {
 #[test]
 fn fmt_totality_item_supervisor() {
     assert_roundtrip(
-        "supervisor App(config: string) {\n    strategy: one_for_one;\n\n    child worker: Counter(id: 1);\n}\n",
+        "supervisor App(config: string) {\n    strategy: one_for_one;\n\n    child worker: Counter { id: 1 };\n}\n",
     );
 }
 
@@ -341,7 +341,7 @@ fn fmt_totality_item_supervisor() {
 #[test]
 fn fmt_totality_item_supervisor_no_params() {
     assert_roundtrip(
-        "supervisor App {\n    strategy: one_for_one;\n\n    child worker: Counter(id: 1);\n}\n",
+        "supervisor App {\n    strategy: one_for_one;\n\n    child worker: Counter { id: 1 };\n}\n",
     );
 }
 
@@ -899,7 +899,7 @@ fn fmt_totality_type_expr_infer() {
 /// will fail.
 #[test]
 fn fmt_supervisor_config_param_is_not_dropped() {
-    let src = "supervisor App(cfg: string, port: i64) {\n    strategy: one_for_one;\n\n    child worker: Counter(id: 1);\n}\n";
+    let src = "supervisor App(cfg: string, port: i64) {\n    strategy: one_for_one;\n\n    child worker: Counter { id: 1 };\n}\n";
 
     let r1 = parse(src);
     assert!(r1.errors.is_empty(), "parse failed: {:?}", r1.errors);

@@ -47,7 +47,7 @@ fn target_coroutine_unsupported_rejects_actor_decl() {
 fn target_coroutine_unsupported_rejects_supervisor_decl() {
     let source = r"supervisor Root {
     strategy: one_for_one;
-    child worker: WorkerActor();
+    child worker: WorkerActor;
 }
 
 actor WorkerActor {

@@ -12,8 +12,8 @@ fn mailbox_calls_submit_and_rejections_can_be_resubmitted() {
 }
 
 fn main() {
-    let worker = mailbox(spawn Worker(), on_full: .Reject);
-    let backup = spawn Worker();
+    let worker = mailbox(spawn Worker, on_full: .Reject);
+    let backup = spawn Worker;
     match worker.process("work") {
         .Ok(delivery) => {}
         .Err(rejected) => {
@@ -61,7 +61,7 @@ fn main() {
 fn actor_delivery_wait_policy_only_suspends_submission() {
     let source = r"actor Worker { receive fn process(value: i64) {} }
         fn main() {
-            let worker = spawn Worker();
+            let worker = spawn Worker;
             let quick = mailbox(worker, on_full: .Reject);
             let sender = mailbox(worker, on_full: .Wait);
             let _ = quick.process(1);
@@ -87,14 +87,14 @@ fn actor_delivery_wait_policy_only_suspends_submission() {
 fn actor_delivery_rejects_reuse_and_incompatible_destination() {
     for (body, diagnostic) in [
         ("let _ = m.retry(); let _ = m.retry();", "moved"),
-        ("let other = spawn Other(); let _ = m.to(other);", "type"),
+        ("let other = spawn Other; let _ = m.to(other);", "type"),
         ("let x = m.payload;", "sealed"),
         ("m.retry();", "e_result_dropped"),
     ] {
         let source = format!(
             "actor Worker {{ receive fn process(value: i64) {{}} }} \
              actor Other {{ receive fn process(value: i64) {{}} }} \
-             fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
+             fn main() {{ let worker = mailbox(spawn Worker, on_full: .Reject); \
              match worker.process(1) {{ \
                  .Ok(_) => {{}} \
                  .Err(rejected) => {{ let m = rejected.message; {body} }} \
@@ -221,7 +221,7 @@ fn actor_delivery_seals_message_destructuring_and_construction() {
     ] {
         let source = format!(
             "actor Worker {{ receive fn process(value: i64) {{}} }} \
-             fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
+             fn main() {{ let worker = mailbox(spawn Worker, on_full: .Reject); \
              match worker.process(1) {{ \
                  .Ok(_) => {{}} \
                  .Err(rejected) => {{ let m = rejected.message; {body} }} \
@@ -243,7 +243,7 @@ fn actor_delivery_seals_message_destructuring_and_construction() {
 fn actor_delivery_named_arguments_preserve_protocol_order() {
     let output = check_source(
         r#"actor Worker { receive fn process(number: i64, text: string) {} }
-        fn main() { let worker = spawn Worker(); let _ = worker.process(text: "work", number: 7); }"#,
+        fn main() { let worker = spawn Worker; let _ = worker.process(text: "work", number: 7); }"#,
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let slots = output
@@ -252,7 +252,7 @@ fn actor_delivery_named_arguments_preserve_protocol_order() {
         .next()
         .expect("reordered call records its parameter slots");
     assert_eq!(slots, &[1, 0]);
-    let output = check_source("actor Worker { receive fn process(first: i64, second: i64) {} } fn main() { let worker = spawn Worker(); let _ = worker.process(first: 1, first: 2); }");
+    let output = check_source("actor Worker { receive fn process(first: i64, second: i64) {} } fn main() { let worker = spawn Worker; let _ = worker.process(first: 1, first: 2); }");
     assert!(
         output
             .errors
@@ -265,7 +265,7 @@ fn actor_delivery_named_arguments_preserve_protocol_order() {
 
 #[test]
 fn actor_delivery_failure_reason_matches_annotated_error_values() {
-    let output = check_source("actor Worker {\n    receive fn process() {}\n}\n\nfn reason(error: SendError) -> SendError {\n    error\n}\n\nfn main() {\n    let worker = mailbox(spawn Worker(), on_full: .Reject);\n    match worker.process() {\n        .Ok(_) => {}\n        .Err(failure) => {\n            let same = reason(failure.reason);\n        }\n    }\n}\n");
+    let output = check_source("actor Worker {\n    receive fn process() {}\n}\n\nfn reason(error: SendError) -> SendError {\n    error\n}\n\nfn main() {\n    let worker = mailbox(spawn Worker, on_full: .Reject);\n    match worker.process() {\n        .Ok(_) => {}\n        .Err(failure) => {\n            let same = reason(failure.reason);\n        }\n    }\n}\n");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
         output
@@ -281,7 +281,7 @@ fn actor_delivery_failure_reason_matches_annotated_error_values() {
 #[test]
 fn a_call_on_a_handle_completes_with_a_unit_result() {
     let source = "actor Worker { receive fn work(n: i64) {} } \
-         fn main() { let w = spawn Worker(); let _ = w.work(1); }";
+         fn main() { let w = spawn Worker; let _ = w.work(1); }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
@@ -322,7 +322,7 @@ fn a_call_on_a_handle_completes_with_a_unit_result() {
 fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
     let output = check_source(
         "actor Worker { receive fn total() -> i64 { 1 } } \
-         fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.total(); }",
+         fn main() { let w = mailbox(spawn Worker, on_full: .Reject); let _ = w.total(); }",
     );
     let message = output
         .errors
@@ -338,7 +338,7 @@ fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
 #[test]
 fn a_unit_fails_handler_submits_through_a_mailbox_view() {
     let output = check_source(
-        "actor Worker { receive fn note(n: i64) fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
+        "actor Worker { receive fn note(n: i64) fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker, on_full: .Reject); let _ = w.note(1); }",
     );
     assert!(
         output.errors.is_empty(),
@@ -352,7 +352,7 @@ fn a_unit_fails_handler_submits_through_a_mailbox_view() {
 #[test]
 fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
     let output = check_source(
-        "type Opaque {\n    code: i64;\n}\n\nactor Worker {\n    receive fn note(n: i64) fails Opaque {\n        if n < 0 {\n            return error Opaque { code: n };\n        }\n    }\n}\n\nfn main() {\n    let w = mailbox(spawn Worker(), on_full: .Reject);\n    let _ = w.note(1);\n}\n",
+        "type Opaque {\n    code: i64;\n}\n\nactor Worker {\n    receive fn note(n: i64) fails Opaque {\n        if n < 0 {\n            return error Opaque { code: n };\n        }\n    }\n}\n\nfn main() {\n    let w = mailbox(spawn Worker, on_full: .Reject);\n    let _ = w.note(1);\n}\n",
     );
     assert!(
         output
@@ -369,7 +369,7 @@ fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
 #[test]
 fn an_infallible_completion_envelope_needs_no_failed_arm() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker();\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker;\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -379,7 +379,7 @@ fn an_infallible_completion_envelope_needs_no_failed_arm() {
 #[test]
 fn a_fails_completion_envelope_still_requires_its_failed_arm() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 fails string {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker();\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 fails string {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker;\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
     );
     assert!(
         output
@@ -412,7 +412,7 @@ fn static_completion_call_cycles_are_refused_and_name_the_path() {
 #[test]
 fn a_completion_call_chain_without_a_cycle_is_accepted() {
     let output = check_source(
-        "actor Sink {\n    var n: i64 = 0;\n    receive fn take(v: i64) -> i64 {\n        n = n + v;\n        n\n    }\n}\n\nactor Source {\n    var sink: Sink;\n    receive fn run(v: i64) -> i64 {\n        match sink.take(v) {\n            .Ok(t) => t,\n            .Err(_) => 0,\n        }\n    }\n}\n\nfn main() {\n    let s = spawn Sink();\n    let src = spawn Source(sink: s);\n    match src.run(3) {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
+        "actor Sink {\n    var n: i64 = 0;\n    receive fn take(v: i64) -> i64 {\n        n = n + v;\n        n\n    }\n}\n\nactor Source {\n    var sink: Sink;\n    receive fn run(v: i64) -> i64 {\n        match sink.take(v) {\n            .Ok(t) => t,\n            .Err(_) => 0,\n        }\n    }\n}\n\nfn main() {\n    let s = spawn Sink;\n    let src = spawn Source { sink: s };\n    match src.run(3) {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -462,7 +462,7 @@ fn self_call_prepared_by_select_keeps_its_timeout_escape() {
 #[test]
 fn a_policy_view_completes_and_carries_its_admission_policy() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = policy(spawn Worker(), on_full: .Reject);\n    match w.total() {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = policy(spawn Worker, on_full: .Reject);\n    match w.total() {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
@@ -497,11 +497,11 @@ fn stored_completion_request_preserves_reply_and_rejects_incompatible_redirect()
             actor WrongName {{ receive fn other(value: string) -> string {{ value }} }}
             actor WrongReply {{ receive fn echo(value: string) -> i64 {{ 0 }} }}
             fn main() {{
-                let worker = policy(spawn Worker(), on_full: .Reject);
+                let worker = policy(spawn Worker, on_full: .Reject);
                 let result = worker.echo("owned");
                 match result {{
                     .Err(ActorError.Rejected(failure)) => {{
-                        let reply = failure.message.to(spawn {destination}());
+                        let reply = failure.message.to(spawn {destination});
                         match reply {{ .Ok(text) => println(text), .Err(_) => {{}} }}
                     }}
                     _ => {{}}
@@ -538,7 +538,7 @@ fn completion_recovery_consumes_the_stored_rejection() {
             r#"
             actor Worker {{ receive fn echo(value: string) -> string {{ value }} }}
             fn main() {{
-                let worker = policy(spawn Worker(), on_full: .Reject);
+                let worker = policy(spawn Worker, on_full: .Reject);
                 let result = worker.echo("owned");
                 match result {{
                     .Err(ActorError.Rejected(failure)) => {{
@@ -581,11 +581,11 @@ fn sealed_request_keeps_the_declared_callable_protocol_after_coercion() {
                 receive fn invoke(operation: fn() -> i64) -> i64 {{ operation() }}
             }}
             fn main() {{
-                let original = policy(spawn Original(), on_full: .Reject);
+                let original = policy(spawn Original, on_full: .Reject);
                 let result = original.invoke(pure);
                 match result {{
                     .Err(ActorError.Rejected(failure)) => {{
-                        let _ = failure.message.to(spawn {destination}());
+                        let _ = failure.message.to(spawn {destination});
                     }}
                     _ => {{}}
                 }}
@@ -614,7 +614,7 @@ fn sealed_request_keeps_the_declared_callable_protocol_after_coercion() {
 #[test]
 fn a_bare_handle_completion_waits_for_admission() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker();\n    match w.total() {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker;\n    match w.total() {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
@@ -633,7 +633,7 @@ fn a_policy_view_refuses_the_discarding_policies() {
     for option in [".DropNewest", ".ReplaceLatest"] {
         let output = check_source(&format!(
             "actor Worker {{ mailbox 1; receive fn total() -> i64 {{ 1 }} }} \
-             fn main() {{ let w = policy(spawn Worker(), on_full: {option}); \
+             fn main() {{ let w = policy(spawn Worker, on_full: {option}); \
                match w.total() {{ .Ok(_) => {{}} .Err(_) => {{}} }} }}"
         ));
         assert!(
@@ -652,12 +652,12 @@ fn a_policy_view_refuses_the_discarding_policies() {
 #[test]
 fn a_coalesce_key_names_a_receive_parameter_with_a_key_type() {
     let output = check_source(
-        "actor Worker {\n    mailbox 1 overflow coalesce(id) fallback drop_new;\n    receive fn update(id: i64, value: i64) {}\n}\n\nfn main() {\n    let _ = spawn Worker();\n}\n",
+        "actor Worker {\n    mailbox 1 overflow coalesce(id) fallback drop_new;\n    receive fn update(id: i64, value: i64) {}\n}\n\nfn main() {\n    let _ = spawn Worker;\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 
     let unknown = check_source(
-        "actor Worker {\n    mailbox 1 overflow coalesce(missing) fallback drop_new;\n    receive fn update(id: i64, value: i64) {}\n}\n\nfn main() {\n    let _ = spawn Worker();\n}\n",
+        "actor Worker {\n    mailbox 1 overflow coalesce(missing) fallback drop_new;\n    receive fn update(id: i64, value: i64) {}\n}\n\nfn main() {\n    let _ = spawn Worker;\n}\n",
     );
     assert!(
         unknown
@@ -669,7 +669,7 @@ fn a_coalesce_key_names_a_receive_parameter_with_a_key_type() {
     );
 
     let untypeable = check_source(
-        "actor Worker {\n    mailbox 1 overflow coalesce(pause) fallback drop_new;\n    receive fn update(pause: duration) {}\n}\n\nfn main() {\n    let _ = spawn Worker();\n}\n",
+        "actor Worker {\n    mailbox 1 overflow coalesce(pause) fallback drop_new;\n    receive fn update(pause: duration) {}\n}\n\nfn main() {\n    let _ = spawn Worker;\n}\n",
     );
     assert!(
         untypeable

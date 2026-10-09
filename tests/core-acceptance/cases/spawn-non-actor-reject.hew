@@ -3,5 +3,5 @@ type Rec {
 }
 
 fn main() {
-    let _a = spawn Rec();
+    let _a = spawn Rec;
 }

@@ -1252,7 +1252,7 @@ impl Parser<'_> {
                 // Check whether the user wrote the legacy `spawn (params) => body` form.
                 // The supported form is `actor |params| { body }`.
                 // Consume an optional `move` keyword only to detect legacy syntax; it is not
-                // used in the regular `spawn ActorName(...)` form.
+                // used in the regular `spawn ActorName { ... }` form.
                 let _is_move_legacy = self.eat(&Token::Move);
 
                 if self.peek() == Some(&Token::LeftParen) {
@@ -1286,8 +1286,8 @@ impl Parser<'_> {
                     }
                 }
 
-                // Regular spawn: spawn ActorName(...) or spawn module.ActorName(...)
-                // or spawn ActorName<T>(...) with explicit turbofish type args.
+                // Regular spawn: `spawn Actor`, `spawn module.Actor { key: value }`
+                // or `spawn Actor<T> { .. }` with explicit type arguments.
                 let name = self.expect_ident()?;
                 let name_end = self.peek_span().start;
                 let mut target = (Expr::Ident(name), start..name_end);
@@ -1304,7 +1304,7 @@ impl Parser<'_> {
                 }
                 let target = Box::new(target);
 
-                // Optional turbofish type-argument list `<T, U>` before `(`.
+                // Optional type-argument list `<T, U>` before the keys.
                 // A bare `<` here is unambiguous: spawn does not admit
                 // comparison in this position (the target is a name, not an
                 // expression), so we eagerly parse the angle-bracket list.
@@ -1314,22 +1314,8 @@ impl Parser<'_> {
                     vec![]
                 };
 
-                let mut arg_labels = Vec::new();
-                let args = if self.eat(&Token::LeftParen) {
-                    let mut args = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                        let (field_name, field_label, value) = self.parse_field_init()?;
-                        args.push((field_name, value));
-                        arg_labels.push(field_label);
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightParen)?;
-                    args
-                } else {
-                    Vec::new()
-                };
+                let (args, arg_labels) =
+                    self.parse_construction_keys(start, ParseDiagnosticKind::LegacySpawnArgs)?;
 
                 Expr::Spawn {
                     target,
@@ -1868,6 +1854,96 @@ impl Parser<'_> {
             return Some(ArrayElement::Spread(operand));
         }
         Some(ArrayElement::Value(self.parse_expr()?))
+    }
+
+    /// The keys of a `spawn` or supervisor child: `{ key: value, key }`, or
+    /// nothing. Braces open a key list exactly where they would open a record
+    /// literal, so `for x in spawn Gen { n }` reads `{ n }` as the loop body.
+    /// `head_start` is where the construct begins, for the fix-it text.
+    pub(crate) fn parse_construction_keys(
+        &mut self,
+        head_start: usize,
+        legacy: ParseDiagnosticKind,
+    ) -> Option<ConstructionKeys> {
+        if self.peek() == Some(&Token::LeftParen) {
+            return self.parse_legacy_paren_keys(head_start, legacy);
+        }
+        if self.peek() != Some(&Token::LeftBrace)
+            || self.no_struct_literal()
+            || !self.probe_struct_init_brace()
+        {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let open = self.peek_span();
+        self.advance();
+        let (fields, labels, base) =
+            self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
+        if let Some(base) = base {
+            self.error_at_with_kind_and_hint(
+                "an actor has no value to spread from: `..base` is refused here".to_string(),
+                base.1.clone(),
+                "remove `..base` and write each key",
+                ParseDiagnosticKind::SpawnBase,
+            );
+        } else if fields.is_empty() {
+            let head = self
+                .source_text(head_start..open.start)
+                .trim_end()
+                .to_string();
+            self.error_at_with_kind_and_hint(
+                "an empty key list is written without braces".to_string(),
+                open.start..self.last_token_end,
+                format!("write `{head}`"),
+                ParseDiagnosticKind::EmptyKeyBraces,
+            );
+        }
+        Some((fields, labels))
+    }
+
+    /// The retired parenthesised key list, `spawn A { k: v, x }`. It recovers to
+    /// the same keys the brace form carries, so `hew fmt --migrate` rewrites it.
+    fn parse_legacy_paren_keys(
+        &mut self,
+        head_start: usize,
+        kind: ParseDiagnosticKind,
+    ) -> Option<ConstructionKeys> {
+        let open = self.peek_span();
+        self.advance();
+        let _allow_struct = self.set_no_struct_literal(false);
+        let mut args = Vec::new();
+        let mut labels = Vec::new();
+        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+            let (name, label, value) = self.parse_field_init()?;
+            args.push((name, value));
+            labels.push(label);
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        let close = self.peek_span();
+        self.expect(&Token::RightParen)?;
+        let head = self
+            .source_text(head_start..open.start)
+            .trim_end()
+            .to_string();
+        let inner = self
+            .source_text(open.end..close.start)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let inner = inner.trim_end_matches(',');
+        let fix = if inner.is_empty() {
+            head
+        } else {
+            format!("{head} {{ {inner} }}")
+        };
+        self.error_at_with_kind_and_hint(
+            "keys are written in braces; parentheses hold positional arguments".to_string(),
+            open.start..close.end,
+            format!("write `{fix}`"),
+            kind,
+        );
+        Some((args, labels))
     }
 
     /// Parse one named field initializer: `name: expr`, or the shorthand

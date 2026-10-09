@@ -15,7 +15,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(_) => panic("stream pipe failed"),
     };
-    let w = spawn Writer(sink: sink);
+    let w = spawn Writer { sink: sink };
     let _ = w.put("hello");
     match input.recv() {
         .Some(s) => println(s),

@@ -41,7 +41,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(_) => panic("stream.pipe failed"),
     };
-    let reader = spawn Reader(input: input, done: tx);
+    let reader = spawn Reader { input: input, done: tx };
     fork reader.pump();
     // Control: a chunk that decodes takes the handler's success path.
     sink.send("first".to_bytes()).expect("send");

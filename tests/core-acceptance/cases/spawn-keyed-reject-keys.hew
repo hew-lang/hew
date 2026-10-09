@@ -1,0 +1,28 @@
+// Spawn keys are checked against the target's fields, init parameters and
+// supervisor parameters, and each refusal lands on the key.
+actor Pair {
+    let a: i64;
+    let b: i64;
+}
+
+actor Loader {
+    var items: Vec<i64>;
+    init(seed: i64) {
+        items = [seed];
+    }
+}
+
+supervisor Pool(a: i64, b: i64) {
+    strategy: one_for_one;
+    child pair: Pair { a, b };
+}
+
+fn main() {
+    let x = 1;
+    let y = 2;
+    let _unknown = spawn Pair { a: 1, b: 2, c: 3 };
+    let _misspelt = spawn Pair { x, y };
+    let _twice = spawn Pair { a: 1, a: 2, b: 3 };
+    let _deferred = spawn Loader { seed: 1, items: [1] };
+    let _missing = spawn Pool { a: 1 };
+}

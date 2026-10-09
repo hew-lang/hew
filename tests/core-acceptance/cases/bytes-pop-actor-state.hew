@@ -24,7 +24,7 @@ actor Buffer {
 fn main() {
     var seed: bytes = bytes.new();
     seed.push(99);
-    let buffer = spawn Buffer(data: seed);
+    let buffer = spawn Buffer { data: seed };
     buffer.fill().expect("fill");
     assert(buffer.size().expect("size") == 3);
     assert(buffer.drain().expect("drain 20") == 20);

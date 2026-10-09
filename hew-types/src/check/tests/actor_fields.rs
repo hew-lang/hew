@@ -17,7 +17,7 @@ fn non_send_actor_state_points_to_the_owning_actor_pattern() {
 }
 
 fn main() {
-    let holder = spawn Holder(value: Rc.new(1));
+    let holder = spawn Holder { value: Rc.new(1) };
     let _ = holder.count();
 }
 ",
@@ -41,7 +41,7 @@ fn sendable_actor_state_has_no_owning_actor_help() {
 }
 
 fn main() {
-    let holder = spawn Holder(value: 1);
+    let holder = spawn Holder { value: 1 };
     let _ = holder.get();
 }
 ",
@@ -191,7 +191,7 @@ fn pid_call_to_plain_actor_method_is_rejected() {
 }
 
 fn main() {
-    let c = spawn Counter(n: 0);
+    let c = spawn Counter { n: 0 };
     c.bump();
 }
 ",
@@ -233,7 +233,7 @@ fn pid_call_to_plain_send_method_is_rejected() {
 }
 
 fn main() {
-    let c = spawn Counter(n: 0);
+    let c = spawn Counter { n: 0 };
     c.send();
 }
 ",
@@ -403,7 +403,7 @@ fn qualified_actor_method_call_from_main_is_refused_on_the_user_channel() {
 }
 
 fn main() {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     c.bump();
     println(Counter.helper());
 }
@@ -1844,7 +1844,7 @@ fn deferred_field_initialized_in_every_arm_is_accepted() {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready", fast: true);
+    let worker = spawn Worker { name: "ready", fast: true };
     let _ = worker.label();
 }
 "#,
@@ -1881,7 +1881,7 @@ fn deferred_field_read_before_its_store_is_rejected() {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready");
+    let worker = spawn Worker { name: "ready" };
     let _ = worker.label();
 }
 "#,
@@ -1910,7 +1910,7 @@ fn deferred_field_missing_on_one_arm_is_rejected() {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready", fast: true);
+    let worker = spawn Worker { name: "ready", fast: true };
     let _ = worker.label();
 }
 "#,
@@ -1942,7 +1942,7 @@ fn deferred_field_left_uninitialized_at_return_is_rejected() {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready");
+    let worker = spawn Worker { name: "ready" };
     let _ = worker.label();
 }
 "#,
@@ -1973,7 +1973,7 @@ fn deferred_field_initialized_inside_a_loop_is_rejected() {
 }
 
 fn main() {
-    let worker = spawn Worker(names: ["a"]);
+    let worker = spawn Worker { names: ["a"] };
     let _ = worker.label();
 }
 "#,
@@ -2000,7 +2000,7 @@ fn spawn_naming_a_deferred_field_is_rejected() {
 }
 
 fn main() {
-    let worker = spawn Worker(label: "ready", name: "ready");
+    let worker = spawn Worker { label: "ready", name: "ready" };
     let _ = worker.label();
 }
 "#,
@@ -2031,7 +2031,7 @@ fn defaulted_or_parameter_shadowed_fields_are_not_deferred() {
 }
 
 fn main() {
-    let worker = spawn Worker(suffix: "!");
+    let worker = spawn Worker { suffix: "!" };
     let _ = worker.label();
 }
 "#,
@@ -2060,7 +2060,7 @@ fn main() {
 }
 
 fn main() {
-    let bag = spawn Bag(count: 1);
+    let bag = spawn Bag { count: 1 };
     let _ = bag.get();
 }
 ",
@@ -2090,7 +2090,7 @@ fn main() {
 }
 
 fn main() {
-    let bag = spawn Bag(initial: 1);
+    let bag = spawn Bag { initial: 1 };
     let _ = bag.get();
 }
 ",
@@ -2120,7 +2120,7 @@ fn spawn_plus_init_parameter_of_the_same_name_is_refused() {
 }
 
 fn main() {
-    let bag = spawn Bag(items: 3);
+    let bag = spawn Bag { items: 3 };
     let _ = bag.get();
 }
 ",
@@ -2157,7 +2157,7 @@ fn deferred_field_method_call_before_its_store_is_rejected() {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready");
+    let worker = spawn Worker { name: "ready" };
     let _ = worker.label();
 }
 "#,
@@ -2187,7 +2187,7 @@ fn deferred_field_self_read_before_its_store_is_rejected() {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready");
+    let worker = spawn Worker { name: "ready" };
     let _ = worker.label();
 }
 "#,
@@ -2224,7 +2224,7 @@ fn deferred_field_method_call_after_every_store_is_accepted() {
 }
 
 fn main() {
-    let worker = spawn Worker(name: "ready");
+    let worker = spawn Worker { name: "ready" };
     let _ = worker.label();
 }
 "#,

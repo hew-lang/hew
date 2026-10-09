@@ -2476,7 +2476,7 @@ fn build_module_graph_with_diagnostics(
     // name) pair end-to-end — the checker emits `bank.Account`'s own
     // actor-handle type, MIR
     // layouts key on the dotted name, and native symbols mangle through
-    // `bank$Account` — so `spawn bank.Account(...)` and `spawn
+    // `bank$Account` — so `spawn bank.Account { ... }` and `spawn
     // store.Account(...)` bind their own handlers/state/drop glue.  Within one
     // module there is no qualifier left to tell two same-named actors apart,
     // so that case stays a hard error.  Runs before
@@ -7369,7 +7369,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
     /// A root-local actor sharing a bare name with an imported `pub actor` is
     /// LEGAL: the bare reference resolves local-first to the root actor and
-    /// `spawn bank.Account(...)` routes to the package actor's qualified
+    /// `spawn bank.Account { ... }` routes to the package actor's qualified
     /// layout — neither shadows the other.
     #[test]
     fn check_file_accepts_root_actor_sharing_name_with_imported_actor() {
@@ -7464,7 +7464,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     /// A *private* (non-pub) imported actor must not be spawnable via its
-    /// module qualifier, and in particular `spawn secret.Account()` must NOT
+    /// module qualifier, and in particular `spawn secret.Account` must NOT
     /// silently route to a same-named root actor. The duplicate-actor graph
     /// guard deliberately ignores private actors (they never enter the layout
     /// set), so the fail-closed behaviour here comes from the type checker:
@@ -7484,7 +7484,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n}\n",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account;\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -7511,7 +7511,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     /// satisfy a module-qualified spawn. `module_type_exports` membership is
     /// insufficient -- it also holds public structs/enums/records -- so the
     /// spawn gate requires the qualified definition to be `TypeDefKind::Actor`.
-    /// Without that, `spawn secret.Account()` would strip the qualifier to bare
+    /// Without that, `spawn secret.Account` would strip the qualifier to bare
     /// `Account` and route to a same-named root actor.
     #[test]
     fn check_file_rejects_spawn_of_non_actor_module_export() {
@@ -7525,7 +7525,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n}\n",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account;\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())

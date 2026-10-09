@@ -29,7 +29,7 @@ actor Fan {
 }
 
 fn main() -> i64 {
-    let fan = spawn Fan(seen: 0, held: Outer { inner: Inner { name: "seed" } });
+    let fan = spawn Fan { seen: 0, held: Outer { inner: Inner { name: "seed" } } };
     var i: i64 = 0;
     while i < 12 {
         let _ = fan.route(i % 2 == 0, i % 3 == 0);

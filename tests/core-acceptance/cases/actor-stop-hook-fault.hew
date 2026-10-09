@@ -24,7 +24,7 @@ fn open(path: string) -> Stream<string> {
 }
 
 fn main() {
-    let keeper = spawn Keeper(journal: open("resource-read.bin"));
+    let keeper = spawn Keeper { journal: open("resource-read.bin") };
     match keeper.ping() {
         .Ok(value) => println(value),
         .Err(_) => panic("ping failed"),

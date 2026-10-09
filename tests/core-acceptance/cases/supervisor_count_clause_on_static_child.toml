@@ -9,5 +9,5 @@ kind = "reject"
 [[case.expected.diagnostics]]
 code = "Other"
 line = 16
-column = 44
+column = 47
 message = "`count:` is a pool clause"

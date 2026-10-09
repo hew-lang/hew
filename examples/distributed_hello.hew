@@ -15,7 +15,7 @@ actor Counter {
 
 fn main() {
     // ── Local actor ──────────────────────────────────────────
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     let _ = counter.increment(5);
     let _ = counter.increment(3);
     // ── Secure distributed node (QUIC mesh, mutual TLS) ──────

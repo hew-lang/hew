@@ -21,14 +21,14 @@ actor Worker {
 supervisor Waits {
     strategy: one_for_one;
     intensity: 10 within 60s;
-    child quick: Worker(name: "quick");
-    child mid: Worker(name: "mid") stop: 100ms;
+    child quick: Worker { name: "quick" };
+    child mid: Worker { name: "mid" } stop: 100ms;
 }
 
 supervisor Outlasted {
     strategy: one_for_one;
     intensity: 10 within 60s;
-    child slow: Worker(name: "slow") stop: 50ms;
+    child slow: Worker { name: "slow" } stop: 50ms;
 }
 
 fn main() {

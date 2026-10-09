@@ -43,7 +43,7 @@ fn test_non_2xx_response_body_round_trips() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
             let port = http.server_port(server);
-            let client = spawn Client(url: f"http://127.0.0.1:{port}/missing", status: 0, body: "");
+            let client = spawn Client { url: f"http://127.0.0.1:{port}/missing", status: 0, body: "" };
             let request = fork client.fetch(0);
             let req = server.accept();
             let _ = req.respond_text(404, "not found: the resource does not exist");

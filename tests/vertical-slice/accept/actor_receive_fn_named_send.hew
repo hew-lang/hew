@@ -14,7 +14,7 @@ actor Counter {
 }
 
 fn main() -> i64 {
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     let _ = counter.send(10);
     let _ = counter.send(32);
     match counter.get() {

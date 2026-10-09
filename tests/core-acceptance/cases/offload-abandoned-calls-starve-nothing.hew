@@ -31,7 +31,7 @@ fn abandon(count: i64) -> i64 {
 fn main() {
     println(f"gave up {abandon(64)}");
     println(f"slept {unsafe { usleep(1000) }}");
-    let talker = spawn Talker();
+    let talker = spawn Talker;
     talker.say("from actor").expect("say");
     sleep(100ms);
     println("main after actor");

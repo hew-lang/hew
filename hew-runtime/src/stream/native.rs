@@ -409,7 +409,8 @@ pub unsafe extern "C" fn hew_stream_write_committed_native(operation: *mut HewNa
         // SAFETY: the operation owns this live async request.
         Backing::Io(io) => match unsafe { async_io::write_failure(*io) } {
             async_io::WriteFailure::TimedOut(committed) => committed
-                .saturating_sub(i64::try_from((*operation).write_prefix).unwrap_or(i64::MAX)),
+                .saturating_sub(i64::try_from((*operation).write_prefix).unwrap_or(i64::MAX))
+                .max(0),
             _ => 0,
         },
         _ => 0,

@@ -35,6 +35,9 @@ impl FunctionEmitter<'_, '_> {
         let builder = self
             .runtime_call_value(new, &[], "structural.builder")?
             .into_pointer_value();
+        if let Some(frame) = &self.frame {
+            frame.carry(self.ctx, &self.builder, builder, "structural.builder.slot")?;
+        }
         self.builder
             .build_store(self.active_fault, ptr.const_null())
             .llvm_ctx("clear structural fault")?;
@@ -484,6 +487,10 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
             "structural.vector.len",
         )?
         .into_int_value();
+        if let Some(frame) = &self.frame {
+            frame.carry(self.ctx, self.builder, vector, "structural.vector.slot")?;
+            frame.carry(self.ctx, self.builder, len, "structural.vector.length.slot")?;
+        }
         let layout = self.structural_layout(structural_glue(self.module, element)?)?;
         let slot = self
             .builder
@@ -547,6 +554,11 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
             .build_call(borrow, &[vector.into(), index.into(), slot.into()], "")
             .llvm_ctx("borrow structural vector element")?;
         self.render_member(element, builder, slot)?;
+        let index = self
+            .builder
+            .build_load(i64_ty, index_slot, "structural.current.index")
+            .llvm_ctx("restore vector index after rendering")?
+            .into_int_value();
         let next = self
             .builder
             .build_int_add(index, i64_ty.const_int(1, false), "structural.next.index")
@@ -633,6 +645,10 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
             .build_unconditional_branch(poll)
             .llvm_ctx("start map iteration")?;
         self.builder.position_at_end(poll);
+        let cursor = self
+            .builder
+            .build_load(ptr, self.map_iter.unwrap(), "structural.current.cursor")
+            .llvm_ctx("restore map cursor after rendering")?;
         let next = get_or_declare_external(
             self.llvm,
             "hew_hashmap_iter_next_layout",

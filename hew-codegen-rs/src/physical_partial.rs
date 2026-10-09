@@ -60,11 +60,11 @@ pub(super) fn allocate_storage<'ctx>(
                     .llvm_ctx("address exclusive actor state field")
                     .map(Some);
             }
-            if matches!(storage.origin, StorageOrigin::Capture { .. }) {
+            if let StorageOrigin::Capture { environment, .. } = storage.origin {
                 let slot = callable::capture_parameter_slot(
                     module, function, signature, value, builder, storage,
                 )?;
-                if let Some(frame) = frame.filter(|_| function.frame_storage.contains(&storage.id))
+                if let Some(frame) = frame.filter(|_| function.frame_storage.contains(&environment))
                 {
                     frame.carry(module.ctx, builder, slot, "capture.address.slot")?;
                 }

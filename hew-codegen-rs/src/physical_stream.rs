@@ -476,6 +476,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.try_send.status",
         )?
         .into_int_value();
+        if let Some(frame) = &self.frame {
+            frame.carry(
+                self.ctx,
+                &self.builder,
+                status,
+                "stream.try_send.status.slot",
+            )?;
+        }
         // The runtime copied the element into its envelope; the slot no
         // longer owns it on any outcome.
         self.clear_owned(value)?;

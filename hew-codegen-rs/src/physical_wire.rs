@@ -1519,6 +1519,14 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 "wire.key.unique",
             )
             .llvm_ctx("check decoded key uniqueness")?;
+        if let Some(frame) = &self.frame {
+            frame.carry(
+                self.values.ctx,
+                self.values.builder,
+                unique,
+                "wire.key.unique.slot",
+            )?;
+        }
         Ok((
             unique,
             cursor.expect("codec insertion detaches displaced owners"),
@@ -1658,10 +1666,19 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .llvm_ctx("iterate decoded collection")?;
         builder.position_at_end(body);
         self.child_into(key, key_slot)?;
+        let load_collection = || {
+            builder
+                .build_load(pointer, output.slot, "wire.collection.owner")
+                .llvm_ctx("restore decoded collection after callback")
+        };
         if let (Some(value), Some(value_slot)) = (value, value_slot) {
             self.child_into(value, value_slot)?;
-            let (unique, cursor) =
-                self.probe_insert(key, collection, key_slot.slot, Some(value_slot.slot))?;
+            let (unique, cursor) = self.probe_insert(
+                key,
+                load_collection()?,
+                key_slot.slot,
+                Some(value_slot.slot),
+            )?;
             self.mark(value_slot, false)?;
             self.release(key_slot)?;
             release::drain(&self.values, self.frame.as_ref(), cursor)?;
@@ -1676,11 +1693,12 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 &self.values,
                 "hew_vec_push_owned_move",
                 None,
-                &[collection, key_slot.slot.into()],
+                &[load_collection()?, key_slot.slot.into()],
             )?;
             self.mark(key_slot, false)?;
         } else {
-            let (unique, cursor) = self.probe_insert(key, collection, key_slot.slot, None)?;
+            let (unique, cursor) =
+                self.probe_insert(key, load_collection()?, key_slot.slot, None)?;
             self.release(key_slot)?;
             release::drain(&self.values, self.frame.as_ref(), cursor)?;
             let status = builder
@@ -1779,6 +1797,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             pointer.into(),
             &[format, self.slots[input.0 as usize].into()],
         )?;
+        if let Some(frame) = &self.frame {
+            frame.carry(self.ctx, &self.builder, reader, "wire.reader.slot")?;
+        }
         let arguments = [reader.into(), decoded.into(), fault_out.into()];
         let status = if decode_is_resumable(self.module, plans, &plans.root, recipes) {
             suspend::invoke_child(

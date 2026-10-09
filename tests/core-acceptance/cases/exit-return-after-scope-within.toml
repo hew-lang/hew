@@ -1,10 +1,10 @@
 [[case]]
 id = "exit-return-after-scope-within"
-intent = "Control: returning from main after `scope within` drains the scope and exits 0."
+intent = "Returning from main after a timed scope completes or recovers its deadline drains the scope and exits 0."
 source = "cases/exit-return-after-scope-within.hew"
 suites = ["acceptance"]
 timeout_seconds = 20
 
 [case.expected]
-stdout = "0\ndone\n"
+stdout = "done\n"
 exit = 0

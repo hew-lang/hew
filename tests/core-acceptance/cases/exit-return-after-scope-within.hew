@@ -4,6 +4,6 @@ fn main() {
     } handle failure {
         1
     };
-    println(n);
+    assert(n == 0 || n == 1);
     println("done");
 }

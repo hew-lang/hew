@@ -259,13 +259,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     pub(super) fn load(&self, id: StorageId, name: &str) -> CodegenResult<BasicValueEnum<'ctx>> {
-        self.builder
-            .build_load(
-                llvm_type(self.ctx, &self.storage(id)?.layout.repr)?,
-                self.slots[id.0 as usize],
-                name,
-            )
-            .llvm_ctx("load physical storage")
+        self.value_emitter()
+            .load_value(self.slots[id.0 as usize], &self.storage(id)?.layout, name)
     }
 
     pub(super) fn storage(&self, id: StorageId) -> CodegenResult<&PhysicalStorage> {
@@ -277,18 +272,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     pub(super) fn store(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
-        let expected = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?;
-        if value.get_type() != expected {
-            return Err(CodegenError::FailClosed(format!(
-                "physical storage {} expects {}, received {}",
-                id.0,
-                expected.print_to_string(),
-                value.get_type().print_to_string()
-            )));
-        }
-        self.builder
-            .build_store(self.slots[id.0 as usize], value)
-            .llvm_ctx("store physical storage")?;
+        self.value_emitter().store_value(
+            self.slots[id.0 as usize],
+            &self.storage(id)?.layout,
+            value,
+        )?;
         self.set_capture_initialized(id, true)?;
         self.set_place_initialized(id, true)?;
         Ok(())
@@ -313,9 +301,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         if self.storage(id)?.own == OwnKind::Owned {
             let zero = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?.const_zero();
-            self.builder
-                .build_store(self.slots[id.0 as usize], zero)
-                .llvm_ctx("clear transferred physical owner")?;
+            self.value_emitter().store_value(
+                self.slots[id.0 as usize],
+                &self.storage(id)?.layout,
+                zero,
+            )?;
         }
         Ok(())
     }
@@ -791,9 +781,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
         let payload = self
-            .builder
-            .build_load(payload_ty, payload_ptr, "variant.project.payload")
-            .llvm_ctx("load physical variant payload")?
+            .value_emitter()
+            .load_value(
+                payload_ptr,
+                &layout.variants[variant as usize],
+                "variant.project.payload",
+            )?
             .into_struct_value();
         Ok((Some(payload), layout, object))
     }
@@ -837,12 +830,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.builder.position_at_end(*arm_block);
             let payload_layout = &layout.variants[arm.variant as usize];
             if !arm.fields.is_empty() {
-                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
                 let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
                 let payload = self
-                    .builder
-                    .build_load(payload_ty, payload_ptr, "variant.switch.payload")
-                    .llvm_ctx("load physical variant payload")?
+                    .value_emitter()
+                    .load_value(payload_ptr, payload_layout, "variant.switch.payload")?
                     .into_struct_value();
                 for (index, field) in arm.fields.iter().enumerate() {
                     let index = u32::try_from(index).map_err(|_| {

@@ -1,5 +1,7 @@
 import std.stream;
 
+type Tick {}
+
 // `()` items carry no bytes: each send is one item, and close is end of data.
 fn main() {
     let (ticks, input): (stream.Sink<()>, stream.Stream<()>) = match stream.pipe(4) {
@@ -22,4 +24,22 @@ fn main() {
         rest += 1;
     }
     println(f"then {rest} more");
+
+    // Empty records and tuples also have zero-sized physical representations.
+    let (records, record_input): (stream.Sink<Tick>, stream.Stream<Tick>) =
+        stream.pipe(1).expect("record pipe");
+    records.send(Tick {}).expect("record tick");
+    records.finish();
+    assert(record_input.try_recv().is_some());
+    assert(record_input.try_recv().is_none());
+
+    let (tuples, tuple_input): (stream.Sink<((), ())>, stream.Stream<((), ())>) =
+        stream.pipe(1).expect("tuple pipe");
+    tuples.send(((), ())).expect("tuple tick");
+    tuples.finish();
+    var tuple_count = 0;
+    for tick in tuple_input {
+        tuple_count += 1;
+    }
+    assert(tuple_count == 1);
 }

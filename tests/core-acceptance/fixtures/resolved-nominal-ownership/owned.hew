@@ -1,6 +1,10 @@
 #[resource]
-pub type Ticket { text: string; }
+pub type Ticket {
+    text: string;
+}
 
 impl Ticket {
-    pub fn close(consume self) { println(self.text); }
+    pub fn close(consume self) {
+        println(self.text);
+    }
 }

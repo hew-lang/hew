@@ -25,11 +25,19 @@ impl From<IoError> for AppError {
 }
 
 fn low(n: i64) -> Result<i64, LowError> {
-    if n < 0 { .Err(LowError { code: n }) } else { .Ok(n) }
+    if n < 0 {
+        .Err(LowError { code: n })
+    } else {
+        .Ok(n)
+    }
 }
 
 fn io(n: i64) -> Result<i64, IoError> {
-    if n < 0 { .Err(IoError { code: n }) } else { .Ok(n) }
+    if n < 0 {
+        .Err(IoError { code: n })
+    } else {
+        .Ok(n)
+    }
 }
 
 fn both<F: From<LowError> + From<IoError>>(a: i64, b: i64) -> i64 fails F {

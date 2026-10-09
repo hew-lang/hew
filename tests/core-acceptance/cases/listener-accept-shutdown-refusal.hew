@@ -22,7 +22,7 @@ actor Acceptor {
 
 fn main() {
     let (ready, entered): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    let acceptor = spawn Acceptor(ready: ready);
+    let acceptor = spawn Acceptor { ready: ready };
     mailbox(acceptor, on_full: .Wait).run().expect("start");
     entered.recv().expect("listener bound");
 }

@@ -1,1 +1,3 @@
-pub type Ticket { text: string; }
+pub type Ticket {
+    text: string;
+}

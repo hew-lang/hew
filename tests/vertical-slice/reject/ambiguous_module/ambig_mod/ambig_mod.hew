@@ -1,1 +1,3 @@
-pub fn val() -> i64 { 2 }
+pub fn val() -> i64 {
+    2
+}

@@ -248,12 +248,14 @@ impl Parser<'_> {
         self.block_arm_body.replace(false)
     }
 
-    fn parse_nested_block_arm_expr(&mut self, block_arm_body: bool) -> Option<Spanned<Expr>> {
-        if block_arm_body {
-            let _guard = self.set_block_arm_body();
-            self.parse_expr()
+    fn parse_if_arm(&mut self, allow_if: bool) -> Option<Spanned<Expr>> {
+        let _guard = self.enter_recursion()?;
+        if allow_if && self.peek() == Some(&Token::If) {
+            self.parse_primary()
         } else {
-            self.parse_expr()
+            let start = self.peek_span().start;
+            let block = self.with_struct_literals_allowed(Self::parse_block)?;
+            Some((Expr::Block(block), start..self.peek_span().start))
         }
     }
 
@@ -382,7 +384,7 @@ impl Parser<'_> {
                 _ => unreachable!("prefix parser dispatches only recognized unary operators"),
             }
         } else {
-            self.parse_primary(block_arm_body)?
+            self.parse_primary()?
         };
 
         // Infix + postfix
@@ -676,7 +678,7 @@ impl Parser<'_> {
         clippy::too_many_lines,
         reason = "expression parser with many branches"
     )]
-    pub(crate) fn parse_primary(&mut self, block_arm_body: bool) -> Option<Spanned<Expr>> {
+    pub(crate) fn parse_primary(&mut self) -> Option<Spanned<Expr>> {
         let start = self.peek_span().start;
 
         let expr = match self.peek()? {
@@ -1148,10 +1150,8 @@ impl Parser<'_> {
                     .any(|item| matches!(item, ConditionItem::Let { .. }))
                 {
                     let body = self.parse_block()?;
-                    // The `else` arm is an expression, exactly as it is for a
-                    // plain `if`: a block, another `if`, or another `if let`.
                     let else_body = if self.eat(&Token::Else) {
-                        Some(Box::new(self.parse_nested_block_arm_expr(block_arm_body)?))
+                        Some(Box::new(self.parse_if_arm(true)?))
                     } else {
                         None
                     };
@@ -1165,9 +1165,9 @@ impl Parser<'_> {
                         unreachable!("a condition with no `let` operand is one expression")
                     };
                     let condition = Box::new(condition);
-                    let then_block = Box::new(self.parse_nested_block_arm_expr(block_arm_body)?);
+                    let then_block = Box::new(self.parse_if_arm(false)?);
                     let else_block = if self.eat(&Token::Else) {
-                        Some(Box::new(self.parse_nested_block_arm_expr(block_arm_body)?))
+                        Some(Box::new(self.parse_if_arm(true)?))
                     } else {
                         None
                     };

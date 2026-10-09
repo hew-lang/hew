@@ -520,7 +520,7 @@ fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
 }
 
 #[test]
-fn reassigned_function_value_keeps_every_possible_closure() {
+fn reassigned_function_value_keeps_the_current_closure() {
     let source = "fn main() { \
         var f: fn() -> i64 = || 1; \
         f = || 2; \
@@ -546,7 +546,7 @@ fn reassigned_function_value_keeps_every_possible_closure() {
     assert_eq!(
         output.indirect_call_candidates.get(call),
         Some(&IndirectCallCandidates {
-            known: vec![closure("|| 1"), closure("|| 2")],
+            known: vec![closure("|| 2")],
             may_be_unknown: false,
         })
     );

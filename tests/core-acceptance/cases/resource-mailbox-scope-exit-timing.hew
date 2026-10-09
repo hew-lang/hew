@@ -1,0 +1,26 @@
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+actor Worker {
+    receive fn inspect(consume ticket: Ticket) {
+        println(f"used {ticket.id}");
+        println("first marker");
+        println("second marker");
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    worker.inspect(Ticket { id: 2 }).expect("inspection completes");
+    println("after reply");
+    stop(worker);
+    stopped(worker);
+}

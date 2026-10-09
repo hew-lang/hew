@@ -14,6 +14,3 @@
 
 acceptance	windows	process-pipe	failure	#3632	Windows child pipes are not select sources and Windows has no signals
 acceptance	windows	process-supervised-reap	failure	#3632	asserts reaping through POSIX kill -0
-corpus	*	docs/repros/final-core/own-generic-identity-transfer.hew	compile	#3598	tracked corpus refusal; see linked issue
-corpus	*	repros/ladder/bytes_clone.hew	compile	#3602	tracked corpus refusal; see linked issue
-corpus	*	repros/ladder/state_reinit.hew	diagnostic:E_SIR_UNSUPPORTED	#3611	tracked corpus refusal; see linked issue

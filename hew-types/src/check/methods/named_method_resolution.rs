@@ -211,25 +211,18 @@ impl Checker {
         );
     }
 
-    /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
-    ///
-    /// Used as a fallback from hardcoded handle-type dispatch tables so that
-    /// methods added via `.hew` impl blocks work without updating the tables.
-    pub(in crate::check) fn try_resolve_named_method(
+    /// Resolve a source method through its checked receiver and declaration.
+    pub(in crate::check) fn try_resolve_source_method(
         &mut self,
         receiver_ty: &Ty,
         method: &str,
         args: &[CallArg],
         span: &Span,
     ) -> Option<Ty> {
-        let Ty::Named {
-            head,
-            args: type_args,
-        } = receiver_ty
-        else {
-            return None;
+        let (name, type_args) = match receiver_ty {
+            Ty::Named { head, args } => (head.registry_key(), args.as_slice()),
+            primitive => (primitive.canonical_lowering_name()?, &[][..]),
         };
-        let name = head.registry_key();
         let canonical_name = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| name.to_string());
@@ -246,10 +239,15 @@ impl Checker {
                 self.report_ambiguous_method(receiver_ty, method, &traits, span);
                 return Some(Ty::Error);
             }
-            crate::check::dispatch_table::MethodSelection::Missing => (
-                self.lookup_named_method_sig(&canonical_name, type_args, method)?,
-                None,
-            ),
+            crate::check::dispatch_table::MethodSelection::Missing
+                if matches!(receiver_ty, Ty::Named { .. }) =>
+            {
+                (
+                    self.lookup_named_method_sig(&canonical_name, type_args, method)?,
+                    None,
+                )
+            }
+            crate::check::dispatch_table::MethodSelection::Missing => return None,
         };
         if self.refuse_associated_dot_call(&sig, name, method, args, span) {
             return Some(Ty::Error);
@@ -375,12 +373,10 @@ impl Checker {
         sig: &FnSig,
         span: &Span,
     ) {
-        let Ty::Named { head, .. } = receiver_ty else {
-            return;
-        };
         let consumes_receiver = sig.consumes_receiver
-            || self.named_type_method_consumes_receiver(receiver_ty, method)
-            || self.named_type_inherent_close_consumes_receiver(*head, method, sig);
+            || matches!(receiver_ty, Ty::Named { head, .. }
+                if self.named_type_method_consumes_receiver(receiver_ty, method)
+                    || self.named_type_inherent_close_consumes_receiver(*head, method, sig));
         if consumes_receiver {
             self.method_call_consumes_receiver
                 .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -490,7 +486,7 @@ impl Checker {
         span: &Span,
         type_display_name: &str,
     ) -> Ty {
-        if let Some(ty) = self.try_resolve_named_method(receiver_ty, method_name, args, span) {
+        if let Some(ty) = self.try_resolve_source_method(receiver_ty, method_name, args, span) {
             if let Ty::Named { head, .. } = receiver_ty {
                 let name = head.registry_key();
                 // If the receiver type is a registered actor declaration AND

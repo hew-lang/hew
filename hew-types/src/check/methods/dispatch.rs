@@ -2442,7 +2442,7 @@ impl Checker {
                 // `clone` on a user-defined named type: intercept before
                 // `UndefinedMethod` for admissible records.
                 // This arm handles the (Ty::Named { head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. }, "clone")
-                // case where `try_resolve_named_method` found no `clone` in fn_sigs.
+                // case where `try_resolve_source_method` found no `clone` in fn_sigs.
                 if method == "clone" && args.is_empty() {
                     if let Ty::Named {
                         head:

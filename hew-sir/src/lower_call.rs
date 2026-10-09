@@ -396,8 +396,10 @@ impl Builder<'_, '_> {
         if self.service.checked_facts.rows()[&TypeInstanceKey(ty)].clone
             == hew_types::CloneKind::None
         {
-            if expression.intent == IntentKind::Consume
-                && self.binding_root_is_mutable(expression)?
+            if matches!(
+                expression.intent,
+                IntentKind::Consume | IntentKind::Discharge
+            ) && self.binding_root_is_mutable(expression)?
             {
                 return Ok(false);
             }

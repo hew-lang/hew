@@ -1,0 +1,81 @@
+enum Fault<T> {
+    Io { path: string; cause: T; }
+    Offline { message: string; }
+}
+
+enum Detail {
+    Missing { message: string; code: i64; }
+    Denied;
+}
+
+fn failure() -> Result<i64, Fault<string>> {
+    .Err(.Io { path: "file", cause: "missing" })
+}
+
+fn original() -> string {
+    match failure() {
+        .Ok(_) => "ok",
+        .Err(.Io { path, cause }) => path + cause,
+        .Err(.Offline { message }) => message,
+    }
+}
+
+fn describe(value: Result<string, Fault<string>>) -> string {
+    match value {
+        .Ok(text) => text,
+        .Err(.Io { cause: "missing", path }) if path.len() > 100 => "unreachable",
+        .Err(Fault.Io { cause: reason, path: name }) if name == "file" => name + ":" + reason,
+        .Err(.Io { cause, path }) => path + "=" + cause,
+        .Err(.Offline { message }) => message,
+    }
+}
+
+fn detail(value: Result<i64, Fault<Detail>>) -> string {
+    match value {
+        .Ok(number) => f"ok{number}",
+        .Err(.Io { path, cause: .Missing { code: 7, message } }) if message == "retry" => path + ":retry",
+        .Err(.Io { cause: .Missing { message, code }, path }) => f"{path}:{message}:{code}",
+        .Err(.Io { path, cause: .Denied }) => path + ":denied",
+        .Err(.Offline { message }) => message,
+    }
+}
+
+fn omitted(value: Result<string, Fault<string>>) -> string {
+    match value {
+        .Ok(_) => "ok",
+        .Err(.Io { path }) => path,
+        .Err(.Offline { .. }) => "offline",
+    }
+}
+
+fn conditional(value: Result<string, Fault<string>>) -> string {
+    if let .Err(.Io { path, cause }) = value {
+        return path + "=" + cause;
+    }
+    "other"
+}
+
+fn main() {
+    println(original());
+    let kept: Result<string, Fault<string>> = .Err(.Io { path: "file".to_upper().to_lower(), cause: "missing".to_upper().to_lower() });
+    println(describe(kept));
+    println(describe(kept));
+    println(describe(.Err(.Io { path: "other", cause: "broken" })));
+    println(describe(.Err(.Offline { message: "offline".to_upper() })));
+    println(describe(.Ok("ready".to_upper())));
+    println(conditional(kept));
+    println(conditional(.Ok("kept".to_upper())));
+    println(omitted(kept));
+    println(omitted(.Err(.Offline { message: "ignored".to_upper() })));
+    println(detail(.Err(.Io { path: "file", cause: .Missing { message: "gone".to_upper(), code: 7 } })));
+    println(detail(.Err(.Io { path: "file", cause: .Missing { message: "retry", code: 7 } })));
+    println(detail(.Err(.Io { path: "file", cause: .Denied })));
+    println(detail(.Err(.Offline { message: "detail-offline" })));
+    println(detail(.Ok(4)));
+    var total = 0;
+    for index in 0..1000 {
+        total = total + describe(kept).len();
+        total = total + detail(.Err(.Io { path: f"file{index}", cause: .Missing { message: "gone".to_upper(), code: 7 } })).len();
+    }
+    println(total);
+}

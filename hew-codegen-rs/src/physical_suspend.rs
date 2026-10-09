@@ -394,7 +394,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select sleep outcome")?;
         self.builder.position_at_end(waiting);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
             .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
@@ -530,7 +530,7 @@ pub(super) fn await_child<'ctx>(
         .build_conditional_branch(pending, wait, done)
         .llvm_ctx("select child call completion")?;
     builder.position_at_end(wait);
-    frame.suspend(ctx, llvm, builder, resume, destroy, false)?;
+    frame.suspend(ctx, builder, resume, destroy)?;
     builder.position_at_end(resume);
     free_handle("hew_cont_resume", child_frame)?;
     builder

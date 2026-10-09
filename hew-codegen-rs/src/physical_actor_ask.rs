@@ -69,7 +69,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("inspect completion readiness")?;
         self.builder.position_at_end(pending);
         self.check_actor_wait_cycle(wait_edge, cycle)?;
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
             .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
@@ -173,6 +173,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "ask.request",
             )?
             .into_pointer_value();
+            frame.carry(self.ctx, &self.builder, wrapper, "ask.request.slot")?;
             let failed = self
                 .ctx
                 .append_basic_block(self.value, "ask.allocation.failed");

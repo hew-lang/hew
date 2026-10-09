@@ -140,7 +140,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let invalid = self
             .ctx
             .append_basic_block(self.value, "generator.yield.invalid.destroy");
-        frame.suspend(self.ctx, self.llvm, &self.builder, resume, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, resume, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_generator_destroy()?;
         self.builder.position_at_end(resume);
@@ -351,7 +351,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("dispatch checked generator outcome")?;
         self.builder.position_at_end(wait);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_generator_destroy()?;
         self.builder.position_at_end(yielded);

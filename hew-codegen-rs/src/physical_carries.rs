@@ -1,5 +1,5 @@
 use super::*;
-use inkwell::values::{AnyValueEnum, AsValueRef, BasicValue, InstructionOpcode, InstructionValue};
+use inkwell::values::{AsValueRef, BasicValue, InstructionOpcode, InstructionValue};
 
 pub(super) fn materialize(ctx: &Context, module: &Module<'_>) -> CodegenResult<()> {
     let kind = ctx.get_kind_id("hew.carry");
@@ -28,7 +28,14 @@ pub(super) fn materialize(ctx: &Context, module: &Module<'_>) -> CodegenResult<(
         let mut users = Vec::new();
         let mut cursor = definition.get_first_use();
         while let Some(usage) = cursor {
-            if let AnyValueEnum::InstructionValue(user) = usage.get_user() {
+            // SAFETY: the use owns a live value; LLVM distinguishes instructions
+            // independently of their result type.
+            let instruction = unsafe {
+                inkwell::llvm_sys::core::LLVMIsAInstruction(usage.get_user().as_value_ref())
+            };
+            if !instruction.is_null() {
+                // SAFETY: LLVM confirmed this live user is an instruction.
+                let user = unsafe { InstructionValue::new(instruction) };
                 if user != store {
                     users.push(user);
                 }

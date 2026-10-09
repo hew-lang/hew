@@ -37,6 +37,8 @@ mod carries;
 mod coro;
 #[path = "../physical_debug.rs"]
 mod debug;
+#[path = "../physical_frames.rs"]
+mod frames;
 #[path = "../physical_generators.rs"]
 mod generators;
 #[path = "../physical_io.rs"]
@@ -920,8 +922,6 @@ struct FunctionEmitter<'a, 'ctx> {
         debug::FunctionDebug<'ctx>,
         &'a hew_mir::physical::PhysicalDebugFunction,
     )>,
-    prologue: BasicBlock<'ctx>,
-    pending_locals: Vec<debug::PendingLocal<'ctx>>,
 }
 
 /// Execute verified type recipes in either a language body or a container

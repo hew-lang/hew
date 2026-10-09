@@ -18,45 +18,58 @@ pub(super) fn retained_storage(
     if !callable.is_resumable {
         return Ok(BTreeSet::new());
     }
-    let indices: BTreeMap<_, _> = function
-        .blocks
-        .iter()
-        .enumerate()
-        .map(|(index, block)| (block.id, index))
-        .collect();
+    let mut indices = BTreeMap::new();
+    let mut count = 0;
+    for block in &function.blocks {
+        indices.insert(block.id, count);
+        count += 1 + block
+            .ops
+            .iter()
+            .filter(|operation| operation_suspends(module, function, operation))
+            .count();
+    }
     let mut references = vec![BTreeSet::new(); function.storage.len()];
-    let mut successors = vec![Vec::new(); function.blocks.len()];
-    let mut suspends = vec![false; function.blocks.len()];
-    for (index, block) in function.blocks.iter().enumerate() {
-        let mut used = BTreeSet::new();
-        let mut defined = BTreeSet::new();
-        let mut locals = BTreeSet::new();
-        used.extend(&block.arguments);
+    let mut successors = vec![Vec::new(); count];
+    let mut suspends = vec![false; count];
+    let mut pinned = BTreeSet::new();
+    for block in &function.blocks {
+        let mut index = indices[&block.id];
+        let mut arguments: BTreeSet<_> = block.arguments.iter().copied().collect();
         if block.id == function.entry {
-            used.extend(&function.parameters);
+            arguments.extend(&function.parameters);
         }
+        record_references(function, arguments, index, &mut references)?;
         for operation in &block.ops {
-            storage_uses::operation_storage(operation, &mut used, &mut defined, &mut locals);
-            suspends[index] |= operation_suspends(module, operation);
+            let used = operation_references(function, operation);
+            if operation_suspends(module, function, operation) {
+                pinned.extend(dependency_roots(function, used.clone())?);
+                suspends[index] = true;
+                successors[index].push(index + 1);
+                record_references(function, used, index, &mut references)?;
+                index += 1;
+            } else {
+                record_references(function, used, index, &mut references)?;
+            }
         }
+        let mut used = BTreeSet::new();
         storage_uses::terminator_storage(&block.terminator, &mut used);
-        used.extend(defined);
-        used.extend(locals);
-        for id in dependency_roots(function, used)? {
-            references[id.0 as usize].insert(index);
+        if terminator_suspends(module, &block.terminator)? {
+            pinned.extend(dependency_roots(
+                function,
+                pinned_operands(function, &block.terminator, used.clone()),
+            )?);
+            suspends[index] = true;
         }
-        suspends[index] |= terminator_suspends(module, &block.terminator)?;
+        record_references(function, used, index, &mut references)?;
         for edge in defer::edges(&block.terminator) {
             successors[index].push(*indices.get(&edge.target).ok_or_else(|| {
                 PhysicalError::new("frame storage analysis encountered an unknown block")
             })?);
         }
     }
-    let mut retained = BTreeSet::new();
+    let mut retained = pinned;
     for (index, accesses) in references.iter().enumerate() {
-        if accesses.iter().any(|block| suspends[*block])
-            || crosses_boundary(accesses, &successors, &suspends)
-        {
+        if crosses_boundary(accesses, &successors, &suspends) {
             retained
                 .insert(StorageId(u32::try_from(index).map_err(|_| {
                     PhysicalError::new("frame storage index exceeds u32")
@@ -64,6 +77,92 @@ pub(super) fn retained_storage(
         }
     }
     Ok(retained)
+}
+
+fn operation_references(
+    function: &PhysicalFunction,
+    operation: &PhysicalOp,
+) -> BTreeSet<StorageId> {
+    let mut used = BTreeSet::new();
+    let mut defined = BTreeSet::new();
+    let mut locals = BTreeSet::new();
+    match operation {
+        PhysicalOp::EndBorrow { .. } | PhysicalOp::StorageLive { .. } => {}
+        PhysicalOp::StorageDead {
+            storage,
+            destroy: None,
+            cleanup,
+        } => {
+            if let Some(place) = function.place_storage.get(storage) {
+                used.extend(
+                    place
+                        .leaves
+                        .iter()
+                        .filter(|leaf| {
+                            leaf.destroy.is_some()
+                                && cleanup.leaf(leaf.storage) != Some(super::LeafContents::Absent)
+                        })
+                        .map(|leaf| leaf.storage),
+                );
+            }
+        }
+        _ => {
+            storage_uses::operation_storage(operation, &mut used, &mut defined, &mut locals);
+        }
+    }
+    used.extend(defined);
+    used
+}
+
+fn pinned_operands(
+    function: &PhysicalFunction,
+    term: &PhysicalTerminator,
+    mut used: BTreeSet<StorageId>,
+) -> BTreeSet<StorageId> {
+    let copied: Vec<_> = match term {
+        PhysicalTerminator::ActorCall {
+            operation: super::ActorOperation::Spawn(_),
+            args,
+            ..
+        }
+        | PhysicalTerminator::ActorAsk { args, .. } => args
+            .iter()
+            .filter_map(|argument| match argument {
+                super::ArgumentTransfer::Borrow(_) | super::ArgumentTransfer::BorrowMut(_) => None,
+                super::ArgumentTransfer::Move(id) => Some(*id),
+                super::ArgumentTransfer::Clone { source, .. } => Some(*source),
+            })
+            .collect(),
+        PhysicalTerminator::Sleep { duration, .. } => vec![*duration],
+        PhysicalTerminator::SleepUntil { deadline, .. } => vec![*deadline],
+        _ => Vec::new(),
+    };
+    for id in copied {
+        if function.storage[id.0 as usize].own == super::OwnKind::None {
+            used.remove(&id);
+        }
+    }
+    for edge in defer::edges(term) {
+        used.extend(
+            edge.transfers
+                .iter()
+                .chain(&edge.leaf_transfers)
+                .flat_map(|(source, dest)| [*source, *dest]),
+        );
+    }
+    used
+}
+
+fn record_references(
+    function: &PhysicalFunction,
+    used: BTreeSet<StorageId>,
+    index: usize,
+    references: &mut [BTreeSet<usize>],
+) -> Result<(), PhysicalError> {
+    for id in dependency_roots(function, used)? {
+        references[id.0 as usize].insert(index);
+    }
+    Ok(())
 }
 
 fn crosses_boundary(
@@ -117,7 +216,11 @@ fn dependency_roots(
     Ok(used)
 }
 
-fn operation_suspends(module: &PhysicalModule, operation: &PhysicalOp) -> bool {
+fn operation_suspends(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    operation: &PhysicalOp,
+) -> bool {
     let release = match operation {
         PhysicalOp::Destroy { action, .. } => Some(*action),
         PhysicalOp::StorageDead { destroy, .. } => *destroy,
@@ -125,6 +228,10 @@ fn operation_suspends(module: &PhysicalModule, operation: &PhysicalOp) -> bool {
         _ => None,
     };
     release.is_some_and(|action| module.releases.suspends(action))
+        || matches!(operation, PhysicalOp::StorageDead { storage, destroy: None, cleanup }
+            if function.place_storage.get(storage).is_some_and(|place| place.leaves.iter().any(|leaf|
+                cleanup.leaf(leaf.storage) != Some(super::LeafContents::Absent)
+                && leaf.destroy.is_some_and(|action| module.releases.suspends(action)))))
 }
 
 fn terminator_suspends(

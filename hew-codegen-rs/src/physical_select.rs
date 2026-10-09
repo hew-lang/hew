@@ -163,7 +163,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(in_range, completed, failed)
             .llvm_ctx("select readiness outcome")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
             .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))

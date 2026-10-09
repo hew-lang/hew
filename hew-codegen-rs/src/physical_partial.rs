@@ -19,6 +19,15 @@ pub(super) fn allocate_storage<'ctx>(
     builder: &Builder<'ctx>,
     frame: Option<&super::coro::Frame<'ctx>>,
 ) -> CodegenResult<Vec<PointerValue<'ctx>>> {
+    let address_builder = module.ctx.create_builder();
+    let addressing = if let Some(frame) = frame {
+        address_builder.position_before(&frame.allocations.get_terminator().ok_or_else(|| {
+            CodegenError::FailClosed("frame storage has no dispatch point".into())
+        })?);
+        &address_builder
+    } else {
+        builder
+    };
     let mut slots = function
         .storage
         .iter()
@@ -40,7 +49,7 @@ pub(super) fn allocate_storage<'ctx>(
                     })?)
                     .ok_or_else(|| CodegenError::FailClosed("missing actor state receiver".into()))?
                     .into_pointer_value();
-                return builder
+                return addressing
                     .build_struct_gep(
                         llvm_type(module.ctx, &signature.params[index].layout.repr)?
                             .into_struct_type(),
@@ -53,7 +62,7 @@ pub(super) fn allocate_storage<'ctx>(
             }
             if matches!(storage.origin, StorageOrigin::Capture { .. }) {
                 return callable::capture_parameter_slot(
-                    module, function, signature, value, builder, storage,
+                    module, function, signature, value, addressing, storage,
                 )
                 .map(Some);
             }
@@ -83,6 +92,9 @@ pub(super) fn allocate_storage<'ctx>(
                     .build_alloca(ty, &name)
                     .llvm_ctx("allocate physical storage")?,
             };
+            if let Some(frame) = frame.filter(|_| !function.frame_storage.contains(&storage.id)) {
+                frame.stack(module.ctx, slot)?;
+            }
             slot.as_instruction()
                 .ok_or_else(|| {
                     CodegenError::FailClosed(
@@ -117,7 +129,7 @@ pub(super) fn allocate_storage<'ctx>(
             let layout = module.module.target.layout(&glue.ty).ok_or_else(|| {
                 CodegenError::FailClosed("aggregate path lacks its target layout".into())
             })?;
-            address = builder
+            address = addressing
                 .build_struct_gep(
                     llvm_type(module.ctx, &layout.repr)?.into_struct_type(),
                     address,
@@ -132,11 +144,12 @@ pub(super) fn allocate_storage<'ctx>(
         .into_iter()
         .enumerate()
         .map(|(id, slot)| {
-            slot.ok_or_else(|| {
+            let slot = slot.ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "physical storage {id} has no allocation or alias"
                 ))
-            })
+            })?;
+            Ok(slot)
         })
         .collect()
 }
@@ -146,7 +159,17 @@ pub(super) fn allocate_flags<'ctx>(
     function: &PhysicalFunction,
     builder: &Builder<'ctx>,
     slots: &[PointerValue<'ctx>],
+    frame: Option<&super::coro::Frame<'ctx>>,
 ) -> CodegenResult<BTreeMap<StorageId, PointerValue<'ctx>>> {
+    let address_builder = module.ctx.create_builder();
+    let addressing = if let Some(frame) = frame {
+        address_builder.position_before(&frame.allocations.get_terminator().ok_or_else(|| {
+            CodegenError::FailClosed("frame storage has no dispatch point".into())
+        })?);
+        &address_builder
+    } else {
+        builder
+    };
     let mut flags = BTreeMap::new();
     for projection in function.place_storage.values() {
         for leaf in &projection.leaves {
@@ -157,7 +180,7 @@ pub(super) fn allocate_flags<'ctx>(
                     let layout = &function.storage[state.0 as usize].layout;
                     entry.insert(super::actor::state_field_initialized(
                         module.ctx,
-                        builder,
+                        addressing,
                         slots[state.0 as usize],
                         layout,
                         field,
@@ -171,6 +194,12 @@ pub(super) fn allocate_flags<'ctx>(
                     )
                     .llvm_ctx("allocate aggregate leaf initialization")?;
                 let initialized = function.parameters.contains(&projection.root);
+                if let Some(frame) = frame.filter(|_| {
+                    !function.frame_storage.contains(&leaf.storage)
+                        && !function.frame_storage.contains(&projection.root)
+                }) {
+                    frame.stack(module.ctx, flag)?;
+                }
                 builder
                     .build_store(
                         flag,
@@ -191,7 +220,7 @@ pub(super) fn allocate_flags<'ctx>(
         if let Entry::Vacant(entry) = flags.entry(storage.id) {
             entry.insert(super::actor::state_field_initialized(
                 module.ctx,
-                builder,
+                addressing,
                 slots[state.0 as usize],
                 &function.storage[state.0 as usize].layout,
                 field,

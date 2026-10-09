@@ -113,7 +113,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, complete, pending)
             .llvm_ctx("select restart wait readiness")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(cancelled);
@@ -355,7 +355,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("inspect terminal cleanup")?;
         self.builder.position_at_end(pending);
         self.check_actor_wait_cycle(edge, cycle)?;
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         // The three failing exits record their fault and share one release.
@@ -479,7 +479,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("select capacity readiness")?;
         self.builder.position_at_end(pending);
         self.check_actor_wait_cycle(edge, cycle)?;
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         // Both failing exits record their fault and share one release.

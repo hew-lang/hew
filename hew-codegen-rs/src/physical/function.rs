@@ -37,7 +37,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &function_debug,
                     attribution.decl,
                 ));
-                debug::pin_for_inspection(ctx, value, callable.is_resumable);
+                debug::pin_for_inspection(ctx, value);
                 Some((emitter, function_debug, attribution))
             }
             _ => None,
@@ -55,8 +55,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let slots =
             partial::allocate_storage(module, function, callable, value, &builder, frame.as_ref())?;
-        let pending_locals = match &debug {
-            Some((emitter, function_debug, attribution)) => debug::declare_locals(
+        if let Some((emitter, function_debug, attribution)) = &debug {
+            debug::declare_locals(
                 ctx,
                 emitter,
                 function_debug,
@@ -65,11 +65,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 &module.module.target,
                 &slots,
                 prologue,
-                callable.is_resumable,
-            ),
-            None => Vec::new(),
-        };
-        let place_flags = partial::allocate_flags(module, function, &builder, &slots)?;
+                frame.as_ref(),
+            )?;
+        }
+        let place_flags =
+            partial::allocate_flags(module, function, &builder, &slots, frame.as_ref())?;
         let active_fault = builder
             .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
             .llvm_ctx("allocate active fault")?;
@@ -195,8 +195,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             frame,
             task_scopes,
             debug,
-            prologue,
-            pending_locals,
         })
     }
 
@@ -215,15 +213,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             self.locate(block.id, block.ops.len());
             self.emit_terminator(block)?;
-        }
-        if let Some((emitter, _, _)) = &self.debug {
-            debug::resolve_coroutine_locals(
-                emitter,
-                self.llvm,
-                value,
-                self.prologue,
-                &self.pending_locals,
-            );
         }
         if inspectable {
             debug::order_blocks_for_inspection(value);

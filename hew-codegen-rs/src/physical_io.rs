@@ -96,7 +96,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, drained, pending)
             .llvm_ctx("wait for I/O producer release")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(drained);
@@ -229,7 +229,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select I/O readiness")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         Ok((completed, cancelled))

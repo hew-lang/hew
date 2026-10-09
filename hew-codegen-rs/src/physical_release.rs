@@ -917,14 +917,7 @@ fn drain_operation<'ctx>(
         .build_switch(status, done, &[(values.ctx.i32_type().const_zero(), wait)])
         .llvm_ctx("wait for operation cleanup")?;
     values.builder.position_at_end(wait);
-    frame.suspend(
-        values.ctx,
-        values.llvm,
-        values.builder,
-        poll,
-        invalid,
-        false,
-    )?;
+    frame.suspend(values.ctx, values.builder, poll, invalid)?;
     values.builder.position_at_end(invalid);
     values
         .builder
@@ -1255,14 +1248,7 @@ fn generator<'ctx>(
         .build_switch(status, done, &[(values.ctx.i32_type().const_zero(), wait)])
         .llvm_ctx("wait for generator cleanup")?;
     values.builder.position_at_end(wait);
-    frame.suspend(
-        values.ctx,
-        values.llvm,
-        values.builder,
-        poll,
-        invalid,
-        false,
-    )?;
+    frame.suspend(values.ctx, values.builder, poll, invalid)?;
     values.builder.position_at_end(invalid);
     values
         .builder

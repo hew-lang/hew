@@ -2404,6 +2404,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .unwrap()
             .into_int_value();
         if let Some(frame) = &self.frame {
+            frame.carry(self.ctx, &self.builder, token, "spawn.token.slot")?;
             let cursor = self
                 .builder
                 .build_load(ptr, rejected, "spawn.rejected.cursor")

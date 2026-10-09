@@ -6,9 +6,10 @@ For VSCode, see [vscode-hew](https://github.com/hew-lang/vscode-hew).
 
 ## Language Server
 
-The Hew language server is the standalone `hew-lsp` binary crate. The `hew`
-CLI does not currently expose a `hew lsp` subcommand, so LSP clients should
-launch `hew-lsp` directly.
+The Hew language server is the standalone `hew-lsp` binary crate. LSP clients
+can launch `hew-lsp` directly or use `hew lsp`, which launches the sibling
+`hew-lsp` binary. See the [LSP editor setup guide](../docs/dev/lsp-editor-setup.md)
+for discovery and configuration details.
 
 From a source checkout:
 

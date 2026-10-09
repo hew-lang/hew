@@ -228,6 +228,7 @@ pub struct Binding {
     pub collection_borrow: Option<Span>,
     /// Whether the value has been moved (e.g., sent to an actor)
     pub is_moved: bool,
+    pub init_state: InitState,
     /// Where the move happened, for error reporting
     pub moved_at: Option<Span>,
     /// Strict sub-places of this binding consumed on the current path.
@@ -340,10 +341,14 @@ pub enum BindingOrigin {
     /// A method receiver parameter. Receivers have caller-visible write-back
     /// semantics and are exempt from ordinary by-value parameter guards.
     ReceiverParameter,
-    /// An actor state field that `init` owns (D447): it enters the init body
-    /// uninitialized, so `is_moved` means "not yet initialized" until the
-    /// first store, and every branch join must agree on it.
+    /// An actor state field initialized by its `init` body.
     DeferredField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitState {
+    Unassigned,
+    Assigned,
 }
 
 impl Binding {
@@ -390,10 +395,9 @@ pub struct OwnershipState {
     pub collection_borrow: Option<Span>,
     /// Whether the value has been moved on this path.
     pub is_moved: bool,
+    pub init_state: InitState,
     /// Where the move happened, for error reporting.
     pub moved_at: Option<Span>,
-    /// See [`Binding::deferred_init`].
-    pub deferred_init: bool,
     /// Strict sub-places consumed on this path.
     pub moved_places: Vec<MovedPlace>,
     /// Where the close obligation was discharged on this path.
@@ -816,6 +820,7 @@ impl TypeEnv {
                     parameter_replacements: Vec::new(),
                     collection_borrow: None,
                     is_moved: false,
+                    init_state: InitState::Assigned,
                     moved_at: None,
                     moved_places: Vec::new(),
                     consumed_at: None,
@@ -845,7 +850,7 @@ impl TypeEnv {
             .and_then(|scope| scope.get_mut(&name))
         {
             binding.origin = BindingOrigin::DeferredField;
-            binding.is_moved = true;
+            binding.init_state = InitState::Unassigned;
         }
     }
 
@@ -853,8 +858,9 @@ impl TypeEnv {
     #[must_use]
     pub fn deferred_field_uninitialized(&self, name: impl LexicalName) -> bool {
         let name = name.lexical_key();
-        self.lookup_ref(name)
-            .is_some_and(|binding| binding.deferred_init() && binding.is_moved)
+        self.lookup_ref(name).is_some_and(|binding| {
+            binding.deferred_init() && binding.init_state == InitState::Unassigned
+        })
     }
 
     /// The binding id of `name` when it is a deferred init field.
@@ -887,6 +893,7 @@ impl TypeEnv {
                     parameter_replacements: Vec::new(),
                     collection_borrow: None,
                     is_moved: false,
+                    init_state: InitState::Assigned,
                     moved_at: None,
                     moved_places: Vec::new(),
                     consumed_at: None,
@@ -984,6 +991,7 @@ impl TypeEnv {
                     parameter_replacements: Vec::new(),
                     collection_borrow: None,
                     is_moved: false,
+                    init_state: InitState::Assigned,
                     moved_at: None,
                     moved_places: Vec::new(),
                     consumed_at: None,
@@ -1198,6 +1206,7 @@ impl TypeEnv {
                 if path.is_empty() {
                     binding.collection_borrow = None;
                     binding.is_moved = false;
+                    binding.init_state = InitState::Assigned;
                     binding.moved_at = None;
                     // A fresh value carries a fresh close obligation.
                     binding.released_at = None;
@@ -1253,8 +1262,8 @@ impl TypeEnv {
                         parameter_replacements: binding.parameter_replacements.clone(),
                         collection_borrow: binding.collection_borrow.clone(),
                         is_moved: binding.is_moved,
+                        init_state: binding.init_state,
                         moved_at: binding.moved_at.clone(),
-                        deferred_init: binding.deferred_init(),
                         moved_places: binding.moved_places.clone(),
                         released_at: binding.released_at.clone(),
                         loop_fresh: binding.loop_fresh.clone(),
@@ -1331,8 +1340,9 @@ impl TypeEnv {
             // Joining only reaching exits lets every arm repair a moved field.
             let mut state = reaching.next().unwrap_or(entry_state).clone();
             for exit_state in reaching {
-                if state.deferred_init && exit_state.is_moved != state.is_moved {
+                if exit_state.init_state != state.init_state {
                     conflicts.push(*id);
+                    state.init_state = InitState::Unassigned;
                 }
                 state.parameter_replacements = common_parameter_replacements(
                     &state.parameter_replacements,
@@ -1383,6 +1393,7 @@ impl TypeEnv {
                         .collection_borrow
                         .clone_from(&state.collection_borrow);
                     binding.is_moved = state.is_moved;
+                    binding.init_state = state.init_state;
                     binding.moved_at.clone_from(&state.moved_at);
                     binding.moved_places.clone_from(&state.moved_places);
                     binding.released_at.clone_from(&state.released_at);

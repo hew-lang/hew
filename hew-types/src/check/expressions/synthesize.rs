@@ -1265,6 +1265,7 @@ impl Checker {
             let binding_id = binding.id;
             let is_moved = binding.is_moved;
             let deferred_init = binding.deferred_init();
+            let uninitialized = binding.init_state == crate::env::InitState::Unassigned;
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             let def_span = binding
@@ -1278,13 +1279,22 @@ impl Checker {
             if !is_write_target {
                 self.reject_crash_hook_consumed_state_read(binding_id, span);
             }
-            if is_moved && deferred_init && !is_write_target {
+            if uninitialized && !is_write_target {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
-                        "E_ACTOR_FIELD_UNINITIALIZED: state field `{name}` is read before \
-                         `init` initializes it; assign it first"
+                        "{}: {} `{name}` is read before initialization; assign it first",
+                        if deferred_init {
+                            "E_ACTOR_FIELD_UNINITIALIZED"
+                        } else {
+                            "E_LOCAL_UNINITIALIZED"
+                        },
+                        if deferred_init {
+                            "state field"
+                        } else {
+                            "local"
+                        }
                     ),
                 );
             } else if is_moved && !is_write_target {

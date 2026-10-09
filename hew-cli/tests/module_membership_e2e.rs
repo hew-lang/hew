@@ -439,3 +439,27 @@ fn running_a_file_without_main_names_the_file() {
     let check = hew_in(root, &["check", "library.hew"]);
     assert!(check.status.success(), "{}", describe_output(&check));
 }
+
+#[test]
+fn checking_a_package_root_module_checks_it_under_the_package_name() {
+    let workspace = support::tempdir();
+    let root = workspace.path().join("checkout");
+    fs::create_dir_all(&root).expect("create package");
+    fs::write(root.join("hew.toml"), manifest("acme.meter")).expect("write manifest");
+    write(
+        &root,
+        "meter.hew",
+        "pub type Meter {\n    v: i64;\n}\n\npub fn read(m: meter.Meter) -> i64 {\n    m.v\n}\n",
+    );
+    let check = hew_in(&root, &["check", "meter.hew"]);
+    assert!(check.status.success(), "{}", describe_output(&check));
+    // Negative control: another top-level file is a module of its own, so
+    // the root module's qualifier is not its name.
+    write(
+        &root,
+        "other.hew",
+        "pub type Meter {\n    v: i64;\n}\n\npub fn read(m: meter.Meter) -> i64 {\n    m.v\n}\n",
+    );
+    let other = hew_in(&root, &["check", "other.hew"]);
+    assert!(!other.status.success(), "{}", describe_output(&other));
+}

@@ -1685,7 +1685,8 @@ statements.
   else with `foo.hew` beside it.
 - `hew check`, the language server, `hew test`, `hew build` and migration all
   assign each file to the same module. Checking an entry or a peer checks the
-  whole directory module.
+  whole directory module, and checking a package's root module checks it as
+  its importers see it.
 
 A working example is at
 [`examples/directory_module_demo/`](../../examples/directory_module_demo/README.md).

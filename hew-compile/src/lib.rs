@@ -3809,7 +3809,7 @@ fn run_document_frontend_with_dependency_cache(
 ) -> DocumentFrontendState {
     if roots == RootSelection::Module {
         if let Some(membership) = module_membership(Path::new(input), options)
-            .filter(hew_types::module_registry::ModuleMembership::checks_as_directory_module)
+            .filter(|m| m.checks_as_directory_module() || m.is_package_root_module())
         {
             return run_directory_module_frontend(
                 &membership.entry,

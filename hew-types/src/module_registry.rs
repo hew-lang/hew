@@ -321,6 +321,16 @@ impl ModuleMembership {
             && !matches!(self.anchor, ModuleAnchor::Std { .. })
     }
 
+    /// Whether the file is its package's root module, `<leaf>.hew` beside
+    /// `hew.toml`. Checking it checks the module importers see, under the
+    /// package's name.
+    #[must_use]
+    pub fn is_package_root_module(&self) -> bool {
+        self.role == MembershipRole::Single
+            && matches!(&self.anchor, ModuleAnchor::Package { dir, name: Some(name) }
+                if self.entry.parent() == Some(dir.as_path()) && self.module == *name)
+    }
+
     /// The production source a test file compiles with, when it has one.
     #[must_use]
     pub fn test_companion(&self, file: &std::path::Path) -> Option<&std::path::Path> {

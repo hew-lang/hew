@@ -402,7 +402,9 @@ impl LowerCtx {
                     || {
                         value
                             .as_ref()
-                            .map_or(ResolvedTy::Unit, |expr| expr.ty.clone())
+                            .expect("checked valueless binding requires a declared type")
+                            .ty
+                            .clone()
                     },
                     |ty| self.lower_type(ty),
                 );
@@ -422,7 +424,9 @@ impl LowerCtx {
                     || {
                         value
                             .as_ref()
-                            .map_or(ResolvedTy::Unit, |expr| expr.ty.clone())
+                            .expect("checked valueless binding requires a declared type")
+                            .ty
+                            .clone()
                     },
                     |ty| self.lower_type(ty),
                 );
@@ -435,9 +439,7 @@ impl LowerCtx {
                 } else if let Some(op) = op {
                     self.lower_compound_assignment(target, *op, value, &span)
                 } else {
-                    let first_store = self
-                        .actor_init_first_stores
-                        .contains(&self.mk_key(&target.1));
+                    let first_store = self.first_stores.contains(&self.mk_key(&target.1));
                     let target = self.lower_expr(target, IntentKind::Modify);
                     let value = self.lower_expr(value, IntentKind::Consume);
                     HirStmtKind::Assign {

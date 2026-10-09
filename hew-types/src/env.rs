@@ -540,6 +540,7 @@ pub struct TypeEnv {
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
     /// Active loop labels, lexical floors and entry ownership snapshots.
     loop_scope_floors: Vec<LoopScope>,
+    initialization_floors: Vec<usize>,
     /// The lexical floor of each active `scope within` body, outermost first.
     /// A task defined at or above a floor is cancelled by that deadline.
     deadline_scope_floors: Vec<usize>,
@@ -565,6 +566,7 @@ impl TypeEnv {
             scopes: vec![HashMap::new()],
             deferred_scopes: vec![Vec::new()],
             loop_scope_floors: Vec::new(),
+            initialization_floors: Vec::new(),
             deadline_scope_floors: Vec::new(),
             mutation_root: None,
             next_binding_id: 0,
@@ -854,6 +856,54 @@ impl TypeEnv {
         }
     }
 
+    pub(crate) fn mark_unassigned(&mut self, name: impl LexicalName) {
+        let name = name.lexical_key();
+        if let Some(binding) = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.get_mut(&name))
+        {
+            binding.init_state = InitState::Unassigned;
+        }
+    }
+
+    pub(crate) fn unassigned(&self, name: impl LexicalName) -> bool {
+        self.lookup_ref(name)
+            .is_some_and(|binding| binding.init_state == InitState::Unassigned)
+    }
+
+    pub(crate) fn first_store_allowed(&self, name: impl LexicalName) -> bool {
+        let Some((depth, _)) = self.lookup_ref_with_depth(name) else {
+            return false;
+        };
+        self.initialization_floors
+            .iter()
+            .all(|floor| depth >= *floor)
+            && self
+                .loop_scope_floors
+                .iter()
+                .all(|scope| depth >= scope.floor)
+    }
+
+    pub(crate) fn enter_initialization_boundary(&mut self) {
+        self.initialization_floors.push(self.depth());
+    }
+
+    pub(crate) fn exit_initialization_boundary(&mut self) {
+        self.initialization_floors
+            .pop()
+            .expect("initialization boundary is active");
+    }
+
+    pub(crate) fn initialization_conflicts(&self, ids: &[TypeBindingId]) -> Vec<(String, Binding)> {
+        self.scopes
+            .iter()
+            .flat_map(HashMap::iter)
+            .filter(|(_, binding)| ids.contains(&binding.id))
+            .map(|(name, binding)| (name.to_string(), binding.clone()))
+            .collect()
+    }
+
     /// Whether `name` is a deferred init field still awaiting its first store.
     #[must_use]
     pub fn deferred_field_uninitialized(&self, name: impl LexicalName) -> bool {
@@ -1019,6 +1069,7 @@ impl TypeEnv {
     ) -> Self {
         let mut environment = self.clone();
         environment.loop_scope_floors.clear();
+        environment.enter_initialization_boundary();
         // A closure body may run after the enclosing deadline scope has ended.
         environment.deadline_scope_floors.clear();
         environment.mutation_root = None;

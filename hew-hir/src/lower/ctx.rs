@@ -95,7 +95,7 @@ impl LowerCtx {
             current_actor_self: None,
             actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
             actor_deferred_field_decls: tc_output.actor_deferred_field_decls.clone(),
-            actor_init_first_stores: tc_output.actor_init_first_stores.clone(),
+            first_stores: tc_output.first_stores.clone(),
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
             borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),

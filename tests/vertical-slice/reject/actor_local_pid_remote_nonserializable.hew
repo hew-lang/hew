@@ -18,11 +18,16 @@ impl ActorMsg for Holder {
 }
 
 fn main() {
-    let local: Holder = spawn Holder();
-    let peer: RemotePid<Holder>;
-    let sent: Result<(), SendError> = peer.send(local);
-    match sent {
-        .Ok(_) => println("sent"),
-        .Err(_) => println("send failed"),
+    let local: Holder = spawn Holder;
+    let found: Result<RemotePid<Holder>, LookupError> = Node.lookup("holder");
+    match found {
+        .Ok(peer) => {
+            let sent: Result<(), SendError> = peer.send(local);
+            match sent {
+                .Ok(_) => println("sent"),
+                .Err(_) => println("send failed"),
+            }
+        }
+        .Err(_) => println("lookup failed"),
     }
 }

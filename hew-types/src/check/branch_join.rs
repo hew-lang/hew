@@ -54,7 +54,7 @@
 use super::types::Checker;
 use crate::env::OwnershipSnapshot;
 use crate::ty::Ty;
-use hew_parser::ast::{Block, Expr, Spanned, Stmt};
+use hew_parser::ast::{Block, Expr, Span, Spanned, Stmt};
 
 /// What one branch arm left behind.
 pub(super) struct BranchArmExit {
@@ -82,12 +82,14 @@ impl Checker {
         &mut self,
         entry: &OwnershipSnapshot,
         arms: &[BranchArmExit],
+        span: &Span,
     ) {
         let mut reaching: Vec<OwnershipSnapshot> = arms
             .iter()
             .filter(|arm| !arm.diverges)
             .map(|arm| arm.ownership.clone())
             .collect();
+        let has_reaching_arms = !reaching.is_empty();
         if reaching.is_empty() {
             // Every arm diverges, so nothing after the join is reachable. Union
             // over all of them: it costs nothing and keeps the state defined for
@@ -95,7 +97,10 @@ impl Checker {
             reaching = arms.iter().map(|arm| arm.ownership.clone()).collect();
         }
         let conflicts = self.env.merge_ownership(entry, &reaching);
-        self.report_deferred_init_conflicts(&conflicts);
+        if has_reaching_arms {
+            self.report_deferred_init_conflicts(&conflicts);
+            self.report_local_init_conflicts(&conflicts, span);
+        }
     }
 
     /// Join a two-armed branch whose second arm has just finished checking.
@@ -108,12 +113,13 @@ impl Checker {
         entry: &OwnershipSnapshot,
         taken: BranchArmExit,
         other_skips_join: bool,
+        span: &Span,
     ) {
         let other = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
             diverges: other_skips_join,
         };
-        self.join_branch_ownership(entry, &[taken, other]);
+        self.join_branch_ownership(entry, &[taken, other], span);
     }
 
     /// Join a one-armed branch — an `if` or `if let` with no `else` — against
@@ -122,12 +128,17 @@ impl Checker {
     /// The fall-through arm consumes nothing, so its exit is the branch entry
     /// itself. Keeping it in the union is what preserves the rejection for a
     /// conditional consume followed by an unconditional use.
-    pub(super) fn join_fall_through(&mut self, entry: &OwnershipSnapshot, taken: BranchArmExit) {
+    pub(super) fn join_fall_through(
+        &mut self,
+        entry: &OwnershipSnapshot,
+        taken: BranchArmExit,
+        span: &Span,
+    ) {
         let fall_through = BranchArmExit {
             ownership: entry.clone(),
             diverges: false,
         };
-        self.join_branch_ownership(entry, &[taken, fall_through]);
+        self.join_branch_ownership(entry, &[taken, fall_through], span);
     }
 }
 

@@ -1,0 +1,10 @@
+[[case]]
+id = "local_deferred_values"
+intent = "Typed deferred locals initialize on reaching branches, compose with actor initialization and owned collections, and release only acquired resources."
+source = "../../examples/sandbox-graduation/deferred_locals.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ok:false\nbusy:true\nstatus 404:false\nnorth\nsouth\n0\nclosed 7\n7\nfirst\nacross\naddress:tls://example\n"
+exit = 0

@@ -25,6 +25,10 @@ impl Builder<'_, '_> {
             }
             return Ok(());
         }
+        if value.is_none() {
+            let place = self.allocate_local(self.ty(&binding.ty))?;
+            return self.bind_source_target(binding, BindingTarget::Place(place));
+        }
         let loan_floor = self.scope_loans.len();
         let value = value
             .map(|expr| {
@@ -59,9 +63,7 @@ impl Builder<'_, '_> {
                 )
             })
             .transpose()?
-            .ok_or_else(|| {
-                "uninitialised bindings are not in the initial SIR subset".to_string()
-            })?;
+            .expect("initialized binding has an initializer");
         // §1.6: the value a binding names carries the binding's name, span and
         // mutability, so a rule 2, 3, 4 or 6 violation rooted in it renders its
         // `E_OWN_*` code rather than `E_SIR_ICE`, and rule 6a has a mutability
@@ -233,7 +235,7 @@ impl Builder<'_, '_> {
             .binding_declarations
             .get(binding)
             .ok_or_else(|| "assignment target has no declaration".to_string())?;
-        if !self.source_bindings[declaration].mutable {
+        if !self.source_bindings[declaration].mutable && !first_store {
             return Err("assignment target is not mutable".into());
         }
         let target = self.binding_target(*binding)?;
@@ -243,18 +245,11 @@ impl Builder<'_, '_> {
         let new = self.coerce_value(new, &ty, Provenance::Site(value.site))?;
         match target {
             BindingTarget::Place(place) if first_store || self.state_taken.contains(&place) => {
-                // A deferred field, a mutable field consumed earlier in this
-                // body, or a `var self` receiver moved out earlier has an
-                // empty seat. Publish the replacement without trying to
-                // release the value that left it.
                 let initialized = match self.places[place.0 as usize].origin {
                     PlaceOrigin::ActorState { initialized, .. } => initialized,
+                    PlaceOrigin::Local if first_store => true,
                     _ if !first_store && self.in_var_self_receiver(place) => true,
-                    _ => {
-                        return Err(
-                            "a first store requires an uninitialized actor state seat".into()
-                        )
-                    }
+                    _ => return Err("a first store requires local or actor state storage".into()),
                 };
                 self.emit_place_operation(
                     SemOpKind::StoreInit {

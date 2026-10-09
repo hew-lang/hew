@@ -815,6 +815,8 @@ pub enum ParseDiagnosticKind {
     DuplicateRecordBase,
     /// A testing attribute has an invalid literal, arity or named argument.
     AttributeArgument,
+    DeferredDeclType,
+    DeferredDeclPattern,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -844,6 +846,8 @@ impl ParseDiagnosticKind {
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
             Self::ReservedName => "E_RESERVED_NAME",
             Self::AttributeArgument => "E_ATTRIBUTE_ARGUMENT",
+            Self::DeferredDeclType => "E_DEFERRED_DECL_TYPE",
+            Self::DeferredDeclPattern => "E_DEFERRED_DECL_PATTERN",
             Self::Other => "Other",
         }
     }

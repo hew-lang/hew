@@ -669,6 +669,7 @@ impl Checker {
         condition: &Spanned<Expr>,
         then_block: &Block,
         else_block: Option<&hew_parser::ast::ElseBlock>,
+        span: &Span,
     ) -> bool {
         self.check_against(&condition.0, &condition.1, &Ty::Bool);
         let entry = self.env.ownership_snapshot();
@@ -679,7 +680,7 @@ impl Checker {
         };
         let then_skips_join = then_exit.diverges;
         let Some(eb) = else_block else {
-            self.join_fall_through(&entry, then_exit);
+            self.join_fall_through(&entry, then_exit, span);
             return false;
         };
         self.env.restore_ownership(&entry);
@@ -690,7 +691,12 @@ impl Checker {
                 else_block,
             } = &if_stmt.0
             {
-                self.check_discarded_if_chain(condition, then_block, else_block.as_ref())
+                self.check_discarded_if_chain(
+                    condition,
+                    then_block,
+                    else_block.as_ref(),
+                    &if_stmt.1,
+                )
             } else {
                 self.check_stmt(&if_stmt.0, &if_stmt.1);
                 false
@@ -701,7 +707,7 @@ impl Checker {
         } else {
             // `else` with neither a block nor a chained `if`: nothing runs on
             // that path, so it is the implicit fall-through.
-            self.join_fall_through(&entry, then_exit);
+            self.join_fall_through(&entry, then_exit, span);
             return false;
         };
         self.join_branch_ownership(
@@ -713,6 +719,7 @@ impl Checker {
                     diverges: else_skips_join,
                 },
             ],
+            span,
         );
         then_skips_join && else_skips_join
     }
@@ -850,7 +857,7 @@ impl Checker {
                         else_body,
                         expected,
                     );
-                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit], span);
                     self.unify_branches(&then_ty, &else_ty, join_span)
                 } else {
                     let then_ty = self.check_block(then_block, expected);
@@ -858,7 +865,7 @@ impl Checker {
                         ownership: self.env.ownership_snapshot(),
                         diverges: Self::arm_skips_join(&then_ty),
                     };
-                    self.join_fall_through(&entry, then_exit);
+                    self.join_fall_through(&entry, then_exit, span);
                     Ty::Unit
                 }
             }
@@ -877,7 +884,7 @@ impl Checker {
                         BranchBody::Expr(else_expr),
                         expected,
                     );
-                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit], span);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
                     let then_ty = self.check_block(body, expected);
@@ -886,7 +893,7 @@ impl Checker {
                         diverges: Self::arm_skips_join(&then_ty),
                     };
                     self.env.pop_scope();
-                    self.join_fall_through(&entry, then_exit);
+                    self.join_fall_through(&entry, then_exit, span);
                     Ty::Unit
                 }
             }
@@ -1241,6 +1248,9 @@ impl Checker {
                     self.check_shadowing(name.name.as_str(), &pattern.1);
                     self.env
                         .define_with_span(*name, val_ty.clone(), false, pattern.1.clone());
+                    if value.is_none() {
+                        self.env.mark_unassigned(*name);
+                    }
                     self.record_local_resolution(*name, &pattern.1);
                     self.record_callable_binding_candidates(*name, value.as_ref());
                     // A plain identifier pattern begins at its name token;
@@ -1388,6 +1398,7 @@ impl Checker {
                                         diverges: Self::arm_skips_join(&else_ty),
                                     },
                                 ],
+                                span,
                             );
                             if !matches!(else_ty, Ty::Never)
                                 && !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error)
@@ -1547,6 +1558,9 @@ impl Checker {
                 self.check_shadowing(name.name.as_str(), span);
                 self.env
                     .define_with_span(name.to_string(), val_ty, true, span.clone());
+                if value.is_none() {
+                    self.env.mark_unassigned(*name);
+                }
                 self.record_local_resolution(*name, span);
                 self.record_callable_binding_candidates(*name, value.as_ref());
                 self.record_local_resolution(*name, name_span);
@@ -1584,6 +1598,33 @@ impl Checker {
                     }
                     _ => target,
                 };
+                if !matches!(&target.0, Expr::Ident(_)) {
+                    if let Some(name) = self
+                        .assignment_root_binding_name(&target.0)
+                        .map(str::to_string)
+                    {
+                        if self.env.unassigned(&name) {
+                            self.report_error(TypeErrorKind::LocalUninitialized, &target.1,
+                                format!("E_LOCAL_UNINITIALIZED: local `{name}` must hold a whole value before a field or indexed store"));
+                        }
+                    }
+                }
+                let first_store = op.is_none()
+                    && matches!(&target.0,
+                    Expr::Ident(name) if self.env.unassigned(*name));
+                if first_store {
+                    if let Expr::Ident(name) = &target.0 {
+                        if !self.env.first_store_allowed(*name) {
+                            let actor_field = self
+                                .env
+                                .lookup_ref(*name)
+                                .is_some_and(crate::env::Binding::deferred_init);
+                            self.report_error(if actor_field { TypeErrorKind::InvalidOperation } else { TypeErrorKind::LocalConditionalInit }, span,
+                                format!("{}: `{name}` cannot receive its first value inside a loop or deferred body; initialize it before entering the body",
+                                    if actor_field { "E_ACTOR_FIELD_CONDITIONAL_INIT" } else { "E_LOCAL_CONDITIONAL_INIT" }));
+                        }
+                    }
+                }
                 // Every read taken while checking this assignment either
                 // resolves the target place or computes the new value from the
                 // old one (`n = n + 1`). Neither observes the result, so the
@@ -1696,7 +1737,7 @@ impl Checker {
                 // Synthesising the target must not read it as a value: an
                 // assignment overwrites the place, so a moved-out place is
                 // exactly what a re-initialisation is allowed to name.
-                self.place_write_depth += 1;
+                self.place_write_depth += usize::from(op.is_none());
                 let target_ty = match &target.0 {
                     Expr::Index { object, index } => {
                         let ty = self.synthesize_index(
@@ -1714,7 +1755,7 @@ impl Checker {
                     }
                     _ => self.synthesize(&target.0, &target.1),
                 };
-                self.place_write_depth -= 1;
+                self.place_write_depth -= usize::from(op.is_none());
                 if let Some(field) = receiver_field.as_ref() {
                     self.record_actor_state_projection_resolution(&target.1, field);
                 }
@@ -1753,7 +1794,7 @@ impl Checker {
                 }
                 if let Some(name) = root_binding_name {
                     if let Some(binding) = self.env.lookup_ref(name) {
-                        if !binding.is_mutable {
+                        if !binding.is_mutable && !first_store {
                             // Actor state fields get a field-specific
                             // diagnostic pointing at the declaration site;
                             // plain locals keep the variable-shaped error.
@@ -1785,7 +1826,9 @@ impl Checker {
                     if op.is_none() {
                         self.env.unmark_used(name);
                     }
-                    self.env.mark_written(name);
+                    if !first_store {
+                        self.env.mark_written(name);
+                    }
                 }
                 if let Some(op) = op {
                     self.check_compound_operator(*op, &target_ty, span);
@@ -1838,14 +1881,27 @@ impl Checker {
                 // reports the read.
                 self.check_receiver_whole_at_assignment(&target.0, *op, &target_ty, span);
                 if op.is_none() {
-                    // A deferred field's first store initializes storage that
-                    // held no value (D447); HIR carries the site so SIR emits
-                    // an initializing store rather than a replacement.
-                    if let Expr::Ident(name) = &target.0 {
-                        if self.env.deferred_field_uninitialized(name.name.as_str()) {
-                            self.actor_init_first_stores
-                                .insert(SpanKey::in_module(&target.1, self.current_module_idx));
+                    let actual_first_store =
+                        matches!(&target.0, Expr::Ident(name) if self.env.unassigned(*name));
+                    if first_store && !actual_first_store {
+                        if let Expr::Ident(name) = &target.0 {
+                            if self
+                                .env
+                                .lookup_ref(*name)
+                                .is_some_and(|binding| !binding.is_mutable)
+                            {
+                                self.errors.push(TypeError::mutability_error(
+                                    span.clone(),
+                                    name.name.as_str(),
+                                ));
+                            } else {
+                                self.env.mark_written(*name);
+                            }
                         }
+                    }
+                    if actual_first_store {
+                        self.first_stores
+                            .insert(SpanKey::in_module(&target.1, self.current_module_idx));
                     }
                     if let Some((root, path)) = self.expr_place(&target.0) {
                         self.env.reinit_place(&root, &path);
@@ -1888,7 +1944,7 @@ impl Checker {
                 then_block,
                 else_block,
             } => {
-                self.check_discarded_if_chain(condition, then_block, else_block.as_ref());
+                self.check_discarded_if_chain(condition, then_block, else_block.as_ref(), span);
             }
             Stmt::IfLet {
                 conditions,
@@ -1907,9 +1963,9 @@ impl Checker {
                     self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
                     let else_skips = Self::arm_skips_join(&else_ty);
-                    self.join_two_way(&entry, then_exit, else_skips);
+                    self.join_two_way(&entry, then_exit, else_skips, span);
                 } else {
-                    self.join_fall_through(&entry, then_exit);
+                    self.join_fall_through(&entry, then_exit, span);
                 }
             }
             Stmt::Return(value) => {
@@ -2372,7 +2428,9 @@ impl Checker {
                 let previous = self
                     .deferred_body
                     .replace((self.loop_depth, self.loop_labels.len()));
+                self.env.enter_initialization_boundary();
                 self.synthesize(&expr.0, &expr.1);
+                self.env.exit_initialization_boundary();
                 self.deferred_body = previous;
                 self.env.restore_ownership(&ownership);
                 if !self.env.register_defer(*expr.clone()) {
@@ -2438,7 +2496,7 @@ impl Checker {
             });
             self.env.pop_scope();
         }
-        self.join_branch_ownership(&ownership_entry, &arm_exits);
+        self.join_branch_ownership(&ownership_entry, &arm_exits, span);
 
         self.check_exhaustiveness(scrutinee_ty, arms, span);
     }

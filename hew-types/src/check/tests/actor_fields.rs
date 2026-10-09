@@ -1860,7 +1860,7 @@ fn main() {
         "both assigned fields are deferred to init"
     );
     assert_eq!(
-        output.actor_init_first_stores.len(),
+        output.first_stores.len(),
         3,
         "count once and label in each arm; the trailing assignment replaces a value"
     );

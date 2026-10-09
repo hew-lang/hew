@@ -794,6 +794,8 @@ pub enum TypeErrorKind {
     ReservedTypeName,
     /// Assigning to immutable variable
     MutabilityError,
+    LocalUninitialized,
+    LocalConditionalInit,
     /// Return statement type doesn't match function signature
     ReturnTypeMismatch,
     /// Value used after it was moved to an actor
@@ -882,7 +884,9 @@ pub enum TypeErrorKind {
     /// A fork body attempted to capture a caller-owned parameter. Function
     /// parameters use Hew's borrowed call boundary, so the child cannot take
     /// over their drop obligation.
-    ForkBorrowCapture { binding: String },
+    ForkBorrowCapture {
+        binding: String,
+    },
     /// An immutable foreign boundary view appeared outside an extern signature.
     BorrowTypeOutsideExternSignature,
     /// Branches of an or-pattern bind different names.
@@ -1538,6 +1542,8 @@ impl TypeErrorKind {
             Self::DuplicateDefinition => "DuplicateDefinition",
             Self::ReservedTypeName => "ReservedTypeName",
             Self::MutabilityError => "MutabilityError",
+            Self::LocalUninitialized => "E_LOCAL_UNINITIALIZED",
+            Self::LocalConditionalInit => "E_LOCAL_CONDITIONAL_INIT",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",

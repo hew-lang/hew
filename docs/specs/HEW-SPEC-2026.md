@@ -947,6 +947,38 @@ place rooted at it can be assigned. `p.x = …`, `v[0] = …`, `m["k"] = …`, a
 the `let`→`var` fix-it. The wall is about the binding, not about the syntax
 used to reach through it.
 
+**Deferred local initialization (normative).** A single `let` or `var` binding
+may omit its initializer when it has an explicit type: `let label: string;`.
+The declaration creates no value and supplies no implicit zero. The first
+whole-value assignment initializes it; a `let` permits exactly that one store.
+A read, capture, compound assignment, field or indexed store requires a value
+on every reaching path. A field or element cannot initialize part of a local.
+
+Every reaching arm of a branch must agree on initialization, even when no
+later read appears. Returning, breaking, continuing, propagating an error or
+panicking leaves the immediate join. A loop, closure, generator, actor lambda
+or deferred body cannot provide the first store of an outer binding. Bindings
+declared inside those bodies follow the ordinary rule. Never-initialized locals
+release nothing; initialized locals receive normal lifetime cleanup. The first
+store of a `var` is initialization rather than mutation for the `use let` lint.
+Deferred actor fields follow the same initialization rule (§3.4, D447).
+
+```hew
+fn classify(ready: bool) -> (string, bool) {
+    let label: string;
+    let retry: bool;
+    if ready { label = "ready"; retry = false; }
+    else { label = "waiting"; retry = true; }
+    (label, retry)
+}
+```
+
+Missing annotations and valueless patterns are `E_DEFERRED_DECL_TYPE` and
+`E_DEFERRED_DECL_PATTERN`. Reading before assignment is
+`E_LOCAL_UNINITIALIZED`; differing initialization at a join or a first store
+inside a deferred body is `E_LOCAL_CONDITIONAL_INIT`. Where a mutable binding
+has an obvious empty value, diagnostics suggest writing it explicitly.
+
 **The mutating receiver.** A method that mutates its receiver declares
 `var self` (§3.6). Calling one needs a `var` binding: `let p = Counter { n: 0 };
 p.bump()` is refused with "requires a mutable binding receiver". The mutating

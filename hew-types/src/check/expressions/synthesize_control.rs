@@ -412,7 +412,9 @@ impl Checker {
                     .entry(effect_body.clone())
                     .or_default();
                 let previous_effect_body = self.effect_graph.current_body.replace(effect_body);
+                self.env.enter_initialization_boundary();
                 let body_ty = self.check_block(body, None);
+                self.env.exit_initialization_boundary();
                 self.effect_graph.current_body = previous_effect_body;
 
                 self.in_generator = prev_in_generator;
@@ -696,7 +698,7 @@ impl Checker {
                         ownership: self.env.ownership_snapshot(),
                         diverges: Self::arm_skips_join(&else_ty),
                     };
-                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit], span);
                     if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
                         Ty::Error
                     } else if matches!(then_ty, Ty::Never) && matches!(else_ty, Ty::Never) {
@@ -705,7 +707,7 @@ impl Checker {
                         self.subst.resolve(expected)
                     }
                 } else {
-                    self.join_fall_through(&entry, then_exit);
+                    self.join_fall_through(&entry, then_exit, span);
                     Ty::Unit
                 };
                 if matches!(actual, Ty::Never | Ty::Error) {

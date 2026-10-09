@@ -21,7 +21,7 @@ fn invalid(text: string) {
     match string.to_float(text) {
         .Ok(_) => panic("invalid float accepted"),
         .Err(error) => {
-            if f"{error}" != f"Invalid: {text}" { panic("wrong float error"); }
+            if f"{error}" != f"invalid number literal: `{text}`" { panic("wrong float error"); }
         }
     }
 }

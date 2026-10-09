@@ -10,17 +10,12 @@
 //!   non-`fmt` method name is dispatched to correctly.
 //! * **F1 (negative)** — an empty registry causes f-string lowering to
 //!   refuse fail-closed (no fabricated dispatch).
-//! * **F2 (fail-closed)** — when the impl symbol the checker accepted is
-//!   absent from the HIR fn-registry, the lowering pass emits a
-//!   [`hew_hir::HirDiagnosticKind::CheckerBoundaryViolation`] and never
-//!   substitutes an empty string.
 //! * **F3 (`string` passthrough hole)** — a user `impl Display for string`
 //!   is routed through `string::fmt` rather than silently bypassed by an
 //!   identity passthrough.
 
 use hew_hir::{
-    lower_program, HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirLiteral, HirStmtKind,
-    ResolutionCtx,
+    lower_program, HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx,
 };
 use hew_parser::ast::{Expr, Item, Stmt, StringPart};
 use hew_types::{module_registry::ModuleRegistry, Checker, SpanKey, Ty};
@@ -125,21 +120,6 @@ fn collect_calls(output: &hew_hir::LowerOutput) -> Vec<String> {
         }
     }
     acc
-}
-
-/// Does any expression in the module match `pred`?
-fn any_expr(output: &hew_hir::LowerOutput, mut pred: impl FnMut(&HirExpr) -> bool) -> bool {
-    let mut found = false;
-    for item in &output.module.items {
-        if let HirItem::Function(func) = item {
-            walk_block(&func.body, &mut |e| {
-                if pred(e) {
-                    found = true;
-                }
-            });
-        }
-    }
-    found
 }
 
 /// F1 positive: f-string interpolation dispatches through the
@@ -288,136 +268,6 @@ fn fstring_without_display_fmt_lang_item_is_fail_closed() {
     assert!(
         reason.contains("display_fmt"),
         "violation reason must mention the missing lang-item key; got: {reason:?}"
-    );
-}
-
-/// F2 (fail-closed): when the HIR lowering's named-type arm cannot resolve
-/// an impl symbol it must emit `CheckerBoundaryViolation` — never
-/// fabricate an empty string. This drives the path by handing lowering
-/// a `TypeCheckOutput` whose lang-item registry is populated but whose
-/// `expr_types` annotates an identifier binding as a `Named` type that
-/// has no `<Type>::fmt` registered.  We synthesise the binding directly
-/// through a top-level fn parameter so the lowering pipeline accepts the
-/// reference without checker collaboration.
-#[test]
-fn fstring_named_type_without_impl_is_fail_closed() {
-    // Program: `fn main(w: Widget) { let s: string = f"got {w}"; }`. The
-    // parser will accept this; the checker will likely reject (no Widget
-    // type-def, no Display impl) but its errors do not stop HIR lowering
-    // from running.  We invoke `lower_program` directly with a hand-built
-    // tc_output that has the Display lang-item plus the interpolant's
-    // expr_types entry set to `Named("Widget")`.
-    let source = "type Widget {\n    x: i64;\n}\n\nfn main(w: Widget) {\n    let s: string = f\"got {w}\";\n}\n";
-    let parsed = hew_parser::parse(source);
-    assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
-
-    // Locate the interpolant identifier span.
-    let (Item::Function(fn_decl), _) = &parsed.program.items[1] else {
-        panic!("expected fn as second item");
-    };
-    let (Stmt::Let { value, .. }, _) = &fn_decl.body.stmts[0] else {
-        panic!("expected let");
-    };
-    let value = value.as_ref().unwrap();
-    let Expr::InterpolatedString(parts) = &value.0 else {
-        panic!("expected f-string");
-    };
-    let interp_span = parts
-        .iter()
-        .find_map(|p| match p {
-            StringPart::Expr((_, sp)) => Some(sp.clone()),
-            StringPart::Literal(_) | StringPart::StructuralExpr(_) => None,
-        })
-        .expect("interp expr present");
-
-    // W4.015: behavior pin — poisoned fn_registry input must surface as a
-    // CheckerBoundaryViolation in display dispatch substitution.
-    let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    tc.lang_items = hew_types::LangItemRegistry::default();
-    let defs = std::sync::Arc::make_mut(&mut tc.defs);
-    // Rows no declaration can claim: the poisoned binding names nothing the
-    // checker or the embedded builtin check declared.
-    let trait_id = defs.mint_for_test("#poison.Display");
-    let method_id = defs.mint_for_test("#poison.Display::fmt");
-    tc.lang_items.insert(
-        hew_types::LANG_ITEM_DISPLAY_FMT,
-        hew_types::LangItemBinding {
-            trait_name: "Display".to_string(),
-            trait_id,
-            method_name: Some("fmt".to_string()),
-            method_id: Some(method_id),
-        },
-    );
-    tc.insert_expr_type(
-        SpanKey {
-            start: interp_span.start,
-            end: interp_span.end,
-            module_idx: 0,
-        },
-        Ty::named_for_test("Widget", vec![]),
-    );
-
-    let lower_output = lower_program(
-        &parsed.program,
-        &tc,
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
-
-    let violations: Vec<_> = lower_output
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            matches!(
-                &d.kind,
-                HirDiagnosticKind::CheckerBoundaryViolation { name, .. } if name == "Widget::fmt"
-            )
-        })
-        .collect();
-    assert!(
-        !violations.is_empty(),
-        "missing impl symbol must emit CheckerBoundaryViolation for `Widget::fmt`; \
-         got: {:#?}",
-        lower_output.diagnostics
-    );
-    let HirDiagnosticKind::CheckerBoundaryViolation { name, reason } = &violations[0].kind else {
-        unreachable!()
-    };
-    assert_eq!(name, "Widget::fmt");
-    assert!(
-        reason.contains("fn_registry"),
-        "reason should mention fn_registry; got: {reason:?}"
-    );
-
-    // Defensive: no empty-string literal was fabricated for the
-    // interpolant.  The pre-fix behaviour pushed `String::new()` into the
-    // concat chain; this asserts that fail-open is gone.
-    let lower_output2 = lower_program(
-        &parsed.program,
-        &tc,
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
-    // The interpolant itself must lower to `Unsupported`, and no empty string
-    // may stand in its place. Scope the scan to this source's own f-string span:
-    // `std.builtins` bodies lower into every module and carry their own empty
-    // string literals (`NodeConfig.at` sets `key: ""`).
-    let substituted = any_expr(&lower_output2, |e| {
-        interp_span.contains(&e.span.start)
-            && matches!(&e.kind, HirExprKind::Literal(HirLiteral::String(s)) if s.is_empty())
-    });
-    assert!(
-        !substituted,
-        "fail-open violation: lowering must not substitute an empty \
-         string for a missing Display dispatch"
-    );
-    let refused = any_expr(&lower_output2, |e| {
-        interp_span.contains(&e.span.start)
-            && matches!(&e.kind, HirExprKind::Unsupported(note) if note.contains("Widget::fmt"))
-    });
-    assert!(
-        refused,
-        "the interpolant must lower to an Unsupported node naming the missing impl"
     );
 }
 

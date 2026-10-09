@@ -222,7 +222,12 @@ impl Checker {
         let mut bindings = HashSet::new();
         for (name, span) in captures {
             if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
-                if !bindings.insert(binding.id) {
+                let id = binding.id;
+                if binding.init_state == crate::env::InitState::Unassigned {
+                    self.report_error(TypeErrorKind::LocalUninitialized, span,
+                        format!("E_LOCAL_UNINITIALIZED: local `{name}` is captured before initialization; assign it first"));
+                }
+                if !bindings.insert(id) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,

@@ -672,6 +672,24 @@ impl Parser<'_> {
                     None
                 };
 
+                if value.is_none() {
+                    if !matches!(pattern.0, Pattern::Identifier(_)) {
+                        self.error_at_with_kind_and_hint(
+                            "E_DEFERRED_DECL_PATTERN: a declaration without a value requires a single binding".to_string(),
+                            pattern.1.clone(),
+                            "initialize the pattern, or declare each binding separately",
+                            ParseDiagnosticKind::DeferredDeclPattern,
+                        );
+                    } else if ty.is_none() {
+                        self.error_at_with_kind_and_hint(
+                            "E_DEFERRED_DECL_TYPE: a declaration without a value requires an explicit type".to_string(),
+                            pattern.1.clone(),
+                            "add a type annotation or an initializer",
+                            ParseDiagnosticKind::DeferredDeclType,
+                        );
+                    }
+                }
+
                 // `let Pat = expr else { <diverging block> };` — the let-else
                 // fallback clause, parsed AFTER the value and BEFORE the
                 // terminating `;`. The else block is carried structurally so
@@ -718,6 +736,15 @@ impl Parser<'_> {
                 };
 
                 self.expect(&Token::Semicolon)?;
+
+                if value.is_none() && ty.is_none() {
+                    self.error_at_with_kind_and_hint(
+                        "E_DEFERRED_DECL_TYPE: a declaration without a value requires an explicit type".to_string(),
+                        name_span.clone(),
+                        "add a type annotation or an initializer",
+                        ParseDiagnosticKind::DeferredDeclType,
+                    );
+                }
 
                 Stmt::Var {
                     name,

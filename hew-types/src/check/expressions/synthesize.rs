@@ -328,7 +328,7 @@ impl Checker {
                         BranchBody::Expr(eb),
                         None,
                     );
-                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit], span);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
                     let entry = self.env.ownership_snapshot();
@@ -339,7 +339,7 @@ impl Checker {
                     };
                     // No `else`: the implicit fall-through arm runs with the
                     // state the condition left behind and never consumes.
-                    self.join_fall_through(&entry, then_exit);
+                    self.join_fall_through(&entry, then_exit, span);
                     Ty::Unit
                 }
             }
@@ -1012,7 +1012,7 @@ impl Checker {
             diverges: Self::arm_skips_join(&body_ty),
         };
         self.env.pop_scope();
-        self.join_fall_through(&entry, taken);
+        self.join_fall_through(&entry, taken, span);
         let payload = self.subst.resolve(&payload);
         if payload == Ty::Never {
             self.subst.resolve(&body_ty)
@@ -1122,7 +1122,7 @@ impl Checker {
                 BranchBody::Expr(else_expr),
                 None,
             );
-            self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+            self.join_branch_ownership(&entry, &[then_exit, else_exit], span);
             self.unify_branches(&then_ty, &else_ty, span)
         } else {
             let then_ty = self.check_block(body, None);
@@ -1131,7 +1131,7 @@ impl Checker {
                 diverges: Self::arm_skips_join(&then_ty),
             };
             self.env.pop_scope();
-            self.join_fall_through(&entry, then_exit);
+            self.join_fall_through(&entry, then_exit, span);
             Ty::Unit
         }
     }
@@ -1265,6 +1265,9 @@ impl Checker {
             let binding_id = binding.id;
             let is_moved = binding.is_moved;
             let deferred_init = binding.deferred_init();
+            let uninitialized = binding.init_state == crate::env::InitState::Unassigned;
+            let initialization_suggestions =
+                uninitialized.then(|| Self::deferred_local_suggestions(name, binding));
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             let def_span = binding
@@ -1278,15 +1281,42 @@ impl Checker {
             if !is_write_target {
                 self.reject_crash_hook_consumed_state_read(binding_id, span);
             }
-            if is_moved && deferred_init && !is_write_target {
+            if uninitialized && !is_write_target {
                 self.report_error(
-                    TypeErrorKind::InvalidOperation,
+                    if deferred_init {
+                        TypeErrorKind::InvalidOperation
+                    } else {
+                        TypeErrorKind::LocalUninitialized
+                    },
                     span,
                     format!(
-                        "E_ACTOR_FIELD_UNINITIALIZED: state field `{name}` is read before \
-                         `init` initializes it; assign it first"
+                        "{}: {} `{name}` is read before initialization; assign it first",
+                        if deferred_init {
+                            "E_ACTOR_FIELD_UNINITIALIZED"
+                        } else {
+                            "E_LOCAL_UNINITIALIZED"
+                        },
+                        if deferred_init {
+                            "state field"
+                        } else {
+                            "local"
+                        }
                     ),
                 );
+                if !deferred_init {
+                    if let (Some(error), Some(suggestions)) =
+                        (self.errors.last_mut(), initialization_suggestions)
+                    {
+                        error.suggestions = suggestions;
+                        if let Some(declaration) = def_span.clone() {
+                            error.notes.push((
+                                declaration,
+                                "binding declared without a value here".to_string(),
+                                self.current_module.clone(),
+                            ));
+                        }
+                    }
+                }
             } else if is_moved && !is_write_target {
                 let mut err = self.use_after_move_error(name, &ty, span);
                 if let Some(moved_span) = moved_at {

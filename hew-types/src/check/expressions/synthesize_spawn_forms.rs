@@ -611,7 +611,7 @@ impl Checker {
             );
             self.env.pop_scope();
         }
-        self.join_branch_ownership(&ownership_entry, &arm_exits);
+        self.join_branch_ownership(&ownership_entry, &arm_exits, span);
         // Leave the flag disarmed: the arm loop set it per-arm, and the
         // exhaustiveness check below is not a tail position.
         self.tail_ok_armed = false;
@@ -771,7 +771,7 @@ impl Checker {
             self.env.pop_scope();
         }
         self.tail_ok_armed = false;
-        self.join_branch_ownership(&entry, &arm_exits);
+        self.join_branch_ownership(&entry, &arm_exits, span);
         // No typed body: `!` only when every body diverges; otherwise each
         // body already reported its error, and `Error` keeps uses quiet.
         result_ty.unwrap_or_else(|| {

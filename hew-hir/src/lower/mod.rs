@@ -1203,7 +1203,7 @@ struct LowerCtx {
     /// Type-annotation spans of state fields that `init` initializes (D447).
     actor_deferred_field_decls: HashSet<SpanKey>,
     /// Assignment target spans that are a deferred field's first store (D447).
-    actor_init_first_stores: HashSet<SpanKey>,
+    first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
     borrowed_element_for_loops: HashSet<SpanKey>,
     /// `xs[i]` spans the checker admitted as a borrowed element read (D432).

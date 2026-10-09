@@ -519,6 +519,10 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/trap_residual.hew",
     },
     ParityCase {
+        test_name: "deferred_locals",
+        source_rel: "examples/sandbox-graduation/deferred_locals.hew",
+    },
+    ParityCase {
         // `f"{v:?}"` over scalars, strings, tuples, records, enums, Vec,
         // HashMap and an `impl Display` override, reusing the pinned
         // core-acceptance fixture rather than a second copy (#3516).

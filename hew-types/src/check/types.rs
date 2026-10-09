@@ -417,9 +417,8 @@ pub struct TypeCheckOutput {
     /// Type-annotation spans of actor state fields that `init` initializes
     /// (D447). Their storage is uninitialized until init's first store.
     pub actor_deferred_field_decls: HashSet<SpanKey>,
-    /// Target spans of the assignments in `init` that are a deferred field's
-    /// first store. Every other assignment to a state field replaces a value.
-    pub actor_init_first_stores: HashSet<SpanKey>,
+    /// Assignment target spans that initialize a local or actor state seat.
+    pub first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops whose element type has no clone, so each
     /// element is bound as a loan of the slot the sequence still owns (D432).
     /// The checker decides borrow versus clone once, here; no lowering stage
@@ -3177,8 +3176,8 @@ pub struct Checker {
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
     /// See [`TypeCheckOutput::actor_deferred_field_decls`].
     pub(super) actor_deferred_field_decls: HashSet<SpanKey>,
-    /// See [`TypeCheckOutput::actor_init_first_stores`].
-    pub(super) actor_init_first_stores: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::first_stores`].
+    pub(super) first_stores: HashSet<SpanKey>,
     /// Deferred field names per actor identity, in declaration order,
     /// decided at registration from the init body's assignment targets.
     pub(super) actor_deferred_fields: HashMap<String, Vec<String>>,
@@ -4312,7 +4311,7 @@ impl Checker {
             flat_file_import_module_names: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
             actor_deferred_field_decls: HashSet::new(),
-            actor_init_first_stores: HashSet::new(),
+            first_stores: HashSet::new(),
             actor_deferred_fields: HashMap::new(),
             checking_actor_init: false,
             borrowed_element_for_loops: HashSet::new(),

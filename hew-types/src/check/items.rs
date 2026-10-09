@@ -1794,6 +1794,77 @@ impl Checker {
         }
     }
 
+    pub(super) fn deferred_local_suggestions(
+        name: &str,
+        binding: &crate::env::Binding,
+    ) -> Vec<String> {
+        let initializer = if binding.is_mutable {
+            match &binding.ty {
+                Ty::I8
+                | Ty::I16
+                | Ty::I32
+                | Ty::I64
+                | Ty::U8
+                | Ty::U16
+                | Ty::U32
+                | Ty::U64
+                | Ty::Isize
+                | Ty::Usize => Some("0"),
+                Ty::F32 | Ty::F64 => Some("0.0"),
+                Ty::Bool => Some("false"),
+                Ty::String => Some("\"\""),
+                Ty::Bytes => Some("bytes.new()"),
+                Ty::Duration => Some("0ns"),
+                Ty::Named {
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
+                    ..
+                } => Some("[]"),
+                Ty::Named {
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::HashMap),
+                    ..
+                } => Some("HashMap.new()"),
+                Ty::Named {
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
+                    ..
+                } => Some("HashSet.new()"),
+                Ty::Named {
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Option),
+                    ..
+                } => Some("Option.None"),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        initializer.map_or_else(
+            || {
+                vec![format!(
+                    "assign `{name}` on every reaching path before reading it"
+                )]
+            },
+            |value| vec![format!("initialize `{name}` with `{value}`")],
+        )
+    }
+
+    pub(super) fn report_local_init_conflicts(
+        &mut self,
+        conflicts: &[crate::env::TypeBindingId],
+        span: &Span,
+    ) {
+        for (name, binding) in self.env.initialization_conflicts(conflicts) {
+            if binding.origin != crate::env::BindingOrigin::Local {
+                continue;
+            }
+            let mut error = TypeError::new(TypeErrorKind::LocalConditionalInit, span.clone(),
+                format!("E_LOCAL_CONDITIONAL_INIT: local `{name}` is initialized on only some reaching paths; initialize it in every arm or before the branch"));
+            error.suggestions = Self::deferred_local_suggestions(&name, &binding);
+            if let Some(declaration) = binding.def_span {
+                error = error.with_note(declaration, "binding declared without a value here");
+            }
+            self.errors.push(error);
+        }
+    }
+
     /// Close the innermost loop boundary. Reports deferred fields whose
     /// initialization differs between its entry and its exits, and values an
     /// iteration consumes that the next iteration uses again. `body_ty` is

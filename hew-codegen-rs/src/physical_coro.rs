@@ -232,6 +232,25 @@ pub(super) fn begin<'ctx>(
 }
 
 impl<'ctx> Frame<'ctx> {
+    pub fn storage(
+        &self,
+        ctx: &'ctx Context,
+        ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let builder = ctx.create_builder();
+        if let Some(end) = self.allocations.get_terminator() {
+            builder.position_before(&end);
+        } else {
+            builder.position_at_end(self.allocations);
+        }
+        // The explicit-frame cutover replaces this stack carrier with a frame
+        // field; emitter sites keep the same storage contract.
+        builder
+            .build_alloca(ty, name)
+            .llvm_ctx("allocate frame carrier")
+    }
+
     pub fn suspend(
         &self,
         ctx: &'ctx Context,

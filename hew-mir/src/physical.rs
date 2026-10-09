@@ -41,6 +41,10 @@ mod callable;
 mod defer;
 #[path = "physical_extern.rs"]
 mod extern_abi;
+#[path = "physical_frame.rs"]
+mod frame;
+#[path = "physical_storage_uses.rs"]
+mod storage_uses;
 pub use extern_abi::PhysicalExternResultAbi;
 #[cfg(test)]
 #[path = "physical_defer_tests.rs"]

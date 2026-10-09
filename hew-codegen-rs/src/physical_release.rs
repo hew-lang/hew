@@ -12,15 +12,7 @@ fn scratch<'ctx>(
     ty: BasicTypeEnum<'ctx>,
     name: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
-    let builder = values.ctx.create_builder();
-    if let Some(end) = frame.allocations.get_terminator() {
-        builder.position_before(&end);
-    } else {
-        builder.position_at_end(frame.allocations);
-    }
-    builder
-        .build_alloca(ty, name)
-        .llvm_ctx("allocate release continuation storage")
+    frame.storage(values.ctx, ty, name)
 }
 
 pub(super) fn callback<'ctx>(

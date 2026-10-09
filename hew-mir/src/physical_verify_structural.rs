@@ -739,7 +739,13 @@ pub(crate) fn verify_physical_function(
             partial::verify_cleanup_site(function, operation, (block.id, index))?;
         }
     }
-    needs_fault.map(|_| ())
+    needs_fault?;
+    if function.frame_storage != super::frame::retained_storage(module, function)? {
+        return Err(PhysicalError::new(
+            "physical frame storage differs from its suspension and dependency contract",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn storage(

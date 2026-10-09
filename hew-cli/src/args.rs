@@ -133,7 +133,7 @@ pub struct CompileArgs {
     /// `<name>.wasm` artefacts into. Default: `.tmp/compile-out`.
     #[arg(long = "emit-dir", value_name = "DIR")]
     pub emit_dir: Option<PathBuf>,
-    /// Retain the pre-optimization textual LLVM IR beside emitted artifacts.
+    /// Retain the textual LLVM IR used for object emission beside emitted artifacts.
     #[arg(long = "emit-llvm")]
     pub emit_llvm: bool,
     /// Emit a textual MIR dump and exit (no LLVM emission).
@@ -526,7 +526,7 @@ pub struct BuildArgs {
         conflicts_with = "debug"
     )]
     pub export_c: Option<String>,
-    /// Retain the pre-optimization textual LLVM IR beside the output.
+    /// Retain the textual LLVM IR used for object emission beside the output.
     #[arg(long = "emit-llvm")]
     pub emit_llvm: bool,
     /// Use the O2 release pipeline. Explicit `--opt-level` takes precedence.

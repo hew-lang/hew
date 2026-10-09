@@ -53,7 +53,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         } else {
             None
         };
-        let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
+        let slots =
+            partial::allocate_storage(module, function, callable, value, &builder, frame.as_ref())?;
         let pending_locals = match &debug {
             Some((emitter, function_debug, attribution)) => debug::declare_locals(
                 ctx,

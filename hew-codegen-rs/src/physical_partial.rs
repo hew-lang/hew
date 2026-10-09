@@ -17,6 +17,7 @@ pub(super) fn allocate_storage<'ctx>(
     signature: &PhysicalCallable,
     value: FunctionValue<'ctx>,
     builder: &Builder<'ctx>,
+    frame: Option<&super::coro::Frame<'ctx>>,
 ) -> CodegenResult<Vec<PointerValue<'ctx>>> {
     let mut slots = function
         .storage
@@ -74,12 +75,14 @@ pub(super) fn allocate_storage<'ctx>(
                         CodegenError::FailClosed("missing exclusive parameter address".into())
                     });
             }
-            let slot = builder
-                .build_alloca(
-                    llvm_type(module.ctx, &storage.layout.repr)?,
-                    &format!("s{}", storage.id.0),
-                )
-                .llvm_ctx("allocate physical storage")?;
+            let ty = llvm_type(module.ctx, &storage.layout.repr)?;
+            let name = format!("s{}", storage.id.0);
+            let slot = match frame.filter(|_| function.frame_storage.contains(&storage.id)) {
+                Some(frame) => frame.storage(module.ctx, ty, &name)?,
+                None => builder
+                    .build_alloca(ty, &name)
+                    .llvm_ctx("allocate physical storage")?,
+            };
             slot.as_instruction()
                 .ok_or_else(|| {
                     CodegenError::FailClosed(

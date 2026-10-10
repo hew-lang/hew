@@ -519,9 +519,8 @@ fn main() -> i64 {
         "scope diagnostic should name the missing wasm32 executor/join path\nstderr:\n{stderr}",
     );
     assert!(
-        stderr.contains(
-            "task spawn is thread-based and no cooperative task executor drives forked bodies"
-        ),
+        stderr.contains("Task handles spawned from scopes are not supported on WASM32")
+            && stderr.contains("no wasm32 task executor"),
         "task diagnostic should name the missing task spawn/executor path\nstderr:\n{stderr}",
     );
     assert!(

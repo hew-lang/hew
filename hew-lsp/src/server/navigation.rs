@@ -239,14 +239,32 @@ pub(super) fn compute_import_path(
         return Some(importer.parent()?.join(fp));
     }
     let mut options = hew_compile::FrontendOptions::default();
-    for path in open
+    let open: Vec<_> = open
         .into_iter()
         .filter_map(|uri| uri.to_checked_file_path().map(|path| path.to_path_buf()))
-    {
+        .collect();
+    for path in &open {
         // Resolution reads which files exist, never their text.
-        options.documents.insert(path, String::new());
+        options.documents.insert(path.clone(), String::new());
     }
-    hew_compile::resolve_module_import(&importer, &import.path, &options)
+    let resolved = hew_compile::resolve_module_import(&importer, &import.path, &options)?;
+    if let Some(path) = open
+        .into_iter()
+        .find(|path| hew_compile::paths_name_same_file(path, &resolved))
+    {
+        return Some(path);
+    }
+    // Compiler paths identify files physically; editor paths retain the spelling
+    // through which the importing document was opened.
+    for spelled in importer.parent()?.ancestors() {
+        let Ok(physical) = spelled.canonicalize() else {
+            continue;
+        };
+        if let Ok(relative) = resolved.strip_prefix(physical) {
+            return Some(spelled.join(relative));
+        }
+    }
+    Some(resolved)
 }
 
 pub(super) fn collect_import_items(parse_result: &ParseResult) -> Vec<(ImportDecl, Span)> {

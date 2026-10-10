@@ -1,4 +1,5 @@
 import std.process;
+import std.os;
 
 // A child's piped stdio are ordinary pipes: stdin is a Sink that finishes into
 // the child's end of input, stdout is a Stream that a select can watch without
@@ -44,8 +45,17 @@ fn select_on_silent_stdout() {
 fn signals_and_cached_status() {
     let child = process.start(process.command("sleep", ["60"])).expect("sleep starts");
     child.terminate().expect("TERM is delivered");
-    println(f"sleep {child.wait().expect("wait")}");
-    println(f"again {child.wait().expect("wait again")}");
+    let status = child.wait().expect("wait");
+    let windows = match os.env("OS") {
+        .Some(name) => name == "Windows_NT",
+        .None => false,
+    };
+    let terminated = match status {
+        .Signalled(signal) => !windows && signal == 15,
+        .Exited(code) => windows && code == 1,
+    };
+    println(f"terminated {terminated}");
+    println(f"cached {child.wait().expect("wait again") == status}");
     child.kill().expect("a reaped child is not signalled");
     let output = process.run_argv("printf", ["<%s>|<%s>|<%s>", "", "a b", "雪"]).expect("printf runs");
     println(f"{output.stdout} {output.status}");

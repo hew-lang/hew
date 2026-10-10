@@ -945,19 +945,18 @@ fn tcp_sink_close(backing: &mut TcpStreamBacking) {
 //
 // The parent's end of a child's stdin, stdout or stderr pipe. On Unix it is a
 // reactor slot like a socket: reads and writes wait on readiness, and a read
-// end is a select source. On Windows an anonymous pipe has no readiness
-// report, so its operations run on the blocking pool and it is not a select
-// source.
+// end is a select source. Windows output pipes retain one bounded overlapped
+// read in the reactor; stdin writes use the blocking pool.
 
 /// A pipe end or child exit watch registered on the reactor. Dropping it
 /// closes the descriptor once no operation still holds the slot.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct ReactorPipe {
     handle: c_int,
 }
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 impl ReactorPipe {
     fn new(object: crate::reactor::IoObject) -> Self {
         Self {
@@ -966,7 +965,7 @@ impl ReactorPipe {
     }
 }
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for ReactorPipe {
     fn drop(&mut self) {
         drop(crate::reactor::unregister(self.handle));
@@ -975,7 +974,7 @@ impl Drop for ReactorPipe {
 
 /// Child pipes are created by a running Hew program; their synchronous
 /// entries wait on the reactor through the runtime.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 fn pipe_without_runtime() -> bool {
     if crate::runtime::rt_current_opt().is_some() {
         return false;
@@ -984,7 +983,7 @@ fn pipe_without_runtime() -> bool {
     true
 }
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 impl StreamBacking for ReactorPipe {
     fn native_read(&self) -> Option<NativeRead> {
         Some(NativeRead::Content(self.handle))
@@ -1001,7 +1000,9 @@ impl StreamBacking for ReactorPipe {
         native::blocking_tcp_read(self.handle)
     }
 
-    fn close(&mut self) {}
+    fn close(&mut self) {
+        drop(crate::reactor::unregister(self.handle));
+    }
 
     fn is_closed(&self) -> bool {
         false
@@ -1037,10 +1038,6 @@ struct BlockingPipe {
     mode_error: Option<std::io::Error>,
 }
 
-/// Bytes one blocking pipe read takes.
-#[cfg(windows)]
-const PIPE_READ_CHUNK: usize = 64 * 1024;
-
 #[cfg(windows)]
 fn record_pipe_error(operation: &str, error: &std::io::Error) {
     set_last_error_with_errno_and_kind(
@@ -1048,42 +1045,6 @@ fn record_pipe_error(operation: &str, error: &std::io::Error) {
         error.raw_os_error().unwrap_or(libc::EIO),
         io_error_kind_tag(error.kind()),
     );
-}
-
-#[cfg(windows)]
-impl StreamBacking for BlockingPipe {
-    fn select_readiness(&self) -> SelectReadiness {
-        SelectReadiness::Unsupported("select cannot observe a child process pipe on Windows yet")
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        let pipe = self.pipe.as_mut()?;
-        let mut buffer = vec![0u8; PIPE_READ_CHUNK];
-        loop {
-            match pipe.read(&mut buffer) {
-                Ok(0) => return None,
-                Ok(count) => {
-                    buffer.truncate(count);
-                    return Some(buffer);
-                }
-                // The child closed its end: end of stream.
-                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return None,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(error) => {
-                    record_pipe_error("read child process pipe", &error);
-                    return None;
-                }
-            }
-        }
-    }
-
-    fn close(&mut self) {
-        self.pipe = None;
-    }
-
-    fn is_closed(&self) -> bool {
-        self.pipe.is_none()
-    }
 }
 
 #[cfg(windows)]
@@ -1195,10 +1156,9 @@ pub(crate) fn child_pipe_stream(pipe: fs::File) -> *mut HewStreamPair {
     #[cfg(unix)]
     let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe)));
     #[cfg(windows)]
-    let stream = into_stream_ptr(BlockingPipe {
-        pipe: Some(pipe),
-        mode_error: None,
-    });
+    let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(
+        crate::process::windows_pipe::WindowsPipe::new(pipe),
+    )));
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
         sink: ptr::null_mut(),

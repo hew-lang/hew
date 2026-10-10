@@ -11,6 +11,3 @@
 #
 # Policy (D574): no per-row issues. A row cites an issue only when it needs a
 # design decision or is a real defect; ledger-cleanup PRs carry `Fixes #N`.
-
-acceptance	windows	process-pipe	failure	#3632	Windows child pipes are not select sources and Windows has no signals
-acceptance	windows	process-supervised-reap	failure	#3632	asserts reaping through POSIX kill -0

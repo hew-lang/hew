@@ -277,7 +277,7 @@ fn warm_debug_symbols(binary: &Path) {
     }
     // A wedged debugger here is still a failure, just not one this fixture can
     // describe, so it gets a budget of its own rather than the measured one.
-    let _ = try_run_bounded_command(
+    let _ = try_run_debugger_query(
         command,
         format!("warm debug symbols for {path}"),
         std::time::Duration::from_mins(5),
@@ -306,13 +306,26 @@ fn debugger_query_timeout() -> std::time::Duration {
         })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn try_run_debugger_query(
+    mut command: Command,
+    label: impl Into<String>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, hew_testutil::BoundedExecError> {
+    if command.get_program() == "lldb" {
+        // Let debugserver kill its inferior when a timeout kills LLDB.
+        command.args(["-O", "settings set target.detach-on-error false"]);
+    }
+    try_run_bounded_command(command, label, timeout)
+}
+
 /// Run a measured gdb/lldb query under [`debugger_query_timeout`] instead of
 /// the shared harness's default 30s deadline, and panic with the harness's
 /// own clear timeout diagnostic (command, configured deadline, elapsed time,
 /// captured output) rather than a bare assertion failure.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn run_debugger_query(command: Command, label: impl Into<String>) -> std::process::Output {
-    try_run_bounded_command(command, label, debugger_query_timeout())
+    try_run_debugger_query(command, label, debugger_query_timeout())
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
@@ -1231,7 +1244,7 @@ fn debugger_hang_before_breakpoint_times_out_with_clear_diagnostic() {
         command
     };
 
-    let result = try_run_bounded_command(
+    let result = try_run_debugger_query(
         command,
         format!("{dbg} hang-before-breakpoint control"),
         std::time::Duration::from_secs(3),

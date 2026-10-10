@@ -239,9 +239,9 @@ pub(super) fn compute_import_uri(
         for uri in &open {
             if let Some(path) = uri.to_checked_file_path() {
                 // Resolution reads which files exist, never their text.
-                options
-                    .documents
-                    .insert(resolved_physical_path(&path).ok()?, String::new());
+                if let Ok(path) = resolved_physical_path(&path) {
+                    options.documents.insert(path, String::new());
+                }
             }
         }
         hew_compile::resolve_module_import(&importer, &import.path, &options)?

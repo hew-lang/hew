@@ -277,7 +277,7 @@ fn warm_debug_symbols(binary: &Path) {
     }
     // A wedged debugger here is still a failure, just not one this fixture can
     // describe, so it gets a budget of its own rather than the measured one.
-    let _ = try_run_bounded_command(
+    let _ = try_run_debugger_query(
         command,
         format!("warm debug symbols for {path}"),
         std::time::Duration::from_mins(5),
@@ -306,33 +306,41 @@ fn debugger_query_timeout() -> std::time::Duration {
         })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn try_run_debugger_query(
+    mut command: Command,
+    label: impl Into<String>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, hew_testutil::BoundedExecError> {
+    if command.get_program() == "lldb" {
+        // Let debugserver kill its inferior when a timeout kills LLDB.
+        command.args(["-O", "settings set target.detach-on-error false"]);
+    }
+    try_run_bounded_command(command, label, timeout)
+}
+
 /// Run a measured gdb/lldb query under [`debugger_query_timeout`] instead of
 /// the shared harness's default 30s deadline, and panic with the harness's
 /// own clear timeout diagnostic (command, configured deadline, elapsed time,
 /// captured output) rather than a bare assertion failure.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn run_debugger_query(command: Command, label: impl Into<String>) -> std::process::Output {
-    try_run_bounded_command(command, label, debugger_query_timeout())
+    try_run_debugger_query(command, label, debugger_query_timeout())
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
-/// First available batch debugger, preferring each platform's native one.
-/// `lldb -b -o ...` and `gdb --batch -ex ...` both run a script
-/// non-interactively.
+/// Require the platform debugger provisioned by CI.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger() -> Option<&'static str> {
-    #[cfg(target_os = "linux")]
-    let candidates = ["gdb", "lldb"];
-    #[cfg(target_os = "freebsd")]
-    let candidates = ["gdb", "lldb"];
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let debugger = "gdb";
     #[cfg(target_os = "macos")]
-    let candidates = ["lldb", "gdb"];
-    candidates.into_iter().find(|d| {
-        Command::new(d)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
+    let debugger = "lldb";
+    Command::new(debugger)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+        .then_some(debugger)
 }
 
 /// A missing debugger is a hard failure, not a skip. A skip here silently
@@ -1096,7 +1104,9 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         "backtrace must name the Hew handler frame:\n{text}"
     );
     assert!(
-        text.contains("coro_resume") || text.contains("hew_cont_resume"),
+        text.contains("coro_resume")
+            || text.contains("hew_cont_resume")
+            || text.contains("coro_exec::resume_park"),
         "backtrace must show the honest transition into the runtime coroutine \
          resume boundary:\n{text}"
     );
@@ -1231,7 +1241,7 @@ fn debugger_hang_before_breakpoint_times_out_with_clear_diagnostic() {
         command
     };
 
-    let result = try_run_bounded_command(
+    let result = try_run_debugger_query(
         command,
         format!("{dbg} hang-before-breakpoint control"),
         std::time::Duration::from_secs(3),

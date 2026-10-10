@@ -319,14 +319,14 @@ impl Parser<'_> {
             // `clone x.field` / `clone foo()` clone the whole postfix chain.
             self.advance()?; // consume `clone`
             let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
-            let end = operand.1.end;
+            let end = self.peek_span().start;
             (Expr::Clone(Box::new(operand)), start..end)
         } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
                 Token::Bang => {
                     let operand = self.parse_expr_bp(rbp)?;
-                    let end = operand.1.end;
+                    let end = self.peek_span().start;
                     (
                         Expr::Unary {
                             op: UnaryOp::Not,
@@ -341,7 +341,7 @@ impl Parser<'_> {
                     // so there is nothing the parser must fold early. HIR folds
                     // it once the checker has picked a concrete width.
                     let operand = self.parse_expr_bp(rbp)?;
-                    let end = operand.1.end;
+                    let end = self.peek_span().start;
                     (
                         Expr::Unary {
                             op: UnaryOp::Negate,
@@ -352,7 +352,7 @@ impl Parser<'_> {
                 }
                 Token::Tilde => {
                     let operand = self.parse_expr_bp(rbp)?;
-                    let end = operand.1.end;
+                    let end = self.peek_span().start;
                     (
                         Expr::Unary {
                             op: UnaryOp::BitNot,
@@ -644,14 +644,13 @@ impl Parser<'_> {
             if self.peek() == Some(&Token::Is) {
                 self.advance(); // consume `is`
                 let rhs = self.parse_expr_bp(rbp)?;
-                let end = rhs.1.end;
-                let lhs_start = lhs.1.start;
+                let end = self.peek_span().start;
                 lhs = (
                     Expr::Is {
                         lhs: Box::new(lhs),
                         rhs: Box::new(rhs),
                     },
-                    lhs_start..end,
+                    start..end,
                 );
                 continue;
             }
@@ -662,7 +661,7 @@ impl Parser<'_> {
                 return None;
             };
             let rhs = self.parse_expr_bp(rbp)?;
-            let end = rhs.1.end;
+            let end = self.peek_span().start;
 
             lhs = (
                 Expr::Binary {

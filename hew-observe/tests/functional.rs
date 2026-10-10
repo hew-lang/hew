@@ -537,15 +537,33 @@ fn validate_trace_snapshot(traces: &[TraceEvent]) -> Result<(), String> {
         return Err("trace endpoint did not attribute an event to Counter or Pinger".to_owned());
     }
 
-    // Protocol v0.5 has no separate target actor/dispatch on send events, so a
-    // forwarded send may legitimately have no handler name. The consumer must
-    // preserve the raw message type and render the missing metadata honestly.
-    if traces
+    // Protocol v0.5 records the sender actor context but no separate target
+    // actor/dispatch. The fixture forwards exactly seven Counter.increment
+    // messages from Pinger, so current runtime data cannot resolve their target
+    // handler. Pin that limit until the producer versions and fixes the trace
+    // contract; the consumer must preserve the raw nonzero message type and
+    // render the missing metadata honestly in the meantime.
+    let unresolved_forwarded = traces
         .iter()
-        .filter(|event| event.event_type == "send")
-        .any(|event| event.handler_name.is_none() && event.msg_type == 0)
+        .filter(|event| {
+            event.event_type == "send"
+                && event.actor_type.as_deref() == Some("Pinger")
+                && event.handler_name.is_none()
+        })
+        .collect::<Vec<_>>();
+    if unresolved_forwarded.len() != FIXTURE_COUNTER_INCREMENTS as usize {
+        return Err(format!(
+            "expected {FIXTURE_COUNTER_INCREMENTS} unresolved Pinger-forwarded sends under v0.5, observed {}",
+            unresolved_forwarded.len()
+        ));
+    }
+    if let Some(event) = unresolved_forwarded
+        .iter()
+        .find(|event| event.msg_type == 0)
     {
-        return Err("unresolved send event lost its raw msg_type".to_owned());
+        return Err(format!(
+            "unresolved Pinger-forwarded send lost its raw msg_type: {event:?}"
+        ));
     }
 
     Ok(())

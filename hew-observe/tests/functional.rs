@@ -57,6 +57,18 @@ struct ActorInfo {
     msgs: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct TraceEvent {
+    #[serde(default)]
+    actor_type: Option<String>,
+    #[serde(default)]
+    event_type: String,
+    #[serde(default)]
+    msg_type: i32,
+    #[serde(default)]
+    handler_name: Option<String>,
+}
+
 #[derive(Debug, Default)]
 struct Snapshot {
     metrics: Metrics,
@@ -128,11 +140,13 @@ fn profiler_endpoint_captures_fixture_observability_data() {
         .build()
         .expect("build HTTP client");
 
-    match wait_for_valid_snapshot(&client, &base_url) {
-        Ok(snapshot) => assert_snapshot_has_expected_data(&snapshot),
-        Err(error) => {
-            panic!("{error}\n{}", child.output_after_kill());
-        }
+    let result = wait_for_valid_snapshot(&client, &base_url).and_then(|snapshot| {
+        validate_snapshot(&snapshot)?;
+        let traces: Vec<TraceEvent> = fetch_json(&client, &base_url, "/api/traces")?;
+        validate_trace_snapshot(&traces)
+    });
+    if let Err(error) = result {
+        panic!("{error}\n{}", child.output_after_kill());
     }
 }
 
@@ -483,6 +497,60 @@ fn validate_scrape_metrics(scrape: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_trace_snapshot(traces: &[TraceEvent]) -> Result<(), String> {
+    if traces.is_empty() {
+        return Err("trace endpoint returned no events for the actor fixture".to_owned());
+    }
+
+    for event_type in ["spawn", "send", "begin", "end"] {
+        if !traces.iter().any(|event| event.event_type == event_type) {
+            return Err(format!("trace endpoint did not emit a {event_type} event"));
+        }
+    }
+
+    for handler in ["Counter.increment", "Counter.total", "Pinger.ping"] {
+        if !traces
+            .iter()
+            .any(|event| event.handler_name.as_deref() == Some(handler))
+        {
+            return Err(format!(
+                "trace endpoint did not resolve current dotted handler name {handler}"
+            ));
+        }
+    }
+
+    if let Some(legacy) = traces.iter().find_map(|event| {
+        event
+            .handler_name
+            .as_deref()
+            .filter(|handler| handler.contains("::"))
+    }) {
+        return Err(format!(
+            "trace endpoint emitted legacy handler separator in {legacy}; expected Actor.handler"
+        ));
+    }
+
+    if !traces
+        .iter()
+        .any(|event| matches!(event.actor_type.as_deref(), Some("Counter" | "Pinger")))
+    {
+        return Err("trace endpoint did not attribute an event to Counter or Pinger".to_owned());
+    }
+
+    // Protocol v0.5 has no separate target actor/dispatch on send events, so a
+    // forwarded send may legitimately have no handler name. The consumer must
+    // preserve the raw message type and render the missing metadata honestly.
+    if traces
+        .iter()
+        .filter(|event| event.event_type == "send")
+        .any(|event| event.handler_name.is_none() && event.msg_type == 0)
+    {
+        return Err("unresolved send event lost its raw msg_type".to_owned());
+    }
+
+    Ok(())
+}
+
 fn scrape_values(scrape: &str) -> BTreeMap<String, u64> {
     scrape
         .lines()
@@ -552,8 +620,4 @@ fn restart_count(scrape: &str, child: &str) -> Option<u64> {
         .find(|line| line.starts_with(prefix) && line.contains(&needle))
         .and_then(|line| line.rsplit_once(' '))
         .and_then(|(_, value)| value.parse::<u64>().ok())
-}
-
-fn assert_snapshot_has_expected_data(snapshot: &Snapshot) {
-    validate_snapshot(snapshot).expect("snapshot should already have been validated");
 }

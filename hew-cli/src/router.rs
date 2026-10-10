@@ -213,7 +213,7 @@ mod tests {
     };
 
     use super::{
-        compile_fallback_args, dispatch_command, try_parse_cli_with_compile_fallback,
+        compile_fallback_args, dispatch_command, parse_from, try_parse_cli_with_compile_fallback,
         CommandDispatcher,
     };
 
@@ -481,6 +481,22 @@ mod tests {
         dispatch_command(Some(&command), &mut dispatcher);
 
         assert_eq!(dispatcher.calls, vec!["observe"]);
+    }
+
+    #[test]
+    fn observe_version_flag_is_forwarded_to_sibling() {
+        let cli = parse_from(
+            ["hew", "observe", "--version"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .expect("observe arguments should parse");
+
+        let Some(crate::args::Command::Observe(args)) = cli.command else {
+            panic!("expected observe command");
+        };
+        assert_eq!(args.args, ["--version"]);
     }
 
     #[test]

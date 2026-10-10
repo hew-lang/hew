@@ -50,12 +50,14 @@ restart decision, and the surrounding context.
 Multi-node view for clustered deployments: per-node connection state,
 message flow across nodes, and distributed actor placement.
 
-### 6. Messages — message flow
+### 6. Messages — message events
 
 ![Messages tab](docs/screenshots/observer-tab6-messages.png)
 
-Live message traffic between actors, with source, destination, kind, and
-recent rate.
+Live message events grouped by the actor context recorded by the runtime. The
+v0.5 trace protocol includes a message type and sometimes a resolved handler
+name, but it does **not** include a distinct destination actor ID. An unresolved
+handler is shown explicitly instead of synthesizing an actor or handler name.
 
 ### 7. Timeline — temporal view
 
@@ -63,6 +65,14 @@ recent rate.
 
 Time-ordered trace of scheduler and mailbox events so causality and
 ordering are visible at a glance.
+
+### Trace-reader limitation
+
+`GET /api/traces` is a destructive, process-global drain. Each request removes
+up to 256 events from the runtime queue. Run only one trace-reading observer at
+a time: simultaneous TUI, desktop, native, or direct HTTP clients split the
+event stream rather than receiving independent copies. Pausing the Messages or
+Timeline view stops that view from draining until it resumes.
 
 ## Usage
 

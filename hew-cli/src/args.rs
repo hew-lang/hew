@@ -1013,7 +1013,7 @@ pub enum ToolSubcommand {
 
 /// Arguments forwarded verbatim to `hew-observe`.
 #[derive(Debug, Args)]
-#[command(disable_help_flag = true)]
+#[command(disable_help_flag = true, disable_version_flag = true)]
 pub struct ObserveArgs {
     /// Arguments passed through to `hew-observe`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

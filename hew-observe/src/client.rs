@@ -329,10 +329,13 @@ pub struct TraceEvent {
     pub msg_type: i32,
     #[serde(default)]
     pub timestamp_ns: u64,
-    /// Fully-qualified handler name (`"ActorType::handler_name"`), or `None`
-    /// when the runtime's metadata registry has not been populated for this
-    /// `(actor_type, msg_type)` pair.  Populated on native builds via
-    /// codegen-emitted `hew_register_handler_name` calls at actor-type init time.
+    /// Fully-qualified handler name (`"ActorType.handler_name"`), or `None`
+    /// when the runtime cannot resolve this message type against the event's
+    /// actor context. In protocol v0.5 a send does not carry a distinct target
+    /// actor or target dispatch, so actor-to-actor sends can legitimately leave
+    /// this field empty even when both actor types were registered. Populated on
+    /// native builds via codegen-emitted `hew_register_handler_name` calls at
+    /// actor-type init time.
     #[serde(default)]
     pub handler_name: Option<String>,
 }

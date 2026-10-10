@@ -38,13 +38,23 @@ impl TraceEventMeta {
     pub fn swimlane_label(self, msg_type: i32, handler_name: Option<&str>) -> String {
         match self.name {
             "send" => handler_name.map_or_else(
-                || format!("──▶ send({msg_type})"),
+                || format!("──▶ send(msg_type={msg_type}; handler unavailable)"),
                 |name| format!("──▶ send({name})"),
             ),
             _ => format!("{} {}", self.glyph, self.label),
         }
     }
 }
+
+/// User-visible limits of the v0.5 trace transport.
+///
+/// A send event carries one actor context and a message type, but no distinct
+/// destination actor ID. The runtime endpoint also removes events as it serves
+/// them, so two observers split the stream instead of receiving independent
+/// copies. Keep this visible anywhere the TUI presents trace data rather than
+/// implying a complete source-to-destination flow.
+pub const TRACE_PROTOCOL_NOTICE: &str =
+    "v0.5: destination IDs unavailable; trace reads are single-consumer";
 
 pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
     // Runtime-emitted v0.5 trace events. MachineDispatchUnreachable is a
@@ -458,9 +468,18 @@ mod tests {
     fn send_label_prefers_registered_handler_name() {
         let meta = trace_event_meta("send");
         assert_eq!(
-            meta.swimlane_label(7, Some("Counter::increment")),
-            "──▶ send(Counter::increment)"
+            meta.swimlane_label(7, Some("Counter.increment")),
+            "──▶ send(Counter.increment)"
         );
-        assert_eq!(meta.swimlane_label(7, None), "──▶ send(7)");
+        assert_eq!(
+            meta.swimlane_label(7, None),
+            "──▶ send(msg_type=7; handler unavailable)"
+        );
+    }
+
+    #[test]
+    fn trace_protocol_notice_names_both_v05_limits() {
+        assert!(TRACE_PROTOCOL_NOTICE.contains("destination IDs unavailable"));
+        assert!(TRACE_PROTOCOL_NOTICE.contains("single-consumer"));
     }
 }

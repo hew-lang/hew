@@ -12,7 +12,7 @@ use ratatui::Frame;
 
 use crate::app::{App, SortColumn, Tab};
 use crate::client::{ConnectionInfo, ConnectionStatus, RouteEntry};
-use crate::events::trace_event_meta;
+use crate::events::{trace_event_meta, TRACE_PROTOCOL_NOTICE};
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -594,7 +594,7 @@ fn cluster_member_debug_summary(
 fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .constraints([Constraint::Min(0), Constraint::Length(4)])
         .split(area);
     draw_message_swimlanes(f, app, chunks[0]);
     draw_message_controls(f, app, chunks[1]);
@@ -768,10 +768,14 @@ fn draw_message_controls(f: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
-    let text = format!(
+    let controls = format!(
         " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str}{filter_str}",
         app.trace_events.len()
     );
+    let text = vec![
+        Line::from(controls),
+        Line::from(Span::styled(TRACE_PROTOCOL_NOTICE, theme::muted_style())),
+    ];
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);
 }
@@ -786,7 +790,7 @@ fn draw_timeline(f: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Min(0),
             Constraint::Length(2),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(area);
     draw_timeline_chart(f, app, chunks[0]);
@@ -994,10 +998,14 @@ fn draw_timeline_controls(f: &mut Frame, app: &App, area: Rect) {
     let paused_str = if app.timeline_paused { "yes" } else { "no" };
     let window_s = app.timeline_window_ns as f64 / 1_000_000_000.0;
     let offset_s = app.timeline_offset_ns as f64 / 1_000_000_000.0;
-    let text = format!(
+    let controls = format!(
         " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str}",
         app.trace_events.len()
     );
+    let text = vec![
+        Line::from(controls),
+        Line::from(Span::styled(TRACE_PROTOCOL_NOTICE, theme::muted_style())),
+    ];
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);
 }

@@ -329,23 +329,18 @@ fn run_debugger_query(command: Command, label: impl Into<String>) -> std::proces
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
-/// First available batch debugger, preferring each platform's native one.
-/// `lldb -b -o ...` and `gdb --batch -ex ...` both run a script
-/// non-interactively.
+/// Require the platform debugger provisioned by CI.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger() -> Option<&'static str> {
-    #[cfg(target_os = "linux")]
-    let candidates = ["gdb", "lldb"];
-    #[cfg(target_os = "freebsd")]
-    let candidates = ["gdb", "lldb"];
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let debugger = "gdb";
     #[cfg(target_os = "macos")]
-    let candidates = ["lldb", "gdb"];
-    candidates.into_iter().find(|d| {
-        Command::new(d)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
+    let debugger = "lldb";
+    Command::new(debugger)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+        .then_some(debugger)
 }
 
 /// A missing debugger is a hard failure, not a skip. A skip here silently

@@ -4,9 +4,7 @@
 // and output, an actor's output and exit never wait on them.
 extern "C" {
     #[offload]
-    fn pause() -> i32;
-    #[offload]
-    fn usleep(micros: u32) -> i32;
+    fn hew_sleep_ns(ns: i64);
 }
 
 actor Talker {
@@ -19,7 +17,7 @@ fn abandon(count: i64) -> i64 {
     var gave_up = 0;
     for i in 0..count {
         gave_up += scope within 1ms {
-            let _ = unsafe { pause() };
+            unsafe { hew_sleep_ns(9223372036854775807) };
             0
         } handle failure {
             1
@@ -30,7 +28,8 @@ fn abandon(count: i64) -> i64 {
 
 fn main() {
     println(f"gave up {abandon(64)}");
-    println(f"slept {unsafe { usleep(1000) }}");
+    unsafe { hew_sleep_ns(1000000) };
+    println("slept");
     let talker = spawn Talker;
     talker.say("from actor").expect("say");
     sleep(100ms);

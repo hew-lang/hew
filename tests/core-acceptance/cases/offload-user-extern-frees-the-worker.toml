@@ -2,6 +2,7 @@
 id = "offload-user-extern-frees-the-worker"
 intent = "A user #[offload] extern blocked in the OS leaves the only worker free for the task that unblocks it."
 source = "cases/offload-user-extern-frees-the-worker.hew"
+platforms = ["linux", "macos", "freebsd"]
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 

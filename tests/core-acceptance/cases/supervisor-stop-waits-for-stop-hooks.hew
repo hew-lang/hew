@@ -22,7 +22,7 @@ supervisor Waits {
     strategy: one_for_one;
     intensity: 10 within 60s;
     child quick: Worker { name: "quick" };
-    child mid: Worker { name: "mid" } stop: 100ms;
+    child mid: Worker { name: "mid" } stop: 1s;
 }
 
 supervisor Outlasted {

@@ -2,6 +2,7 @@
 id = "shutdown-signal-parked-waits"
 intent = "A default SIGTERM delivered while main waits for a child does not interrupt the wait; main then sees its actor calls refused."
 source = "cases/shutdown-signal-parked-waits.hew"
+platforms = ["linux", "macos", "freebsd"]
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 

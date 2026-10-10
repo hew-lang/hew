@@ -2,6 +2,7 @@
 id = "offload-cancel-releases-late-result"
 intent = "A deadline resumes the caller of a blocked #[offload] call at once; the job keeps its own argument copy and releases its late result exactly once."
 source = "cases/offload-cancel-releases-late-result.hew"
+platforms = ["linux", "macos", "freebsd"]
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 

@@ -11,30 +11,15 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
-
-/// Canonical schema version expected on every JSON envelope returned by the
-/// profiler/observe HTTP surface.
-///
-/// Mirrors `hew_runtime::profiler::OBSERVE_SCHEMA_VERSION`. The two crates
-/// duplicate the literal because `hew-observe` deliberately does not depend on
-/// `hew-runtime`; both copies must move together when the envelope shape
-/// evolves. Producer and consumer at v0.5 emit/accept `"v0.5"`; no
-/// cross-version compatibility shims (per R58 Q136 Option B).
-pub const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
-
-/// Canonical envelope returned by every `/api/*` JSON endpoint:
-/// `{"schema_version": "<OBSERVE_SCHEMA_VERSION>", "data": <body>}`.
-///
-/// The producer (`hew_runtime::profiler::server::envelope_json`) wraps every
-/// response body in this shape so downstream consumers (this client, the
-/// dashboard, the sandbox-VM bridge) can detect when the producer's event
-/// shape has drifted.
-#[derive(Debug, Deserialize)]
-struct Envelope<T> {
-    schema_version: String,
-    data: T,
-}
+#[cfg(test)]
+use hew_observe_protocol::Envelope;
+#[cfg(test)]
+pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
+use hew_observe_protocol::{decode_envelope, DecodeError};
+pub use hew_observe_protocol::{
+    ActorInfo, ClusterMember, ConnectionInfo, CrashEntry, HistoryEntry, Metrics, RouteEntry,
+    RoutingSnapshot, SupervisorRow, TraceEvent,
+};
 
 /// Typed failure categories from a profiler client request.
 ///
@@ -118,265 +103,6 @@ fn build_tcp_http_client(base_url: &str) -> Result<reqwest::blocking::Client, Cl
             base_url: base_url.to_owned(),
             source,
         })
-}
-
-/// Metrics snapshot from `/api/metrics`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Metrics {
-    #[serde(default)]
-    pub timestamp_secs: f64,
-    #[serde(default)]
-    pub tasks_spawned: u64,
-    #[serde(default)]
-    pub tasks_completed: u64,
-    #[serde(default)]
-    pub steals: u64,
-    #[serde(default)]
-    pub messages_sent: u64,
-    #[serde(default)]
-    pub messages_received: u64,
-    #[serde(default)]
-    pub active_workers: u64,
-    #[serde(default)]
-    pub alloc_count: u64,
-    #[serde(default)]
-    pub dealloc_count: u64,
-    #[serde(default)]
-    pub bytes_allocated: u64,
-    #[serde(default)]
-    pub bytes_freed: u64,
-    #[serde(default)]
-    pub bytes_live: u64,
-    #[serde(default)]
-    pub peak_bytes_live: u64,
-    #[serde(default)]
-    pub tcp_bytes_read: u64,
-    #[serde(default)]
-    pub tcp_bytes_written: u64,
-    #[serde(default)]
-    pub tcp_accept_count: u64,
-    #[serde(default)]
-    pub tcp_connect_count: u64,
-    #[serde(default)]
-    pub tcp_error_count: u64,
-}
-
-/// Per-actor stats from `/api/actors`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ActorInfo {
-    pub id: u64,
-    #[serde(default)]
-    pub pid: u64,
-    /// Hew actor type name, e.g. `"Counter"`.  Absent from older profiler
-    /// versions; defaults to an empty string in that case.
-    #[serde(default)]
-    pub actor_type: String,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub msgs: u64,
-    #[serde(default)]
-    pub time_ns: u64,
-    #[serde(default)]
-    pub mbox_depth: i64,
-    #[serde(default)]
-    pub mbox_hwm: i64,
-}
-
-impl ActorInfo {
-    /// Human-readable state name (capitalized for display).
-    pub fn state_name(&self) -> &str {
-        if self.state.is_empty() {
-            "Unknown"
-        } else {
-            &self.state
-        }
-    }
-
-    /// Display label for the actor type.
-    ///
-    /// Returns the registered Hew type name when available, or `"Actor"` as a
-    /// fallback for older profiler versions that do not emit `actor_type`.
-    pub fn type_label(&self) -> &str {
-        if self.actor_type.is_empty() {
-            "Actor"
-        } else {
-            &self.actor_type
-        }
-    }
-}
-
-/// History entry from `/api/metrics/history` (abbreviated keys).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; only a subset used for sparklines currently"
-)]
-pub struct HistoryEntry {
-    #[serde(default)]
-    pub t: f64,
-    #[serde(default, rename = "ts")]
-    pub tasks_spawned: u64,
-    #[serde(default, rename = "tc")]
-    pub tasks_completed: u64,
-    #[serde(default, rename = "st")]
-    pub steals: u64,
-    #[serde(default, rename = "ms")]
-    pub messages_sent: u64,
-    #[serde(default, rename = "mr")]
-    pub messages_received: u64,
-    #[serde(default, rename = "aw")]
-    pub active_workers: u64,
-    #[serde(default, rename = "ac")]
-    pub alloc_count: u64,
-    #[serde(default, rename = "dc")]
-    pub dealloc_count: u64,
-    #[serde(default, rename = "ba")]
-    pub bytes_allocated: u64,
-    #[serde(default, rename = "bf")]
-    pub bytes_freed: u64,
-    #[serde(default, rename = "bl")]
-    pub bytes_live: u64,
-    #[serde(default, rename = "pb")]
-    pub peak_bytes_live: u64,
-    #[serde(default, rename = "tbr")]
-    pub tcp_bytes_read: u64,
-    #[serde(default, rename = "tbw")]
-    pub tcp_bytes_written: u64,
-    #[serde(default, rename = "tac")]
-    pub tcp_accept_count: u64,
-    #[serde(default, rename = "tcc")]
-    pub tcp_connect_count: u64,
-    #[serde(default, rename = "tec")]
-    pub tcp_error_count: u64,
-}
-
-/// Cluster member from `/api/cluster/members`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ClusterMember {
-    #[serde(default)]
-    pub node_id: u16,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub incarnation: u64,
-    #[serde(default)]
-    pub addr: String,
-    #[serde(default)]
-    pub last_seen_ms: u64,
-}
-
-/// Connection info from `/api/connections`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ConnectionInfo {
-    #[serde(default)]
-    pub conn_id: i32,
-    #[serde(default)]
-    pub peer_node_id: u16,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub last_activity_ms: u64,
-}
-
-/// Routing table snapshot from `/api/routing/table`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RoutingSnapshot {
-    #[serde(default)]
-    pub local_node_id: u16,
-    #[serde(default)]
-    pub routes: Vec<RouteEntry>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RouteEntry {
-    #[serde(default)]
-    pub node_id: u16,
-    #[serde(default)]
-    pub conn_id: i32,
-}
-
-/// Trace event from `/api/traces`.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
-)]
-pub struct TraceEvent {
-    #[serde(default)]
-    pub trace_id: String,
-    #[serde(default)]
-    pub span_id: u64,
-    #[serde(default)]
-    pub parent_span_id: u64,
-    #[serde(default)]
-    pub actor_id: u64,
-    /// Dispatch function pointer cast to `u64` — the de-facto actor type
-    /// identifier.  `0` when the actor was freed before the drain ran, or when
-    /// the profiler actor registry has not been populated.  Use together with
-    /// `actor_type` for display; use the raw value to group or compare actor
-    /// types programmatically.
-    #[serde(default)]
-    pub actor_type_id: u64,
-    /// Registered Hew type name for this actor (e.g. `"Counter"`), or `None`
-    /// when the dispatch function has not been registered via
-    /// `hew_actor_register_type` (requires codegen emission — see #1258).
-    #[serde(default)]
-    pub actor_type: Option<String>,
-    #[serde(default)]
-    pub event_type: String,
-    #[serde(default)]
-    pub msg_type: i32,
-    #[serde(default)]
-    pub timestamp_ns: u64,
-    /// Fully-qualified handler name (`"ActorType::handler_name"`), or `None`
-    /// when the runtime's metadata registry has not been populated for this
-    /// `(actor_type, msg_type)` pair.  Populated on native builds via
-    /// codegen-emitted `hew_register_handler_name` calls at actor-type init time.
-    #[serde(default)]
-    pub handler_name: Option<String>,
-}
-
-impl TraceEvent {
-    /// Returns `true` for event types that drive the actionable trace UI views
-    /// (timeline, actor drill-down).  This is the single source of truth for
-    /// the "actionable event" predicate used throughout hew-observe.
-    pub fn is_actionable(&self) -> bool {
-        crate::events::trace_event_meta(&self.event_type).is_actionable()
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct SupervisorRow {
-    #[serde(default)]
-    pub depth: u16,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub state: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct CrashEntry {
-    #[serde(default)]
-    pub time_s: f64,
-    #[serde(default)]
-    pub actor_id: u64,
-    #[serde(default)]
-    pub signal: i32,
-    /// Canonical Hew trap discriminator resolved from the raw `signal`
-    /// (`HEW_TRAP_*` band → `"DivideByZero"`, `"IntegerOverflow"`, …; an OS
-    /// signal number → `"Signal"`; clean stop → `"Normal"`).
-    ///
-    /// Populated by `hew_runtime::crash::snapshot_crashes_json` via
-    /// `ExitReason::from_error_code(signal).trap_kind_name()`. Defaults to the
-    /// empty string when a profiler/runtime predating this field is observed.
-    #[serde(default)]
-    pub trap_kind: String,
-    #[serde(default)]
-    pub msg_type: i32,
-    #[serde(default)]
-    pub fault_addr: u64,
 }
 
 /// Connection status.
@@ -501,21 +227,17 @@ impl ProfilerClient {
     /// possibly-shape-shifted data.
     fn get_json<T: serde::de::DeserializeOwned>(&mut self, path: &str) -> Option<T> {
         let body = self.get_bytes(path)?;
-        let envelope: Envelope<T> = match serde_json::from_slice(&body) {
-            Ok(v) => v,
-            Err(e) => {
+        match decode_envelope(&body) {
+            Ok(data) => Some(data),
+            Err(DecodeError::Json(e)) => {
                 self.last_error = Some(ClientError::Parse(e));
-                return None;
+                None
             }
-        };
-        if envelope.schema_version != OBSERVE_SCHEMA_VERSION {
-            self.last_error = Some(ClientError::BadStatus(format!(
-                "schema_version mismatch: expected {OBSERVE_SCHEMA_VERSION}, got {}",
-                envelope.schema_version
-            )));
-            return None;
+            Err(error @ DecodeError::SchemaVersion { .. }) => {
+                self.last_error = Some(ClientError::BadStatus(error.to_string()));
+                None
+            }
         }
-        Some(envelope.data)
     }
 
     /// Raw GET request returning the response body bytes.
@@ -738,19 +460,14 @@ mod tests {
         assert_eq!(entry.msg_type, 7);
     }
 
-    /// Pre-existing profiler payloads that do not carry `trap_kind` (e.g.
-    /// older runtimes) must still parse — `trap_kind` is `#[serde(default)]`
-    /// and defaults to the empty string. Prevents a flag-day break on the
-    /// consumer when a downstream tool inspects an older /api/crashes body.
+    /// v0.5 requires `trap_kind`; omission is malformed rather than an empty
+    /// value with different semantics.
     #[test]
-    fn crash_entry_trap_kind_defaults_when_field_absent() {
+    fn crash_entry_rejects_missing_required_trap_kind() {
         let body = r#"[{"time_s":0.0,"actor_id":1,"signal":11,"msg_type":0,"fault_addr":0}]"#;
-        let entries: Vec<CrashEntry> = serde_json::from_str(body).expect("parse");
-        assert_eq!(entries.len(), 1);
-        assert!(
-            entries[0].trap_kind.is_empty(),
-            "missing trap_kind must default to the empty string for forward-compat"
-        );
+        let error = serde_json::from_str::<Vec<CrashEntry>>(body)
+            .expect_err("missing required trap_kind must fail");
+        assert!(error.to_string().contains("trap_kind"), "{error}");
     }
 
     // ── Schema-version envelope unwrapping ────────────────────────────────
@@ -906,10 +623,7 @@ mod tests {
         let metrics = client
             .fetch_metrics()
             .expect("observe client must parse live v0.5 metrics snapshot");
-        assert!(
-            metrics.timestamp_secs.is_finite(),
-            "metrics timestamp must be finite"
-        );
+        assert_eq!(metrics.timestamp_secs, data["timestamp_secs"]);
         assert_eq!(client.status, ConnectionStatus::Connected);
         assert!(
             client.last_error.is_none(),
@@ -1020,7 +734,7 @@ mod tests {
         // Swap to a socket that serves valid metrics JSON wrapped in the
         // canonical observe envelope (producer/consumer at v0.5 emit/accept
         // `{"schema_version":"v0.5","data":<body>}`).
-        let metrics_inner = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
+        let metrics_inner = r#"{"timestamp_secs":1,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
         let metrics_json =
             format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{metrics_inner}}}"#);
         let body_len = metrics_json.len();
@@ -1093,7 +807,7 @@ mod tests {
 
     fn make_trace_event(event_type: &str) -> TraceEvent {
         serde_json::from_str(&format!(
-            r#"{{"trace_id":"0000000000000000","span_id":1,"parent_span_id":0,"actor_id":12345678,"event_type":"{event_type}","msg_type":0,"timestamp_ns":9999}}"#
+            r#"{{"trace_id":"00000000000000000000000000000000","span_id":1,"parent_span_id":0,"actor_id":12345678,"actor_type_id":0,"actor_type":null,"event_type":"{event_type}","msg_type":0,"timestamp_ns":9999,"handler_name":null}}"#
         ))
         .expect("TraceEvent JSON must deserialise")
     }

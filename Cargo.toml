@@ -14,6 +14,7 @@ members = [
   "hew-runtime-testkit",
   "hew-types",
   "hew-observe",
+  "hew-observe-protocol",
   "hew-wasm",
   "hew-analysis",
   "hew-compile",

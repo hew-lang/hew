@@ -9,6 +9,8 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use hew_observe_protocol::envelope_json_raw;
+pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -257,41 +259,12 @@ fn text_response(body: String, content_type: &str) -> Response<Full<Bytes>> {
         .expect("valid response")
 }
 
-/// Canonical schema version stamped on every JSON envelope emitted by the
-/// profiler/observe HTTP surface.
-///
-/// Consumers (`hew-observe`, sandbox-VM bridges, dashboard) read this value
-/// to detect when the producer's event shape has drifted. The string is
-/// duplicated on the consumer side (`hew_observe::client::OBSERVE_SCHEMA_VERSION`)
-/// because `hew-observe` does not depend on `hew-runtime`; both copies must
-/// move together when the envelope shape evolves. Per R58 Q136 (Option B),
-/// the field lives on the JSON envelope only — the `#[repr(C)]` payloads
-/// crossing the FFI boundary (e.g. `CrashReport`) are untouched.
-pub const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
-
-/// Wrap a raw JSON document body in the canonical observe envelope:
-/// `{"schema_version":"<OBSERVE_SCHEMA_VERSION>","data":<body>}`.
-///
-/// `body` MUST already be a valid JSON value (object, array, string, number,
-/// boolean, or null). The function does not validate; callers in this module
-/// build the inner JSON via `serde_json` / manual `format!` and always emit
-/// well-formed JSON.
-pub(crate) fn envelope_json(body: &str) -> String {
-    let mut out = String::with_capacity(body.len() + OBSERVE_SCHEMA_VERSION.len() + 32);
-    out.push_str(r#"{"schema_version":""#);
-    out.push_str(OBSERVE_SCHEMA_VERSION);
-    out.push_str(r#"","data":"#);
-    out.push_str(body);
-    out.push('}');
-    out
-}
-
 fn json_response(body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-Hew-Schema-Version", OBSERVE_SCHEMA_VERSION)
-        .body(Full::new(Bytes::from(envelope_json(body))))
+        .body(Full::new(Bytes::from(envelope_json_raw(body))))
         .expect("valid response")
 }
 
@@ -474,7 +447,9 @@ fn serve_connections(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
 /// `GET /api/routing/table` — routing table snapshot.
 fn serve_routing_table(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.routing.is_null() {
-        return json_response(r#"{"local_node_id":0,"routes":[]}"#);
+        return json_response(
+            r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#,
+        );
     }
     // SAFETY: pointer is non-null and points to a valid HewRoutingTable
     // that outlives the profiler thread. Internal access is RwLock-protected.
@@ -609,7 +584,7 @@ mod tests {
 
     #[test]
     fn envelope_json_wraps_array_body_with_schema_version() {
-        let env = envelope_json("[]");
+        let env = envelope_json_raw("[]");
         let parsed: serde_json::Value =
             serde_json::from_str(&env).expect("envelope must be valid JSON");
         assert_eq!(parsed["schema_version"], json!("v0.5"));
@@ -618,7 +593,9 @@ mod tests {
 
     #[test]
     fn envelope_json_wraps_object_body_with_schema_version() {
-        let env = envelope_json(r#"{"local_node_id":1,"routes":[]}"#);
+        let env = envelope_json_raw(
+            r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#,
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&env).expect("envelope must be valid JSON");
         assert_eq!(parsed["schema_version"], json!("v0.5"));

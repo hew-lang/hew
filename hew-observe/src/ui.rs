@@ -308,7 +308,7 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 break;
             }
             let m = &members[member_idx];
-            let is_self = m.node_id == app.cluster_routing.local_node_id;
+            let is_self = m.node_id == app.cluster_routing.local_route_slot;
             let connection = app
                 .cluster_connections
                 .iter()
@@ -317,7 +317,7 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 .cluster_routing
                 .routes
                 .iter()
-                .find(|r| r.node_id == m.node_id);
+                .find(|r| r.route_slot == m.node_id);
             let title = if is_self {
                 format!(" node:{} (self) ", m.node_id)
             } else {
@@ -466,8 +466,8 @@ fn draw_cluster_connections(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(format!(
-        " Routing Table (local node:{}) ",
-        app.cluster_routing.local_node_id
+        " Routing Table (local {} / slot {}) ",
+        app.cluster_routing.local_node_id, app.cluster_routing.local_route_slot
     ));
     if app.cluster_routing.routes.is_empty() {
         let inner = block.inner(area);
@@ -495,7 +495,7 @@ fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
                 .find(|connection| connection.conn_id == route.conn_id);
             let state = connection.map_or("missing", |connection| connection.state.as_str());
             Row::new(vec![
-                Cell::from(format!("node:{}", route.node_id)),
+                Cell::from(route.node_id.clone()),
                 Cell::from(format!("{}", route.conn_id)),
                 Cell::from(connection.map_or("—".to_owned(), |connection| {
                     format!("node:{}", connection.peer_node_id)
@@ -522,25 +522,21 @@ fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-fn route_targets_for_connection(routes: &[RouteEntry], conn_id: i32) -> Vec<u16> {
-    let mut targets: Vec<u16> = routes
+fn route_targets_for_connection(routes: &[RouteEntry], conn_id: i32) -> Vec<String> {
+    let mut targets: Vec<String> = routes
         .iter()
         .filter(|route| route.conn_id == conn_id)
-        .map(|route| route.node_id)
+        .map(|route| route.node_id.clone())
         .collect();
     targets.sort_unstable();
     targets
 }
 
-fn format_route_targets(targets: &[u16]) -> String {
+fn format_route_targets(targets: &[String]) -> String {
     if targets.is_empty() {
         "\u{2014}".to_owned()
     } else {
-        targets
-            .iter()
-            .map(|target| format!("node:{target}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        targets.join(", ")
     }
 }
 
@@ -1596,13 +1592,7 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "duration seconds are always small positive values"
-)]
-fn format_duration(secs: f64) -> String {
-    let total = secs as u64;
+fn format_duration(total: u64) -> String {
     let h = total / 3600;
     let m = (total % 3600) / 60;
     let s = total % 60;
@@ -1654,23 +1644,29 @@ mod tests {
     fn route_targets_for_connection_returns_sorted_targets() {
         let routes = vec![
             RouteEntry {
-                node_id: 9,
+                node_id: "node-9".to_owned(),
+                route_slot: 9,
+                session_incarnation: 1,
                 conn_id: 3,
             },
             RouteEntry {
-                node_id: 4,
+                node_id: "node-4".to_owned(),
+                route_slot: 4,
+                session_incarnation: 1,
                 conn_id: 3,
             },
             RouteEntry {
-                node_id: 7,
+                node_id: "node-7".to_owned(),
+                route_slot: 7,
+                session_incarnation: 1,
                 conn_id: 8,
             },
         ];
 
         let targets = route_targets_for_connection(&routes, 3);
 
-        assert_eq!(targets, vec![4, 9]);
-        assert_eq!(format_route_targets(&targets), "node:4, node:9");
+        assert_eq!(targets, vec!["node-4", "node-9"]);
+        assert_eq!(format_route_targets(&targets), "node-4, node-9");
     }
 
     #[test]
@@ -1678,7 +1674,9 @@ mod tests {
         let summary = cluster_member_debug_summary(
             None,
             Some(&RouteEntry {
-                node_id: 42,
+                node_id: "node-42".to_owned(),
+                route_slot: 42,
+                session_incarnation: 1,
                 conn_id: 7,
             }),
             3,
@@ -1698,7 +1696,9 @@ mod tests {
                 last_activity_ms: 1_250,
             }),
             Some(&RouteEntry {
-                node_id: 42,
+                node_id: "node-42".to_owned(),
+                route_slot: 42,
+                session_incarnation: 1,
                 conn_id: 7,
             }),
             1,

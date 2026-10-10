@@ -551,7 +551,9 @@ fn validate_trace_snapshot(traces: &[TraceEvent]) -> Result<(), String> {
                 && event.handler_name.is_none()
         })
         .collect::<Vec<_>>();
-    if unresolved_forwarded.len() != FIXTURE_COUNTER_INCREMENTS as usize {
+    let expected_unresolved = usize::try_from(FIXTURE_COUNTER_INCREMENTS)
+        .map_err(|_| "fixture increment count does not fit usize".to_owned())?;
+    if unresolved_forwarded.len() != expected_unresolved {
         return Err(format!(
             "expected {FIXTURE_COUNTER_INCREMENTS} unresolved Pinger-forwarded sends under v0.5, observed {}",
             unresolved_forwarded.len()

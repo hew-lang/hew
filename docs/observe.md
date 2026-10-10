@@ -304,6 +304,12 @@ The key endpoints for observe users are:
 | `GET /api/metrics` | JSON envelope | Current profiler metrics: timestamp, task/message counters, active workers, allocator stats, and TCP counters. |
 | `GET /api/metrics/history` | JSON envelope | Five-minute, one-sample-per-second profiler ring buffer with abbreviated keys. |
 | `GET /api/memory` | JSON envelope | Current allocator stats. |
+| `GET /api/supervisors` | JSON envelope | Current supervisor tree rows. |
+| `GET /api/crashes` | JSON envelope | Recent actor crash records. |
+| `GET /api/cluster/members` | JSON envelope | Cluster membership snapshot. |
+| `GET /api/connections` | JSON envelope | Live cluster connection snapshot. |
+| `GET /api/routing/table` | JSON envelope | Local node ID and distributed routing rows. |
+| `GET /api/traces` | JSON envelope | Up to 256 trace events, removed from the process-global queue when read. |
 | `GET /debug/pprof/heap` | gzip protobuf | pprof-compatible heap profile. |
 | `GET /debug/pprof/profile` | text | Flat profile text. |
 
@@ -330,11 +336,32 @@ hew-observe --addr 127.0.0.1:6067
 delegation fails; run `hew-observe` directly or build/install it alongside
 `hew`.
 
+### Trace protocol limits
+
+The `v0.5` trace transport is useful for event timing and message-kind
+inspection, but it is not a complete message-flow graph:
+
+- A `send` event carries one actor context, a raw `msg_type`, and an optional
+  resolved `handler_name`. It does not carry separate source and destination
+  actor IDs. In particular, an actor forwarding a message to another actor may
+  have `handler_name: null` because the target handler cannot be resolved from
+  the recorded actor context. `hew-observe` reports the raw message type and
+  marks the handler unavailable; it does not invent a destination.
+- `/api/traces` is a destructive, process-global drain. Each request removes up
+  to 256 events. Use one trace-reading client at a time; simultaneous TUI,
+  desktop, native, or HTTP clients divide the event stream instead of receiving
+  independent copies.
+- Registered native handler names use the current `Actor.handler` spelling,
+  for example `Counter.increment`. A missing name is distinct from a schema
+  mismatch and remains valid `v0.5` data.
+
 ## Limitations / not yet
 
-- **No custom application metrics.** Hew programs can read runtime-owned metrics,
-  but cannot define counters, gauges, histograms, labels, spans, or traces
-  through `std.observe`.
+- **Custom metrics are scrape-only in the profiler UI.** Hew programs can define
+  counters, gauges, and simple histograms through `std.metrics`; their values
+  appear in `observe.scrape()` and `/api/observe/scrape`. They are not folded
+  into `/api/metrics` or displayed by the current `hew-observe` Overview tab.
+  Custom labels, application spans, and application traces are not yet exposed.
 - **Fragmented surfaces.** `observe.read`, `observe.scrape`, `/api/metrics`,
   `/api/actors`, and `/api/metrics/history` do not expose one identical schema.
   In particular, `/api/metrics` currently omits several fields that the runtime

@@ -22,15 +22,15 @@ installed without installing it). `sh install.sh --help` lists all of them.
 
 ## Quick Install (FreeBSD)
 
-FreeBSD base includes `fetch(1)` — no extra packages needed:
+Prebuilt tools require FreeBSD 15.1 or newer. FreeBSD base includes `fetch(1)`:
 
 ```sh
 fetch -o - https://hew.sh/install | sh
 ```
 
-Prebuilt release tarballs: `hew-v<ver>-freebsd-x86_64.tar.gz` and
-`hew-v<ver>-freebsd-aarch64.tar.gz` on the
-[releases page](https://github.com/hew-lang/hew/releases).
+Download `hew-v<ver>-freebsd-x86_64.tar.gz` from the
+[releases page](https://github.com/hew-lang/hew/releases). FreeBSD ARM64 has
+build and link checks; an ARM64 SDK archive is not currently shipped.
 
 ## Quick Install (Windows)
 
@@ -58,8 +58,8 @@ installed without installing it). `.\install.ps1 -Help` lists all of them.
 
 ## Package Managers
 
-| Platform                 | Command                                                                                              |
-| ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Platform                 | Command                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------- |
 | macOS / Linux (Homebrew) | `brew install hew-lang/tap/hew` (newest release, rc included) or `hew@stable` (final releases only) |
 | FreeBSD (script)         | `fetch -o - https://hew.sh/install \| sh`                                                           |
 | Arch Linux (AUR)         | `yay -S hew-bin`                                                                                    |

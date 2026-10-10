@@ -10,8 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
-use hew_compile::{DocumentSet, FrontendDiagnosticKind, FrontendOptions};
+use hew_compile::{DocumentSet, FrontendDiagnosticKind};
 use hew_types::error::TypeErrorKind;
+
+use crate::migrate_checks::CheckUnits;
 
 /// Respelling one site can expose another inside it (`Some(Ok(x))` checks
 /// the payload once the outer variant has a type), so a file is re-checked
@@ -29,37 +31,40 @@ pub(crate) struct VariantRefusal {
 /// Respell the bare variants of every file in `files` (path, migrated text),
 /// in place. Returns the refusals.
 ///
-/// Respelling never changes what a file declares, so each check unit — a
-/// directory module, or a file of its own — is checked against the other
-/// units' syntax-migrated text, and units are respelled one at a time.
 pub(crate) fn respell_bare_variants(files: &mut [(PathBuf, String)]) -> Vec<VariantRefusal> {
     let mut documents = DocumentSet::new();
-    let mut units: Vec<(PathBuf, Vec<usize>)> = Vec::new();
-    for (index, (path, text)) in files.iter().enumerate() {
+    let mut units = CheckUnits::new(files, "variants");
+    for (path, text) in files.iter() {
         documents.insert(path.clone(), text.clone());
-        let root = hew_compile::module_membership(path, &FrontendOptions::default())
-            .filter(hew_types::module_registry::ModuleMembership::checks_as_directory_module)
-            .map_or_else(|| path.clone(), |membership| membership.entry);
-        match units.iter_mut().find(|(known, _)| *known == root) {
-            Some((_, members)) => members.push(index),
-            None => units.push((root, vec![index])),
-        }
     }
     let mut refusals = Vec::new();
-    // A unit can load its whole import graph. Keep one semantic check live
-    // rather than multiplying that graph by the machine's CPU count.
-    for (root, members) in units {
-        let members: Vec<_> = members
+    while let Some(mut unit) = units.next() {
+        let before = unit_diagnostics(&unit.root, &documents, &mut units);
+        if before.checked {
+            units.include_loaded(&mut unit, files, &before.indices);
+        }
+        let members: Vec<_> = unit
+            .members
             .iter()
             .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
             .collect();
-        for (index, outcome) in respell_unit(&root, &members, &documents) {
+        for (index, outcome) in respell_unit(
+            &unit.root,
+            &members,
+            &documents,
+            &before.diagnostics,
+            &mut units,
+        ) {
             match outcome {
-                Ok(respelled) => files[index].1 = respelled,
+                Ok(respelled) => {
+                    documents.insert(files[index].0.clone(), respelled.clone());
+                    files[index].1 = respelled;
+                }
                 Err(refusal) => refusals.push(refusal),
             }
         }
     }
+    units.report();
     refusals
 }
 
@@ -70,14 +75,15 @@ fn respell_unit(
     root: &Path,
     members: &[(usize, &Path, &str)],
     documents: &DocumentSet,
+    before: &[(Option<PathBuf>, FileDiagnostic)],
+    units: &mut CheckUnits,
 ) -> Vec<MemberOutcome> {
     let mut documents = documents.clone();
-    let before = unit_diagnostics(root, &documents);
     let mut current: Vec<String> = members
         .iter()
         .map(|(_, _, text)| text.to_string())
         .collect();
-    let mut diagnostics = before.clone();
+    let mut diagnostics = before.to_vec();
     for _ in 0..PASSES {
         let mut changed = false;
         for ((_, path, _), text) in members.iter().zip(current.iter_mut()) {
@@ -91,7 +97,7 @@ fn respell_unit(
         if !changed {
             break;
         }
-        diagnostics = unit_diagnostics(root, &documents);
+        diagnostics = unit_diagnostics(root, &documents, units).diagnostics;
     }
     members
         .iter()
@@ -101,7 +107,7 @@ fn respell_unit(
                 Ok(respelled)
             } else {
                 let after = reported_in(&diagnostics, path);
-                match first_new_diagnostic(&reported_in(&before, path), &after) {
+                match first_new_diagnostic(&reported_in(before, path), &after) {
                     Some(new) => {
                         let (line, column) =
                             crate::diagnostic::offset_to_line_col(&respelled, new.span.start);
@@ -138,20 +144,30 @@ struct FileDiagnostic {
 }
 
 /// The type diagnostics a check of `root` reports, with the file each is in.
+struct UnitDiagnostics {
+    diagnostics: Vec<(Option<PathBuf>, FileDiagnostic)>,
+    indices: hew_parser::module::FileSpanIndices,
+    checked: bool,
+}
+
 fn unit_diagnostics(
     root: &Path,
     documents: &DocumentSet,
-) -> Vec<(Option<PathBuf>, FileDiagnostic)> {
-    let options = FrontendOptions {
-        documents: documents.clone(),
-        ..FrontendOptions::default()
-    };
-    let input = root.display().to_string();
-    let diagnostics = match hew_compile::check_file(&input, &options) {
-        Ok(output) => output.diagnostics,
-        Err(failure) => failure.diagnostics,
-    };
-    diagnostics
+    units: &mut CheckUnits,
+) -> UnitDiagnostics {
+    let state = units.check(root, documents);
+    let indices = state
+        .program
+        .module_graph
+        .as_ref()
+        .map(hew_parser::module::ModuleGraph::file_span_indices)
+        .unwrap_or_default();
+    let checked = state
+        .typecheck_result
+        .as_ref()
+        .is_some_and(|result| result.tco.is_some());
+    let diagnostics = state
+        .diagnostics
         .into_iter()
         .filter_map(|diagnostic| match diagnostic.kind {
             FrontendDiagnosticKind::Type(error) => Some((
@@ -169,7 +185,12 @@ fn unit_diagnostics(
             | FrontendDiagnosticKind::Message(_)
             | FrontendDiagnosticKind::Hir(_) => None,
         })
-        .collect()
+        .collect();
+    UnitDiagnostics {
+        diagnostics,
+        indices,
+        checked,
+    }
 }
 
 /// The diagnostics located in `path`.

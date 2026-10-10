@@ -29,7 +29,7 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use hew_compile::{DocumentSet, FrontendDiagnosticKind, FrontendOptions};
+use hew_compile::{DocumentSet, FrontendDiagnosticKind};
 use hew_parser::ast::{
     Block, CallArg, Expr, Item, Span, Spanned, Stmt, TraitItem, TypeBodyItem, TypeExpr,
 };
@@ -37,6 +37,8 @@ use hew_types::check::scope::Resolution;
 use hew_types::check::TypeCheckOutput;
 use hew_types::error::TypeErrorKind;
 use hew_types::{BuiltinType, CallTarget, MethodCallRewrite, NodeVisitor, SpanKey, Ty};
+
+use crate::migrate_checks::CheckUnits;
 
 /// A file the pass left unconverted, at its first location.
 pub(crate) struct EdgeReport {
@@ -50,40 +52,35 @@ pub(crate) struct EdgeReport {
 /// in place. Returns the refused files and the notes on files it could not
 /// check.
 ///
-/// Converting a callable keeps its type, so each check unit — a directory
-/// module, or a file of its own — is checked against the other units'
-/// unconverted text, and units convert one at a time.
 pub(crate) fn convert_failure_edges(
     files: &mut [(PathBuf, String)],
 ) -> (Vec<EdgeReport>, Vec<EdgeReport>) {
     let mut documents = DocumentSet::new();
-    let mut units: Vec<(PathBuf, Vec<usize>)> = Vec::new();
-    for (index, (path, text)) in files.iter().enumerate() {
+    let mut units = CheckUnits::new(files, "failure-edges");
+    for (path, text) in files.iter() {
         documents.insert(path.clone(), text.clone());
-        let root = hew_compile::module_membership(path, &FrontendOptions::default())
-            .filter(hew_types::module_registry::ModuleMembership::checks_as_directory_module)
-            .map_or_else(|| path.clone(), |membership| membership.entry);
-        match units.iter_mut().find(|(known, _)| *known == root) {
-            Some((_, members)) => members.push(index),
-            None => units.push((root, vec![index])),
-        }
     }
     let mut refusals = Vec::new();
     let mut notes = Vec::new();
-    // A unit can load its whole import graph. Keep one semantic check live
-    // rather than multiplying that graph by the machine's CPU count.
-    for (root, members) in units {
-        let members: Vec<_> = members
+    while let Some(mut unit) = units.next() {
+        let before = check_unit(&unit.root, &documents, &mut units);
+        if before.output.is_some() {
+            units.include_loaded(&mut unit, files, &before.indices);
+        }
+        let members: Vec<_> = unit
+            .members
             .iter()
             .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
             .collect();
-        let outcome = convert_unit(&root, &members, &documents);
+        let outcome = convert_unit(&unit.root, &members, &documents, before, &mut units);
         for (index, converted) in outcome.converted {
+            documents.insert(files[index].0.clone(), converted.clone());
             files[index].1 = converted;
         }
         refusals.extend(outcome.refusals);
         notes.extend(outcome.notes);
     }
+    units.report();
     (refusals, notes)
 }
 
@@ -104,10 +101,11 @@ fn convert_unit(
     root: &Path,
     members: &[(usize, &Path, &str)],
     documents: &DocumentSet,
+    mut before: UnitCheck,
+    units: &mut CheckUnits,
 ) -> UnitOutcome {
     let mut documents = documents.clone();
     let mut outcome = UnitOutcome::default();
-    let mut before = check_unit(root, &documents);
     let mut candidates = Vec::new();
     for &(index, path, text) in members {
         let Some(file) = before.file_index(path, root) else {
@@ -148,7 +146,7 @@ fn convert_unit(
         return outcome;
     }
     before.output = None;
-    let after = check_unit(root, &documents);
+    let after = check_unit(root, &documents, units);
     for (index, path, rewrite) in candidates {
         if let Some(diagnostic) = first_new_diagnostic(
             &before.reported_in(path),
@@ -205,12 +203,8 @@ impl FileDiagnostic {
     }
 }
 
-fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
-    let options = FrontendOptions {
-        documents: documents.clone(),
-        ..FrontendOptions::default()
-    };
-    let state = hew_compile::run_document_frontend(&root.display().to_string(), &options);
+fn check_unit(root: &Path, documents: &DocumentSet, units: &mut CheckUnits) -> UnitCheck {
+    let state = units.check(root, documents);
     let indices = state
         .program
         .module_graph
@@ -290,15 +284,7 @@ impl UnitCheck {
     /// The span-key index of `path` in this unit's module graph. A file the
     /// graph does not list is the unit's own root only when it is that root.
     fn file_index(&self, path: &Path, root: &Path) -> Option<u32> {
-        let canonical = std::fs::canonicalize(path).ok();
-        canonical
-            .as_deref()
-            .and_then(|path| self.indices.path_index(path))
-            .or_else(|| self.indices.path_index(path))
-            .or_else(|| {
-                let root = std::fs::canonicalize(root).ok();
-                (canonical.is_some() && canonical == root).then_some(0)
-            })
+        crate::migrate_checks::source_index(&self.indices, path, root)
     }
 
     fn reported_in(&self, path: &Path) -> Vec<FileDiagnostic> {

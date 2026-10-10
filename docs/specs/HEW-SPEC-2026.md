@@ -6376,10 +6376,10 @@ fn serve(radio_fd: i32) {
 }
 ```
 
-A child process's stdout or stderr
-stream (§6.4.7) is a select source on Unix, observed through the same
-readiness as a socket; on Windows it is read on the blocking pool and is
-not one yet. A line, chunk or take adapter over a socket or child pipe
+A child process's stdout or stderr stream (§6.4.7) is a select source on
+every native host, for data, EOF or an I/O failure. A losing selection leaves
+the next item available, and a cancelled receive returns without waiting for
+the child to produce data. A line, chunk or take adapter over a socket or child pipe
 stream, and a file stream over a pipe, device or terminal, whose next read
 can wait, are not select sources in edition 2026 (§2.1.1). The set of
 select sources only grows: admitting another stream kind refuses no

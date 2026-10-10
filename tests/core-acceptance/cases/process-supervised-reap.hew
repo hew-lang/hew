@@ -1,4 +1,5 @@
 import std.process;
+import std.os;
 
 // A supervised actor owns a child process. When the actor panics, releasing
 // its state kills and reaps the child, so no zombie outlives the incarnation,
@@ -22,9 +23,19 @@ supervisor Group {
 }
 
 // `kill -0` succeeds for a running child and for an unreaped zombie alike, so
-// a refusal proves the process was reaped.
+// a refusal proves the process was reaped. Windows checks its process table
+// after the owner has closed the process handle.
 fn alive(pid: i64) -> bool {
-    process.run_argv("kill", ["-0", f"{pid}"]).expect("kill runs").status == process.ExitStatus.Exited(0)
+    let windows = match os.env("OS") {
+        .Some(name) => name == "Windows_NT",
+        .None => false,
+    };
+    let probe = if windows {
+        process.run_argv("powershell", ["-NoProfile", "-Command", f"Get-Process -Id {pid} -ErrorAction Stop | Out-Null"])
+    } else {
+        process.run_argv("kill", ["-0", f"{pid}"])
+    };
+    probe.expect("process probe runs").status == process.ExitStatus.Exited(0)
 }
 
 fn main() {

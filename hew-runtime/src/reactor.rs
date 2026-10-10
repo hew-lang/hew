@@ -48,6 +48,8 @@ pub(crate) enum IoObject {
     /// The parent's end of a child process pipe.
     #[cfg(unix)]
     Pipe(std::fs::File),
+    #[cfg(windows)]
+    Pipe(crate::process::windows_pipe::WindowsPipe),
     /// A child process's exit: readable, then at end of stream, once it has
     /// exited.
     #[cfg(unix)]
@@ -79,6 +81,8 @@ pub(crate) enum ByteChannel<'a> {
     Tcp(&'a TcpStream),
     #[cfg(unix)]
     Pipe(&'a std::fs::File),
+    #[cfg(windows)]
+    Pipe(&'a crate::process::windows_pipe::WindowsPipe),
     /// A child's exit: no bytes, only end of stream once it has exited.
     #[cfg(unix)]
     Exit(&'a crate::process::ExitWatch),
@@ -91,6 +95,8 @@ impl ByteChannel<'_> {
             Self::Tcp(mut stream) => stream.read(buffer),
             #[cfg(unix)]
             Self::Pipe(mut pipe) => pipe.read(buffer),
+            #[cfg(windows)]
+            Self::Pipe(pipe) => pipe.read(buffer),
             #[cfg(unix)]
             Self::Exit(watch) => {
                 if watch.exited() {
@@ -108,6 +114,8 @@ impl ByteChannel<'_> {
             Self::Tcp(mut stream) => stream.write(data),
             #[cfg(unix)]
             Self::Pipe(mut pipe) => pipe.write(data),
+            #[cfg(windows)]
+            Self::Pipe(_) => Err(io::ErrorKind::Unsupported.into()),
             #[cfg(unix)]
             Self::Exit(_) => Err(io::Error::from_raw_os_error(libc::EBADF)),
         }
@@ -192,7 +200,7 @@ struct SlotState {
     added: bool,
     closed: bool,
     nonblocking: bool,
-    /// Interest of the in-flight AFD poll, zero when none is in flight.
+    /// Interest of the in-flight AFD poll or pipe read, zero when idle.
     #[cfg(windows)]
     armed: c_int,
 }
@@ -314,7 +322,6 @@ impl Slot {
     pub(crate) fn bytes(&self) -> Option<ByteChannel<'_>> {
         match &self.object {
             IoObject::TcpStream(stream) => Some(ByteChannel::Tcp(stream)),
-            #[cfg(unix)]
             IoObject::Pipe(pipe) => Some(ByteChannel::Pipe(pipe)),
             #[cfg(unix)]
             IoObject::ChildExit(watch) => Some(ByteChannel::Exit(watch)),
@@ -339,6 +346,8 @@ impl Slot {
                 use std::os::fd::AsRawFd;
                 fd_readable(pipe.as_raw_fd())
             }
+            #[cfg(windows)]
+            IoObject::Pipe(pipe) => pipe.readable(),
             #[cfg(unix)]
             IoObject::ChildExit(watch) => watch.exited(),
             #[cfg(unix)]
@@ -366,7 +375,6 @@ impl Slot {
         match self.object {
             IoObject::TcpStream(_) => "TCP connection",
             IoObject::TcpListener(_) => "TCP listener",
-            #[cfg(unix)]
             IoObject::Pipe(_) => "process pipe",
             #[cfg(unix)]
             IoObject::ChildExit(_) => "process exit watch",
@@ -406,6 +414,8 @@ impl Slot {
                 IoObject::TcpListener(listener) => listener.set_nonblocking(true)?,
                 #[cfg(unix)]
                 IoObject::Pipe(pipe) => set_fd_nonblocking(pipe)?,
+                #[cfg(windows)]
+                IoObject::Pipe(_) => {}
                 // Descriptor 0's open file description is shared with the
                 // terminal and parent shell; its reads are gated on `poll`.
                 // An exit watch is never read.
@@ -509,6 +519,22 @@ impl Slot {
         if interest == 0 || state.armed & interest == interest {
             return Ok(());
         }
+        if let IoObject::Pipe(pipe) = &self.object {
+            let context = Arc::into_raw(Arc::clone(self)) as usize;
+            WINDOWS_IO_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+            match pipe.arm(poller, context) {
+                Ok(()) => {
+                    state.armed = interest;
+                    return Ok(());
+                }
+                Err(error) => {
+                    WINDOWS_IO_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+                    // SAFETY: no completion retained this context after the failed arm.
+                    drop(unsafe { Arc::from_raw(context as *const Self) });
+                    return Err(error);
+                }
+            }
+        }
         if state.armed != 0 {
             // The in-flight poll lacks a direction. Cancel it; its completion
             // re-arms with the interest the waiters then hold.
@@ -517,15 +543,16 @@ impl Slot {
             return Ok(());
         }
         let context = Arc::into_raw(Arc::clone(self)) as usize;
+        WINDOWS_IO_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         // SAFETY: no poll is in flight; the retained slot keeps the buffers
         // live until the reactor dequeues this completion.
         match unsafe { poller.arm(self.afd.get(), interest, context) } {
             Ok(()) => {
                 state.armed = interest;
-                AFD_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
             Err(error) => {
+                WINDOWS_IO_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
                 // SAFETY: the failed arm did not retain the context.
                 drop(unsafe { Arc::from_raw(context as *const Self) });
                 Err(error)
@@ -658,7 +685,9 @@ impl Slot {
             }
             #[cfg(windows)]
             if state.armed != 0 {
-                if let Ok(poller) = poller() {
+                if let IoObject::Pipe(pipe) = &self.object {
+                    pipe.cancel();
+                } else if let Ok(poller) = poller() {
                     // SAFETY: a poll is in flight on these buffers.
                     unsafe { poller.cancel(self.afd.get()) };
                 }
@@ -732,7 +761,7 @@ fn new_slot(handle: c_int, object: IoObject) -> Slot {
             IoObject::TcpStream(stream) => stream.as_raw_socket() as usize,
             IoObject::TcpListener(listener) => listener.as_raw_socket() as usize,
             // Never armed through AFD.
-            IoObject::Stdin => usize::MAX,
+            IoObject::Stdin | IoObject::Pipe(_) => usize::MAX,
         };
         std::cell::UnsafeCell::new(crate::io_time::AfdPoll::new(socket))
     };
@@ -820,9 +849,9 @@ static REACTOR_HANDLE: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 static SLEEP_UNTIL: AtomicU64 = AtomicU64::new(AWAKE);
 const AWAKE: u64 = 0;
 
-/// AFD polls in flight; each owns one retained slot reference.
+/// Windows I/O completions in flight; each owns one retained slot reference.
 #[cfg(windows)]
-static AFD_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+static WINDOWS_IO_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 /// Whether shutdown has closed listener admission. An accept attempt refuses
 /// to begin once this is set, so no accepted connection can land behind the
@@ -966,9 +995,14 @@ fn dispatch(event: Event) {
 fn dispatch(event: Event) {
     // SAFETY: the arm retained exactly this slot reference as its context.
     let slot = unsafe { Arc::from_raw(event.token as usize as *const Slot) };
-    AFD_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
-    // SAFETY: the completion has been dequeued; the kernel is done writing.
-    let events = unsafe { (*slot.afd.get()).report() } | event.events;
+    WINDOWS_IO_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    let events = if let IoObject::Pipe(pipe) = &slot.object {
+        pipe.complete();
+        event.events
+    } else {
+        // SAFETY: the completion has been dequeued; the kernel is done writing.
+        (unsafe { (*slot.afd.get()).report() }) | event.events
+    };
     slot.fire(events);
 }
 
@@ -1026,26 +1060,30 @@ pub(crate) fn reactor_shutdown() {
     REACTOR_RUNNING.store(false, Ordering::Release);
     cancel_all();
     #[cfg(windows)]
-    drain_afd_polls();
+    drain_windows_io();
     REACTOR_STOP.store(false, Ordering::SeqCst);
 }
 
-/// Cancel every in-flight AFD poll and dequeue each completion, so no slot
+/// Cancel every in-flight Windows operation and dequeue each completion, so no slot
 /// buffer is released while the kernel may still write it.
 #[cfg(windows)]
-fn drain_afd_polls() {
+fn drain_windows_io() {
     let Ok(poller) = poller() else {
         return;
     };
     for slot in slots() {
         let state = slot.state.lock_or_recover();
         if state.armed != 0 {
-            // SAFETY: a poll is in flight on these buffers.
-            unsafe { poller.cancel(slot.afd.get()) };
+            if let IoObject::Pipe(pipe) = &slot.object {
+                pipe.cancel();
+            } else {
+                // SAFETY: a poll is in flight on these buffers.
+                unsafe { poller.cancel(slot.afd.get()) };
+            }
         }
     }
     let mut events = Vec::new();
-    while AFD_IN_FLIGHT.load(Ordering::SeqCst) != 0 {
+    while WINDOWS_IO_IN_FLIGHT.load(Ordering::SeqCst) != 0 {
         if poller.wait(1000, &mut events).is_err() {
             break;
         }

@@ -1549,10 +1549,7 @@ fn main() {}
             output.errors
         );
         assert!(
-            platform_error_contains(
-                &output,
-                "task spawn is thread-based and no cooperative task executor drives forked bodies"
-            ),
+            platform_error_contains(&output, "no wasm32 task executor"),
             "error message should name the missing task spawn/executor path; got: {:?}",
             output.errors
         );

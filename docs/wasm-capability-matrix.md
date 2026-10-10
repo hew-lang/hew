@@ -59,7 +59,7 @@ The **Checker disposition** column documents what the type checker emits when
 | `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | Implemented on the wasm32 process driver: the same actor core the native target runs, with the parked root draining the run queue in place of worker threads | — |
 | `exit-status-range` | Process exit statuses above 125 | Process exit statuses above 125 | Pass | — | WASI `proc_exit` refuses a status above 125, so `exit(n)` for n greater than 125 reaches the host as 1 rather than n. Every other status matches native, including the exit-1 rule an unrecovered fault follows (HEW-SPEC-2026 5.8), whose trap code is a diagnostic tag and never the status | — |
 | `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | WASM-TODO (not checker-gated) | — | A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability | WASM-TODO(actor-crash-containment): |
-| `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard) | — | Scalar-parameter and fn-typed-parameter `gen fn` forms execute and tear down correctly on Tier 2 via the unified `llvm.coro` switched-resume substrate (identical IR to native) | Note below |
+| `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard) | — | Scalar-parameter and `fn[clone]`-parameter `gen fn` forms execute through checked continuation frames on Tier 2; full consumption and early-break cleanup verified under wasmtime at O0 and O2 | Note below |
 | `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented | — |
 | `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented | — |
 | `layout-hashmap-hashset` | Layout-backed `HashMap` / `HashSet` | Layout-backed `HashMap` / `HashSet` | Pass | — | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime | #1820 |
@@ -68,8 +68,8 @@ The **Checker disposition** column documents what the type checker emits when
 | `select` | `select {}` (any arm kind, any timeout expression) | `select {}` operations | Reject (`Select`) | a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32 | Module not compiled | WASM-TODO(suspending-select): |
 | `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | WASM-TODO(supervision): |
 | `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | WASM-TODO(link-monitor): |
-| `structured-concurrency` | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | Structured concurrency scopes | Reject (`StructuredConcurrency`) | the wasm32 scheduler has no cooperative task executor or non-blocking scope join | Native thread/condvar task runtime only; wasm32 has no cooperative task work queue or join | WASM-TODO(scope): |
-| `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Reject (`Tasks`) | task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | Task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | WASM-TODO(scope): |
+| `structured-concurrency` | Structured concurrency (`scope {}`, `fork`, `await`) | Structured concurrency scopes | Reject (`StructuredConcurrency`) | the wasm32 scheduler has no cooperative task executor or non-blocking scope join | Native scheduler-owned task continuations and scope joins; the task-scope runtime is not compiled for wasm32 | WASM-TODO(scope): |
+| `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Reject (`Tasks`) | the scheduler-owned task continuation executor is not compiled for wasm32, so forked bodies have no wasm32 task executor | Native task spawn queues checked continuations for the scheduler; no task executor drives forked bodies on wasm32 | WASM-TODO(scope): |
 | `semaphore-non-blocking` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | Pass | — | Non-blocking semaphore subset only | — |
 | `semaphore-blocking-acquire` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | Blocking semaphore acquire operations | Reject (`BlockingSemaphoreAcquire`) | Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead | No cooperative blocking wait implementation | WASM-TODO(semaphore): |
 | `timers-sleep` | `sleep_ms`, `sleep` | Timer operations | Warn (`Timers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative park at message boundary | Implemented |
@@ -88,7 +88,7 @@ The **Checker disposition** column documents what the type checker emits when
 | `quic` | `std.net.quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*` | std.net.quic operations | Reject (`Quic`) | the std.net.quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO(quic): |
 | `dns` | `std.net.dns.resolve`, `dns.lookup_host` | std.net.dns resolver operations | Reject (`Dns`) | the std.net.dns resolver uses the native OS resolver; no wasm32 implementation exists yet | Native OS resolver; not compiled for wasm32 | WASM-TODO(dns): |
 | `std-os` | `std.os.*` (args, env, cwd, home, hostname, pid, temp-dir) | std.os environment and path operations | Reject (`OsEnv`) | the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32 | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO(os): |
-| `distributed` | `Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `RemotePid<T>.send` / `.ask`, and remote monitor/link operations | Distributed node and remote-actor operations | Reject (`Distributed`) | the Node cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32; no wasm32 distributed runtime exists yet | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only | WASM-TODO(distributed): |
+| `distributed` | `Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), remote actor calls, and remote monitor/link operations | Distributed node and remote-actor operations | Reject (`Distributed`) | the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32; no wasm32 distributed runtime exists yet | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only | WASM-TODO(distributed): |
 | `stdin-input` | Standard input reads | Standard input reads | Pass | — | Native and WASI standard input is host-provided | — |
 | `crypto-random` | `std.crypto.crypto.random_bytes` | std.crypto.crypto.random_bytes operations | Reject (`CryptoRandom`) | the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO(crypto-random): |
 | `crypto-encrypt` | `std.crypto.encrypt.*` | std.crypto.encrypt operations | Reject (`CryptoEncrypt`) | the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet | Native-only AES-256-GCM companion crate; not linked for wasm32 | WASM-TODO(crypto-encrypt): |
@@ -188,8 +188,8 @@ would otherwise end in a trap or linker failure:
   feature-specific diagnostic rather than a native-symbol failure downstream.
   - `WASM-TODO(process-execution):` define a host capability model for subprocess execution.
 
-- **Key-backed distributed identity and remote actors**: The `Node::*` cluster
-  API, `RemotePid<T>::send` / `RemotePid<T>::ask`, registry/SWIM, durable
+- **Key-backed distributed identity and remote actors**: The `Node.*` cluster
+  API, remote actor calls, registry/SWIM, durable
   session fencing, and cross-node monitor/link delivery lower to the native
   authenticated mesh runtime. That runtime is absent from the wasm32 link set.
   The checker rejects the whole distributed surface with `Distributed`, so
@@ -223,20 +223,19 @@ dedicated checker warning/error for them.
 
 ## Generators on WASM — note
 
-`gen fn` lowers onto the unified `llvm.coro` switched-resume continuation
-substrate (`hew-runtime/src/cont.rs`), which emits identical IR on native and
-wasm32. The wasm32 backend synthesizes its own `hew_gen_coro_destroy` that
-routes coro-frame teardown through `llvm.coro.destroy`, so construction,
-`.next()` consumption, and scope-exit teardown all release exactly one frame —
-verified end-to-end under `wasmtime`
-(`hew-codegen-rs/tests/exec/wasm_generator_exec.rs`).
+`gen fn` uses explicit continuation frames emitted by
+`hew-codegen-rs/src/physical_coro.rs` and `physical_frames.rs`, with checked
+polling and cleanup through `hew-runtime/src/generator_checked.rs` and
+`cont.rs`. The emitter uses the target data layout, and these runtime modules
+are compiled for wasm32. WASI execution at O0 and O2 verifies scalar parameters
+and a named function supplied to a `fn[clone]` parameter through full consumption
+and early break, including producer defer cleanup.
 
 Generator forms not yet implemented on any target are tracked in
 HEW-FUTURE.md §1.6 — that is a language-surface gap, not a WASM-specific one.
 
-Generators that depend on blocking I/O (e.g. a generator that calls
-`stream.next()` internally) are additionally covered by the Streams reject
-above at the point of the stream call.
+Generators that depend on stream I/O are additionally covered by the Streams
+reject above at the point of the stream call.
 
 ---
 
@@ -267,7 +266,7 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* / tls.* / quic.* / dns.* / os.* / `crypto.random_bytes` module calls)
 - `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
 - `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child / tls.TlsStream / quic.QUIC* handle match arms
-- `hew-types/src/check/methods.rs` RemotePid match arm (`send` / `ask` → `Distributed`)
+- `hew-types/src/check/methods/dispatch.rs` remote-handle method gate (`Distributed`)
 
 Rows marked **WASM-TODO (not checker-gated)** currently have no dedicated
 `WasmUnsupportedFeature` guard point. As of main, that bucket includes raw WASI
@@ -321,14 +320,11 @@ These gaps are explicitly deferred and tracked here:
 | WASI error-code classification | Target-aware filesystem and network error mapping for WASI errno values | `WASM-TODO(wasi-errno):` |
 | WebSocket transport parity | A browser/WASI WebSocket bridge without the native thread and socket implementation | `WASM-TODO(websocket):` |
 
-> **Stackless suspension substrate (R326/R327, W6.007).** The shared LLVM
-> `llvm.coro.*` switched-resume carrier is built, and native `await task` now
-> emits a suspend point. That does not by itself provide wasm32 task scopes:
-> task spawn still targets the native thread entry point, task readiness still
-> wakes through the native-only `hew_read_slot_*` path, and `hew_sched_run` has
-> no task work queue to drive. The gate can relax only when those three pieces
-> and non-blocking scope join are wired together; relaxing it around a
-> synchronous stub would be fail-open.
+> **Stackless suspension substrate.** Native tasks use checked continuation
+> frames, scheduler-owned task work, and readiness wakeups. The task-scope
+> runtime, including its continuation executor, is not compiled for wasm32.
+> WASM task scopes remain gated until a wasm32 task executor and non-blocking
+> scope joins preserve the same concurrency and cleanup behaviour.
 
 ---
 

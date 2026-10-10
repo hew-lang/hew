@@ -97,8 +97,9 @@ v0.8 with the rest of the supervision ergonomics work.
 **[`gen fn` and `receive gen fn` live in v0.5 / remaining forms deferred]**
 
 `gen fn` functions compile and run, including parameterized forms with scalar
-parameters (e.g. `n: i64`) and fn-typed parameters. The LLVM coroutine
-machinery, `yield`, `.next()`, and `for x in generator()` are all live. A
+parameters (e.g. `n: i64`) and cloneable function parameters (`fn[clone]`). The
+native compiler emits explicit continuation frames with checked polling and
+cleanup; `yield`, `.next()`, and `for x in generator()` are all live. A
 `gen fn` body may suspend; there is no `async gen fn` form, because the word
 marked nothing (HEW-SPEC-2026 §4.12). `receive gen fn` on actors returning
 `Stream<Y>` backed by mailbox protocol (cross-actor streaming with natural

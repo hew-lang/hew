@@ -1109,7 +1109,9 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         "backtrace must name the Hew handler frame:\n{text}"
     );
     assert!(
-        text.contains("coro_resume") || text.contains("hew_cont_resume"),
+        text.contains("coro_resume")
+            || text.contains("hew_cont_resume")
+            || text.contains("coro_exec::resume_park"),
         "backtrace must show the honest transition into the runtime coroutine \
          resume boundary:\n{text}"
     );

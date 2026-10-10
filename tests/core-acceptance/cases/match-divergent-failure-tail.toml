@@ -1,0 +1,11 @@
+[[case]]
+id = "match-divergent-failure-tail"
+intent = "All-return failure-edge matches preserve divergence; mixed returning and fall-through arms preserve owned success and error payloads."
+source = "cases/match-divergent-failure-tail.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "match exits preserve values\n"
+stderr = ""
+exit = 0

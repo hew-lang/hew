@@ -1096,7 +1096,7 @@ impl LowerCtx {
         self.try_register_enum_instantiation(&scrutinee.1);
 
         let pattern_arms = pattern_arms_from_match(arms);
-        let Some((hir_arms, result_ty)) =
+        let Some((hir_arms, _)) =
             self.lower_pattern_arms(&scrutinee_hir, &pattern_arms, &ResolvedTy::Unit)
         else {
             return (
@@ -1130,7 +1130,9 @@ impl LowerCtx {
             );
         }
 
-        let ty = self.callable_join_type(span, result_ty.unwrap_or(ResolvedTy::Unit));
+        let ty = self
+            .checker_expr_ty(span, "match expression")
+            .unwrap_or(ResolvedTy::Unit);
         (
             HirExprKind::Match {
                 scrutinee: Box::new(scrutinee_hir),

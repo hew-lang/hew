@@ -611,7 +611,11 @@ impl Checker {
         self.check_exhaustiveness(scrutinee_ty, arms, span);
 
         // If all arms diverge (Never/Error), the match itself diverges
-        result_ty.unwrap_or(Ty::Never)
+        if arm_exits.iter().all(|arm| arm.diverges) {
+            Ty::Never
+        } else {
+            result_ty.unwrap_or(Ty::Never)
+        }
     }
 
     /// Check one arm body against the match's type so far, record its exit and

@@ -425,9 +425,6 @@ pub(super) fn should_skip_workspace_dir(path: &Path) -> bool {
 
 /// Find the workspace root for a URI: the nearest ancestor directory that
 /// contains a `std/` subdirectory.  Returns `None` if no such ancestor exists.
-///
-/// This is the canonical workspace-root heuristic; both the import-path
-/// resolver (`compute_import_path`) and the rename disk-scan use it.
 pub(super) fn find_workspace_root_for_uri(uri: &Url) -> Option<PathBuf> {
     let mut dir = uri
         .to_checked_file_path()

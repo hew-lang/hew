@@ -130,6 +130,7 @@ LLVM_PREFIX="$(brew --prefix llvm)" make release
 ## FreeBSD x86_64
 
 **Status:** Tier 2 — builds and tests pass on FreeBSD 15.1 x86_64.
+Prebuilt compiler and support tools require FreeBSD 15.1 or newer.
 
 Tag releases build `libhew.a` on Linux with Rust 1.96.0,
 `cargo-zigbuild` 0.22.3, and Zig 0.16.0. The archive is published between
@@ -137,7 +138,8 @@ jobs under the full `x86_64-unknown-freebsd` Rust triple. The FreeBSD 15.1
 job still builds the compiler and support binaries natively, links a real Hew
 consumer against the downloaded archive, and runs the packaged compile/run
 smoke before that cross-built library can ship. Zig currently targets the
-FreeBSD 14 ABI baseline, so the native FreeBSD 15.1 proof is required.
+FreeBSD 14 ABI baseline for the library; this does not lower the tools'
+FreeBSD 15.1 minimum. The native FreeBSD 15.1 proof is required.
 
 ### Prerequisites
 
@@ -175,8 +177,8 @@ LLVM_SYS_221_PREFIX=/usr/local/llvm22 make release
 
 ## FreeBSD aarch64
 
-**Status:** Tier 2 — the release package is proved on FreeBSD 15.1 aarch64
-under QEMU.
+**Status:** Tier 2 — native build and link checks run on FreeBSD 15.1
+aarch64 under QEMU. An ARM64 SDK archive is not currently shipped.
 
 Rust 1.96.0 does not publish a standard-library component for
 `aarch64-unknown-freebsd`. Tag releases therefore install the matching
@@ -185,11 +187,10 @@ Rust 1.96.0 does not publish a standard-library component for
 The producer records and checks Zig 0.16.0's FreeBSD 14.0 ABI baseline before
 uploading the full-triple-keyed archive.
 
-The FreeBSD 15.1 aarch64 job keeps the native compiler and support-binary
-builds. It links a real Hew consumer against the downloaded `libhew.a`,
-packages that exact archive under both `lib/` and
-`lib/aarch64-unknown-freebsd/`, and executes the packaged compile/run smoke.
-A failed native link or smoke rejects the release.
+The FreeBSD 15.1 aarch64 release gate builds the native compiler and
+consolidated native library, then compiles and runs a Hew smoke program.
+A failed build or smoke execution rejects the release. The cross-built release
+library receives separate consumer-link checks on Linux.
 
 ## Windows
 

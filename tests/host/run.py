@@ -52,6 +52,7 @@ def main():
     parser.add_argument("--hew-bin", type=Path, required=True)
     parser.add_argument("--hew-lib", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--include-dir", type=Path)
     parser.add_argument("--cc", default="clang")
     parser.add_argument("--cxx", default="clang++")
     parser.add_argument("--sanitize", action="store_true")
@@ -117,7 +118,7 @@ def main():
                     compiler,
                     *flags,
                     "-I",
-                    root / "hew-cabi/include",
+                    args.include_dir or root / "hew-cabi/include",
                     "-I",
                     directory,
                     "-x",

@@ -1036,6 +1036,10 @@ jobs:
             mkdir -p "${smoke_root}/staging"
             tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${smoke_root}/staging" --strip-components=1
 
+            for tool in hew hew-lsp hew-observe; do
+              "${smoke_root}/staging/bin/${tool}" --version
+            done
+
             output=$("${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
             echo "${output}"
             echo "${output}" | grep -q "pkg-smoke-ok"

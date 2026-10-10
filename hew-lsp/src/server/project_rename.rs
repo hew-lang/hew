@@ -17,7 +17,7 @@ use tower_lsp_server::ls_types::{
 };
 
 use super::navigation::find_named_import_spans;
-use super::uri::FileUriExt;
+use super::uri::{resolved_physical_path, FileUriExt};
 use super::{offset_range_to_lsp, DocumentState, HewLanguageServer, OpenDocument};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,46 +30,6 @@ struct Function {
 
 fn physical_path(path: &Path) -> PathBuf {
     resolved_physical_path(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// Resolve existing parents even when an editor has opened a new unsaved file.
-/// Appending an unresolved leaf to a lexical symlink path would misstate its
-/// workspace ownership. Resolve components before interpreting a later `..`.
-fn resolved_physical_path(path: &Path) -> std::io::Result<PathBuf> {
-    use std::path::Component;
-    if let Ok(path) = std::fs::canonicalize(path) {
-        return Ok(path);
-    }
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut resolved = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                resolved.pop();
-            }
-            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
-            Component::Normal(_) => {
-                resolved.push(component.as_os_str());
-                match std::fs::canonicalize(&resolved) {
-                    Ok(path) => resolved = path,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        if std::fs::symlink_metadata(&resolved)
-                            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-                        {
-                            return Err(error);
-                        }
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-    }
-    Ok(resolved)
 }
 
 fn function(output: &TypeCheckOutput, resolution: Resolution) -> Option<Function> {

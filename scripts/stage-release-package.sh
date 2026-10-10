@@ -87,8 +87,10 @@ for binary in hew hew-lsp hew-observe; do
 done
 [ -f "$native_lib" ] || die "missing native release library: $native_lib"
 [ -d "$source_dir/std" ] || die "missing standard library directory: $source_dir/std"
-[ -f "$source_dir/hew-cabi/include/hew.h" ] ||
-    die "missing public C header: $source_dir/hew-cabi/include/hew.h"
+for header in hew.h hew_host.h; do
+    [ -f "$source_dir/hew-cabi/include/$header" ] ||
+        die "missing public C header: $source_dir/hew-cabi/include/$header"
+done
 [ -d "$wasi_lib_dir" ] || die "missing portable WASI library directory: $wasi_lib_dir"
 for wasi_lib in libhew_runtime.a libhew_std.a; do
     [ -f "$wasi_lib_dir/$wasi_lib" ] ||
@@ -126,7 +128,8 @@ for wasi_lib in libhew_runtime.a libhew_std.a; do
     cp "$wasi_lib_dir/$wasi_lib" "$package_root/lib/wasm32-wasip1/$wasi_lib"
 done
 cp -R "$source_dir/std/." "$package_root/std/"
-cp "$source_dir/hew-cabi/include/hew.h" "$package_root/include/hew.h"
+cp "$source_dir/hew-cabi/include/hew.h" "$source_dir/hew-cabi/include/hew_host.h" \
+    "$package_root/include/"
 
 completion_count=0
 for completion_shell in $completion_shells; do

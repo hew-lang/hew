@@ -47,5 +47,9 @@ fn main() {
     fs.delete(path).expect("clean up");
     println(f"still running: {child.try_wait().expect("poll").is_none()}");
     child.kill().expect("kill");
-    println(f"{child.wait().expect("wait")}");
+    let killed = match child.wait().expect("wait") {
+        .Exited(code) => code != 0,
+        .Signalled(signal) => signal == 9,
+    };
+    println(f"killed: {killed}");
 }

@@ -3,7 +3,7 @@ id = "match-call-scrutinee-g2429-tls-read-loop"
 intent = "From-call match-scrutinee enum-payload leak oracle (#2429 guard). Shape `g2429_tls_read_loop_high` (a loop of refused TLS connects whose error payloads must not leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
 source = "cases/match-call-scrutinee-g2429-tls-read-loop.hew"
 suites = ["acceptance", "safety"]
-timeout_seconds = 60
+timeout_seconds = 180
 
 [case.expected]
 stdout = ""

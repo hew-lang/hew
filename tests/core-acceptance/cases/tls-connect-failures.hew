@@ -29,6 +29,7 @@ fn main() {
     let closed = net.listen("127.0.0.1:0").expect("listen");
     let closed_port = closed.local_port();
     closed.close();
+    options.handshake_timeout = 10s;
     println(describe(tls.connect("127.0.0.1", closed_port, options)));
 
     var bad_pem = tls.options();

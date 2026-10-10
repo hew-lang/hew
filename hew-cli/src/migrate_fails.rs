@@ -140,41 +140,66 @@ fn convert_unit(
             }
         };
         documents.insert(path.to_path_buf(), rewrite.text.clone());
-        candidates.push((index, path, rewrite));
+        candidates.push((index, path, text, rewrite));
     }
     if candidates.is_empty() {
         return outcome;
     }
     before.output = None;
-    let after = check_unit(root, &documents, units);
-    for (index, path, rewrite) in candidates {
-        if let Some(diagnostic) = first_new_diagnostic(
-            &before.reported_in(path),
-            &after.reported_in(path),
-            &rewrite,
-        ) {
-            let text = members
-                .iter()
-                .find(|(member, _, _)| *member == index)
-                .map_or("", |(_, _, text)| text);
-            let (line, column) = crate::diagnostic::offset_to_line_col(
-                text,
-                rewrite.original_offset(diagnostic.span.start),
-            );
-            outcome.refusals.push(EdgeReport {
-                file: path.to_path_buf(),
-                line,
-                column,
-                message: format!(
-                    "converting its failure edges would leave `{}`: {}",
-                    diagnostic.code, diagnostic.message
-                ),
-            });
-        } else {
+    while !candidates.is_empty() {
+        let after = check_unit(root, &documents, units);
+        let mut remaining = Vec::new();
+        let mut refused = false;
+        for (index, path, text, rewrite) in candidates {
+            if let Some(diagnostic) = first_new_diagnostic(
+                &before.reported_in(path),
+                &after.reported_in(path),
+                &rewrite,
+            ) {
+                let (line, column) = crate::diagnostic::offset_to_line_col(
+                    text,
+                    rewrite.original_offset(diagnostic.span.start),
+                );
+                outcome.refusals.push(EdgeReport {
+                    file: path.to_path_buf(),
+                    line,
+                    column,
+                    message: format!(
+                        "converting its failure edges would leave `{}`: {}",
+                        diagnostic.code, diagnostic.message
+                    ),
+                });
+                documents.insert(path.to_path_buf(), text.to_string());
+                refused = true;
+            } else {
+                remaining.push((index, path, text, rewrite));
+            }
+        }
+        if refused {
+            candidates = remaining;
+            continue;
+        }
+        if after.output.is_none() {
+            outcome
+                .refusals
+                .extend(remaining.into_iter().map(|(_, path, _, _)| {
+                    EdgeReport {
+                        file: path.to_path_buf(),
+                        line: 1,
+                        column: 1,
+                        message: "its failure edges were not converted: the rewritten module \
+                              did not complete type checking"
+                            .to_string(),
+                    }
+                }));
+            break;
+        }
+        for (index, _, _, rewrite) in remaining {
             let parsed = hew_parser::parse(&rewrite.text);
             let formatted = hew_parser::fmt::format_source(&rewrite.text, &parsed.program);
             outcome.converted.push((index, formatted));
         }
+        break;
     }
     outcome
 }

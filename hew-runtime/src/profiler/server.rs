@@ -6,6 +6,7 @@
 use crate::util::{json_array, push_json_string, MutexExt};
 use std::convert::Infallible;
 use std::fmt::Write as _;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,9 +22,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::path::Path;
+use std::os::unix::net::UnixListener as StdUnixListener;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -70,9 +69,36 @@ unsafe impl Sync for ProfilerContext {}
 /// client connects. The listener is set to non-blocking and converted to a
 /// tokio listener inside the runtime.
 pub fn run_tcp_with_listener(listener: std::net::TcpListener, ctx: Arc<ProfilerContext>) {
-    let Some(rt) = build_runtime() else { return };
+    run_tcp_with_listener_inner(listener, ctx, None);
+}
+
+/// Start the TCP server and report when all fallible listener/runtime setup is
+/// complete. The profiler startup path waits for this signal before enabling
+/// tracing, so a server that cannot actually accept connections cannot create
+/// a phantom trace epoch.
+pub(super) fn run_tcp_with_listener_ready(
+    listener: std::net::TcpListener,
+    ctx: Arc<ProfilerContext>,
+    ready: SyncSender<Result<(), String>>,
+) {
+    run_tcp_with_listener_inner(listener, ctx, Some(ready));
+}
+
+fn run_tcp_with_listener_inner(
+    listener: std::net::TcpListener,
+    ctx: Arc<ProfilerContext>,
+    mut ready: Option<SyncSender<Result<(), String>>>,
+) {
+    let Some(rt) = build_runtime() else {
+        report_startup(&mut ready, Err("failed to create tokio runtime".to_owned()));
+        return;
+    };
     if let Err(e) = listener.set_nonblocking(true) {
         eprintln!("[hew-pprof] failed to set listener nonblocking: {e}");
+        report_startup(
+            &mut ready,
+            Err(format!("failed to set listener nonblocking: {e}")),
+        );
         return;
     }
 
@@ -81,46 +107,58 @@ pub fn run_tcp_with_listener(listener: std::net::TcpListener, ctx: Arc<ProfilerC
             Ok(l) => l,
             Err(e) => {
                 eprintln!("[hew-pprof] failed to wrap std listener: {e}");
+                report_startup(&mut ready, Err(format!("failed to wrap TCP listener: {e}")));
                 return;
             }
         };
+        report_startup(&mut ready, Ok(()));
         serve_loop(Listener::Tcp(tokio_listener), ctx).await;
     });
 }
 
 #[cfg(unix)]
-/// Start the profiling HTTP server on a unix domain socket, blocking the
-/// current thread.
-///
-/// The socket file must not already exist (caller should clean up stale
-/// sockets before calling).
-pub fn run_unix(socket_path: &Path, ctx: Arc<ProfilerContext>) {
-    let Some(rt) = build_runtime() else { return };
+/// Start the profiling HTTP server on an already bound Unix listener and
+/// report when all fallible runtime/listener setup is complete.
+pub(super) fn run_unix_with_listener_ready(
+    listener: StdUnixListener,
+    ctx: Arc<ProfilerContext>,
+    ready: SyncSender<Result<(), String>>,
+) {
+    let mut ready = Some(ready);
+    let Some(rt) = build_runtime() else {
+        report_startup(&mut ready, Err("failed to create tokio runtime".to_owned()));
+        return;
+    };
+    if let Err(e) = listener.set_nonblocking(true) {
+        eprintln!("[hew-pprof] failed to set unix listener nonblocking: {e}");
+        report_startup(
+            &mut ready,
+            Err(format!("failed to set unix listener nonblocking: {e}")),
+        );
+        return;
+    }
 
     rt.block_on(async move {
-        let listener = match UnixListener::bind(socket_path) {
+        let listener = match UnixListener::from_std(listener) {
             Ok(l) => l,
             Err(e) => {
-                eprintln!(
-                    "[hew-pprof] failed to bind unix socket {}: {e}",
-                    socket_path.display(),
+                eprintln!("[hew-pprof] failed to wrap unix listener: {e}");
+                report_startup(
+                    &mut ready,
+                    Err(format!("failed to wrap unix listener: {e}")),
                 );
                 return;
             }
         };
-
-        // Set socket to mode 0600 — only the owning user can connect.
-        if let Err(e) =
-            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
-        {
-            eprintln!("[hew-pprof] failed to set socket permissions: {e}");
-            return;
-        }
-
-        eprintln!("[hew-pprof] listening on unix:{}", socket_path.display());
-
+        report_startup(&mut ready, Ok(()));
         serve_loop(Listener::Unix(listener), ctx).await;
     });
+}
+
+fn report_startup(ready: &mut Option<SyncSender<Result<(), String>>>, result: Result<(), String>) {
+    if let Some(ready) = ready.take() {
+        let _ = ready.send(result);
+    }
 }
 
 fn build_runtime() -> Option<tokio::runtime::Runtime> {

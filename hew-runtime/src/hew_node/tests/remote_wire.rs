@@ -109,6 +109,94 @@ fn two_node_remote_send_delivery() {
     crate::registry::hew_registry_clear();
 }
 
+#[test]
+fn two_node_remote_ask_reply_records_remote_attribution() {
+    let _guard = crate::runtime_test_guard();
+    let _trace_guard = crate::tracing::tracing_test_guard();
+    let _real_sched;
+    crate::registry::hew_registry_clear();
+    register_test_u32_codec(test_dispatch(), 1);
+
+    let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(303, 304);
+    _real_sched = init_real_scheduler();
+    crate::tracing::hew_trace_enable(1);
+
+    crate::pid::hew_pid_set_local_node(304);
+    let echo_actor = spawn_remote_test_actor(ask_probe_dispatch);
+    crate::pid::hew_pid_set_local_node(303);
+    assert!(!echo_actor.is_null(), "actor spawn failed");
+    // SAFETY: actor was just spawned and remains live until teardown.
+    let actor_id = unsafe { (*echo_actor).id };
+    assert_eq!(crate::pid::hew_pid_node(actor_id), 304);
+
+    let connect_addr = CString::new(format!("304@127.0.0.1:{node2_port}")).unwrap();
+    // SAFETY: node1 and connect_addr are valid for this call.
+    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+    // SAFETY: both nodes remain live through the handshake and ask.
+    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+    let send_value: u32 = 21;
+    let target = remote_pid_for_node(&node2, actor_id);
+    // SAFETY: send_value is a valid u32 request and the reply codec returns a u32.
+    let (reply, status) = unsafe {
+        ask_for_test(
+            &raw const target,
+            test_dispatch(),
+            1,
+            (&raw const send_value).cast::<c_void>().cast_mut(),
+            std::mem::size_of::<u32>(),
+            NO_ASK_DEADLINE_MS,
+            std::mem::size_of::<u32>(),
+        )
+    };
+    assert_eq!(status, AskError::None as i32);
+    assert_eq!(
+        u32::from_ne_bytes(reply[..4].try_into().expect("u32 reply")),
+        42
+    );
+
+    let snapshot = crate::tracing::trace_snapshot(None, None, 256)
+        .expect("inbound ask trace snapshot must be readable");
+    let inbound_ask = snapshot
+        .events
+        .iter()
+        .find(|record| {
+            record.event.event_type == crate::tracing::SPAN_SEND
+                && record.event.msg_type == 1
+                && record.destination_actor_id == Some(actor_id)
+        })
+        .expect("real inbound ask must trace delivery to its local target");
+    assert_eq!(inbound_ask.source_actor_id, None);
+    assert_eq!(
+        inbound_ask.source_attribution,
+        crate::tracing::TraceActorAttribution::RemoteUnknown
+    );
+    assert_eq!(
+        inbound_ask.destination_attribution,
+        crate::tracing::TraceActorAttribution::LocalActor
+    );
+    assert_eq!(
+        inbound_ask.destination_spawn_serial,
+        Some(unsafe {
+            // SAFETY: echo_actor remains live until teardown below.
+            (*echo_actor).spawn_serial
+        })
+    );
+    assert_eq!(
+        inbound_ask.destination_dispatch_ptr,
+        ask_probe_dispatch as *const () as usize
+    );
+    crate::tracing::hew_trace_reset();
+
+    // SAFETY: actor and nodes were allocated by this test and remain valid.
+    unsafe {
+        let _ = crate::actor::hew_actor_free(echo_actor);
+        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+    }
+    crate::registry::hew_registry_clear();
+}
+
 #[cfg(feature = "quic")]
 #[test]
 fn two_node_remote_send_delivery_quic_mesh() {

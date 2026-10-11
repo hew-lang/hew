@@ -1689,6 +1689,10 @@ mod tests {
             serde_json::from_str(&trace_response(trace_id, timestamp_ns))
                 .expect("trace response fixture must parse");
         value["has_more"] = serde_json::Value::Bool(has_more);
+        if has_more {
+            value["next_sequence"] = serde_json::json!((timestamp_ns + 2).to_string());
+            value["events_recorded_total"] = serde_json::json!((timestamp_ns + 1).to_string());
+        }
         serde_json::to_string(&value).expect("serialize paged trace response")
     }
 

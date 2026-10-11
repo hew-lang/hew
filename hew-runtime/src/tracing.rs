@@ -813,7 +813,7 @@ pub(crate) fn read_test_report_events(max: usize) -> TraceConsumerBatch {
 /// Record a trace event if tracing is enabled.
 fn recording_generation() -> Option<u64> {
     TRACING_ENABLED
-        .load(Ordering::Relaxed)
+        .load(Ordering::Acquire)
         .then(|| STREAM_GENERATION.load(Ordering::Acquire))
 }
 
@@ -850,6 +850,11 @@ fn record_event_with_attribution(
             return;
         }
         if store.next_sequence == u64::MAX {
+            // The sequence cursor cannot represent one-past-u64::MAX. Rotate
+            // atomically at commit time and make this event sequence 1 of the
+            // replacement stream. Unlike a user reset, no other thread can
+            // observe a boundary between the rotation and this append because
+            // both happen while holding TRACE_EVENTS.
             store.begin_new_stream();
         }
         let sequence = store.next_sequence;
@@ -1073,7 +1078,7 @@ pub extern "C" fn hew_trace_end(actor_id: u64, msg_type: i32) {
 /// Record a lifecycle event (spawn, crash, stop).
 #[no_mangle]
 pub extern "C" fn hew_trace_lifecycle(actor_id: u64, event_type: i32) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return;
     }
     record_lifecycle_event(actor_id, event_type, 0);
@@ -1128,7 +1133,7 @@ pub(crate) fn current_context() -> HewTraceContext {
     //
     // Fast path preserved: when tracing is disabled this returns the cheap
     // all-zero default without minting (the receiver never traces anyway).
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return HewTraceContext::default();
     }
     HewTraceContext {
@@ -1177,7 +1182,7 @@ pub(crate) fn system_context() -> HewTraceContext {
 // is not.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ensure_supervisor_trace_root() {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return;
     }
     match trace_context() {
@@ -1318,7 +1323,7 @@ fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
 /// Fast path: returns immediately (no allocation) when tracing is disabled.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn io_accept_span_begin(conn_id: c_int) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return;
     }
     let ctx = HewTraceContext {
@@ -1347,7 +1352,7 @@ pub(crate) fn io_accept_span_begin(conn_id: c_int) {
 /// skips tracing entirely).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return None;
     }
 
@@ -2650,6 +2655,59 @@ mod tests {
         let reenabled = trace_snapshot(None, None, 1).expect("re-enabled snapshot");
         assert_eq!(reenabled.producer_instance_id, initial.producer_instance_id);
         assert_ne!(reenabled.stream_id, cleared.stream_id);
+    }
+
+    #[test]
+    fn enable_publishes_replacement_generation_before_recording() {
+        let _guard = tracing_test_guard();
+        hew_trace_reset();
+
+        for actor_id in 1..=256_u64 {
+            hew_trace_enable(1);
+            let emitter = std::thread::spawn(move || {
+                record_event(HewTraceEvent {
+                    trace_id_hi: 1,
+                    trace_id_lo: actor_id,
+                    span_id: actor_id,
+                    parent_span_id: 0,
+                    actor_id,
+                    event_type: SPAN_SPAWN,
+                    msg_type: 0,
+                    timestamp_ns: monotonic_ns(),
+                });
+            });
+            emitter.join().expect("post-enable emitter");
+
+            let snapshot = trace_snapshot(None, None, 2).expect("post-enable snapshot");
+            assert_eq!(snapshot.events.len(), 1);
+            assert_eq!(snapshot.events[0].sequence, 1);
+            assert_eq!(snapshot.events[0].event.actor_id, actor_id);
+
+            hew_trace_enable(0);
+        }
+        hew_trace_reset();
+    }
+
+    #[test]
+    fn sequence_exhaustion_rotates_before_cursor_overflow() {
+        let _guard = setup();
+        let before = trace_snapshot(None, None, 1).expect("initial stream");
+        TRACE_EVENTS.access(|store| {
+            store.next_sequence = u64::MAX;
+            store.events_recorded_total = u64::MAX - 1;
+        });
+
+        hew_trace_lifecycle(77, SPAN_SPAWN);
+
+        let after = trace_snapshot(None, None, 2).expect("replacement stream");
+        assert_ne!(after.stream_id, before.stream_id);
+        assert_eq!(after.oldest_sequence, 1);
+        assert_eq!(after.next_sequence, 2);
+        assert_eq!(after.next_cursor, 1);
+        assert_eq!(after.events_recorded_total, 1);
+        assert_eq!(after.events.len(), 1);
+        assert_eq!(after.events[0].sequence, 1);
+        assert_eq!(after.events[0].event.actor_id, 77);
     }
 
     #[test]

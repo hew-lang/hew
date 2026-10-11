@@ -49,6 +49,140 @@ struct TraceCursor {
     after: u64,
 }
 
+/// Validate relationships that cannot be expressed by generated field-level
+/// decoders. A malformed success response must never advance the private
+/// cursor: doing so could silently skip, duplicate, or reorder trace records.
+fn validate_trace_batch(batch: &TraceBatch, requested_after: Option<u64>) -> Result<(), String> {
+    if batch.oldest_sequence == 0 || batch.next_sequence == 0 {
+        return Err("oldest_sequence and next_sequence must be positive".to_owned());
+    }
+    if batch.oldest_sequence > batch.next_sequence {
+        return Err(format!(
+            "oldest_sequence {} exceeds next_sequence {}",
+            batch.oldest_sequence, batch.next_sequence
+        ));
+    }
+
+    let last_produced = batch.next_sequence - 1;
+    if batch.events_recorded_total != last_produced {
+        return Err(format!(
+            "events_recorded_total {} does not match last produced sequence {last_produced}",
+            batch.events_recorded_total
+        ));
+    }
+    if batch.events_overwritten_total > batch.events_recorded_total {
+        return Err("events_overwritten_total exceeds events_recorded_total".to_owned());
+    }
+    let expected_oldest = if batch.events_recorded_total == 0 {
+        batch.next_sequence
+    } else {
+        batch
+            .events_overwritten_total
+            .checked_add(1)
+            .ok_or_else(|| "events_overwritten_total overflow".to_owned())?
+    };
+    if batch.oldest_sequence != expected_oldest {
+        return Err(format!(
+            "oldest_sequence {} does not match overwrite history {expected_oldest}",
+            batch.oldest_sequence
+        ));
+    }
+    if batch.batch_source_monotonic_ns < batch.clock_anchor.monotonic_ns {
+        return Err("batch source clock precedes its clock anchor".to_owned());
+    }
+
+    let requested_next = match requested_after {
+        Some(after) => {
+            if after > last_produced {
+                return Err(format!(
+                    "response accepted future cursor {after} past {last_produced}"
+                ));
+            }
+            after
+                .checked_add(1)
+                .ok_or_else(|| "requested cursor overflow".to_owned())?
+        }
+        None => batch.oldest_sequence,
+    };
+    let expected_overrun = batch.oldest_sequence.saturating_sub(requested_next);
+    match (&batch.overrun, expected_overrun) {
+        (None, 0) => {}
+        (None, count) => {
+            return Err(format!("missing overrun metadata for {count} lost events"));
+        }
+        (Some(_), 0) => return Err("spurious overrun metadata without a cursor gap".to_owned()),
+        (Some(overrun), count) => {
+            let expected_last = batch.oldest_sequence - 1;
+            if overrun.first_missing_sequence != requested_next
+                || overrun.last_missing_sequence != expected_last
+                || overrun.count != count
+            {
+                return Err(format!(
+                    "overrun range {}..={} count {} does not match expected {}..={} count {count}",
+                    overrun.first_missing_sequence,
+                    overrun.last_missing_sequence,
+                    overrun.count,
+                    requested_next,
+                    expected_last
+                ));
+            }
+        }
+    }
+
+    let expected_first = requested_next.max(batch.oldest_sequence);
+    if let Some(first) = batch.events.first() {
+        if first.sequence != expected_first {
+            return Err(format!(
+                "first event sequence {} does not match expected {expected_first}",
+                first.sequence
+            ));
+        }
+        for pair in batch.events.windows(2) {
+            if pair[1].sequence != pair[0].sequence.saturating_add(1) {
+                return Err(format!(
+                    "event sequences are not contiguous at {} then {}",
+                    pair[0].sequence, pair[1].sequence
+                ));
+            }
+        }
+        let last = batch.events.last().expect("non-empty trace page").sequence;
+        if last >= batch.next_sequence {
+            return Err(format!(
+                "event sequence {last} is not below next_sequence {}",
+                batch.next_sequence
+            ));
+        }
+        if batch.next_cursor != last {
+            return Err(format!(
+                "next_cursor {} does not match last returned sequence {last}",
+                batch.next_cursor
+            ));
+        }
+    } else {
+        if expected_first < batch.next_sequence {
+            return Err(format!(
+                "empty page omitted available sequence {expected_first}"
+            ));
+        }
+        let expected_cursor = requested_after.unwrap_or(last_produced);
+        if batch.next_cursor != expected_cursor {
+            return Err(format!(
+                "empty page cursor {} does not match expected {expected_cursor}",
+                batch.next_cursor
+            ));
+        }
+    }
+
+    let expected_has_more = batch.next_cursor < last_produced;
+    if batch.has_more != expected_has_more {
+        return Err(format!(
+            "has_more {} does not match cursor {} and last produced {last_produced}",
+            batch.has_more, batch.next_cursor
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct HttpResponse {
     status: String,
@@ -257,6 +391,11 @@ impl ProfilerClient {
         let mut expected_after_mismatch: Option<(String, String)> = None;
 
         loop {
+            let requested_after = if bootstrap_after_mismatch {
+                None
+            } else {
+                self.trace_cursor.as_ref().map(|cursor| cursor.after)
+            };
             let path = if bootstrap_after_mismatch {
                 "/api/traces?limit=256".to_owned()
             } else {
@@ -312,6 +451,12 @@ impl ProfilerClient {
                 self.last_error = Some(ClientError::BadStatus(response.status));
                 return None;
             };
+            if let Err(error) = validate_trace_batch(&batch, requested_after) {
+                self.last_error = Some(ClientError::BadStatus(format!(
+                    "invalid trace batch: {error}"
+                )));
+                return None;
+            }
             if let Some((expected_stream, expected_producer)) = expected_after_mismatch.as_ref() {
                 if batch.stream_id != *expected_stream
                     || batch.producer_instance_id != *expected_producer
@@ -649,7 +794,7 @@ mod tests {
         serde_json::json!({
             "producer_instance_id": producer,
             "stream_id": stream,
-            "oldest_sequence": "1",
+            "oldest_sequence": (cursor + 1).to_string(),
             "next_sequence": (cursor + 1).to_string(),
             "next_cursor": cursor.to_string(),
             "has_more": false,
@@ -657,7 +802,7 @@ mod tests {
             "tracing_enabled": true,
             "sampling_mode": "all",
             "events_recorded_total": cursor.to_string(),
-            "events_overwritten_total": "0",
+            "events_overwritten_total": cursor.to_string(),
             "events_sampled_out_total": "0",
             "batch_source_monotonic_ns": "10",
             "clock_anchor": {
@@ -666,6 +811,48 @@ mod tests {
                 "uncertainty_ns": "1"
             },
             "events": []
+        })
+    }
+
+    fn one_event_trace_batch(producer: &str, stream: &str, sequence: u64) -> serde_json::Value {
+        serde_json::json!({
+            "producer_instance_id": producer,
+            "stream_id": stream,
+            "oldest_sequence": "1",
+            "next_sequence": (sequence + 1).to_string(),
+            "next_cursor": sequence.to_string(),
+            "has_more": false,
+            "overrun": null,
+            "tracing_enabled": true,
+            "sampling_mode": "all",
+            "events_recorded_total": sequence.to_string(),
+            "events_overwritten_total": "0",
+            "events_sampled_out_total": "0",
+            "batch_source_monotonic_ns": "20",
+            "clock_anchor": {
+                "monotonic_ns": "10",
+                "unix_epoch_ns": "1000",
+                "uncertainty_ns": "1"
+            },
+            "events": [{
+                "sequence": sequence.to_string(),
+                "trace_id": "00000000000000000000000000000010",
+                "span_id": "1",
+                "parent_span_id": "0",
+                "subject": null,
+                "source_attribution": "external",
+                "source_actor": null,
+                "destination_attribution": "local_actor",
+                "destination_actor": {
+                    "actor_id": "9",
+                    "spawn_serial": "1",
+                    "actor_type": "Probe"
+                },
+                "event_type": "send",
+                "msg_type": 1,
+                "timestamp_ns": "15",
+                "handler_name": "Probe.handle"
+            }]
         })
     }
 
@@ -837,6 +1024,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trace_batch_validation_pins_overrun_cursor_and_sequence_relationships() {
+        let producer = "00000000000000000000000000000001";
+        let stream = "00000000000000000000000000000002";
+        let mut value = one_event_trace_batch(producer, stream, 8);
+        value["oldest_sequence"] = serde_json::json!("8");
+        value["next_sequence"] = serde_json::json!("10");
+        value["has_more"] = serde_json::json!(true);
+        value["events_recorded_total"] = serde_json::json!("9");
+        value["events_overwritten_total"] = serde_json::json!("7");
+        value["overrun"] = serde_json::json!({
+            "first_missing_sequence": "5",
+            "last_missing_sequence": "7",
+            "count": "3"
+        });
+
+        let valid: TraceBatch = serde_json::from_value(value).expect("valid trace batch shape");
+        validate_trace_batch(&valid, Some(4)).expect("valid stale-cursor page");
+
+        let mut bad_overrun = valid.clone();
+        bad_overrun.overrun.as_mut().expect("overrun").count = 2;
+        assert!(validate_trace_batch(&bad_overrun, Some(4))
+            .expect_err("wrong loss count")
+            .contains("overrun range"));
+
+        let mut bad_sequence = valid.clone();
+        bad_sequence.events[0].sequence = 9;
+        assert!(validate_trace_batch(&bad_sequence, Some(4))
+            .expect_err("wrong first sequence")
+            .contains("first event sequence"));
+
+        let mut bad_cursor = valid.clone();
+        bad_cursor.next_cursor = 9;
+        assert!(validate_trace_batch(&bad_cursor, Some(4))
+            .expect_err("wrong next cursor")
+            .contains("next_cursor"));
+
+        let mut bad_backlog = valid;
+        bad_backlog.has_more = false;
+        assert!(validate_trace_batch(&bad_backlog, Some(4))
+            .expect_err("wrong backlog flag")
+            .contains("has_more"));
+    }
+
+    #[test]
+    fn invalid_success_batch_does_not_advance_private_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let sock = temp.path().join("invalid_trace_batch.sock");
+        let producer = "00000000000000000000000000000001";
+        let stream = "00000000000000000000000000000002";
+        let mut invalid = one_event_trace_batch(producer, stream, 1);
+        invalid["next_cursor"] = serde_json::json!("2");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![
+                http_json_response("200 OK", &empty_trace_batch(producer, stream, 0)),
+                http_json_response("200 OK", &invalid),
+                http_json_response("200 OK", &one_event_trace_batch(producer, stream, 1)),
+            ],
+            Arc::clone(&requests),
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        client.fetch_traces().expect("initial attachment");
+        assert!(client.fetch_traces().is_none());
+        assert!(matches!(
+            client.last_error,
+            Some(ClientError::BadStatus(ref message)) if message.contains("invalid trace batch")
+        ));
+        let recovered = client
+            .fetch_traces()
+            .expect("valid retry must use preserved cursor");
+        assert_eq!(recovered.batch.next_cursor, 1);
+        assert_eq!(
+            requests.lock().expect("captured requests").as_slice(),
+            [
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=0&limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=0&limit=256 HTTP/1.1",
+            ]
+        );
+    }
+
     fn assert_invalid_mismatch_keeps_cursor(response: String) -> ClientError {
         let tmp = tempfile::tempdir().unwrap();
         let sock = tmp.path().join("invalid_trace_mismatch.sock");
@@ -848,7 +1119,7 @@ mod tests {
             vec![
                 http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 7)),
                 response,
-                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 8)),
+                http_json_response("200 OK", &one_event_trace_batch(producer, old_stream, 8)),
             ],
             Arc::clone(&requests),
         );
@@ -961,7 +1232,7 @@ mod tests {
                     }),
                 ),
                 http_json_response("200 OK", &empty_trace_batch(producer, unexpected_stream, 0)),
-                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 8)),
+                http_json_response("200 OK", &one_event_trace_batch(producer, old_stream, 8)),
             ],
             Arc::clone(&requests),
         );

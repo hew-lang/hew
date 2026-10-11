@@ -12,7 +12,7 @@ use ratatui::Frame;
 
 use crate::app::{App, SortColumn, Tab};
 use crate::client::{ConnectionInfo, ConnectionStatus, RouteEntry};
-use crate::events::trace_event_meta;
+use crate::events::{trace_event_lane_label, trace_event_matches_actor, trace_event_meta};
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -308,20 +308,20 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 break;
             }
             let m = &members[member_idx];
-            let is_self = m.node_id == app.cluster_routing.local_node_id;
+            let is_self = m.route_slot == app.cluster_routing.local_route_slot;
             let connection = app
                 .cluster_connections
                 .iter()
-                .find(|c| c.peer_node_id == m.node_id);
+                .find(|c| c.peer_route_slot == m.route_slot);
             let route = app
                 .cluster_routing
                 .routes
                 .iter()
-                .find(|r| r.node_id == m.node_id);
+                .find(|r| r.route_slot == m.route_slot);
             let title = if is_self {
-                format!(" node:{} (self) ", m.node_id)
+                format!(" slot:{} (self) ", m.route_slot)
             } else {
-                format!(" node:{} ", m.node_id)
+                format!(" slot:{} ", m.route_slot)
             };
 
             let colour = theme::member_state_colour(&m.state);
@@ -383,7 +383,7 @@ fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
         .map(|m| {
             let colour = theme::member_state_colour(&m.state);
             Row::new(vec![
-                Cell::from(format!("node:{}", m.node_id)),
+                Cell::from(format!("slot:{}", m.route_slot)),
                 Cell::from(m.state.as_str()).style(Style::default().fg(colour)),
                 Cell::from(format!("{}", m.incarnation)),
                 Cell::from(m.addr.as_str()),
@@ -440,7 +440,7 @@ fn draw_cluster_connections(f: &mut Frame, app: &App, area: Rect) {
                 route_targets_for_connection(&app.cluster_routing.routes, connection.conn_id);
             Row::new(vec![
                 Cell::from(format!("{}", connection.conn_id)),
-                Cell::from(format!("node:{}", connection.peer_node_id)),
+                Cell::from(format!("slot:{}", connection.peer_route_slot)),
                 Cell::from(connection.state.as_str())
                     .style(Style::default().fg(theme::connection_state_colour(&connection.state))),
                 Cell::from(format_relative_ms(connection.last_activity_ms)),
@@ -466,8 +466,8 @@ fn draw_cluster_connections(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(format!(
-        " Routing Table (local node:{}) ",
-        app.cluster_routing.local_node_id
+        " Routing Table (local {} / slot {}) ",
+        app.cluster_routing.local_node_id, app.cluster_routing.local_route_slot
     ));
     if app.cluster_routing.routes.is_empty() {
         let inner = block.inner(area);
@@ -495,10 +495,10 @@ fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
                 .find(|connection| connection.conn_id == route.conn_id);
             let state = connection.map_or("missing", |connection| connection.state.as_str());
             Row::new(vec![
-                Cell::from(format!("node:{}", route.node_id)),
+                Cell::from(route.node_id.clone()),
                 Cell::from(format!("{}", route.conn_id)),
                 Cell::from(connection.map_or("—".to_owned(), |connection| {
-                    format!("node:{}", connection.peer_node_id)
+                    format!("slot:{}", connection.peer_route_slot)
                 })),
                 Cell::from(state).style(Style::default().fg(match connection {
                     Some(connection) => theme::connection_state_colour(&connection.state),
@@ -522,25 +522,21 @@ fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-fn route_targets_for_connection(routes: &[RouteEntry], conn_id: i32) -> Vec<u16> {
-    let mut targets: Vec<u16> = routes
+fn route_targets_for_connection(routes: &[RouteEntry], conn_id: i32) -> Vec<String> {
+    let mut targets: Vec<String> = routes
         .iter()
         .filter(|route| route.conn_id == conn_id)
-        .map(|route| route.node_id)
+        .map(|route| route.node_id.clone())
         .collect();
     targets.sort_unstable();
     targets
 }
 
-fn format_route_targets(targets: &[u16]) -> String {
+fn format_route_targets(targets: &[String]) -> String {
     if targets.is_empty() {
         "\u{2014}".to_owned()
     } else {
-        targets
-            .iter()
-            .map(|target| format!("node:{target}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        targets.join(", ")
     }
 }
 
@@ -570,16 +566,16 @@ fn cluster_member_debug_summary(
 
     match (connection, route) {
         (Some(connection), Some(route)) => format!(
-            "conn:{} ↔ node:{} • route:{} • {}",
+            "conn:{} ↔ slot:{} • route:{} • {}",
             connection.conn_id,
-            connection.peer_node_id,
+            connection.peer_route_slot,
             route.conn_id,
             format_relative_ms(connection.last_activity_ms),
         ),
         (Some(connection), None) => format!(
-            "conn:{} ↔ node:{} • no route • {}",
+            "conn:{} ↔ slot:{} • no route • {}",
             connection.conn_id,
-            connection.peer_node_id,
+            connection.peer_route_slot,
             format_relative_ms(connection.last_activity_ms),
         ),
         (None, Some(route)) => format!("route:{} • no live connection", route.conn_id),
@@ -616,8 +612,8 @@ fn make_vertical_lane_bar(segment_width: usize) -> String {
     reason = "swimlane rendering involves safe small-range conversions and is inherently verbose"
 )]
 fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
-    let subtitle = if let Some(actor) = app.trace_filter_actor {
-        format!(" Messages  [filtered: actor {actor}] ")
+    let subtitle = if let Some(actor) = app.trace_filter_actor.as_ref() {
+        format!(" Messages  [filtered: actor {}] ", actor.actor_id)
     } else {
         " Messages ".to_owned()
     };
@@ -626,15 +622,16 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Filter events
-    let events: Vec<&crate::client::TraceEvent> = app
-        .trace_events
+    let source_events = app
+        .trace_pause_events
+        .as_deref()
+        .unwrap_or(&app.trace_events);
+    let events: Vec<&crate::app::ObservedTraceEvent> = source_events
         .iter()
         .filter(|e| {
-            if let Some(filter_id) = app.trace_filter_actor {
-                e.actor_id == filter_id
-            } else {
-                true
-            }
+            app.trace_filter_actor.as_ref().is_none_or(|filter| {
+                trace_event_matches_actor(&e.producer_instance_id, &e.event, filter)
+            })
         })
         .filter(|e| e.is_actionable())
         .collect();
@@ -648,10 +645,10 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Collect unique node IDs
-    let mut node_ids: Vec<u16> = events.iter().map(|e| (e.actor_id >> 48) as u16).collect();
-    for m in &app.cluster_members {
-        node_ids.push(m.node_id);
-    }
+    let mut node_ids: Vec<String> = events
+        .iter()
+        .map(|e| trace_event_lane_label(&e.endpoint, &e.producer_instance_id, &e.event))
+        .collect();
     node_ids.sort_unstable();
     node_ids.dedup();
 
@@ -687,8 +684,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
 
     // Header line with node labels
     let mut header_spans = Vec::new();
-    for (i, &nid) in node_ids.iter().enumerate() {
-        let label = format!("node:{nid}");
+    for (i, label) in node_ids.iter().enumerate() {
         let colour = lane_colours[i % lane_colours.len()];
         let pad = lane_width as usize;
         let formatted = format!("{label:^pad$}");
@@ -704,15 +700,15 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(Span::styled(sep, theme::dim_style())));
 
     // Get base timestamp for relative display
-    let base_ns = events.first().map_or(0, |e| e.timestamp_ns);
+    let base_ns = events.first().map_or(0, |e| e.correlated_unix_ns);
 
     // Event rows
     for evt in visible_events {
-        let node_id = (evt.actor_id >> 48) as u16;
-        let lane_idx = node_ids.iter().position(|&n| n == node_id).unwrap_or(0);
+        let node_id = trace_event_lane_label(&evt.endpoint, &evt.producer_instance_id, &evt.event);
+        let lane_idx = node_ids.iter().position(|n| n == &node_id).unwrap_or(0);
 
         // Build the row: show vertical bars at each lane, with event info at the source lane
-        let relative_s = (evt.timestamp_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
+        let relative_s = (evt.correlated_unix_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
         let time_str = format!("{relative_s:>6.2}s");
 
         let event_label = trace_event_meta(&evt.event_type)
@@ -763,14 +759,25 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_message_controls(f: &mut Frame, app: &App, area: Rect) {
     let paused_str = if app.trace_paused { "yes" } else { "no" };
-    let filter_str = if let Some(actor) = app.trace_filter_actor {
-        format!("  │  Filter: actor {actor}")
+    let filter_str = if let Some(actor) = app.trace_filter_actor.as_ref() {
+        format!("  │  Filter: actor {}", actor.actor_id)
     } else {
         String::new()
     };
+    let clock_status = trace_clock_status(app);
     let text = format!(
-        " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str}{filter_str}",
-        app.trace_events.len()
+        " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ {clock_status}{}{}",
+        app.trace_events.len(),
+        app.trace_overrun_events,
+        app.trace_local_discarded,
+        app.trace_stream_resets,
+        app.trace_producer_restarts,
+        if app.trace_has_more {
+            " │ Backlog"
+        } else {
+            ""
+        },
+        filter_str,
     );
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);
@@ -813,9 +820,13 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Collect node IDs from cluster members and trace events
-    let mut node_ids: Vec<u16> = app.cluster_members.iter().map(|m| m.node_id).collect();
-    for evt in &app.trace_events {
-        let nid = (evt.actor_id >> 48) as u16;
+    let timeline_events = app
+        .timeline_pause_events
+        .as_deref()
+        .unwrap_or(&app.trace_events);
+    let mut node_ids: Vec<String> = Vec::new();
+    for evt in timeline_events {
+        let nid = trace_event_lane_label(&evt.endpoint, &evt.producer_instance_id, &evt.event);
         if !node_ids.contains(&nid) {
             node_ids.push(nid);
         }
@@ -823,7 +834,7 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     node_ids.sort_unstable();
     node_ids.dedup();
 
-    if node_ids.is_empty() || app.trace_events.is_empty() {
+    if node_ids.is_empty() || timeline_events.is_empty() {
         let msg = Paragraph::new("No events in window")
             .style(theme::dim_style())
             .alignment(Alignment::Center);
@@ -832,10 +843,9 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Determine visible time window
-    let latest_ns = app
-        .trace_events
+    let latest_ns = timeline_events
         .iter()
-        .map(|e| e.timestamp_ns)
+        .map(|e| e.correlated_unix_ns)
         .max()
         .unwrap_or(0);
     let window_ns = app.timeline_window_ns;
@@ -874,9 +884,9 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     // One row per node
     let lane_colours = theme::LANE_COLOURS;
 
-    for (node_idx, &nid) in node_ids.iter().enumerate() {
+    for (node_idx, nid) in node_ids.iter().enumerate() {
         // Node label
-        let label = format!("node:{nid} \u{2502}");
+        let label = format!("{nid} \u{2502}");
         let padded_label = format!("{label:>width$}", width = label_width as usize);
 
         // Build the chart row
@@ -884,17 +894,17 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
             vec![(' ', theme::TEXT_DIM); chart_width];
 
         // Place events
-        let node_events: Vec<&crate::client::TraceEvent> = app
-            .trace_events
+        let node_events: Vec<&crate::app::ObservedTraceEvent> = timeline_events
             .iter()
             .filter(|e| {
-                let enid = (e.actor_id >> 48) as u16;
-                enid == nid && e.timestamp_ns >= window_start && e.timestamp_ns < window_end
+                trace_event_lane_label(&e.endpoint, &e.producer_instance_id, &e.event) == *nid
+                    && e.correlated_unix_ns >= window_start
+                    && e.correlated_unix_ns < window_end
             })
             .collect();
 
         for evt in &node_events {
-            let x = ((evt.timestamp_ns - window_start) as f64 / window_ns as f64
+            let x = ((evt.correlated_unix_ns - window_start) as f64 / window_ns as f64
                 * chart_width as f64) as usize;
             if x < chart_width {
                 let (glyph, colour) = theme::timeline_event_glyph(&evt.event_type);
@@ -994,12 +1004,32 @@ fn draw_timeline_controls(f: &mut Frame, app: &App, area: Rect) {
     let paused_str = if app.timeline_paused { "yes" } else { "no" };
     let window_s = app.timeline_window_ns as f64 / 1_000_000_000.0;
     let offset_s = app.timeline_offset_ns as f64 / 1_000_000_000.0;
+    let clock_status = trace_clock_status(app);
     let text = format!(
-        " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str}",
-        app.trace_events.len()
+        " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ {clock_status}{}",
+        app.trace_events.len(),
+        app.trace_overrun_events,
+        app.trace_local_discarded,
+        app.trace_stream_resets,
+        app.trace_producer_restarts,
+        if app.trace_has_more {
+            " │ Backlog"
+        } else {
+            ""
+        },
     );
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);
+}
+
+fn trace_clock_status(app: &App) -> String {
+    let max_uncertainty = app
+        .trace_events
+        .iter()
+        .map(|event| event.clock_uncertainty_ns)
+        .max()
+        .unwrap_or(0);
+    format!("Order: ~wall clock (unsynced) │ Anchor sample ±{max_uncertainty}ns")
 }
 
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
@@ -1596,13 +1626,7 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "duration seconds are always small positive values"
-)]
-fn format_duration(secs: f64) -> String {
-    let total = secs as u64;
+fn format_duration(total: u64) -> String {
     let h = total / 3600;
     let m = (total % 3600) / 60;
     let s = total % 60;
@@ -1635,7 +1659,7 @@ fn format_ns(ns: u64) -> String {
 mod tests {
     use super::{
         active_node_title, cluster_member_debug_summary, format_relative_ms, format_route_targets,
-        route_targets_for_connection, status_bar_text,
+        route_targets_for_connection, status_bar_text, trace_clock_status,
     };
     use crate::{
         app::App,
@@ -1651,26 +1675,41 @@ mod tests {
     }
 
     #[test]
+    fn trace_clock_status_does_not_claim_cross_node_synchronization() {
+        let app = App::new_demo();
+        let status = trace_clock_status(&app);
+
+        assert!(status.contains("~wall clock (unsynced)"), "{status}");
+        assert!(status.contains("Anchor sample ±0ns"), "{status}");
+    }
+
+    #[test]
     fn route_targets_for_connection_returns_sorted_targets() {
         let routes = vec![
             RouteEntry {
-                node_id: 9,
+                node_id: "node-9".to_owned(),
+                route_slot: 9,
+                session_incarnation: 1,
                 conn_id: 3,
             },
             RouteEntry {
-                node_id: 4,
+                node_id: "node-4".to_owned(),
+                route_slot: 4,
+                session_incarnation: 1,
                 conn_id: 3,
             },
             RouteEntry {
-                node_id: 7,
+                node_id: "node-7".to_owned(),
+                route_slot: 7,
+                session_incarnation: 1,
                 conn_id: 8,
             },
         ];
 
         let targets = route_targets_for_connection(&routes, 3);
 
-        assert_eq!(targets, vec![4, 9]);
-        assert_eq!(format_route_targets(&targets), "node:4, node:9");
+        assert_eq!(targets, vec!["node-4", "node-9"]);
+        assert_eq!(format_route_targets(&targets), "node-4, node-9");
     }
 
     #[test]
@@ -1678,7 +1717,9 @@ mod tests {
         let summary = cluster_member_debug_summary(
             None,
             Some(&RouteEntry {
-                node_id: 42,
+                node_id: "node-42".to_owned(),
+                route_slot: 42,
+                session_incarnation: 1,
                 conn_id: 7,
             }),
             3,
@@ -1693,19 +1734,21 @@ mod tests {
         let summary = cluster_member_debug_summary(
             Some(&ConnectionInfo {
                 conn_id: 7,
-                peer_node_id: 42,
+                peer_route_slot: 42,
                 state: "active".to_owned(),
                 last_activity_ms: 1_250,
             }),
             Some(&RouteEntry {
-                node_id: 42,
+                node_id: "node-42".to_owned(),
+                route_slot: 42,
+                session_incarnation: 1,
                 conn_id: 7,
             }),
             1,
             false,
         );
 
-        assert_eq!(summary, "conn:7 ↔ node:42 • route:7 • 1.2s ago");
+        assert_eq!(summary, "conn:7 ↔ slot:42 • route:7 • 1.2s ago");
     }
 
     #[test]

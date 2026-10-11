@@ -54,15 +54,31 @@ message flow across nodes, and distributed actor placement.
 
 ![Messages tab](docs/screenshots/observer-tab6-messages.png)
 
-Live message traffic between actors, with source, destination, kind, and
-recent rate.
+Live actionable trace events grouped by the actor ID currently recorded on
+each event. The v1 producer does not expose a message destination, so this is
+not yet a complete source-to-destination flow graph.
 
 ### 7. Timeline — temporal view
 
 ![Timeline tab](docs/screenshots/observer-tab7-timeline.png)
 
 Time-ordered trace of scheduler and mailbox events so causality and
-ordering are visible at a glance.
+ordering can be inspected within the events retained by the runtime queue.
+Fetching traces destructively drains a process-global queue; multiple viewers
+divide the stream rather than each receiving a copy.
+
+## Protocol contract
+
+The authoritative v1 HTTP/JSON contract is
+[`protocol/observe/v1/openapi.json`](../protocol/observe/v1/openapi.json).
+This client consumes the generated Rust models from `hew-observe-protocol`.
+Swift and `bigint` TypeScript bindings are generated beside the
+contract for native and web clients. Regenerate and verify all outputs with:
+
+```sh
+make observe-protocol-generate
+make observe-protocol-check
+```
 
 ## Usage
 
@@ -104,17 +120,17 @@ On Unix, `hew-observe` resolves the profiler socket directory in this order:
 3. `/tmp/hew-profilers-{uid}/` (fallback)
 
 The Hew runtime writes a JSON descriptor (`{pid}.json`) to whichever
-directory it chooses.  `hew-observe` reads from the first directory that
-exists and is owned by your UID.  Stale entries (processes that are no longer
+directory it chooses. `hew-observe` reads from the first directory that
+exists and is owned by your UID. Stale entries (processes that are no longer
 alive) are pruned automatically on the next scan.
 
 ## Troubleshooting
 
 **No profiler discovered at startup?**
 
-The observer starts in *waiting mode* and displays an informative splash
-screen.  It rescans the discovery directory every **3 seconds** and will
-auto-connect as soon as a profiler appears — no restart required.  The
+The observer starts in _waiting mode_ and displays an informative splash
+screen. It rescans the discovery directory every **3 seconds** and will
+auto-connect as soon as a profiler appears — no restart required. The
 status bar shows `[WAITING]` and the connection indicator shows
 `◌ Waiting for profiler…` while scanning.
 
@@ -139,12 +155,12 @@ hew-observe --pid 12345   # attach to that specific PID
 
 **"No profiler found for PID …" error?**
 
-The process may have exited or profiling may not be enabled.  Check with
+The process may have exited or profiling may not be enabled. Check with
 `hew-observe --list` to see what is currently available.
 
 **On non-Unix platforms (Windows)?**
 
-Automatic discovery is not available.  Use `--addr` to specify the profiler
+Automatic discovery is not available. Use `--addr` to specify the profiler
 address explicitly:
 
 ```sh

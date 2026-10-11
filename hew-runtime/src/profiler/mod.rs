@@ -26,10 +26,12 @@ use crate::lifetime::PoisonSafe;
 use crate::util::MutexExt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    mpsc, Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+#[cfg(unix)]
+use std::{os::unix::fs::PermissionsExt as _, path::PathBuf};
 
 use metrics::MetricsRing;
 pub use server::{run_tcp_with_listener, ProfilerContext, OBSERVE_SCHEMA_VERSION};
@@ -63,6 +65,60 @@ enum ListenMode {
     /// Bind to a per-user unix domain socket with auto-discovery.
     #[cfg(unix)]
     Unix,
+}
+
+fn stop_sampler_after_startup_failure(sampler_handle: JoinHandle<()>) {
+    PROFILER_SHUTDOWN.store(true, Ordering::Release);
+    crate::util::report_join_panic("hew profiler sampler thread", sampler_handle.join());
+}
+
+fn stop_threads_after_startup_failure(
+    sampler_handle: JoinHandle<()>,
+    server_handle: JoinHandle<()>,
+) {
+    PROFILER_SHUTDOWN.store(true, Ordering::Release);
+    crate::util::report_join_panic("hew profiler server thread", server_handle.join());
+    crate::util::report_join_panic("hew profiler sampler thread", sampler_handle.join());
+}
+
+fn await_server_startup(ready_rx: &mpsc::Receiver<Result<(), String>>) -> bool {
+    match ready_rx.recv() {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            eprintln!("[hew-pprof] server startup failed: {error}");
+            false
+        }
+        Err(error) => {
+            eprintln!("[hew-pprof] server exited during startup: {error}");
+            false
+        }
+    }
+}
+
+#[cfg(unix)]
+fn prepare_unix_listener() -> Result<(std::os::unix::net::UnixListener, PathBuf, PathBuf), String> {
+    let disc_dir = discovery::discovery_dir()
+        .ok_or_else(|| "could not resolve a safe discovery directory".to_owned())?;
+    let sock_path = discovery::socket_path(&disc_dir);
+
+    // Preserve the existing cleanup behavior for a stale socket from a
+    // previous crashed run. An entry that `remove_file` cannot remove (for
+    // example, a directory) makes the fail-closed bind below return an error.
+    let _ = std::fs::remove_file(&sock_path);
+    let listener = std::os::unix::net::UnixListener::bind(&sock_path).map_err(|error| {
+        format!(
+            "failed to bind unix socket {}: {error}",
+            sock_path.display()
+        )
+    })?;
+
+    if let Err(error) = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))
+    {
+        drop(listener);
+        let _ = std::fs::remove_file(&sock_path);
+        return Err(format!("failed to set socket permissions: {error}"));
+    }
+    Ok((listener, disc_dir, sock_path))
 }
 
 /// Register profiler-owned session reset hooks.
@@ -120,8 +176,6 @@ pub fn maybe_start_with_context(
         Ok(val) if !val.is_empty() => val,
         _ => return,
     };
-    crate::tracing::hew_trace_enable(1);
-
     let Some(mode) = parse_listen_mode(&env_val) else {
         return;
     };
@@ -148,58 +202,81 @@ pub fn maybe_start_with_context(
         routing,
     });
 
-    // HTTP server thread — TCP or Unix depending on mode.
+    // HTTP server thread — TCP or Unix depending on mode. Startup waits for
+    // the server to finish every fallible runtime/listener conversion before
+    // tracing is enabled or discovery is published.
+    let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+    #[cfg(unix)]
+    let mut unix_discovery = None;
     let server_handle = match mode {
-        ListenMode::Tcp(bind_addr) => thread::Builder::new()
-            .name("hew-pprof-server".into())
-            .spawn(move || server::run_tcp(&bind_addr, ctx)),
+        ListenMode::Tcp(bind_addr) => {
+            // Bind before spawning so an invalid or unavailable address cannot
+            // create a phantom enabled tracing epoch with no listening server.
+            let listener = match std::net::TcpListener::bind(&bind_addr) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    eprintln!("[hew-pprof] failed to bind {bind_addr}: {error}");
+                    stop_sampler_after_startup_failure(sampler_handle);
+                    return;
+                }
+            };
+            thread::Builder::new()
+                .name("hew-pprof-server".into())
+                .spawn(move || server::run_tcp_with_listener_ready(listener, ctx, ready_tx))
+        }
         #[cfg(unix)]
         ListenMode::Unix => {
-            let Some(disc_dir) = discovery::discovery_dir() else {
-                eprintln!("[hew-pprof] could not resolve a safe discovery directory");
-                PROFILER_SHUTDOWN.store(true, Ordering::Release);
-                crate::util::report_join_panic(
-                    "hew profiler sampler thread",
-                    sampler_handle.join(),
-                );
-                return;
+            let (listener, disc_dir, sock_path) = match prepare_unix_listener() {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    eprintln!("[hew-pprof] {error}");
+                    stop_sampler_after_startup_failure(sampler_handle);
+                    return;
+                }
             };
-
-            let sock_path = discovery::socket_path(&disc_dir);
-
-            // Remove stale socket from a previous crashed run.
-            let _ = std::fs::remove_file(&sock_path);
-
-            // Store discovery dir so shutdown() can clean up.
-            PROFILER_DISCOVERY_DIR.access(|d| *d = Some(disc_dir.clone()));
+            unix_discovery = Some((disc_dir, sock_path.clone()));
 
             thread::Builder::new()
                 .name("hew-pprof-server".into())
-                .spawn(move || {
-                    // Write discovery file after we're on the server thread
-                    // (the socket is created inside run_unix).
-                    server::run_unix(&sock_path, ctx);
-                })
+                .spawn(move || server::run_unix_with_listener_ready(listener, ctx, ready_tx))
         }
     };
 
     let Ok(server_handle) = server_handle else {
         eprintln!("[hew-pprof] failed to spawn server thread");
-        PROFILER_SHUTDOWN.store(true, Ordering::Release);
-        crate::util::report_join_panic("hew profiler sampler thread", sampler_handle.join());
+        stop_sampler_after_startup_failure(sampler_handle);
+        #[cfg(unix)]
+        if let Some((disc_dir, _)) = unix_discovery.as_ref() {
+            discovery::cleanup(disc_dir);
+        }
         return;
     };
 
-    // For unix mode, write the discovery file now that the thread is running.
-    #[cfg(unix)]
-    PROFILER_DISCOVERY_DIR.access(|disc_dir_opt| {
-        if let Some(disc_dir) = disc_dir_opt.as_ref() {
-            let sock_path = discovery::socket_path(disc_dir);
-            if let Err(e) = discovery::write_discovery_file(disc_dir, &sock_path) {
-                eprintln!("[hew-pprof] failed to write discovery file: {e}");
-            }
+    if !await_server_startup(&ready_rx) {
+        stop_threads_after_startup_failure(sampler_handle, server_handle);
+        #[cfg(unix)]
+        if let Some((disc_dir, _)) = unix_discovery.as_ref() {
+            discovery::cleanup(disc_dir);
         }
-    });
+        return;
+    }
+
+    // For unix mode, publish discovery only after the listener is known ready.
+    #[cfg(unix)]
+    if let Some((disc_dir, sock_path)) = unix_discovery.as_ref() {
+        if let Err(error) = discovery::write_discovery_file(disc_dir, sock_path) {
+            eprintln!("[hew-pprof] failed to write discovery file: {error}");
+            stop_threads_after_startup_failure(sampler_handle, server_handle);
+            discovery::cleanup(disc_dir);
+            return;
+        }
+        PROFILER_DISCOVERY_DIR.access(|slot| *slot = Some(disc_dir.clone()));
+        eprintln!("[hew-pprof] listening on unix:{}", sock_path.display());
+    }
+
+    // Start the trace epoch only after mode validation, resource setup, bind,
+    // server readiness, discovery publication, and both thread spawns succeed.
+    crate::tracing::hew_trace_enable(1);
 
     // Store thread handles for shutdown.
     let threads = ProfilerThreads {
@@ -386,6 +463,92 @@ mod tests {
 
         assert_eq!(bind_addr, "0.0.0.0:6060");
         assert!(warns_on_wildcard);
+    }
+
+    #[test]
+    fn invalid_tcp_address_does_not_enable_tracing() {
+        let _guard = PROFILER_TEST_MUTEX.lock_or_recover();
+        let _trace_guard = crate::tracing::tracing_test_guard();
+        shutdown();
+        crate::tracing::hew_trace_reset();
+
+        crate::env::ENV_LOCK.access(|()| {
+            let previous = std::env::var_os("HEW_PPROF");
+            // SAFETY: ENV_LOCK provides exclusive process-environment access.
+            unsafe { std::env::set_var("HEW_PPROF", "definitely-not-a-socket-address") };
+            maybe_start();
+            match previous {
+                Some(value) => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::set_var("HEW_PPROF", value) };
+                }
+                None => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::remove_var("HEW_PPROF") };
+                }
+            }
+        });
+
+        assert_eq!(crate::tracing::hew_trace_is_enabled(), 0);
+        assert!(PROFILER_STATE.access(|state| state.is_none()));
+        crate::tracing::hew_trace_reset();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_unix_bind_does_not_publish_or_enable_profiler() {
+        let _guard = PROFILER_TEST_MUTEX.lock_or_recover();
+        let _trace_guard = crate::tracing::tracing_test_guard();
+        shutdown();
+        crate::tracing::hew_trace_reset();
+
+        let temp = tempfile::tempdir().expect("temporary runtime directory");
+        crate::env::ENV_LOCK.access(|()| {
+            let previous_pprof = std::env::var_os("HEW_PPROF");
+            let previous_xdg = std::env::var_os("XDG_RUNTIME_DIR");
+            // SAFETY: ENV_LOCK provides exclusive process-environment access.
+            unsafe {
+                std::env::set_var("HEW_PPROF", "auto");
+                std::env::set_var("XDG_RUNTIME_DIR", temp.path());
+            }
+
+            let disc_dir = discovery::discovery_dir().expect("test discovery directory");
+            let sock_path = discovery::socket_path(&disc_dir);
+            std::fs::create_dir(&sock_path).expect("directory obstructs unix socket bind");
+
+            maybe_start();
+
+            assert_eq!(crate::tracing::hew_trace_is_enabled(), 0);
+            assert!(PROFILER_STATE.access(|state| state.is_none()));
+            assert!(PROFILER_DISCOVERY_DIR.access(|state| state.is_none()));
+            assert!(
+                !discovery::discovery_file_path(&disc_dir).exists(),
+                "failed startup must not publish discovery"
+            );
+
+            match previous_pprof {
+                Some(value) => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::set_var("HEW_PPROF", value) };
+                }
+                None => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::remove_var("HEW_PPROF") };
+                }
+            }
+            match previous_xdg {
+                Some(value) => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::set_var("XDG_RUNTIME_DIR", value) };
+                }
+                None => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+                }
+            }
+        });
+
+        crate::tracing::hew_trace_reset();
     }
 
     #[test]

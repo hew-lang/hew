@@ -74,6 +74,7 @@ serde.workspace = true
 # Serialization formats (CBOR, JSON, YAML, TOML, MessagePack) behind the
 # `codec` event ABI that compiled codec walks call.
 hew-codec = { path = "../hew-codec" }
+hew-observe-protocol = { path = "../hew-observe-protocol" }
 # Test reports.
 serde_json.workspace = true
 # Core dependencies — always linked (collections, print, string, etc.)

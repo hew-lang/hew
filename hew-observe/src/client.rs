@@ -11,29 +11,229 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
+#[cfg(test)]
+use hew_observe_protocol::Envelope;
+#[cfg(test)]
+pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
+use hew_observe_protocol::{decode_envelope, DecodeError};
+pub use hew_observe_protocol::{
+    ActorIdentity, ActorInfo, ClusterMember, ConnectionInfo, CrashEntry, HistoryEntry, Metrics,
+    RouteEntry, RoutingSnapshot, SupervisorRow, TraceBatch, TraceEvent, TraceStreamMismatch,
+    TraceSubject,
+};
 
-/// Canonical schema version expected on every JSON envelope returned by the
-/// profiler/observe HTTP surface.
-///
-/// Mirrors `hew_runtime::profiler::OBSERVE_SCHEMA_VERSION`. The two crates
-/// duplicate the literal because `hew-observe` deliberately does not depend on
-/// `hew-runtime`; both copies must move together when the envelope shape
-/// evolves. Producer and consumer at v0.5 emit/accept `"v0.5"`; no
-/// cross-version compatibility shims (per R58 Q136 Option B).
-pub const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
+/// Relationship between a fetched trace page and the client's previous page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceContinuity {
+    /// First successful attachment to this producer.
+    Initial,
+    /// The page continues the same producer process and trace stream.
+    Continuous,
+    /// The producer stayed alive but began a new trace stream epoch.
+    StreamReset,
+    /// The profiler process was replaced or restarted.
+    ProducerRestart,
+}
 
-/// Canonical envelope returned by every `/api/*` JSON endpoint:
-/// `{"schema_version": "<OBSERVE_SCHEMA_VERSION>", "data": <body>}`.
-///
-/// The producer (`hew_runtime::profiler::server::envelope_json`) wraps every
-/// response body in this shape so downstream consumers (this client, the
-/// dashboard, the sandbox-VM bridge) can detect when the producer's event
-/// shape has drifted.
-#[derive(Debug, Deserialize)]
-struct Envelope<T> {
-    schema_version: String,
-    data: T,
+/// One cursor-addressed trace page and its continuity classification.
+#[derive(Debug)]
+pub struct TracePage {
+    pub batch: TraceBatch,
+    pub continuity: TraceContinuity,
+}
+
+#[derive(Debug, Clone)]
+struct TraceCursor {
+    producer_instance_id: String,
+    stream_id: String,
+    after: u64,
+}
+
+/// Validate relationships that cannot be expressed by generated field-level
+/// decoders. A malformed success response must never advance the private
+/// cursor: doing so could silently skip, duplicate, or reorder trace records.
+fn validate_trace_identity(
+    batch: &TraceBatch,
+    requested_cursor: Option<&TraceCursor>,
+    expected_after_mismatch: Option<&(String, String)>,
+) -> Result<(), String> {
+    if requested_cursor.is_some_and(|cursor| {
+        batch.stream_id != cursor.stream_id
+            || batch.producer_instance_id != cursor.producer_instance_id
+    }) {
+        return Err(
+            "successful trace response changed producer or stream without a mismatch".to_owned(),
+        );
+    }
+    if let Some((expected_stream, expected_producer)) = expected_after_mismatch {
+        if batch.stream_id != *expected_stream || batch.producer_instance_id != *expected_producer {
+            return Err(format!(
+                "trace_stream_mismatch advertised stream {expected_stream} from producer \
+                 {expected_producer}, retry returned stream {} from producer {}",
+                batch.stream_id, batch.producer_instance_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_trace_batch(batch: &TraceBatch, requested_after: Option<u64>) -> Result<(), String> {
+    let last_produced = validate_trace_batch_metadata(batch)?;
+    let requested_next = validate_trace_batch_overrun(batch, requested_after, last_produced)?;
+    validate_trace_batch_page(batch, requested_after, requested_next, last_produced)
+}
+
+fn validate_trace_batch_metadata(batch: &TraceBatch) -> Result<u64, String> {
+    if batch.oldest_sequence == 0 || batch.next_sequence == 0 {
+        return Err("oldest_sequence and next_sequence must be positive".to_owned());
+    }
+    if batch.oldest_sequence > batch.next_sequence {
+        return Err(format!(
+            "oldest_sequence {} exceeds next_sequence {}",
+            batch.oldest_sequence, batch.next_sequence
+        ));
+    }
+
+    let last_produced = batch.next_sequence - 1;
+    if batch.events_recorded_total != last_produced {
+        return Err(format!(
+            "events_recorded_total {} does not match last produced sequence {last_produced}",
+            batch.events_recorded_total
+        ));
+    }
+    if batch.events_overwritten_total > batch.events_recorded_total {
+        return Err("events_overwritten_total exceeds events_recorded_total".to_owned());
+    }
+    let expected_oldest = if batch.events_recorded_total == 0 {
+        batch.next_sequence
+    } else {
+        batch
+            .events_overwritten_total
+            .checked_add(1)
+            .ok_or_else(|| "events_overwritten_total overflow".to_owned())?
+    };
+    if batch.oldest_sequence != expected_oldest {
+        return Err(format!(
+            "oldest_sequence {} does not match overwrite history {expected_oldest}",
+            batch.oldest_sequence
+        ));
+    }
+    if batch.batch_source_monotonic_ns < batch.clock_anchor.monotonic_ns {
+        return Err("batch source clock precedes its clock anchor".to_owned());
+    }
+    Ok(last_produced)
+}
+
+fn validate_trace_batch_overrun(
+    batch: &TraceBatch,
+    requested_after: Option<u64>,
+    last_produced: u64,
+) -> Result<u64, String> {
+    let requested_next = match requested_after {
+        Some(after) => {
+            if after > last_produced {
+                return Err(format!(
+                    "response accepted future cursor {after} past {last_produced}"
+                ));
+            }
+            after
+                .checked_add(1)
+                .ok_or_else(|| "requested cursor overflow".to_owned())?
+        }
+        None => batch.oldest_sequence,
+    };
+    let expected_overrun = batch.oldest_sequence.saturating_sub(requested_next);
+    match (&batch.overrun, expected_overrun) {
+        (None, 0) => {}
+        (None, count) => {
+            return Err(format!("missing overrun metadata for {count} lost events"));
+        }
+        (Some(_), 0) => return Err("spurious overrun metadata without a cursor gap".to_owned()),
+        (Some(overrun), count) => {
+            let expected_last = batch.oldest_sequence - 1;
+            if overrun.first_missing_sequence != requested_next
+                || overrun.last_missing_sequence != expected_last
+                || overrun.count != count
+            {
+                return Err(format!(
+                    "overrun range {}..={} count {} does not match expected {}..={} count {count}",
+                    overrun.first_missing_sequence,
+                    overrun.last_missing_sequence,
+                    overrun.count,
+                    requested_next,
+                    expected_last
+                ));
+            }
+        }
+    }
+    Ok(requested_next)
+}
+
+fn validate_trace_batch_page(
+    batch: &TraceBatch,
+    requested_after: Option<u64>,
+    requested_next: u64,
+    last_produced: u64,
+) -> Result<(), String> {
+    let expected_first = requested_next.max(batch.oldest_sequence);
+    if let Some(first) = batch.events.first() {
+        if first.sequence != expected_first {
+            return Err(format!(
+                "first event sequence {} does not match expected {expected_first}",
+                first.sequence
+            ));
+        }
+        for pair in batch.events.windows(2) {
+            if pair[1].sequence != pair[0].sequence.saturating_add(1) {
+                return Err(format!(
+                    "event sequences are not contiguous at {} then {}",
+                    pair[0].sequence, pair[1].sequence
+                ));
+            }
+        }
+        let last = batch.events.last().expect("non-empty trace page").sequence;
+        if last >= batch.next_sequence {
+            return Err(format!(
+                "event sequence {last} is not below next_sequence {}",
+                batch.next_sequence
+            ));
+        }
+        if batch.next_cursor != last {
+            return Err(format!(
+                "next_cursor {} does not match last returned sequence {last}",
+                batch.next_cursor
+            ));
+        }
+    } else {
+        if expected_first < batch.next_sequence {
+            return Err(format!(
+                "empty page omitted available sequence {expected_first}"
+            ));
+        }
+        let expected_cursor = requested_after.unwrap_or(last_produced);
+        if batch.next_cursor != expected_cursor {
+            return Err(format!(
+                "empty page cursor {} does not match expected {expected_cursor}",
+                batch.next_cursor
+            ));
+        }
+    }
+
+    let expected_has_more = batch.next_cursor < last_produced;
+    if batch.has_more != expected_has_more {
+        return Err(format!(
+            "has_more {} does not match cursor {} and last produced {last_produced}",
+            batch.has_more, batch.next_cursor
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct HttpResponse {
+    status: String,
+    status_code: u16,
+    body: Vec<u8>,
 }
 
 /// Typed failure categories from a profiler client request.
@@ -120,265 +320,6 @@ fn build_tcp_http_client(base_url: &str) -> Result<reqwest::blocking::Client, Cl
         })
 }
 
-/// Metrics snapshot from `/api/metrics`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Metrics {
-    #[serde(default)]
-    pub timestamp_secs: f64,
-    #[serde(default)]
-    pub tasks_spawned: u64,
-    #[serde(default)]
-    pub tasks_completed: u64,
-    #[serde(default)]
-    pub steals: u64,
-    #[serde(default)]
-    pub messages_sent: u64,
-    #[serde(default)]
-    pub messages_received: u64,
-    #[serde(default)]
-    pub active_workers: u64,
-    #[serde(default)]
-    pub alloc_count: u64,
-    #[serde(default)]
-    pub dealloc_count: u64,
-    #[serde(default)]
-    pub bytes_allocated: u64,
-    #[serde(default)]
-    pub bytes_freed: u64,
-    #[serde(default)]
-    pub bytes_live: u64,
-    #[serde(default)]
-    pub peak_bytes_live: u64,
-    #[serde(default)]
-    pub tcp_bytes_read: u64,
-    #[serde(default)]
-    pub tcp_bytes_written: u64,
-    #[serde(default)]
-    pub tcp_accept_count: u64,
-    #[serde(default)]
-    pub tcp_connect_count: u64,
-    #[serde(default)]
-    pub tcp_error_count: u64,
-}
-
-/// Per-actor stats from `/api/actors`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ActorInfo {
-    pub id: u64,
-    #[serde(default)]
-    pub pid: u64,
-    /// Hew actor type name, e.g. `"Counter"`.  Absent from older profiler
-    /// versions; defaults to an empty string in that case.
-    #[serde(default)]
-    pub actor_type: String,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub msgs: u64,
-    #[serde(default)]
-    pub time_ns: u64,
-    #[serde(default)]
-    pub mbox_depth: i64,
-    #[serde(default)]
-    pub mbox_hwm: i64,
-}
-
-impl ActorInfo {
-    /// Human-readable state name (capitalized for display).
-    pub fn state_name(&self) -> &str {
-        if self.state.is_empty() {
-            "Unknown"
-        } else {
-            &self.state
-        }
-    }
-
-    /// Display label for the actor type.
-    ///
-    /// Returns the registered Hew type name when available, or `"Actor"` as a
-    /// fallback for older profiler versions that do not emit `actor_type`.
-    pub fn type_label(&self) -> &str {
-        if self.actor_type.is_empty() {
-            "Actor"
-        } else {
-            &self.actor_type
-        }
-    }
-}
-
-/// History entry from `/api/metrics/history` (abbreviated keys).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; only a subset used for sparklines currently"
-)]
-pub struct HistoryEntry {
-    #[serde(default)]
-    pub t: f64,
-    #[serde(default, rename = "ts")]
-    pub tasks_spawned: u64,
-    #[serde(default, rename = "tc")]
-    pub tasks_completed: u64,
-    #[serde(default, rename = "st")]
-    pub steals: u64,
-    #[serde(default, rename = "ms")]
-    pub messages_sent: u64,
-    #[serde(default, rename = "mr")]
-    pub messages_received: u64,
-    #[serde(default, rename = "aw")]
-    pub active_workers: u64,
-    #[serde(default, rename = "ac")]
-    pub alloc_count: u64,
-    #[serde(default, rename = "dc")]
-    pub dealloc_count: u64,
-    #[serde(default, rename = "ba")]
-    pub bytes_allocated: u64,
-    #[serde(default, rename = "bf")]
-    pub bytes_freed: u64,
-    #[serde(default, rename = "bl")]
-    pub bytes_live: u64,
-    #[serde(default, rename = "pb")]
-    pub peak_bytes_live: u64,
-    #[serde(default, rename = "tbr")]
-    pub tcp_bytes_read: u64,
-    #[serde(default, rename = "tbw")]
-    pub tcp_bytes_written: u64,
-    #[serde(default, rename = "tac")]
-    pub tcp_accept_count: u64,
-    #[serde(default, rename = "tcc")]
-    pub tcp_connect_count: u64,
-    #[serde(default, rename = "tec")]
-    pub tcp_error_count: u64,
-}
-
-/// Cluster member from `/api/cluster/members`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ClusterMember {
-    #[serde(default)]
-    pub node_id: u16,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub incarnation: u64,
-    #[serde(default)]
-    pub addr: String,
-    #[serde(default)]
-    pub last_seen_ms: u64,
-}
-
-/// Connection info from `/api/connections`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ConnectionInfo {
-    #[serde(default)]
-    pub conn_id: i32,
-    #[serde(default)]
-    pub peer_node_id: u16,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub last_activity_ms: u64,
-}
-
-/// Routing table snapshot from `/api/routing/table`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RoutingSnapshot {
-    #[serde(default)]
-    pub local_node_id: u16,
-    #[serde(default)]
-    pub routes: Vec<RouteEntry>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RouteEntry {
-    #[serde(default)]
-    pub node_id: u16,
-    #[serde(default)]
-    pub conn_id: i32,
-}
-
-/// Trace event from `/api/traces`.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
-)]
-pub struct TraceEvent {
-    #[serde(default)]
-    pub trace_id: String,
-    #[serde(default)]
-    pub span_id: u64,
-    #[serde(default)]
-    pub parent_span_id: u64,
-    #[serde(default)]
-    pub actor_id: u64,
-    /// Dispatch function pointer cast to `u64` — the de-facto actor type
-    /// identifier.  `0` when the actor was freed before the drain ran, or when
-    /// the profiler actor registry has not been populated.  Use together with
-    /// `actor_type` for display; use the raw value to group or compare actor
-    /// types programmatically.
-    #[serde(default)]
-    pub actor_type_id: u64,
-    /// Registered Hew type name for this actor (e.g. `"Counter"`), or `None`
-    /// when the dispatch function has not been registered via
-    /// `hew_actor_register_type` (requires codegen emission — see #1258).
-    #[serde(default)]
-    pub actor_type: Option<String>,
-    #[serde(default)]
-    pub event_type: String,
-    #[serde(default)]
-    pub msg_type: i32,
-    #[serde(default)]
-    pub timestamp_ns: u64,
-    /// Fully-qualified handler name (`"ActorType::handler_name"`), or `None`
-    /// when the runtime's metadata registry has not been populated for this
-    /// `(actor_type, msg_type)` pair.  Populated on native builds via
-    /// codegen-emitted `hew_register_handler_name` calls at actor-type init time.
-    #[serde(default)]
-    pub handler_name: Option<String>,
-}
-
-impl TraceEvent {
-    /// Returns `true` for event types that drive the actionable trace UI views
-    /// (timeline, actor drill-down).  This is the single source of truth for
-    /// the "actionable event" predicate used throughout hew-observe.
-    pub fn is_actionable(&self) -> bool {
-        crate::events::trace_event_meta(&self.event_type).is_actionable()
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct SupervisorRow {
-    #[serde(default)]
-    pub depth: u16,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub state: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct CrashEntry {
-    #[serde(default)]
-    pub time_s: f64,
-    #[serde(default)]
-    pub actor_id: u64,
-    #[serde(default)]
-    pub signal: i32,
-    /// Canonical Hew trap discriminator resolved from the raw `signal`
-    /// (`HEW_TRAP_*` band → `"DivideByZero"`, `"IntegerOverflow"`, …; an OS
-    /// signal number → `"Signal"`; clean stop → `"Normal"`).
-    ///
-    /// Populated by `hew_runtime::crash::snapshot_crashes_json` via
-    /// `ExitReason::from_error_code(signal).trap_kind_name()`. Defaults to the
-    /// empty string when a profiler/runtime predating this field is observed.
-    #[serde(default)]
-    pub trap_kind: String,
-    #[serde(default)]
-    pub msg_type: i32,
-    #[serde(default)]
-    pub fault_addr: u64,
-}
-
 /// Connection status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
@@ -416,6 +357,9 @@ pub struct ProfilerClient {
     /// Last error from the most recent `fetch_*` call, if it failed.
     /// Cleared to `None` on a successful fetch.
     pub last_error: Option<ClientError>,
+    /// Per-observer trace cursor. This is deliberately client-local: the
+    /// producer never allocates or advances cursor state on our behalf.
+    trace_cursor: Option<TraceCursor>,
 }
 
 impl ProfilerClient {
@@ -429,6 +373,7 @@ impl ProfilerClient {
             },
             status: ConnectionStatus::Connecting,
             last_error: None,
+            trace_cursor: None,
         })
     }
 
@@ -441,6 +386,7 @@ impl ProfilerClient {
             },
             status: ConnectionStatus::Connecting,
             last_error: None,
+            trace_cursor: None,
         }
     }
 
@@ -478,8 +424,113 @@ impl ProfilerClient {
         self.get_json("/api/routing/table")
     }
 
-    pub fn fetch_traces(&mut self) -> Option<Vec<TraceEvent>> {
-        self.get_json("/api/traces")
+    /// Fetch the next non-destructive trace page for this client.
+    ///
+    /// A stream-mismatch response is an explicit segment boundary. The old
+    /// cursor is discarded and the method performs one fresh attachment with
+    /// both cursor parameters omitted; events from the two epochs are never
+    /// requested with the same cursor.
+    pub fn fetch_traces(&mut self) -> Option<TracePage> {
+        let previous = self.trace_cursor.clone();
+        let mut retried_after_mismatch = false;
+        let mut bootstrap_after_mismatch = false;
+        let mut expected_after_mismatch: Option<(String, String)> = None;
+
+        loop {
+            let requested_after = if bootstrap_after_mismatch {
+                None
+            } else {
+                self.trace_cursor.as_ref().map(|cursor| cursor.after)
+            };
+            let path = if bootstrap_after_mismatch {
+                "/api/traces?limit=256".to_owned()
+            } else {
+                self.trace_cursor.as_ref().map_or_else(
+                    || "/api/traces?limit=256".to_owned(),
+                    |cursor| {
+                        format!(
+                            "/api/traces?stream_id={}&after={}&limit=256",
+                            cursor.stream_id, cursor.after
+                        )
+                    },
+                )
+            };
+
+            let response = match self.fetch_response_inner(&path) {
+                Ok(response) => response,
+                Err(error) => {
+                    self.last_error = Some(error);
+                    return None;
+                }
+            };
+            let batch: TraceBatch = if (200..300).contains(&response.status_code) {
+                self.decode_json_body(&response.body)?
+            } else if response.status_code == 409 && !retried_after_mismatch {
+                let mismatch: TraceStreamMismatch = self.decode_json_body(&response.body)?;
+                let Some(cursor) = self.trace_cursor.as_ref() else {
+                    self.last_error = Some(ClientError::BadStatus(
+                        "409 trace_stream_mismatch without a local cursor".to_owned(),
+                    ));
+                    return None;
+                };
+                if mismatch.requested_stream_id != cursor.stream_id {
+                    self.last_error = Some(ClientError::BadStatus(format!(
+                        "409 trace_stream_mismatch requested {}, expected {}",
+                        mismatch.requested_stream_id, cursor.stream_id
+                    )));
+                    return None;
+                }
+                if mismatch.current_stream_id == cursor.stream_id {
+                    self.last_error = Some(ClientError::BadStatus(
+                        "409 trace_stream_mismatch did not change stream_id".to_owned(),
+                    ));
+                    return None;
+                }
+                expected_after_mismatch = Some((
+                    mismatch.current_stream_id,
+                    mismatch.current_producer_instance_id,
+                ));
+                bootstrap_after_mismatch = true;
+                retried_after_mismatch = true;
+                continue;
+            } else {
+                self.last_error = Some(ClientError::BadStatus(response.status));
+                return None;
+            };
+            let requested_cursor = if bootstrap_after_mismatch {
+                None
+            } else {
+                self.trace_cursor.as_ref()
+            };
+            if let Err(error) =
+                validate_trace_identity(&batch, requested_cursor, expected_after_mismatch.as_ref())
+            {
+                self.last_error = Some(ClientError::BadStatus(error));
+                return None;
+            }
+            if let Err(error) = validate_trace_batch(&batch, requested_after) {
+                self.last_error = Some(ClientError::BadStatus(format!(
+                    "invalid trace batch: {error}"
+                )));
+                return None;
+            }
+
+            let continuity = match previous.as_ref() {
+                None => TraceContinuity::Initial,
+                Some(cursor) if cursor.producer_instance_id != batch.producer_instance_id => {
+                    TraceContinuity::ProducerRestart
+                }
+                Some(cursor) if cursor.stream_id != batch.stream_id => TraceContinuity::StreamReset,
+                Some(_) => TraceContinuity::Continuous,
+            };
+            self.trace_cursor = Some(TraceCursor {
+                producer_instance_id: batch.producer_instance_id.clone(),
+                stream_id: batch.stream_id.clone(),
+                after: batch.next_cursor,
+            });
+            self.last_error = None;
+            return Some(TracePage { batch, continuity });
+        }
     }
 
     pub fn fetch_supervisors(&mut self) -> Option<Vec<SupervisorRow>> {
@@ -493,7 +544,7 @@ impl ProfilerClient {
     /// Fetch JSON from an endpoint. Does NOT affect connection status.
     ///
     /// Parses the canonical observe envelope
-    /// (`{"schema_version":"v0.5","data":<T>}`) — bare bodies emitted by a
+    /// (`{"schema_version":"v1","data":<T>}`) — bare bodies emitted by a
     /// pre-envelope producer fail with `ClientError::Parse`. The envelope's
     /// `schema_version` field is checked against [`OBSERVE_SCHEMA_VERSION`];
     /// a mismatch surfaces as `ClientError::BadStatus` so the caller's
@@ -501,21 +552,21 @@ impl ProfilerClient {
     /// possibly-shape-shifted data.
     fn get_json<T: serde::de::DeserializeOwned>(&mut self, path: &str) -> Option<T> {
         let body = self.get_bytes(path)?;
-        let envelope: Envelope<T> = match serde_json::from_slice(&body) {
-            Ok(v) => v,
-            Err(e) => {
+        self.decode_json_body(&body)
+    }
+
+    fn decode_json_body<T: serde::de::DeserializeOwned>(&mut self, body: &[u8]) -> Option<T> {
+        match decode_envelope(body) {
+            Ok(data) => Some(data),
+            Err(DecodeError::Json(e)) => {
                 self.last_error = Some(ClientError::Parse(e));
-                return None;
+                None
             }
-        };
-        if envelope.schema_version != OBSERVE_SCHEMA_VERSION {
-            self.last_error = Some(ClientError::BadStatus(format!(
-                "schema_version mismatch: expected {OBSERVE_SCHEMA_VERSION}, got {}",
-                envelope.schema_version
-            )));
-            return None;
+            Err(error @ DecodeError::SchemaVersion { .. }) => {
+                self.last_error = Some(ClientError::BadStatus(error.to_string()));
+                None
+            }
         }
-        Some(envelope.data)
     }
 
     /// Raw GET request returning the response body bytes.
@@ -539,6 +590,15 @@ impl ProfilerClient {
     /// Inner fetch that borrows `self` immutably and returns a typed `Result`.
     /// Called exclusively by [`Self::get_bytes`].
     fn fetch_bytes_inner(&self, path: &str) -> Result<Vec<u8>, ClientError> {
+        let response = self.fetch_response_inner(path)?;
+        if (200..300).contains(&response.status_code) {
+            Ok(response.body)
+        } else {
+            Err(ClientError::BadStatus(response.status))
+        }
+    }
+
+    fn fetch_response_inner(&self, path: &str) -> Result<HttpResponse, ClientError> {
         match &self.transport {
             Transport::Tcp { base_url, http } => {
                 let url = format!("{base_url}{path}");
@@ -546,16 +606,20 @@ impl ProfilerClient {
                     .get(&url)
                     .send()
                     .map_err(|e| ClientError::Connect(io::Error::other(e)))?;
-                if resp.status().is_success() {
-                    resp.bytes()
-                        .map_err(|e| ClientError::Read(io::Error::other(e)))
-                        .map(|b| b.to_vec())
-                } else {
-                    Err(ClientError::BadStatus(resp.status().to_string()))
-                }
+                let status_code = resp.status().as_u16();
+                let status = resp.status().to_string();
+                let body = resp
+                    .bytes()
+                    .map_err(|e| ClientError::Read(io::Error::other(e)))?
+                    .to_vec();
+                Ok(HttpResponse {
+                    status,
+                    status_code,
+                    body,
+                })
             }
             #[cfg(unix)]
-            Transport::Unix { socket_path } => unix_get(socket_path, path),
+            Transport::Unix { socket_path } => unix_get_response(socket_path, path),
         }
     }
 }
@@ -569,7 +633,7 @@ impl ProfilerClient {
 /// Returns a typed [`ClientError`] on failure so callers can distinguish
 /// connect errors (stale/missing socket path) from I/O failures and
 /// unexpected server responses.
-fn unix_get(socket_path: &Path, path: &str) -> Result<Vec<u8>, ClientError> {
+fn unix_get_response(socket_path: &Path, path: &str) -> Result<HttpResponse, ClientError> {
     let mut stream = UnixStream::connect(socket_path).map_err(ClientError::Connect)?;
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -591,9 +655,12 @@ fn unix_get(socket_path: &Path, path: &str) -> Result<Vec<u8>, ClientError> {
     reader
         .read_line(&mut status_line)
         .map_err(ClientError::Read)?;
-    if !status_line.contains(" 200 ") {
-        return Err(ClientError::BadStatus(status_line.trim_end().to_owned()));
-    }
+    let status_code = status_line
+        .split_ascii_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| ClientError::BadStatus(status_line.trim_end().to_owned()))?;
+    let status = status_line.trim_end().to_owned();
 
     // Headers — look for Content-Length, skip until blank line.
     let mut content_length: Option<usize> = None;
@@ -615,12 +682,20 @@ fn unix_get(socket_path: &Path, path: &str) -> Result<Vec<u8>, ClientError> {
     if let Some(len) = content_length {
         let mut body = vec![0u8; len];
         reader.read_exact(&mut body).map_err(ClientError::Read)?;
-        Ok(body)
+        Ok(HttpResponse {
+            status,
+            status_code,
+            body,
+        })
     } else {
         // No Content-Length — read until EOF (Connection: close).
         let mut body = Vec::new();
         reader.read_to_end(&mut body).map_err(ClientError::Read)?;
-        Ok(body)
+        Ok(HttpResponse {
+            status,
+            status_code,
+            body,
+        })
     }
 }
 
@@ -692,6 +767,7 @@ impl ClusterClient {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
 
     /// Bind a listener on `path`, accept one connection, send `response`,
     /// then close.  Spawned on a background thread so the test's
@@ -711,6 +787,120 @@ mod tests {
         });
     }
 
+    fn serve_responses(path: &Path, responses: Vec<String>, requests: Arc<Mutex<Vec<String>>>) {
+        let listener = UnixListener::bind(path).expect("bind");
+        std::thread::spawn(move || {
+            for response in responses {
+                let (mut conn, _) = listener.accept().expect("accept test request");
+                let mut reader =
+                    std::io::BufReader::new(conn.try_clone().expect("clone test request stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read test request line");
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).expect("read test header");
+                    if header == "\r\n" || header.is_empty() {
+                        break;
+                    }
+                }
+                requests
+                    .lock()
+                    .expect("lock captured requests")
+                    .push(request_line.trim().to_owned());
+                conn.write_all(response.as_bytes())
+                    .expect("write test response");
+            }
+        });
+    }
+
+    fn http_json_response(status: &str, data: &serde_json::Value) -> String {
+        http_envelope_response(status, OBSERVE_SCHEMA_VERSION, data)
+    }
+
+    fn http_envelope_response(
+        status: &str,
+        schema_version: &str,
+        data: &serde_json::Value,
+    ) -> String {
+        let body = serde_json::json!({
+            "schema_version": schema_version,
+            "data": data,
+        })
+        .to_string();
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn empty_trace_batch(producer: &str, stream: &str, cursor: u64) -> serde_json::Value {
+        serde_json::json!({
+            "producer_instance_id": producer,
+            "stream_id": stream,
+            "oldest_sequence": (cursor + 1).to_string(),
+            "next_sequence": (cursor + 1).to_string(),
+            "next_cursor": cursor.to_string(),
+            "has_more": false,
+            "overrun": null,
+            "tracing_enabled": true,
+            "sampling_mode": "all",
+            "events_recorded_total": cursor.to_string(),
+            "events_overwritten_total": cursor.to_string(),
+            "events_sampled_out_total": "0",
+            "batch_source_monotonic_ns": "10",
+            "clock_anchor": {
+                "monotonic_ns": "10",
+                "unix_epoch_ns": "1000",
+                "uncertainty_ns": "1"
+            },
+            "events": []
+        })
+    }
+
+    fn one_event_trace_batch(producer: &str, stream: &str, sequence: u64) -> serde_json::Value {
+        serde_json::json!({
+            "producer_instance_id": producer,
+            "stream_id": stream,
+            "oldest_sequence": "1",
+            "next_sequence": (sequence + 1).to_string(),
+            "next_cursor": sequence.to_string(),
+            "has_more": false,
+            "overrun": null,
+            "tracing_enabled": true,
+            "sampling_mode": "all",
+            "events_recorded_total": sequence.to_string(),
+            "events_overwritten_total": "0",
+            "events_sampled_out_total": "0",
+            "batch_source_monotonic_ns": "20",
+            "clock_anchor": {
+                "monotonic_ns": "10",
+                "unix_epoch_ns": "1000",
+                "uncertainty_ns": "1"
+            },
+            "events": [{
+                "sequence": sequence.to_string(),
+                "trace_id": "00000000000000000000000000000010",
+                "span_id": "1",
+                "parent_span_id": "0",
+                "subject": null,
+                "source_attribution": "external",
+                "source_actor": null,
+                "destination_attribution": "local_actor",
+                "destination_actor": {
+                    "actor_id": "9",
+                    "spawn_serial": "1",
+                    "actor_type": "Probe"
+                },
+                "event_type": "send",
+                "msg_type": 1,
+                "timestamp_ns": "15",
+                "handler_name": "Probe.handle"
+            }]
+        })
+    }
+
     // ── crash entry deserialization ──────────────────────────────────────
 
     /// Pins the `/api/crashes` JSON contract from the consumer side: the
@@ -727,7 +917,7 @@ mod tests {
         // (202). The runtime test asserts the exact same shape is
         // produced by a live trap; this test asserts the observe consumer
         // parses it correctly.
-        let body = r#"[{"time_s":1.5,"actor_id":42,"signal":202,"trap_kind":"DivideByZero","msg_type":7,"fault_addr":0}]"#;
+        let body = r#"[{"time_s":1.5,"actor_id":"42","signal":202,"trap_kind":"DivideByZero","msg_type":7,"fault_addr":"0"}]"#;
         let entries: Vec<CrashEntry> =
             serde_json::from_str(body).expect("profiler crash payload must parse");
         assert_eq!(entries.len(), 1);
@@ -738,25 +928,20 @@ mod tests {
         assert_eq!(entry.msg_type, 7);
     }
 
-    /// Pre-existing profiler payloads that do not carry `trap_kind` (e.g.
-    /// older runtimes) must still parse — `trap_kind` is `#[serde(default)]`
-    /// and defaults to the empty string. Prevents a flag-day break on the
-    /// consumer when a downstream tool inspects an older /api/crashes body.
+    /// v1 requires `trap_kind`; omission is malformed rather than an empty
+    /// value with different semantics.
     #[test]
-    fn crash_entry_trap_kind_defaults_when_field_absent() {
-        let body = r#"[{"time_s":0.0,"actor_id":1,"signal":11,"msg_type":0,"fault_addr":0}]"#;
-        let entries: Vec<CrashEntry> = serde_json::from_str(body).expect("parse");
-        assert_eq!(entries.len(), 1);
-        assert!(
-            entries[0].trap_kind.is_empty(),
-            "missing trap_kind must default to the empty string for forward-compat"
-        );
+    fn crash_entry_rejects_missing_required_trap_kind() {
+        let body = r#"[{"time_s":0.0,"actor_id":"1","signal":11,"msg_type":0,"fault_addr":"0"}]"#;
+        let error = serde_json::from_str::<Vec<CrashEntry>>(body)
+            .expect_err("missing required trap_kind must fail");
+        assert!(error.to_string().contains("trap_kind"), "{error}");
     }
 
     // ── Schema-version envelope unwrapping ────────────────────────────────
 
     /// `get_json` MUST peel the canonical envelope
-    /// (`{"schema_version":"v0.5","data":<body>}`) before handing the inner
+    /// (`{"schema_version":"v1","data":<body>}`) before handing the inner
     /// `T` back. Producer-side coverage lives in
     /// `hew_runtime::profiler::server`; this test pins the consumer half.
     #[test]
@@ -764,7 +949,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sock = tmp.path().join("envelope_ok.sock");
 
-        let inner = r#"[{"time_s":2.5,"actor_id":17,"signal":202,"trap_kind":"DivideByZero","msg_type":3,"fault_addr":0}]"#;
+        let inner = r#"[{"time_s":2.5,"actor_id":"17","signal":202,"trap_kind":"DivideByZero","msg_type":3,"fault_addr":"0"}]"#;
         let body = format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{inner}}}"#);
         let body_len = body.len();
         let response: &'static str = Box::leak(
@@ -840,6 +1025,305 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trace_cursor_retries_stream_mismatch_as_new_segment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("trace_cursor.sock");
+        let producer = "00000000000000000000000000000001";
+        let old_stream = "00000000000000000000000000000002";
+        let new_stream = "00000000000000000000000000000003";
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 7)),
+                http_json_response(
+                    "409 Conflict",
+                    &serde_json::json!({
+                        "error": "trace_stream_mismatch",
+                        "requested_stream_id": old_stream,
+                        "current_stream_id": new_stream,
+                        "current_producer_instance_id": producer,
+                    }),
+                ),
+                http_json_response("200 OK", &empty_trace_batch(producer, new_stream, 0)),
+            ],
+            Arc::clone(&requests),
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let initial = client.fetch_traces().expect("initial trace attach");
+        assert_eq!(initial.continuity, TraceContinuity::Initial);
+        assert_eq!(initial.batch.stream_id, old_stream);
+
+        let reset = client.fetch_traces().expect("retry after stream mismatch");
+        assert_eq!(reset.continuity, TraceContinuity::StreamReset);
+        assert_eq!(reset.batch.stream_id, new_stream);
+        assert_eq!(
+            requests.lock().expect("lock captured requests").as_slice(),
+            [
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+                "GET /api/traces?limit=256 HTTP/1.1",
+            ]
+        );
+    }
+
+    #[test]
+    fn trace_batch_validation_pins_overrun_cursor_and_sequence_relationships() {
+        let producer = "00000000000000000000000000000001";
+        let stream = "00000000000000000000000000000002";
+        let mut value = one_event_trace_batch(producer, stream, 8);
+        value["oldest_sequence"] = serde_json::json!("8");
+        value["next_sequence"] = serde_json::json!("10");
+        value["has_more"] = serde_json::json!(true);
+        value["events_recorded_total"] = serde_json::json!("9");
+        value["events_overwritten_total"] = serde_json::json!("7");
+        value["overrun"] = serde_json::json!({
+            "first_missing_sequence": "5",
+            "last_missing_sequence": "7",
+            "count": "3"
+        });
+
+        let valid: TraceBatch = serde_json::from_value(value).expect("valid trace batch shape");
+        validate_trace_batch(&valid, Some(4)).expect("valid stale-cursor page");
+
+        let mut bad_overrun = valid.clone();
+        bad_overrun.overrun.as_mut().expect("overrun").count = 2;
+        assert!(validate_trace_batch(&bad_overrun, Some(4))
+            .expect_err("wrong loss count")
+            .contains("overrun range"));
+
+        let mut bad_sequence = valid.clone();
+        bad_sequence.events[0].sequence = 9;
+        assert!(validate_trace_batch(&bad_sequence, Some(4))
+            .expect_err("wrong first sequence")
+            .contains("first event sequence"));
+
+        let mut bad_cursor = valid.clone();
+        bad_cursor.next_cursor = 9;
+        assert!(validate_trace_batch(&bad_cursor, Some(4))
+            .expect_err("wrong next cursor")
+            .contains("next_cursor"));
+
+        let mut bad_backlog = valid;
+        bad_backlog.has_more = false;
+        assert!(validate_trace_batch(&bad_backlog, Some(4))
+            .expect_err("wrong backlog flag")
+            .contains("has_more"));
+    }
+
+    #[test]
+    fn invalid_success_batch_does_not_advance_private_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let sock = temp.path().join("invalid_trace_batch.sock");
+        let producer = "00000000000000000000000000000001";
+        let stream = "00000000000000000000000000000002";
+        let mut invalid = one_event_trace_batch(producer, stream, 1);
+        invalid["next_cursor"] = serde_json::json!("2");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![
+                http_json_response("200 OK", &empty_trace_batch(producer, stream, 0)),
+                http_json_response("200 OK", &invalid),
+                http_json_response("200 OK", &one_event_trace_batch(producer, stream, 1)),
+            ],
+            Arc::clone(&requests),
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        client.fetch_traces().expect("initial attachment");
+        assert!(client.fetch_traces().is_none());
+        assert!(matches!(
+            client.last_error,
+            Some(ClientError::BadStatus(ref message)) if message.contains("invalid trace batch")
+        ));
+        let recovered = client
+            .fetch_traces()
+            .expect("valid retry must use preserved cursor");
+        assert_eq!(recovered.batch.next_cursor, 1);
+        assert_eq!(
+            requests.lock().expect("captured requests").as_slice(),
+            [
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=0&limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=0&limit=256 HTTP/1.1",
+            ]
+        );
+    }
+
+    fn assert_invalid_trace_response_keeps_cursor(response: String) -> ClientError {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("invalid_trace_mismatch.sock");
+        let producer = "00000000000000000000000000000001";
+        let old_stream = "00000000000000000000000000000002";
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 7)),
+                response,
+                http_json_response("200 OK", &one_event_trace_batch(producer, old_stream, 8)),
+            ],
+            Arc::clone(&requests),
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        client.fetch_traces().expect("initial trace attach");
+        assert!(
+            client.fetch_traces().is_none(),
+            "invalid trace response must fail"
+        );
+        let error = client
+            .last_error
+            .take()
+            .expect("invalid trace response must surface an error");
+        let continued = client
+            .fetch_traces()
+            .expect("invalid trace response must retain the old cursor");
+        assert_eq!(continued.continuity, TraceContinuity::Continuous);
+        assert_eq!(continued.batch.stream_id, old_stream);
+        assert_eq!(
+            requests.lock().expect("lock captured requests").as_slice(),
+            [
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+            ]
+        );
+        error
+    }
+
+    #[test]
+    fn malformed_or_wrong_version_mismatch_does_not_reset_cursor() {
+        let malformed = "not json";
+        let malformed_response = format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{malformed}",
+            malformed.len()
+        );
+        assert!(matches!(
+            assert_invalid_trace_response_keeps_cursor(malformed_response),
+            ClientError::Parse(_)
+        ));
+
+        let mismatch = serde_json::json!({
+            "error": "trace_stream_mismatch",
+            "requested_stream_id": "00000000000000000000000000000002",
+            "current_stream_id": "00000000000000000000000000000003",
+            "current_producer_instance_id": "00000000000000000000000000000001",
+        });
+        assert!(matches!(
+            assert_invalid_trace_response_keeps_cursor(http_envelope_response(
+                "409 Conflict",
+                "v9",
+                &mismatch,
+            )),
+            ClientError::BadStatus(message) if message.contains("schema_version")
+        ));
+    }
+
+    #[test]
+    fn inconsistent_trace_response_does_not_reset_cursor() {
+        let wrong_literal = serde_json::json!({
+            "error": "something_else",
+            "requested_stream_id": "00000000000000000000000000000002",
+            "current_stream_id": "00000000000000000000000000000003",
+            "current_producer_instance_id": "00000000000000000000000000000001",
+        });
+        assert!(matches!(
+            assert_invalid_trace_response_keeps_cursor(http_json_response(
+                "409 Conflict",
+                &wrong_literal,
+            )),
+            ClientError::Parse(_)
+        ));
+
+        let wrong_requested_stream = serde_json::json!({
+            "error": "trace_stream_mismatch",
+            "requested_stream_id": "00000000000000000000000000000004",
+            "current_stream_id": "00000000000000000000000000000003",
+            "current_producer_instance_id": "00000000000000000000000000000001",
+        });
+        assert!(matches!(
+            assert_invalid_trace_response_keeps_cursor(http_json_response(
+                "409 Conflict",
+                &wrong_requested_stream,
+            )),
+            ClientError::BadStatus(message) if message.contains("requested")
+        ));
+
+        for (producer, stream) in [
+            (
+                "00000000000000000000000000000001",
+                "00000000000000000000000000000003",
+            ),
+            (
+                "00000000000000000000000000000003",
+                "00000000000000000000000000000002",
+            ),
+        ] {
+            assert!(matches!(
+                assert_invalid_trace_response_keeps_cursor(http_json_response(
+                    "200 OK",
+                    &one_event_trace_batch(producer, stream, 8),
+                )),
+                ClientError::BadStatus(message) if message.contains("changed producer or stream")
+            ));
+        }
+    }
+
+    #[test]
+    fn mismatch_retry_must_match_advertised_current_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("inconsistent_trace_retry.sock");
+        let producer = "00000000000000000000000000000001";
+        let old_stream = "00000000000000000000000000000002";
+        let advertised_stream = "00000000000000000000000000000003";
+        let unexpected_stream = "00000000000000000000000000000004";
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 7)),
+                http_json_response(
+                    "409 Conflict",
+                    &serde_json::json!({
+                        "error": "trace_stream_mismatch",
+                        "requested_stream_id": old_stream,
+                        "current_stream_id": advertised_stream,
+                        "current_producer_instance_id": producer,
+                    }),
+                ),
+                http_json_response("200 OK", &empty_trace_batch(producer, unexpected_stream, 0)),
+                http_json_response("200 OK", &one_event_trace_batch(producer, old_stream, 8)),
+            ],
+            Arc::clone(&requests),
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        client.fetch_traces().expect("initial trace attach");
+        assert!(client.fetch_traces().is_none());
+        assert!(matches!(
+            client.last_error,
+            Some(ClientError::BadStatus(ref message)) if message.contains("advertised stream")
+        ));
+        let continued = client
+            .fetch_traces()
+            .expect("failed recovery must preserve old cursor");
+        assert_eq!(continued.continuity, TraceContinuity::Continuous);
+        assert_eq!(continued.batch.stream_id, old_stream);
+        assert_eq!(
+            requests.lock().expect("lock captured requests").as_slice(),
+            [
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+            ]
+        );
+    }
+
     // ── Live profiler server round-trip ──────────────────────────────────
 
     #[test]
@@ -899,16 +1383,18 @@ mod tests {
         ] {
             assert!(
                 data.contains_key(key),
-                "live metrics v0.5 payload must include {key}"
+                "live metrics v1 payload must include {key}"
             );
         }
 
         let metrics = client
             .fetch_metrics()
-            .expect("observe client must parse live v0.5 metrics snapshot");
-        assert!(
-            metrics.timestamp_secs.is_finite(),
-            "metrics timestamp must be finite"
+            .expect("observe client must parse live v1 metrics snapshot");
+        assert_eq!(
+            metrics.timestamp_secs.to_string(),
+            data["timestamp_secs"]
+                .as_str()
+                .expect("v1 timestamps are decimal strings")
         );
         assert_eq!(client.status, ConnectionStatus::Connected);
         assert!(
@@ -1018,9 +1504,9 @@ mod tests {
         assert!(client.last_error.is_some());
 
         // Swap to a socket that serves valid metrics JSON wrapped in the
-        // canonical observe envelope (producer/consumer at v0.5 emit/accept
-        // `{"schema_version":"v0.5","data":<body>}`).
-        let metrics_inner = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
+        // canonical observe envelope (producer/consumer at v1 emit/accept
+        // `{"schema_version":"v1","data":<body>}`).
+        let metrics_inner = r#"{"timestamp_secs":"1","tasks_spawned":"0","tasks_completed":"0","steals":"0","messages_sent":"0","messages_received":"0","active_workers":"0","alloc_count":"0","dealloc_count":"0","bytes_allocated":"0","bytes_freed":"0","bytes_live":"0","peak_bytes_live":"0","tcp_bytes_read":"0","tcp_bytes_written":"0","tcp_accept_count":"0","tcp_connect_count":"0","tcp_error_count":"0"}"#;
         let metrics_json =
             format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{metrics_inner}}}"#);
         let body_len = metrics_json.len();
@@ -1093,7 +1579,7 @@ mod tests {
 
     fn make_trace_event(event_type: &str) -> TraceEvent {
         serde_json::from_str(&format!(
-            r#"{{"trace_id":"0000000000000000","span_id":1,"parent_span_id":0,"actor_id":12345678,"event_type":"{event_type}","msg_type":0,"timestamp_ns":9999}}"#
+            r#"{{"sequence":"1","trace_id":"00000000000000000000000000000000","span_id":"1","parent_span_id":"0","subject":{{"kind":"actor","id":"12345678","actor":{{"actor_id":"12345678","spawn_serial":"12345678","actor_type":null}}}},"source_attribution":"not_applicable","source_actor":null,"destination_attribution":"not_applicable","destination_actor":null,"event_type":"{event_type}","msg_type":0,"timestamp_ns":"9999","handler_name":null}}"#
         ))
         .expect("TraceEvent JSON must deserialise")
     }
@@ -1113,7 +1599,11 @@ mod tests {
             let ev = make_trace_event(et);
             assert_eq!(ev.event_type, et, "event_type must round-trip for {et}");
             assert_eq!(
-                ev.actor_id, 12_345_678,
+                ev.subject
+                    .as_ref()
+                    .and_then(|subject| subject.actor.as_ref())
+                    .map(|actor| actor.actor_id),
+                Some(12_345_678),
                 "actor_id must be populated for {et}"
             );
             assert_eq!(

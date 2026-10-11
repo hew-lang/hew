@@ -1,0 +1,1403 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hew Observe HTTP API",
+    "version": "1.0.0",
+    "description": "Authoritative contract for the current Hew 0.6 profiler/observe HTTP surface. The Observe wire version is independent of Hew release labels. JSON responses use a strict versioned envelope, and 64-bit integers use canonical decimal strings."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "description": "Loopback TCP listener",
+      "variables": { "port": { "default": "6060" } }
+    }
+  ],
+  "x-hew-schema-version": "v1",
+  "x-hew-transports": {
+    "tcp": "HTTP/1.1 on the configured bind address; the default is loopback-only.",
+    "unix": "HTTP/1.1 over the per-process Unix socket discovered by hew-observe. The socket is mode 0600."
+  },
+  "x-hew-evolution": {
+    "required-properties": "Consumers reject missing required properties and properties with the wrong type.",
+    "additive-properties": "Consumers accept unknown object properties so producers may add fields without a wire-version bump.",
+    "open-string-taxonomies": "Consumers accept unknown event_type, state, trap_kind, sampling_mode, subject kind, and actor-attribution strings.",
+    "breaking-change": "Any field, type, unit, taxonomy, or semantic change requires a new Observe wire version.",
+    "version-check": "Consumers reject an envelope whose schema_version is not exactly v1."
+  },
+  "paths": {
+    "/": { "$ref": "#/components/pathItems/Dashboard" },
+    "/dashboard.js": { "$ref": "#/components/pathItems/DashboardScript" },
+    "/api/metrics": { "$ref": "#/components/pathItems/Metrics" },
+    "/api/memory": { "$ref": "#/components/pathItems/Memory" },
+    "/api/actors": { "$ref": "#/components/pathItems/Actors" },
+    "/api/metrics/history": { "$ref": "#/components/pathItems/History" },
+    "/api/cluster/members": { "$ref": "#/components/pathItems/ClusterMembers" },
+    "/api/connections": { "$ref": "#/components/pathItems/Connections" },
+    "/api/routing/table": { "$ref": "#/components/pathItems/Routing" },
+    "/api/traces": { "$ref": "#/components/pathItems/Traces" },
+    "/api/supervisors": { "$ref": "#/components/pathItems/Supervisors" },
+    "/api/crashes": { "$ref": "#/components/pathItems/Crashes" },
+    "/api/observe/scrape": { "$ref": "#/components/pathItems/Scrape" },
+    "/debug/pprof/heap": { "$ref": "#/components/pathItems/HeapProfile" },
+    "/debug/pprof/profile": { "$ref": "#/components/pathItems/FlatProfile" }
+  },
+  "components": {
+    "headers": {
+      "SchemaVersion": {
+        "description": "Duplicates the JSON envelope version.",
+        "required": true,
+        "schema": { "type": "string", "const": "v1" }
+      }
+    },
+    "pathItems": {
+      "Dashboard": {
+        "get": {
+          "operationId": "getDashboard",
+          "responses": {
+            "200": {
+              "description": "Embedded dashboard HTML",
+              "content": { "text/html": { "schema": { "type": "string" } } }
+            },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "DashboardScript": {
+        "get": {
+          "operationId": "getDashboardScript",
+          "responses": {
+            "200": {
+              "description": "Embedded dashboard JavaScript",
+              "content": {
+                "application/javascript": { "schema": { "type": "string" } }
+              }
+            },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Metrics": {
+        "get": {
+          "operationId": "getMetrics",
+          "responses": {
+            "200": { "$ref": "#/components/responses/MetricsResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Memory": {
+        "get": {
+          "operationId": "getMemory",
+          "responses": {
+            "200": { "$ref": "#/components/responses/MemoryResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Actors": {
+        "get": {
+          "operationId": "getActors",
+          "responses": {
+            "200": { "$ref": "#/components/responses/ActorsResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "History": {
+        "get": {
+          "operationId": "getHistory",
+          "responses": {
+            "200": { "$ref": "#/components/responses/HistoryResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "ClusterMembers": {
+        "get": {
+          "operationId": "getClusterMembers",
+          "responses": {
+            "200": { "$ref": "#/components/responses/ClusterMembersResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Connections": {
+        "get": {
+          "operationId": "getConnections",
+          "responses": {
+            "200": { "$ref": "#/components/responses/ConnectionsResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Routing": {
+        "get": {
+          "operationId": "getRouting",
+          "responses": {
+            "200": { "$ref": "#/components/responses/RoutingResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Traces": {
+        "get": {
+          "operationId": "getTraces",
+          "description": "Reads a non-destructive page from the bounded process trace stream. Omit both cursor parameters to start at the oldest retained event. On subsequent requests, supply both stream_id and after; after is the last sequence already consumed and is therefore exclusive. A full page only means the response limit was reached; has_more and overrun report backlog and loss explicitly.",
+          "parameters": [
+            {
+              "name": "stream_id",
+              "in": "query",
+              "required": false,
+              "description": "Stream epoch from the previous TraceBatch. Must be supplied together with after.",
+              "schema": { "$ref": "#/components/schemas/Hex128Lower" }
+            },
+            {
+              "name": "after",
+              "in": "query",
+              "required": false,
+              "description": "Exclusive source sequence cursor from the previous TraceBatch.next_cursor. Must be supplied together with stream_id.",
+              "schema": { "$ref": "#/components/schemas/UInt64Decimal" }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "description": "Maximum events returned. Defaults to 256.",
+              "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 256,
+                "default": 256
+              }
+            }
+          ],
+          "responses": {
+            "200": { "$ref": "#/components/responses/TracesResponse" },
+            "400": {
+              "$ref": "#/components/responses/TraceRequestErrorResponse"
+            },
+            "409": {
+              "$ref": "#/components/responses/TraceStreamMismatchResponse"
+            },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Supervisors": {
+        "get": {
+          "operationId": "getSupervisors",
+          "responses": {
+            "200": { "$ref": "#/components/responses/SupervisorsResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Crashes": {
+        "get": {
+          "operationId": "getCrashes",
+          "responses": {
+            "200": { "$ref": "#/components/responses/CrashesResponse" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "Scrape": {
+        "get": {
+          "operationId": "getObserveScrape",
+          "responses": {
+            "200": {
+              "description": "Prometheus-style scrape text. This endpoint is not JSON and has no schema envelope.",
+              "content": { "text/plain": { "schema": { "type": "string" } } }
+            },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "HeapProfile": {
+        "get": {
+          "operationId": "getHeapProfile",
+          "responses": {
+            "200": {
+              "description": "gzip-compressed pprof protobuf heap profile",
+              "headers": {
+                "Content-Disposition": {
+                  "schema": {
+                    "type": "string",
+                    "const": "attachment; filename=\"heap.pb.gz\""
+                  }
+                }
+              },
+              "content": {
+                "application/octet-stream": {
+                  "schema": { "type": "string", "format": "binary" }
+                }
+              }
+            },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      },
+      "FlatProfile": {
+        "get": {
+          "operationId": "getFlatProfile",
+          "responses": {
+            "200": {
+              "description": "gprof-style flat profile",
+              "content": { "text/plain": { "schema": { "type": "string" } } }
+            },
+            "404": { "$ref": "#/components/responses/NotFound" }
+          }
+        }
+      }
+    },
+    "responses": {
+      "NotFound": {
+        "description": "Unknown paths return status 404 and the literal plain-text body `404 Not Found`. This response is not JSON and has no observe version header.",
+        "content": {
+          "text/plain": {
+            "schema": { "type": "string", "const": "404 Not Found" }
+          }
+        }
+      },
+      "MetricsResponse": {
+        "description": "Versioned metrics response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/MetricsEnvelope" }
+          }
+        }
+      },
+      "MemoryResponse": {
+        "description": "Versioned memory response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/MemoryEnvelope" }
+          }
+        }
+      },
+      "ActorsResponse": {
+        "description": "Versioned actors response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ActorsEnvelope" }
+          }
+        }
+      },
+      "HistoryResponse": {
+        "description": "Versioned history response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/HistoryEnvelope" }
+          }
+        }
+      },
+      "ClusterMembersResponse": {
+        "description": "Versioned cluster-member response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ClusterMembersEnvelope" }
+          }
+        }
+      },
+      "ConnectionsResponse": {
+        "description": "Versioned connections response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ConnectionsEnvelope" }
+          }
+        }
+      },
+      "RoutingResponse": {
+        "description": "Versioned routing response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/RoutingEnvelope" }
+          }
+        }
+      },
+      "TracesResponse": {
+        "description": "Versioned, non-destructive trace page",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/TracesEnvelope" }
+          }
+        }
+      },
+      "TraceRequestErrorResponse": {
+        "description": "The trace cursor or page request is malformed or points beyond the current stream.",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TraceRequestErrorEnvelope"
+            }
+          }
+        }
+      },
+      "TraceStreamMismatchResponse": {
+        "description": "The requested stream epoch is no longer current. Consumers must start a new recording segment and must not apply the old cursor to the new stream.",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TraceStreamMismatchEnvelope"
+            }
+          }
+        }
+      },
+      "SupervisorsResponse": {
+        "description": "Versioned supervisors response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SupervisorsEnvelope" }
+          }
+        }
+      },
+      "CrashesResponse": {
+        "description": "Versioned crashes response",
+        "headers": {
+          "X-Hew-Schema-Version": {
+            "$ref": "#/components/headers/SchemaVersion"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/CrashesEnvelope" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "UInt64Decimal": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,19})$",
+        "maxLength": 20,
+        "description": "Canonical base-10 u64 with no sign or leading zeroes; consumers must enforce the u64 upper bound.",
+        "x-rust-type": "u64",
+        "x-swift-type": "UInt64",
+        "x-typescript-type": "bigint",
+        "x-value-minimum": "0",
+        "x-value-maximum": "18446744073709551615"
+      },
+      "Int64Decimal": {
+        "type": "string",
+        "pattern": "^(0|-?[1-9][0-9]{0,18})$",
+        "maxLength": 20,
+        "description": "Canonical base-10 i64 with no plus sign, negative zero, or leading zeroes; consumers must enforce i64 bounds.",
+        "x-rust-type": "i64",
+        "x-swift-type": "Int64",
+        "x-typescript-type": "bigint",
+        "x-value-minimum": "-9223372036854775808",
+        "x-value-maximum": "9223372036854775807"
+      },
+      "UInt32": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295,
+        "format": "uint32",
+        "x-rust-type": "u32",
+        "x-swift-type": "UInt32",
+        "x-typescript-type": "number"
+      },
+      "UInt16": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65535,
+        "format": "uint16",
+        "x-rust-type": "u16",
+        "x-swift-type": "UInt16",
+        "x-typescript-type": "number"
+      },
+      "Int32": {
+        "type": "integer",
+        "minimum": -2147483648,
+        "maximum": 2147483647,
+        "format": "int32",
+        "x-rust-type": "i32",
+        "x-swift-type": "Int32",
+        "x-typescript-type": "number"
+      },
+      "Hex128Lower": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$",
+        "minLength": 32,
+        "maxLength": 32,
+        "description": "Exactly 128 bits rendered as 32 lowercase hexadecimal digits.",
+        "x-rust-type": "String",
+        "x-swift-type": "String",
+        "x-typescript-type": "string"
+      },
+      "Metrics": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "timestamp_secs",
+          "tasks_spawned",
+          "tasks_completed",
+          "steals",
+          "messages_sent",
+          "messages_received",
+          "active_workers",
+          "alloc_count",
+          "dealloc_count",
+          "bytes_allocated",
+          "bytes_freed",
+          "bytes_live",
+          "peak_bytes_live",
+          "tcp_bytes_read",
+          "tcp_bytes_written",
+          "tcp_accept_count",
+          "tcp_connect_count",
+          "tcp_error_count"
+        ],
+        "properties": {
+          "timestamp_secs": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Whole monotonic seconds since this metrics ring was created.",
+            "x-unit": "s",
+            "x-clock": "monotonic-relative"
+          },
+          "tasks_spawned": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tasks_completed": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "steals": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "messages_sent": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "messages_received": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "active_workers": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "alloc_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "dealloc_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "bytes_allocated": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "bytes_freed": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "bytes_live": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "peak_bytes_live": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "tcp_bytes_read": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "tcp_bytes_written": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "tcp_accept_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tcp_connect_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tcp_error_count": { "$ref": "#/components/schemas/UInt64Decimal" }
+        }
+      },
+      "Memory": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "alloc_count",
+          "dealloc_count",
+          "bytes_allocated",
+          "bytes_freed",
+          "bytes_live",
+          "peak_bytes_live"
+        ],
+        "properties": {
+          "alloc_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "dealloc_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "bytes_allocated": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "bytes_freed": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "bytes_live": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          },
+          "peak_bytes_live": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "bytes"
+          }
+        }
+      },
+      "ActorInfo": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "pid",
+          "actor_type",
+          "state",
+          "msgs",
+          "time_ns",
+          "mbox_depth",
+          "mbox_hwm"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Packed actor id: high 16 bits are the route slot and low 48 bits are the local serial."
+          },
+          "pid": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "actor_type": { "type": "string" },
+          "state": {
+            "type": "string",
+            "x-known-values": [
+              "idle",
+              "runnable",
+              "running",
+              "suspended",
+              "stopping",
+              "crashing",
+              "crashed",
+              "stopped",
+              "unknown"
+            ]
+          },
+          "msgs": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "time_ns": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "ns",
+            "x-clock": "duration"
+          },
+          "mbox_depth": { "$ref": "#/components/schemas/Int64Decimal" },
+          "mbox_hwm": { "$ref": "#/components/schemas/Int64Decimal" }
+        }
+      },
+      "HistoryEntry": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "t",
+          "ts",
+          "tc",
+          "st",
+          "ms",
+          "mr",
+          "aw",
+          "ac",
+          "dc",
+          "ba",
+          "bf",
+          "bl",
+          "pb",
+          "tbr",
+          "tbw",
+          "tac",
+          "tcc",
+          "tec"
+        ],
+        "properties": {
+          "t": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "s",
+            "x-clock": "monotonic-relative"
+          },
+          "ts": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tc": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "st": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "ms": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "mr": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "aw": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "ac": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "dc": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "ba": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "bf": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "bl": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "pb": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tbr": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tbw": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tac": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tcc": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tec": { "$ref": "#/components/schemas/UInt64Decimal" }
+        }
+      },
+      "ClusterMember": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "route_slot",
+          "state",
+          "incarnation",
+          "addr",
+          "last_seen_ms"
+        ],
+        "properties": {
+          "route_slot": {
+            "$ref": "#/components/schemas/UInt16",
+            "description": "Ephemeral route slot used by the legacy cluster membership subsystem; not a stable NodeId."
+          },
+          "state": {
+            "type": "string",
+            "x-known-values": ["alive", "suspect", "dead", "left", "unknown"]
+          },
+          "incarnation": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "addr": { "type": "string" },
+          "last_seen_ms": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Milliseconds elapsed since the member was last seen, not a timestamp.",
+            "x-unit": "ms",
+            "x-clock": "age"
+          }
+        }
+      },
+      "ConnectionInfo": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": ["conn_id", "peer_route_slot", "state", "last_activity_ms"],
+        "properties": {
+          "conn_id": { "$ref": "#/components/schemas/Int32" },
+          "peer_route_slot": {
+            "$ref": "#/components/schemas/UInt16",
+            "description": "Ephemeral route slot of the peer; not a stable NodeId."
+          },
+          "state": {
+            "type": "string",
+            "x-known-values": [
+              "connecting",
+              "active",
+              "draining",
+              "closed",
+              "unknown"
+            ]
+          },
+          "last_activity_ms": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Monotonic runtime millisecond reading at the last activity.",
+            "x-unit": "ms",
+            "x-clock": "monotonic-timestamp"
+          }
+        }
+      },
+      "RouteEntry": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": ["node_id", "route_slot", "session_incarnation", "conn_id"],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Stable 128-bit NodeId rendered as lowercase hexadecimal groups."
+          },
+          "route_slot": { "$ref": "#/components/schemas/UInt16" },
+          "session_incarnation": { "$ref": "#/components/schemas/UInt32" },
+          "conn_id": { "$ref": "#/components/schemas/Int32" }
+        }
+      },
+      "RoutingSnapshot": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "local_node_id",
+          "local_route_slot",
+          "session_incarnation",
+          "routes"
+        ],
+        "properties": {
+          "local_node_id": {
+            "type": "string",
+            "description": "Stable NodeId, or the literal `unconfigured`."
+          },
+          "local_route_slot": { "$ref": "#/components/schemas/UInt16" },
+          "session_incarnation": { "$ref": "#/components/schemas/UInt32" },
+          "routes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RouteEntry" }
+          }
+        }
+      },
+      "ActorIdentity": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "description": "Process-local actor identity. Actor id, spawn serial, and a stable dispatch key are captured at event creation; optional display metadata may be resolved from that key during response serialization. Distributed actor identity remains explicitly remote_unknown until the transport carries an exact durable identity.",
+        "required": ["actor_id", "spawn_serial", "actor_type"],
+        "properties": {
+          "actor_id": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Process-local packed actor id."
+          },
+          "spawn_serial": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/UInt64Decimal" },
+              { "type": "null" }
+            ],
+            "description": "Full process-local spawn serial, or null when unavailable. Unlike the packed actor id, this value is not truncated."
+          },
+          "actor_type": {
+            "type": ["string", "null"],
+            "description": "Actor type resolved from the event's captured process-local dispatch key; null when unavailable."
+          }
+        }
+      },
+      "TraceSubject": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "description": "Actor subjects require actor details; channel and resource subjects require actor to be null. Unknown future kinds may carry a nullable actor.",
+        "required": ["kind", "id", "actor"],
+        "allOf": [
+          {
+            "if": {
+              "properties": { "kind": { "const": "actor" } },
+              "required": ["kind"]
+            },
+            "then": {
+              "properties": {
+                "actor": { "$ref": "#/components/schemas/ActorIdentity" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "kind": { "enum": ["channel", "resource"] } },
+              "required": ["kind"]
+            },
+            "then": { "properties": { "actor": { "type": "null" } } }
+          }
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "x-known-values": ["actor", "channel", "resource"],
+            "description": "Open subject taxonomy. Unknown values are forward-compatible."
+          },
+          "id": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Raw process-local identity in the namespace selected by kind."
+          },
+          "actor": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/ActorIdentity" },
+              { "type": "null" }
+            ],
+            "description": "Actor details when kind is actor; otherwise null."
+          }
+        }
+      },
+      "TraceClockAnchor": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": ["monotonic_ns", "unix_epoch_ns", "uncertainty_ns"],
+        "properties": {
+          "monotonic_ns": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "ns",
+            "x-clock": "monotonic-relative"
+          },
+          "unix_epoch_ns": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "x-unit": "ns",
+            "x-clock": "unix-wall"
+          },
+          "uncertainty_ns": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Upper bound on uncertainty introduced while sampling this correlation anchor. This does not claim cross-node clock synchronization.",
+            "x-unit": "ns",
+            "x-clock": "uncertainty"
+          }
+        }
+      },
+      "TraceOverrun": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "first_missing_sequence",
+          "last_missing_sequence",
+          "count"
+        ],
+        "properties": {
+          "first_missing_sequence": {
+            "$ref": "#/components/schemas/UInt64Decimal"
+          },
+          "last_missing_sequence": {
+            "$ref": "#/components/schemas/UInt64Decimal"
+          },
+          "count": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Inclusive missing range cardinality: last_missing_sequence - first_missing_sequence + 1."
+          }
+        }
+      },
+      "TraceEvent": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "description": "For each actor endpoint, attribution local_actor requires a non-null actor object; external, remote_unknown, and not_applicable require null. Unknown future attribution values remain forward-compatible and may carry a nullable actor.",
+        "required": [
+          "sequence",
+          "trace_id",
+          "span_id",
+          "parent_span_id",
+          "subject",
+          "source_attribution",
+          "source_actor",
+          "destination_attribution",
+          "destination_actor",
+          "event_type",
+          "msg_type",
+          "timestamp_ns",
+          "handler_name"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "source_attribution": { "const": "local_actor" }
+              },
+              "required": ["source_attribution"]
+            },
+            "then": {
+              "properties": {
+                "source_actor": { "$ref": "#/components/schemas/ActorIdentity" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "source_attribution": {
+                  "enum": ["external", "remote_unknown", "not_applicable"]
+                }
+              },
+              "required": ["source_attribution"]
+            },
+            "then": { "properties": { "source_actor": { "type": "null" } } }
+          },
+          {
+            "if": {
+              "properties": {
+                "destination_attribution": { "const": "local_actor" }
+              },
+              "required": ["destination_attribution"]
+            },
+            "then": {
+              "properties": {
+                "destination_actor": {
+                  "$ref": "#/components/schemas/ActorIdentity"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "destination_attribution": {
+                  "enum": ["external", "remote_unknown", "not_applicable"]
+                }
+              },
+              "required": ["destination_attribution"]
+            },
+            "then": {
+              "properties": { "destination_actor": { "type": "null" } }
+            }
+          }
+        ],
+        "properties": {
+          "sequence": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Strictly increasing within one stream_id; the first assigned sequence is 1."
+          },
+          "trace_id": { "$ref": "#/components/schemas/Hex128Lower" },
+          "span_id": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "parent_span_id": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "subject": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/TraceSubject" },
+              { "type": "null" }
+            ],
+            "description": "Primary entity whose lifecycle or activity this event describes. Null when no honest subject is known. For send events, source_actor and destination_actor are authoritative."
+          },
+          "source_attribution": {
+            "type": "string",
+            "x-known-values": [
+              "local_actor",
+              "external",
+              "remote_unknown",
+              "not_applicable"
+            ],
+            "description": "Open attribution taxonomy explaining source_actor nullability without guessing remote identity."
+          },
+          "source_actor": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/ActorIdentity" },
+              { "type": "null" }
+            ],
+            "description": "Sending process-local actor when source_attribution is local_actor; otherwise null for current known attribution values."
+          },
+          "destination_attribution": {
+            "type": "string",
+            "x-known-values": [
+              "local_actor",
+              "external",
+              "remote_unknown",
+              "not_applicable"
+            ],
+            "description": "Open attribution taxonomy explaining destination_actor nullability without guessing remote identity."
+          },
+          "destination_actor": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/ActorIdentity" },
+              { "type": "null" }
+            ],
+            "description": "Destination process-local actor when destination_attribution is local_actor; otherwise null for current known attribution values."
+          },
+          "event_type": {
+            "type": "string",
+            "x-known-values": [
+              "begin",
+              "end",
+              "spawn",
+              "crash",
+              "stop",
+              "send",
+              "io_accept",
+              "io_recv",
+              "duplex_created",
+              "duplex_half_split",
+              "duplex_closed",
+              "sink_closed",
+              "stream_closed",
+              "supervisor_restart",
+              "supervisor_escalate",
+              "supervisor_circuit_open",
+              "supervisor_circuit_half_open",
+              "supervisor_circuit_close",
+              "supervisor_max_restarts",
+              "supervisor_backoff",
+              "lambda_spawned",
+              "lambda_released",
+              "unknown"
+            ],
+            "x-hew-actionable-values": [
+              "send",
+              "spawn",
+              "crash",
+              "stop",
+              "duplex_created",
+              "duplex_half_split",
+              "duplex_closed",
+              "sink_closed",
+              "stream_closed",
+              "lambda_spawned",
+              "lambda_released"
+            ],
+            "description": "Open taxonomy. `invalid:<code>` indicates producer corruption; other unknown strings are forward-compatible."
+          },
+          "msg_type": { "$ref": "#/components/schemas/Int32" },
+          "timestamp_ns": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Nanoseconds since the tracing subsystem epoch. Authoritative for ordering and durations within this producer clock domain; not wall-clock Unix time.",
+            "x-unit": "ns",
+            "x-clock": "monotonic-relative"
+          },
+          "handler_name": {
+            "type": ["string", "null"],
+            "description": "Selected message handler for destination_actor or an actor subject, or null when not applicable or unavailable."
+          }
+        }
+      },
+      "TraceBatch": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "producer_instance_id",
+          "stream_id",
+          "oldest_sequence",
+          "next_sequence",
+          "next_cursor",
+          "has_more",
+          "overrun",
+          "tracing_enabled",
+          "sampling_mode",
+          "events_recorded_total",
+          "events_overwritten_total",
+          "events_sampled_out_total",
+          "batch_source_monotonic_ns",
+          "clock_anchor",
+          "events"
+        ],
+        "properties": {
+          "producer_instance_id": {
+            "$ref": "#/components/schemas/Hex128Lower",
+            "description": "Random process-lifetime identity. A process restart creates a new value."
+          },
+          "stream_id": {
+            "$ref": "#/components/schemas/Hex128Lower",
+            "description": "Random trace epoch identity. It changes on trace clear/reset and disable-to-enable transitions."
+          },
+          "oldest_sequence": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Oldest retained sequence, or next_sequence when no event is retained."
+          },
+          "next_sequence": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "One past the highest sequence assigned in this stream. It is 1 before any event is assigned."
+          },
+          "next_cursor": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Exclusive after cursor for the next request: the last event returned, or the effective caught-up cursor when events is empty."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "True when retained events remain after next_cursor. A page at the response limit does not by itself establish backlog."
+          },
+          "overrun": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/TraceOverrun" },
+              { "type": "null" }
+            ],
+            "description": "Exact events unavailable before this response because retention overwrote them; null when the requested cursor has no gap."
+          },
+          "tracing_enabled": { "type": "boolean" },
+          "sampling_mode": {
+            "type": "string",
+            "x-known-values": ["all", "off"],
+            "description": "Open sampling taxonomy. Current producers report all or off; consumers accept future modes."
+          },
+          "events_recorded_total": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Events admitted to this stream before retention eviction."
+          },
+          "events_overwritten_total": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Events evicted from this stream's bounded retention ring."
+          },
+          "events_sampled_out_total": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Events rejected by producer sampling. Current all/off producers report zero."
+          },
+          "batch_source_monotonic_ns": {
+            "$ref": "#/components/schemas/UInt64Decimal",
+            "description": "Producer monotonic timestamp sampled for this batch response.",
+            "x-unit": "ns",
+            "x-clock": "monotonic-relative"
+          },
+          "clock_anchor": { "$ref": "#/components/schemas/TraceClockAnchor" },
+          "events": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/TraceEvent" }
+          }
+        }
+      },
+      "TraceRequestError": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": ["error", "message"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "x-known-values": ["invalid_trace_cursor", "future_trace_cursor"],
+            "description": "Open error taxonomy."
+          },
+          "message": { "type": "string" }
+        }
+      },
+      "TraceStreamMismatch": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "error",
+          "requested_stream_id",
+          "current_stream_id",
+          "current_producer_instance_id"
+        ],
+        "properties": {
+          "error": { "type": "string", "const": "trace_stream_mismatch" },
+          "requested_stream_id": { "$ref": "#/components/schemas/Hex128Lower" },
+          "current_stream_id": { "$ref": "#/components/schemas/Hex128Lower" },
+          "current_producer_instance_id": {
+            "$ref": "#/components/schemas/Hex128Lower",
+            "description": "Process identity currently serving this endpoint, so consumers can distinguish a stream reset from a process restart."
+          }
+        }
+      },
+      "SupervisorRow": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": ["depth", "label", "state"],
+        "properties": {
+          "depth": { "$ref": "#/components/schemas/UInt16" },
+          "label": { "type": "string" },
+          "state": {
+            "type": "string",
+            "x-known-values": [
+              "Supervisor",
+              "Pool",
+              "idle",
+              "runnable",
+              "running",
+              "suspended",
+              "stopping",
+              "crashing",
+              "crashed",
+              "stopped",
+              "unknown"
+            ]
+          }
+        }
+      },
+      "CrashEntry": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "time_s",
+          "actor_id",
+          "signal",
+          "trap_kind",
+          "msg_type",
+          "fault_addr"
+        ],
+        "properties": {
+          "time_s": {
+            "type": "number",
+            "format": "double",
+            "description": "Monotonic crash timestamp converted from integer nanoseconds; not Unix time.",
+            "x-unit": "s",
+            "x-clock": "monotonic-relative"
+          },
+          "actor_id": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "signal": { "$ref": "#/components/schemas/Int32" },
+          "trap_kind": {
+            "type": "string",
+            "x-known-values": [
+              "Normal",
+              "Signal",
+              "DivideByZero",
+              "IntegerOverflow",
+              "InvalidShift",
+              "IndexOutOfBounds",
+              "NullPointer",
+              "InvalidUtf8",
+              "Unreachable",
+              "Unknown"
+            ]
+          },
+          "msg_type": { "$ref": "#/components/schemas/Int32" },
+          "fault_addr": { "$ref": "#/components/schemas/UInt64Decimal" }
+        }
+      },
+      "MetricsEnvelope": { "$ref": "#/components/schemas/EnvelopeMetrics" },
+      "MemoryEnvelope": { "$ref": "#/components/schemas/EnvelopeMemory" },
+      "ActorsEnvelope": { "$ref": "#/components/schemas/EnvelopeActors" },
+      "HistoryEnvelope": { "$ref": "#/components/schemas/EnvelopeHistory" },
+      "ClusterMembersEnvelope": {
+        "$ref": "#/components/schemas/EnvelopeClusterMembers"
+      },
+      "ConnectionsEnvelope": {
+        "$ref": "#/components/schemas/EnvelopeConnections"
+      },
+      "RoutingEnvelope": { "$ref": "#/components/schemas/EnvelopeRouting" },
+      "TracesEnvelope": { "$ref": "#/components/schemas/EnvelopeTraces" },
+      "TraceRequestErrorEnvelope": {
+        "$ref": "#/components/schemas/EnvelopeTraceRequestError"
+      },
+      "TraceStreamMismatchEnvelope": {
+        "$ref": "#/components/schemas/EnvelopeTraceStreamMismatch"
+      },
+      "SupervisorsEnvelope": {
+        "$ref": "#/components/schemas/EnvelopeSupervisors"
+      },
+      "CrashesEnvelope": { "$ref": "#/components/schemas/EnvelopeCrashes" },
+      "EnvelopeMetrics": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": { "$ref": "#/components/schemas/Metrics" }
+        }
+      },
+      "EnvelopeMemory": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": { "$ref": "#/components/schemas/Memory" }
+        }
+      },
+      "EnvelopeActors": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ActorInfo" }
+          }
+        }
+      },
+      "EnvelopeHistory": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/HistoryEntry" }
+          }
+        }
+      },
+      "EnvelopeClusterMembers": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ClusterMember" }
+          }
+        }
+      },
+      "EnvelopeConnections": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ConnectionInfo" }
+          }
+        }
+      },
+      "EnvelopeRouting": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": { "$ref": "#/components/schemas/RoutingSnapshot" }
+        }
+      },
+      "EnvelopeTraces": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": { "$ref": "#/components/schemas/TraceBatch" }
+        }
+      },
+      "EnvelopeTraceRequestError": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": { "$ref": "#/components/schemas/TraceRequestError" }
+        }
+      },
+      "EnvelopeTraceStreamMismatch": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": { "$ref": "#/components/schemas/TraceStreamMismatch" }
+        }
+      },
+      "EnvelopeSupervisors": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SupervisorRow" }
+          }
+        }
+      },
+      "EnvelopeCrashes": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schema_version", "data"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "v1" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CrashEntry" }
+          }
+        }
+      }
+    }
+  }
+}

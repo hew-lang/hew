@@ -121,7 +121,7 @@ fn write_test_trace(
         "phase": "run",
         "span": null,
     })];
-    for event in crate::tracing::drain_events(16_384) {
+    for event in crate::tracing::read_test_report_events(16_384).events {
         let name = crate::tracing::event_type_name(event.event_type).unwrap_or("unknown");
         events.push(serde_json::json!({
             "seq": events.len(),

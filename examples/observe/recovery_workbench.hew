@@ -1,0 +1,191 @@
+//! Status: runnable (native; requires the profiler for Observe telemetry)
+//! Description: Deterministic, phased actor workload for live and recorded Observe demos.
+
+// A compact workload for exercising a real Observe client. Every phase is
+// driven by Hew actors and runtime state; the program does not fabricate
+// telemetry or print values that it has not read back from actors.
+//
+// Run it directly:
+//   HEW_PPROF=:6067 HEW_OBSERVE=hot \
+//     hew run --profile examples/observe/recovery_workbench.hew
+//
+// Or use scripts/observe-workbench-demo.sh, which also supports API snapshots
+// and terminal recording. The sleeps deliberately leave each phase visible to
+// the profiler's one-second sampler. The full run takes about 17 seconds.
+
+// Ledger is the destination of actor-to-actor sends from Router. This gives a
+// trace viewer an unambiguous Main -> Router -> Ledger message chain.
+actor Ledger {
+    var events: i64;
+    var total: i64;
+
+    receive fn record(value: i64) -> i64 {
+        events = events + 1;
+        total = total + value;
+        total
+    }
+
+    receive fn event_count() -> i64 {
+        events
+    }
+
+    receive fn balance() -> i64 {
+        total
+    }
+}
+
+actor Router {
+    let ledger: Ledger;
+    var routed: i64;
+
+    receive fn route(value: i64) -> i64 {
+        let reply = ledger.record(value);
+        match reply {
+            .Ok(total) => {
+                routed = routed + 1;
+                total
+            }
+            .Err(_) => -1,
+        }
+    }
+
+    receive fn route_count() -> i64 {
+        routed
+    }
+}
+
+// A one_for_one restart resets only the crashed worker. The sibling's state
+// remains intact, making the restart visible and independently verifiable.
+actor Worker {
+    let id: i64;
+    var completed: i64;
+
+    receive fn process(units: i64) -> i64 {
+        completed = completed + units;
+        completed
+    }
+
+    receive fn count() -> i64 {
+        completed
+    }
+
+    receive fn crash() {
+        panic("observe showcase: controlled worker failure");
+    }
+}
+
+supervisor Workers {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child primary: Worker { id: 1, completed: 0 };
+    child standby: Worker { id: 2, completed: 0 };
+}
+
+// The shelf owns real heap-backed strings. Spawning it raises live allocation
+// and actor counts; stop + stopped releases that state at a precise phase.
+actor PayloadShelf {
+    let chunks: Vec<string>;
+    let expected: i64;
+
+    receive fn count() -> i64 {
+        expected
+    }
+}
+
+fn read(result: Result<i64, ActorError>) -> i64 {
+    match result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    }
+}
+
+fn main() -> i64 {
+    println("OBSERVE_WORKBENCH phase=boot begin");
+    let ledger = spawn Ledger { events: 0, total: 0 };
+    let router = spawn Router { ledger: ledger, routed: 0 };
+    let workers = spawn Workers;
+    let primary = workers.primary;
+    let standby = workers.standby;
+    sleep(1s);
+    println("OBSERVE_WORKBENCH phase=boot topology=ledger-router-workers");
+    println("OBSERVE_WORKBENCH phase=traffic begin routes=24");
+    var item: i64 = 1;
+    while item <= 24 {
+        let _ = router.route(item);
+        item = item + 1;
+    }
+    var job: i64 = 0;
+    while job < 6 {
+        let _ = primary.process(2);
+        let _ = standby.process(3);
+        job = job + 1;
+    }
+    let routed_before = read(router.route_count());
+    let events_before = read(ledger.event_count());
+    let balance_before = read(ledger.balance());
+    let primary_before = read(primary.count());
+    let standby_before = read(standby.count());
+    println(f"OBSERVE_WORKBENCH phase=traffic routed={routed_before} events={events_before} balance={balance_before} primary={primary_before} standby={standby_before}");
+    sleep(2s);
+    println("OBSERVE_WORKBENCH phase=resource-grow begin chunks=4096");
+    var chunks: Vec<string> = Vec.new();
+    var chunk: i64 = 0;
+    while chunk < 4096 {
+        chunks.push("observe-workbench-payload-abcdefghijklmnopqrstuvwxyz-0123456789");
+        chunk = chunk + 1;
+    }
+    let shelf = spawn PayloadShelf { chunks: chunks, expected: 4096 };
+    let shelf_count = read(shelf.count());
+    println(f"OBSERVE_WORKBENCH phase=resource-grow retained_chunks={shelf_count}");
+    sleep(3s);
+    println("OBSERVE_WORKBENCH phase=recovery crash=primary");
+    let _ = primary.crash();
+    let primary_after = {
+        let current = workers.primary;
+        restarted(current);
+        current
+    };
+    let primary_reset = read(primary_after.count());
+    let standby_kept = read(standby.count());
+    let primary_resumed = read(primary_after.process(7));
+    println(f"OBSERVE_WORKBENCH phase=recovery primary_reset={primary_reset} standby_kept={standby_kept} primary_resumed={primary_resumed}");
+    sleep(3s);
+    println("OBSERVE_WORKBENCH phase=resource-release begin");
+    stop(shelf);
+    stopped(shelf);
+    println("OBSERVE_WORKBENCH phase=resource-release shelf=stopped");
+    sleep(2s);
+    println("OBSERVE_WORKBENCH phase=steady begin rounds=4");
+    var round: i64 = 1;
+    while round <= 4 {
+        var burst: i64 = 0;
+        while burst < 8 {
+            let _ = router.route(round);
+            burst = burst + 1;
+        }
+        let _ = primary_after.process(round);
+        println(f"OBSERVE_WORKBENCH phase=steady round={round}");
+        sleep(1s);
+        round = round + 1;
+    }
+    let final_events = read(ledger.event_count());
+    let final_balance = read(ledger.balance());
+    let final_primary = read(primary_after.count());
+    let final_standby = read(standby.count());
+    println(f"OBSERVE_WORKBENCH phase=complete events={final_events} balance={final_balance} primary={final_primary} standby={final_standby}");
+    // Leave the verified final state visible for one last pair of profiler
+    // samples before orderly teardown removes the remaining live actors.
+    sleep(2s);
+    stop(router);
+    stopped(router);
+    stop(ledger);
+    stopped(ledger);
+    stop(workers);
+    stopped(workers);
+    if routed_before == 24 && events_before == 24 && balance_before == 300 && primary_before == 12 && standby_before == 18 && shelf_count == 4096 && primary_reset == 0 && standby_kept == 18 && primary_resumed == 7 && final_events == 56 && final_balance == 380 && final_primary == 17 && final_standby == 18 {
+        0
+    } else {
+        1
+    }
+}

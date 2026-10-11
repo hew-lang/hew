@@ -182,6 +182,9 @@ proptest = "1"
 # native-only (the crate pulls a full CDDL parser/AST it never needs in the
 # runtime binary, and is irrelevant on wasm where there is no internode wire).
 cddl = "0.10"
+# Avoid indexmap's sysroot probe with an instrumented std build. Remove once
+# abnf_to_pest enables indexmap/std itself.
+indexmap = { version = "1.9.3", features = ["std"] }
 # Safe handle wrappers for integration tests (RAII over runtime FFI). Native
 # only: wraps FFI (e.g. hew_actor_trap) the runtime does not export on wasm32.
 hew-runtime-testkit = { path = "../hew-runtime-testkit" }

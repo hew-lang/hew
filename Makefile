@@ -1328,24 +1328,28 @@ asan:
 	LSAN_OPTIONS="$(ASAN_LSAN_OPTIONS)" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime $(ASAN_TEST_ARGS) -- $(ASAN_TEST_FILTER) --test-threads=1
 
-# Local rust-runtime TSan command (Linux/nightly toolchain required).
-#
-# The local target skips darwin-arm64 because of upstream Rust nightly
-# build-std + TSan link limits. No current CI workflow executes this target.
-# Keep the target available for fresh local investigation.
+# Local runtime TSan requires nightly rust-src to instrument std and libtest.
+# No current CI workflow executes this target.
+# Override TSAN_TEST_ARGS for optional features or integration tests, and
+# TSAN_TEST_FILTER for libtest name filters.
+TSAN_TEST_ARGS ?= --lib
+TSAN_TEST_FILTER ?=
 tsan:
 ifeq ($(shell uname -sm),Darwin arm64)
-	@echo "tsan: skipped on darwin-arm64 (upstream Rust nightly TSan not supported on this target — see the rust-runtime-tsan advisory job in nightly-sanitizers.yml)"
+	@echo "tsan: skipped on darwin-arm64 (not supported by this local target)"
 else
 	CARGO_TARGET_DIR=$(RUNTIME_TSAN_TARGET_DIR) \
-	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
-	TSAN_OPTIONS="$${TSAN_OPTIONS:-halt_on_error=0 suppressions=tsan.supp}" \
+	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes -Cdebuginfo=1" \
+	TSAN_OPTIONS="$${TSAN_OPTIONS:-halt_on_error=1 exitcode=66}" \
 	cargo +nightly test \
 		--target $(SANITIZER_RUST_TARGET) \
+		-Zbuild-std=std,test \
+		-Zbuild-std-features=backtrace,panic-unwind \
+		--locked \
 		-p hew-runtime \
 		--no-default-features \
-		--lib \
-		-- --test-threads=1
+		$(TSAN_TEST_ARGS) \
+		-- $(TSAN_TEST_FILTER) --test-threads=1
 endif
 
 # Curated rust-runtime Miri command (aliasing / uninit-read / provenance axis).
@@ -1353,10 +1357,9 @@ endif
 # Miri interprets MIR, so it catches the Stacked/Tree-Borrows aliasing,
 # uninitialised-read, and pointer-provenance bugs that ASan/TSan cannot — and it
 # runs on any host (no sanitizer-capable target required).  The lane is scoped to
-# hew-runtime's pure-Rust unsafe data structures; the FFI / syscall / socket
-# surface stays on ASan because Miri cannot execute foreign code.  Optional
-# features (tokio/quinn/profiler) are excluded for the same reason TSan excludes
-# them — they pull in async + network FFI that Miri cannot interpret.
+# hew-runtime's unsafe data structures. The filters select pure Rust test
+# execution; Cargo may still unify optional runtime features through native
+# test dependencies. Socket, syscall and subprocess cases are outside this scope.
 #
 # One-time setup:  rustup component add --toolchain $(MIRI_TOOLCHAIN) miri rust-src
 # No current CI workflow runs this target. The default uses the host `nightly`;
@@ -1364,15 +1367,13 @@ endif
 #
 # MIRIFLAGS:
 #   -Zmiri-disable-isolation       — timer/clock/random reads need host time/entropy.
-#   -Zmiri-permissive-provenance   — silences the benign int->ptr cast warning from
-#     cross-thread pointer hand-off in tests; does not weaken UB detection.
+#   -Zmiri-permissive-provenance   — suppresses integer-to-pointer cast warnings;
+#     some bugs involving exposed-provenance pointers can be missed.
 #
-# The trailing filters are the GREEN allowlist (substring-matched, `::`-anchored
-# to module boundaries).  arena runs against the `cfg(miri)` std::alloc shim that
-# replaces mmap/VirtualAlloc.  send_ptr/tagged_union carry no dedicated unit tests
-# yet (exercised transitively) but stay listed as curated-surface members.
+# The filters select module test names. Arena uses the `cfg(miri)` std::alloc
+# implementation instead of mmap/VirtualAlloc.
 MIRI_TOOLCHAIN ?= nightly
-MIRI_ALLOWLIST := send_ptr:: rc:: arc:: tagged_union:: arena:: bytes:: vecdeque:: vec::
+MIRI_ALLOWLIST := send_ptr:: rc:: arc:: arena:: bytes:: vecdeque:: vec::
 miri:
 	CARGO_TARGET_DIR=$(RUNTIME_MIRI_TARGET_DIR) \
 	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-permissive-provenance" \

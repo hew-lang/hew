@@ -472,34 +472,34 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 
 ## Coverage matrix summary
 
-| Check                                | Where it runs                                                     | Blocking?                           |
-| ------------------------------------ | ----------------------------------------------------------------- | ----------------------------------- |
-| Clippy + rustfmt                     | ci.yml (every PR)                                                 | Yes                                 |
-| Rust workspace tests                 | ci.yml + release-gate.yml                                         | Yes                                 |
-| Codegen E2E (native)                 | ci.yml + release-gate.yml                                         | Yes                                 |
-| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                         | Yes                                 |
-| Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                             | Yes for PRs                         |
-| Smoke test (compile+run)             | release-gate.yml                                                  | Yes                                 |
-| Release-library consumer link+run    | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane) | Yes                                 |
-| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                         | Yes                                 |
-| Packaged archive smoke (Windows zip) | release.yml (Windows job)                                         | Yes                                 |
-| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 only)                             | Yes                                 |
-| Linux package install smoke          | release.yml (`linux-packages`)                                    | Yes for final tags; skipped for RCs |
-| Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                | Yes                                 |
-| Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                       | Yes                                 |
-| Full release DAG dry run             | release.yml on `release/**` pushes                                | Yes for release branches            |
-| macOS build + tests                  | ci.yml + release-gate.yml                                         | Yes                                 |
-| Windows build + tests                | ci.yml + release-gate.yml                                         | Yes                                 |
-| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                            | Yes for release branches            |
-| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                  | Yes for release branches            |
-| Rust runtime ASan (`make asan`)       | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml     | Yes for release branches            |
-| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)           | Blocks nightly result; review before release |
-| Host and extern-byte safety         | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release |
-| Bounded parser fuzz smoke           | nightly-sanitizers.yml (`make fuzz-smoke`)                        | Blocks nightly result; review before release |
-| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                        | Current CI evidence unavailable; release decision required |
-| Miri                                | Local `make miri`; no current workflow job                        | Current CI evidence unavailable; release decision required |
-| Codegen silent-failure lint          | codegen-lint.yml (PR)                                             | Advisory                            |
-| Local cross-platform build           | `make pre-release`                                                | Recommended                         |
+| Check                                | Where it runs                                                           | Blocking?                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Clippy + rustfmt                     | ci.yml (every PR)                                                       | Yes                                                        |
+| Rust workspace tests                 | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Codegen E2E (native)                 | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                                   | Yes for PRs                                                |
+| Smoke test (compile+run)             | release-gate.yml                                                        | Yes                                                        |
+| Release-library consumer link+run    | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane)    | Yes                                                        |
+| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                               | Yes                                                        |
+| Packaged archive smoke (Windows zip) | release.yml (Windows job)                                               | Yes                                                        |
+| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 only)                                   | Yes                                                        |
+| Linux package install smoke          | release.yml (`linux-packages`)                                          | Yes for final tags; skipped for RCs                        |
+| Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                      | Yes                                                        |
+| Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                             | Yes                                                        |
+| Full release DAG dry run             | release.yml on `release/**` pushes                                      | Yes for release branches                                   |
+| macOS build + tests                  | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Windows build + tests                | ci.yml + release-gate.yml                                               | Yes                                                        |
+| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                                 | Yes for release branches                                   |
+| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                        | Yes for release branches                                   |
+| Rust runtime ASan (`make asan`)      | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml           | Yes for release branches                                   |
+| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)                  | Blocks nightly result; review before release               |
+| Host and extern-byte safety          | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release               |
+| Bounded parser fuzz smoke            | nightly-sanitizers.yml (`make fuzz-smoke`)                              | Blocks nightly result; review before release               |
+| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                              | Current CI evidence unavailable; release decision required |
+| Miri                                 | Local `make miri`; no current workflow job                              | Current CI evidence unavailable; release decision required |
+| Codegen silent-failure lint          | codegen-lint.yml (PR)                                                   | Advisory                                                   |
+| Local cross-platform build           | `make pre-release`                                                      | Recommended                                                |
 
 ## Known gaps (tracked)
 
@@ -562,12 +562,12 @@ that missing evidence or establish safety sign-off.
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
   arm VM/container / remote host).
 - **TSan (Rust runtime): current CI evidence unavailable.** The local
-  `make tsan` target uses a prebuilt, uninstrumented standard library, so its
-  results cannot authoritatively classify races. Earlier investigation found
-  upstream Rust/Cargo build-std + TSan link failures (duplicate lang items,
-  panic-strategy mismatch) as of 2026-04. Re-evaluate those limits against the
-  selected toolchain when obtaining fresh evidence; no current nightly signal
-  is available to review.
+  `make tsan` target instruments the standard library, libtest and runtime
+  together. It selects native runtime unit tests with `--no-default-features`
+  by default; `TSAN_TEST_ARGS` and `TSAN_TEST_FILTER` select additional features,
+  integration tests and name filters. It stops on a reported race and uses no
+  default suppressions. Record the actual toolchain, target and executed scope;
+  no current nightly TSan job is available to review.
 - **WASM capability gaps**: Pipes (`stream.pipe`, `Stream<T>`, `Sink<T>`)
   and the other suspending I/O paths remain compile-time refusals on
   wasm32-wasi. Timers (`sleep`/`sleep_until`) have cooperative

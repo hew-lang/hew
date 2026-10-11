@@ -47,7 +47,7 @@ impl TraceEventMeta {
     pub fn swimlane_label(self, msg_type: i32, handler_name: Option<&str>) -> String {
         match self.name {
             "send" => handler_name.map_or_else(
-                || format!("──▶ send({msg_type})"),
+                || format!("──▶ send(msg_type={msg_type}; handler unavailable)"),
                 |name| format!("──▶ send({name})"),
             ),
             _ => format!("{} {}", self.glyph, self.label),
@@ -594,6 +594,9 @@ mod tests {
             meta.swimlane_label(7, Some("Counter::increment")),
             "──▶ send(Counter::increment)"
         );
-        assert_eq!(meta.swimlane_label(7, None), "──▶ send(7)");
+        assert_eq!(
+            meta.swimlane_label(7, None),
+            "──▶ send(msg_type=7; handler unavailable)"
+        );
     }
 }

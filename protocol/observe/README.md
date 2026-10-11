@@ -23,17 +23,48 @@ IPC without a custom tokenizer or an IEEE-754 rounding window.
 ## Compatibility policy
 
 - A v1 producer emits every property listed in a model's `required` array.
-- `actor_type` and `handler_name` keys are required and nullable. `null` means
-  attribution was unavailable; an omitted key is malformed v1.
+- Required-nullable keys are distinct from omitted keys. A `null` actor or
+  handler means the producer explicitly could not or should not attribute it;
+  omission is malformed v1.
 - Unknown object properties and unknown `event_type`, `state`, and `trap_kind`
   strings are accepted. Those taxonomies are intentionally not JSON enums.
 - Consumers reject malformed envelopes and any `schema_version` other than
   exactly `v1`.
-- Transport failures, endpoint failures, reconnection, and last-good-view state
-  remain client service/view-model responsibilities. They are not wire fields.
-- `/api/traces` is a destructive, process-global drain (maximum 256 events per
-  request from a 16,384-event queue). v1 has no source/destination attribution
-  and no per-consumer cursor. Those require a future versioned contract.
+- Transport failures, reconnection policy, durable recordings, and
+  last-good-view state remain client responsibilities. Producer stream identity,
+  cursor validity, and retention overruns are wire data because clients cannot
+  reconstruct them honestly.
+
+## Trace stream
+
+`GET /api/traces` is a non-destructive, stateless cursor read. Omit both
+`stream_id` and `after` to start at the oldest retained event. Thereafter send
+both values, with `after` set to the previous response's `next_cursor`.
+`after` is exclusive. `limit` is an integer from 1 through 256 and defaults to
+256. A response containing 256 events proves only that the response limit was
+reached; use `has_more` for retained backlog and `overrun` for proven loss.
+
+Source sequences start at 1 and increase strictly within a `stream_id`.
+`next_sequence` is one past the highest assigned sequence, while `next_cursor`
+is the last sequence returned or the effective caught-up cursor for an empty
+page. `oldest_sequence` equals `next_sequence` when the ring is empty. Two
+consumers using the same cursor receive the same retained events and never
+drain one another.
+
+`producer_instance_id` is stable for one process lifetime. `stream_id` changes
+on trace clear/reset and disable-to-enable transitions. A cursor from another
+stream receives HTTP 409 with `trace_stream_mismatch`, the current stream, and
+the current producer instance. Malformed, unpaired, or future cursors receive a
+versioned HTTP 400 error. A stale cursor within the current stream succeeds but
+includes the exact inclusive missing sequence range in `overrun`.
+
+Every trace event has explicit source and destination attribution. The known
+attribution values are `local_actor`, `external`, `remote_unknown`, and
+`not_applicable`. `local_actor` requires the corresponding actor object; the
+other current values require it to be null. This release does not fabricate a
+remote identity. Event timestamps remain producer-monotonic; `clock_anchor`
+correlates that clock approximately with Unix time and declares its sampling
+uncertainty. Consumers must not infer causal links from timestamp proximity.
 
 ## Generated outputs
 

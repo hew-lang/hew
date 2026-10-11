@@ -10,6 +10,8 @@ listen_addr="${HEW_OBSERVE_DEMO_ADDR:-127.0.0.1:6067}"
 endpoint="http://${listen_addr}"
 artifact_dir="${HEW_OBSERVE_ARTIFACT_DIR:-/tmp/hew-observe-workbench}"
 demo_seconds="${HEW_OBSERVE_DEMO_SECONDS:-18}"
+demo_rows="${HEW_OBSERVE_DEMO_ROWS:-36}"
+demo_cols="${HEW_OBSERVE_DEMO_COLS:-120}"
 workload_pid=""
 trace_stream_id=""
 trace_after=""
@@ -29,6 +31,8 @@ Environment:
   HEW_OBSERVE_ARTIFACT_DIR    private output directory
                               (default /tmp/hew-observe-workbench)
   HEW_OBSERVE_DEMO_SECONDS    terminal recording limit (default 18)
+  HEW_OBSERVE_DEMO_ROWS       recorded terminal rows (default 36)
+  HEW_OBSERVE_DEMO_COLS       recorded terminal columns (default 120)
   HEW_OBSERVE_BIN             hew-observe executable (default PATH lookup)
 USAGE
 }
@@ -146,8 +150,10 @@ case "${mode}" in
         ;;
     record-tui)
         observer="$(resolve_observer)"
-        if [[ ! "${demo_seconds}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "HEW_OBSERVE_DEMO_SECONDS must be a positive integer" >&2
+        if [[ ! "${demo_seconds}" =~ ^[1-9][0-9]*$ \
+            || ! "${demo_rows}" =~ ^[1-9][0-9]*$ \
+            || ! "${demo_cols}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "demo seconds, rows, and columns must be positive integers" >&2
             exit 2
         fi
         printf -v observer_command '%q --addr %q --refresh-ms 250' \
@@ -162,10 +168,14 @@ case "${mode}" in
                 "${artifact_dir}/observe-workbench.cast" || record_status=$?
             printf 'cast: %s\n' "${artifact_dir}/observe-workbench.cast"
         elif command -v script >/dev/null 2>&1; then
+            # `script` can allocate a zero-sized pseudo-terminal when invoked
+            # by CI or another non-interactive process. Set a readable size so
+            # ratatui emits full frames into the portable timing recording.
+            script_command="stty rows ${demo_rows} cols ${demo_cols}; ${record_command}"
             script --quiet --return --flush \
                 --log-out "${artifact_dir}/observe-workbench.typescript" \
                 --log-timing "${artifact_dir}/observe-workbench.timing" \
-                --command "${record_command}" || record_status=$?
+                --command "${script_command}" || record_status=$?
             printf 'recording: %s\n' "${artifact_dir}/observe-workbench.typescript"
             printf 'timing:    %s\n' "${artifact_dir}/observe-workbench.timing"
             printf 'replay:    %s replay\n' "$0"

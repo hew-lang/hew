@@ -17,6 +17,45 @@ private func decodeInt64Decimal<Key: CodingKey>(from values: KeyedDecodingContai
     return value
 }
 
+private func decodeOptionalUInt64Decimal<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> UInt64? {
+    let wire = try values.decode(Optional<String>.self, forKey: key)
+    guard let wire else { return nil }
+    guard let value = UInt64(wire), String(value) == wire else {
+        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected canonical UInt64 decimal string")
+    }
+    return value
+}
+
+private func decodeOptionalInt64Decimal<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> Int64? {
+    let wire = try values.decode(Optional<String>.self, forKey: key)
+    guard let wire else { return nil }
+    guard let value = Int64(wire), String(value) == wire else {
+        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected canonical Int64 decimal string")
+    }
+    return value
+}
+
+private func isHex128Lower(_ value: String) -> Bool {
+    value.utf8.count == 32 && value.utf8.allSatisfy { byte in
+        (48...57).contains(byte) || (97...102).contains(byte)
+    }
+}
+
+private func decodeHex128Lower<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> String {
+    let value = try values.decode(String.self, forKey: key)
+    guard isHex128Lower(value) else {
+        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected 32 lowercase hexadecimal digits")
+    }
+    return value
+}
+
+private func encodeHex128Lower<Key: CodingKey>(_ value: String, to values: inout KeyedEncodingContainer<Key>, forKey key: Key) throws {
+    guard isHex128Lower(value) else {
+        throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: values.codingPath + [key], debugDescription: "expected 32 lowercase hexadecimal digits"))
+    }
+    try values.encode(value, forKey: key)
+}
+
 public let observeSchemaVersion = "v1"
 public let actionableTraceEventTypes: Set<String> = [
     "send",
@@ -597,25 +636,175 @@ public struct RoutingSnapshot: Codable, Sendable {
     }
 }
 
+public struct ActorIdentity: Codable, Sendable {
+    public let actorId: UInt64
+    public let spawnSerial: UInt64?
+    public let actorType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case actorId = "actor_id"
+        case spawnSerial = "spawn_serial"
+        case actorType = "actor_type"
+    }
+
+    public init(
+        actorId: UInt64 = 0,
+        spawnSerial: UInt64? = nil,
+        actorType: String? = nil
+    ) {
+        self.actorId = actorId
+        self.spawnSerial = spawnSerial
+        self.actorType = actorType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        actorId = try decodeUInt64Decimal(from: values, forKey: .actorId)
+        spawnSerial = try decodeOptionalUInt64Decimal(from: values, forKey: .spawnSerial)
+        actorType = try values.decode(String?.self, forKey: .actorType)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(String(actorId), forKey: .actorId)
+        try values.encode(spawnSerial.map(String.init), forKey: .spawnSerial)
+        try values.encode(actorType, forKey: .actorType)
+    }
+}
+
+public struct TraceSubject: Codable, Sendable {
+    public let kind: String
+    public let id: UInt64
+    public let actor: ActorIdentity?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case id
+        case actor
+    }
+
+    public init(
+        kind: String = "",
+        id: UInt64 = 0,
+        actor: ActorIdentity? = nil
+    ) {
+        self.kind = kind
+        self.id = id
+        self.actor = actor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(String.self, forKey: .kind)
+        id = try decodeUInt64Decimal(from: values, forKey: .id)
+        actor = try values.decode(ActorIdentity?.self, forKey: .actor)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(kind, forKey: .kind)
+        try values.encode(String(id), forKey: .id)
+        try values.encode(actor, forKey: .actor)
+    }
+}
+
+public struct TraceClockAnchor: Codable, Sendable {
+    public let monotonicNs: UInt64
+    public let unixEpochNs: UInt64
+    public let uncertaintyNs: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case monotonicNs = "monotonic_ns"
+        case unixEpochNs = "unix_epoch_ns"
+        case uncertaintyNs = "uncertainty_ns"
+    }
+
+    public init(
+        monotonicNs: UInt64 = 0,
+        unixEpochNs: UInt64 = 0,
+        uncertaintyNs: UInt64 = 0
+    ) {
+        self.monotonicNs = monotonicNs
+        self.unixEpochNs = unixEpochNs
+        self.uncertaintyNs = uncertaintyNs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        monotonicNs = try decodeUInt64Decimal(from: values, forKey: .monotonicNs)
+        unixEpochNs = try decodeUInt64Decimal(from: values, forKey: .unixEpochNs)
+        uncertaintyNs = try decodeUInt64Decimal(from: values, forKey: .uncertaintyNs)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(String(monotonicNs), forKey: .monotonicNs)
+        try values.encode(String(unixEpochNs), forKey: .unixEpochNs)
+        try values.encode(String(uncertaintyNs), forKey: .uncertaintyNs)
+    }
+}
+
+public struct TraceOverrun: Codable, Sendable {
+    public let firstMissingSequence: UInt64
+    public let lastMissingSequence: UInt64
+    public let count: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case firstMissingSequence = "first_missing_sequence"
+        case lastMissingSequence = "last_missing_sequence"
+        case count
+    }
+
+    public init(
+        firstMissingSequence: UInt64 = 0,
+        lastMissingSequence: UInt64 = 0,
+        count: UInt64 = 0
+    ) {
+        self.firstMissingSequence = firstMissingSequence
+        self.lastMissingSequence = lastMissingSequence
+        self.count = count
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        firstMissingSequence = try decodeUInt64Decimal(from: values, forKey: .firstMissingSequence)
+        lastMissingSequence = try decodeUInt64Decimal(from: values, forKey: .lastMissingSequence)
+        count = try decodeUInt64Decimal(from: values, forKey: .count)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(String(firstMissingSequence), forKey: .firstMissingSequence)
+        try values.encode(String(lastMissingSequence), forKey: .lastMissingSequence)
+        try values.encode(String(count), forKey: .count)
+    }
+}
+
 public struct TraceEvent: Codable, Sendable {
+    public let sequence: UInt64
     public let traceId: String
     public let spanId: UInt64
     public let parentSpanId: UInt64
-    public let actorId: UInt64
-    public let actorTypeId: UInt64
-    public let actorType: String?
+    public let subject: TraceSubject?
+    public let sourceAttribution: String
+    public let sourceActor: ActorIdentity?
+    public let destinationAttribution: String
+    public let destinationActor: ActorIdentity?
     public let eventType: String
     public let msgType: Int32
     public let timestampNs: UInt64
     public let handlerName: String?
 
     enum CodingKeys: String, CodingKey {
+        case sequence
         case traceId = "trace_id"
         case spanId = "span_id"
         case parentSpanId = "parent_span_id"
-        case actorId = "actor_id"
-        case actorTypeId = "actor_type_id"
-        case actorType = "actor_type"
+        case subject
+        case sourceAttribution = "source_attribution"
+        case sourceActor = "source_actor"
+        case destinationAttribution = "destination_attribution"
+        case destinationActor = "destination_actor"
         case eventType = "event_type"
         case msgType = "msg_type"
         case timestampNs = "timestamp_ns"
@@ -623,23 +812,29 @@ public struct TraceEvent: Codable, Sendable {
     }
 
     public init(
-        traceId: String = "",
+        sequence: UInt64 = 0,
+        traceId: String = "00000000000000000000000000000000",
         spanId: UInt64 = 0,
         parentSpanId: UInt64 = 0,
-        actorId: UInt64 = 0,
-        actorTypeId: UInt64 = 0,
-        actorType: String? = nil,
+        subject: TraceSubject? = nil,
+        sourceAttribution: String = "",
+        sourceActor: ActorIdentity? = nil,
+        destinationAttribution: String = "",
+        destinationActor: ActorIdentity? = nil,
         eventType: String = "",
         msgType: Int32 = 0,
         timestampNs: UInt64 = 0,
         handlerName: String? = nil
     ) {
+        self.sequence = sequence
         self.traceId = traceId
         self.spanId = spanId
         self.parentSpanId = parentSpanId
-        self.actorId = actorId
-        self.actorTypeId = actorTypeId
-        self.actorType = actorType
+        self.subject = subject
+        self.sourceAttribution = sourceAttribution
+        self.sourceActor = sourceActor
+        self.destinationAttribution = destinationAttribution
+        self.destinationActor = destinationActor
         self.eventType = eventType
         self.msgType = msgType
         self.timestampNs = timestampNs
@@ -648,12 +843,15 @@ public struct TraceEvent: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        traceId = try values.decode(String.self, forKey: .traceId)
+        sequence = try decodeUInt64Decimal(from: values, forKey: .sequence)
+        traceId = try decodeHex128Lower(from: values, forKey: .traceId)
         spanId = try decodeUInt64Decimal(from: values, forKey: .spanId)
         parentSpanId = try decodeUInt64Decimal(from: values, forKey: .parentSpanId)
-        actorId = try decodeUInt64Decimal(from: values, forKey: .actorId)
-        actorTypeId = try decodeUInt64Decimal(from: values, forKey: .actorTypeId)
-        actorType = try values.decode(String?.self, forKey: .actorType)
+        subject = try values.decode(TraceSubject?.self, forKey: .subject)
+        sourceAttribution = try values.decode(String.self, forKey: .sourceAttribution)
+        sourceActor = try values.decode(ActorIdentity?.self, forKey: .sourceActor)
+        destinationAttribution = try values.decode(String.self, forKey: .destinationAttribution)
+        destinationActor = try values.decode(ActorIdentity?.self, forKey: .destinationActor)
         eventType = try values.decode(String.self, forKey: .eventType)
         msgType = try values.decode(Int32.self, forKey: .msgType)
         timestampNs = try decodeUInt64Decimal(from: values, forKey: .timestampNs)
@@ -662,16 +860,199 @@ public struct TraceEvent: Codable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(traceId, forKey: .traceId)
+        try values.encode(String(sequence), forKey: .sequence)
+        try encodeHex128Lower(traceId, to: &values, forKey: .traceId)
         try values.encode(String(spanId), forKey: .spanId)
         try values.encode(String(parentSpanId), forKey: .parentSpanId)
-        try values.encode(String(actorId), forKey: .actorId)
-        try values.encode(String(actorTypeId), forKey: .actorTypeId)
-        try values.encode(actorType, forKey: .actorType)
+        try values.encode(subject, forKey: .subject)
+        try values.encode(sourceAttribution, forKey: .sourceAttribution)
+        try values.encode(sourceActor, forKey: .sourceActor)
+        try values.encode(destinationAttribution, forKey: .destinationAttribution)
+        try values.encode(destinationActor, forKey: .destinationActor)
         try values.encode(eventType, forKey: .eventType)
         try values.encode(msgType, forKey: .msgType)
         try values.encode(String(timestampNs), forKey: .timestampNs)
         try values.encode(handlerName, forKey: .handlerName)
+    }
+}
+
+public struct TraceBatch: Codable, Sendable {
+    public let producerInstanceId: String
+    public let streamId: String
+    public let oldestSequence: UInt64
+    public let nextSequence: UInt64
+    public let nextCursor: UInt64
+    public let hasMore: Bool
+    public let overrun: TraceOverrun?
+    public let tracingEnabled: Bool
+    public let samplingMode: String
+    public let eventsRecordedTotal: UInt64
+    public let eventsOverwrittenTotal: UInt64
+    public let eventsSampledOutTotal: UInt64
+    public let batchSourceMonotonicNs: UInt64
+    public let clockAnchor: TraceClockAnchor
+    public let events: [TraceEvent]
+
+    enum CodingKeys: String, CodingKey {
+        case producerInstanceId = "producer_instance_id"
+        case streamId = "stream_id"
+        case oldestSequence = "oldest_sequence"
+        case nextSequence = "next_sequence"
+        case nextCursor = "next_cursor"
+        case hasMore = "has_more"
+        case overrun
+        case tracingEnabled = "tracing_enabled"
+        case samplingMode = "sampling_mode"
+        case eventsRecordedTotal = "events_recorded_total"
+        case eventsOverwrittenTotal = "events_overwritten_total"
+        case eventsSampledOutTotal = "events_sampled_out_total"
+        case batchSourceMonotonicNs = "batch_source_monotonic_ns"
+        case clockAnchor = "clock_anchor"
+        case events
+    }
+
+    public init(
+        producerInstanceId: String = "00000000000000000000000000000000",
+        streamId: String = "00000000000000000000000000000000",
+        oldestSequence: UInt64 = 0,
+        nextSequence: UInt64 = 0,
+        nextCursor: UInt64 = 0,
+        hasMore: Bool = false,
+        overrun: TraceOverrun? = nil,
+        tracingEnabled: Bool = false,
+        samplingMode: String = "",
+        eventsRecordedTotal: UInt64 = 0,
+        eventsOverwrittenTotal: UInt64 = 0,
+        eventsSampledOutTotal: UInt64 = 0,
+        batchSourceMonotonicNs: UInt64 = 0,
+        clockAnchor: TraceClockAnchor = TraceClockAnchor(),
+        events: [TraceEvent] = []
+    ) {
+        self.producerInstanceId = producerInstanceId
+        self.streamId = streamId
+        self.oldestSequence = oldestSequence
+        self.nextSequence = nextSequence
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+        self.overrun = overrun
+        self.tracingEnabled = tracingEnabled
+        self.samplingMode = samplingMode
+        self.eventsRecordedTotal = eventsRecordedTotal
+        self.eventsOverwrittenTotal = eventsOverwrittenTotal
+        self.eventsSampledOutTotal = eventsSampledOutTotal
+        self.batchSourceMonotonicNs = batchSourceMonotonicNs
+        self.clockAnchor = clockAnchor
+        self.events = events
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        producerInstanceId = try decodeHex128Lower(from: values, forKey: .producerInstanceId)
+        streamId = try decodeHex128Lower(from: values, forKey: .streamId)
+        oldestSequence = try decodeUInt64Decimal(from: values, forKey: .oldestSequence)
+        nextSequence = try decodeUInt64Decimal(from: values, forKey: .nextSequence)
+        nextCursor = try decodeUInt64Decimal(from: values, forKey: .nextCursor)
+        hasMore = try values.decode(Bool.self, forKey: .hasMore)
+        overrun = try values.decode(TraceOverrun?.self, forKey: .overrun)
+        tracingEnabled = try values.decode(Bool.self, forKey: .tracingEnabled)
+        samplingMode = try values.decode(String.self, forKey: .samplingMode)
+        eventsRecordedTotal = try decodeUInt64Decimal(from: values, forKey: .eventsRecordedTotal)
+        eventsOverwrittenTotal = try decodeUInt64Decimal(from: values, forKey: .eventsOverwrittenTotal)
+        eventsSampledOutTotal = try decodeUInt64Decimal(from: values, forKey: .eventsSampledOutTotal)
+        batchSourceMonotonicNs = try decodeUInt64Decimal(from: values, forKey: .batchSourceMonotonicNs)
+        clockAnchor = try values.decode(TraceClockAnchor.self, forKey: .clockAnchor)
+        events = try values.decode([TraceEvent].self, forKey: .events)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try encodeHex128Lower(producerInstanceId, to: &values, forKey: .producerInstanceId)
+        try encodeHex128Lower(streamId, to: &values, forKey: .streamId)
+        try values.encode(String(oldestSequence), forKey: .oldestSequence)
+        try values.encode(String(nextSequence), forKey: .nextSequence)
+        try values.encode(String(nextCursor), forKey: .nextCursor)
+        try values.encode(hasMore, forKey: .hasMore)
+        try values.encode(overrun, forKey: .overrun)
+        try values.encode(tracingEnabled, forKey: .tracingEnabled)
+        try values.encode(samplingMode, forKey: .samplingMode)
+        try values.encode(String(eventsRecordedTotal), forKey: .eventsRecordedTotal)
+        try values.encode(String(eventsOverwrittenTotal), forKey: .eventsOverwrittenTotal)
+        try values.encode(String(eventsSampledOutTotal), forKey: .eventsSampledOutTotal)
+        try values.encode(String(batchSourceMonotonicNs), forKey: .batchSourceMonotonicNs)
+        try values.encode(clockAnchor, forKey: .clockAnchor)
+        try values.encode(events, forKey: .events)
+    }
+}
+
+public struct TraceRequestError: Codable, Sendable {
+    public let error: String
+    public let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case message
+    }
+
+    public init(
+        error: String = "",
+        message: String = ""
+    ) {
+        self.error = error
+        self.message = message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        error = try values.decode(String.self, forKey: .error)
+        message = try values.decode(String.self, forKey: .message)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(error, forKey: .error)
+        try values.encode(message, forKey: .message)
+    }
+}
+
+public struct TraceStreamMismatch: Codable, Sendable {
+    public let error: String
+    public let requestedStreamId: String
+    public let currentStreamId: String
+    public let currentProducerInstanceId: String
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case requestedStreamId = "requested_stream_id"
+        case currentStreamId = "current_stream_id"
+        case currentProducerInstanceId = "current_producer_instance_id"
+    }
+
+    public init(
+        error: String = "",
+        requestedStreamId: String = "00000000000000000000000000000000",
+        currentStreamId: String = "00000000000000000000000000000000",
+        currentProducerInstanceId: String = "00000000000000000000000000000000"
+    ) {
+        self.error = error
+        self.requestedStreamId = requestedStreamId
+        self.currentStreamId = currentStreamId
+        self.currentProducerInstanceId = currentProducerInstanceId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        error = try values.decode(String.self, forKey: .error)
+        requestedStreamId = try decodeHex128Lower(from: values, forKey: .requestedStreamId)
+        currentStreamId = try decodeHex128Lower(from: values, forKey: .currentStreamId)
+        currentProducerInstanceId = try decodeHex128Lower(from: values, forKey: .currentProducerInstanceId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(error, forKey: .error)
+        try encodeHex128Lower(requestedStreamId, to: &values, forKey: .requestedStreamId)
+        try encodeHex128Lower(currentStreamId, to: &values, forKey: .currentStreamId)
+        try encodeHex128Lower(currentProducerInstanceId, to: &values, forKey: .currentProducerInstanceId)
     }
 }
 

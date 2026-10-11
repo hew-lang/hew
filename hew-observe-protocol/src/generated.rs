@@ -22,15 +22,17 @@ pub struct Envelope<T> {
     pub data: T,
 }
 
-fn deserialize_required_nullable<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
 {
-    Option::<String>::deserialize(deserializer)
+    Option::<T>::deserialize(deserializer)
 }
 
 macro_rules! decimal_string_serde {
     ($module:ident, $native:ty) => {
+        #[allow(dead_code)]
         mod $module {
             use serde::{Deserialize, Deserializer, Serializer};
             pub fn serialize<S>(value: &$native, serializer: S) -> Result<S::Ok, S::Error>
@@ -57,6 +59,70 @@ macro_rules! decimal_string_serde {
 }
 decimal_string_serde!(uint64_decimal, u64);
 decimal_string_serde!(int64_decimal, i64);
+
+macro_rules! optional_decimal_string_serde {
+    ($module:ident, $native:ty) => {
+        #[allow(dead_code)]
+        mod $module {
+            use serde::{Deserialize, Deserializer, Serializer};
+            pub fn serialize<S>(value: &Option<$native>, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                match value {
+                    Some(value) => serializer.serialize_some(&value.to_string()),
+                    None => serializer.serialize_none(),
+                }
+            }
+            pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<$native>, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let Some(wire) = Option::<String>::deserialize(deserializer)? else {
+                    return Ok(None);
+                };
+                let value = wire.parse::<$native>().map_err(serde::de::Error::custom)?;
+                if value.to_string() != wire {
+                    return Err(serde::de::Error::custom(
+                        "expected canonical decimal string",
+                    ));
+                }
+                Ok(Some(value))
+            }
+        }
+    };
+}
+optional_decimal_string_serde!(optional_uint64_decimal, u64);
+optional_decimal_string_serde!(optional_int64_decimal, i64);
+
+mod hex128_lower {
+    use serde::{Deserialize, Deserializer, Serializer};
+    fn valid(value: &str) -> bool {
+        value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+    pub fn serialize<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if !valid(value) {
+            return Err(serde::ser::Error::custom("expected 32 lowercase hexadecimal digits"));
+        }
+        serializer.serialize_str(value)
+    }
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<String, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if !valid(&value) {
+            return Err(serde::de::Error::custom("expected 32 lowercase hexadecimal digits"));
+        }
+        Ok(value)
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Metrics {
@@ -226,24 +292,114 @@ pub struct RoutingSnapshot {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActorIdentity {
+    #[serde(with = "uint64_decimal")]
+    pub actor_id: u64,
+    #[serde(with = "optional_uint64_decimal")]
+    pub spawn_serial: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub actor_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceSubject {
+    pub kind: String,
+    #[serde(with = "uint64_decimal")]
+    pub id: u64,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub actor: Option<ActorIdentity>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceClockAnchor {
+    #[serde(with = "uint64_decimal")]
+    pub monotonic_ns: u64,
+    #[serde(with = "uint64_decimal")]
+    pub unix_epoch_ns: u64,
+    #[serde(with = "uint64_decimal")]
+    pub uncertainty_ns: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceOverrun {
+    #[serde(with = "uint64_decimal")]
+    pub first_missing_sequence: u64,
+    #[serde(with = "uint64_decimal")]
+    pub last_missing_sequence: u64,
+    #[serde(with = "uint64_decimal")]
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TraceEvent {
+    #[serde(with = "uint64_decimal")]
+    pub sequence: u64,
+    #[serde(with = "hex128_lower")]
     pub trace_id: String,
     #[serde(with = "uint64_decimal")]
     pub span_id: u64,
     #[serde(with = "uint64_decimal")]
     pub parent_span_id: u64,
-    #[serde(with = "uint64_decimal")]
-    pub actor_id: u64,
-    #[serde(with = "uint64_decimal")]
-    pub actor_type_id: u64,
     #[serde(deserialize_with = "deserialize_required_nullable")]
-    pub actor_type: Option<String>,
+    pub subject: Option<TraceSubject>,
+    pub source_attribution: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub source_actor: Option<ActorIdentity>,
+    pub destination_attribution: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub destination_actor: Option<ActorIdentity>,
     pub event_type: String,
     pub msg_type: i32,
     #[serde(with = "uint64_decimal")]
     pub timestamp_ns: u64,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub handler_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceBatch {
+    #[serde(with = "hex128_lower")]
+    pub producer_instance_id: String,
+    #[serde(with = "hex128_lower")]
+    pub stream_id: String,
+    #[serde(with = "uint64_decimal")]
+    pub oldest_sequence: u64,
+    #[serde(with = "uint64_decimal")]
+    pub next_sequence: u64,
+    #[serde(with = "uint64_decimal")]
+    pub next_cursor: u64,
+    pub has_more: bool,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub overrun: Option<TraceOverrun>,
+    pub tracing_enabled: bool,
+    pub sampling_mode: String,
+    #[serde(with = "uint64_decimal")]
+    pub events_recorded_total: u64,
+    #[serde(with = "uint64_decimal")]
+    pub events_overwritten_total: u64,
+    #[serde(with = "uint64_decimal")]
+    pub events_sampled_out_total: u64,
+    #[serde(with = "uint64_decimal")]
+    pub batch_source_monotonic_ns: u64,
+    pub clock_anchor: TraceClockAnchor,
+    pub events: Vec<TraceEvent>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceRequestError {
+    pub error: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceStreamMismatch {
+    pub error: String,
+    #[serde(with = "hex128_lower")]
+    pub requested_stream_id: String,
+    #[serde(with = "hex128_lower")]
+    pub current_stream_id: String,
+    #[serde(with = "hex128_lower")]
+    pub current_producer_instance_id: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

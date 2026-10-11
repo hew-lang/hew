@@ -148,22 +148,39 @@ def ref_name(schema: dict) -> str | None:
     return ref.removeprefix(prefix)
 
 
+def non_nullable_schema(schema: dict) -> dict:
+    kind = schema.get("type")
+    if isinstance(kind, list) and "null" in kind:
+        non_null = [part for part in kind if part != "null"]
+        if len(non_null) != 1:
+            raise ValueError(f"unsupported nullable union: {kind}")
+        return {**schema, "type": non_null[0]}
+    alternatives = schema.get("anyOf")
+    if alternatives is not None:
+        if not isinstance(alternatives, list):
+            raise ValueError(f"anyOf must be an array: {schema}")
+        non_null = [part for part in alternatives if part.get("type") != "null"]
+        nulls = [part for part in alternatives if part.get("type") == "null"]
+        if len(non_null) == 1 and len(nulls) == 1:
+            return non_null[0]
+    return schema
+
+
 def is_nullable(schema: dict) -> bool:
-    return isinstance(schema.get("type"), list) and "null" in schema["type"]
+    return non_nullable_schema(schema) is not schema
 
 
 def rust_type(schema: dict) -> str:
+    if is_nullable(schema):
+        return f"Option<{rust_type(non_nullable_schema(schema))}>"
     if (name := ref_name(schema)) is not None:
-        primitives = {"UInt64Decimal": "u64", "Int64Decimal": "i64", "UInt32": "u32", "UInt16": "u16", "Int32": "i32"}
+        primitives = {"UInt64Decimal": "u64", "Int64Decimal": "i64", "UInt32": "u32", "UInt16": "u16", "Int32": "i32", "Hex128Lower": "String"}
         return primitives.get(name, name)
     kind = schema.get("type")
-    if isinstance(kind, list):
-        non_null = [part for part in kind if part != "null"]
-        if len(non_null) != 1:
-            raise ValueError(f"unsupported union: {kind}")
-        return f"Option<{rust_type({**schema, 'type': non_null[0]})}>"
     if kind == "string":
         return "String"
+    if kind == "boolean":
+        return "bool"
     if kind == "number":
         return "f64"
     if kind == "array":
@@ -183,15 +200,16 @@ def camel(name: str) -> str:
 
 
 def swift_type(schema: dict) -> str:
+    if is_nullable(schema):
+        return f"{swift_type(non_nullable_schema(schema))}?"
     if (name := ref_name(schema)) is not None:
-        primitives = {"UInt64Decimal": "UInt64", "Int64Decimal": "Int64", "UInt32": "UInt32", "UInt16": "UInt16", "Int32": "Int32"}
+        primitives = {"UInt64Decimal": "UInt64", "Int64Decimal": "Int64", "UInt32": "UInt32", "UInt16": "UInt16", "Int32": "Int32", "Hex128Lower": "String"}
         return primitives.get(name, name)
     kind = schema.get("type")
-    if isinstance(kind, list):
-        non_null = [part for part in kind if part != "null"]
-        return f"{swift_type({**schema, 'type': non_null[0]})}?"
     if kind == "string":
         return "String"
+    if kind == "boolean":
+        return "Bool"
     if kind == "number":
         return "Double"
     if kind == "array":
@@ -205,10 +223,14 @@ def swift_default(schema: dict) -> str:
     if (name := ref_name(schema)) is not None:
         if name in {"UInt64Decimal", "Int64Decimal", "UInt32", "UInt16", "Int32"}:
             return "0"
+        if name == "Hex128Lower":
+            return '"00000000000000000000000000000000"'
         return f"{name}()"
     kind = schema.get("type")
     if kind == "string":
         return '""'
+    if kind == "boolean":
+        return "false"
     if kind == "number":
         return "0"
     if kind == "array":
@@ -217,30 +239,48 @@ def swift_default(schema: dict) -> str:
 
 
 def swift_decode_expression(schema: dict, field: str) -> str:
+    if is_nullable(schema):
+        inner = non_nullable_schema(schema)
+        name = ref_name(inner)
+        if name == "UInt64Decimal":
+            return f"try decodeOptionalUInt64Decimal(from: values, forKey: .{field})"
+        if name == "Int64Decimal":
+            return f"try decodeOptionalInt64Decimal(from: values, forKey: .{field})"
+        return f"try values.decode({swift_type(schema)}.self, forKey: .{field})"
     name = ref_name(schema)
     if name == "UInt64Decimal":
         return f"try decodeUInt64Decimal(from: values, forKey: .{field})"
     if name == "Int64Decimal":
         return f"try decodeInt64Decimal(from: values, forKey: .{field})"
+    if name == "Hex128Lower":
+        return f"try decodeHex128Lower(from: values, forKey: .{field})"
     return f"try values.decode({swift_type(schema)}.self, forKey: .{field})"
 
 
 def swift_encode_expression(schema: dict, field: str) -> str:
+    if is_nullable(schema):
+        name = ref_name(non_nullable_schema(schema))
+        if name in {"UInt64Decimal", "Int64Decimal"}:
+            return f"try values.encode({field}.map(String.init), forKey: .{field})"
+        return f"try values.encode({field}, forKey: .{field})"
     if ref_name(schema) in {"UInt64Decimal", "Int64Decimal"}:
         return f"try values.encode(String({field}), forKey: .{field})"
+    if ref_name(schema) == "Hex128Lower":
+        return f"try encodeHex128Lower({field}, to: &values, forKey: .{field})"
     return f"try values.encode({field}, forKey: .{field})"
 
 
 def ts_type(schema: dict) -> str:
+    if is_nullable(schema):
+        return f"{ts_type(non_nullable_schema(schema))} | null"
     if (name := ref_name(schema)) is not None:
-        primitives = {"UInt64Decimal": "bigint", "Int64Decimal": "bigint", "UInt32": "number", "UInt16": "number", "Int32": "number"}
+        primitives = {"UInt64Decimal": "bigint", "Int64Decimal": "bigint", "UInt32": "number", "UInt16": "number", "Int32": "number", "Hex128Lower": "string"}
         return primitives.get(name, name)
     kind = schema.get("type")
-    if isinstance(kind, list):
-        non_null = [part for part in kind if part != "null"]
-        return f"{ts_type({**schema, 'type': non_null[0]})} | null"
     if kind == "string":
         return "string"
+    if kind == "boolean":
+        return "boolean"
     if kind == "number":
         return "number"
     if kind == "array":
@@ -265,15 +305,17 @@ def rust_output(spec: dict) -> str:
         "    pub data: T,",
         "}",
         "",
-        "fn deserialize_required_nullable<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>",
+        "fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>",
         "where",
         "    D: serde::Deserializer<'de>,",
+        "    T: serde::Deserialize<'de>,",
         "{",
-        "    Option::<String>::deserialize(deserializer)",
+        "    Option::<T>::deserialize(deserializer)",
         "}",
         "",
         "macro_rules! decimal_string_serde {",
         "    ($module:ident, $native:ty) => {",
+        "        #[allow(dead_code)]",
         "        mod $module {",
         "            use serde::{Deserialize, Deserializer, Serializer};",
         "            pub fn serialize<S>(value: &$native, serializer: S) -> Result<S::Ok, S::Error>",
@@ -301,6 +343,70 @@ def rust_output(spec: dict) -> str:
         "decimal_string_serde!(uint64_decimal, u64);",
         "decimal_string_serde!(int64_decimal, i64);",
         "",
+        "macro_rules! optional_decimal_string_serde {",
+        "    ($module:ident, $native:ty) => {",
+        "        #[allow(dead_code)]",
+        "        mod $module {",
+        "            use serde::{Deserialize, Deserializer, Serializer};",
+        "            pub fn serialize<S>(value: &Option<$native>, serializer: S) -> Result<S::Ok, S::Error>",
+        "            where",
+        "                S: Serializer,",
+        "            {",
+        "                match value {",
+        "                    Some(value) => serializer.serialize_some(&value.to_string()),",
+        "                    None => serializer.serialize_none(),",
+        "                }",
+        "            }",
+        "            pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<$native>, D::Error>",
+        "            where",
+        "                D: Deserializer<'de>,",
+        "            {",
+        "                let Some(wire) = Option::<String>::deserialize(deserializer)? else {",
+        "                    return Ok(None);",
+        "                };",
+        "                let value = wire.parse::<$native>().map_err(serde::de::Error::custom)?;",
+        "                if value.to_string() != wire {",
+        "                    return Err(serde::de::Error::custom(",
+        "                        \"expected canonical decimal string\",",
+        "                    ));",
+        "                }",
+        "                Ok(Some(value))",
+        "            }",
+        "        }",
+        "    };",
+        "}",
+        "optional_decimal_string_serde!(optional_uint64_decimal, u64);",
+        "optional_decimal_string_serde!(optional_int64_decimal, i64);",
+        "",
+        "mod hex128_lower {",
+        "    use serde::{Deserialize, Deserializer, Serializer};",
+        "    fn valid(value: &str) -> bool {",
+        "        value.len() == 32",
+        "            && value",
+        "                .bytes()",
+        "                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))",
+        "    }",
+        "    pub fn serialize<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>",
+        "    where",
+        "        S: Serializer,",
+        "    {",
+        "        if !valid(value) {",
+        "            return Err(serde::ser::Error::custom(\"expected 32 lowercase hexadecimal digits\"));",
+        "        }",
+        "        serializer.serialize_str(value)",
+        "    }",
+        "    pub fn deserialize<'de, D>(deserializer: D) -> Result<String, D::Error>",
+        "    where",
+        "        D: Deserializer<'de>,",
+        "    {",
+        "        let value = String::deserialize(deserializer)?;",
+        "        if !valid(&value) {",
+        "            return Err(serde::de::Error::custom(\"expected 32 lowercase hexadecimal digits\"));",
+        "        }",
+        "        Ok(value)",
+        "    }",
+        "}",
+        "",
     ]
     for model, schema in model_schemas(spec).items():
         required = set(schema.get("required", []))
@@ -312,12 +418,19 @@ def rust_output(spec: dict) -> str:
             field = snake_name(model, wire_name)
             if field != wire_name:
                 lines.append(f'    #[serde(rename = "{wire_name}")]')
-            if is_nullable(prop):
+            underlying_name = ref_name(non_nullable_schema(prop))
+            if is_nullable(prop) and underlying_name == "UInt64Decimal":
+                lines.append('    #[serde(with = "optional_uint64_decimal")]')
+            elif is_nullable(prop) and underlying_name == "Int64Decimal":
+                lines.append('    #[serde(with = "optional_int64_decimal")]')
+            elif is_nullable(prop):
                 lines.append('    #[serde(deserialize_with = "deserialize_required_nullable")]')
-            if ref_name(prop) == "UInt64Decimal":
+            elif ref_name(prop) == "UInt64Decimal":
                 lines.append('    #[serde(with = "uint64_decimal")]')
             elif ref_name(prop) == "Int64Decimal":
                 lines.append('    #[serde(with = "int64_decimal")]')
+            elif ref_name(prop) == "Hex128Lower":
+                lines.append('    #[serde(with = "hex128_lower")]')
             lines.append(f"    pub {field}: {rust_type(prop)},")
         lines.extend(["}", ""])
     return "\n".join(lines)
@@ -343,6 +456,45 @@ def swift_output(spec: dict) -> str:
         r'        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected canonical Int64 decimal string")',
         "    }",
         "    return value",
+        "}",
+        "",
+        "private func decodeOptionalUInt64Decimal<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> UInt64? {",
+        "    let wire = try values.decode(Optional<String>.self, forKey: key)",
+        "    guard let wire else { return nil }",
+        "    guard let value = UInt64(wire), String(value) == wire else {",
+        r'        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected canonical UInt64 decimal string")',
+        "    }",
+        "    return value",
+        "}",
+        "",
+        "private func decodeOptionalInt64Decimal<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> Int64? {",
+        "    let wire = try values.decode(Optional<String>.self, forKey: key)",
+        "    guard let wire else { return nil }",
+        "    guard let value = Int64(wire), String(value) == wire else {",
+        r'        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected canonical Int64 decimal string")',
+        "    }",
+        "    return value",
+        "}",
+        "",
+        "private func isHex128Lower(_ value: String) -> Bool {",
+        "    value.utf8.count == 32 && value.utf8.allSatisfy { byte in",
+        "        (48...57).contains(byte) || (97...102).contains(byte)",
+        "    }",
+        "}",
+        "",
+        "private func decodeHex128Lower<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> String {",
+        "    let value = try values.decode(String.self, forKey: key)",
+        "    guard isHex128Lower(value) else {",
+        r'        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected 32 lowercase hexadecimal digits")',
+        "    }",
+        "    return value",
+        "}",
+        "",
+        "private func encodeHex128Lower<Key: CodingKey>(_ value: String, to values: inout KeyedEncodingContainer<Key>, forKey key: Key) throws {",
+        "    guard isHex128Lower(value) else {",
+        r'        throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: values.codingPath + [key], debugDescription: "expected 32 lowercase hexadecimal digits"))',
+        "    }",
+        "    try values.encode(value, forKey: key)",
         "}",
         "",
         f'public let observeSchemaVersion = "{spec["x-hew-schema-version"]}"',
@@ -405,6 +557,8 @@ def swift_output(spec: dict) -> str:
 
 
 def ts_decoder(schema: dict, expr: str) -> str:
+    if is_nullable(schema):
+        return f"({expr} === null ? null : {ts_decoder(non_nullable_schema(schema), expr)})"
     if (name := ref_name(schema)) is not None:
         integer_bounds = {
             "UInt64Decimal": ("0n", "18446744073709551615n", "asBoundedBigInt"),
@@ -416,12 +570,14 @@ def ts_decoder(schema: dict, expr: str) -> str:
         if name in integer_bounds:
             minimum, maximum, decoder = integer_bounds[name]
             return f"{decoder}({expr}, {minimum}, {maximum})"
+        if name == "Hex128Lower":
+            return f"asHex128Lower({expr})"
         return f"decode{name}({expr})"
     kind = schema.get("type")
-    if isinstance(kind, list):
-        return f"({expr} === null ? null : asString({expr}))"
     if kind == "string":
         return f"asString({expr})"
+    if kind == "boolean":
+        return f"asBoolean({expr})"
     if kind == "number":
         return f"asDouble({expr})"
     if kind == "array":
@@ -452,23 +608,34 @@ def ts_output(spec: dict) -> str:
             "function asRecord(value: unknown): Record<string, unknown> { if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('expected object'); return value as Record<string, unknown>; }",
             "function asArray(value: unknown): unknown[] { if (!Array.isArray(value)) throw new TypeError('expected array'); return value; }",
             "function asString(value: unknown): string { if (typeof value !== 'string') throw new TypeError('expected string'); return value; }",
+            "function asHex128Lower(value: unknown): string { const text = asString(value); if (!/^[0-9a-f]{32}$/.test(text)) throw new TypeError('expected 32 lowercase hexadecimal digits'); return text; }",
+            "function asBoolean(value: unknown): boolean { if (typeof value !== 'boolean') throw new TypeError('expected boolean'); return value; }",
             "function asBoundedNumber(value: unknown, minimum: number, maximum: number): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return value === 0 ? 0 : value; }",
             "function asBoundedBigInt(value: unknown, minimum: bigint, maximum: bigint): bigint { if (typeof value !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(value)) throw new TypeError('expected canonical decimal string'); const number = BigInt(value); if (number < minimum || number > maximum || number.toString() !== value) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return number; }",
             "function asDouble(value: unknown): number { if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('expected finite number'); return value; }",
+            "function validateActorAttribution(endpoint: string, attribution: string, actor: ActorIdentity | null): void { const knownNull = attribution === 'external' || attribution === 'remote_unknown' || attribution === 'not_applicable'; if (attribution === 'local_actor' && actor === null) throw new TypeError(`${endpoint}_actor is required for local_actor attribution`); if (knownNull && actor !== null) throw new TypeError(`${endpoint}_actor must be null for ${attribution} attribution`); }",
             "",
         ]
     )
     for model, schema in models.items():
-        lines.extend([f"export function decode{model}(value: unknown): {model} {{", "  const input = asRecord(value);", "  return { ...input,"])
+        lines.extend([f"export function decode{model}(value: unknown): {model} {{", "  const input = asRecord(value);", "  const output = { ...input,"])
         for wire_name, prop in schema["properties"].items():
             lines.append(f"    {wire_name}: {ts_decoder(prop, f'input.{wire_name}')},")
-        lines.extend([f"  }} as {model};", "}", ""])
+        lines.append(f"  }} as {model};")
+        if model == "TraceEvent":
+            lines.extend([
+                "  validateActorAttribution('source', output.source_attribution, output.source_actor);",
+                "  validateActorAttribution('destination', output.destination_attribution, output.destination_actor);",
+            ])
+        lines.extend(["  return output;", "}", ""])
 
     envelope_payloads = {
         "Metrics": ("Metrics", False), "Memory": ("Memory", False), "Actors": ("ActorInfo", True),
         "History": ("HistoryEntry", True), "ClusterMembers": ("ClusterMember", True),
         "Connections": ("ConnectionInfo", True), "Routing": ("RoutingSnapshot", False),
-        "Traces": ("TraceEvent", True), "Supervisors": ("SupervisorRow", True), "Crashes": ("CrashEntry", True),
+        "Traces": ("TraceBatch", False), "TraceRequestError": ("TraceRequestError", False),
+        "TraceStreamMismatch": ("TraceStreamMismatch", False),
+        "Supervisors": ("SupervisorRow", True), "Crashes": ("CrashEntry", True),
     }
     for endpoint, (model, is_array) in envelope_payloads.items():
         data_type = f"{model}[]" if is_array else model

@@ -115,17 +115,81 @@ export interface RoutingSnapshot {
   [key: string]: unknown;
 }
 
+export interface ActorIdentity {
+  actor_id: bigint;
+  spawn_serial: bigint | null;
+  actor_type: string | null;
+  [key: string]: unknown;
+}
+
+export interface TraceSubject {
+  kind: string;
+  id: bigint;
+  actor: ActorIdentity | null;
+  [key: string]: unknown;
+}
+
+export interface TraceClockAnchor {
+  monotonic_ns: bigint;
+  unix_epoch_ns: bigint;
+  uncertainty_ns: bigint;
+  [key: string]: unknown;
+}
+
+export interface TraceOverrun {
+  first_missing_sequence: bigint;
+  last_missing_sequence: bigint;
+  count: bigint;
+  [key: string]: unknown;
+}
+
 export interface TraceEvent {
+  sequence: bigint;
   trace_id: string;
   span_id: bigint;
   parent_span_id: bigint;
-  actor_id: bigint;
-  actor_type_id: bigint;
-  actor_type: string | null;
+  subject: TraceSubject | null;
+  source_attribution: string;
+  source_actor: ActorIdentity | null;
+  destination_attribution: string;
+  destination_actor: ActorIdentity | null;
   event_type: string;
   msg_type: number;
   timestamp_ns: bigint;
   handler_name: string | null;
+  [key: string]: unknown;
+}
+
+export interface TraceBatch {
+  producer_instance_id: string;
+  stream_id: string;
+  oldest_sequence: bigint;
+  next_sequence: bigint;
+  next_cursor: bigint;
+  has_more: boolean;
+  overrun: TraceOverrun | null;
+  tracing_enabled: boolean;
+  sampling_mode: string;
+  events_recorded_total: bigint;
+  events_overwritten_total: bigint;
+  events_sampled_out_total: bigint;
+  batch_source_monotonic_ns: bigint;
+  clock_anchor: TraceClockAnchor;
+  events: TraceEvent[];
+  [key: string]: unknown;
+}
+
+export interface TraceRequestError {
+  error: string;
+  message: string;
+  [key: string]: unknown;
+}
+
+export interface TraceStreamMismatch {
+  error: string;
+  requested_stream_id: string;
+  current_stream_id: string;
+  current_producer_instance_id: string;
   [key: string]: unknown;
 }
 
@@ -149,13 +213,16 @@ export interface CrashEntry {
 function asRecord(value: unknown): Record<string, unknown> { if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('expected object'); return value as Record<string, unknown>; }
 function asArray(value: unknown): unknown[] { if (!Array.isArray(value)) throw new TypeError('expected array'); return value; }
 function asString(value: unknown): string { if (typeof value !== 'string') throw new TypeError('expected string'); return value; }
+function asHex128Lower(value: unknown): string { const text = asString(value); if (!/^[0-9a-f]{32}$/.test(text)) throw new TypeError('expected 32 lowercase hexadecimal digits'); return text; }
+function asBoolean(value: unknown): boolean { if (typeof value !== 'boolean') throw new TypeError('expected boolean'); return value; }
 function asBoundedNumber(value: unknown, minimum: number, maximum: number): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return value === 0 ? 0 : value; }
 function asBoundedBigInt(value: unknown, minimum: bigint, maximum: bigint): bigint { if (typeof value !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(value)) throw new TypeError('expected canonical decimal string'); const number = BigInt(value); if (number < minimum || number > maximum || number.toString() !== value) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return number; }
 function asDouble(value: unknown): number { if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('expected finite number'); return value; }
+function validateActorAttribution(endpoint: string, attribution: string, actor: ActorIdentity | null): void { const knownNull = attribution === 'external' || attribution === 'remote_unknown' || attribution === 'not_applicable'; if (attribution === 'local_actor' && actor === null) throw new TypeError(`${endpoint}_actor is required for local_actor attribution`); if (knownNull && actor !== null) throw new TypeError(`${endpoint}_actor must be null for ${attribution} attribution`); }
 
 export function decodeMetrics(value: unknown): Metrics {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     timestamp_secs: asBoundedBigInt(input.timestamp_secs, 0n, 18446744073709551615n),
     tasks_spawned: asBoundedBigInt(input.tasks_spawned, 0n, 18446744073709551615n),
     tasks_completed: asBoundedBigInt(input.tasks_completed, 0n, 18446744073709551615n),
@@ -175,11 +242,12 @@ export function decodeMetrics(value: unknown): Metrics {
     tcp_connect_count: asBoundedBigInt(input.tcp_connect_count, 0n, 18446744073709551615n),
     tcp_error_count: asBoundedBigInt(input.tcp_error_count, 0n, 18446744073709551615n),
   } as Metrics;
+  return output;
 }
 
 export function decodeMemory(value: unknown): Memory {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     alloc_count: asBoundedBigInt(input.alloc_count, 0n, 18446744073709551615n),
     dealloc_count: asBoundedBigInt(input.dealloc_count, 0n, 18446744073709551615n),
     bytes_allocated: asBoundedBigInt(input.bytes_allocated, 0n, 18446744073709551615n),
@@ -187,11 +255,12 @@ export function decodeMemory(value: unknown): Memory {
     bytes_live: asBoundedBigInt(input.bytes_live, 0n, 18446744073709551615n),
     peak_bytes_live: asBoundedBigInt(input.peak_bytes_live, 0n, 18446744073709551615n),
   } as Memory;
+  return output;
 }
 
 export function decodeActorInfo(value: unknown): ActorInfo {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     id: asBoundedBigInt(input.id, 0n, 18446744073709551615n),
     pid: asBoundedBigInt(input.pid, 0n, 18446744073709551615n),
     actor_type: asString(input.actor_type),
@@ -201,11 +270,12 @@ export function decodeActorInfo(value: unknown): ActorInfo {
     mbox_depth: asBoundedBigInt(input.mbox_depth, -9223372036854775808n, 9223372036854775807n),
     mbox_hwm: asBoundedBigInt(input.mbox_hwm, -9223372036854775808n, 9223372036854775807n),
   } as ActorInfo;
+  return output;
 }
 
 export function decodeHistoryEntry(value: unknown): HistoryEntry {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     t: asBoundedBigInt(input.t, 0n, 18446744073709551615n),
     ts: asBoundedBigInt(input.ts, 0n, 18446744073709551615n),
     tc: asBoundedBigInt(input.tc, 0n, 18446744073709551615n),
@@ -225,77 +295,171 @@ export function decodeHistoryEntry(value: unknown): HistoryEntry {
     tcc: asBoundedBigInt(input.tcc, 0n, 18446744073709551615n),
     tec: asBoundedBigInt(input.tec, 0n, 18446744073709551615n),
   } as HistoryEntry;
+  return output;
 }
 
 export function decodeClusterMember(value: unknown): ClusterMember {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     route_slot: asBoundedNumber(input.route_slot, 0, 65535),
     state: asString(input.state),
     incarnation: asBoundedBigInt(input.incarnation, 0n, 18446744073709551615n),
     addr: asString(input.addr),
     last_seen_ms: asBoundedBigInt(input.last_seen_ms, 0n, 18446744073709551615n),
   } as ClusterMember;
+  return output;
 }
 
 export function decodeConnectionInfo(value: unknown): ConnectionInfo {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     conn_id: asBoundedNumber(input.conn_id, -2147483648, 2147483647),
     peer_route_slot: asBoundedNumber(input.peer_route_slot, 0, 65535),
     state: asString(input.state),
     last_activity_ms: asBoundedBigInt(input.last_activity_ms, 0n, 18446744073709551615n),
   } as ConnectionInfo;
+  return output;
 }
 
 export function decodeRouteEntry(value: unknown): RouteEntry {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     node_id: asString(input.node_id),
     route_slot: asBoundedNumber(input.route_slot, 0, 65535),
     session_incarnation: asBoundedNumber(input.session_incarnation, 0, 4294967295),
     conn_id: asBoundedNumber(input.conn_id, -2147483648, 2147483647),
   } as RouteEntry;
+  return output;
 }
 
 export function decodeRoutingSnapshot(value: unknown): RoutingSnapshot {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     local_node_id: asString(input.local_node_id),
     local_route_slot: asBoundedNumber(input.local_route_slot, 0, 65535),
     session_incarnation: asBoundedNumber(input.session_incarnation, 0, 4294967295),
     routes: asArray(input.routes).map((item) => decodeRouteEntry(item)),
   } as RoutingSnapshot;
+  return output;
+}
+
+export function decodeActorIdentity(value: unknown): ActorIdentity {
+  const input = asRecord(value);
+  const output = { ...input,
+    actor_id: asBoundedBigInt(input.actor_id, 0n, 18446744073709551615n),
+    spawn_serial: (input.spawn_serial === null ? null : asBoundedBigInt(input.spawn_serial, 0n, 18446744073709551615n)),
+    actor_type: (input.actor_type === null ? null : asString(input.actor_type)),
+  } as ActorIdentity;
+  return output;
+}
+
+export function decodeTraceSubject(value: unknown): TraceSubject {
+  const input = asRecord(value);
+  const output = { ...input,
+    kind: asString(input.kind),
+    id: asBoundedBigInt(input.id, 0n, 18446744073709551615n),
+    actor: (input.actor === null ? null : decodeActorIdentity(input.actor)),
+  } as TraceSubject;
+  return output;
+}
+
+export function decodeTraceClockAnchor(value: unknown): TraceClockAnchor {
+  const input = asRecord(value);
+  const output = { ...input,
+    monotonic_ns: asBoundedBigInt(input.monotonic_ns, 0n, 18446744073709551615n),
+    unix_epoch_ns: asBoundedBigInt(input.unix_epoch_ns, 0n, 18446744073709551615n),
+    uncertainty_ns: asBoundedBigInt(input.uncertainty_ns, 0n, 18446744073709551615n),
+  } as TraceClockAnchor;
+  return output;
+}
+
+export function decodeTraceOverrun(value: unknown): TraceOverrun {
+  const input = asRecord(value);
+  const output = { ...input,
+    first_missing_sequence: asBoundedBigInt(input.first_missing_sequence, 0n, 18446744073709551615n),
+    last_missing_sequence: asBoundedBigInt(input.last_missing_sequence, 0n, 18446744073709551615n),
+    count: asBoundedBigInt(input.count, 0n, 18446744073709551615n),
+  } as TraceOverrun;
+  return output;
 }
 
 export function decodeTraceEvent(value: unknown): TraceEvent {
   const input = asRecord(value);
-  return { ...input,
-    trace_id: asString(input.trace_id),
+  const output = { ...input,
+    sequence: asBoundedBigInt(input.sequence, 0n, 18446744073709551615n),
+    trace_id: asHex128Lower(input.trace_id),
     span_id: asBoundedBigInt(input.span_id, 0n, 18446744073709551615n),
     parent_span_id: asBoundedBigInt(input.parent_span_id, 0n, 18446744073709551615n),
-    actor_id: asBoundedBigInt(input.actor_id, 0n, 18446744073709551615n),
-    actor_type_id: asBoundedBigInt(input.actor_type_id, 0n, 18446744073709551615n),
-    actor_type: (input.actor_type === null ? null : asString(input.actor_type)),
+    subject: (input.subject === null ? null : decodeTraceSubject(input.subject)),
+    source_attribution: asString(input.source_attribution),
+    source_actor: (input.source_actor === null ? null : decodeActorIdentity(input.source_actor)),
+    destination_attribution: asString(input.destination_attribution),
+    destination_actor: (input.destination_actor === null ? null : decodeActorIdentity(input.destination_actor)),
     event_type: asString(input.event_type),
     msg_type: asBoundedNumber(input.msg_type, -2147483648, 2147483647),
     timestamp_ns: asBoundedBigInt(input.timestamp_ns, 0n, 18446744073709551615n),
     handler_name: (input.handler_name === null ? null : asString(input.handler_name)),
   } as TraceEvent;
+  validateActorAttribution('source', output.source_attribution, output.source_actor);
+  validateActorAttribution('destination', output.destination_attribution, output.destination_actor);
+  return output;
+}
+
+export function decodeTraceBatch(value: unknown): TraceBatch {
+  const input = asRecord(value);
+  const output = { ...input,
+    producer_instance_id: asHex128Lower(input.producer_instance_id),
+    stream_id: asHex128Lower(input.stream_id),
+    oldest_sequence: asBoundedBigInt(input.oldest_sequence, 0n, 18446744073709551615n),
+    next_sequence: asBoundedBigInt(input.next_sequence, 0n, 18446744073709551615n),
+    next_cursor: asBoundedBigInt(input.next_cursor, 0n, 18446744073709551615n),
+    has_more: asBoolean(input.has_more),
+    overrun: (input.overrun === null ? null : decodeTraceOverrun(input.overrun)),
+    tracing_enabled: asBoolean(input.tracing_enabled),
+    sampling_mode: asString(input.sampling_mode),
+    events_recorded_total: asBoundedBigInt(input.events_recorded_total, 0n, 18446744073709551615n),
+    events_overwritten_total: asBoundedBigInt(input.events_overwritten_total, 0n, 18446744073709551615n),
+    events_sampled_out_total: asBoundedBigInt(input.events_sampled_out_total, 0n, 18446744073709551615n),
+    batch_source_monotonic_ns: asBoundedBigInt(input.batch_source_monotonic_ns, 0n, 18446744073709551615n),
+    clock_anchor: decodeTraceClockAnchor(input.clock_anchor),
+    events: asArray(input.events).map((item) => decodeTraceEvent(item)),
+  } as TraceBatch;
+  return output;
+}
+
+export function decodeTraceRequestError(value: unknown): TraceRequestError {
+  const input = asRecord(value);
+  const output = { ...input,
+    error: asString(input.error),
+    message: asString(input.message),
+  } as TraceRequestError;
+  return output;
+}
+
+export function decodeTraceStreamMismatch(value: unknown): TraceStreamMismatch {
+  const input = asRecord(value);
+  const output = { ...input,
+    error: asString(input.error),
+    requested_stream_id: asHex128Lower(input.requested_stream_id),
+    current_stream_id: asHex128Lower(input.current_stream_id),
+    current_producer_instance_id: asHex128Lower(input.current_producer_instance_id),
+  } as TraceStreamMismatch;
+  return output;
 }
 
 export function decodeSupervisorRow(value: unknown): SupervisorRow {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     depth: asBoundedNumber(input.depth, 0, 65535),
     label: asString(input.label),
     state: asString(input.state),
   } as SupervisorRow;
+  return output;
 }
 
 export function decodeCrashEntry(value: unknown): CrashEntry {
   const input = asRecord(value);
-  return { ...input,
+  const output = { ...input,
     time_s: asDouble(input.time_s),
     actor_id: asBoundedBigInt(input.actor_id, 0n, 18446744073709551615n),
     signal: asBoundedNumber(input.signal, -2147483648, 2147483647),
@@ -303,6 +467,7 @@ export function decodeCrashEntry(value: unknown): CrashEntry {
     msg_type: asBoundedNumber(input.msg_type, -2147483648, 2147483647),
     fault_addr: asBoundedBigInt(input.fault_addr, 0n, 18446744073709551615n),
   } as CrashEntry;
+  return output;
 }
 
 export function decodeMetricsEnvelope(text: string): ObserveEnvelope<Metrics> {
@@ -347,10 +512,22 @@ export function decodeRoutingEnvelope(text: string): ObserveEnvelope<RoutingSnap
   return { ...input, schema_version: OBSERVE_SCHEMA_VERSION, data: decodeRoutingSnapshot(input.data) } as ObserveEnvelope<RoutingSnapshot>;
 }
 
-export function decodeTracesEnvelope(text: string): ObserveEnvelope<TraceEvent[]> {
+export function decodeTracesEnvelope(text: string): ObserveEnvelope<TraceBatch> {
   const input = asRecord(JSON.parse(text));
   if (input.schema_version !== OBSERVE_SCHEMA_VERSION) throw new TypeError(`unsupported Hew Observe schema version ${String(input.schema_version)}`);
-  return { ...input, schema_version: OBSERVE_SCHEMA_VERSION, data: asArray(input.data).map((item) => decodeTraceEvent(item)) } as ObserveEnvelope<TraceEvent[]>;
+  return { ...input, schema_version: OBSERVE_SCHEMA_VERSION, data: decodeTraceBatch(input.data) } as ObserveEnvelope<TraceBatch>;
+}
+
+export function decodeTraceRequestErrorEnvelope(text: string): ObserveEnvelope<TraceRequestError> {
+  const input = asRecord(JSON.parse(text));
+  if (input.schema_version !== OBSERVE_SCHEMA_VERSION) throw new TypeError(`unsupported Hew Observe schema version ${String(input.schema_version)}`);
+  return { ...input, schema_version: OBSERVE_SCHEMA_VERSION, data: decodeTraceRequestError(input.data) } as ObserveEnvelope<TraceRequestError>;
+}
+
+export function decodeTraceStreamMismatchEnvelope(text: string): ObserveEnvelope<TraceStreamMismatch> {
+  const input = asRecord(JSON.parse(text));
+  if (input.schema_version !== OBSERVE_SCHEMA_VERSION) throw new TypeError(`unsupported Hew Observe schema version ${String(input.schema_version)}`);
+  return { ...input, schema_version: OBSERVE_SCHEMA_VERSION, data: decodeTraceStreamMismatch(input.data) } as ObserveEnvelope<TraceStreamMismatch>;
 }
 
 export function decodeSupervisorsEnvelope(text: string): ObserveEnvelope<SupervisorRow[]> {

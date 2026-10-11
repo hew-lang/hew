@@ -1,6 +1,6 @@
 use hew_observe_protocol::{
     decode_envelope, envelope_json_raw, DecodeError, Envelope, Metrics, RoutingSnapshot,
-    TraceEvent, OBSERVE_SCHEMA_VERSION,
+    TraceBatch, TraceEvent, OBSERVE_SCHEMA_VERSION,
 };
 use serde_json::json;
 
@@ -49,12 +49,15 @@ fn max_width_integers_round_trip_without_loss() {
 #[test]
 fn trace_required_nulls_and_unknown_values_are_distinct() {
     let trace = json!({
+        "sequence": u64::MAX.to_string(),
         "trace_id": "0123456789abcdef0123456789abcdef",
         "span_id": u64::MAX.to_string(),
         "parent_span_id": "0",
-        "actor_id": u64::MAX.to_string(),
-        "actor_type_id": "0",
-        "actor_type": null,
+        "subject": null,
+        "source_attribution": "remote_unknown",
+        "source_actor": null,
+        "destination_attribution": "not_applicable",
+        "destination_actor": null,
         "event_type": "future_event",
         "msg_type": -2_147_483_648,
         "timestamp_ns": u64::MAX.to_string(),
@@ -64,7 +67,8 @@ fn trace_required_nulls_and_unknown_values_are_distinct() {
     let decoded: TraceEvent = serde_json::from_value(trace.clone()).expect("decode open taxonomy");
     assert_eq!(decoded.event_type, "future_event");
     assert!(!decoded.is_actionable());
-    assert_eq!(decoded.actor_type, None);
+    assert!(decoded.source_actor.is_none());
+    assert_eq!(decoded.sequence, u64::MAX);
     assert_eq!(decoded.span_id, u64::MAX);
 
     let mut missing = trace;
@@ -80,12 +84,15 @@ fn trace_required_nulls_and_unknown_values_are_distinct() {
 #[test]
 fn actionable_trace_taxonomy_is_generated_from_the_contract() {
     let trace: TraceEvent = serde_json::from_value(json!({
+        "sequence": "1",
         "trace_id": "0123456789abcdef0123456789abcdef",
         "span_id": "1",
         "parent_span_id": "0",
-        "actor_id": "2",
-        "actor_type_id": "0",
-        "actor_type": null,
+        "subject": null,
+        "source_attribution": "not_applicable",
+        "source_actor": null,
+        "destination_attribution": "not_applicable",
+        "destination_actor": null,
         "event_type": "lambda_spawned",
         "msg_type": 3,
         "timestamp_ns": "4",
@@ -99,15 +106,160 @@ fn actionable_trace_taxonomy_is_generated_from_the_contract() {
 fn envelope_requires_shape_but_accepts_additive_properties() {
     let valid = json!({
         "schema_version": OBSERVE_SCHEMA_VERSION,
-        "data": [],
+        "data": {
+            "producer_instance_id": "00112233445566778899aabbccddeeff",
+            "stream_id": "ffeeddccbbaa99887766554433221100",
+            "oldest_sequence": "1",
+            "next_sequence": "1",
+            "next_cursor": "0",
+            "has_more": false,
+            "overrun": null,
+            "tracing_enabled": true,
+            "sampling_mode": "all",
+            "events_recorded_total": "0",
+            "events_overwritten_total": "0",
+            "events_sampled_out_total": "0",
+            "batch_source_monotonic_ns": "5",
+            "clock_anchor": {
+                "monotonic_ns": "5",
+                "unix_epoch_ns": "6",
+                "uncertainty_ns": "1"
+            },
+            "events": []
+        },
         "future_envelope_property": true
     });
-    let decoded: Envelope<Vec<TraceEvent>> =
+    let decoded: Envelope<TraceBatch> =
         serde_json::from_value(valid).expect("additive envelope property must be ignored");
     assert_eq!(decoded.schema_version, OBSERVE_SCHEMA_VERSION);
+    assert_eq!(decoded.data.next_cursor, 0);
 
     let missing_data = json!({"schema_version": OBSERVE_SCHEMA_VERSION});
-    assert!(serde_json::from_value::<Envelope<Vec<TraceEvent>>>(missing_data).is_err());
+    assert!(serde_json::from_value::<Envelope<TraceBatch>>(missing_data).is_err());
+}
+
+#[test]
+fn trace_batch_max_width_integers_round_trip_without_loss() {
+    let max = u64::MAX.to_string();
+    let batch: TraceBatch = serde_json::from_value(json!({
+        "producer_instance_id": "00112233445566778899aabbccddeeff",
+        "stream_id": "ffeeddccbbaa99887766554433221100",
+        "oldest_sequence": max,
+        "next_sequence": u64::MAX.to_string(),
+        "next_cursor": u64::MAX.to_string(),
+        "has_more": true,
+        "overrun": {
+            "first_missing_sequence": u64::MAX.to_string(),
+            "last_missing_sequence": u64::MAX.to_string(),
+            "count": u64::MAX.to_string()
+        },
+        "tracing_enabled": true,
+        "sampling_mode": "future_sampler",
+        "events_recorded_total": u64::MAX.to_string(),
+        "events_overwritten_total": u64::MAX.to_string(),
+        "events_sampled_out_total": u64::MAX.to_string(),
+        "batch_source_monotonic_ns": u64::MAX.to_string(),
+        "clock_anchor": {
+            "monotonic_ns": u64::MAX.to_string(),
+            "unix_epoch_ns": u64::MAX.to_string(),
+            "uncertainty_ns": u64::MAX.to_string()
+        },
+        "events": [{
+            "sequence": u64::MAX.to_string(),
+            "trace_id": "0123456789abcdef0123456789abcdef",
+            "span_id": u64::MAX.to_string(),
+            "parent_span_id": u64::MAX.to_string(),
+            "subject": {
+                "kind": "actor",
+                "id": u64::MAX.to_string(),
+                "actor": {
+                    "actor_id": u64::MAX.to_string(),
+                    "spawn_serial": u64::MAX.to_string(),
+                    "actor_type": null
+                }
+            },
+            "source_attribution": "local_actor",
+            "source_actor": {
+                "actor_id": u64::MAX.to_string(),
+                "spawn_serial": u64::MAX.to_string(),
+                "actor_type": "Source"
+            },
+            "destination_attribution": "local_actor",
+            "destination_actor": {
+                "actor_id": u64::MAX.to_string(),
+                "spawn_serial": null,
+                "actor_type": "Destination"
+            },
+            "event_type": "send",
+            "msg_type": i32::MAX,
+            "timestamp_ns": u64::MAX.to_string(),
+            "handler_name": "Destination.receive"
+        }]
+    }))
+    .expect("decode max-width trace batch");
+    assert_eq!(batch.events_recorded_total, u64::MAX);
+    assert_eq!(batch.events[0].sequence, u64::MAX);
+    assert_eq!(
+        batch.events[0]
+            .source_actor
+            .as_ref()
+            .expect("source")
+            .spawn_serial,
+        Some(u64::MAX)
+    );
+
+    let encoded = serde_json::to_value(batch).expect("encode max-width trace batch");
+    assert_eq!(encoded["next_cursor"], u64::MAX.to_string());
+    assert_eq!(
+        encoded["events"][0]["source_actor"]["actor_id"],
+        u64::MAX.to_string()
+    );
+}
+
+#[test]
+fn hex128_identifiers_reject_uppercase_and_wrong_length() {
+    let valid = json!({
+        "error": "trace_stream_mismatch",
+        "requested_stream_id": "00112233445566778899aabbccddeeff",
+        "current_stream_id": "ffeeddccbbaa99887766554433221100",
+        "current_producer_instance_id": "0123456789abcdef0123456789abcdef"
+    });
+    serde_json::from_value::<hew_observe_protocol::TraceStreamMismatch>(valid.clone())
+        .expect("lowercase 128-bit identifiers are valid");
+
+    let mut uppercase = valid.clone();
+    uppercase["current_stream_id"] = json!("FFEEDDCCBBAA99887766554433221100");
+    assert!(
+        serde_json::from_value::<hew_observe_protocol::TraceStreamMismatch>(uppercase).is_err()
+    );
+
+    let mut constructed =
+        serde_json::from_value::<hew_observe_protocol::TraceStreamMismatch>(valid.clone())
+            .expect("valid mismatch model");
+    constructed.current_stream_id = "FFEEDDCCBBAA99887766554433221100".to_owned();
+    assert!(serde_json::to_value(constructed).is_err());
+
+    let mut short = valid;
+    short["current_stream_id"] = json!("00");
+    assert!(serde_json::from_value::<hew_observe_protocol::TraceStreamMismatch>(short).is_err());
+}
+
+#[test]
+fn actor_identity_nullable_fields_must_be_present() {
+    let identity = json!({
+        "actor_id": "7",
+        "spawn_serial": null,
+        "actor_type": null
+    });
+    serde_json::from_value::<hew_observe_protocol::ActorIdentity>(identity.clone())
+        .expect("required nullable fields may be null");
+
+    let mut missing = identity;
+    missing
+        .as_object_mut()
+        .expect("object")
+        .remove("spawn_serial");
+    assert!(serde_json::from_value::<hew_observe_protocol::ActorIdentity>(missing).is_err());
 }
 
 #[test]

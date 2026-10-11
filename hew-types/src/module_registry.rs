@@ -274,8 +274,7 @@ impl ModuleAnchor {
     #[must_use]
     pub fn dir(&self) -> Option<&std::path::Path> {
         match self {
-            Self::Std { dir } => Some(dir),
-            Self::Package { dir, .. } => Some(dir),
+            Self::Std { dir } | Self::Package { dir, .. } => Some(dir),
             Self::Loose => None,
         }
     }

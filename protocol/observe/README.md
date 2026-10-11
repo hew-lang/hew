@@ -66,6 +66,23 @@ remote identity. Event timestamps remain producer-monotonic; `clock_anchor`
 correlates that clock approximately with Unix time and declares its sampling
 uncertainty. Consumers must not infer causal links from timestamp proximity.
 
+This compact stale-cursor example fixes the boundary arithmetic for client
+fixtures. Given `after=4`, retained sequence 8 proves that 5 through 7 were
+lost; sequence 8 is returned, and sequence 9 remains as backlog:
+
+```http
+GET /api/traces?stream_id=0123456789abcdef0123456789abcdef&after=4&limit=1
+```
+
+```json
+{"schema_version":"v1","data":{"producer_instance_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream_id":"0123456789abcdef0123456789abcdef","oldest_sequence":"8","next_sequence":"10","next_cursor":"8","has_more":true,"overrun":{"first_missing_sequence":"5","last_missing_sequence":"7","count":"3"},"tracing_enabled":true,"sampling_mode":"all","events_recorded_total":"9","events_overwritten_total":"7","events_sampled_out_total":"0","batch_source_monotonic_ns":"1200","clock_anchor":{"monotonic_ns":"1000","unix_epoch_ns":"1791702000000000000","uncertainty_ns":"20"},"events":[{"sequence":"8","trace_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","span_id":"80","parent_span_id":"0","subject":null,"source_attribution":"local_actor","source_actor":{"actor_id":"2","spawn_serial":"2","actor_type":"Router"},"destination_attribution":"local_actor","destination_actor":{"actor_id":"1","spawn_serial":"1","actor_type":"Ledger"},"event_type":"send","msg_type":7,"timestamp_ns":"1100","handler_name":"Ledger.record"}]}}
+```
+
+The next request uses `after=8`. It must not add one client-side: `after` is
+already the last consumed sequence, and the producer performs the exclusive
+increment. On HTTP 409 the client starts a new segment and reattaches without
+either cursor parameter after validating the mismatch envelope.
+
 ## Generated outputs
 
 - Rust crate: `hew-observe-protocol/src/generated.rs`

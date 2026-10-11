@@ -5,6 +5,7 @@ use super::*;
 #[test]
 fn two_node_remote_send_delivery() {
     let _guard = crate::runtime_test_guard();
+    let _trace_guard = crate::tracing::tracing_test_guard();
     let _real_sched;
     crate::registry::hew_registry_clear();
 
@@ -14,6 +15,7 @@ fn two_node_remote_send_delivery() {
 
     // Ensure the scheduler is running so actor dispatches work.
     _real_sched = init_real_scheduler();
+    crate::tracing::hew_trace_enable(1);
 
     // Temporarily set LOCAL_NODE_ID = 302 to assign a node-2 PID to the actor.
     // This makes the actor look remote from node1's routing perspective.
@@ -64,6 +66,37 @@ fn two_node_remote_send_delivery() {
         }
         got
     });
+
+    let snapshot = crate::tracing::trace_snapshot(None, None, 256)
+        .expect("inbound send trace snapshot must be readable");
+    let inbound_send = snapshot
+        .events
+        .iter()
+        .find(|record| {
+            record.event.event_type == crate::tracing::SPAN_SEND
+                && record.destination_actor_id == Some(actor_id)
+        })
+        .expect("real inbound delivery must emit a send record for the local target");
+    assert_eq!(inbound_send.source_actor_id, None);
+    assert_eq!(
+        inbound_send.source_attribution,
+        crate::tracing::TraceActorAttribution::RemoteUnknown,
+        "transport delivery must not be mislabelled as an external local send"
+    );
+    assert_eq!(
+        inbound_send.destination_attribution,
+        crate::tracing::TraceActorAttribution::LocalActor
+    );
+    // SAFETY: probe_actor remains live until teardown below.
+    assert_eq!(
+        inbound_send.destination_spawn_serial,
+        Some(unsafe { (*probe_actor).spawn_serial })
+    );
+    assert_eq!(
+        inbound_send.destination_dispatch_ptr,
+        send_probe_dispatch as *const () as usize
+    );
+    crate::tracing::hew_trace_reset();
 
     // SAFETY: actor and nodes were allocated in this test and are valid.
     unsafe {

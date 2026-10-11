@@ -87,10 +87,12 @@ fn two_node_remote_send_delivery() {
         inbound_send.destination_attribution,
         crate::tracing::TraceActorAttribution::LocalActor
     );
-    // SAFETY: probe_actor remains live until teardown below.
     assert_eq!(
         inbound_send.destination_spawn_serial,
-        Some(unsafe { (*probe_actor).spawn_serial })
+        Some(unsafe {
+            // SAFETY: probe_actor remains live until teardown below.
+            (*probe_actor).spawn_serial
+        })
     );
     assert_eq!(
         inbound_send.destination_dispatch_ptr,

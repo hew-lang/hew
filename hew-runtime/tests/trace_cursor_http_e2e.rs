@@ -112,6 +112,10 @@ fn string_u64(value: &serde_json::Value) -> u64 {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single end-to-end scenario keeps cursor and reset assertions on one live server"
+)]
 fn trace_http_cursors_are_independent_and_report_overflow_and_reset() {
     hew_trace_reset();
     let mut execution_context = HewExecutionContext {

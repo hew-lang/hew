@@ -129,12 +129,12 @@
       "RoutingSnapshot": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["local_node_id", "local_route_slot", "session_incarnation", "routes"], "properties": { "local_node_id": { "type": "string", "description": "Stable NodeId, or the literal `unconfigured`." }, "local_route_slot": { "$ref": "#/components/schemas/UInt16" }, "session_incarnation": { "$ref": "#/components/schemas/UInt32" }, "routes": { "type": "array", "items": { "$ref": "#/components/schemas/RouteEntry" } } } },
       "ActorIdentity": {
         "type": "object", "x-hew-model": true, "additionalProperties": true,
-        "description": "Process-local actor identity and attribution captured at event creation. Distributed actor identity remains explicitly remote_unknown until the transport carries an exact durable identity.",
+        "description": "Process-local actor identity. Actor id, spawn serial, and a stable dispatch key are captured at event creation; optional display metadata may be resolved from that key during response serialization. Distributed actor identity remains explicitly remote_unknown until the transport carries an exact durable identity.",
         "required": ["actor_id", "spawn_serial", "actor_type"],
         "properties": {
           "actor_id": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Process-local packed actor id." },
           "spawn_serial": { "anyOf": [{ "$ref": "#/components/schemas/UInt64Decimal" }, { "type": "null" }], "description": "Full process-local spawn serial, or null when unavailable. Unlike the packed actor id, this value is not truncated." },
-          "actor_type": { "type": ["string", "null"], "description": "Actor type captured at event creation; null when unavailable." }
+          "actor_type": { "type": ["string", "null"], "description": "Actor type resolved from the event's captured process-local dispatch key; null when unavailable." }
         }
       },
       "TraceSubject": {

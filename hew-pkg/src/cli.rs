@@ -499,15 +499,15 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
     let (filename, content) = match template {
         manifest::ManifestTemplate::Lib => (
             // A package name is a module path. Its final segment names the
-            // directory entry (`hew.selfqualtype` installs at
-            // `hew/selfqualtype/selfqualtype.hew`). Scaffold that exact root so
-            // init, install, and import share one convention.
+            // root module, a single file beside `hew.toml` (`hew.selfqualtype`
+            // installs at `hew/selfqualtype/selfqualtype.hew`). Scaffold that
+            // exact root so init, install, and import share one convention.
             manifest::package_root_source(name),
             format!("// {name} library\n\npub fn add(a: i32, b: i32) -> i32 {{\n    a + b\n}}\n"),
         ),
         manifest::ManifestTemplate::Actor => (
             "main.hew".to_string(),
-            "actor Counter {\n    var count: i32;\n\n    receive fn increment() {\n        count = count + 1;\n        println(count);\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    let _ = c.increment();\n    let _ = c.increment();\n    let _ = c.increment();\n}\n"
+            "actor Counter {\n    var count: i32;\n\n    receive fn increment() {\n        count = count + 1;\n        println(count);\n    }\n}\n\nfn main() {\n    let c = spawn Counter { count: 0 };\n    let _ = c.increment();\n    let _ = c.increment();\n    let _ = c.increment();\n}\n"
                 .to_string(),
         ),
         manifest::ManifestTemplate::Bin => (
@@ -4203,7 +4203,7 @@ mod tests {
             "should contain receive handler"
         );
         assert!(
-            src.contains("spawn Counter(count: 0)"),
+            src.contains("spawn Counter { count: 0 }"),
             "should contain spawn"
         );
 

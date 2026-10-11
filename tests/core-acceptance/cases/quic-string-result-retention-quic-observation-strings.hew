@@ -57,7 +57,7 @@ fn main() {
         println(101);
     }
     let address = endpoint.observe().local_addr;
-    let client = spawn Client(address: address, complete: 0);
+    let client = spawn Client { address: address, complete: 0 };
     // The client's turn drives the whole peer side and blocks on this side's
     // reply, so it runs concurrently with the server work below. Calling it
     // inline would leave nobody to accept the connection it is waiting on.

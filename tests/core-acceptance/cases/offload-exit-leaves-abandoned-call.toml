@@ -1,6 +1,6 @@
 [[case]]
 id = "offload-exit-leaves-abandoned-call"
-intent = "Exit does not wait for an #[offload] call whose caller gave up: the read stays blocked in the OS and the program still ends."
+intent = "Exit does not wait for an #[offload] call whose caller gave up: the sleep stays blocked in the OS and the program still ends."
 source = "cases/offload-exit-leaves-abandoned-call.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

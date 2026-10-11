@@ -1,0 +1,37 @@
+actor Pair {
+    let a: i64;
+    let b: i64;
+    receive fn show() -> string {
+        f"a={a} b={b}"
+    }
+}
+
+actor Store {
+    var n: i64 = 0;
+}
+
+supervisor Pool(a: i64, b: i64) {
+    strategy: one_for_one;
+    child pair: Pair(a: b, b) restart: transient;
+}
+
+machine Door {
+    events {
+        Open { by: string; }
+    }
+    state Shut;
+    state Ajar { by: string; }
+
+    on Open(by): Shut => Ajar { by: by }
+
+    default { state }
+}
+
+fn main() {
+    let a = 1;
+    let b = 2;
+    let pair = spawn Pair(b, a);
+    let _store = spawn Store();
+    let _pool = spawn Pool(a: 3, b);
+    println(pair.show().expect("show"));
+}

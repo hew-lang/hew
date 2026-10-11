@@ -38,10 +38,10 @@ actor Worker {
         };
         println("unused await done");
         {
-            let winner = race {
+            let winner = await race [
                 create(audit, 3),
                 delayed(audit),
-            };
+            ];
             assert(winner.id == 3);
         };
         println("race done");

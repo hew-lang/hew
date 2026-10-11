@@ -49,7 +49,7 @@ actor Holder {
 }
 
 fn main() {
-    let h = spawn Holder(cur: Named { label: "initial", n: 0 });
+    let h = spawn Holder { cur: Named { label: "initial", n: 0 } };
     let _ = h.bump_bare();
     let _ = h.bump_self();
     let _ = h.bump_compound();

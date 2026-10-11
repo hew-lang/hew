@@ -45,7 +45,7 @@ supervisor App {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child w1: Worker(value: 7);
+    child w1: Worker { value: 7 };
 }
 
 fn main() -> i64 {

@@ -82,7 +82,7 @@ fn nap_short() {}
 
 #[test]
 fn deadline_body_runs_when_timeout_wins() {
-    let d = spawn Deadliner(fired: 0);
+    let d = spawn Deadliner { fired: 0 };
     // The work never finishes on its own → the deadline wins and the body runs.
     match d.run_timeout_wins() {
         .Ok(v) => assert(v == 7),
@@ -92,7 +92,7 @@ fn deadline_body_runs_when_timeout_wins() {
 
 #[test]
 fn deadline_body_skipped_when_work_finishes_first() {
-    let d = spawn Deadliner(fired: 0);
+    let d = spawn Deadliner { fired: 0 };
     // The work finishes at once, deadline is 200ms → the scope completes first
     // and the body is skipped, so `fired` stays 0.
     match d.run_work_wins() {
@@ -103,7 +103,7 @@ fn deadline_body_skipped_when_work_finishes_first() {
 
 #[test]
 fn nested_scope_deadlines_each_take_their_own_branch() {
-    let d = spawn Deadliner(fired: 0);
+    let d = spawn Deadliner { fired: 0 };
     // Inner deadline (20ms) wins over its parked child → inner body adds 1.
     // Outer work finishes before its 200ms deadline → outer body skipped.
     // Exactly 1 proves the inner timeout fired and the outer skipped — a swapped

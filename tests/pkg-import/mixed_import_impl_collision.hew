@@ -18,7 +18,7 @@ fn main() {
     println(f"local={local.tag()}");
 
     // Package-import impl: testffi TestResult.rows()/get()/total()/free().
-    let db = spawn testffi.Db(seed: 9);
+    let db = spawn testffi.Db { seed: 9 };
     match db.query(3) {
         .Ok(r) => {
             let n = r.rows();

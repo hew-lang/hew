@@ -43,7 +43,7 @@ actor Holder {
 }
 
 fn main() {
-    let holder = spawn Holder();
+    let holder = spawn Holder;
     match holder.add("a", 0) {
         .Ok(n) => println(f"first {n}"),
         .Err(_) => println("first failed"),

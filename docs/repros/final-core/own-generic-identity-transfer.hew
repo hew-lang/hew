@@ -1,6 +1,3 @@
-// E_OWN_CONSUME_BORROWED inside a generic instance: `fn identity<T>(value: T) -> T`
-// returns its own parameter, and semantic lowering of the instance treats that
-// transfer as a consume through a borrowed parameter.
 #[resource]
 type Token {
     id: i64;
@@ -12,7 +9,7 @@ impl Token {
     }
 }
 
-fn identity<T>(value: T) -> T {
+fn identity<T>(consume value: T) -> T {
     value
 }
 

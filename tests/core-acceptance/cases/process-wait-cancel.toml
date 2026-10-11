@@ -6,6 +6,6 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "deadlines: 100\nthreads kept: 0\nwrite after cancelled waits: written\nstill running: true\nSignalled(9)\n"
+stdout = "deadlines: 100\nthreads kept: 0\nwrite after cancelled waits: written\nstill running: true\nkilled: true\n"
 stderr = ""
 exit = 0

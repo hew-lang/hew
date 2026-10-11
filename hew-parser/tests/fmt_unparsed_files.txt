@@ -9,3 +9,4 @@
 tests/core-acceptance/cases/machine-composite-depth-refused.hew
 tests/core-acceptance/cases/named-argument-after-positional-gap.hew
 tests/core-acceptance/cases/spread-parse-refusals.hew
+tests/core-acceptance/cases/spawn-keyed-reject-parens.hew

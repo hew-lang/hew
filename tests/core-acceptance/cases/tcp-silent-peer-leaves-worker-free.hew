@@ -6,13 +6,13 @@
 import std.net;
 
 fn silent(listener: net.Listener) {
-    let conn = listener.accept();
+    let conn = listener.accept().expect("accept");
     let _ = conn.recv();
     conn.close();
 }
 
 fn ticks() {
-    for _ in 0 .. 20 {
+    for _ in 0..20 {
         sleep(20ms);
     }
 }

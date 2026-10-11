@@ -48,7 +48,7 @@ actor ProbeWorker {
 #[test]
 fn _rate_limit_denial_does_not_hide_ask_failure() {
     let tree = spawn ProbeTree;
-    let worker = spawn ProbeWorker(tree: tree, rejected: 0, unavailable: 0);
+    let worker = spawn ProbeWorker { tree: tree, rejected: 0, unavailable: 0 };
     match worker.handle_request() {
         .Ok(outcome) => assert(outcome == 1),
         .Err(_) => assert(false),

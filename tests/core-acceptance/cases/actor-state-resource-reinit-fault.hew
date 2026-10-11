@@ -25,7 +25,7 @@ actor Vault {
 }
 
 fn main() {
-    let vault = spawn Vault(sock: Socket { label: "open" });
+    let vault = spawn Vault { sock: Socket { label: "open" } };
     println(vault.swap(false).expect("first swap"));
     match vault.swap(true) {
         .Ok(_) => println("unexpected"),

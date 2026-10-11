@@ -42,7 +42,7 @@ fn main() {
         server.attach(receiver);
         server.send_text("still writable").expect("writable after attach");
         var finished = false;
-        for attempt in 0 .. 5000 {
+        for attempt in 0..5000 {
             let state = match receiver.result() {
                 .Ok(value) => value,
                 .Err(_) => panic("receiver failed"),

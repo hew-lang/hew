@@ -40,9 +40,9 @@ actor WrappedKeeper {
 #[test]
 #[real_time]
 fn direct_resource_actor_field_compiles_and_runs() {
-    let keeper = spawn DirectKeeper(dq: unsafe {
+    let keeper = spawn DirectKeeper {dq: unsafe {
         hew_deque_new()
-    });
+    }};
     match keeper.ping() {
         .Ok(n) => assert(n == 1),
         .Err(_) => assert(false),
@@ -52,9 +52,9 @@ fn direct_resource_actor_field_compiles_and_runs() {
 #[test]
 #[real_time]
 fn wrapped_resource_actor_field_still_compiles_and_runs() {
-    let keeper = spawn WrappedKeeper(holder: Holder { dq: unsafe {
+    let keeper = spawn WrappedKeeper {holder: Holder { dq: unsafe {
         hew_deque_new()
-    } });
+    } }};
     match keeper.ping() {
         .Ok(n) => assert(n == 2),
         .Err(_) => assert(false),

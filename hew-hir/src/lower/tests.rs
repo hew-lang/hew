@@ -3148,7 +3148,7 @@ actor Db {
 }
 
 fn main() {
-    let db = spawn Db(n: 0);
+    let db = spawn Db { n: 0 };
     match db.query("SELECT 1") {
         .Ok(r) => println(f"handle={r.handle}"),
         .Err(_) => println("ask failed"),

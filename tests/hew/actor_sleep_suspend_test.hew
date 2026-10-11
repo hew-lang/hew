@@ -31,7 +31,7 @@ actor Sleeper {
 
 #[test]
 fn sleep_returns_after_duration_in_handler() {
-    let s = spawn Sleeper(done: 0);
+    let s = spawn Sleeper { done: 0 };
     // The handler sleeps 20ms then increments; the value proves the handler
     // resumed correctly after the timer fired (exact value 1, not >= 1).
     match s.nap(20ms) {
@@ -42,7 +42,7 @@ fn sleep_returns_after_duration_in_handler() {
 
 #[test]
 fn two_sleeps_in_one_handler_resume_in_order() {
-    let s = spawn Sleeper(done: 0);
+    let s = spawn Sleeper { done: 0 };
     // A second suspend point in the same coroutine frame: the body sleeps,
     // does +1, sleeps again, does +10. The exact result (11) proves BOTH
     // suspend points resumed in order through one persistent frame — a
@@ -58,9 +58,9 @@ fn many_handlers_each_sleep_then_resume() {
     // Several independent sleepers each suspend and resume. On a cooperative
     // suspend these all park concurrently and resume; the exact per-handler
     // value (1) proves none lost its frame or resumed another's.
-    let a = spawn Sleeper(done: 0);
-    let b = spawn Sleeper(done: 0);
-    let c = spawn Sleeper(done: 0);
+    let a = spawn Sleeper { done: 0 };
+    let b = spawn Sleeper { done: 0 };
+    let c = spawn Sleeper { done: 0 };
     let ra = a.nap(10ms);
     let rb = b.nap(10ms);
     let rc = c.nap(10ms);

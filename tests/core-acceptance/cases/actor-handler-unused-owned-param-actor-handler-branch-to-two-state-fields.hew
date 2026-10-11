@@ -21,7 +21,7 @@ actor Fan {
 }
 
 fn main() -> i64 {
-    let fan = spawn Fan(seen: 0, one: Wrap { name: "one" }, two: Wrap { name: "two" });
+    let fan = spawn Fan { seen: 0, one: Wrap { name: "one" }, two: Wrap { name: "two" } };
     var i: i64 = 0;
     while i < 50 {
         let _ = fan.route("either".to_upper(), i % 2 == 0);

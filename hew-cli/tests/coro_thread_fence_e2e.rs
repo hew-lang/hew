@@ -1,4 +1,4 @@
-//! Thread-count regression fences for generators and `fork` (U370).
+//! Thread-count regression checks for generators and `fork`.
 //!
 //! Both tests read `/proc/self/task` from inside the running Hew program to
 //! count OS threads at a known point, so the count is exact, not sampled from
@@ -7,10 +7,8 @@
 //! here, and the portable alternative (a runtime-owned spawn counter) does
 //! not exist yet.
 //!
-//! - `generator_iteration_creates_no_os_threads` passes today: all four
-//!   generator surfaces (`gen fn`, `gen {}`, `receive gen fn`)
-//!   already run on `llvm.coro` frames, not OS threads. It is a regression
-//!   fence so the P4 concurrency lane cannot quietly re-thread the pump.
+//! - `generator_iteration_creates_no_os_threads` checks that generator
+//!   iteration creates no threads.
 //! - `fork_children_create_no_os_threads` requires fork continuations to park
 //!   on the shared scheduler without creating OS threads.
 

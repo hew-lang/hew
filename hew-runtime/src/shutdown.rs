@@ -112,14 +112,6 @@ pub(crate) fn refuses_new_root_work() -> bool {
     admit_external_work().is_err()
 }
 
-/// The platform's code for an operation refused because the runtime is shutting
-/// down. Windows sockets report cancellation as `WSAECANCELLED`.
-pub(crate) const SHUTDOWN_REFUSAL_ERRNO: i32 = if cfg!(windows) {
-    10103
-} else {
-    libc::ECANCELED
-};
-
 /// The message naming a root operation that shutdown refused.
 pub(crate) fn refusal_message(operation: &str) -> String {
     format!("{operation}: refused because the runtime is shutting down")

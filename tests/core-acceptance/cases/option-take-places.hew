@@ -31,7 +31,7 @@ fn main() {
     println(h.name.take() ?? "none");
     println(h.name.is_none());
     println(h.count);
-    let k = spawn Keeper(slot: .Some("a"), h: Holder { name: .Some("bob"), count: 2 });
+    let k = spawn Keeper { slot: .Some("a"), h: Holder { name: .Some("bob"), count: 2 } };
     println(k.grab().expect("grab"));
     println(k.grab().expect("grab"));
     k.put("c").expect("put");

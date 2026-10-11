@@ -11,7 +11,7 @@ actor ByteStore {
 }
 
 fn main() -> i64 {
-    let store = spawn ByteStore(buf: bytes.new());
+    let store = spawn ByteStore { buf: bytes.new() };
     var i: i64 = 0;
     while i < 100 {
         let packet = "overwrite-bytes-payload".to_bytes();

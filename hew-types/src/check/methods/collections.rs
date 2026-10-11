@@ -278,24 +278,19 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let inner = Self::stream_element_type(type_args);
-        // Gate 2: lowering-capability check. The element-layout witness
-        // carries every describable element type through the layout recv
-        // entries; only elements the witness provably cannot describe
-        // (containers, handles, closures) fail closed here. Emit a
-        // user-facing diagnostic rather than the ICE-flavoured "missing
-        // runtime rewrite metadata" from require_builtin_runtime_symbol.
         let resolved_inner = self.subst.resolve(&inner);
-        if !matches!(resolved_inner, Ty::Var(_)) && !self.queue_elem_admissible(&resolved_inner) {
-            let reason = self.queue_elem_rejection_reason(&resolved_inner);
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`Stream<{}>` is not supported: {reason}",
-                    inner.user_facing()
-                ),
-            );
-            return Ty::Error;
+        if !matches!(resolved_inner, Ty::Var(_)) {
+            if let Some((kind, reason)) = self.element_admission_refusal(&resolved_inner) {
+                self.report_error(
+                    kind,
+                    span,
+                    format!(
+                        "`Stream<{}>` is not supported: {reason}",
+                        inner.user_facing()
+                    ),
+                );
+                return Ty::Error;
+            }
         }
         let receiver_ty = Ty::stream(inner.clone());
         let Some(sig) = lookup_builtin_method_sig(&receiver_ty, method) else {
@@ -1452,203 +1447,6 @@ impl Checker {
                  remains fail-closed"
             ),
         );
-    }
-
-    /// Channel/stream element admission for the layout-witness queue path
-    /// (`Sender<T>`/`Receiver<T>`/`Stream<T>` recv/send). An element is
-    /// admissible when the codegen element witness can describe it:
-    ///
-    /// - `string` / `bytes` — content-encoded queue envelopes;
-    /// - Copy-eligible primitives and `BitCopy` records ([`primitive_copy_layout`]
-    ///   resolves a fixed width) — Plain raw-representation envelopes;
-    /// - heap-owning value types the §1.1 class rule gives an ownership
-    ///   obligation ([`Checker::element_owns_heap`] — the same class the
-    ///   backend reads for the element's clone and destroy actions, so the
-    ///   checker and the witness cannot disagree about one element type);
-    /// - monomorphic machine values — machines are tagged-union value types
-    ///   whose state-variant layout is registered in `type_defs.variants`,
-    ///   so the owned-element queue witness can describe them (with the same
-    ///   no-unowned-container requirement as enum channel elements).
-    ///   Generic machine instantiations are excluded (the substrate
-    ///   canonicalizes to one bare-named layout; per-instantiation witnesses
-    ///   do not exist).
-    ///
-    /// Everything else fails closed: builtin container/handle nominals
-    /// (`Vec`/`HashMap`/streams/channels/pids), closures, and any type
-    /// without a clone/drop thunk path. `BitCopy` enums ride the
-    /// owned-element authority's record/enum admission and are lowered
-    /// Plain by the witness (no heap leaf → no thunks), which is the
-    /// correct Copy semantics.
-    pub(in crate::check) fn queue_elem_admissible(&self, elem_ty: &Ty) -> bool {
-        match elem_ty {
-            // String/bytes are content-encoded envelopes; unconstrained
-            // numeric literals default to i64/f64 (Plain 8-byte envelopes)
-            // at literal-defaulting time, so a queue element constrained
-            // only by a literal (`tx.send(42)`) must not be rejected
-            // before defaulting runs.
-            Ty::String | Ty::Bytes | Ty::IntLiteral | Ty::FloatLiteral => true,
-            // Monomorphic machine values travel the owned-element queue
-            // witness: machines are tagged-union value types registered in
-            // `type_defs.variants`, satisfying the same thunk-path
-            // requirements as enums. Generic machine instantiations are
-            // refused (canonicalised to one bare-named decl layout; no
-            // per-instantiation witness exists).
-            Ty::Named { head, args } if head.builtin().is_none() => {
-                if let Some(type_def) = self.head_type_def(*head) {
-                    if matches!(type_def.kind, TypeDefKind::Machine) {
-                        // Generic instantiation: no per-instantiation layout.
-                        if !args.is_empty() {
-                            return false;
-                        }
-                        // Monomorphic: apply the same no-unowned-container
-                        // requirement as for enum channel elements.
-                        return !self.queue_element_holds_collection(
-                            elem_ty,
-                            &HashSet::new(),
-                            &mut HashSet::new(),
-                        );
-                    }
-                }
-                self.queue_element_describable(elem_ty)
-            }
-            // Builtin container/handle nominals (`Vec`/`HashMap`/`HashSet`/
-            // `Rc`/handles/...) can never ride the element-layout queue
-            // witness: their ownership lives in a runtime context the queue
-            // cannot clone or drop. This stays in lockstep with
-            // `queue_elem_rejection_reason`, which rejects every `builtin:
-            // Some(_)`. A nested-container Vec ELEMENT is admitted for
-            // copy-in push, but that is a Vec-storage property, not a queue
-            // property, and must not leak here. Primitives (`i64`/`bool`/`char`/...) are dedicated `Ty`
-            // variants (not `Ty::Named`), so they remain queue-admissible via
-            // the `_` arm's `primitive_copy_layout` check.
-            //
-            // A callable owns a heap environment the envelope has no ingress
-            // for, which `queue_elem_rejection_reason` states in the same
-            // words; every other shape is admitted on its value class.
-            Ty::Named {
-                head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
-                ..
-            }
-            | Ty::Function { .. }
-            | Ty::Closure { .. } => false,
-            _ => self.queue_element_describable(elem_ty),
-        }
-    }
-
-    /// Can the element-layout queue witness describe this element?
-    ///
-    /// It can when the element has a value class at all — the class carries the
-    /// clone and destroy actions the envelope needs — and holds no builtin
-    /// collection. A type with no class (an abstract parameter among them) has
-    /// no witness either and stays fail-closed here; the collection rule is the
-    /// mailbox's own, stated on [`Self::queue_element_holds_collection`].
-    pub(super) fn queue_element_describable(&self, elem_ty: &Ty) -> bool {
-        self.element_value_facts(elem_ty).is_ok()
-            && !self.queue_element_holds_collection(elem_ty, &HashSet::new(), &mut HashSet::new())
-    }
-
-    /// Explain why a channel/stream element type was rejected by
-    /// [`Self::queue_elem_admissible`], for the fail-closed diagnostic.
-    /// Completes "`{Container}<X>` is not supported: {clause}".
-    pub(in crate::check) fn queue_elem_rejection_reason(&self, elem_ty: &Ty) -> String {
-        if let Ty::Named {
-            head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
-            ..
-        } = elem_ty
-        {
-            return "builtin container and handle types cannot ride the \
-                    element-layout queue witness; their ownership lives in a \
-                    runtime context the queue cannot clone or drop"
-                .to_string();
-        }
-        if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }) {
-            return "function values cannot be queue elements".to_string();
-        }
-        if self.queue_element_holds_collection(elem_ty, &HashSet::new(), &mut HashSet::new()) {
-            return "it holds a `Vec`/`HashMap`/`HashSet` field, and the mailbox envelope \
-                    has no per-message release for one"
-                .to_string();
-        }
-        self.element_admission_refusal(elem_ty).map_or_else(
-            || "it has no value class the queue witness can describe".to_string(),
-            |(_, refusal)| refusal,
-        )
-    }
-
-    /// True when `ty` (or a transitive record/enum member) is — or holds a
-    /// field of — a builtin collection (`Vec`/`HashMap`/`HashSet`).
-    ///
-    /// This is a MAILBOX rule, not a value-class one: the envelope deep-copies
-    /// an element in but has no per-message release that recurses through a
-    /// collection field, so a collection-bearing message would leak the field
-    /// on every send. Vec storage admits the same shape (the collection's own
-    /// destroy action releases it); the queue does not, until the mailbox
-    /// release path recurses. The recursive enum's own self-edge through a
-    /// `Vec` (`Array(Vec<RedisReply>)`) is the one admitted exception.
-    pub(super) fn queue_element_holds_collection(
-        &self,
-        ty: &Ty,
-        roots: &HashSet<String>,
-        visiting: &mut HashSet<String>,
-    ) -> bool {
-        match ty {
-            Ty::Named { head, args, .. } => {
-                let name = head.registry_key();
-                let builtin = head.builtin();
-                if matches!(
-                    builtin,
-                    Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet)
-                ) {
-                    // A collection whose every type argument is a `root` (the
-                    // recursing element type) is the admitted self-recursion
-                    // (`enum R { A(Vec<R>) }`): the enum's own owned thunk
-                    // recurses through this field. Any other container element
-                    // is unowned (no thunk path) — reject.
-                    return !args.iter().all(|a| match a {
-                        Ty::Named { head, .. } => {
-                            roots.iter().any(|root| root == head.registry_key())
-                        }
-                        _ => false,
-                    });
-                }
-                if builtin.is_some() {
-                    // Other builtins (Option/Result/Rc/handles) carry their own
-                    // ABI; recurse only through their type arguments.
-                    return args
-                        .iter()
-                        .any(|a| self.queue_element_holds_collection(a, roots, visiting));
-                }
-                if !visiting.insert(name.to_string()) {
-                    // Self-recursive edge on a user type: the recursion through a
-                    // user record/enum is finite by construction here (it only
-                    // recurses once per name). It carries no bare container.
-                    return false;
-                }
-                let result = self.head_type_def(*head).is_some_and(|td| {
-                    td.fields
-                        .values()
-                        .any(|fty| self.queue_element_holds_collection(fty, roots, visiting))
-                        || td.variants.values().any(|variant| match variant {
-                            VariantDef::Unit => false,
-                            VariantDef::Tuple(tys) => tys
-                                .iter()
-                                .any(|t| self.queue_element_holds_collection(t, roots, visiting)),
-                            VariantDef::Struct(fields) => fields.iter().any(|(_, t)| {
-                                self.queue_element_holds_collection(t, roots, visiting)
-                            }),
-                        })
-                });
-                visiting.remove(name);
-                result
-            }
-            Ty::Tuple(elems) => elems
-                .iter()
-                .any(|e| self.queue_element_holds_collection(e, roots, visiting)),
-            Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.queue_element_holds_collection(inner, roots, visiting)
-            }
-            _ => false,
-        }
     }
 
     pub(super) fn check_runtime_vec_method_from_source(

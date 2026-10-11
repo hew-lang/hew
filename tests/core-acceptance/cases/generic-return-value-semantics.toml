@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-return-value-semantics"
+intent = "Borrowed generic returns copy ordinary values through direct, forwarded and callable applications, while an explicit consume parameter transfers an affine value."
+source = "cases/generic-return-value-semantics.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n7\nretained\nretained\ncallback\ncallback\nclosed=9\n"
+exit = 0

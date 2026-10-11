@@ -158,7 +158,7 @@ fn test_recv_reports_an_orderly_eof_as_none() {
         .Ok(value) => value,
         .Err(error) => panic("network operation failed"),
     };
-    let server = listener.accept();
+    let server = listener.accept().expect("accept");
     // Seed a failure in the shared status slot: an orderly EOF must not
     // report an earlier operation's errno as this read's error.
     match net.connect("127.0.0.1:1") {
@@ -203,7 +203,7 @@ fn test_recv_delivers_payload_bytes_unchanged() {
         .Ok(value) => value,
         .Err(error) => panic("network operation failed"),
     };
-    let server = listener.accept();
+    let server = listener.accept().expect("accept");
     client.send("ping".to_bytes()).expect("send");
     match server.recv() {
         .Some(data) => assert(utf8.decode(data).expect("utf-8 payload") == "ping"),
@@ -228,7 +228,7 @@ fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowi
         .Ok(value) => value,
         .Err(error) => panic("network operation failed"),
     };
-    let server = listener.accept();
+    let server = listener.accept().expect("accept");
     match client.set_read_timeout(-9223372036854775807) {
         .Ok(()) => {}
         .Err(_) => panic(f"negative read-timeout clear failed"),

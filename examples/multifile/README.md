@@ -3,18 +3,20 @@
 Three progressively larger examples that demonstrate how Hew's module system
 scales from a single file to a layered directory structure.
 
-In an application package, `hew.toml` names `main.hew` (implicitly or through
-`[package] main`) and the primary commands are simply `hew check`, `hew run`,
-and `hew build`. These three directories are documentation fixtures without
-individual manifests, so their command blocks name each entry file explicitly.
+Each directory is a small package: its `hew.toml` names the package, and a
+directory module such as `shapes/` exists because it sits inside one. Files
+outside a package are always single-file modules (HEW-SPEC-2026 §3.5.1). The
+manifest names `main.hew` implicitly, so `hew check`, `hew run` and
+`hew build` work bare inside each directory; the command blocks below name
+each entry file so they also run from the repository root.
 
 ## Examples at a glance
 
-| # | Directory | What it teaches |
-|---|-----------|-----------------|
-| 1 | `01_shapes/` | Directory-form module; peer files contribute types + trait impls |
-| 2 | `02_geometry/` | Peer-file type sharing; selective `import mod.{A, B}` |
-| 3 | `03_text_stats/` | Two-level hierarchy; `import parent;` vs `import parent.child;` |
+| #   | Directory        | What it teaches                                                  |
+| --- | ---------------- | ---------------------------------------------------------------- |
+| 1   | `01_shapes/`     | Directory-form module; peer files contribute types + trait impls |
+| 2   | `02_geometry/`   | Peer-file type sharing; selective `import mod.{A, B}`            |
+| 3   | `03_text_stats/` | Two-level hierarchy; `import parent;` vs `import parent.child;`  |
 
 ---
 
@@ -45,12 +47,14 @@ println(shapes.render(c));   // "Circle(r=5)"
 ```
 
 Run it:
+
 ```sh
 hew run   examples/multifile/01_shapes/main.hew
 hew check examples/multifile/01_shapes/main.hew
 ```
 
 Expected output:
+
 ```
 Circle(r=5)
 Rectangle(4x3)
@@ -87,18 +91,20 @@ println(manhattan(o, p));        // 7
 
 ### Import style comparison
 
-| Style | Syntax | Notes |
-|-------|--------|-------|
-| Bare | `import geo;` | All `pub` names in scope; also available as `geo.name(...)`. No false-positive warning when functions are called. |
-| Selective | `import geo.{Point, manhattan}` | Only named symbols enter scope. Preferred when callers only need a subset. |
+| Style     | Syntax                          | Notes                                                                                                             |
+| --------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Bare      | `import geo;`                   | All `pub` names in scope; also available as `geo.name(...)`. No false-positive warning when functions are called. |
+| Selective | `import geo.{Point, manhattan}` | Only named symbols enter scope. Preferred when callers only need a subset.                                        |
 
 Run it:
+
 ```sh
 hew run   examples/multifile/02_geometry/main.hew
 hew check examples/multifile/02_geometry/main.hew
 ```
 
 Expected output:
+
 ```
 origin  = (0, 0)
 p       = (3, 4)
@@ -135,12 +141,14 @@ This means callers opt into sub-modules explicitly — a standard approach
 for large packages where only a fraction of callers need the deeper API.
 
 Run it:
+
 ```sh
 hew run   examples/multifile/03_text_stats/main.hew
 hew check examples/multifile/03_text_stats/main.hew
 ```
 
 Expected output:
+
 ```
 characters : 19
 is_empty   : false
@@ -155,7 +163,7 @@ first word : the
 
 The compiler's unused-import checker currently tracks whether an import is
 **used as a qualified call** (`mod.func(...)`) but does **not** count
-unqualified type construction or trait usage as evidence of use.  Concretely:
+unqualified type construction or trait usage as evidence of use. Concretely:
 
 ```hew
 import shapes.{Circle};    // <-- warning: "unused import: shapes"
@@ -164,7 +172,7 @@ let c = Circle { ... };    //     even though Circle came from this import
 
 **Workaround:** ensure at least one imported name is also called as a
 function (`shapes.make_circle(...)`, or add the function to the selective
-list).  Using a bare import (`import shapes;`) with a qualified call
+list). Using a bare import (`import shapes;`) with a qualified call
 (`shapes.some_fn(...)`) is the most reliable style until this is fixed.
 
 This affects both import forms: bare and selective.

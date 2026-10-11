@@ -1006,7 +1006,7 @@ fn no_warn_unused_spawn() {
     let (_, warnings) = parse_and_check(concat!(
         "actor Worker { let count: i32;\n",
         "    receive fn work() {} }\n",
-        "fn main() { let _w = spawn Worker(count: 0); }\n",
+        "fn main() { let _w = spawn Worker { count: 0 }; }\n",
     ));
     assert!(
         !warnings
@@ -2947,7 +2947,7 @@ receive fn compute(n: i32) {
 }
 }
 fn main() {
-let w = spawn Worker();
+let w = spawn Worker;
 w.compute(10);
 }
 ";

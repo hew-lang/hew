@@ -25,7 +25,7 @@ actor Countdown {
 
 fn main() {
     let (done, finished) = stream.pipe(1).expect("done");
-    let count = spawn Countdown(done: done);
+    let count = spawn Countdown { done: done };
     let _ = count.tick(10, count);
     // The first call returns after one hop; the base case reports the rest.
     finished.recv();

@@ -27,5 +27,5 @@ message = "E_MACHINE_REDUNDANT_TARGET: the body of a transition to `On` repeats 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
 line = 53
-column = 38
+column = 41
 message = "E_MACHINE_REDUNDANT_TARGET: the body of a transition to `Filled` repeats `Filled`"

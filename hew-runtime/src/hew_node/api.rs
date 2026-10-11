@@ -14,6 +14,7 @@ use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::vec::HewVec;
+use hew_cabi::node::NodeFailure;
 use hew_cabi::string::{string_as_str, string_to_cstring, HewString};
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::ptr;
@@ -48,19 +49,19 @@ unsafe fn parse_connect_target(addr: *const c_char) -> Option<(Option<u16>, CStr
 pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_char) -> c_int {
     if node.is_null() || addr.is_null() {
         set_last_error("hew_node_connect: node or addr is null");
-        return -1;
+        return NodeFailure::Refused as c_int;
     }
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &mut *node };
     if node.transport.is_null() || node.conn_mgr.is_null() {
         set_last_error("hew_node_connect: node is not started");
-        return -1;
+        return NodeFailure::Refused as c_int;
     }
 
     // SAFETY: addr pointer is non-null and valid by caller contract.
     let Some((expected_peer_node_id, target_addr)) = (unsafe { parse_connect_target(addr) }) else {
         set_last_error("hew_node_connect: invalid connect target");
-        return -1;
+        return NodeFailure::Config as c_int;
     };
 
     // SAFETY: transport pointer validated above.
@@ -68,18 +69,27 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
     // SAFETY: valid transport vtable pointer from transport object.
     let Some(ops) = (unsafe { t.ops.as_ref() }) else {
         set_last_error("hew_node_connect: transport ops are null");
-        return -1;
+        return NodeFailure::Refused as c_int;
     };
     let Some(connect_fn) = ops.connect else {
         set_last_error("hew_node_connect: transport connect op missing");
-        return -1;
+        return NodeFailure::Refused as c_int;
     };
 
     // SAFETY: transport impl and C string are valid.
+    let _ = crate::stream_error::take_last_error();
+    // SAFETY: transport and target address remain live for this connect.
     let conn_id = unsafe { connect_fn(t.r#impl, target_addr.as_ptr()) };
     if conn_id == HEW_CONN_INVALID {
-        set_last_error("hew_node_connect: transport connect failed");
-        return -1;
+        let kind = crate::stream_error::take_last_error_kind();
+        let message = crate::stream_error::take_last_error()
+            .unwrap_or_else(|| "hew_node_connect: transport connect failed".into());
+        set_last_error(message);
+        return if kind == crate::stream_error::IO_ERROR_KIND_PERMISSION_DENIED {
+            NodeFailure::Refused as c_int
+        } else {
+            NodeFailure::Unreachable as c_int
+        };
     }
     if let Some(expected) = expected_peer_node_id {
         // SAFETY: conn_mgr is live and conn_id was just returned by this node's
@@ -92,7 +102,7 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
                 // been transferred to the connection manager.
                 unsafe { close_fn(t.r#impl, conn_id) };
             }
-            return -1;
+            return NodeFailure::Refused as c_int;
         }
     }
 
@@ -116,7 +126,7 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
             || "hew_node_connect: failed to add connection".to_string(),
             |detail| format!("hew_node_connect: failed to add connection: {detail}"),
         ));
-        return -1;
+        return NodeFailure::Refused as c_int;
     }
     // SAFETY: conn_mgr and conn_id are valid on successful add.
     let _ = unsafe {
@@ -256,9 +266,8 @@ fn merge_start_env_into_config(
 #[derive(Debug)]
 pub struct HewNodeConfig {
     pub(super) bind: *const HewString,
-    pub(super) transport: *const HewString,
+    pub(super) transport: u8,
     pub(super) key: *const HewString,
-    pub(super) trust: *const HewString,
     pub(super) peers: *mut HewVec,
     pub(super) seeds: *mut HewVec,
 }
@@ -269,29 +278,27 @@ static NODE_CONFIG_TRANSACTION: std::sync::LazyLock<Mutex<()>> =
     std::sync::LazyLock::new(|| Mutex::new(()));
 
 const _: () = {
-    assert!(std::mem::size_of::<HewNodeConfig>() == 6 * std::mem::size_of::<usize>());
+    assert!(std::mem::size_of::<HewNodeConfig>() == 5 * std::mem::size_of::<usize>());
     assert!(std::mem::offset_of!(HewNodeConfig, bind) == 0);
     assert!(std::mem::offset_of!(HewNodeConfig, transport) == std::mem::size_of::<usize>());
     assert!(std::mem::offset_of!(HewNodeConfig, key) == 2 * std::mem::size_of::<usize>());
-    assert!(std::mem::offset_of!(HewNodeConfig, trust) == 3 * std::mem::size_of::<usize>());
-    assert!(std::mem::offset_of!(HewNodeConfig, peers) == 4 * std::mem::size_of::<usize>());
-    assert!(std::mem::offset_of!(HewNodeConfig, seeds) == 5 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, peers) == 3 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, seeds) == 4 * std::mem::size_of::<usize>());
 };
 
 struct ConsumedNodeConfig {
     bind: *const HewString,
-    transport: *const HewString,
+    transport: u8,
     key: *const HewString,
-    trust: *const HewString,
     peers: *mut HewVec,
     seeds: *mut HewVec,
 }
 
 impl Drop for ConsumedNodeConfig {
     fn drop(&mut self) {
-        for field in [self.bind, self.transport, self.key, self.trust] {
+        for field in [self.bind, self.key] {
             if !field.is_null() {
-                // SAFETY: this owner is created only from the six moved fields
+                // SAFETY: this owner is created only from the moved managed fields
                 // of one NodeConfig and drops each managed string once.
                 unsafe { crate::string::hew_string_drop(field.cast_mut()) };
             }
@@ -385,7 +392,6 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
         bind: config.bind,
         transport: config.transport,
         key: config.key,
-        trust: config.trust,
         peers: config.peers,
         seeds: config.seeds,
     };
@@ -393,9 +399,13 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
     let Ok(bind) = (unsafe { config_string(owned.bind, "bind") }) else {
         return -1;
     };
-    // SAFETY: each helper validates its managed source handle before borrowing.
-    let Ok(transport) = (unsafe { config_string(owned.transport, "transport") }) else {
-        return -1;
+    let transport = match owned.transport {
+        0 => c"tcp",
+        1 => c"quic-mesh",
+        _ => {
+            set_last_error("Node::start: invalid NodeTransport tag");
+            return NodeFailure::Config as c_int;
+        }
     };
     let key = if owned.key.is_null() {
         // The managed empty-string representation is a null handle. This is the
@@ -409,10 +419,6 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
         };
         key
     };
-    // SAFETY: each helper validates its managed source handle before borrowing.
-    let Ok(trust) = (unsafe { config_string(owned.trust, "trust") }) else {
-        return -1;
-    };
     // SAFETY: the helper validates and balances every borrowed vector string.
     let Ok(peers) = (unsafe { config_strings(owned.peers, "peers") }) else {
         return -1;
@@ -421,21 +427,13 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
     let Ok(seeds) = (unsafe { config_strings(owned.seeds, "seeds") }) else {
         return -1;
     };
-    if trust != "pinned" {
-        set_last_error("Node::start: NodeConfig.trust must be pinned");
-        return -1;
-    }
-    let Ok(transport) = CString::new(transport) else {
-        set_last_error("Node::start: transport contains NUL");
-        return -1;
-    };
     let key = if key.is_empty() {
         None
     } else if let Ok(key) = CString::new(key) {
         Some(key)
     } else {
         set_last_error("Node::start: key contains NUL");
-        return -1;
+        return NodeFailure::Key as c_int;
     };
     let mut peer_credentials = Vec::with_capacity(peers.len());
     for peer in peers {
@@ -443,7 +441,7 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
             peer_credentials.push(peer);
         } else {
             set_last_error("Node::start: peer credential contains NUL");
-            return -1;
+            return NodeFailure::Key as c_int;
         }
     }
     let Ok(bind_c) = CString::new(bind.clone()) else {
@@ -467,19 +465,23 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
     // fields to it. This is the only public path that stages these low-level
     // operations, and every error below restores the empty Building state.
     if reset_node_config_staging().is_err() {
-        return -1;
+        return NodeFailure::Refused as c_int;
     }
     let staged = (|| {
         // SAFETY: the C string lives until this closure returns; the callee
         // copies its selection into the locked staging record.
         if unsafe { hew_node_api_set_transport(transport.as_ptr()) } != 0 {
-            return Err(-1);
+            return Err(NodeFailure::Refused as c_int);
         }
         if let Some(key) = key.as_ref() {
             // SAFETY: the key C string lives for this complete transaction.
             if unsafe { hew_node_api_load_keys(key.as_ptr()) } != 0 {
-                return Err(-1);
+                return Err(NodeFailure::Key as c_int);
             }
+        }
+        if key.is_none() {
+            set_last_error("Node::start: a stable identity key is required");
+            return Err(NodeFailure::Key as c_int);
         }
         for (index, credential) in peer_credentials.iter().enumerate() {
             let Ok(slot) = u16::try_from(index + 1) else {
@@ -489,27 +491,29 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
             // SAFETY: the credential C string lives for this transaction; the
             // low-level call copies and validates it before returning.
             if unsafe { hew_node_api_allow_peer(slot, credential.as_ptr()) } != 0 {
-                return Err(-1);
+                return Err(NodeFailure::Key as c_int);
             }
         }
         // SAFETY: the bind C string lives until the legacy start call has read it.
-        if unsafe { hew_node_api_start(bind_c.as_ptr()) } != 0 {
-            return Err(-1);
+        let status = unsafe { hew_node_api_start(bind_c.as_ptr()) };
+        if status != 0 {
+            return Err(status);
         }
         Ok(())
     })();
-    if staged.is_err() {
+    if let Err(status) = staged {
         let _ = reset_node_config_staging();
-        return -1;
+        return status;
     }
 
     for seed in seed_addresses {
         // SAFETY: each seed C string is live for the duration of this call.
-        if unsafe { hew_node_api_connect(seed.as_ptr()) } != 0 {
+        let status = unsafe { hew_node_api_connect(seed.as_ptr()) };
+        if status != 0 {
             // SAFETY: a successful start above owns the singleton public node;
             // shutdown releases it and resets its staging state.
             unsafe { node_api_shutdown_inner() };
-            return -1;
+            return status;
         }
     }
     0
@@ -592,7 +596,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             Err(msg) => {
                 eprintln!("hew: {msg}");
                 set_last_error(msg);
-                return -1;
+                return NodeFailure::Key as c_int;
             }
         };
         // SAFETY: addr was null-checked above and is a valid C string.
@@ -731,7 +735,7 @@ pub unsafe extern "C" fn hew_node_api_connect(addr: *const c_char) -> c_int {
         let node = *guard as *mut HewNode;
         if node.is_null() {
             set_last_error("Node::connect: no active node");
-            return -1;
+            return NodeFailure::Refused as c_int;
         }
         // SAFETY: node and addr are non-null and validated above.
         unsafe { hew_node_connect(node, addr) }

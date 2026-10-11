@@ -22,5 +22,5 @@ actor B {
 
 fn main() {
     let w = spawn W;
-    let b = spawn B(out: w);
+    let b = spawn B { out: w };
 }

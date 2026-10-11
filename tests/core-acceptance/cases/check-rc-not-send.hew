@@ -11,7 +11,7 @@ actor Sink {
 }
 
 fn main() {
-    let sink = spawn Sink();
+    let sink = spawn Sink;
     match sink.take(Rc.new(3)) {
         .Ok(total) => println(total),
         .Err(_) => panic("send failed"),

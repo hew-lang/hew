@@ -310,7 +310,6 @@ pub enum RuntimeCallFamily {
     // the Stream note below); `try_send` is its non-parking peer.
     SinkClone,
     SinkClose,
-    SinkFinish,
     /// `hew_sink_peer_closed(sink) -> i32` — a `receive gen fn` pump's
     /// per-iteration peer-closed check (decision 6): 1 once the
     /// consumer stream has closed/detached, so the pump breaks its loop

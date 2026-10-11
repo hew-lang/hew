@@ -1,6 +1,6 @@
-import "../../hew/machine_value_import_support/file_gate.hew";
+import "machine_value_import_support/file_gate.hew";
 
-import tests.hew.machine_value_import_support.package_gate as remote;
+import machine_value_import_support.package_gate as remote;
 
 fn imported_label(value: remote.Marker) -> string {
     match value {

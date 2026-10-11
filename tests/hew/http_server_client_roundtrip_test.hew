@@ -56,7 +56,7 @@ fn test_server_client_roundtrip_returns_200_and_echoes_path() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
             let port = http.server_port(server);
-            let client = spawn Client(url: f"http://127.0.0.1:{port}/ping", status: 0, body: "");
+            let client = spawn Client { url: f"http://127.0.0.1:{port}/ping", status: 0, body: "" };
             let request = fork client.fetch(0);
             let req = server.accept();
             let path = req.path();

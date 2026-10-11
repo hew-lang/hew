@@ -40,7 +40,7 @@ fn scope_recovery_keeps_result_values_and_owned_failure_binding() {
     else {
         panic!("expected scope recovery, got {:?}", value.kind);
     };
-    let HirExprKind::ScopeDeadline { duration, body } = &scope.kind else {
+    let HirExprKind::ScopeDeadline { duration, body, .. } = &scope.kind else {
         panic!("expected a scope with a deadline");
     };
     assert_eq!(duration.ty, ResolvedTy::Duration);

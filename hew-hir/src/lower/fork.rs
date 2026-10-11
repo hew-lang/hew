@@ -206,6 +206,7 @@ impl LowerCtx {
         &mut self,
         body: HirBlock,
         captures: Vec<HirClosureCapture>,
+        result_lifetime: crate::HirTaskScopeResult,
     ) -> HirExpr {
         let task_ty = ResolvedTy::Task(Box::new(body.ty.clone()));
         let span = body.span.clone();
@@ -214,6 +215,7 @@ impl LowerCtx {
                 body,
                 captures,
                 task_ty: task_ty.clone(),
+                result_lifetime,
             },
             task_ty,
             IntentKind::Consume,
@@ -237,11 +239,15 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn lower_fork_invocation(&mut self, source: &Spanned<Expr>) -> HirExpr {
+    pub(super) fn lower_fork_invocation(
+        &mut self,
+        source: &Spanned<Expr>,
+        result_lifetime: crate::HirTaskScopeResult,
+    ) -> HirExpr {
         let mut statements = Vec::new();
         let (call, captures) = self.prepare_fork_call(source, &mut statements);
         let body = self.fork_result_block(Vec::new(), call, source.1.clone());
-        let child = self.fork_body(body, captures);
+        let child = self.fork_body(body, captures, result_lifetime);
         let block = self.fork_result_block(statements, child, source.1.clone());
         let ty = block.ty.clone();
         self.make_expr(
@@ -361,6 +367,7 @@ impl LowerCtx {
         sources: &[Spanned<Expr>],
         output_ty: ResolvedTy,
         span: Span,
+        result_lifetime: crate::HirTaskScopeResult,
     ) -> HirExpr {
         let mut parent_statements = Vec::new();
         let mut batch_captures = Vec::new();
@@ -371,7 +378,7 @@ impl LowerCtx {
             batch_captures.extend(captures.iter().cloned());
             let output_ty = call.ty.clone();
             let body = self.fork_result_block(Vec::new(), call, source.1.clone());
-            let child = self.fork_body(body, captures);
+            let child = self.fork_body(body, captures, result_lifetime);
             let binding = self.fork_temporary(child, true, &mut batch_statements);
             let operand = self.fork_binding_ref(&binding, IntentKind::Consume);
             results.push(self.make_expr(
@@ -408,7 +415,7 @@ impl LowerCtx {
             self.fork_binding_ref(&vector, IntentKind::Consume)
         };
         let batch_body = self.fork_result_block(batch_statements, result, span.clone());
-        let batch = self.fork_body(batch_body, batch_captures);
+        let batch = self.fork_body(batch_body, batch_captures, result_lifetime);
         let block = self.fork_result_block(parent_statements, batch, span.clone());
         let ty = block.ty.clone();
         self.make_expr(HirExprKind::Block(block), ty, IntentKind::Consume, span)

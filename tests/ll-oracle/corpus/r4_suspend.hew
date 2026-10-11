@@ -14,7 +14,7 @@ actor Adder {
 }
 
 fn main() {
-    let a = spawn Adder(base: 10);
+    let a = spawn Adder { base: 10 };
     let _ = a.set_base(100);
     let r = a.add(42);
     match r {

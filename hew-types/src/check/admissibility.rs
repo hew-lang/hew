@@ -764,7 +764,7 @@ impl Checker {
 
     /// The element type of a `Stream<T>` / `Sink<T>` receiver. A missing
     /// argument is a fresh inference variable: admission is checked once the
-    /// element is known (`queue_elem_admissible`), never on a partial type.
+    /// element is known (`element_admission_refusal`), never on a partial type.
     pub(super) fn stream_element_type(type_args: &[Ty]) -> Ty {
         type_args
             .first()

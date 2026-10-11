@@ -496,6 +496,8 @@ pub enum MeshError {
     Tls(String),
     /// Quinn endpoint or connection error.
     Quic(String),
+    /// The peer connection failed before its authenticated channel opened.
+    Connection(quinn::ConnectionError),
     /// Stream operation error.
     Stream(String),
     /// Datagram send/receive error.
@@ -525,6 +527,7 @@ impl std::fmt::Display for MeshError {
         match self {
             MeshError::Tls(s) => write!(f, "quic_mesh TLS error: {s}"),
             MeshError::Quic(s) => write!(f, "quic_mesh QUIC error: {s}"),
+            MeshError::Connection(error) => write!(f, "quic_mesh handshake: {error}"),
             MeshError::Stream(s) => write!(f, "quic_mesh stream error: {s}"),
             MeshError::Datagram(s) => write!(f, "quic_mesh datagram error: {s}"),
             MeshError::Closed(s) => write!(f, "quic_mesh connection closed: {s}"),
@@ -1356,7 +1359,20 @@ unsafe extern "C" fn quic_mesh_connect(impl_ptr: *mut c_void, address: *const c_
     match result {
         Ok(peer) => qmt.store_conn(QuicMeshConn::new(peer, true, &qmt.rt)),
         Err(e) => {
-            set_last_error(format!("quic_mesh connect: {e}"));
+            let kind = match &e {
+                MeshError::Connection(quinn::ConnectionError::TimedOut) => {
+                    crate::stream_error::IO_ERROR_KIND_TIMED_OUT
+                }
+                MeshError::Connection(_) | MeshError::Tls(_) => {
+                    crate::stream_error::IO_ERROR_KIND_PERMISSION_DENIED
+                }
+                _ => crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
+            };
+            crate::stream_error::set_last_error_with_errno_and_kind(
+                format!("quic_mesh connect: {e}"),
+                0,
+                kind,
+            );
             HEW_CONN_INVALID
         }
     }
@@ -2097,14 +2113,15 @@ impl Mesh {
     ///
     /// # Errors
     ///
-    /// Returns [`MeshError::Quic`] if the connection or mTLS handshake fails.
+    /// Returns [`MeshError::Quic`] on setup failure or [`MeshError::Connection`]
+    /// when the peer connection or authenticated handshake fails.
     pub async fn connect(&self, peer_addr: std::net::SocketAddr) -> Result<PeerConn, MeshError> {
         let conn = self
             .endpoint
             .connect(peer_addr, "hew-mesh.local")
             .map_err(|e| MeshError::Quic(format!("connect: {e}")))?
             .await
-            .map_err(|e| MeshError::Quic(format!("handshake: {e}")))?;
+            .map_err(MeshError::Connection)?;
 
         Ok(PeerConn::new(conn, StreamCap::default()))
     }

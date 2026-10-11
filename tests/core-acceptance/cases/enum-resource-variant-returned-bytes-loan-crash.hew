@@ -32,7 +32,7 @@ actor Runner {
 
 fn main() {
     let gate = spawn Gate;
-    let runner = spawn Runner(gate: gate);
+    let runner = spawn Runner { gate: gate };
     match runner.run(0) {
         .Ok(value) => println(f"ok={value}"),
         .Err(_) => println("bad"),

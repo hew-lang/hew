@@ -20,10 +20,19 @@
       "include": "#wire-annotations"
     },
     {
+      "include": "#legacy-syntax"
+    },
+    {
+      "include": "#paths"
+    },
+    {
       "include": "#function-definitions"
     },
     {
       "include": "#actors"
+    },
+    {
+      "include": "#callable-syntax"
     },
     {
       "include": "#keywords"
@@ -35,13 +44,7 @@
       "include": "#types"
     },
     {
-      "include": "#turbofish"
-    },
-    {
       "include": "#closures"
-    },
-    {
-      "include": "#glob-import"
     },
     {
       "include": "#operators"
@@ -240,24 +243,46 @@
     "keywords": {
       "patterns": [
         {
+          "comment": "Failure return `return error <expr>`. After `return`, `error` begins a failure return unless an operator, call, index, `?`, `as`, `else`, `handle` or terminator follows, in which case it stays an ordinary binding.",
+          "match": "\\b(return)\\s+(error)(?=\\s+(?!(?:as|else|handle)\\b)[A-Za-z0-9_\"'{.])",
+          "captures": {
+            "1": {
+              "name": "keyword.control.hew"
+            },
+            "2": {
+              "name": "keyword.control.failure.hew"
+            }
+          }
+        },
+        {
+          "comment": "Failure clause `-> T fails E`: `fails` after a return type, before the error type.",
+          "name": "keyword.control.failure.hew",
+          "match": "(?<=[\\w>\\])]\\s)\\s*\\bfails\\b(?=\\s+[A-Za-z_(\\[])"
+        },
+        {
           "comment": "`clone <operand>` — the eager copy-on-write cost operation. A contextual prefix operator, highlighted only in prefix position: preceded by a non-member, non-word char and followed by whitespace then an operand start. This deliberately skips `x.clone()`, `fn clone(`, `clone(args)`, and `clone = ...` where `clone` stays an ordinary identifier.",
           "name": "keyword.operator.clone.hew",
           "match": "(?<![.\\w])clone(?=\\s+[A-Za-z0-9_\"'\\[{])"
         },
         {
+          "comment": "The contextual keywords `state` and `from` as field labels in a field list (`{ state: s }`, `{ from, to }`, `{ to, from }`) are ordinary names. A lone `{ state }` stays the keyword: it is the block yielding the source state.",
+          "name": "variable.other.hew",
+          "match": "(?:(?<=[{,])|(?<=[{,]\\s))\\b(?:state|from)\\b(?=\\s*(?::(?!:)|,))|(?:(?<=,)|(?<=,\\s))\\b(?:state|from)\\b(?=\\s*})"
+        },
+        {
           "comment": "Control flow",
           "name": "keyword.control.hew",
-          "match": "\\b(after|await_restart|await|break|continue|defer|else|for|from|if|in|join|loop|match|return|scope|select|while|yield)\\b"
+          "match": "\\b(after|await|await_restart|break|continue|defer|else|for|from|if|in|loop|match|race|return|scope|select|while|yield)\\b"
         },
         {
           "comment": "Declarations",
           "name": "keyword.declaration.hew",
-          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|trait|type|var|where)\\b"
+          "match": "\\b(as|const|enum|extern|fn|gen|impl|import|indirect|let|package|pub|trait|type|var|where)\\b"
         },
         {
           "comment": "Actor and concurrency",
           "name": "keyword.actor.hew",
-          "match": "\\b(actor|fork|init|move|receive|spawn|this)\\b"
+          "match": "\\b(actor|fork|init|move|receive|spawn)\\b"
         },
         {
           "comment": "Supervisor",
@@ -267,7 +292,7 @@
         {
           "comment": "Supervisor strategy and overflow policy values",
           "name": "constant.language.strategy.hew",
-          "match": "\\b(brutal_kill|one_for_all|one_for_one|permanent|rest_for_one|simple_one_for_one|temporary|transient)\\b"
+          "match": "\\b(one_for_all|one_for_one|permanent|rest_for_one|simple_one_for_one|temporary|transient)\\b"
         },
         {
           "comment": "Wire protocol keywords",
@@ -295,9 +320,9 @@
           "match": "\\bNone\\b"
         },
         {
-          "comment": "Reserved but unimplemented — the parser rejects `race` until the spec's race expression lands. Highlight as invalid so users know it does not compile yet.",
+          "comment": "Removed/rejected keywords — parser explicitly rejects these with migration diagnostics. Highlight as invalid so users know these are not valid v0.6 syntax.",
           "name": "invalid.removed.hew",
-          "match": "\\brace\\b"
+          "match": "\\b(await_restart|brutal_kill|catch|cooperate|foreign|try)\\b"
         }
       ]
     },
@@ -334,7 +359,7 @@
         {
           "comment": "Concurrency types",
           "name": "storage.type.concurrency.hew",
-          "match": "\\b(RemotePid|Generator|Scope|Sink|Stream|Task)\\b"
+          "match": "\\b(Generator|RemotePid|Scope|Sink|Stream|Task)\\b"
         },
         {
           "comment": "Built-in trait names",
@@ -356,7 +381,20 @@
     "function-definitions": {
       "patterns": [
         {
-          "comment": "Generator function definition (gen fn, receive gen fn)",
+          "comment": "Consuming receiver; consume remains an identifier elsewhere.",
+          "name": "meta.parameter.receiver.hew",
+          "match": "\\b(consume)\\s+(self)\\b",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.receiver.hew"
+            },
+            "2": {
+              "name": "variable.language.self.hew"
+            }
+          }
+        },
+        {
+          "comment": "Generator function definition (gen fn and receive gen fn)",
           "match": "\\b((?:receive\\s+)?gen)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
             "1": {
@@ -533,25 +571,13 @@
         }
       ]
     },
-    "turbofish": {
+    "legacy-syntax": {
       "patterns": [
         {
-          "comment": "Turbofish type arguments in expression position: Ident::<T>(...), Vec::<i64>::new() (hew-parser postfix expressions). Scoped before #operators so the angle brackets are not mistaken for comparison operators.",
+          "comment": "Retired turbofish syntax: Vec::<T>(). The compiler reports E_LEGACY_TURBOFISH and suggests the migrated dotted form.",
+          "name": "invalid.removed.hew",
           "begin": "(::)(<)",
-          "beginCaptures": {
-            "1": {
-              "name": "keyword.operator.namespace.hew"
-            },
-            "2": {
-              "name": "punctuation.definition.typeparameters.begin.hew"
-            }
-          },
           "end": "(>)",
-          "endCaptures": {
-            "1": {
-              "name": "punctuation.definition.typeparameters.end.hew"
-            }
-          },
           "patterns": [
             {
               "include": "#types"
@@ -561,14 +587,39 @@
               "match": ","
             }
           ]
+        },
+        {
+          "comment": "Retired dotted glob import syntax: import a.b.*. The compiler reports E_IMPORT_GLOB_REMOVED.",
+          "name": "invalid.removed.hew",
+          "match": "\\.\\*"
+        },
+        {
+          "comment": "Retired :: path separator. The compiler reports E_PATH_LEGACY_SEPARATOR and suggests a dotted path.",
+          "name": "invalid.removed.hew",
+          "match": "::"
+        },
+        {
+          "name": "invalid.removed.hew",
+          "match": "\\basync\\s+gen\\s+fn\\b",
+          "comment": "Generator functions no longer use an async modifier."
+        },
+        {
+          "name": "invalid.removed.hew",
+          "match": "\\|\\s*after\\b",
+          "comment": "Timeouts use select or scope deadlines."
+        },
+        {
+          "name": "invalid.removed.hew",
+          "match": "\\bfor\\s+await\\b",
+          "comment": "Stream iteration uses plain for and waits for each item automatically."
         }
       ]
     },
     "closures": {
       "patterns": [
         {
-          "comment": "Closure parameters: |x|, |x, y|, |x: T|, move |x|, actor |x| (hew-parser closure parameters). Anchored to closure-introducing contexts (after = ( , [ => move actor) so bitwise-or `a | b | c`, or-patterns `A | B`, and logical-or `a || b` keep their operator scopes. Empty `||` closures intentionally stay logical-or to avoid mis-scoping `a || b`.",
-          "begin": "(?<=[=(,\\[]\\s*|=>\\s*|\\bmove\\s+|\\bactor\\s+)(\\|)(?!\\|)(?=[^|]*\\|)",
+          "comment": "Pipe closure parameters following an expression introducer, move, actor or a private capture list. Logical and bitwise operators keep their ordinary scopes.",
+          "begin": "(?<=[=(,\\[]\\s*|=>\\s*|\\bmove\\s+|\\bactor\\s+|\\bcapture\\s*\\([^)]*\\)\\s*)(\\|)(?!\\|)(?=[^|]*\\|)",
           "beginCaptures": {
             "1": {
               "name": "punctuation.definition.parameters.begin.hew"
@@ -600,19 +651,70 @@
         }
       ]
     },
-    "glob-import": {
+    "paths": {
       "patterns": [
         {
-          "comment": "Glob import wildcard: import a::b::* (hew-parser import paths). Matched before #operators so the trailing * is a wildcard, not arithmetic multiply. The `::*` sequence only occurs in glob imports — Hew dereference is prefix *expr, never path::*.",
-          "match": "(::)(\\*)",
+          "comment": "Explicit import selection syntax: import module.{Name, Other}. The import prefix prevents invalid value.{Name} expressions from receiving this scope.",
+          "name": "meta.import.selection.hew",
+          "begin": "\\b(import)(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\.\\{)",
+          "end": "(\\})",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.declaration.hew"
+            }
+          },
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.selection.end.hew"
+            }
+          },
+          "patterns": [
+            {
+              "match": "(\\.)(\\{)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.accessor.selection.hew"
+                },
+                "2": {
+                  "name": "punctuation.section.selection.begin.hew"
+                }
+              }
+            },
+            {
+              "include": "#keywords"
+            },
+            {
+              "name": "punctuation.accessor.path.hew",
+              "match": "\\.(?!\\{)"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#variables"
+            },
+            {
+              "name": "punctuation.separator.comma.hew",
+              "match": ","
+            }
+          ]
+        },
+        {
+          "comment": "Contextual enum variant: .Variant.",
+          "match": "(?<![A-Za-z0-9_])(\\.)([A-Z][a-zA-Z0-9_]*)\\b",
           "captures": {
             "1": {
-              "name": "keyword.operator.namespace.hew"
+              "name": "punctuation.accessor.variant.hew"
             },
             "2": {
-              "name": "keyword.operator.wildcard.hew"
+              "name": "entity.name.variant.hew"
             }
           }
+        },
+        {
+          "comment": "Dotted path segment: std.time, value.method.",
+          "name": "punctuation.accessor.path.hew",
+          "match": "(?<!\\.)\\.(?![.\\{])"
         }
       ]
     },
@@ -689,6 +791,11 @@
           "match": "[+\\-*/%]"
         },
         {
+          "comment": "Optional default: value ?? fallback",
+          "name": "keyword.operator.coalesce.hew",
+          "match": "\\?\\?"
+        },
+        {
           "comment": "Error propagation",
           "name": "keyword.operator.question.hew",
           "match": "\\?"
@@ -697,11 +804,6 @@
           "comment": "Logical not",
           "name": "keyword.operator.not.hew",
           "match": "!"
-        },
-        {
-          "comment": "Namespace separator",
-          "name": "keyword.operator.namespace.hew",
-          "match": "::"
         },
         {
           "comment": "Attribute / wire tag marker",
@@ -765,12 +867,79 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|clone|coalesce|consume|default|drop_new|drop_old|emit|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|pool|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
+          "match": "\\b(block|clone|coalesce|consume|default|drop_new|drop_old|emit|emits|error|events|export|fail|fails|fallback|handle|initial|intensity|json|mailbox|overflow|pool|reenter|repeated|stop|suspends|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Identifier (catch-all for variables, parameters, fields)",
           "name": "variable.other.hew",
           "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "callable-syntax": {
+      "patterns": [
+        {
+          "name": "meta.type.callable-capabilities.hew",
+          "begin": "\\b(fn)\\s*(\\[)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.declaration.hew"
+            },
+            "2": {
+              "name": "punctuation.section.brackets.begin.hew"
+            }
+          },
+          "end": "(\\])",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.brackets.end.hew"
+            }
+          },
+          "patterns": [
+            {
+              "name": "keyword.callable-capability.hew",
+              "match": "\\b(var|once|clone|suspends)\\b"
+            },
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        {
+          "name": "meta.closure.capture.hew",
+          "begin": "(?<![.\\w])(capture)\\s*(\\()(?=\\s*var\\b)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.closure.capture.hew"
+            },
+            "2": {
+              "name": "punctuation.section.parens.begin.hew"
+            }
+          },
+          "end": "(\\))",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.parens.end.hew"
+            }
+          },
+          "patterns": [
+            {
+              "name": "keyword.closure.capture-mutability.hew",
+              "match": "\\bvar\\b"
+            },
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#variables"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
         }
       ]
     }

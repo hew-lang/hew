@@ -48,7 +48,7 @@ fn calls_of(worker: Worker) -> i64 {
 
 #[test]
 fn halt_message_prevents_more_periodic_work() {
-    let worker = spawn Worker(running: true, ticks: 0, calls: 0);
+    let worker = spawn Worker { running: true, ticks: 0, calls: 0 };
     while ticks_of(worker) < 2 {
         sleep(10ms);
     }

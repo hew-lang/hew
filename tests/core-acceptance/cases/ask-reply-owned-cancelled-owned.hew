@@ -13,7 +13,7 @@ actor SlowReplier {
 
 fn main() -> i64 {
     let (open, gate) = stream.pipe(1).expect("gate");
-    let slow = spawn SlowReplier(gate: gate);
+    let slow = spawn SlowReplier { gate: gate };
     var timeouts: i64 = 0;
     for _ in 0 .. 1000 {
         let r = select {

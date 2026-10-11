@@ -6,7 +6,7 @@ actor Tagger {
 }
 
 fn main() -> i64 {
-    let t = spawn Tagger(unused: 0);
+    let t = spawn Tagger { unused: 0 };
     var i: i64 = 0;
     var sink: i64 = 0;
     while i < 50 {

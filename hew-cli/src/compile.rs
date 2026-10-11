@@ -18,7 +18,6 @@ use hew_compile::{
     inject_implicit_imports as frontend_inject_implicit_imports,
     line_map_from_source as frontend_line_map_from_source, parse_source as frontend_parse_source,
     typecheck_program as frontend_typecheck_program,
-    validate_imports_against_manifest as frontend_validate_imports_against_manifest,
 };
 #[cfg(test)]
 use hew_parser::ast::{ImportDecl, Item, Spanned};
@@ -317,15 +316,6 @@ fn push_frontend_diagnostics_json(diagnostics: &[FrontendDiagnostic]) {
 type ImportResolutionContext<'a> = hew_compile::ImportResolutionContext<'a>;
 
 #[cfg(test)]
-fn validate_imports_against_manifest(
-    items: &[Spanned<Item>],
-    manifest_deps: &[String],
-    package_name: Option<&str>,
-) -> Vec<String> {
-    frontend_validate_imports_against_manifest(items, manifest_deps, package_name)
-}
-
-#[cfg(test)]
 fn line_map_from_source(source: &str) -> Vec<usize> {
     frontend_line_map_from_source(source)
 }
@@ -367,34 +357,6 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
 mod tests {
     use super::*;
     use hew_types::{error::TypeErrorKind, module_registry::ModuleRegistry};
-
-    fn make_module_import(path: &[&str]) -> Spanned<Item> {
-        let decl = hew_parser::ast::ImportDecl {
-            path: hew_parser::ast::Path::from_spellings(path),
-            spec: None,
-            selection_trailing_comma: false,
-            module_alias: None,
-            file_path: None,
-            resolved_items: None,
-            resolved_item_source_paths: Vec::new(),
-            resolved_source_paths: Vec::new(),
-        };
-        (Item::Import(decl), 0..0)
-    }
-
-    fn make_file_import(file: &str) -> Spanned<Item> {
-        let decl = hew_parser::ast::ImportDecl {
-            path: hew_parser::ast::Path::from_spellings(&[]),
-            spec: None,
-            selection_trailing_comma: false,
-            module_alias: None,
-            file_path: Some(file.to_string()),
-            resolved_items: None,
-            resolved_item_source_paths: Vec::new(),
-            resolved_source_paths: Vec::new(),
-        };
-        (Item::Import(decl), 0..0)
-    }
 
     struct TestFixtureDir {
         path: PathBuf,
@@ -459,75 +421,6 @@ mod tests {
                 }
             })
             .collect()
-    }
-
-    #[test]
-    fn validate_no_manifest_allows_all() {
-        // When manifest exists but has no deps, undeclared imports are flagged.
-        let items = vec![make_module_import(&["mylib", "utils"])];
-        let errs = validate_imports_against_manifest(&items, &[], None);
-        assert_eq!(errs.len(), 1, "undeclared import should produce an error");
-    }
-
-    #[test]
-    fn validate_declared_dep_is_ok() {
-        let items = vec![make_module_import(&["mylib", "utils"])];
-        let deps = vec!["mylib::utils".to_string()];
-        let errs = validate_imports_against_manifest(&items, &deps, None);
-        assert!(errs.is_empty());
-    }
-
-    #[test]
-    fn validate_undeclared_dep_errors() {
-        let items = vec![make_module_import(&["mylib", "utils"])];
-        let deps: Vec<String> = vec!["mylib::other".to_string()];
-        let errs = validate_imports_against_manifest(&items, &deps, None);
-        assert_eq!(errs.len(), 1);
-        assert!(errs[0].contains("mylib.utils"));
-        assert!(errs[0].contains("hew add"));
-    }
-
-    #[test]
-    fn validate_stdlib_import_is_always_ok() {
-        // std.fs is a known stdlib module
-        let items = vec![make_module_import(&["std", "fs"])];
-        let deps: Vec<String> = vec![];
-        let errs = validate_imports_against_manifest(&items, &deps, None);
-        assert!(errs.is_empty(), "stdlib imports are always allowed");
-    }
-
-    #[test]
-    fn validate_file_import_is_not_validated() {
-        let items = vec![make_file_import("./lib.hew")];
-        let deps: Vec<String> = vec![];
-        let errs = validate_imports_against_manifest(&items, &deps, None);
-        assert!(
-            errs.is_empty(),
-            "file-path imports are not subject to manifest validation"
-        );
-    }
-
-    #[test]
-    fn validate_multiple_imports_reports_all_errors() {
-        let items = vec![
-            make_module_import(&["mylib", "a"]),
-            make_module_import(&["mylib", "b"]),
-            make_module_import(&["mylib", "c"]),
-        ];
-        let deps = vec!["mylib::a".to_string()];
-        let errs = validate_imports_against_manifest(&items, &deps, None);
-        assert_eq!(errs.len(), 2);
-    }
-
-    #[test]
-    fn validate_local_import_is_exempt() {
-        // Imports matching the package name are local and skip manifest validation.
-        let items = vec![make_module_import(&["myapp", "models"])];
-        let errs = validate_imports_against_manifest(&items, &[], Some("myapp"));
-        assert!(
-            errs.is_empty(),
-            "local imports should be exempt from manifest validation"
-        );
     }
 
     #[test]

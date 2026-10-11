@@ -2,8 +2,8 @@
 //!
 //! Runs commands to completion with captured output, or starts a child with
 //! inherited, null or piped stdio. A child's pipes become `Stream<bytes>` and
-//! `Sink<bytes>` owners; on Unix they wait on the I/O reactor, so a child's
-//! output is a select source. The child handle owns the process until it is
+//! `Sink<bytes>` owners; output waits on the I/O reactor and is a select source
+//! on every native host. The child handle owns the process until it is
 //! reaped: the PID cannot be reused while a signal can still name it, and the
 //! reaped status is cached so a second wait returns it again. A wait parks on
 //! a stream that ends when the child exits (see [`hew_process_exit_stream`]),
@@ -40,6 +40,8 @@ pub struct HewProcessResult {
 mod exit_watch;
 #[cfg(unix)]
 pub(crate) use exit_watch::ExitWatch;
+#[cfg(windows)]
+pub(crate) mod windows_pipe;
 
 /// Handle to a started child process. It owns the process until it is
 /// reaped and caches the status from then on. Concurrent waits share it, so
@@ -54,6 +56,8 @@ pub struct HewProcess {
 struct ChildState {
     child: std::process::Child,
     status: Option<ExitStatus>,
+    #[cfg(windows)]
+    output: [Option<std::fs::File>; 2],
 }
 
 impl std::fmt::Debug for HewProcess {
@@ -337,12 +341,36 @@ pub unsafe extern "C" fn hew_process_start(
     let Some(args) = (unsafe { hewvec_string_args(args, CONTEXT) }) else {
         return std::ptr::null_mut();
     };
+    #[cfg(windows)]
+    let output_modes = [stdout, stderr];
     let (Some(stdin), Some(stdout), Some(stderr)) = (
         stdio(stdin, CONTEXT),
         stdio(stdout, CONTEXT),
         stdio(stderr, CONTEXT),
     ) else {
         return std::ptr::null_mut();
+    };
+    #[cfg(windows)]
+    let mut output = [None, None];
+    #[cfg(windows)]
+    let (stdout, stderr) = {
+        let mut modes = [stdout, stderr];
+        for (index, code) in output_modes.into_iter().enumerate() {
+            if code == 2 {
+                match windows_pipe::output_pipe() {
+                    Ok((parent, child)) => {
+                        output[index] = Some(parent);
+                        modes[index] = Stdio::from(child);
+                    }
+                    Err(error) => {
+                        crate::set_last_error(format!("{CONTEXT}: create output pipe: {error}"));
+                        return std::ptr::null_mut();
+                    }
+                }
+            }
+        }
+        let [stdout, stderr] = modes;
+        (stdout, stderr)
     };
     let mut command = Command::new(&program);
     command
@@ -359,6 +387,8 @@ pub unsafe extern "C" fn hew_process_start(
                 state: std::sync::Mutex::new(ChildState {
                     child,
                     status: None,
+                    #[cfg(windows)]
+                    output,
                 }),
                 wait_error: std::sync::atomic::AtomicI32::new(0),
             }))
@@ -418,6 +448,12 @@ pub unsafe extern "C" fn hew_process_take_pipe(
 ) -> *mut HewStreamPair {
     // SAFETY: proc is a live HewProcess per caller contract.
     let mut state = unsafe { &*proc }.state.lock_or_recover();
+    #[cfg(windows)]
+    if which == 1 || which == 2 {
+        return state.output[(which - 1) as usize]
+            .take()
+            .map_or(std::ptr::null_mut(), crate::stream::child_pipe_stream);
+    }
     let child = &mut state.child;
     let pair = match which {
         0 => child

@@ -8,6 +8,7 @@ files.
 
 ```text
 examples/directory_module_demo/
+├── hew.toml
 ├── main.hew
 └── greeting/
     ├── greeting.hew
@@ -22,11 +23,12 @@ examples/directory_module_demo/
 
 Because both `hello()` and `target()` are reached through `greeting.*`, this
 example exercises peer-file merging instead of a simpler single-file import.
-In an application package, leave `[package] main` unset for this conventional
-`main.hew` layout and use bare `hew check`, `hew run`, and `hew build`. This
-checked-in directory is a documentation fixture without its own `hew.toml`, so
-the commands below name `main.hew` explicitly; its `import greeting;` pulls in
-the directory-form module and peer file automatically.
+Directory modules belong to a package, so the example carries a small
+`hew.toml`; without it `greeting/` would be a plain namespace and
+`import greeting;` would not be found. The manifest leaves `[package] main`
+unset for the conventional `main.hew` layout, so bare `hew check`, `hew run`
+and `hew build` work inside the directory; the commands below name
+`main.hew` so they also run from the repository root.
 
 ## Run from the repo root
 
@@ -42,8 +44,8 @@ Expected output:
 Hello from a merged directory module!
 ```
 
-`hew check` passes in v0.5.  `hew run` and `hew build` require string
-concatenation lowering, which lands in the v0.5 codegen milestone.  The
+`hew check` passes in v0.5. `hew run` and `hew build` require string
+concatenation lowering, which lands in the v0.5 codegen milestone. The
 directory-module resolution path (`import greeting;`, peer-file merge, and
 function-call lowering) is covered by the vertical-slice acceptance suite.
 

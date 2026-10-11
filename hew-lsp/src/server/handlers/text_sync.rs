@@ -9,16 +9,18 @@ use tower_lsp_server::ls_types::{
 
 use super::super::uri::FileUriExt;
 use super::super::{
-    build_server_capabilities, close_document_and_dependents, normalize_workspace_root,
-    HewLanguageServer, OpenDocument,
+    build_server_capabilities, close_document_and_dependents, HewLanguageServer, OpenDocument,
 };
 
+/// Roots keep the editor's spelling: every URI the server reports for a file
+/// found under a root is built from it. Containment and identity checks
+/// resolve both sides physically where they compare.
 fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
     let mut roots = Vec::with_capacity(params.workspace_folders.as_ref().map_or(1, Vec::len));
     if let Some(folders) = &params.workspace_folders {
         for folder in folders {
             if let Some(path) = folder.uri.to_checked_file_path() {
-                roots.push(normalize_workspace_root(path.into_owned()));
+                roots.push(path.into_owned());
             }
         }
     }
@@ -30,7 +32,7 @@ fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
         {
             if let Some(root_uri) = &params.root_uri {
                 if let Some(path) = root_uri.to_checked_file_path() {
-                    roots.push(normalize_workspace_root(path.into_owned()));
+                    roots.push(path.into_owned());
                 }
             }
         }
@@ -38,7 +40,7 @@ fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
     #[expect(deprecated, reason = "LSP root_path is a fallback for older clients")]
     if roots.is_empty() {
         if let Some(root_path) = &params.root_path {
-            roots.push(normalize_workspace_root(PathBuf::from(root_path)));
+            roots.push(PathBuf::from(root_path));
         }
     }
     roots.sort();

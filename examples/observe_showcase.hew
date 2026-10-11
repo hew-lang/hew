@@ -77,13 +77,13 @@ fn main() {
     println("");
 
     // Spawn a variety of actors with different workload profiles.
-    let c1 = spawn Counter(name: 1, value: 0);
-    let c2 = spawn Counter(name: 2, value: 0);
-    let c3 = spawn Counter(name: 3, value: 0);
-    let slow1 = spawn SlowProcessor(id: 1, processed: 0);
-    let slow2 = spawn SlowProcessor(id: 2, processed: 0);
-    let logger = spawn Logger(entries: 0);
-    let acc = spawn Accumulator(total: 0);
+    let c1 = spawn Counter { name: 1, value: 0 };
+    let c2 = spawn Counter { name: 2, value: 0 };
+    let c3 = spawn Counter { name: 3, value: 0 };
+    let slow1 = spawn SlowProcessor { id: 1, processed: 0 };
+    let slow2 = spawn SlowProcessor { id: 2, processed: 0 };
+    let logger = spawn Logger { entries: 0 };
+    let acc = spawn Accumulator { total: 0 };
     sleep(100ms);
     println("7 actors spawned. Running workload for 60 seconds...");
     println("Watch hew-observe tabs: Overview, Actors, Messages, Timeline");

@@ -34,13 +34,13 @@ actor Worker {
 supervisor App(audit: Audit) {
     strategy: one_for_all;
     intensity: 3 within 60s;
-    child left: Worker(name: "left", audit: audit);
-    child right: Worker(name: "right", audit: audit);
+    child left: Worker { name: "left", audit: audit };
+    child right: Worker { name: "right", audit: audit };
 }
 
 fn main() {
     let audit = spawn Audit;
-    let app = spawn App(audit: audit);
+    let app = spawn App { audit: audit };
     let _ = app.left.boom();
     let replacement = {
         let __hew_migrated_role_1122 = app.left;

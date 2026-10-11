@@ -2081,7 +2081,7 @@ fn fmt_supervisor_decl_roundtrip() {
     // Flat reliability fields: fused `intensity:`, named init args, and the
     // explicit `strategy:` the formatter always materializes.
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child worker: Worker(id: 1);\n}\n",
+        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child worker: Worker { id: 1 };\n}\n",
     );
 }
 
@@ -2091,7 +2091,7 @@ fn fmt_supervisor_omitted_strategy_stays_omitted() {
     // it omitted. Materializing the default here reparsed as a different AST
     // and broke the corpus round-trip.
     exact_roundtrip(
-        "supervisor Pool {\n    intensity: 5 within 30s;\n\n    child w: Worker(id: 1);\n}\n",
+        "supervisor Pool {\n    intensity: 5 within 30s;\n\n    child w: Worker { id: 1 };\n}\n",
     );
 }
 
@@ -2100,14 +2100,14 @@ fn fmt_supervisor_pool_and_clauses_roundtrip() {
     // Exercises every previously-lossy field: `pool` vs `child`, `wired_to:`,
     // `restart:` and `stop:` round-trip beside `wired_to:`.
     exact_roundtrip(
-        "supervisor ServiceStack {\n    strategy: rest_for_one;\n    intensity: 5 within 60s;\n\n    child db: Database(connections: 4) restart: permanent stop: 10s;\n    child api: ApiHandler(port: 8080) restart: transient stop: 0s wired_to: { backend: db };\n}\n",
+        "supervisor ServiceStack {\n    strategy: rest_for_one;\n    intensity: 5 within 60s;\n\n    child db: Database { connections: 4 } restart: permanent stop: 10s;\n    child api: ApiHandler { port: 8080 } restart: transient stop: 0s wired_to: { backend: db };\n}\n",
     );
 }
 
 #[test]
 fn fmt_supervisor_pool_keyword_roundtrip() {
     exact_roundtrip(
-        "supervisor ConnectionPool {\n    strategy: simple_one_for_one;\n    intensity: 20 within 60s;\n\n    pool handler: ApiHandler(port: 8080);\n}\n",
+        "supervisor ConnectionPool {\n    strategy: simple_one_for_one;\n    intensity: 20 within 60s;\n\n    pool handler: ApiHandler { port: 8080 };\n}\n",
     );
 }
 
@@ -2118,7 +2118,7 @@ fn fmt_supervisor_static_pool_count_roundtrip() {
     // formatter neither drops it nor folds it back into the parenthesised
     // field list (the C4/C5 B3 formatter-drops-new-syntax lesson).
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker(value: 7) count: 3;\n}\n",
+        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker { value: 7 } count: 3;\n}\n",
     );
 }
 

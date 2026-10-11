@@ -22,10 +22,15 @@ impl ActorMsg for Echo {
 }
 
 fn main() {
-    let peer: RemotePid<Echo>;
-    let reply: Result<i64, AskError> = peer.ask(7, 100);
-    match reply {
-        .Ok(v) => println(f"answer={v}"),
-        .Err(_) => println("ask failed"),
+    let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
+    match found {
+        .Ok(peer) => {
+            let reply = peer.ask(7, 100);
+            match reply {
+                .Ok(v) => println(f"answer={v}"),
+                .Err(_) => println("ask failed"),
+            }
+        }
+        .Err(_) => println("lookup failed"),
     }
 }

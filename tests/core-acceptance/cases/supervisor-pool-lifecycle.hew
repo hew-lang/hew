@@ -25,7 +25,7 @@ supervisor Farm {
     strategy: simple_one_for_one;
     intensity: 5 within 60s;
 
-    pool workers: Worker(id: 3, tag: "pool-member") count: 4;
+    pool workers: Worker { id: 3, tag: "pool-member" } count: 4;
 }
 
 fn main() {

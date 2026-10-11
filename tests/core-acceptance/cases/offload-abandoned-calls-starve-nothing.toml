@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "gave up 64\nslept 0\nfrom actor\nmain after actor\n"
+stdout = "gave up 64\nslept\nfrom actor\nmain after actor\n"
 exit = 3

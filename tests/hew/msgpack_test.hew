@@ -259,7 +259,7 @@ fn test_encode_bytes_frames_a_bin_not_an_array_of_integers() {
 #[test]
 fn test_encode_bytes_frames_bin16_past_the_bin8_boundary() {
     var data: bytes = bytes.new();
-    for _ in 0 .. 256 {
+    for _ in 0..256 {
         data.push(127);
     }
     let encoded = msgpack.encode(data);

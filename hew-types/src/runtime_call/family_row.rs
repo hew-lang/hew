@@ -5365,21 +5365,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::SinkFinish => RuntimeOpRow {
-                symbol: "hew_sink_finish",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::PipeHalf(PipeHalfKind::Sink),
-                        effect: E::Borrow,
-                    }],
-                    result: R::Unit,
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::SinkClose => RuntimeOpRow {
                 symbol: "hew_sink_close",
                 contract: Some(RuntimeSemanticContract {

@@ -28,7 +28,7 @@ machine Session {
     }
     state Spent;
 
-    on Open(user): Idle => Live { user: user, weight: 0 }
+    on Open { user }: Idle => Live { user: user, weight: 0 }
     on Touch: Live => _ when state.weight + event.weight >= 3 {
         emit Trace { text: "spent:" + state.user };
         Spent

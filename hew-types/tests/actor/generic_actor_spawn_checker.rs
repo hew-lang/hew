@@ -19,7 +19,7 @@ actor Buffer<T> {
 }
 
 fn main() {
-    let pid = spawn Buffer<i64>();
+    let pid = spawn Buffer<i64>;
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_isolated(source);
@@ -65,7 +65,7 @@ actor Buffer<T> {
 }
 
 fn main() {
-    let _pid = spawn Buffer();
+    let _pid = spawn Buffer;
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_isolated(source);
@@ -84,7 +84,7 @@ fn main() {
 
     assert!(
         !missing_args_errors.is_empty(),
-        "expected MissingActorTypeArgs diagnostic for `spawn Buffer()` on generic actor; \
+        "expected MissingActorTypeArgs diagnostic for `spawn Buffer` on generic actor; \
          errors present: {:#?}",
         output.errors
     );
@@ -100,7 +100,7 @@ fn main() {
 
 #[test]
 fn checker_actor_rejects_non_send_type_argument_at_spawn() {
-    let source = "actor Holder<T> { receive fn put(item: T) {} } fn main() { let _pid = spawn Holder<Rc<i64>>(); }";
+    let source = "actor Holder<T> { receive fn put(item: T) {} } fn main() { let _pid = spawn Holder<Rc<i64>>; }";
     let (_, output) = common::parse_and_typecheck_isolated(source);
     assert!(
         output.errors.iter().any(
@@ -115,7 +115,7 @@ fn checker_actor_rejects_non_send_type_argument_at_spawn() {
 
 #[test]
 fn checker_actor_accepts_structurally_send_record_argument() {
-    let source = "type Packet {\n    value: i64;\n}\n\nactor Holder<T> {\n    receive fn put(item: T) {}\n}\n\nfn main() {\n    let _pid = spawn Holder<Packet>();\n}\n";
+    let source = "type Packet {\n    value: i64;\n}\n\nactor Holder<T> {\n    receive fn put(item: T) {}\n}\n\nfn main() {\n    let _pid = spawn Holder<Packet>;\n}\n";
     let (_, output) = common::parse_and_typecheck_isolated(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -133,7 +133,7 @@ actor Pair<A, B> {
 
 fn main() {
     // Pair needs 2 type args; supply only 1.
-    let _pid = spawn Pair<i64>();
+    let _pid = spawn Pair<i64>;
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_isolated(source);
@@ -165,7 +165,7 @@ fn main() {
 // ── checker_non_generic_actor_spawn_no_diagnostic ───────────────────────────
 
 /// Non-generic actor spawn produces no errors — regression guard for the
-/// pre-existing `spawn Foo()` path. The empty-type-args fast path must
+/// pre-existing `spawn Foo` path. The empty-type-args fast path must
 /// remain silent for actors with no declared type params.
 #[test]
 fn checker_non_generic_actor_spawn_no_diagnostic() {
@@ -175,7 +175,7 @@ actor Counter {
 }
 
 fn main() {
-    let _pid = spawn Counter();
+    let _pid = spawn Counter;
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_isolated(source);
@@ -200,21 +200,21 @@ fn main() {
 
 #[test]
 fn checker_actor_infers_owner_from_init_and_substitutes_handler_reply() {
-    let source = "actor Holder<T> {\n    var value: Option<T> = .None;\n    init(seed: T) {\n        value = .Some(seed);\n    }\n    receive fn get() -> Option<T> {\n        value\n    }\n}\n\nfn main() {\n    let holder = spawn Holder(seed: 41);\n    let result: i64 = holder.get().expect(\"reply\").expect(\"set\");\n}\n";
+    let source = "actor Holder<T> {\n    var value: Option<T> = .None;\n    init(seed: T) {\n        value = .Some(seed);\n    }\n    receive fn get() -> Option<T> {\n        value\n    }\n}\n\nfn main() {\n    let holder = spawn Holder { seed: 41 };\n    let result: i64 = holder.get().expect(\"reply\").expect(\"set\");\n}\n";
     let (_, output) = common::parse_and_typecheck_inline(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
 
 #[test]
 fn checker_actor_handler_rejects_another_instances_payload() {
-    let source = "actor Holder<T> { receive fn put(value: T) {} } fn main() { let holder = spawn Holder<i64>(); holder.put(\"wrong instance\"); }";
+    let source = "actor Holder<T> { receive fn put(value: T) {} } fn main() { let holder = spawn Holder<i64>; holder.put(\"wrong instance\"); }";
     let (_, output) = common::parse_and_typecheck_inline(source);
     assert!(output.errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::Mismatch { expected, actual } if expected == "i64" && actual == "string")), "{:#?}", output.errors);
 }
 
 // ── checker_spawn_hashmap_new_infers_from_field_type ─────────────────────────
 
-/// `spawn Cache(store: HashMap::new())` must check clean: the field's declared
+/// `spawn Cache { store: HashMap::new() }` must check clean: the field's declared
 /// type (`HashMap<string, i64>`) is pushed down so `HashMap::new()` infers
 /// its key/value type variables rather than leaving them unbound and triggering
 /// a spurious "not Send" error.
@@ -233,20 +233,20 @@ fn checker_spawn_hashmap_new_infers_from_field_type() {
 }
 
 fn main() {
-    let c = spawn Cache(store: HashMap.new());
+    let c = spawn Cache { store: HashMap.new() };
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_inline(source);
     assert!(
         output.errors.is_empty(),
-        "spawn Cache(store: HashMap::new()) should check clean; errors: {:#?}",
+        "spawn Cache {{ store: HashMap::new() }} should check clean; errors: {:#?}",
         output.errors
     );
 }
 
 // ── checker_spawn_vec_new_infers_from_field_type ─────────────────────────────
 
-/// `spawn Log(entries: Vec::new())` must check clean: the field's declared
+/// `spawn Log { entries: Vec::new() }` must check clean: the field's declared
 /// type (`Vec<string>`) is pushed down so `Vec::new()` infers its element
 /// type.  Same root cause as the `HashMap` case.
 #[test]
@@ -259,20 +259,20 @@ fn checker_spawn_vec_new_infers_from_field_type() {
 }
 
 fn main() {
-    let _log = spawn Log(entries: Vec.new());
+    let _log = spawn Log { entries: Vec.new() };
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_inline(source);
     assert!(
         output.errors.is_empty(),
-        "spawn Log(entries: Vec::new()) should check clean; errors: {:#?}",
+        "spawn Log {{ entries: Vec::new() }} should check clean; errors: {:#?}",
         output.errors
     );
 }
 
 // ── checker_spawn_substitutes_type_args_into_generic_field_arg ───────────────
 
-/// `spawn Box<i64>(value: 5)` must check the `value` constructor arg against
+/// `spawn Box<i64> { value: 5 }` must check the `value` constructor arg against
 /// the SUBSTITUTED field type (`i64`), not the unsubstituted declared generic
 /// `T`.  Regression for #2447: `check_spawn_constructor_args` compared the arg
 /// against the raw declared `T`, yielding a spurious
@@ -285,21 +285,21 @@ fn checker_spawn_substitutes_type_args_into_generic_field_arg() {
 }
 
 fn main() {
-    let _b = spawn Box<i64>(value: 5);
+    let _b = spawn Box<i64> { value: 5 };
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_inline(source);
     assert!(
         output.errors.is_empty(),
-        "spawn Box<i64>(value: 5) should check clean after type-arg substitution; errors: {:#?}",
+        "spawn Box<i64> {{ value: 5 }} should check clean after type-arg substitution; errors: {:#?}",
         output.errors
     );
 }
 
 // ── checker_spawn_generic_field_arg_type_mismatch_still_reported ─────────────
 
-/// The #2447 substitution must not mask a genuine mismatch: `spawn Box<i64>(
-/// value: "x")` supplies a `string` where the instantiated field type is
+/// The #2447 substitution must not mask a genuine mismatch: `spawn Box<i64> {
+/// value: "x"}` supplies a `string` where the instantiated field type is
 /// `i64`, so a type-mismatch error must still fire (against the substituted
 /// `i64`, not the generic `T`).
 #[test]
@@ -310,12 +310,12 @@ fn checker_spawn_generic_field_arg_type_mismatch_still_reported() {
 }
 
 fn main() {
-    let _b = spawn Box<i64>(value: "x");
+    let _b = spawn Box<i64> { value: "x" };
 }
 "#;
     let (_prog, output) = common::parse_and_typecheck_inline(source);
     assert!(
         !output.errors.is_empty(),
-        "spawn Box<i64>(value: \"x\") should still report a type mismatch against the substituted i64"
+        "spawn Box<i64> {{ value: \"x\" }} should still report a type mismatch against the substituted i64"
     );
 }

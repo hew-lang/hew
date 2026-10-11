@@ -107,15 +107,12 @@ actor Handler {
 
 fn main() {
     let source = spawn Source;
-    let handler = spawn Handler(source: source);
+    let handler = spawn Handler { source: source };
     let _ = handler.run();
 }
 ";
 
-/// A receive handler that assigns a local AFTER a real suspend point. The
-/// handler cannot take `optnone` (`CoroSplit` must run), so `y`'s slot store is
-/// free to lag its source line — the case where a whole-scope `dbg.declare`
-/// would let the debugger print stale garbage as if it were `y`.
+/// A receive handler whose local becomes initialized after a real suspension.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const SLEEP_SRC: &str = "\
 actor Worker {
@@ -280,7 +277,7 @@ fn warm_debug_symbols(binary: &Path) {
     }
     // A wedged debugger here is still a failure, just not one this fixture can
     // describe, so it gets a budget of its own rather than the measured one.
-    let _ = try_run_bounded_command(
+    let _ = try_run_debugger_query(
         command,
         format!("warm debug symbols for {path}"),
         std::time::Duration::from_mins(5),
@@ -309,33 +306,41 @@ fn debugger_query_timeout() -> std::time::Duration {
         })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn try_run_debugger_query(
+    mut command: Command,
+    label: impl Into<String>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, hew_testutil::BoundedExecError> {
+    if command.get_program() == "lldb" {
+        // Let debugserver kill its inferior when a timeout kills LLDB.
+        command.args(["-O", "settings set target.detach-on-error false"]);
+    }
+    try_run_bounded_command(command, label, timeout)
+}
+
 /// Run a measured gdb/lldb query under [`debugger_query_timeout`] instead of
 /// the shared harness's default 30s deadline, and panic with the harness's
 /// own clear timeout diagnostic (command, configured deadline, elapsed time,
 /// captured output) rather than a bare assertion failure.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn run_debugger_query(command: Command, label: impl Into<String>) -> std::process::Output {
-    try_run_bounded_command(command, label, debugger_query_timeout())
+    try_run_debugger_query(command, label, debugger_query_timeout())
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
-/// First available batch debugger, preferring each platform's native one.
-/// `lldb -b -o ...` and `gdb --batch -ex ...` both run a script
-/// non-interactively.
+/// Require the platform debugger provisioned by CI.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger() -> Option<&'static str> {
-    #[cfg(target_os = "linux")]
-    let candidates = ["gdb", "lldb"];
-    #[cfg(target_os = "freebsd")]
-    let candidates = ["gdb", "lldb"];
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let debugger = "gdb";
     #[cfg(target_os = "macos")]
-    let candidates = ["lldb", "gdb"];
-    candidates.into_iter().find(|d| {
-        Command::new(d)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
+    let debugger = "lldb";
+    Command::new(debugger)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+        .then_some(debugger)
 }
 
 /// A missing debugger is a hard failure, not a skip. A skip here silently
@@ -593,53 +598,7 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     // `.resume`, post-suspend): both stored. lldb uses hardware breakpoints
     // to avoid patching coroutine code while runtime threads execute it; gdb
     // falls back to software breakpoints (see the await test above for why).
-    let cmd = if dbg == "lldb" {
-        let mut command = Command::new("lldb");
-        command.args([
-            "-b",
-            "-o",
-            &format!("breakpoint set -H --file {src} --line 4"),
-            "-o",
-            &format!("breakpoint set -H --file {src} --line 7"),
-            "-o",
-            "run",
-            "-o",
-            "frame variable x y",
-            // The line-4 breakpoint also matches the `.resume` re-entry PC;
-            // disable it so the next stop is the line-7 one.
-            "-o",
-            "breakpoint disable 1",
-            "-o",
-            "continue",
-            "-o",
-            "frame variable x y",
-            "-o",
-            "quit",
-            bin,
-        ]);
-        command
-    } else {
-        let mut command = Command::new("gdb");
-        command.args([
-            "--batch",
-            "-ex",
-            &format!("break {src}:4"),
-            "-ex",
-            &format!("break {src}:7"),
-            "-ex",
-            "run",
-            "-ex",
-            "info locals",
-            "-ex",
-            "disable 1",
-            "-ex",
-            "continue",
-            "-ex",
-            "info locals",
-            bin,
-        ]);
-        command
-    };
+    let cmd = two_stop_sleep_cmd(dbg, &src, bin);
     let out = run_debugger_query(cmd, format!("{dbg} honest post-suspend local"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -647,9 +606,24 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
         "{dbg} failed while debugging sleep handler:\n{text}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let (before, after) = text.split_once(STOP_SPLIT).expect("both debugger stops");
+    assert!(
+        before
+            .lines()
+            .filter_map(debugger_n_value)
+            .any(|value| value == "7"),
+        "pre-suspend breakpoint must read the parameter `n = 7`:\n{text}"
+    );
+    let honest_n = text.lines().filter_map(debugger_n_value).all(|value| {
+        value == "7" || value.contains("not available") || value.contains("optimized out")
+    });
+    assert!(
+        after.lines().any(|line| debugger_n_value(line).is_some()) && honest_n,
+        "resumed parameter must read 7 or be unavailable, never a frame pointer or stale stack value:\n{text}"
+    );
     // Pre-suspend stop: the stored local reads its real value.
     assert!(
-        text.contains("x = 8"),
+        before.contains("x = 8"),
         "pre-suspend breakpoint must read the stored `x = 8`:\n{text}"
     );
     // The unstored local must be reported absent, and must never surface a
@@ -657,7 +631,8 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     // 42, and 42 may legitimately appear at the second (post-store) stop — so
     // reject any `y = <digits>` line that is not exactly 42.
     assert!(
-        text.contains("not available") || text.contains("optimized out"),
+        before.lines().any(|line| line.contains("y = ")
+            && (line.contains("not available") || line.contains("optimized out"))),
         "unstored `y` must be reported unavailable/optimized-out at the pre-store stop:\n{text}"
     );
     let wrong_y = text.lines().any(|line| {
@@ -677,9 +652,71 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     // Post-store stop: the value is either honestly absent or the real 42 —
     // this fixture's codegen shape keeps it readable at the `y` return line.
     assert!(
-        text.contains("y = 42") || text.contains("= 42"),
+        after.contains("y = 42"),
         "post-store breakpoint must read the stored `y = 42`:\n{text}"
     );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn debugger_n_value(line: &str) -> Option<&str> {
+    line.strip_prefix("n = ")
+        .or_else(|| line.split_once(" n = ").map(|(_, value)| value))
+        .map(str::trim)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
+    if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 4"),
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 7"),
+            "-o",
+            "run",
+            "-o",
+            "frame variable n x y",
+            "-o",
+            &format!("script print(\"{STOP_SPLIT}\")"),
+            // The line-4 breakpoint also matches the `.resume` re-entry PC;
+            // disable it so the next stop is the line-7 one.
+            "-o",
+            "breakpoint disable 1",
+            "-o",
+            "continue",
+            "-o",
+            "frame variable n x y",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("break {src}:4"),
+            "-ex",
+            &format!("break {src}:7"),
+            "-ex",
+            "run",
+            "-ex",
+            "info locals",
+            "-ex",
+            &format!("echo {STOP_SPLIT}\\n"),
+            "-ex",
+            "disable 1",
+            "-ex",
+            "continue",
+            "-ex",
+            "info locals",
+            bin,
+        ]);
+        command
+    }
 }
 
 /// Marker printed between the two debugger stops so each stop's reads can be
@@ -1067,7 +1104,9 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         "backtrace must name the Hew handler frame:\n{text}"
     );
     assert!(
-        text.contains("coro_resume") || text.contains("hew_cont_resume"),
+        text.contains("coro_resume")
+            || text.contains("hew_cont_resume")
+            || text.contains("coro_exec::resume_park"),
         "backtrace must show the honest transition into the runtime coroutine \
          resume boundary:\n{text}"
     );
@@ -1202,7 +1241,7 @@ fn debugger_hang_before_breakpoint_times_out_with_clear_diagnostic() {
         command
     };
 
-    let result = try_run_bounded_command(
+    let result = try_run_debugger_query(
         command,
         format!("{dbg} hang-before-breakpoint control"),
         std::time::Duration::from_secs(3),

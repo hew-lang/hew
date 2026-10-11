@@ -1009,29 +1009,6 @@ fn stream_dot_stream_int_element_now_admitted() {
     );
 }
 
-#[test]
-fn stream_dot_stream_container_element_reports_user_facing_type() {
-    // Container elements have no clone/drop thunk path — the fail-closed
-    // diagnostic must name the user-facing element type.
-    let output = typecheck_inline(
-        r"
-        import std.stream;
-
-        fn close_rows(s: stream.Stream<Vec<i64>>) {
-            s.close();
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("`Stream<Vec<i64>>` is not supported")),
-        "expected Stream<Vec<i64>> fail-closed diagnostic, got: {:#?}",
-        output.errors
-    );
-}
-
 // The old bare `stream.decode()` / `sink.encode()` fail-closed carve-outs are
 // gone along with `stream.bytes_pipe`: decoding/encoding now goes through the
 // `Codec<T>` trait (`Lines`, `LengthPrefixed`), never a method directly on
@@ -1145,70 +1122,6 @@ fn main() {
     );
 }
 
-/// `for item in input` over a container element (`Stream<Vec<i64>>`)
-/// must fail closed at the stream element validation boundary.
-#[test]
-fn for_stream_container_element_errors() {
-    let output = typecheck_inline(
-        r#"
-        import std.stream;
-
-        extern "C" {
-            fn fake_stream() -> Stream<Vec<i64>>;
-        }
-
-        fn main() {
-            let input = unsafe { fake_stream() };
-            for rows in input {
-                println("seen");
-            }
-        }
-        "#,
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Vec<i64>>` is not supported")
-        }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Unsupported first-class `Stream<T>` element types in `for` must fail
-/// closed without cascading into loop-body field/type errors.
-#[test]
-fn for_stream_unsupported_type_does_not_cascade() {
-    let output = typecheck_inline(
-        r#"
-        extern "C" {
-            fn fake_stream() -> Stream<Vec<i64>>;
-        }
-
-        fn main() {
-            let input = unsafe { fake_stream() };
-            for rows in input {
-                println(rows.missing);
-            }
-        }
-        "#,
-    );
-    assert_eq!(
-        output.errors.len(),
-        1,
-        "expected only the fail-closed Stream<Vec<i64>> error, got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Vec<i64>>` is not supported")
-        }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
-        output.errors
-    );
-}
-
 /// `for item in input` over a bare `Stream` annotation must fail closed
 /// instead of bypassing stream element validation and lowering as text.
 #[test]
@@ -1248,7 +1161,7 @@ fn for_receive_generator_int_stream_typechecks() {
         }
 
         fn main() {
-            let c = spawn Counter();
+            let c = spawn Counter;
             for val in c.count_up() {
                 println(val);
             }
@@ -1339,7 +1252,7 @@ fn for_over_a_plain_receive_fn_is_refused() {
         }
 
         fn main() {
-            let r = spawn Reader();
+            let r = spawn Reader;
             for line in r.lines() {
                 println(line);
             }
@@ -1487,7 +1400,7 @@ fn weak_rejected_at_actor_send_boundary() {
 fn main() {
     let rc = Rc.new(1);
     let weak = rc.downgrade();
-    let sink = spawn BoundarySink(_unused: 0);
+    let sink = spawn BoundarySink { _unused: 0 };
     let _ = sink.consume(weak);
 }
 ",
@@ -1615,7 +1528,7 @@ fn rc_rejected_at_actor_send_boundary() {
 
 fn main() {
     let rc: Rc<i64> = Rc.new(1);
-    let a = spawn BoundarySink(_unused: 0);
+    let a = spawn BoundarySink { _unused: 0 };
     let _ = a.consume(rc);
 }
 ",
@@ -1641,7 +1554,7 @@ actor BoundarySink {
 }
 
 fn main() {
-    let sink = spawn BoundarySink(_unused: 0);
+    let sink = spawn BoundarySink { _unused: 0 };
     var value = Boxed { payload: [1, 2] };
     let _ = sink.take(value);
     let _ = sink.take(value);
@@ -1671,7 +1584,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    let _writer = spawn Writer(sink: sink);
+    let _writer = spawn Writer { sink: sink };
     sink.send("after-move");
 }
 "#,
@@ -1701,7 +1614,7 @@ actor BoundarySink {
 }
 
 fn main() {
-    let sink = spawn BoundarySink(_unused: 0);
+    let sink = spawn BoundarySink { _unused: 0 };
     let rc = Rc.new(1);
     let weak = rc.downgrade();
     let boxed = RcBox { value: rc.clone() };
@@ -1818,7 +1731,7 @@ fn actor_ref_send_method_requires_send_payload() {
 }
 
 fn main() {
-    let sink = spawn Sink(_unused: 0);
+    let sink = spawn Sink { _unused: 0 };
     let rc: Rc<i64> = Rc.new(1);
     sink.send(rc);
 }
@@ -1851,7 +1764,7 @@ fn actor_receive_fn_option_reply_accepted() {
 }
 
 fn main() {
-    let q = spawn Queue(items: Vec.new());
+    let q = spawn Queue { items: Vec.new() };
     let _item = q.dequeue();
 }
 ",
@@ -5584,7 +5497,7 @@ fn deferred_pipe_unresolved_inner_fails_closed() {
 #[test]
 fn await_stream_recv_bytes_typechecks() {
     let output = typecheck_inline(
-        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_bytes(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner();\n    let _ = r.go(0);\n}\n",
+        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_bytes(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner;\n    let _ = r.go(0);\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -5599,7 +5512,7 @@ fn await_stream_recv_bytes_typechecks() {
 #[test]
 fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
-        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_i64(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner();\n    let _ = r.go(0);\n}\n",
+        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_i64(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner;\n    let _ = r.go(0);\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -5752,80 +5665,6 @@ fn main() {
     assert!(
         output.errors.is_empty(),
         "monomorphic machine pipe element must be admitted; got: {:#?}",
-        output.errors
-    );
-}
-
-/// A GENERIC machine instantiation as a pipe element stays refused:
-/// the machine substrate canonicalizes instantiations to one bare-named
-/// decl layout, so the recv binding's `Option<T>` has no
-/// per-instantiation layout to land in. The imported spelling resolves
-/// through the generic no-thunk-path clause (the tailored bare-canon
-/// clause fires for locally declared generic machines, whose type defs
-/// resolve by bare name).
-#[test]
-fn generic_machine_instantiation_pipe_element_refused() {
-    let output = typecheck_inline(
-        r"
-        import std.concurrency.lifecycle;
-        import std.stream;
-
-        fn main() {
-            let (tx, rx): (stream.Sink<lifecycle.Lifecycle<i64>>, stream.Stream<lifecycle.Lifecycle<i64>>) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            tx.close();
-            let _ = rx.recv();
-            rx.close();
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("Lifecycle<i64>") && e.message.contains("is not supported")),
-        "generic machine instantiation element must be refused; got: {:#?}",
-        output.errors
-    );
-}
-
-/// A machine whose state payload carries a container (`Vec<i64>`) stays
-/// refused exactly as a container-bearing enum would — the machine
-/// admission rides the same transitive container walk.
-#[test]
-fn container_bearing_machine_pipe_element_refused() {
-    let output = typecheck_inline(
-        r"import std.stream;
-
-machine Buffered {
-    events {
-        Load { items: Vec<i64>; }
-    }
-    state Empty;
-    state Loaded { items: Vec<i64>; }
-    on Load: Empty => Loaded { items: event.items }
-    on Load: _ => _ {
-        state
-    }
-}
-
-fn main() {
-    let (tx, rx): (stream.Sink<Buffered>, stream.Stream<Buffered>) = match stream.pipe(2) {
-        .Ok(pair) => pair,
-        .Err(error) => panic(error),
-    };
-    let _ = tx.send(Buffered.Empty);
-    tx.close();
-    let _ = rx.recv();
-    rx.close();
-}
-",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("is not supported")),
-        "container-bearing machine element must stay refused; got: {:#?}",
         output.errors
     );
 }

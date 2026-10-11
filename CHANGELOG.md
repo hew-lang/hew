@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### v0.6.0-rc8
+
+- Lower native suspension from physical MIR and reuse sequential child storage.
+- Make `race [...]` produce a scoped task; preserve task lifetimes through
+  callbacks, aggregates and generic calls.
+- Add definite assignment for typed locals, brace-keyed construction and
+  package-root imports.
+- Complete typed failure edges, owned stream composition and nonblocking
+  partial-write handling.
+- Correct actor teardown, binding-aware rename and registry wire identities.
+- Reduce migration memory use and preserve debugger-local lifetimes across
+  suspension.
+
+See the [candidate notes](docs/releases/v0.6.0-rc8.md) for migration guidance.
+
 ### v0.6.0-rc5
 
 This candidate is scoped to errors and data.

@@ -230,7 +230,7 @@ impl InstanceService<'_> {
         Ok(id)
     }
 
-    /// `fn(config...) -> handle { spawn Child(init args) }`, lowered and
+    /// `fn(config...) -> handle { spawn Child { init args } }`, lowered and
     /// verified like any function. The config parameters are lent, so an owned
     /// init argument is copied into each incarnation.
     fn register_child_spawn(
@@ -260,6 +260,7 @@ impl InstanceService<'_> {
                     )
                     .to_string(),
                 args: child.init_args.clone(),
+                slots: child.init_slots.clone(),
             },
             span: child.span.clone(),
         };

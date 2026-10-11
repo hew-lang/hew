@@ -1,0 +1,19 @@
+fn main() {
+    let original = "abc".to_bytes();
+    var prefix = clone original;
+    var method = original.clone();
+    prefix.set(0, 120);
+    method.push(100);
+    println(f"{original.len()} {original[0]}");
+    println(f"{prefix.len()} {prefix[0]}");
+    println(f"{method.len()} {method[3]}");
+    let slice = original[1..];
+    var copied_slice = clone slice;
+    copied_slice.set(0, 121);
+    println(f"{slice.len()} {slice[0]}");
+    println(f"{copied_slice.len()} {copied_slice[0]}");
+    let empty: bytes = [];
+    var copied_empty = empty.clone();
+    copied_empty.push(101);
+    println(f"{empty.len()} {copied_empty.len()} {copied_empty[0]}");
+}

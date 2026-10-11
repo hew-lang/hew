@@ -10,7 +10,7 @@ actor Counter {
 }
 
 fn main() {
-    let counter = spawn Counter();
+    let counter = spawn Counter;
     let _ = counter.bump();
     let signaller = process.start(process.command("sh", ["-c", f"kill -TERM {os.pid()}; exit 4"])).expect("start");
     match signaller.wait() {

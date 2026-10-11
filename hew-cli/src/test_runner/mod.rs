@@ -343,8 +343,8 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
 
     let cwd = root.clone();
     let project_dir = find_project_dir(&cwd).unwrap_or_else(|| cwd.clone());
-    let compile_paths = (args.engine == crate::args::TestEngine::Native)
-        .then(|| resolve_compile_paths(&project_dir));
+    let compile_paths =
+        (args.engine == crate::args::TestEngine::Native).then(resolve_compile_paths);
     let vm_runner = (args.engine == crate::args::TestEngine::Vm).then(|| {
         vm::resolve_runner(&project_dir).unwrap_or_else(|error| {
             eprintln!("Error: {error}");
@@ -366,7 +366,6 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             filter: None,
             include_ignored,
             compile_paths: compile_paths.as_ref(),
-            project_dir: &project_dir,
             engine: args.engine,
             vm_runner: vm_runner.as_deref(),
             step_budget: args.step_budget,
@@ -451,8 +450,8 @@ fn find_project_dir(start_dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn resolve_compile_paths(project_dir: &Path) -> runner::TestCompilePaths {
-    runner::TestCompilePaths::resolve(project_dir).unwrap_or_else(|error| {
+fn resolve_compile_paths() -> runner::TestCompilePaths {
+    runner::TestCompilePaths::resolve().unwrap_or_else(|error| {
         eprintln!("Error: cannot prepare in-process test compilation: {error}");
         std::process::exit(1);
     })

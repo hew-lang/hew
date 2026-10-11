@@ -14,7 +14,7 @@ actor Counter {
 }
 
 fn main() -> i64 {
-    let counter = spawn Counter(step: 7, count: 0);
+    let counter = spawn Counter { step: 7, count: 0 };
     let _ = counter.bump();
     let _ = counter.bump();
     match counter.total() {

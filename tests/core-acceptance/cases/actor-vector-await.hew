@@ -17,7 +17,7 @@ actor Worker {
 }
 
 fn main() {
-    let workers = [spawn Worker(), spawn Worker(), spawn Worker()];
+    let workers = [spawn Worker, spawn Worker, spawn Worker];
     var tasks = [fork workers[0].compute(6)];
     for i in 1 .. 6 {
         tasks.push(fork workers[i % 3].compute(6 - i));

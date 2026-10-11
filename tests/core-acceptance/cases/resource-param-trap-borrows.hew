@@ -31,7 +31,7 @@ actor Splitter {
 }
 
 fn main() {
-    let splitter = spawn Splitter();
+    let splitter = spawn Splitter;
     match splitter.split("one", 5) {
         .Ok(text) => println(text),
         .Err(_) => println("one failed"),

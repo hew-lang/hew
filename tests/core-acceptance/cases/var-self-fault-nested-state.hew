@@ -53,7 +53,7 @@ actor Holder {
 
 supervisor Group {
     intensity: 1 within 60s;
-    child holder: Holder(outer: Outer { counter: Counter { n: 0, label: "count" }, conn: Conn { fd: 1 }, tag: "outer" });
+    child holder: Holder { outer: Outer { counter: Counter { n: 0, label: "count" }, conn: Conn { fd: 1 }, tag: "outer" } };
 }
 
 fn main() {

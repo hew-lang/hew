@@ -8,7 +8,6 @@ use super::{
     ResolvedTy, SemAbiParam, SemCallConv, SemCallable, SemCallableKind, SemOpKind, SemParamPassing,
     SemSignature, SemTerminator, TypeSubstitution, ValueDef, ValueId,
 };
-use std::collections::BTreeSet;
 
 pub(super) fn declaration<'a>(
     module: &'a HirModule,
@@ -959,7 +958,7 @@ impl Builder<'_, '_> {
                     Vec::new(),
                 ))
             }
-            HirExprKind::Spawn { args, .. }
+            HirExprKind::Spawn { args, slots, .. }
                 if super::supervisor::declaration(
                     self.service.module,
                     &self.ty(&expression.ty),
@@ -970,28 +969,30 @@ impl Builder<'_, '_> {
                 let id = self.service.require_supervisor(&ty)?;
                 let source = super::supervisor::declaration(self.service.module, &ty)
                     .ok_or("spawn lost its supervisor declaration")?;
+                if slots.len() != source.params.len() {
+                    return Err("supervisor spawn binding does not cover its parameters".into());
+                }
+                let argument_order = slots
+                    .iter()
+                    .map(|slot| match slot {
+                        hew_types::check::SpawnSlot::Written(index) => Ok(*index),
+                        hew_types::check::SpawnSlot::Default => {
+                            Err("a supervisor parameter has no default".to_string())
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 let values: Vec<_> = args.iter().map(|(_, value)| value.clone()).collect();
-                let mut argument_order = Vec::new();
-                for parameter in &source.params {
-                    let (index, _) = args
-                        .iter()
-                        .enumerate()
-                        .find(|(_, (name, _))| *name == parameter.name)
-                        .ok_or_else(|| {
-                            format!("supervisor config `{}` is missing", parameter.name)
-                        })?;
-                    argument_order.push(index);
-                }
-                if argument_order.len() != args.len() {
-                    return Err("spawn carries an unknown supervisor config argument".into());
-                }
                 Ok((
                     crate::ActorOperation::SupervisorSpawn(id),
                     values,
                     argument_order,
                 ))
             }
-            HirExprKind::Spawn { actor_name, args } => {
+            HirExprKind::Spawn {
+                actor_name,
+                args,
+                slots,
+            } => {
                 let ty = self.ty(&expression.ty);
                 // A spawn starts one exact declaration's body, so it selects
                 // by the declaration it names rather than by handle type.
@@ -1010,45 +1011,29 @@ impl Builder<'_, '_> {
                         _ => None,
                     })
                     .ok_or("spawn lost its actor declaration")?;
+                // The checker bound one slot per spawn key: each state field
+                // init does not initialize (D447), then each init parameter.
+                // Written values evaluate in source order; defaults follow.
+                let fields = source.state_fields.iter().filter(|field| !field.deferred);
+                let parameters = source.init.iter().flat_map(|init| init.params.iter());
+                if slots.len() != fields.clone().count() + parameters.count() {
+                    return Err("spawn binding does not cover the actor's keys".into());
+                }
                 let mut values: Vec<_> = args.iter().map(|(_, value)| value.clone()).collect();
-                let mut argument_order = Vec::new();
-                let mut used = BTreeSet::new();
-                for field in &source.state_fields {
-                    if field.deferred {
-                        // Initialized inside init (D447); the checker refused
-                        // any spawn argument naming it.
-                        continue;
+                let mut argument_order = Vec::with_capacity(slots.len());
+                let mut fields = fields;
+                for slot in slots {
+                    let field = fields.next();
+                    match slot {
+                        hew_types::check::SpawnSlot::Written(index) => argument_order.push(*index),
+                        hew_types::check::SpawnSlot::Default => {
+                            let default = field
+                                .and_then(|field| field.default.as_ref())
+                                .ok_or("a spawn default names a key with no default")?;
+                            argument_order.push(values.len());
+                            values.push(default.clone());
+                        }
                     }
-                    if let Some((index, _)) = args
-                        .iter()
-                        .enumerate()
-                        .find(|(_, (name, _))| *name == field.name)
-                    {
-                        argument_order.push(index);
-                        used.insert(index);
-                    } else if let Some(default) = &field.default {
-                        argument_order.push(values.len());
-                        values.push(default.clone());
-                    } else {
-                        return Err(format!(
-                            "actor state field `{}` requires an initialized spawn value",
-                            field.name
-                        ));
-                    }
-                }
-                if let Some(init) = &source.init {
-                    for parameter in &init.params {
-                        let (index, _) = args
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (name, _))| *name == parameter.name)
-                            .ok_or("actor init argument is missing")?;
-                        used.insert(index);
-                        argument_order.push(index);
-                    }
-                }
-                if used.len() != args.len() {
-                    return Err("spawn carries an unknown actor argument".into());
                 }
                 Ok((crate::ActorOperation::Spawn(id), values, argument_order))
             }

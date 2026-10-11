@@ -13,7 +13,7 @@ supervisor Farm {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child worker: Worker(value: 7) count: 2;
+    child worker: Worker { value: 7 } count: 2;
 }
 
 fn main() -> i64 {

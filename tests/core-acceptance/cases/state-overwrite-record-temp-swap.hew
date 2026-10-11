@@ -31,7 +31,7 @@ fn main() -> i64 {
     yv.push(20);
     yv.push(30);
     yv.push(40);
-    let a = spawn TwoBoxes(x: Box { v: xv }, y: Box { v: yv });
+    let a = spawn TwoBoxes { x: Box { v: xv }, y: Box { v: yv } };
     var i: i64 = 0;
     while i < 25 {
         let _ = a.flip();

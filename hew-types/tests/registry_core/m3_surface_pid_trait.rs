@@ -76,7 +76,7 @@ fn takes_pid<P: Pid>(pid: P, msg: P.Msg) -> Result<(), SendError> {
 }
 
 fn main() {
-    let worker = spawn Worker(id: 7);
+    let worker = spawn Worker { id: 7 };
     let result: Result<(), SendError> = takes_pid(worker, Job { n: 3 });
 }
 ",
@@ -116,7 +116,7 @@ impl ActorMsg for Worker {
 }
 
 fn main() {
-    let worker = spawn Worker(id: 7);
+    let worker = spawn Worker { id: 7 };
     let result = worker.send(Job { n: 3 });
 }
 ",
@@ -152,8 +152,7 @@ impl ActorMsg for Worker {
     type Reply = ();
 }
 
-fn main() {
-    let remote: RemotePid<Worker>;
+fn use_remote(remote: RemotePid<Worker>) {
     let result: Result<(), SendError> = remote.send(Job { n: 9 });
 }
 ",
@@ -186,8 +185,7 @@ impl ActorMsg for Worker {
     type Reply = i64;
 }
 
-fn main() {
-    let remote: RemotePid<Worker>;
+fn use_remote(remote: RemotePid<Worker>) {
     let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
 }
 ",
@@ -222,8 +220,7 @@ impl ActorMsg for Worker {
     type Reply = fn(i64) -> i64;
 }
 
-fn main() {
-    let remote: RemotePid<Worker>;
+fn use_remote(remote: RemotePid<Worker>) {
     let result = remote.ask(Job { n: 9 }, 250);
 }
 ",
@@ -248,7 +245,7 @@ fn local_pid_remote_conversion_is_not_public() {
             init() {}
         }
         fn main() {
-            let local = spawn Bot(n: 0);
+            let local = spawn Bot { n: 0 };
             let _remote = local.$METHOD("node-1");
         }
     "#

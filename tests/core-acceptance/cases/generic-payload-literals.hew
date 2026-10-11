@@ -131,7 +131,7 @@ fn main() {
     println(result_case(Result.Ok(true)));
     println(result_case(Result.Ok(false)));
     println(result_case(Result.Err("error".to_upper())));
-    let gate = spawn Gate();
+    let gate = spawn Gate;
     println(ask_case(gate, true));
     println(ask_case(gate, false));
     println(nested_case(Envelope.Wrapped(Payload.Value(true, "short".to_upper()))));

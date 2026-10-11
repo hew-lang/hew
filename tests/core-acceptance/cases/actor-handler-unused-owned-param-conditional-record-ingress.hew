@@ -20,7 +20,7 @@ actor Fan {
 }
 
 fn main() -> i64 {
-    let fan = spawn Fan(seen: 0, held: Wrap { name: "held" }, last: "last");
+    let fan = spawn Fan { seen: 0, held: Wrap { name: "held" }, last: "last" };
     var i: i64 = 0;
     while i < 40 {
         let _ = fan.route("payload".to_upper(), i % 2);

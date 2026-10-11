@@ -23,7 +23,7 @@ fn main() {
     let address = f"127.0.0.1:{listener.local_port()}";
     scope {
         let response = fork client(address);
-        let connection = listener.accept();
+        let connection = listener.accept().expect("accept");
         let (input, output) = connection.split();
         assert(drain(input) == "request\0bytes".to_bytes());
         output.send("reply\0bytes".to_bytes()).expect("send");

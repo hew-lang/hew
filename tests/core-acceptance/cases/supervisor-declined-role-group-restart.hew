@@ -22,7 +22,7 @@ supervisor Group {
 }
 
 fn main() {
-    let group = spawn Group();
+    let group = spawn Group;
     let short = group.short_lived;
     let durable = group.durable;
     let _ = short.fail();

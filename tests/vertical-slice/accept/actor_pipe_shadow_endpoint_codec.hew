@@ -32,7 +32,7 @@ actor Collector {
 }
 
 fn main() {
-    let collector = spawn Collector(total: 0);
+    let collector = spawn Collector { total: 0 };
     let _ = collector.accept_sink(Sink { x: 20 });
     let _ = collector.accept_stream(Stream { y: 22 });
     let sum = collector.sum();

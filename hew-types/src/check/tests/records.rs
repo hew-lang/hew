@@ -2212,12 +2212,12 @@ fn main() {}
     }
     state Empty;
     state Filled { items: Vec<i64>; }
-    on Append(item): Empty => Filled {
+    on Append { item }: Empty => Filled {
         var v: Vec<i64> = Vec.new();
         v.push(item);
         Filled { items: v }
     }
-    on Append(item): Filled => Filled reenter {
+    on Append { item }: Filled => Filled reenter {
         var v = state.items;
         v.push(item);
         Filled { items: v }
@@ -2246,7 +2246,7 @@ fn main() {}
     }
     state Empty;
     state Filled { counts: HashMap<string, i64>; }
-    on Bump(key): Empty => Filled {
+    on Bump { key }: Empty => Filled {
         var m: HashMap<string, i64> = HashMap.new();
         m.insert(key, 1);
         Filled { counts: m }
@@ -2276,7 +2276,7 @@ fn main() {}
     }
     state Empty;
     state Filled { items: Vec<i64>; }
-    on Append(item): Empty => Filled {
+    on Append { item }: Empty => Filled {
         println(item);
         var v: Vec<i64> = Vec.new();
         v.push(item);

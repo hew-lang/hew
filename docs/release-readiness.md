@@ -1,37 +1,42 @@
 # Release and ecosystem readiness
 
-Snapshot: 2026-10-09. Deliver a usable compiler/client candidate and compatible
+Snapshot: 2026-10-11. Deliver a usable compiler/client candidate and compatible
 signed ecosystem archives through the [release runbook](release-runbook.md).
-The next compiler tag/version remains a release-owner decision under
-[versioning](versioning.md); committed `0.6.0-rc7` identifies an already
-published candidate, not permission to reuse its tag or replace its assets.
+The source version is `0.6.0-rc8`; release qualification and publication are
+separate steps under [versioning](versioning.md). Never replace published
+candidate tags or assets.
 
 ## Starting point
 
-- Inspected Hew [main at e6bdf09](https://github.com/hew-lang/hew/tree/e6bdf09abaa50aba134ab1a0da2ba9739989d6d8).
-  [Main CI](https://github.com/hew-lang/hew/actions/runs/37901139708),
-  [nightly sanitizers](https://github.com/hew-lang/hew/actions/runs/37933275996)
-  and [FreeBSD x86_64 nightly](https://github.com/hew-lang/hew/actions/runs/37940742948)
-  passed for that revision and their recorded scopes.
+- Module membership, keyed construction, platform paths/native symbol fixes
+  and typed failure edges have merged through
+  [PR3659](https://github.com/hew-lang/hew/pull/3659),
+  [PR3664](https://github.com/hew-lang/hew/pull/3664),
+  [PR3661](https://github.com/hew-lang/hew/pull/3661) and
+  [PR3636](https://github.com/hew-lang/hew/pull/3636).
 - [Registry PR3666](https://github.com/hew-lang/hew/pull/3666) is merged.
   Official slash wire identities, custom dotted defaults/explicit slash modes,
-  signing checks and fallback handling are implemented. Its controlled
+  signing checks and fallback handling are implemented. Controlled
   [signed-install fixtures](https://github.com/hew-lang/hew/blob/4de1c83407a9dd3b4c2a9bc6ae0c67766613cf7c/hew-pkg/tests/test_registry_wire_install.rs)
-  passed with the actual CLI and native consumers; official package lookup
-  also passed. These prove the source fix, not live archive compatibility.
-  Published [rc7](https://github.com/hew-lang/hew/releases/tag/v0.6.0-rc7)
-  predates this fix.
+  exercise the CLI and native consumers. Published
+  [rc7](https://github.com/hew-lang/hew/releases/tag/v0.6.0-rc7)
+  predates the client fix.
+- The earlier rc8 candidate qualified by
+  [PR3673](https://github.com/hew-lang/hew/pull/3673) passed its
+  [cross-platform gate](https://github.com/hew-lang/hew/actions/runs/38027378763)
+  and [release dry run](https://github.com/hew-lang/hew/actions/runs/38027378726),
+  with publication skipped. Those results cover that revision and scope.
+  Later compiler/parser/formatter changes require fresh combined qualification.
+- [Windows child-pipe readiness](https://github.com/hew-lang/hew/pull/3675)
+  and [current capability descriptions](https://github.com/hew-lang/hew/pull/3674)
+  have merged, with PR, merge-queue and merged-main checks passing.
+  [Nightly sanitizers](https://github.com/hew-lang/hew/actions/runs/38139361238)
+  and [FreeBSD nightly](https://github.com/hew-lang/hew/actions/runs/38143935846)
+  passed on that main revision. Later compiler changes need their own evidence.
 - [Editor launch guidance](https://github.com/hew-lang/hew/pull/3660),
   [sanitizer guidance](https://github.com/hew-lang/hew/pull/3662) and the
   [VS Code formatter fix](https://github.com/hew-lang/vscode-hew/pull/21)
-  are merged. Their completed source work does not publish a new editor build.
-- Resolve candidate inclusion or deferral of open [PR3659](https://github.com/hew-lang/hew/pull/3659)
-  (module membership), [PR3664](https://github.com/hew-lang/hew/pull/3664)
-  (keyed construction) and [PR3661](https://github.com/hew-lang/hew/pull/3661)
-  (platform paths/native symbol collisions). Reuse those efforts.
-  [Typed failure edges](https://github.com/hew-lang/hew/pull/3636) have already
-  merged since the registry fixture qualification; recheck downstream source
-  and native ABI against the selected candidate.
+  are merged. Source completion does not publish a new editor build.
 
 ## Ecosystem inventory
 
@@ -41,14 +46,16 @@ Its rc7 source audit and pure-Hew tests passed; compiler minimums now agree
 with that audit. It did not qualify installed native packages against a new
 compiler candidate or publish archives.
 
-Read-only registry observation at 15:42 UTC and archive hashing at 15:46 UTC
-on 2026-10-09 still find every intended `0.3.0` version below absent. Package
+The historical registry observation at 15:42 UTC and archive hashing at 15:46 UTC
+on 2026-10-09 found every intended `0.3.0` version below absent. Recheck the
+version endpoints before qualification or publication; this dated inventory
+does not assert current registry state. Package
 links identify the canonical version-detail endpoints. The fifteen `0.2.0`
 archive hashes match registry metadata; PR9's source-only audit found removed
 `::` syntax under both rc4 and rc7. Checksums are not signature verification
 or execution evidence. Older `0.1.0` versions are outside that compatibility audit.
 
-| Intended package (`0.3.0` absent) | Existing `0.2.0` archive SHA-256 |
+| Intended package (`0.3.0` absent on 2026-10-09) | Observed `0.2.0` archive SHA-256 |
 | --- | --- |
 | [hew.auth.oauth](https://registry.hewpkg.com/api/v1/packages/hew/auth/oauth/0.3.0) | [`1b97176b181d19faf0158f6578e6ed8630f2c80978593d4fd17ca7a01b7bc9bd`](https://cdn.hewpkg.com/tarballs/hew/auth/oauth/0.2.0.tar.zst) |
 | [hew.dag](https://registry.hewpkg.com/api/v1/packages/hew/dag/0.3.0) | [`0c5cb70cfbe8855fef98b2b11edcf0db9dd6af0d8bc322216ecda6e9c8cb93af`](https://cdn.hewpkg.com/tarballs/hew/dag/0.2.0.tar.zst) |
@@ -116,16 +123,17 @@ PR3666 does not migrate incompatible source inside an old archive.
    ABI and the [ecosystem corpus/service tests](https://github.com/hew-lang/ecosystem/blob/d7bb375c8330b1d838bea6c71f49aa8def2240bf/docs/toolchain.md#the-corpus-gate).
    Check supported pure-Hew WASM consumers separately. Source checks alone,
    a metadata response or an archive hash are insufficient.
-4. **Resolve recorded failures and retain evidence.** The latest
-   [cross-platform gate](https://github.com/hew-lang/hew/actions/runs/37875862773)
-   was cancelled on an earlier PR3661 head, not the selected candidate.
-   [Coverage at e6bdf09](https://github.com/hew-lang/hew/actions/runs/37942830488)
-   failed: instrumented WASI parity could not find its runtime archive, and
-   runtime coverage reported `examples/supervisor_crash_budget.hew` failing
-   or timing out. Classify/fix or explicitly disposition those causes with
-   equivalent candidate checks. Record source SHA, run/job scope, outcomes,
-   archive hashes, signature identities and consumer outputs; keep missing,
-   failed, skipped and cancelled work visible.
+4. **Retain revision-bound evidence and unresolved scope.** The earlier
+   [cross-platform gate](https://github.com/hew-lang/hew/actions/runs/38027378763)
+   passed after portable fixture and deadline corrections. Its FreeBSD aarch64
+   result is build/smoke evidence, not a full suite or shipped archive.
+   The historical [coverage run](https://github.com/hew-lang/hew/actions/runs/37942830488)
+   failed on runtime archive lookup and supervisor execution; the latest
+   applicable nightly/coverage outcomes must be assessed separately from PR CI.
+   Record source SHA, run/job scope, outcomes, archive hashes, signature
+   identities and consumer outputs. Keep failed, skipped, cancelled and
+   unexecuted work visible. Reuse earlier evidence only when the relevant
+   source, configuration and artefact identities are established unchanged.
 
 ## Publication order and recovery
 

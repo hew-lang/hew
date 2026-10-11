@@ -35,7 +35,7 @@ fn wait_for_ticks(p: Pulse, at_least: i64) {
 
 #[test]
 fn periodic_handler_ticks_after_spawn() {
-    let p = spawn Pulse(count: 0);
+    let p = spawn Pulse { count: 0 };
     wait_for_ticks(p, 3);
 }
 
@@ -43,9 +43,9 @@ fn periodic_handler_ticks_after_spawn() {
 fn two_instances_tick_independently() {
     // `b` starts from zero after `a` has ticked, and both keep ticking once
     // both exist: the timers are per-instance, not shared across the type.
-    let a = spawn Pulse(count: 0);
+    let a = spawn Pulse { count: 0 };
     wait_for_ticks(a, 3);
-    let b = spawn Pulse(count: 0);
+    let b = spawn Pulse { count: 0 };
     let a_before = total_of(a);
     wait_for_ticks(b, 1);
     wait_for_ticks(a, a_before + 1);

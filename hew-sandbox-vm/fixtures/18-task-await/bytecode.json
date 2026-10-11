@@ -9,7 +9,7 @@
       "id": 0
     }
   ],
-  "compiler_version": "hew-wasm-0.6.0-rc7",
+  "compiler_version": "hew-wasm-0.6.0-rc8",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -682,7 +682,7 @@
       ],
       "entry": 0,
       "id": 1,
-      "name": "__hew_fn_main$closure$42",
+      "name": "__hew_fn_main$closure$43",
       "params": [
         {
           "own": "owned",
@@ -745,7 +745,7 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.0-rc7",
+  "hew_version": "0.6.0-rc8",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [

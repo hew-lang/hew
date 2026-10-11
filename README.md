@@ -17,7 +17,7 @@ A statically-typed, actor-oriented programming language for concurrent and distr
 curl -fsSL https://hew.sh/install | bash
 ```
 
-Pre-built binaries for Linux (x86_64, ARM64), macOS (x86_64, ARM64), FreeBSD (x86_64, ARM64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. See the [Getting Started Guide](https://hew.sh/docs/getting-started/) for installation options, editor setup, and troubleshooting.
+Pre-built binaries for Linux (x86_64, ARM64), macOS (x86_64, ARM64), FreeBSD 15.1 or newer (x86_64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. See the [Getting Started Guide](https://hew.sh/docs/getting-started/) for installation options, editor setup, and troubleshooting.
 
 ## Quick Start
 
@@ -146,12 +146,15 @@ the tree.
 `hew doc` is different: it accepts either one `.hew` file or a directory tree
 of `.hew` files to document.
 
-- `import foo;` resolves to the directory-form module at `foo/foo.hew` or to
-  `foo.hew` beside the importer — whichever exists. If **both** exist the
-  import is a hard error (``import `foo` is ambiguous: both ... exist``);
-  rename or remove one.
-- Other top-level `.hew` files inside `foo/` merge into the same module
-  automatically.
+- `import foo;` resolves to `foo.hew` beside the importer or, inside a package
+  (a directory with `hew.toml`, made by `hew init`), to the directory-form
+  module at `foo/foo.hew` — whichever exists. If **both** exist the import is
+  a hard error (``import `foo` is ambiguous: both ... exist``); rename or
+  remove one.
+- Other top-level `.hew` files inside a package's `foo/` merge into the same
+  module automatically. Outside a package every file is a module of its own.
+- Imports never depend on the working directory or on the name of the
+  directory a project was checked out into.
 - Child directories stay separate submodules, so import them explicitly — for
   example `import foo.bar;`.
 - Start with
@@ -216,7 +219,7 @@ actor Counter {
     receive fn total() -> i64 { count }
 }
 fn main() {
-    let counter = spawn Counter();
+    let counter = spawn Counter;
     counter.add(42) handle error {
         println(f"update failed: {error}");
         return;

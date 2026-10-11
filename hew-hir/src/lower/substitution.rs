@@ -430,7 +430,11 @@ pub(super) fn collect_call_sites_in_expr(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
-        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
+        HirExprKind::TaskRace {
+            members: elements, ..
+        }
+        | HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_call_sites_in_expr(elem, out, trait_out);
             }
@@ -462,8 +466,7 @@ pub(super) fn collect_call_sites_in_expr(
         HirExprKind::FieldAccess { object, .. } => {
             collect_call_sites_in_expr(object, out, trait_out);
         }
-        HirExprKind::Scope { body }
-        | HirExprKind::Race { body }
+        HirExprKind::Scope { body, .. }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::Loop { body, .. } => {
             collect_call_sites_in_block(body, out, trait_out);
@@ -472,7 +475,7 @@ pub(super) fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(scope, out, trait_out);
             collect_call_sites_in_expr(handler, out, trait_out);
         }
-        HirExprKind::ScopeDeadline { duration, body } => {
+        HirExprKind::ScopeDeadline { duration, body, .. } => {
             collect_call_sites_in_expr(duration, out, trait_out);
             collect_call_sites_in_block(body, out, trait_out);
         }

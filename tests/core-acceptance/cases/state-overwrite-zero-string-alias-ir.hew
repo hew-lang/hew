@@ -14,7 +14,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let k = spawn Keeper(cur: Wrap { leaf: Leaf { value: 1 } });
+    let k = spawn Keeper { cur: Wrap { leaf: Leaf { value: 1 } } };
     let _ = k.rewrite();
     0
 }

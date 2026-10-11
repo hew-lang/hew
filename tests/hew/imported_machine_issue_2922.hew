@@ -1,6 +1,6 @@
 //! Exact factory-and-carry shape for a private imported machine.
 
-import tests.hew.imported_machine_support.machine_defs;
+import imported_machine_support.machine_defs;
 
 fn carry(value: machine_defs.RunLifecycle) -> machine_defs.RunLifecycle {
     value

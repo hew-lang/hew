@@ -30,7 +30,7 @@ fn open(path: string) -> Stream<string> {
 }
 
 fn main() {
-    let counter = spawn Counter(journal: open("resource-read.bin"));
+    let counter = spawn Counter { journal: open("resource-read.bin") };
     match counter.increment(2) {
         .Ok(total) => println(total),
         .Err(_) => panic("increment failed"),

@@ -14,7 +14,7 @@ fn spawn_returns_the_actor_type() {
 }
 
 fn main() {
-    let c = spawn Counter(n: 0);
+    let c = spawn Counter { n: 0 };
 }
 ";
     let (prog, output) = common::parse_and_typecheck_inline(source);
@@ -31,7 +31,7 @@ fn main() {
             _ => None,
         })
         .expect("no main");
-    // Find the span of the `spawn Counter(n: 0)` expression (not the let stmt).
+    // Find the span of the `spawn Counter { n: 0 }` expression (not the let stmt).
     let spawn_span = main
         .body
         .stmts

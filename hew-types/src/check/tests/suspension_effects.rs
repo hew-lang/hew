@@ -148,7 +148,7 @@ actor Worker {
     receive fn checked() -> Result<i64, string> { .Ok(41) }
 }
 fn main() {
-    let worker = spawn Worker();
+    let worker = spawn Worker;
     let direct = worker.value();
     let child = fork worker.value();
     let joined = await child;
@@ -307,7 +307,7 @@ actor Worker {
 }
 
 fn main() {
-    let worker = spawn Worker();
+    let worker = spawn Worker;
     let socket = Socket { fd: 1 };
     let child = fork worker.read(socket);
     let result = await child;
@@ -348,7 +348,7 @@ fn select_join_ignores_a_diverging_winner() {
 
 #[test]
 fn select_classifies_an_actor_call_source_by_checked_dispatch() {
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let result = select { value from worker.value() => value }; }");
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker; let result = select { value from worker.value() => value }; }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(matches!(
         output
@@ -925,7 +925,7 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
             .collect::<Vec<_>>(),
         vec!["`await` joins a task; `i64` is not one"]
     );
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); stop(worker); stopped(worker); }");
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker; let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); stop(worker); stopped(worker); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.warnings.is_empty(), "{:?}", output.warnings);
 }

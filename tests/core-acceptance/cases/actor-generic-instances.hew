@@ -70,8 +70,8 @@ actor Printer<T: Display> {
 }
 
 fn main() {
-    let numbers = spawn Latest<i64>(seed: 1);
-    let names = spawn Latest<string>(seed: "initial".to_upper());
+    let numbers = spawn Latest<i64> { seed: 1 };
+    let names = spawn Latest<string> { seed: "initial".to_upper() };
     numbers.put(41).expect("put number");
     let name = "owned\0name".to_upper();
     names.put(name).expect("put name");
@@ -82,7 +82,7 @@ fn main() {
     assert(names.get().expect("get name").expect("set") == "OWNED\0NAME");
     assert(numbers.count().expect("number changes") == 102);
     assert(names.count().expect("name changes") == 101);
-    let records = spawn Latest(seed: Packet { label: "packet".to_upper(), data: "data\0bytes".to_bytes(), history: ["history".to_upper()] });
+    let records = spawn Latest { seed: Packet { label: "packet".to_upper(), data: "data\0bytes".to_bytes(), history: ["history".to_upper()] } };
     var seen = 0;
     for packet in records.repeat(3) {
         assert(packet.label == "PACKET");
@@ -91,11 +91,11 @@ fn main() {
         seen = seen + 1;
     }
     assert(seen == 3);
-    let numeric_printer = spawn Printer(item: 42);
-    let text_printer = spawn Printer(item: "rendered".to_upper());
+    let numeric_printer = spawn Printer { item: 42 };
+    let text_printer = spawn Printer { item: "rendered".to_upper() };
     assert(numeric_printer.show().expect("numeric display") == "<42>");
     assert(text_printer.show().expect("text display") == "<RENDERED>");
-    let record_printer = spawn Printer(item: Packet { label: "record".to_upper(), data: "payload".to_bytes(), history: [] });
+    let record_printer = spawn Printer { item: Packet { label: "record".to_upper(), data: "payload".to_bytes(), history: [] } };
     assert(record_printer.show().expect("record display") == "<RECORD>");
     assert(render(7 as i8) == "<7>");
     assert(render(true) == "<true>");

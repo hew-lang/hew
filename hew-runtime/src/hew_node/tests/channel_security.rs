@@ -101,7 +101,11 @@ fn tcp_dial_refuses_a_peer_without_noise() {
     // SAFETY: the node and target are valid for the call.
     let rc = unsafe { hew_node_connect(node.as_ptr(), target.as_ptr()) };
     let error = last_error();
-    assert_eq!(rc, -1, "a plaintext peer must be refused");
+    assert_eq!(
+        rc,
+        hew_cabi::node::NodeFailure::Refused as i32,
+        "a plaintext peer must be refused"
+    );
     assert!(
         error.contains(&ChannelRefusal::PlaintextPeer.to_string()),
         "the refusal must name the missing channel, got: {error}"

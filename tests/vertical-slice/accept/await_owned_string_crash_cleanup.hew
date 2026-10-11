@@ -25,7 +25,7 @@ actor CrashAfterUse {
 
 fn main() {
     let fresh = spawn Fresh;
-    let probe = spawn CrashAfterUse(fresh: fresh);
+    let probe = spawn CrashAfterUse { fresh: fresh };
     match probe.run(1) {
         .Ok(value) => println(f"unexpected={value}"),
         .Err(_) => println("handled-crash"),

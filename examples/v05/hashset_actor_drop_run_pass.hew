@@ -67,7 +67,7 @@ fn main() {
     names.insert("zeta");
     names.insert("eta");
     names.insert("theta");
-    let holder = spawn SetHolder(ints: ints, names: names);
+    let holder = spawn SetHolder { ints: ints, names: names };
     // Synchronous ask so the actor is alive and reachable; teardown (and the
     // state_drop_fn free of both non-empty sets) runs as the program winds down.
     let r = holder.ping();

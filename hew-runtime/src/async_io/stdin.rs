@@ -10,7 +10,7 @@
 //! zero-timeout `poll` reports it readable, and otherwise waits on the stdin
 //! reactor slot. Descriptor 0 stays blocking: `O_NONBLOCK` would change the
 //! open file description the terminal and parent shell share. On Windows one
-//! reader thread fills the buffer, bounded to [`BUFFER_LIMIT`], and reports
+//! reader thread fills the buffer through one complete line and reports
 //! readiness on the same slot. WASI runs one thread with nothing else to
 //! schedule while it waits, so there the read blocks at submission and the
 //! operation is returned complete.
@@ -40,7 +40,7 @@ static STDIN: Mutex<Buffer> = Mutex::new(Buffer {
 /// The most one read takes from the OS.
 const READ_CHUNK: usize = 64 * 1024;
 
-/// The most the Windows reader thread buffers ahead of the program.
+/// Pause Windows read-ahead at this size once a complete line is available.
 #[cfg(windows)]
 const BUFFER_LIMIT: usize = 64 * 1024;
 
@@ -213,7 +213,10 @@ fn reader_loop() {
     loop {
         {
             let mut buffer = STDIN.lock_or_recover();
-            while buffer.data.len() >= BUFFER_LIMIT || buffer.eof || buffer.error.is_some() {
+            while (buffer.data.len() >= BUFFER_LIMIT && buffer.data.contains(&b'\n'))
+                || buffer.eof
+                || buffer.error.is_some()
+            {
                 buffer = ROOM
                     .wait(buffer)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -39,7 +39,7 @@ actor Vault {
 
 supervisor Group {
     intensity: 1 within 60s;
-    child vault: Vault(sock: Socket { label: "sock" }, log: Socket { label: "log" });
+    child vault: Vault { sock: Socket { label: "sock" }, log: Socket { label: "log" } };
 }
 
 fn main() {

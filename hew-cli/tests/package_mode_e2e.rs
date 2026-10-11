@@ -15,6 +15,65 @@ use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen, run_bounded_command};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn package_check_keeps_the_toolchain_std_when_its_executable_is_unlinked() {
+    use std::os::fd::AsRawFd;
+
+    fn copy_std(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).expect("create shipped std directory");
+        for entry in std::fs::read_dir(from).expect("read std directory") {
+            let entry = entry.expect("read std entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("read std entry type").is_dir() {
+                copy_std(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).expect("copy shipped std source");
+            }
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("create relocated toolchain fixture");
+    let toolchain = dir.path().join("toolchain");
+    std::fs::create_dir_all(toolchain.join("bin")).expect("create toolchain bin");
+    copy_std(&repo_root().join("std"), &toolchain.join("std"));
+    let compiler = toolchain.join("bin/hew");
+    std::fs::copy(hew_binary(), &compiler).expect("copy compiler");
+    let package = dir.path().join("package");
+    std::fs::create_dir_all(package.join("std")).expect("create package std decoy");
+    write_package(&package, "stdlib_discovery", "main.hew", "");
+    std::fs::write(package.join("std/builtins.hew"), "invalid project std\n")
+        .expect("write project std decoy");
+    std::fs::write(
+        package.join("main.hew"),
+        "import std.link_monitor;\nfn main() { let id = link_monitor.MonitorId { value: 7 }; println(id.value); }\n",
+    )
+    .expect("write std consumer");
+    let check = |executable: &Path| {
+        let mut command = Command::new(executable);
+        command
+            .arg("check")
+            .current_dir(&package)
+            .env_remove("HEW_STD")
+            .env_remove("HEWPATH");
+        let output = run_bounded_command(command, "check with relocated compiler");
+        assert!(output.status.success(), "{}", describe_output(&output));
+    };
+    check(&compiler);
+    let linked = dir.path().join("linked-hew");
+    std::os::unix::fs::symlink(&compiler, &linked).expect("link relocated compiler");
+    check(&linked);
+
+    // Linux can execute the retained inode after its directory entry is gone.
+    let running = std::fs::File::open(&compiler).expect("retain compiler inode");
+    std::fs::remove_file(&compiler).expect("unlink compiler");
+    check(Path::new(&format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        running.as_raw_fd()
+    )));
+}
+
 /// Package builds resolve `libhew.a` by walking up from the working directory,
 /// so fixtures live under the repo root like every other linking test.
 fn workspace() -> tempfile::TempDir {

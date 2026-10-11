@@ -8,5 +8,5 @@ pub actor Worker {
 pub supervisor Rack {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child worker: Worker(id: 2) restart: temporary;
+    child worker: Worker { id: 2 } restart: temporary;
 }

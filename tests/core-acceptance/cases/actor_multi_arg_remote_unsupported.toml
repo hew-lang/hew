@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "UndefinedType"
-line = 26
-column = 28
-message = "unknown type `AskError`"
+code = "BoundsNotSatisfied"
+line = 28
+column = 25
+message = "remote actor `Echo` has no receive fn taking `i64` and returning `i64`"

@@ -15,12 +15,12 @@ supervisor App(config: AppConfig) {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child t: Tagged(name: config.label);
+    child t: Tagged { name: config.label };
 }
 
 fn main() {
     let cfg = AppConfig { label: "hello" };
-    let sup = spawn App(config: cfg);
+    let sup = spawn App { config: cfg };
     let t = sup.t;
     match t.name_len() {
         .Ok(n) => println(n),

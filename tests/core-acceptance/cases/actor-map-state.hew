@@ -22,7 +22,7 @@ actor Store {
 fn main() {
     var original: HashMap<string, string> = HashMap.new();
     original.insert("kept", "original");
-    let store = spawn Store(data: original, prefix: "shared actor field".repeat(3));
+    let store = spawn Store { data: original, prefix: "shared actor field".repeat(3) };
     store.set("name", "é🙂".repeat(20)).expect("set");
     assert(store.get("name").expect("get") == "é🙂".repeat(20));
     store.set("name", "replacement").expect("replace");

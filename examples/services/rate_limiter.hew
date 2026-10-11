@@ -93,10 +93,10 @@ fn main() {
     println("");
 
     // Create a limiter with 5 tokens, max 5, refilling 3 at a time
-    let limiter = spawn RateLimiter(tokens: 5, max_tokens: 5, refill_amount: 3);
+    let limiter = spawn RateLimiter { tokens: 5, max_tokens: 5, refill_amount: 3 };
     // Two API workers sharing the same limiter
-    let w1 = spawn ApiWorker(id: 1, limiter: limiter, accepted: 0, rejected: 0);
-    let w2 = spawn ApiWorker(id: 2, limiter: limiter, accepted: 0, rejected: 0);
+    let w1 = spawn ApiWorker { id: 1, limiter: limiter, accepted: 0, rejected: 0 };
+    let w2 = spawn ApiWorker { id: 2, limiter: limiter, accepted: 0, rejected: 0 };
     // Burst: send 8 requests through 2 workers (only 5 tokens available)
     println("--- Burst: 8 requests, 5 tokens ---");
     let _ = w1.handle_request(0);
@@ -122,7 +122,7 @@ fn main() {
     // as a bare statement lets main carry on; the task joins at main's scope
     // exit, so the remaining cycles still run to completion.
     println("--- After refill ---");
-    let timer = spawn RefillTimer(limiter: limiter, interval: 200ms, cycles: 3);
+    let timer = spawn RefillTimer { limiter: limiter, interval: 200ms, cycles: 3 };
     fork timer.start();
     sleep(250ms);
     let after_refill_r = limiter.available();

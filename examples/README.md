@@ -47,6 +47,10 @@ this progression:
 4. [`multifile/README.md`](multifile/README.md) / `03_text_stats/` — nested
    modules where `import parent;` and `import parent.child;` are distinct.
 
+Each of these directories carries a small `hew.toml`: a directory module
+exists only inside a package, and outside one every file is a module of its
+own. Start a multi-file program with `hew init`.
+
 In an application package, set `[package] main` when the entry is not
 `main.hew`, then use bare `hew check`, `hew build`, and `hew run`; imports
 resolve the rest. The explicit `main.hew` paths in these fixture collections

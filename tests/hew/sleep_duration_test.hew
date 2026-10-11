@@ -67,7 +67,7 @@ actor SleepActor {
 
 #[test]
 fn sleep_in_actor_suspends_and_resumes() {
-    let a = spawn SleepActor(woke: 0);
+    let a = spawn SleepActor { woke: 0 };
     match a.sleep_and_count(10ms) {
         .Ok(n) => assert(n == 1),
         .Err(_) => assert(false),
@@ -90,7 +90,7 @@ actor SleepUntilActor {
 
 #[test]
 fn sleep_until_in_actor_suspends_and_resumes() {
-    let a = spawn SleepUntilActor(woke: 0);
+    let a = spawn SleepUntilActor { woke: 0 };
     match a.sleep_until_and_count() {
         .Ok(n) => assert(n == 1),
         .Err(_) => assert(false),

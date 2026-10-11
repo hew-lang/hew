@@ -1,4 +1,4 @@
-// The retired pool-arity spelling: `count:` inside the init-arg parentheses
+// The retired pool-arity spelling: `count:` among the keys
 // on a pool child with no arity clause (#3253). The refusal names the clause
 // form rather than passing `count` on as an init field, which would surface as
 // a diagnostic about the actor's own fields.
@@ -15,7 +15,7 @@ supervisor Farm {
     strategy: simple_one_for_one;
     intensity: 3 within 60s;
 
-    pool workers: Worker(count: 2, value: 7);
+    pool workers: Worker { count: 2, value: 7 };
 }
 
 fn main() -> i64 {

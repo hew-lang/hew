@@ -15,12 +15,12 @@ supervisor App(config: Config) {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child r: Reader(name: config.label);
+    child r: Reader { name: config.label };
 }
 
 fn main() {
     let cfg = Config { label: "hello" };
-    let sup = spawn App(config: cfg);
+    let sup = spawn App { config: cfg };
     let r = sup.r;
     for v in r.stream() {
         println(f"{v}");

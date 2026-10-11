@@ -30,7 +30,7 @@ fn main() -> i64 {
     while i < 50 {
         let w = Narrow.B(1);
         let raw = cbor.encode(w);
-        let a = spawn Decoder(seq: i);
+        let a = spawn Decoder { seq: i };
         let r = a.decode_it(raw);
         match r {
             .Ok(v) => {

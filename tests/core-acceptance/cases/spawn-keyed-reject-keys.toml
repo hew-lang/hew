@@ -1,0 +1,63 @@
+[[case]]
+id = "spawn-keyed-reject-keys"
+intent = "An unknown, misspelt, repeated or deferred spawn key and a missing supervisor parameter are checker errors at the key, never a lowering failure."
+source = "cases/spawn-keyed-reject-keys.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_SPAWN_ARG_UNKNOWN"
+line = 23
+column = 45
+message = "actor `Pair` has no field `c`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_SPAWN_ARG_UNKNOWN"
+line = 24
+column = 34
+message = "actor `Pair` has no field `x`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_SPAWN_ARG_UNKNOWN"
+line = 24
+column = 37
+message = "actor `Pair` has no field `y`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "MissingActorSpawnArgument"
+line = 24
+column = 21
+message = "missing field `a` in spawn of actor `Pair`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "MissingActorSpawnArgument"
+line = 24
+column = 21
+message = "missing field `b` in spawn of actor `Pair`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_SPAWN_ARG_DUPLICATE"
+line = 25
+column = 37
+message = "spawn of `Pair` names `a` more than once"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 26
+column = 45
+message = "E_ACTOR_FIELD_DEFERRED: state field `items` of actor `Loader` is initialized by `init`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "MissingActorSpawnArgument"
+line = 27
+column = 20
+message = "missing parameter `b` in spawn of supervisor `Pool`"

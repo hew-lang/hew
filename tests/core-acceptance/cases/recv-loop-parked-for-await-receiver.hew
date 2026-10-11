@@ -84,7 +84,7 @@ supervisor App {
 
 fn main() {
     let (ready_tx, ready_rx) = stream.pipe(50).expect("ready");
-    let ready = spawn Ready(tx: ready_tx);
+    let ready = spawn Ready { tx: ready_tx };
     let app = spawn App;
     let receiver0 = app.receiver0;
     mailbox(receiver0, on_full: .Wait).run(0, ready).expect("start receiver");

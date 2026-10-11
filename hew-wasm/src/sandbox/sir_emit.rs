@@ -121,7 +121,6 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::SendErrorLocalShutdown => "SendErrorLocalShutdown",
         Role::SendErrorCancelled => "SendErrorCancelled",
         Role::SendErrorVersionMismatch => "SendErrorVersionMismatch",
-        Role::SendErrorUnauthorized => "SendErrorUnauthorized",
         Role::SendErrorBackpressure => "SendErrorBackpressure",
         Role::SendErrorDead => "SendErrorDead",
         Role::SendErrorWriteTimedOut => "SendErrorWriteTimedOut",
@@ -1408,6 +1407,9 @@ impl<'m> Walker<'m> {
             SemOpKind::TaskScopeClose { scope } => {
                 serde_json::json!({ "op": "task_scope.close", "scope": scope.0 })
             }
+            SemOpKind::TaskRace { scope, members } => {
+                serde_json::json!({ "op": "task.race", "scope": scope.0, "members": members.iter().map(operand).collect::<Vec<_>>() })
+            }
             SemOpKind::TaskSpawn { scope, callable } => serde_json::json!({
                 "op": "task.spawn",
                 "scope": scope.0,
@@ -2013,8 +2015,6 @@ const fn join_mode_name(mode: hew_sir::TaskScopeJoinMode) -> &'static str {
     match mode {
         hew_sir::TaskScopeJoinMode::Wait => "wait",
         hew_sir::TaskScopeJoinMode::PropagateFault => "propagate_fault",
-        hew_sir::TaskScopeJoinMode::CancelLosers => "cancel_losers",
-        hew_sir::TaskScopeJoinMode::CancelLosersAfterFault => "cancel_losers_after_fault",
     }
 }
 

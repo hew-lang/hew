@@ -17,7 +17,7 @@ actor SlowWorker {
 
 fn main() {
     println("=== Backpressure Test ===");
-    let worker = spawn SlowWorker(id: 1);
+    let worker = spawn SlowWorker { id: 1 };
     // A full mailbox cooperatively suspends this sender; it does not park a
     // runtime worker thread.
     for i in 0..8 {

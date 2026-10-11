@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use tower_lsp_server::ls_types::Uri;
@@ -28,6 +28,46 @@ impl FileUriExt for Uri {
     }
 }
 
+/// Resolve existing parents even when an editor has opened a new unsaved file.
+/// Appending an unresolved leaf to a lexical symlink path would misstate its
+/// workspace ownership. Resolve components before interpreting a later `..`.
+pub(super) fn resolved_physical_path(path: &Path) -> std::io::Result<PathBuf> {
+    use std::path::Component;
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return Ok(path);
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+            Component::Normal(_) => {
+                resolved.push(component.as_os_str());
+                match std::fs::canonicalize(&resolved) {
+                    Ok(path) => resolved = path,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        if std::fs::symlink_metadata(&resolved)
+                            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                        {
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    Ok(resolved)
+}
+
 /// Use a canonical file URI for dependency keys, retaining non-file URIs and
 /// paths that do not yet exist so unsaved documents can still be indexed.
 pub(super) fn source_file_key(uri: &Uri) -> Uri {
@@ -48,8 +88,6 @@ pub(super) fn same_source_file(left: &Uri, right: &Uri) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     #[test]

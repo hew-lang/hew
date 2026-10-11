@@ -29,6 +29,8 @@ struct Case {
     /// Flat input directory copied independently for each execution profile.
     fixtures: Option<PathBuf>,
     suites: Vec<String>,
+    #[serde(default)]
+    platforms: Vec<String>,
     timeout_seconds: u64,
     /// A case without a `kind` is `run`: compile and execute at O0 and O2.
     #[serde(default)]
@@ -229,6 +231,23 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     validate_manifest(&manifest, &root)?;
     let ratchet = load_expected_failures(&root, &manifest, current_platform())?;
     let mut selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
+    let platform = current_platform();
+    selected.retain(|case| {
+        let applicable =
+            case.platforms.is_empty() || case.platforms.iter().any(|member| member == platform);
+        if !applicable {
+            println!(
+                "EXCLUDED {} host={platform} platforms={:?}",
+                case.id, case.platforms
+            );
+        }
+        applicable
+    });
+    if selected.is_empty() {
+        return Err(format!(
+            "no selected core acceptance cases apply to {platform}"
+        ));
+    }
     if let Some(partition) = options.partition {
         selected = partition_cases(selected, partition);
     }
@@ -632,6 +651,12 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
         }
         if case.timeout_seconds == 0 {
             return Err(format!("{} has a zero timeout", case.id));
+        }
+        let mut platforms = std::collections::BTreeSet::new();
+        for platform in &case.platforms {
+            if !PLATFORMS.contains(&platform.as_str()) || !platforms.insert(platform) {
+                return Err(format!("{} has invalid platform membership", case.id));
+            }
         }
         if case.suites.is_empty()
             || case
@@ -1885,6 +1910,7 @@ mod tests {
             source: PathBuf::from(source_rel),
             fixtures: None,
             suites: suites.iter().map(ToString::to_string).collect(),
+            platforms: Vec::new(),
             // These cases run a stub compiler that returns at once. The budget
             // is generous so a loaded host cannot turn an expectation-matching
             // test into a stopwatch.

@@ -118,7 +118,7 @@ to know whether a handler finished; handle its failure envelope (§2.1.1).
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-**An actor is the type of its handle (normative).** `spawn Orders(...)` has
+**An actor is the type of its handle (normative).** `spawn Orders { ... }` has
 type `Orders`. A field, parameter, return, collection element or record field
 that holds an actor is written with the actor's own name, `self` inside an
 actor body is `Self` which is that actor, and a supervisor is addressed by its
@@ -232,7 +232,7 @@ fn load(store: Store, index: i64) -> bytes fails LoadError {
 }
 
 fn main() {
-    let store = spawn Store();
+    let store = spawn Store;
     store.put(b"\x01\x02").expect("put is delivered");
     match load(store, 0) {
         .Ok(block) => println(block.len()),
@@ -315,7 +315,7 @@ actor Counter {
 **Calling named actors:**
 
 ```hew,ignore
-let counter = spawn Counter(count: 0);
+let counter = spawn Counter { count: 0 };
 
 // No return type: the call waits until the handler has finished
 counter.increment(10)?;
@@ -408,7 +408,7 @@ These limitations do not establish sandbox or cross-platform execution parity.
 
 **Actor instantiation:**
 
-Actors are instantiated using the `spawn` keyword with constructor arguments matching the actor's `init` block parameters:
+Actors are instantiated with `spawn`. Like a record literal, a spawn names its keys in braces: the actor's state fields that `init` does not initialize, then its `init` parameters.
 
 ```hew
 actor Counter {
@@ -423,10 +423,10 @@ actor WorkerActor {
 }
 
 fn main() {
-    // Spawn with named field arguments
-    let counter = spawn Counter(count: 0);
-    // Spawn with no arguments (if actor has no-arg init or no init block)
-    let worker = spawn WorkerActor();
+    // Spawn with keys, in braces like a record literal
+    let counter = spawn Counter { count: 0 };
+    // An actor with no keys to supply is spawned by its name alone
+    let worker = spawn WorkerActor;
     stop(counter);
     stopped(counter);
     stop(worker);
@@ -434,7 +434,47 @@ fn main() {
 }
 ```
 
-> **Note:** Named actor spawn always uses parenthesized arguments, even when empty. This is distinct from lambda actor syntax, which uses `actor |params| { body }`.
+**Keyed construction (normative).** Parentheses hold positional arguments and
+braces hold keyed ones, so a spawn takes its keys in braces and binds each by
+name, never by position:
+
+- The keys are the state fields that `init` does not initialize (D447) and the
+  `init` parameters, which never share a name (D458). A field with a default
+  may be omitted; every other key is required. A supervisor's keys are its
+  header parameters.
+- The values evaluate left to right as written; defaults follow. Shorthand
+  (`spawn Pair { a, b }`) means `a: a, b: b`, as in a record literal.
+- An unknown key is `E_SPAWN_ARG_UNKNOWN` and a repeated one
+  `E_SPAWN_ARG_DUPLICATE`, both reported at the key; a field `init`
+  initializes is `E_ACTOR_FIELD_DEFERRED`.
+- A spawn with no keys is written `spawn Store`. `spawn Store {}` is refused
+  (`E_EMPTY_KEY_BRACES`), and so is `..base` (`E_SPAWN_BASE`): an actor has no
+  value to spread from.
+- The retired parenthesised list `spawn Pair(a: 1, b: 2)` is refused with
+  `E_SPAWN_PAREN_ARGS` and a fix-it; `hew fmt --migrate` rewrites it.
+- Where a block follows an expression, spawn braces follow the record-literal
+  rule of the shorthand section: write `(spawn Gen { n })` there.
+
+```hew
+actor Pair {
+    let a: i64;
+    let b: i64;
+    receive fn show() -> string {
+        f"a={a} b={b}"
+    }
+}
+
+fn main() {
+    let a = 1;
+    let b = 2;
+    let same = spawn Pair { b, a }; // keyed, so order does not matter
+    let swapped = spawn Pair { a: b, b: a };
+    println(same.show().expect("show")); // a=1 b=2
+    println(swapped.show().expect("show")); // a=2 b=1
+}
+```
+
+A spawn is distinct from lambda actor syntax, which uses `actor |params| { body }`.
 
 Actor behaviours can also be defined via traits:
 
@@ -514,7 +554,7 @@ fn main() {
 
 ```ebnf
 LambdaActorExpr = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
-ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Counter(count: 0) *)
+ActorSpawn      = "spawn" Path TypeArgs? [ "{" FieldInitList "}" ] ;  (* spawn Counter { count: 0 } *)
 ```
 
 **Type system:**
@@ -555,7 +595,7 @@ actor Counter {
 
 fn main() {
     // Spawn a named actor
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     // A lambda actor expression has the type `actor(M) -> R`
     let worker: actor(i64) = actor |msg: i64| {
         println(msg);
@@ -1008,7 +1048,8 @@ In a named field list, a field written as a bare identifier takes the value
 of the binding with that name: `name` means `name: name`. The rule is the same
 wherever fields are named by an initializer — record literals, enum struct
 variants (`Type.Variant { … }` and contextual `.Variant { … }`), record
-update, `spawn` arguments, and machine `emit` and transition field lists — and
+update, `spawn` keys and supervisor child keys, and machine `emit` and
+transition field lists — and
 mirrors the record pattern, where `.Circle { radius }` binds the field
 `radius` to a name of the same spelling. Bare and explicit fields mix in any
 order, and a bare field is a named field: it overrides `..base` and counts
@@ -1058,7 +1099,8 @@ A machine transition body `{ name }` is the expression body (§3.11.3); a field
 list there needs two fields or an explicit one.
 
 Named call arguments (§12.7) take no shorthand: `f(name)` is a positional
-argument.
+argument. Keyed lists use braces and parentheses are positional, so a bare
+name binds by name only inside braces.
 
 ### 3.2 Mutability
 
@@ -1071,6 +1113,38 @@ place rooted at it can be assigned. `p.x = …`, `v[0] = …`, `m["k"] = …`, a
 `t.0 = …` on a `let` binding are all `MutabilityError` (User channel) carrying
 the `let`→`var` fix-it. The wall is about the binding, not about the syntax
 used to reach through it.
+
+**Deferred local initialization (normative).** A single `let` or `var` binding
+may omit its initializer when it has an explicit type: `let label: string;`.
+The declaration creates no value and supplies no implicit zero. The first
+whole-value assignment initializes it; a `let` permits exactly that one store.
+A read, capture, compound assignment, field or indexed store requires a value
+on every reaching path. A field or element cannot initialize part of a local.
+
+Every reaching arm of a branch must agree on initialization, even when no
+later read appears. Returning, breaking, continuing, propagating an error or
+panicking leaves the immediate join. A loop, closure, generator, actor lambda
+or deferred body cannot provide the first store of an outer binding. Bindings
+declared inside those bodies follow the ordinary rule. Never-initialized locals
+release nothing; initialized locals receive normal lifetime cleanup. The first
+store of a `var` is initialization rather than mutation for the `use let` lint.
+Deferred actor fields follow the same initialization rule (§3.4, D447).
+
+```hew
+fn classify(ready: bool) -> (string, bool) {
+    let label: string;
+    let retry: bool;
+    if ready { label = "ready"; retry = false; }
+    else { label = "waiting"; retry = true; }
+    (label, retry)
+}
+```
+
+Missing annotations and valueless patterns are `E_DEFERRED_DECL_TYPE` and
+`E_DEFERRED_DECL_PATTERN`. Reading before assignment is
+`E_LOCAL_UNINITIALIZED`; differing initialization at a join or a first store
+inside a deferred body is `E_LOCAL_CONDITIONAL_INIT`. Where a mutable binding
+has an obvious empty value, diagnostics suggest writing it explicitly.
 
 **The mutating receiver.** A method that mutates its receiver declares
 `var self` (§3.6). Calling one needs a `var` binding: `let p = Counter { n: 0 };
@@ -1393,7 +1467,7 @@ actor Outbox {
 }
 
 fn main() {
-    let outbox = spawn Outbox(capacity: 0);
+    let outbox = spawn Outbox { capacity: 0 };
     println(outbox.is_closed().expect("outbox replies"));
 }
 ```
@@ -1414,7 +1488,7 @@ value closes.
 | ordinary data | scalars, strings, bytes, cloneable records/enums and collections | an independent logical value | snapshot when sendable | automatic recursive release |
 | affine composite | an aggregate containing a non-copyable owner, or `dyn Trait` without a clone contract | transfers ownership | requires a valid transfer contract | automatic release of owned members |
 | linear value | a type marked `#[linear]` | transfers ownership | transfers ownership when sendable | must be explicitly consumed |
-| pid handle | `Pid`, `ChildRef` | names the same actor or role | copies the identity | use `close` to request actor termination |
+| pid handle | `Pid`, `ChildRef` | names the same actor or role | copies the identity | use `stop` to request actor termination |
 | counted handle | `Rc`, `Weak`, `actor(M) -> R` | retains the same identity | subject to handle-specific sendability rules | releases a reference |
 | opaque/resource handle | pipe halves, sockets, user `#[resource]` types | transfers ownership | local transfer where admitted; no wire serialization | declared consuming close |
 | callable | closure | copies independent state or transfers affine captures, according to its capabilities | subject to callable boundary restrictions | releases captures |
@@ -1462,8 +1536,8 @@ actor Forwarder {
 }
 
 fn main() {
-    let handler = spawn Handler();
-    let forwarder = spawn Forwarder();
+    let handler = spawn Handler;
+    let forwarder = spawn Forwarder;
     let _ = forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
@@ -1517,9 +1591,9 @@ actor Broadcaster {
 }
 
 fn main() {
-    let first = spawn Handler();
-    let second = spawn Handler();
-    let broadcaster = spawn Broadcaster();
+    let first = spawn Handler;
+    let second = spawn Handler;
+    let broadcaster = spawn Broadcaster;
     let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 
@@ -1618,12 +1692,14 @@ containing one — is a fail-closed compile error, never a silent copy.
 Hew uses a file-based module system inspired by Rust:
 
 - **File = module**: Each `.hew` file is a module. The file name is the module name.
-- **Directory = namespace**: Directories create nested namespaces.
+- **Directory = namespace**: Directories create nested namespaces. Inside a
+  package, a directory `D` holding `D/D.hew` is one module spread over its
+  files (§3.5.1).
 - **Visibility**: All declarations are private by default. Use `pub` to export.
 - **Imports form a DAG (normative)**: a module may not import itself, directly or through other modules, whatever the imported declarations are. The compiler reports the cycle with every import on its path; break it by moving the shared declarations into a module both sides import.
 
 ```hew
-// src/network/tcp.hew
+// network/tcp.hew
 // This is module network.tcp
 
 pub type Connection {
@@ -1717,19 +1793,28 @@ The same prefix applies to any item kind: `package type`, `package const`, `pack
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 
-A module may span multiple files inside a dedicated directory. When the
-compiler resolves `import greeting;` it looks for either:
+A module may span multiple files inside a dedicated directory. Which module a
+file belongs to depends only on where it sits relative to its **anchor**, a
+directory the code carries with it:
 
-1. A single file `greeting.hew` beside the importing file (**single-file form**), or
-2. A directory named `greeting/` that contains a file `greeting/greeting.hew`
-   (**directory form** — the entry file's stem must match the directory name).
+- the standard-library root, for a file under `<std root>/std/`;
+- otherwise the nearest directory at or above the file that holds `hew.toml`
+  (the file's package);
+- otherwise nothing: the file is **loose**.
 
-In directory form, **every other `.hew` file in that directory is a peer
-file**. The compiler parses all peer files and merges their items into the same
-module namespace, in deterministic (sorted) order.
+The anchor directory's own name is never read. Renaming a checkout, installing
+a package from the registry or linking it as a path dependency gives every
+file the same module.
+
+A directory `D` strictly below an anchor that contains `D/D.hew` is a
+**directory module**. `D/D.hew` is its **entry file**, and every other `.hew`
+file at the top level of `D`, except `*_test.hew` test files, is a **peer
+file**. The compiler parses the entry and its peers and merges their items
+into one module namespace, in deterministic (sorted) order.
 
 ```
 myapp/
+├── hew.toml           ← [package] name = "myapp"
 ├── main.hew           ← import greeting;
 └── greeting/
     ├── greeting.hew         ← entry (dir name == file stem)
@@ -1770,24 +1855,37 @@ statements.
 
 **Rules:**
 
-- The entry file is identified by `dir_name == file_stem` (e.g.
-  `greeting/greeting.hew`). If no such file exists, import resolution fails.
+- A package's **root module** is the single file `<leaf>.hew` in the package
+  directory, where `<leaf>` is the last segment of `[package] name`: package
+  `acme.http` has its root module in `http.hew`. Every other top-level file of
+  the package is a module of its own (`client.hew` is `acme.http.client`). A
+  multi-file module is always a named subdirectory.
+- Loose files never form directory modules; their directories are only
+  namespaces, so `import meshproto.radio` still finds `meshproto/radio.hew`.
+  A multi-file module needs a package (`hew init`).
 - The directory is the module's only import spelling. The entry file
   (`import greeting.greeting;`) is refused as `E_ENTRY_FILE_IMPORT`; a user
   package's peer file imported directly is refused as `E_PEER_IMPORT`. Both
-  name `greeting` as the fix.
-- All other `.hew` files at the **top level** of the directory are peer files.
-  Sub-directories are not automatically included; they must be imported
+  name `greeting` as the fix. A standard-library peer stays importable by file
+  (`std.net.http.http_client`) and loads the whole directory module.
+- Sub-directories are not automatically included; they must be imported
   explicitly.
 - Peer files are merged in sorted filename order (deterministic across
   platforms).
 - A peer file may itself contain `import` statements; those imports are
   resolved recursively.
-- Duplicate `pub` names across the entry and its peers are a **compile error**.
-  Each public symbol must have a unique name within the merged module.
+- Duplicate `pub` names across the entry and its peers are a **compile error**
+  that names both files. Each public symbol must have a unique name within the
+  merged module.
 - Peer files participate in the same module body. Private items remain private
   to the merged module from outside imports, but peer files are not isolated
   from one another.
+- A test file `foo_test.hew` compiles with the directory module it sits in, or
+  else with `foo.hew` beside it.
+- `hew check`, the language server, `hew test`, `hew build` and migration all
+  assign each file to the same module. Checking an entry or a peer checks the
+  whole directory module, and checking a package's root module checks it as
+  its importers see it.
 
 A working example is at
 [`examples/directory_module_demo/`](../../examples/directory_module_demo/README.md).
@@ -1823,7 +1921,36 @@ hew doc std/
 
 This produces an index plus per-module pages for the shipped `std/` sources.
 
-#### 3.5.3 Per-module type namespacing
+#### 3.5.3 Anchors and search roots
+
+A dotted import `a.b.c` written in file `F` is looked for in four places, in
+order:
+
+1. `std.*` resolves from the standard-library root only (§3.5.2).
+2. A path that starts with the whole dotted name of `F`'s package resolves
+   inside the package directory: the bare package name is its root module
+   (`<leaf>.hew`), and `acme.http.client` is `client.hew` in package
+   `acme.http`. Tests and examples in a package import it this way, whatever
+   directory they sit in.
+3. Paths relative to `F`'s directory: the flat form `a/b/c.hew`, and the
+   directory form `a/b/c/c.hew` when that file roots a module — a directory
+   module's entry, or the `c.hew` of a package whose `hew.toml` sits in
+   `a/b/c/`. A loose `a/b/c/c.hew` is reached only by its flat spelling
+   `a.b.c.c`. A file below its package's root also reaches the package's
+   modules by their path from the root: `import wire;` in
+   `meshproto/radio.hew` finds the package's `wire.hew`.
+4. Dependencies: the packages installed under the project's
+   `.hew/packages/`, then the `--pkg-path`, `hew.` and `ecosystem.` roots.
+
+The working directory is never searched, and neither is the
+standard-library root for a module outside `std`. When two different files
+answer one import, it is refused as ambiguous. Inside a package, an import
+that resolves from the standard library, from the package's own name, from the
+package root or beside the importing file needs no `[dependencies]` entry;
+anything else must be a
+declared dependency.
+
+#### 3.5.4 Per-module type namespacing
 
 Types defined in different modules are distinct even if they share a name. A
 `Point` defined in `geometry` and a `Point` defined in `graphics` are unrelated
@@ -2120,7 +2247,7 @@ state field; bare `count` is the same state access.
 - Available in `receive fn` and `fn` methods and in lifecycle hooks
 - Sendable: it may be passed as a message argument or stored in a field
 - Read-only: assignment to `self` is rejected at check time
-- Actor termination uses the close/closed contract (§4.10); a completion
+- Actor termination uses the stop/stopped contract (§4.10); a completion
   call that waits on its own handler is a wait cycle, not a stop primitive.
 
 `this` is not a keyword and carries no actor meaning; the handle is `self`
@@ -2206,9 +2333,9 @@ actor Broadcaster {
 }
 
 fn main() {
-    let first = spawn Receiver();
-    let second = spawn Receiver();
-    let broadcaster = spawn Broadcaster();
+    let first = spawn Receiver;
+    let second = spawn Receiver;
+    let broadcaster = spawn Broadcaster;
     let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
@@ -2913,9 +3040,9 @@ actor Broadcaster {
 }
 
 fn main() {
-    let first = spawn Receiver();
-    let second = spawn Receiver();
-    let broadcaster = spawn Broadcaster();
+    let first = spawn Receiver;
+    let second = spawn Receiver;
+    let broadcaster = spawn Broadcaster;
     let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
@@ -3296,8 +3423,8 @@ actor Latest<T> {
 }
 
 fn main() {
-    let numbers = spawn Latest<i64>();
-    let names = spawn Latest<string>();
+    let numbers = spawn Latest<i64>;
+    let names = spawn Latest<string>;
     numbers.put(41).expect("put succeeds");
     names.put("hew").expect("put succeeds");
     println(f"{numbers.get().expect("get succeeds").expect("set")} {names.get().expect("get succeeds").expect("set")}");
@@ -3308,7 +3435,7 @@ fn main() {
 }
 ```
 
-`spawn Latest<i64>()` instantiates explicitly. When the init arguments fix the
+`spawn Latest<i64>` instantiates explicitly. When the init arguments fix the
 parameters, they are inferred the way record type arguments are:
 
 ```hew
@@ -3330,7 +3457,7 @@ actor Cache<K: Hash + Eq, V: Clone> {
 fn main() {
     var seed: HashMap<string, i64> = HashMap.new();
     seed.insert("answer", 42);
-    let cache = spawn Cache(entries: seed); // K = string, V = i64
+    let cache = spawn Cache { entries: seed }; // K = string, V = i64
     let found = cache.lookup("answer") handle error {
         .None
     };
@@ -3367,11 +3494,11 @@ actor Worker<Job: Send> {
 supervisor Pool<Job: Send> {
     strategy: one_for_one;
     intensity: 3 within 10s;
-    child worker: Worker<Job>(done: 0);
+    child worker: Worker<Job> { done: 0 };
 }
 
 fn main() {
-    let workers = spawn Pool<string>();
+    let workers = spawn Pool<string>;
     let completed = workers.worker.run("parse").expect("the example worker completes");
     println(completed);
     stop(workers);
@@ -4357,7 +4484,7 @@ machine Door {
         }
     }
 
-    on Open(by): Shut => Ajar { by: by }
+    on Open { by }: Shut => Ajar { by: by }
     on Close: Ajar => Shut;
 
     default { state }
@@ -4379,7 +4506,10 @@ fn main() {
 vocabulary. A state is a unit (`state Shut,`) or carries named fields, and a
 fielded state may declare `entry` and `exit` hooks (§3.11.5). A rule head is
 `on Event: Source => Target`, optionally with a payload head binding
-(`on Open(by):`), `reenter`, and a `when` guard.
+(`on Open { by }:`), `reenter`, and a `when` guard. The head binding names
+event fields in braces, as the record pattern `.Open { by }` does, and binds
+each to a local of the same name; the retired `on Open(by):` is refused with
+`E_EVENT_HEAD_PARENS` and a fix-it.
 
 **Surface spelling** (an illustration of what `hew-parser` accepts, not a
 normative grammar — see §12):
@@ -4414,7 +4544,7 @@ CompositeState = "state" Ident "{"
                    { TransitionDecl }               (* parent-level rules *)
                  "}" ;
 
-TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
+TransitionDecl = "on" Ident [ "{" Ident { "," Ident } "}" ] ":"
                  StatePattern "=>" StatePattern
                  [ "reenter" ] [ "when" Expr ] TransitionBody ;
 TransitionBody = ";" | "{" FieldInitList "}" | Block ;
@@ -4773,7 +4903,7 @@ actor ConnectionManager {
 }
 
 fn main() {
-    let manager = spawn ConnectionManager();
+    let manager = spawn ConnectionManager;
     let _ = manager.handle(.Connect); // established on 8080
     let _ = manager.handle(.Close); // closed
 }
@@ -4908,7 +5038,8 @@ body. `await` is reserved for `Task<T>` and `Vec<Task<T>>` (§4.4).
 
 ### 4.1 The Task Type
 
-`Task<T>` owns a concurrent computation whose ordinary result has type `T`.
+`Task<T>` denotes an inferred scoped handle and cannot be written as a type
+annotation. It owns a concurrent computation whose ordinary result has type `T`.
 It is affine and cannot be sent as an actor message. Its owner may join it
 once. The task may be pending, running, completed with a value, cancelled or
 faulted; cancellation and faults are structured outcomes, not extra variants
@@ -5010,8 +5141,8 @@ task and returns values in vector order, not completion order.
 | `Vec<Task<Result<T, E>>>` | `Vec<Result<T, E>>` |
 
 There is no implicit `Ok` wrapper and no automatic Result flattening.
-`(await task)?` is meaningful when `T` is an Option or Result accepted by
-`?`. It is not a cancellation-handling operator. Task faults and cancellation
+`await task?` applies `?` to the awaited value, as does `(await task)?`, when
+`T` is an Option or Result accepted by `?`. It is not a cancellation-handling operator. Task faults and cancellation
 follow the structured scope path (§4.5).
 
 ```hew
@@ -5033,7 +5164,7 @@ ordinary result values.
 
 Actor handles, actor-call results and stream operations are not await operands.
 A concurrent actor call is `fork worker.compute(x)`; the task result is the
-actor completion envelope. Actor termination uses `close` or `closed`, and
+actor completion envelope. Actor termination uses `stop` or `stopped`, and
 stream iteration uses plain `for` (§4.10, §4.12).
 
 ### 4.5 Cancellation
@@ -5163,7 +5294,7 @@ completion envelope follows §2.1.1; submission still requires a mailbox view.
 
 | Aspect | Structured task | Actor |
 | --- | --- | --- |
-| Start | `fork call(...)` or `fork { ... }` | `spawn Actor(...)` or a lambda actor |
+| Start | `fork call(...)` or `fork { ... }` | `spawn Actor { ... }` or a lambda actor |
 | Result | `await` yields the declared `T` | a completion call yields the actor envelope |
 | Application error | an ordinary Result value | declared `fails` error reaches the completion envelope |
 | Fault | propagates through the owning scope | belongs to the actor and its supervisor |
@@ -5312,9 +5443,10 @@ fn main() {
     //         }
     //     }
     let accepted = scope within 50ms {
-        let conn = listener.accept();
-        conn.close();
-        true
+        match listener.accept() {
+            .Ok(conn) => { conn.close(); true }
+            .Err(_) => false,
+        }
     } handle failure {
         false
     };
@@ -5380,44 +5512,46 @@ native actor-call gap is recorded in §2.1.1.
 
 #### 4.11.2 `race` Expression
 
-`race { ... }` runs its operands concurrently and yields the first one to
-complete. Completion is completion: an operand that returns an ordinary
-`Err` wins the race exactly as an `Ok` does, because a result is a result.
-Every loser is cancelled and drained before the expression returns.
+`race [ ... ]` starts a group and returns `Task<T>`. Its operands are ordinary
+calls or existing `Task<T>` handles. Calls prepare their inputs in source order
+and run concurrently; handles transfer into the group and cannot be joined or
+used again. Every operand has the same result type, allowing `!` for a child
+that cannot return normally.
 
 ```hew,ignore
-let fastest = race {
-    primary.fetch(key),
-    replica.fetch(key),
-};
+let primary = fork primary.fetch(key);
+let fastest = race [primary, replica.fetch(key)];
+let response = await fastest;
 ```
 
-Operands are plain calls (§4.0). `await` is never written on a `race`
-operand; the `race` is what waits. The spelling is refused at check time
-with a fix-it that deletes it, matching `select`'s own arm-source rule
-(§4.11.1).
+The group keeps every child registered with its original scope and preserves
+its cancellation ancestry. It cannot extend a child's lifetime, escape the
+surrounding scope or transfer a task handle across a `Send` boundary. A scope
+also joins an unobserved race group before releasing its own resources.
 
 **Type rule:**
 
 ```
-race { e1, e2, ... } : T
-where e1: T, e2: T, ...
+race [ e1, e2, ... ] : Task<T>
+where each ei is a call yielding T or an owned Task<T>
 ```
 
-All operands share one type and the expression has that type. There is no
-`Result` flattening: if the operands yield `Result<U, E>`, so does the
-`race`.
+**Completion and cleanup.** The first normal completion wins, including an
+ordinary `Err`. There is no `Result` flattening. Pending losers are cancelled;
+all child frames and abandoned results finish cleanup before the group becomes
+ready. A child's trap cancels and drains the other members before propagating.
+Actual loser or cleanup faults remain failures, while cancellation introduced
+solely because a sibling won is suppressed. If cleanup fails after a winner
+produces an owned value, that value is released before the group reports failure.
 
-**Loser cleanup.** A losing operand is cancelled by the same discipline the
-`select` table gives its form (§4.11.1): an in-flight ask is withdrawn from
-the target mailbox or its reply sink is tombstoned, a pending receive is
-withdrawn from the pipe core, and a running child unwinds through its
-`defer` blocks. The `race` expression does not return until every loser has
-been drained. This does not retract work already dispatched to another actor
-or undo an external effect; cancelling a caller is not a transaction rollback.
+`await race [ ... ]?`, `await fork work()?` and `await task?` propagate the
+awaited `Result`. Parentheses remain available for explicit grouping. An
+ordinary unary prefix keeps its usual operand propagation: `-number()?` negates
+the successful number and `!flag()?` negates the successful boolean.
 
-**Traps.** A trapping operand is not a completion. The remaining operands
-are cancelled and the trap propagates to the enclosing context.
+Cancellation does not retract work already dispatched to another actor or
+undo an external effect. It waits for producers and consuming cleanup to stop;
+it is not a transaction rollback.
 
 #### 4.11.3 `after` and Deadlines
 
@@ -5462,7 +5596,7 @@ diagnostic pointing at the offending position.
 | Composition                                              | Legality        | Rationale                                                                                                                                                                                          |
 | -------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `select {}` inside a `scope {}` body or child             | Legal           | The `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
-| `let r = fork select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the task's result type is the `select` expression's type.                                                                                  |
+| `let r = fork { select { ... } }`                             | Legal           | A child task's block may return a `select` expression; the task's result type is the `select` expression's type.                                                                                  |
 | `scope {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                               |
 | `scope { ... }` as a `select` arm source                  | **Rejected**    | A scope produces a value and owns a lexical lifetime; it is not a select registration. Fork the work and use the resulting task as the arm source, without `await`. |
 
@@ -5580,9 +5714,40 @@ supervisor MyPool {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child worker1: Worker(id: 1, count: 0);
-    child worker2: Worker(id: 2, count: 0) restart: transient;
-    child logger: Logger(level: 3) restart: temporary stop: 10s;
+    child worker1: Worker { id: 1, count: 0 };
+    child worker2: Worker { id: 2, count: 0 } restart: transient;
+    child logger: Logger { level: 3 } restart: temporary stop: 10s;
+}
+```
+
+**Header parameters.** `supervisor Name(param: Type, ...)` declares the values
+a spawn of the supervisor supplies: `spawn Name { param: value, ... }`. Every
+parameter is a required key, and child keys may read the parameters. Child
+handles are reached as fields of the supervisor handle.
+
+```hew
+type Plan {
+    name: string;
+    kind: i64;
+}
+
+actor RoleWorker {
+    let plan: Plan;
+    var failed: bool = false;
+    receive fn describe() -> string {
+        f"{plan.name} kind={plan.kind} failed={failed}"
+    }
+}
+
+supervisor RoleBranch(plan: Plan) {
+    strategy: one_for_one;
+    intensity: 2 within 60s;
+    child role: RoleWorker { plan } restart: transient;
+}
+
+fn main() {
+    let branch = spawn RoleBranch { plan: Plan { name: "relay", kind: 2 } };
+    println(branch.role.describe().expect("describe")); // relay kind=2 failed=false
 }
 ```
 
@@ -5597,11 +5762,14 @@ supervisor MyPool {
 
 **Child specifications:**
 
-- `child <name>: <ActorType>(<field>: <expr>, ...)` — a static supervised child.
-  Init args are named (positional args are rejected with a migration diagnostic).
-- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>;` — a pool of `N`
-  fungible children (only under `simple_one_for_one`). The parenthesised args
-  are the per-spawn template, exactly as for `child`; `count:` is the arity.
+- `child <name>: <ActorType> { <key>: <expr>, ... }` — a static supervised
+  child. Its keys are those a `spawn` of the actor takes (§2), with the same
+  shorthand, defaults and refusals; a child with no keys is written
+  `child <name>: <ActorType>;`. The retired parenthesised list is refused with
+  `E_CHILD_PAREN_ARGS` and a fix-it.
+- `pool <name>: <ActorType> { <key>: <expr>, ... } count: <N>;` — a pool of `N`
+  fungible children (only under `simple_one_for_one`). The braces hold the
+  per-spawn template, exactly as for `child`; `count:` is the arity.
 - Per-child suffix clauses, accepted in any order:
   - `restart: permanent | transient | temporary` (optional, default
     `permanent`). This is the only restart spelling — bare `T permanent` and
@@ -5618,7 +5786,7 @@ supervisor MyPool {
 
 **Pool arity is a clause, not an init field (normative).** `count:` sits
 beside `restart:` and `stop:` in the child's clause namespace, and the
-parenthesised argument list stays the actor's own field namespace. An actor
+braces stay the actor's own key namespace. An actor
 that happens to declare a field named `count` is therefore poolable like any
 other, and its `count` field is set the same way every other field is. The
 two namespaces never collide, so no diagnostic about pool arity can land on a
@@ -5685,16 +5853,16 @@ supervisor Inner {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child w1: Worker(id: 1, count: 0);
-    child w2: Worker(id: 2, count: 0);
+    child w1: Worker { id: 1, count: 0 };
+    child w2: Worker { id: 2, count: 0 };
 }
 
 supervisor Root {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child workers: Inner();
-    child cache: CacheActor(capacity: 1000);
+    child workers: Inner;
+    child cache: CacheActor { capacity: 1000 };
 }
 ```
 
@@ -5704,7 +5872,7 @@ When a child supervisor's restart budget is exhausted, it escalates to its paren
 
 ```hew,ignore
 fn main() {
-    let pool = spawn MyPool();
+    let pool = spawn MyPool;
     sleep(50ms);
 
     // Access children by declared name
@@ -5719,7 +5887,7 @@ fn main() {
 }
 ```
 
-- `spawn SupervisorName(...)` — starts a supervisor with its declared children
+- `spawn SupervisorName { ... }` — starts a supervisor with its declared children
 - `sup.child_name` — named actor-child access via field syntax. The compiler
   resolves the child name to a static slot and returns `ChildRef<Actor>`, which
   re-resolves the current incarnation on every ask or tell. The child name must
@@ -5943,7 +6111,7 @@ actor Journal {
 
 fn main() {
     let stop = os.shutdown_signal();
-    let journal = spawn Journal();
+    let journal = spawn Journal;
     for i in 0..3 {
         let stopping = select {
             request from stop.recv() => true,
@@ -6208,10 +6376,10 @@ fn serve(radio_fd: i32) {
 }
 ```
 
-A child process's stdout or stderr
-stream (§6.4.7) is a select source on Unix, observed through the same
-readiness as a socket; on Windows it is read on the blocking pool and is
-not one yet. A line, chunk or take adapter over a socket or child pipe
+A child process's stdout or stderr stream (§6.4.7) is a select source on
+every native host, for data, EOF or an I/O failure. A losing selection leaves
+the next item available, and a cancelled receive returns without waiting for
+the child to produce data. A line, chunk or take adapter over a socket or child pipe
 stream, and a file stream over a pipe, device or terminal, whose next read
 can wait, are not select sources in edition 2026 (§2.1.1). The set of
 select sources only grows: admitting another stream kind refuses no
@@ -7050,14 +7218,17 @@ does not by itself establish final-core source support or execution parity.
 in the type system:
 
 - `Node.start(config: NodeConfig) -> Result<(), NodeError>` is the only start.
-  `NodeConfig { bind: string, transport: string, key: string, trust: string,
+  `NodeConfig { bind: string, transport: NodeTransport, key: string,
   peers: Vec<string>, seeds: Vec<string> }` is a prelude record, and
   `NodeConfig.at(addr)` fills the defaults around a bind address. No field is
   inert: `Node.start` pins every `peers` entry — the slot a peer occupies is
   its one-based position in that vector, so slot `0` stays reserved for local
   dispatch — dials every `seeds` entry once while skipping its
-  own bind address, and admits `trust = "pinned"` only, answering
-  `Err(NodeError.Config)` for anything else.
+  own bind address. `NodeTransport` is `Tcp | QuicMesh`; both require
+  authenticated, pinned peers. There is no trust-mode field. `NodeError.Config`
+  reports invalid configuration, `Key` an invalid identity or peer key,
+  `Unreachable` a failed dial, and `Refused` denied admission or an unavailable
+  node or transport.
 - `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` do not exist.
   Each carried one fact that is a field of `NodeConfig`, and a setup sequence
   whose steps can be reordered or skipped is a second configuration authority.
@@ -7158,7 +7329,7 @@ machine Switch {
 supervisor App {
     strategy: one_for_one;
     intensity: 5 within 60s;
-    child counter: Counter() restart: permanent;
+    child counter: Counter restart: permanent;
 }
 
 trait Reader { fn read(self) -> i64; }

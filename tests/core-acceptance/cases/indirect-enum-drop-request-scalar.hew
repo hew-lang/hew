@@ -22,7 +22,7 @@ actor Coordinator {
 
 fn main() -> i64 {
     let scorer = spawn Scorer;
-    let coordinator = spawn Coordinator(scorer: scorer);
+    let coordinator = spawn Coordinator { scorer: scorer };
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 50 {

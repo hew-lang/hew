@@ -1939,7 +1939,7 @@ impl Checker {
                     // Skip non-pub actors (enforce visibility), matching every
                     // other item kind in this loop. A private actor must never
                     // become a module type export, qualified alias, or registered
-                    // base in the importer's view: otherwise `spawn module.Account()`
+                    // base in the importer's view: otherwise `spawn module.Account`
                     // would accept a private target and -- after the qualifier is
                     // stripped to the bare name in HIR -- silently route to a
                     // same-named root/pub actor. This `Item::Actor` arm was the

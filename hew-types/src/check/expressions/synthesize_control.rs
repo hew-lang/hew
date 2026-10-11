@@ -16,8 +16,8 @@ use super::super::types::GenericLambdaSig;
 use super::super::*;
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericRequirement, PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
@@ -195,6 +195,7 @@ impl Checker {
                     true,
                     false,
                 );
+                self.record_task_actor_transfer(expr, span);
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
                     Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
@@ -334,7 +335,9 @@ impl Checker {
             }
             Expr::Scope { body: block } => {
                 self.task_scope_depth += 1;
+                self.enter_task_lifetime_scope(span);
                 let ty = self.check_block(block, None);
+                self.leave_task_lifetime_scope(block, span);
                 self.task_scope_depth -= 1;
                 ty
             }
@@ -342,7 +345,9 @@ impl Checker {
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
                 self.task_scope_depth += 1;
                 self.env.enter_deadline_scope();
+                self.enter_task_lifetime_scope(span);
                 let ty = self.check_block(body, None);
+                self.leave_task_lifetime_scope(body, span);
                 self.env.exit_deadline_scope();
                 self.task_scope_depth -= 1;
                 ty
@@ -415,7 +420,9 @@ impl Checker {
                     .entry(effect_body.clone())
                     .or_default();
                 let previous_effect_body = self.effect_graph.current_body.replace(effect_body);
+                self.env.enter_initialization_boundary();
                 let body_ty = self.check_block(body, None);
+                self.env.exit_initialization_boundary();
                 self.effect_graph.current_body = previous_effect_body;
 
                 self.in_generator = prev_in_generator;
@@ -688,7 +695,7 @@ impl Checker {
                         ownership: self.env.ownership_snapshot(),
                         diverges: Self::arm_skips_join(&else_ty),
                     };
-                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit], span);
                     if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
                         Ty::Error
                     } else if matches!(then_ty, Ty::Never) && matches!(else_ty, Ty::Never) {
@@ -697,7 +704,7 @@ impl Checker {
                         self.subst.resolve(expected)
                     }
                 } else {
-                    self.join_fall_through(&entry, then_exit);
+                    self.join_fall_through(&entry, then_exit, span);
                     Ty::Unit
                 };
                 if matches!(actual, Ty::Never | Ty::Error) {
@@ -2288,9 +2295,15 @@ impl Checker {
             .or_insert_with(|| self.current_module.clone());
         self.expr_types.entry(key).or_insert_with(|| result.clone());
         self.record_expression_effect(expr, span);
+        self.record_task_producer(expr, span);
         self.record_aggregate_field_sources(expr, span);
         self.record_call_argument_sources(expr, span);
         self.check_receiver_whole_at_expr(expr, span, &result);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.expression_value_candidates.remove(&key);
+        let candidates = self.callable_candidates_for_expr(expr, span);
+        self.expression_value_candidates.insert(key, candidates);
+
         result
     }
 }

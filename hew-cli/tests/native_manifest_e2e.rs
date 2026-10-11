@@ -115,17 +115,18 @@ fn c_package_builds_and_runs_at_o0_and_o2() {
 fn imported_packages_link_their_native_code_at_any_depth() {
     require_codegen();
     let dir = workspace();
-    // app.hew (no manifest) -> outer (C) -> inner (C).
+    // app.hew (no manifest) -> outer (C) -> inner (C), a package inside
+    // outer: imports resolve beside the importing file (HEW-SPEC-2026 §3.5.3).
     write(
-        &dir.path().join("inner/hew.toml"),
+        &dir.path().join("outer/inner/hew.toml"),
         &manifest("inner", "sources = [\"inner.c\"]\n"),
     );
     write(
-        &dir.path().join("inner/inner.c"),
+        &dir.path().join("outer/inner/inner.c"),
         "#include <stdint.h>\nint32_t inner_value(void) { return 30; }\n",
     );
     write(
-        &dir.path().join("inner/inner.hew"),
+        &dir.path().join("outer/inner/inner.hew"),
         "extern \"C\" {\n    fn inner_value() -> i32;\n}\n\n\
          pub fn value() -> i32 {\n    unsafe { inner_value() }\n}\n",
     );

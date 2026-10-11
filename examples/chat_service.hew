@@ -41,7 +41,7 @@ fn main() {
     // Node.start("0.0.0.0:9000");
     let empty_users: Vec<string> = Vec.new();
     let empty_msgs: Vec<string> = Vec.new();
-    let room = spawn ChatRoom(users: empty_users, messages: empty_msgs);
+    let room = spawn ChatRoom { users: empty_users, messages: empty_msgs };
     // Node.register("room", room);
 
     // ── Client side (same process for now) ───────────────────

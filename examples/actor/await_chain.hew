@@ -31,9 +31,9 @@ actor Top {
 }
 
 fn main() {
-    let b = spawn Bottom(base: 10);
-    let m = spawn Mid(bottom: b);
-    let t = spawn Top(mid: m);
+    let b = spawn Bottom { base: 10 };
+    let m = spawn Mid { bottom: b };
+    let t = spawn Top { mid: m };
     let r = t.run(5);
     match r {
         .Ok(v) => println(f"result={v}"),

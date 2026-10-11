@@ -489,7 +489,7 @@ fn main() {
     let ffi: i64 = unsafe {
         actorcabi_probe()
     };
-    let adder = spawn Adder();
+    let adder = spawn Adder;
     match adder.add(ffi) {
         .Ok(v) => println(f"total={v}"),
         .Err(_) => println("err"),
@@ -918,9 +918,14 @@ fn ffi_link_hew_cabi_wrapper_links_clean() {
 use hew_cabi::sink::set_last_error;
 
 #[no_mangle]
+pub extern "C" fn _hew_alloc(value: i64) -> i64 {
+    value
+}
+
+#[no_mangle]
 pub extern "C" fn cabiwrap_report() -> i64 {
     set_last_error("cabiwrap: simulated failure".to_string());
-    -7
+    -_hew_alloc(7)
 }
 "#,
     ) else {

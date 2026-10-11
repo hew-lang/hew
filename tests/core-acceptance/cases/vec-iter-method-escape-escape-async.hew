@@ -5,7 +5,7 @@ actor Echo {
 }
 
 fn main() {
-    let e = spawn Echo();
+    let e = spawn Echo;
     let c = {
         var v: Vec<i64> = Vec.new();
         v.push(40);

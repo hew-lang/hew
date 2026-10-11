@@ -38,8 +38,13 @@ enum Action {
     Write {
         data: WriteData,
         written: usize,
+        finish: Option<FinishSink>,
     },
 }
+
+struct FinishSink(*mut crate::stream::HewSink);
+// SAFETY: the submitted operation retains the sink's exclusive loan to quiescence.
+unsafe impl Send for FinishSink {}
 
 enum WriteData {
     Owned(Vec<u8>),
@@ -160,7 +165,7 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
             }
         }
         Action::StdinLine => unreachable!("standard input advances under its buffer lock"),
-        Action::Write { data, written } => {
+        Action::Write { data, written, .. } => {
             let Some(channel) = slot.bytes() else {
                 return closed(&format!("write {}", slot.describe()));
             };
@@ -235,6 +240,16 @@ pub(crate) fn accept_now(slot: &Slot) -> io::Result<Option<c_int>> {
 }
 
 impl NetOp {
+    pub(super) fn finish_sink(&self) -> Option<IoFailure> {
+        let finish = match &mut *self.action.lock_or_recover() {
+            Action::Write { finish, .. } => finish.take(),
+            _ => None,
+        }?;
+        let _ = crate::stream_error::take_last_error();
+        // SAFETY: producer quiescence precedes releasing this exclusive loan.
+        unsafe { (*finish.0).close() };
+        IoFailure::take_recorded()
+    }
     /// Bytes of a write's item that reached the OS so far.
     pub(super) fn written(&self) -> Option<usize> {
         match &*self.action.lock_or_recover() {
@@ -444,7 +459,17 @@ pub unsafe extern "C" fn hew_async_tcp_write(
     match region {
         Ok(Some(data)) => {
             // SAFETY: the region and waker satisfy this function's contract.
-            unsafe { start(connection, Action::Write { data, written: 0 }, waker) }
+            unsafe {
+                start(
+                    connection,
+                    Action::Write {
+                        data,
+                        written: 0,
+                        finish: None,
+                    },
+                    waker,
+                )
+            }
         }
         result => {
             // SAFETY: the borrowed waker obeys the ordinary submission contract.
@@ -473,8 +498,24 @@ pub(crate) unsafe fn start_tcp_stream_write(
         let action = Action::Write {
             data: WriteData::Owned(bytes),
             written: 0,
+            finish: None,
         };
         // SAFETY: the caller supplies the borrowed readiness descriptor.
         unsafe { start(connection, action, waker) }
     }
+}
+
+pub(super) unsafe fn start_tcp_sink_finish(
+    connection: i32,
+    bytes: Vec<u8>,
+    sink: *mut crate::stream::HewSink,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    let action = Action::Write {
+        data: WriteData::Owned(bytes),
+        written: 0,
+        finish: Some(FinishSink(sink)),
+    };
+    // SAFETY: the caller retains the source loan and supplies a live waker.
+    unsafe { start(connection, action, waker) }
 }

@@ -36,7 +36,7 @@ fn one_frame() -> i64 {
 
 fn main() -> i64 {
     var total = 0;
-    for _ in 0 .. 50 {
+    for _ in 0..50 {
         total = total + one_frame();
         println("frame");
     }

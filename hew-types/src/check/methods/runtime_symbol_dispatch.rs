@@ -174,6 +174,17 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if matches!(
+            self.select_method(receiver_ty, method),
+            crate::check::dispatch_table::MethodSelection::Unique(
+                crate::check::dispatch_table::MethodOwner::Inherent,
+                _
+            )
+        ) {
+            if let Some(ret_ty) = self.try_resolve_source_method(receiver_ty, method, args, span) {
+                return ret_ty;
+            }
+        }
         if let Some(ret_ty) =
             self.try_dispatch_primitive_trait_method(receiver_ty, method, args, span)
         {

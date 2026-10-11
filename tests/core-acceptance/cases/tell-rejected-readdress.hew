@@ -58,8 +58,8 @@ fn count_of(label: string, sink: Sink) {
 }
 
 fn main() {
-    let sink = spawn Sink();
-    let backup = spawn Sink();
+    let sink = spawn Sink;
+    let backup = spawn Sink;
     match sink.fill(sink, backup) {
         .Ok(_) => {}
         .Err(_) => panic("fill ask failed"),

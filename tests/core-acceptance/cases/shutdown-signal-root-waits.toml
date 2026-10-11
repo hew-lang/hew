@@ -2,6 +2,7 @@
 id = "shutdown-signal-root-waits"
 intent = "After a default SIGTERM, main's waits on a socket, a child and standard input proceed; new processes, connections, listeners and actor calls are refused with typed errors."
 source = "cases/shutdown-signal-root-waits.hew"
+platforms = ["linux", "macos", "freebsd"]
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 

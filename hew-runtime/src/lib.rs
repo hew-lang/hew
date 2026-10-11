@@ -349,6 +349,7 @@ pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
     let installed_runtime = if outermost && crate::runtime::rt_default().is_none() {
         let rt = crate::scheduler::worker_less_runtime_box();
         crate::runtime::test_store_default(rt);
+        crate::scheduler::reopen_admission_gates();
         rt
     } else {
         std::ptr::null_mut()

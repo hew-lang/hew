@@ -15,7 +15,7 @@ actor Producer {
 
 fn main() {
     let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
-    let producer = spawn Producer(out: tx);
+    let producer = spawn Producer { out: tx };
     producer.emit(1).expect("emit");
     match producer.boom() {
         .Ok(_) => println("the producer must crash"),

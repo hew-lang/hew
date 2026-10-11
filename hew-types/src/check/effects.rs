@@ -655,6 +655,12 @@ impl Checker {
         self.record_intrinsic_suspension(expr);
     }
 
+    pub(super) fn is_construct_call(&self, span: &Span) -> bool {
+        self.effect_graph
+            .construct_calls
+            .contains(&SpanKey::in_module(span, self.current_module_idx))
+    }
+
     /// A checked variant constructor is a call-form expression with no
     /// executable callee. Mark it at the selection site so body eligibility
     /// does not mistake it for an unresolved function call.

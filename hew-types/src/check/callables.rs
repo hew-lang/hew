@@ -48,6 +48,12 @@ impl Checker {
         }
         let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
         self.enforce_signature_bounds(&sig, &arguments, span);
+        self.record_generic_application(
+            super::types::GenericCallee::Function { key: signature_key },
+            &sig.type_params,
+            &arguments,
+            span,
+        );
         self.record_concrete_call_type_args(span, &arguments);
         let target = self.call_target_for_signature(signature_key);
         self.record_direct_call_target(span, target.clone());
@@ -98,10 +104,30 @@ impl Checker {
         let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
             return;
         };
-        if (self.place_read_transfers_ownership(&ty) || self.reads_resource_handle_field(expr))
-            && !self.reject_borrowed_consumption(expr, span)
+        if self.place_read_transfers_ownership(&ty) || self.reads_resource_handle_field(expr) {
+            if !self.reject_borrowed_consumption(expr, span) {
+                self.mark_expr_moved(expr, span);
+            }
+            return;
+        }
+        let Some((root, path)) = self.expr_place(expr) else {
+            return;
+        };
+        if self.is_current_closure_capture(&root) || !self.env.place_borrows_parameter(&root, &path)
         {
-            self.mark_expr_moved(expr, span);
+            return;
+        }
+        let parameters = self
+            .current_function
+            .as_ref()
+            .and_then(|owner| self.fn_sig(owner))
+            .map_or_else(Vec::new, |signature| signature.type_params.clone());
+        if Self::ty_mentions_type_params(&ty, &parameters) {
+            self.record_generic_requirement(
+                super::types::GenericRequirementKind::BorrowedTransfer { root },
+                &ty,
+                span,
+            );
         }
     }
 
@@ -302,7 +328,12 @@ impl Checker {
         let mut bindings = HashSet::new();
         for (name, span) in captures {
             if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
-                if !bindings.insert(binding.id) {
+                let id = binding.id;
+                if binding.init_state == crate::env::InitState::Unassigned {
+                    self.report_error(TypeErrorKind::LocalUninitialized, span,
+                        format!("E_LOCAL_UNINITIALIZED: local `{name}` is captured before initialization; assign it first"));
+                }
+                if !bindings.insert(id) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -335,6 +366,11 @@ impl Checker {
             if !seen.insert(fact.binding_id) {
                 continue;
             }
+            fact.value_candidates = self
+                .env
+                .value_candidates(fact.binding_id)
+                .cloned()
+                .unwrap_or_else(super::IndirectCallCandidates::unknown);
             fact.ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
             let fork_snapshot = is_fork_body
                 && !matches!(fact.ty, Ty::Borrow { .. })

@@ -26,9 +26,9 @@ fn winner() -> i64 {
 }
 
 fn main() {
-    let value = race {
+    let value = await race [
         decode(),
         winner(),
-    };
+    ];
     println(value);
 }

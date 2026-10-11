@@ -27,7 +27,7 @@ fn main() -> i64 {
     ys.push(20);
     ys.push(30);
     ys.push(40);
-    let a = spawn TwoVecs(x: xs, y: ys);
+    let a = spawn TwoVecs { x: xs, y: ys };
     var i: i64 = 0;
     while i < 25 {
         let _ = a.flip();

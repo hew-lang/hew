@@ -1471,29 +1471,6 @@ impl LowerCtx {
                 ..
             } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
-                if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
-                    self.unsupported(
-                        iterable.1.clone(),
-                        format!("for over Stream<{elem_ty}>: {reason}"),
-                        "for-stream-runtime-dispatch",
-                    );
-                    self.push_scope();
-                    let _ = if destructure_pattern.is_none() {
-                        self.bind_checked(
-                            var_name.clone(),
-                            elem_ty.clone(),
-                            false,
-                            pattern.1.clone(),
-                        )
-                    } else {
-                        self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone())
-                    };
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    return HirExprKind::Unsupported(
-                        "for over unsupported Stream<T> element type".into(),
-                    );
-                }
                 // Stream is an affine resource: `for x in stream` drains it;
                 // the source binding is consumed.
                 // The layout-witness recv (`hew_stream_next_layout`) carries

@@ -44,10 +44,10 @@ supervisor Pool {
     strategy: one_for_one;
     intensity: 10 within 60s;
 
-    child w0: Worker(id: 0, jobs_done: 0);
-    child w1: Worker(id: 1, jobs_done: 0);
-    child w2: Worker(id: 2, jobs_done: 0);
-    child w3: Worker(id: 3, jobs_done: 0);
+    child w0: Worker { id: 0, jobs_done: 0 };
+    child w1: Worker { id: 1, jobs_done: 0 };
+    child w2: Worker { id: 2, jobs_done: 0 };
+    child w3: Worker { id: 3, jobs_done: 0 };
 }
 
 fn main() {

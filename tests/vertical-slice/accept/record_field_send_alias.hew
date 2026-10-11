@@ -11,7 +11,7 @@ actor App {
 }
 
 fn main() {
-    let app = spawn App();
+    let app = spawn App;
     let cfg = AppConfig { label: "hello" };
     match app.describe(cfg) {
         .Ok(n) => println(n),

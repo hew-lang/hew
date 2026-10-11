@@ -17,6 +17,6 @@ actor Holder {
 }
 
 fn main() {
-    let h = spawn Holder();
+    let h = spawn Holder;
     let _ = h.demo();
 }

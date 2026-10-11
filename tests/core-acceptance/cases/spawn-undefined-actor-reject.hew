@@ -3,5 +3,5 @@ actor Counter {
 }
 
 fn main() {
-    let _a = spawn Countr();
+    let _a = spawn Countr;
 }

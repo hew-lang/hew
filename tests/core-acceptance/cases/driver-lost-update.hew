@@ -23,7 +23,7 @@ fn read(account: Account) -> i64 {
 }
 
 fn main() {
-    let account = spawn Account(balance: 0);
+    let account = spawn Account { balance: 0 };
     scope {
         let first = fork deposit(account, 10);
         let second = fork deposit(account, 20);

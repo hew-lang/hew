@@ -6,7 +6,7 @@
     clippy::wildcard_imports,
     reason = "chunk files share the parent module's import header"
 )]
-use super::super::types::ImportBindingKey;
+use super::super::types::{ImportBindingKey, SpawnKey};
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -92,6 +92,16 @@ impl Checker {
         self.supervisor_children.insert(
             identity.to_string(),
             crate::check::types::SupervisorChildren { statics, pools },
+        );
+        self.actor_spawn_args.insert(
+            identity.to_string(),
+            sd.params
+                .iter()
+                .map(|param| SpawnKey {
+                    name: param.name.name,
+                    required: true,
+                })
+                .collect(),
         );
         self.exit_primary_sig_scope(scope);
         self.known_types.insert(identity.to_string());
@@ -226,14 +236,16 @@ impl Checker {
             .fields
             .iter()
             .filter(|field| !deferred.iter().any(|name| name == field.name.name.as_str()))
-            .map(|field| (field.name.to_string(), field.default.is_none()))
+            .map(|field| SpawnKey {
+                name: field.name.name,
+                required: field.default.is_none(),
+            })
             .collect::<Vec<_>>();
         if let Some(init) = &ad.init {
-            spawn_args.extend(
-                init.params
-                    .iter()
-                    .map(|parameter| (parameter.name.to_string(), true)),
-            );
+            spawn_args.extend(init.params.iter().map(|parameter| SpawnKey {
+                name: parameter.name.name,
+                required: true,
+            }));
         }
         self.actor_spawn_args
             .insert(identity.to_string(), spawn_args);

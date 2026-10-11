@@ -28,8 +28,6 @@
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 
 use hew_compile::{DocumentSet, FrontendDiagnosticKind, FrontendOptions};
 use hew_parser::ast::{
@@ -54,7 +52,7 @@ pub(crate) struct EdgeReport {
 ///
 /// Converting a callable keeps its type, so each check unit — a directory
 /// module, or a file of its own — is checked against the other units'
-/// unconverted text, and units convert in parallel.
+/// unconverted text, and units convert one at a time.
 pub(crate) fn convert_failure_edges(
     files: &mut [(PathBuf, String)],
 ) -> (Vec<EdgeReport>, Vec<EdgeReport>) {
@@ -62,47 +60,24 @@ pub(crate) fn convert_failure_edges(
     let mut units: Vec<(PathBuf, Vec<usize>)> = Vec::new();
     for (index, (path, text)) in files.iter().enumerate() {
         documents.insert(path.clone(), text.clone());
-        let root = hew_compile::directory_module_entry(path).unwrap_or_else(|| path.clone());
+        let root = hew_compile::module_membership(path, &FrontendOptions::default())
+            .filter(hew_types::module_registry::ModuleMembership::checks_as_directory_module)
+            .map_or_else(|| path.clone(), |membership| membership.entry);
         match units.iter_mut().find(|(known, _)| *known == root) {
             Some((_, members)) => members.push(index),
             None => units.push((root, vec![index])),
         }
     }
-    let next = AtomicUsize::new(0);
-    let outcomes: Vec<Mutex<UnitOutcome>> = units
-        .iter()
-        .map(|_| Mutex::new(UnitOutcome::default()))
-        .collect();
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .min(units.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            std::thread::Builder::new()
-                .stack_size(crate::COMPILER_STACK_SIZE)
-                .spawn_scoped(scope, || loop {
-                    let unit = next.fetch_add(1, Ordering::Relaxed);
-                    let Some((root, members)) = units.get(unit) else {
-                        break;
-                    };
-                    let members: Vec<_> = members
-                        .iter()
-                        .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
-                        .collect();
-                    let outcome = convert_unit(root, &members, &documents);
-                    *outcomes[unit]
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = outcome;
-                })
-                .expect("spawn a migration worker");
-        }
-    });
     let mut refusals = Vec::new();
     let mut notes = Vec::new();
-    for outcome in outcomes {
-        let outcome = outcome
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A unit can load its whole import graph. Keep one semantic check live
+    // rather than multiplying that graph by the machine's CPU count.
+    for (root, members) in units {
+        let members: Vec<_> = members
+            .iter()
+            .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
+            .collect();
+        let outcome = convert_unit(&root, &members, &documents);
         for (index, converted) in outcome.converted {
             files[index].1 = converted;
         }
@@ -132,7 +107,7 @@ fn convert_unit(
 ) -> UnitOutcome {
     let mut documents = documents.clone();
     let mut outcome = UnitOutcome::default();
-    let before = check_unit(root, &documents);
+    let mut before = check_unit(root, &documents);
     let mut candidates = Vec::new();
     for &(index, path, text) in members {
         let Some(file) = before.file_index(path, root) else {
@@ -172,6 +147,7 @@ fn convert_unit(
     if candidates.is_empty() {
         return outcome;
     }
+    before.output = None;
     let after = check_unit(root, &documents);
     for (index, path, rewrite) in candidates {
         if let Some(diagnostic) = first_new_diagnostic(

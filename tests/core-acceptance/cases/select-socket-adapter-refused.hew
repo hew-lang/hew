@@ -28,10 +28,10 @@ fn main() {
     let listener = net.listen("127.0.0.1:0").expect("listen");
     let port = listener.local_port();
     let client = net.connect(f"127.0.0.1:{port}").expect("connect");
-    let server = listener.accept();
+    let server = listener.accept().expect("accept");
     let (input, output) = server.split();
-    let sibling = spawn Sibling();
-    let watcher = spawn Watcher();
+    let sibling = spawn Sibling;
+    let watcher = spawn Watcher;
     match watcher.watch(input.lines()) {
         .Ok(_) => println("select over a socket line adapter must not answer"),
         .Err(_) => println("watcher crashed"),

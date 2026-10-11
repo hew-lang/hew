@@ -40,7 +40,9 @@ pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(
                     }
                     stack.push((*scope, false));
                 }
-                PhysicalOp::TaskSpawn { scope, .. } if stack.last() != Some(&(*scope, false)) => {
+                PhysicalOp::TaskSpawn { scope, .. } | PhysicalOp::TaskRace { scope, .. }
+                    if stack.last() != Some(&(*scope, false)) =>
+                {
                     return Err(PhysicalError::new(
                         "physical task spawn has no active lexical scope",
                     ));

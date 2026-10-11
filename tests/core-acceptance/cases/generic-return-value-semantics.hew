@@ -1,0 +1,23 @@
+#[resource]
+type Token { id: i64; }
+impl Token {
+    fn close(consume self) { println(f"closed={self.id}"); }
+}
+type Name { text: string; }
+fn identity<T>(value: T) -> T { value }
+fn forward<T>(value: T) -> T { identity(value) }
+fn transfer<T>(consume value: T) -> T { value }
+fn main() {
+    let number = 7;
+    println(forward(number));
+    println(number);
+    let name = Name { text: "retained" };
+    println(forward(name).text);
+    println(name.text);
+    let callback = identity<string>;
+    let text = "callback";
+    println(callback(text));
+    println(text);
+    let token = transfer(Token { id: 9 });
+    token.close();
+}

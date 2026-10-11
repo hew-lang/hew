@@ -50,6 +50,6 @@ actor Runner {
 
 fn main() {
     let gate = spawn Gate;
-    let runner = spawn Runner(gate: gate);
+    let runner = spawn Runner { gate: gate };
     let _ = runner.go(50);
 }

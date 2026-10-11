@@ -122,6 +122,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         waker: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let frame = self.stream_frame()?;
+        frame.carry(
+            self.ctx,
+            &self.builder,
+            request,
+            "stream.drain.request.slot",
+        )?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.drain.waker.slot")?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let poll = self.ctx.append_basic_block(self.value, "stream.drain.poll");
         let pending = self
@@ -160,7 +167,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, drained, pending)
             .llvm_ctx("wait for stream producer release")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(drained);
@@ -209,7 +216,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         handle: BasicValueEnum<'ctx>,
         slot: PointerValue<'ctx>,
-        element_ty: BasicTypeEnum<'ctx>,
+        element: &PhysicalLayout,
         witness: PointerValue<'ctx>,
         result: StorageId,
         option: PhysicalVariantId,
@@ -250,9 +257,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("dispatch non-parking stream receive outcome")?;
         self.builder.position_at_end(some);
         let value = self
-            .builder
-            .build_load(element_ty, slot, "stream.element")
-            .llvm_ctx("load transferred element")?;
+            .value_emitter()
+            .load_value(slot, element, "stream.element")?;
         self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;
@@ -306,9 +312,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         if !park {
             // A non-parking take never registers a waker or an in-flight read
             // request, so there is nothing to abandon on an empty stream.
-            return self.emit_stream_try_next(
-                handle, slot, element_ty, witness, result, option.id, normal,
-            );
+            return self
+                .emit_stream_try_next(handle, slot, element, witness, result, option.id, normal);
         }
         let frame = self.stream_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
@@ -324,6 +329,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.read.operation",
         )?
         .into_pointer_value();
+        frame.carry(self.ctx, &self.builder, request, "stream.read.request.slot")?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.read.waker.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "stream.read.handle.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "stream.next.poll");
         let inspect = self
             .ctx
@@ -362,7 +370,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("dispatch stream receive outcome")?;
         self.builder.position_at_end(wait);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         // Every exit converges on one release of the operation; its code
@@ -409,9 +417,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         self.builder.position_at_end(some_block);
         let value = self
-            .builder
-            .build_load(element_ty, slot, "stream.element")
-            .llvm_ctx("load transferred element")?;
+            .value_emitter()
+            .load_value(slot, element, "stream.element")?;
         self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option.id)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;
@@ -466,6 +473,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.try_send.status",
         )?
         .into_int_value();
+        if let Some(frame) = &self.frame {
+            frame.carry(
+                self.ctx,
+                &self.builder,
+                status,
+                "stream.try_send.status.slot",
+            )?;
+        }
         // The runtime copied the element into its envelope; the slot no
         // longer owns it on any outcome.
         self.clear_owned(value)?;
@@ -505,13 +520,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let at_capacity = self
             .ctx
             .append_basic_block(self.value, "stream.try_send.full");
+        let write_failed = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_send.failed");
         self.builder
             .build_switch(
                 status,
-                at_capacity,
+                write_failed,
                 &[
                     (self.ctx.i32_type().const_zero(), accepted),
                     (self.ctx.i32_type().const_int(1, false), peer_closed),
+                    (self.ctx.i32_type().const_int(2, false), at_capacity),
                 ],
             )
             .llvm_ctx("dispatch non-parking stream send outcome")?;
@@ -520,7 +539,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(peer_closed);
         self.emit_edge(closed)?;
         self.builder.position_at_end(at_capacity);
-        self.emit_edge(full)
+        self.emit_edge(full)?;
+        self.builder.position_at_end(write_failed);
+        let fault = get_or_declare_external(
+            self.llvm,
+            "hew_stream_take_error_fault",
+            pointer.fn_type(&[], false),
+        )?;
+        let fault = suspend::call_value(&self.builder, fault, &[], "stream.write.fault")?;
+        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(unwind)
     }
 
     pub(super) fn emit_stream_send(&self, block: &PhysicalBlock) -> CodegenResult<()> {
@@ -576,6 +604,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?
         .into_pointer_value();
         self.clear_owned(*value)?;
+        frame.carry(
+            self.ctx,
+            &self.builder,
+            request,
+            "stream.write.request.slot",
+        )?;
+        frame.carry(self.ctx, &self.builder, waker, "stream.write.waker.slot")?;
+        frame.carry(self.ctx, &self.builder, handle, "stream.write.handle.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "stream.send.poll");
         let inspect = self
             .ctx
@@ -620,7 +656,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("dispatch stream send outcome")?;
         self.builder.position_at_end(wait);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         // Every exit converges on one release; peer closure reads the release

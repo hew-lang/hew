@@ -31,7 +31,7 @@ actor Fan {
 }
 
 fn main() -> i64 {
-    let fan = spawn Fan(seen: 0, held: Pair { left: Inner { name: "left" }, right: Inner { name: "right" } });
+    let fan = spawn Fan { seen: 0, held: Pair { left: Inner { name: "left" }, right: Inner { name: "right" } } };
     var i: i64 = 0;
     while i < 50 {
         let _ = fan.route("named".to_upper(), "alternate".to_upper(), i % 5);

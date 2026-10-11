@@ -18,9 +18,8 @@
 //!   finishes. `sink.finish()` publishes EOF and keeps the handle (on a
 //!   socket: FIN to the peer). `close()` on either half consumes it; scope
 //!   exit releases a live half the same way.
-//! - Pipes carry data, actors carry handles: an item is a primitive, a
-//!   `string`, `bytes`, or a value record, enum or tuple. Containers and
-//!   handles are refused at check time.
+//! - In-memory pipes carry typed values, including containers, resources and
+//!   local actor references, using each element's clone, move and drop behaviour.
 //! - A sink released by a crashing actor marks the pipe faulted: the consumer
 //!   traps on its next read instead of reading a clean end.
 //! - `Stream<T>` is a `select` source: `item from input.recv() => ...`.

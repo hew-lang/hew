@@ -1,6 +1,7 @@
 //! Scheduler ownership of one checked task continuation.
 
-use super::{checked, complete, hew_task_free, HewTask};
+use super::group::RaceGroup;
+use super::{checked, complete, hew_task_free, CheckedTaskInvocation, HewTask};
 use crate::cont::{hew_cont_destroy, hew_cont_done, hew_cont_resume};
 use crate::coro_state::{
     hew_coro_state_free, hew_coro_state_new, hew_coro_state_private_status, hew_coro_state_status,
@@ -33,6 +34,7 @@ struct Driver {
     task: *mut HewTask,
     state: *mut HewCoroState,
     frame: *mut c_void,
+    group: Option<RaceGroup>,
     fault: *mut HewFault,
     owner: u64,
 }
@@ -57,6 +59,7 @@ impl TaskExecution {
                 task,
                 state: ptr::null_mut(),
                 frame: ptr::null_mut(),
+                group: None,
                 fault: ptr::null_mut(),
                 owner: crate::fault::owning_actor_at_spawn(),
             }),
@@ -134,26 +137,41 @@ impl Driver {
                     release,
                 };
                 self.state = hew_coro_state_new(&raw const waker, (*self.task).cancel_token);
-                let (callable, result) = {
+                let (invocation, result) = {
                     let mut task = checked(self.task).lock_or_recover();
                     (
-                        task.callable.take().expect("one task invocation"),
+                        task.invocation.take().expect("one task invocation"),
                         task.result,
                     )
                 };
-                self.frame = ((*callable.descriptor).invoke_once)(
-                    callable.environment,
-                    ptr::null(),
-                    result,
-                    (&raw mut self.fault).cast(),
-                    self.state.cast(),
-                );
-            } else {
+                match invocation {
+                    CheckedTaskInvocation::Callable(callable) => {
+                        self.frame = ((*callable.descriptor).invoke_once)(
+                            callable.environment,
+                            ptr::null(),
+                            result,
+                            (&raw mut self.fault).cast(),
+                            self.state.cast(),
+                        );
+                    }
+                    CheckedTaskInvocation::Race(members) => {
+                        self.group = Some(RaceGroup::new(
+                            self.task,
+                            members,
+                            self.state,
+                            &raw const waker,
+                        ));
+                    }
+                }
+            } else if self.group.is_none() {
                 hew_cont_resume(self.frame);
+            }
+            if let Some(group) = &mut self.group {
+                group.poll(self.state, &raw mut self.fault);
             }
             let status = hew_coro_state_status(self.state);
             if status == CoroStatus::Pending as i32 {
-                if self.frame.is_null() || hew_cont_done(self.frame) {
+                if self.group.is_none() && (self.frame.is_null() || hew_cont_done(self.frame)) {
                     std::process::abort();
                 }
                 return false;
@@ -168,6 +186,7 @@ impl Driver {
                 hew_cont_destroy(self.frame);
                 self.frame = ptr::null_mut();
             }
+            self.group = None;
             let status = hew_coro_state_private_status(self.state);
             hew_coro_state_free(self.state);
             self.state = ptr::null_mut();

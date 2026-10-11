@@ -28,7 +28,7 @@ machine Link {
     state Live { node: Rc<Node>; touches: i64; }
     state Parked { node: Rc<Node>; }
 
-    on Open(id): Idle => Live { node: Rc.new(Node { name: "n", tag: Tag { id: id, label: f"tag {id}" } }), touches: 0 }
+    on Open { id }: Idle => Live { node: Rc.new(Node { name: "n", tag: Tag { id: id, label: f"tag {id}" } }), touches: 0 }
     on Touch: Live => Live reenter { node: state.node, touches: state.touches + 1 }
     on Hand: Live => Parked { node: state.node }
     on Shut: Parked => Idle;

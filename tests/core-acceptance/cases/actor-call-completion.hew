@@ -16,7 +16,7 @@ actor Worker {
 }
 
 fn main() {
-    let worker = spawn Worker();
+    let worker = spawn Worker;
     match worker.work("first".to_upper()) {
         .Ok(_) => println("returned first"),
         .Err(_) => panic("completion call failed"),

@@ -551,19 +551,12 @@ pub enum SuspendKind {
 pub enum TaskScopeJoinMode {
     Wait,
     PropagateFault,
-    CancelLosers,
-    CancelLosersAfterFault,
 }
 
 impl TaskScopeJoinMode {
     #[must_use]
     pub const fn preserves_fault(self) -> bool {
-        matches!(self, Self::PropagateFault | Self::CancelLosersAfterFault)
-    }
-
-    #[must_use]
-    pub const fn cancels_losers(self) -> bool {
-        matches!(self, Self::CancelLosers | Self::CancelLosersAfterFault)
+        matches!(self, Self::PropagateFault)
     }
 }
 

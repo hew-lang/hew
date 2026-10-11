@@ -7,6 +7,12 @@ loads every `cases/*.toml` in sorted order and checks each case's expected
 outcome. A new case is one `.hew` file plus one `.toml` file, so adding a case
 never conflicts with another case's file.
 
+A case may name `platforms = ["linux", "macos", "freebsd"]` when its inputs
+require those operating systems, such as POSIX signals or FIFOs. Omitting
+`platforms` selects every host. The runner reports non-applicable cases as
+`EXCLUDED`, separately from passes and failures, and refuses an empty selection.
+These exclusions describe fixture requirements, not execution parity.
+
 ## Expectation kinds
 
 A case's `kind` says what it proves. Omitting `kind` is `kind = "run"`, so

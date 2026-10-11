@@ -10,8 +10,7 @@ impl Display for Low {
     }
 }
 
-impl Error for Low {
-}
+impl Error for Low {}
 
 enum Mid {
     Wrapped(Low);
@@ -25,8 +24,7 @@ impl Display for Mid {
     }
 }
 
-impl Error for Mid {
-}
+impl Error for Mid {}
 
 impl From<Low> for Mid {
     fn from(value: Low) -> Mid {

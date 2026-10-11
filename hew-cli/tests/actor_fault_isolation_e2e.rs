@@ -40,7 +40,7 @@ fn main() {
         .Ok(_) => println("CRASH_UNEXPECTEDLY_REPLIED"),
         .Err(_) => println("CLIENT_CRASHED"),
     }
-    let room = spawn ChatRoom(first: crashed, second: second, third: third);
+    let room = spawn ChatRoom { first: crashed, second: second, third: third };
     let _ = room.broadcast("after-crash");
     match room.fence() {
         .Ok(_) => println("ROOM_FENCE_REPLIED"),
@@ -76,7 +76,7 @@ fn main() {
     let first = spawn Client;
     let second = spawn Client;
     let third = spawn Client;
-    let room = spawn ChatRoom(first: first, second: second, third: third);
+    let room = spawn ChatRoom { first: first, second: second, third: third };
     let _ = room.broadcast("clean");
     match room.fence() {
         .Ok(_) => println("ROOM_FENCE_REPLIED"),
@@ -139,7 +139,7 @@ supervisor Pool {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child w1: Worker(id: 1);
+    child w1: Worker { id: 1 };
 }
 
 fn main() {
@@ -174,7 +174,7 @@ supervisor Pool {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child f1: Flaky(id: 1);
+    child f1: Flaky { id: 1 };
 }
 
 fn main() {
@@ -307,7 +307,7 @@ actor Probe {
 
 fn main() {
     let slow = spawn Slow;
-    let waiter = spawn Waiter(slow: slow);
+    let waiter = spawn Waiter { slow: slow };
     let probe = spawn Probe;
     match waiter.drive() {
         .Ok(_) => println("WAITER_REPLIED"),
@@ -548,14 +548,14 @@ supervisor Recovering {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child r1: Flaky(id: 1);
+    child r1: Flaky { id: 1 };
 }
 
 supervisor GivingUp {
     strategy: one_for_one;
     intensity: 1 within 60s;
 
-    child g1: Flaky(id: 2);
+    child g1: Flaky { id: 2 };
 }
 
 fn main() {

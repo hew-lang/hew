@@ -1,81 +1,20 @@
 //! Stackless continuation substrate — the `HewCont` heap-frame + C ABI.
 //!
-//! This is the runtime side of Hew's unified suspension representation
-//! (R326/R327, W6.007). A suspending Hew function — actor `await`, `scope`
-//! join, blocking `.recv()`, generator `yield` — lowers to an LLVM
-//! switched-resume coroutine (`llvm.coro.*`). CoroSplit turns that single
-//! `presplitcoroutine` function into a ramp function plus `.resume` /
-//! `.destroy` / `.cleanup` outlines, and stores all state that is live across
-//! a suspend into one **heap frame**. The pointer `llvm.coro.begin` returns
-//! IS the [`HewCont`] handle.
+//! Generated resumable functions share one heap frame and one body with an
+//! explicit resume-state dispatch. The frame begins with [`CoroFramePrefix`];
+//! its pointer is the continuation handle. Normal completion clears the resume
+//! entry and leaves the frame for its owning driver to destroy.
 //!
-//! This module owns two responsibilities:
+//! The allocators retain the block size, tracked marker and cleanup registry in
+//! a private header. Generated frames use `hew_cont_frame_alloc`; tracked
+//! runtime frames additionally participate in native crash reclamation. Both
+//! route through [`crate::mem::hew_alloc`] and [`crate::mem::hew_dealloc`].
 //!
-//! 1. **The coro frame allocators** (`hew_cont_frame_alloc`,
-//!    `hew_cont_frame_alloc_tracked`, and `hew_cont_frame_free`).
-//!    `llvm.coro.alloc` / `llvm.coro.free` bridge to a size-only / pointer-only
-//!    allocator (the C++ `operator new`/`delete` shape). LLVM's
-//!    `coro.free` only hands back the raw frame pointer, never its size, so this
-//!    allocator stores the block size, tracked-frame marker, and typed-cleanup
-//!    registry pointer in a 32-byte header it prepends to every frame and reads
-//!    back at free time. Coroutine
-//!    ramps use the tracked sibling so native crash recovery can identify only
-//!    allocations known to be live on the killed synchronous call stack;
-//!    generator companions remain untracked. The bytes themselves route through the
-//!    runtime's general heap allocator [`crate::mem::hew_alloc`] /
-//!    [`crate::mem::hew_dealloc`] — NOT libc `malloc`, which is the wasip1
-//!    requirement the W6.006 spike pinned (criterion C3). The frame is
-//!    `O(live state)`, not `O(stack)`.
-//!
-//! 2. **The continuation handle ABI** (`hew_cont_resume` / `hew_cont_done` /
-//!    `hew_cont_poll` / `hew_cont_destroy`). These are the thin runtime verbs
-//!    the slice-4 poll/resume executor drives, each a direct mapping to a coro
-//!    intrinsic the compiler emits into the ramp/driver:
-//!      - `resume`  → `llvm.coro.resume(handle)`  — run the body to its next
-//!                    suspend (or to completion).
-//!      - `done`    → `llvm.coro.done(handle)`    — has the coroutine reached
-//!                    its final suspend?
-//!      - `destroy` → `llvm.coro.destroy(handle)` — run the single `cleanup`
-//!                    outline (frees frame-owned heap values, then the frame
-//!                    via `coro.free` → `hew_cont_frame_free`).
-//!      - `poll`    → read the value the body published to its out-pointer slot
-//!                    before suspending + `done`, packaged as a [`ResumePoll`]
-//!                    tag. The value channel is an explicit out-pointer the
-//!                    compiler threads through the frame, NOT the C++
-//!                    `std::coroutine` promise: a non-null `coro.id` promise
-//!                    pointer segfaults LLVM 22's `normalizeCoroutine`
-//!                    (spike constraint 1), so Hew always passes `ptr null`
-//!                    there and routes payloads through this out-pointer.
-//!
-//! # Ownership / teardown (single owner)
-//!
-//! After a ramp hands the coroutine frame to its caller, it is owned by whoever
-//! holds the [`HewCont`] handle (the runtime's continuation table / actor slot,
-//! once slice 4 wires it). There is exactly ONE ordinary teardown owner:
-//! `hew_cont_destroy` → the `cleanup` outline.
-//! Normal completion (the body running off its end through the final
-//! `coro.suspend(i1 true)`) frees only the body's locals and leaves the frame
-//! live for the executor to observe `done == true` and reclaim via `destroy`.
-//! A completed coroutine must be destroyed exactly once; resuming a
-//! final-suspended coroutine is a use-error the compiler's `trap` arm guards
-//! against. A native trap that kills a ramp/resume before handoff is the narrow
-//! exception: crash recovery raw-frees only positively tracked active frames,
-//! never invokes `coro.destroy` on a running frame, and excludes the
-//! scheduler-owned resumed root so its existing destroy authority remains
-//! unique. This single-owner discipline is what the spike's MallocScribble +
-//! `leaks --atExit` accounting proved leak-/double-free-clean (criterion C4).
-//!
-//! # WASM parity (CLAUDE.md §4)
-//!
-//! Identical source on native and `wasm32`. The frame allocator routes through
-//! `crate::mem` (target-agnostic `GlobalAlloc`), and the handle verbs are pure
-//! pointer plumbing — the coro intrinsics they mirror lower to in-module linear
-//! memory on wasm32 with no host import (spike criterion C3: the linked module
-//! imports only `fd_write`/`proc_exit`, no malloc, no asyncify, no
-//! stack-switching feature). The divergence between native (M:N OS-thread pool
-//! calls `resume` on any worker) and wasm (single-thread cooperative tick loop
-//! calls `resume`) is an EXECUTION-MODEL difference owned by the slice-4
-//! scheduler, not a representation difference: both drive this same ABI.
+//! Drivers serialise resume and destruction. Checked invocations cooperatively
+//! cancel and drain their typed cleanup before destroying a completed frame;
+//! destruction itself cannot suspend. Crash recovery separately owns frames
+//! abandoned during execution and prevents ordinary destruction from re-entering
+//! them. Native workers and the cooperative wasm32 driver use the same prefix.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -88,12 +27,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::mem::{hew_alloc, hew_dealloc};
 
-/// Alignment for a coroutine frame. LLVM's `CoroSplit` picks the frame's
-/// natural alignment from the spilled state; 16 bytes covers every Hew scalar /
-/// pointer / aggregate the frame can hold on the targets Hew supports
-/// (`x86_64` / aarch64 / wasm32), so a 16-byte frame alignment is always
-/// sufficient and never under-aligns a spilled value. The header reserves two
-/// full 16-byte strides so the returned frame pointer keeps this alignment.
+/// Alignment shared with generated continuation layouts. Codegen rejects
+/// fields requiring more than 16 bytes; the allocation header preserves this
+/// alignment for the returned frame pointer.
 const FRAME_ALIGN: usize = 16;
 
 /// Maximum alignment requested for actor-state crash snapshots. Hew's current
@@ -231,7 +167,7 @@ thread_local! {
     ///
     /// A tracked ramp allocation pushes immediately. A normal ramp return hands
     /// the frame to its caller and pops it. `hew_cont_resume` brackets the
-    /// CoroSplit resume outline with the same enter/leave pair. A language
+    /// continuation body with the same enter/leave pair. A language
     /// unwind skips the normal pop and leaves the positively tracked frames
     /// here for scheduler recovery to reclaim in LIFO order.
     static ACTIVE_COROUTINE_FRAMES: RefCell<Vec<ActiveCoroutineFrame>> =
@@ -415,7 +351,7 @@ pub(crate) fn abort_if_crash_cleanup_finalizer_trap(kind: &str) {
 enum ActiveCoroutinePhase {
     /// A newly allocated coroutine ramp is executing before returning a handle.
     Ramp,
-    /// `hew_cont_resume` is driving a `CoroSplit` `.resume` outline.
+    /// `hew_cont_resume` is driving the continuation body.
     Resume,
     /// `hew_cont_destroy` is driving a suspended frame's cleanup outline.
     Destroy,
@@ -441,33 +377,22 @@ pub enum ResumePoll {
     /// Suspended at a non-final suspend point; a yielded/awaited value is
     /// published at the poll out-pointer. Resume again to advance.
     Pending = 0,
-    /// Reached the final suspend point (`coro.done`); the continuation is
+    /// Reached the terminal state; the continuation is
     /// complete and must be destroyed by its owner.
     Ready = 1,
 }
 
-/// Allocate a coroutine frame of `size` bytes routed through the Hew heap.
+/// Allocate a continuation frame of `size` bytes through the Hew heap.
 ///
-/// `llvm.coro.alloc` gates whether a frame needs dynamic allocation;
-/// `llvm.coro.size.i64` folds to the exact frame size per coroutine, and the
-/// codegen passes that constant here. The returned pointer is the frame LLVM's
-/// `coro.begin` adopts — i.e. the [`HewCont`] handle.
-///
-/// The block is `FRAME_HEADER + size` bytes from [`crate::mem::hew_alloc`]; the
-/// first 8 bytes store the *full* block size so [`hew_cont_frame_free`] can
-/// reconstruct the symmetric `(size, align)` `hew_dealloc` requires — `coro.free`
-/// only hands back the frame pointer, never the size. The frame pointer returned
-/// to LLVM is `base + FRAME_HEADER`, keeping [`FRAME_ALIGN`] alignment.
-///
-/// Returns null on a degenerate `size` (zero) or when the underlying heap
-/// allocation is degenerate — the executor / ramp checks null before adopting
-/// the frame, the same fail-closed contract as [`crate::mem::hew_alloc`].
+/// Codegen supplies the concrete layout size. A private allocation header
+/// records the full block size for the matching [`hew_cont_frame_free`].
+/// The returned frame starts after that header with [`FRAME_ALIGN`] alignment.
+/// Returns null for zero size or an unsuccessful allocation.
 ///
 /// # Safety
 ///
-/// Safe to call with any `size`. The returned block (if non-null) MUST be
-/// released exactly once via [`hew_cont_frame_free`]; the caller (LLVM's
-/// `coro.free` lowering) owns that single free edge.
+/// Safe to call with any `size`. A non-null block must be released exactly once
+/// via [`hew_cont_frame_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
     // SAFETY: this is the untracked allocation entry point; the shared helper
@@ -475,7 +400,7 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
     unsafe { allocate_frame(size, false) }
 }
 
-/// Allocate and activate a coroutine frame for a `CoroSplit` ramp.
+/// Allocate and activate a tracked continuation frame for a ramp.
 ///
 /// Unlike [`hew_cont_frame_alloc`], this entry point marks the allocation as a
 /// real coroutine frame and pushes it onto the current thread's active-frame
@@ -553,15 +478,10 @@ unsafe fn allocate_frame(size: u64, tracked: bool) -> *mut c_void {
     frame
 }
 
-/// Release a coroutine frame previously returned by [`hew_cont_frame_alloc`].
+/// Release a frame previously returned by [`hew_cont_frame_alloc`].
 ///
-/// `llvm.coro.free` produces the frame pointer (the value `coro.begin`
-/// returned); this recovers the block base (`frame - FRAME_HEADER`), reads the
-/// stored block size, and frees via [`crate::mem::hew_dealloc`] with the exact
-/// `(size, align)` pair — the symmetric partner of the alloc.
-///
-/// No-op on a null frame (mirrors `hew_cont_frame_alloc` returning null and the
-/// `coro.free` conditional that only frees when the frame was heap-allocated).
+/// Recovers the allocation header and frees the exact `(size, align)` pair.
+/// A null frame is a no-op.
 ///
 /// # Safety
 ///
@@ -1738,19 +1658,9 @@ fn remove_matching_active_frame(frame: *mut c_void) -> bool {
     })
 }
 
-/// Transfer a normally-returned ramp frame from the active TLS stack to its
-/// caller.
-///
-/// The handoff is intentionally pointer-only and does not inspect the frame:
-/// `CoroSplit` may retain the shared return block in cleanup outlines after the
-/// frame has already been freed. In that outline the pointer is dangling but
-/// cannot match a live active record, so the call is a safe no-op.
+/// Transfer a normally returned tracked ramp frame to its caller.
 #[no_mangle]
 pub extern "C" fn hew_cont_frame_handoff(frame: *mut c_void) {
-    // CoroSplit may clone the presplit shared return block into a `.resume`
-    // outline. The phase check makes that cloned call a no-op: only a newly
-    // allocated ramp record can be handed off; `hew_cont_resume` owns the
-    // matching Resume-phase leave.
     let _ = active_coroutine_leave(frame, ActiveCoroutinePhase::Ramp);
 }
 
@@ -1850,7 +1760,7 @@ pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_
     }
 }
 
-/// Resume a suspended continuation — `llvm.coro.resume(handle)`.
+/// Resume a suspended continuation through its frame entry.
 ///
 /// Runs the coroutine body from its current suspend point to the next suspend
 /// (or to completion). After this returns, the executor should [`hew_cont_poll`]
@@ -1859,9 +1769,8 @@ pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_
 ///
 /// # Safety
 ///
-/// `handle` MUST be a live continuation handle (a frame pointer from
-/// `coro.begin`, i.e. [`hew_cont_frame_alloc`]'s output adopted by `coro.begin`)
-/// that is currently SUSPENDED — not completed (`done`) and not destroyed.
+/// `handle` must be a live frame from [`hew_cont_frame_alloc`] with an
+/// initialized [`CoroFramePrefix`], currently suspended and not completed.
 /// Resuming a completed or destroyed continuation is undefined behaviour the
 /// compiler's emission and the executor's [`ResumePoll`] discipline prevent.
 #[no_mangle]
@@ -1871,9 +1780,6 @@ pub unsafe extern "C-unwind" fn hew_cont_resume(handle: *mut c_void) {
     }
     let tracked = active_coroutine_enter(handle);
     // SAFETY: handle is a live, suspended coroutine frame per the fn contract.
-    // The transmute targets the resume fn-ptr stored at frame slot 0 by
-    // CoroSplit; LLVM's coro lowering guarantees that layout for any frame
-    // produced by coro.begin.
     unsafe { coro_resume(handle) };
     if tracked {
         debug_assert!(
@@ -1883,16 +1789,14 @@ pub unsafe extern "C-unwind" fn hew_cont_resume(handle: *mut c_void) {
     }
 }
 
-/// Report whether a continuation has reached its final suspend —
-/// `llvm.coro.done(handle)`.
+/// Report whether a continuation has reached its terminal state.
 ///
-/// `true` once the body ran off its end through the final `coro.suspend(i1 true)`;
-/// the executor then reclaims the frame via [`hew_cont_destroy`].
+/// The body clears its resume entry on completion. Its owner then reclaims
+/// the frame via [`hew_cont_destroy`].
 ///
 /// # Safety
 ///
-/// `handle` MUST be a live (suspended or completed, not destroyed) continuation
-/// handle from `coro.begin`.
+/// `handle` must be a live suspended or completed continuation frame.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_done(handle: *mut c_void) -> bool {
     if handle.is_null() {
@@ -1907,12 +1811,11 @@ pub unsafe extern "C" fn hew_cont_done(handle: *mut c_void) -> bool {
 /// Poll a continuation after a resume: read the published value + done state.
 ///
 /// The coroutine publishes its yielded/awaited value to an out-pointer slot the
-/// compiler threads through the frame BEFORE each suspend (the explicit value
-/// channel that replaces the forbidden non-null `coro.id` promise). This reads
+/// compiler threads through the frame before each suspend. This reads
 /// the current done state and reports it as a [`ResumePoll`]:
 ///   - [`ResumePoll::Pending`] — suspended at a non-final point; the value at
 ///     the body's out-pointer is the freshly yielded value. Resume to advance.
-///   - [`ResumePoll::Ready`] — `coro.done`; the continuation is complete.
+///   - [`ResumePoll::Ready`] — the continuation is complete.
 ///
 /// `out_value`, when non-null, is unused by the primitive itself: the body
 /// writes its payload directly to its own threaded out-pointer, so this verb is
@@ -1923,7 +1826,7 @@ pub unsafe extern "C" fn hew_cont_done(handle: *mut c_void) -> bool {
 ///
 /// # Safety
 ///
-/// `handle` MUST be a live continuation handle from `coro.begin`. `out_value`,
+/// `handle` must be a live continuation frame. `out_value`,
 /// if non-null, must point to writable storage of the continuation's value type
 /// (reserved; not written today).
 #[no_mangle]
@@ -1937,30 +1840,18 @@ pub unsafe extern "C" fn hew_cont_poll(handle: *mut c_void, out_value: *mut c_vo
     }
 }
 
-/// Destroy a completed (or abandoned) continuation — `llvm.coro.destroy(handle)`.
+/// Destroy a completed continuation through its synchronous cleanup entry.
 ///
-/// Resumes the coroutine at its `coro.suspend` cleanup edge (case 1), running
-/// the coroutine's OWN cleanup funclet before the frame is freed. Codegen emits
-/// that funclet, so the drops live in the compiled coroutine, not in this
-/// runtime shim. For a continuation abandoned WHILE SUSPENDED the funclet runs,
-/// in order: (a) the suspend kind's per-park bookkeeping (slot cancel/free,
-/// observer deregister, deadline cancel), then (b) the drop of every frame-owned
-/// Hew heap value live across the park — the suspend exit's elaborated drop plan
-/// (#2395, the previously-unimplemented "cleanup outline") — and finally the
-/// shared `coro.cleanup` frees the frame via `coro.free` →
-/// [`hew_cont_frame_free`]. A continuation destroyed AFTER completing already
-/// ran its return-path drops; its value-free final suspend frees the frame only.
-/// This is the SOLE teardown owner; it must be called exactly once per
-/// continuation, by the handle's owner, after observing [`ResumePoll::Ready`]
-/// (or to abandon a still-suspended continuation, e.g. scope cancellation /
-/// supervisor stop).
+/// Generated cleanup releases park registrations and frame-owned values,
+/// then calls [`hew_cont_frame_free`]. Checked invocations must cooperatively
+/// drain any suspending cleanup before destruction. A completed frame has
+/// already released its values; its destroy entry only frees the allocation.
 ///
 /// # Safety
 ///
-/// `handle` MUST be a live continuation handle from `coro.begin` that has NOT
-/// already been destroyed. After this call the handle (and its frame) is
-/// dangling. Destroying twice is a double-free the single-owner discipline
-/// prevents.
+/// The caller owns `handle` exclusively. It must be live and not yet destroyed;
+/// any required asynchronous cleanup must have completed. The call invalidates
+/// the handle, which must never be destroyed twice.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_cont_destroy(handle: *mut c_void) {
     if handle.is_null() {
@@ -2131,23 +2022,8 @@ pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
     unsafe { hew_cont_frame_free(companion) };
 }
 
-// ── coro-frame fn-pointer dispatch ────────────────────────────────────────
-//
-// CoroSplit stores the `.resume` and `.destroy` fn pointers at the start of
-// every coroutine frame: slot 0 is the resume fn, slot 1 is the destroy fn
-// (the destroy path also runs `cleanup`). `llvm.coro.resume` / `coro.destroy`
-// / `coro.done` are themselves lowered by LLVM to loads of these slots + an
-// indirect call (resume/destroy) or a null-check of the resume slot (done).
-//
-// The runtime drives a continuation through these same frame slots so the
-// handle ABI does not depend on the coroutine being a C++ `std::coroutine`
-// (it never is — Hew passes `ptr null` for the promise). The layout LLVM
-// commits to for a switched-resume frame is:
-//   { ptr resume_fn, ptr destroy_fn, ... spilled state ... }
-// and `coro.done(h)` is `load ptr, h /*slot 0*/; icmp eq ptr null`.
-
-/// Frame prefix `CoroSplit` writes: resume fn-ptr, destroy fn-ptr. Codegen's
-/// parity guard checks these offsets against the frames LLVM actually splits.
+/// The continuation prefix shared by generated bodies and runtime drivers.
+/// Codegen checks its offsets before emitting the target-specific frame.
 #[repr(C)]
 #[derive(Debug)]
 pub struct CoroFramePrefix {
@@ -2155,43 +2031,35 @@ pub struct CoroFramePrefix {
     pub destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
 }
 
-/// `llvm.coro.resume(handle)`: indirect-call the frame's resume fn-ptr.
+/// Run the frame's resume entry.
 ///
 /// # Safety
 /// `handle` is a live, suspended coroutine frame (slot 0 = resume fn).
 #[inline]
 unsafe fn coro_resume(handle: *mut c_void) {
     let prefix = handle.cast::<CoroFramePrefix>();
-    // SAFETY: handle is a live suspended frame; slot 0 holds the resume fn-ptr
-    // CoroSplit stored, non-null while suspended.
+    // SAFETY: the live frame holds its resume entry at offset zero.
     if let Some(resume) = unsafe { (*prefix).resume } {
-        // SAFETY: resume is the CoroSplit-emitted `.resume` outline; calling it
-        // with the frame pointer is exactly what `llvm.coro.resume` lowers to.
+        // SAFETY: the frame retains the exact entry and its argument.
         unsafe { resume(handle) }
     }
 }
 
-/// `llvm.coro.destroy(handle)`: indirect-call the frame's destroy fn-ptr.
+/// Run the frame's synchronous destroy entry.
 ///
 /// # Safety
 /// `handle` is a live, not-yet-destroyed coroutine frame (slot 1 = destroy fn).
 #[inline]
 unsafe fn coro_destroy(handle: *mut c_void) {
     let prefix = handle.cast::<CoroFramePrefix>();
-    // SAFETY: handle is a live frame; slot 1 holds the destroy fn-ptr CoroSplit
-    // stored.
+    // SAFETY: the live prefix holds its exact destroy entry.
     if let Some(destroy) = unsafe { (*prefix).destroy } {
-        // SAFETY: destroy is the CoroSplit-emitted `.destroy` outline (which
-        // runs `cleanup`); calling it with the frame pointer is exactly what
-        // `llvm.coro.destroy` lowers to.
+        // SAFETY: the caller owns this live frame exclusively.
         unsafe { destroy(handle) }
     }
 }
 
-/// `llvm.coro.done(handle)`: a coroutine is done when its resume slot is null.
-///
-/// `CoroSplit` nulls the resume fn-ptr (slot 0) when the coroutine reaches its
-/// final suspend, which is exactly the test `llvm.coro.done` performs.
+/// A continuation is complete when its resume entry is null.
 ///
 /// # Safety
 /// `handle` is a live (suspended or completed) coroutine frame.

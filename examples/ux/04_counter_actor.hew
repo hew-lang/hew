@@ -10,7 +10,7 @@ actor Counter {
 }
 
 fn main() {
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     let _ = counter.increment(5);
     let _ = counter.increment(10);
     // Actor completion calls return Result<T, ActorError>; match the result to extract the value.

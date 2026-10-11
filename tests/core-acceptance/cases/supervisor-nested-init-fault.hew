@@ -19,16 +19,16 @@ actor Worker {
 }
 
 supervisor Branch(seed: string, refuse: bool) {
-    child worker: Worker(seed: seed, refuse: refuse);
+    child worker: Worker { seed: seed, refuse: refuse };
 }
 
 supervisor Root(seed: string) {
-    child ready: Branch(seed: seed, refuse: false);
-    child broken: Branch(seed: seed, refuse: true);
+    child ready: Branch { seed: seed, refuse: false };
+    child broken: Branch { seed: seed, refuse: true };
 }
 
 fn main() {
-    let root = spawn Root(seed: "completed child released".to_upper());
+    let root = spawn Root { seed: "completed child released".to_upper() };
     println("unreachable");
     stop(root);
     stopped(root);

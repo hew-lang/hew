@@ -55,7 +55,7 @@ fn render_gen_seq(base: i64, n: i64) -> string {
 }
 
 fn main() {
-    let t = spawn Ticker(b: 100);
+    let t = spawn Ticker { b: 100 };
     let actor_seq = render_actor_seq(t, 3);
     let gen_seq = render_gen_seq(100, 3);
     println(actor_seq);

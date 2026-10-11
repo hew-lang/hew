@@ -16,7 +16,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let k = spawn Keeper(prof: Profile { name: "self-store-name".to_upper(), hits: 1 });
+    let k = spawn Keeper { prof: Profile { name: "self-store-name".to_upper(), hits: 1 } };
     var i: i64 = 0;
     while i < 25 {
         let _ = k.refresh();

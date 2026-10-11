@@ -17,7 +17,7 @@ pub struct MachineBinding {
 }
 
 /// The implicit bindings in scope inside `machine` at `offset`, plus any
-/// event-head binding names (`on Open(by): …`) the rule declares.
+/// event-head binding names (`on Open { by }: …`) the rule declares.
 #[derive(Debug)]
 pub struct MachineScope {
     pub bindings: Vec<MachineBinding>,

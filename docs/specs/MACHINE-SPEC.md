@@ -117,7 +117,7 @@ Inside a rule, `state.field` refers to the refined source payload and
 `event.field` to the selected input payload; `state` alone denotes the current
 machine value. These are the only implicit bindings: `self` is an actor or
 method receiver and is refused here with `E_MACHINE_SELF`. Head bindings such
-as `on Input(token): ...` give the body a local alias for `event.token`.
+as `on Input { token }: ...` give the body a local alias for `event.token`.
 
 ## Hooks and wildcard targets
 

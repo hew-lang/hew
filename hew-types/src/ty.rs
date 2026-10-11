@@ -574,13 +574,8 @@ pub enum Ty {
         traits: Vec<TraitObjectBound>,
     },
 
-    /// Compiler-internal type for a running child task whose result has type
-    /// `T`. Produced exclusively by HIR lowering of `fork name = call_expr`
-    /// inside a `fork{}` body; never user-nameable (see `E_TASK_NOT_NAMEABLE`
-    /// in HIR diagnostics). The user writes `fork name = expr`, not
-    /// `let name: Task<T> = expr`.
-    ///
-    /// Display: `<task<T>>` (angle brackets signal compiler-internal origin).
+    /// Inferred scoped task handle produced by `fork` or `race`.
+    /// Source annotations cannot name this type.
     Task(Box<Ty>),
 
     /// Deferred associated-type projection: `T::Bar` where `T` is a generic
@@ -1270,6 +1265,11 @@ impl Ty {
     }
 
     #[must_use]
+    pub fn contains_task(&self) -> bool {
+        matches!(self, Ty::Task(_)) || self.any_child(&Ty::contains_task)
+    }
+
+    #[must_use]
     pub fn contains_error(&self) -> bool {
         matches!(self, Ty::Error) || self.any_child(&Ty::contains_error)
     }
@@ -1348,7 +1348,7 @@ impl Ty {
 
     /// Construct the handle type of actor `name` with its own type arguments.
     ///
-    /// An actor is the type of its handle (D489): `spawn Orders(...)` has type
+    /// An actor is the type of its handle (D489): `spawn Orders { ... }` has type
     /// `Orders`, and `Orders` written in a field, parameter, return or element
     /// position is this type. The actor's declaration name and type arguments
     /// ride the `Named` carrier, so every consumer that reads a nominal's name

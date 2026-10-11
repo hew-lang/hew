@@ -59,6 +59,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("native I/O requires a resumable body".into())
         })?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
+        frame.carry(self.ctx, &self.builder, request, "io.drain.request.slot")?;
+        frame.carry(self.ctx, &self.builder, waker, "io.drain.waker.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "io.drain.poll");
         let pending = self.ctx.append_basic_block(self.value, "io.drain.pending");
         let drained = self.ctx.append_basic_block(self.value, "io.drained");
@@ -94,7 +96,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ready, drained, pending)
             .llvm_ctx("wait for I/O producer release")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(drained);
@@ -110,7 +112,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let (symbol, output) = match operation.resume() {
             AsyncIoResume::Bytes => ("hew_async_io_take_bytes", self.slots[result.0 as usize]),
-            AsyncIoResume::WriteCount => {
+            AsyncIoResume::WriteCount | AsyncIoResume::Unit => {
                 let output = self
                     .builder
                     .build_alloca(self.ctx.i64_type(), "io.write.count")
@@ -169,6 +171,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .build_int_cast_sign_flag(handle, ty, true, "io.connection")
                 .llvm_ctx("convert accepted handle carrier")?;
             self.store(result, handle.into())?;
+        } else if operation.resume() == AsyncIoResume::Unit {
+            let ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?;
+            self.store(result, ty.const_zero())?;
         }
         Ok(())
     }
@@ -183,6 +188,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("a waiting call requires a resumable body".into())
         })?;
+        frame.carry(self.ctx, &self.builder, request, "io.request.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "io.poll");
         let inspect = self.ctx.append_basic_block(self.value, "io.inspect");
         let pending = self.ctx.append_basic_block(self.value, "io.pending");
@@ -226,7 +232,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select I/O readiness")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         Ok((completed, cancelled))
@@ -243,7 +249,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         result: StorageId,
         normal: &PhysicalEdge,
         cancel: &PhysicalEdge,
+        unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("native I/O requires a resumable body".into())
         })?;
@@ -299,17 +307,30 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(resume)
             .llvm_ctx("resume successful I/O")?;
         self.builder.position_at_end(error);
-        let result_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?;
-        let failed = match operation.resume() {
-            AsyncIoResume::Bytes => result_ty.const_zero(),
-            AsyncIoResume::WriteCount | AsyncIoResume::Connection => {
-                result_ty.into_int_type().const_all_ones().into()
-            }
-        };
-        self.store(result, failed)?;
-        self.builder
-            .build_unconditional_branch(resume)
-            .llvm_ctx("resume ordinary I/O error")?;
+        if operation.resume() == AsyncIoResume::Unit {
+            let fault = get_or_declare_external(
+                self.llvm,
+                "hew_stream_take_error_fault",
+                pointer.fn_type(&[], false),
+            )?;
+            let fault = suspend::call_value(&self.builder, fault, &[], "sink.finish.fault")?;
+            self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+            self.free_handle("hew_async_io_free", request)?;
+            self.emit_edge(unwind)?;
+        } else {
+            let result_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?;
+            let failed = match operation.resume() {
+                AsyncIoResume::Bytes => result_ty.const_zero(),
+                AsyncIoResume::Unit => unreachable!("unit finish uses its fault edge"),
+                AsyncIoResume::WriteCount | AsyncIoResume::Connection => {
+                    result_ty.into_int_type().const_all_ones().into()
+                }
+            };
+            self.store(result, failed)?;
+            self.builder
+                .build_unconditional_branch(resume)
+                .llvm_ctx("resume ordinary I/O error")?;
+        }
         self.builder.position_at_end(resume);
         self.free_handle("hew_async_io_free", request)?;
         self.emit_result_edge(Some(result), normal)

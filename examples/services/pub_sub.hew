@@ -71,11 +71,11 @@ fn main() {
     // Create broker
     let empty_topics: Vec<string> = Vec.new();
     let empty_actors: Vec<Subscriber> = Vec.new();
-    let broker = spawn Broker(sub_topics: empty_topics, sub_actors: empty_actors, published: 0);
+    let broker = spawn Broker { sub_topics: empty_topics, sub_actors: empty_actors, published: 0 };
     // Create subscribers
-    let alice = spawn Subscriber(name: "alice", received: 0);
-    let bob = spawn Subscriber(name: "bob", received: 0);
-    let carol = spawn Subscriber(name: "carol", received: 0);
+    let alice = spawn Subscriber { name: "alice", received: 0 };
+    let bob = spawn Subscriber { name: "bob", received: 0 };
+    let carol = spawn Subscriber { name: "carol", received: 0 };
     // ── Register subscriptions ──
     println("--- Registering subscriptions ---");
     let _ = broker.subscribe("orders", alice);

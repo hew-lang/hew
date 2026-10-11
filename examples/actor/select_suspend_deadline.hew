@@ -35,7 +35,7 @@ actor Coordinator {
 
 fn main() {
     let s = spawn Slow;
-    let c = spawn Coordinator(slow: s);
+    let c = spawn Coordinator { slow: s };
     // The Slow arm sleeps 200ms; the 20ms deadline fires first. The select
     // resumes into the AfterTimer winner block (cancelling the Slow ask) and
     // binds the deadline body's value (-7).

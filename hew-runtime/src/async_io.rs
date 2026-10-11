@@ -1,8 +1,7 @@
 //! Owned native I/O operations for suspendable Hew code.
 //!
-//! On wasm32 only standard input is compiled: WASI runs one thread, so its
-//! read completes at submission and the entries below see a finished
-//! operation. Files, sockets and deadlines need the reactor and stay native.
+//! On wasm32 standard input and in-memory sink finish complete at submission.
+//! Files, sockets and deadlines need native I/O facilities.
 //!
 //! A coroutine owns the returned reference and takes a result only on its
 //! resume edge. Pool producers own their inputs and one `Arc` until they
@@ -33,6 +32,8 @@ mod file;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
 mod offload;
+mod sink;
+pub use sink::hew_async_sink_finish;
 mod stdin;
 #[cfg(not(target_arch = "wasm32"))]
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
@@ -98,7 +99,7 @@ impl IoFailure {
     /// New root work that a termination request refused.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn shutting_down(operation: &str) -> Self {
-        let errno = crate::shutdown::SHUTDOWN_REFUSAL_ERRNO;
+        let errno = crate::stream_error::CANCELLED_ERRNO;
         Self {
             kind: crate::stream_error::io_error_kind_tag(
                 io::Error::from_raw_os_error(errno).kind(),
@@ -137,7 +138,7 @@ pub(crate) enum IoValue {
         target_arch = "wasm32",
         expect(
             dead_code,
-            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
+            reason = "wasm32 produces StdinLine and Count; native producers build this and the shared take entries name it"
         )
     )]
     Bytes(Vec<u8>),
@@ -145,17 +146,10 @@ pub(crate) enum IoValue {
         target_arch = "wasm32",
         expect(
             dead_code,
-            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
+            reason = "wasm32 produces StdinLine and Count; native producers build this and the shared take entries name it"
         )
     )]
     StreamItem(Option<Vec<u8>>),
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            dead_code,
-            reason = "wasm32 produces only StdinLine; native producers build this and the shared take entries name it"
-        )
-    )]
     Count(i64),
     #[cfg(not(target_arch = "wasm32"))]
     Connection(AcceptedConnection),
@@ -190,6 +184,8 @@ pub struct HewAsyncIo {
     #[cfg(not(target_arch = "wasm32"))]
     net: Option<net::NetOp>,
     cleanup: Mutex<Cleanup>,
+    #[cfg(windows)]
+    file_cancel: file::FileCancellation,
     #[cfg(not(target_arch = "wasm32"))]
     deadline: Mutex<Option<deadline::Deadline>>,
     /// The running pool job producing the result, told when its caller gives up.
@@ -297,6 +293,8 @@ impl HewAsyncIo {
             cleanup: Mutex::new(Cleanup::default()),
             deadline: Mutex::new(None),
             detach: Mutex::new(None),
+            #[cfg(windows)]
+            file_cancel: file::FileCancellation::default(),
         })
     }
 
@@ -434,6 +432,10 @@ impl HewAsyncIo {
                 }
             }
         }
+        #[cfg(windows)]
+        if won {
+            self.file_cancel.cancel();
+        }
         // Releasing a readiness target can call user-supplied runtime callbacks.
         // Never run those callbacks while holding the operation state lock.
         if let Some(waker) = waker {
@@ -509,6 +511,28 @@ pub unsafe extern "C" fn hew_async_io_cleanup_status(
         }
     };
     drop(previous);
+    #[cfg(not(target_arch = "wasm32"))]
+    if ready == 1 && !operation.is_pending() {
+        if let Some(failure) = operation.net.as_ref().and_then(net::NetOp::finish_sink) {
+            let mut state = operation.state.lock_or_recover();
+            if matches!(*state, State::Ready(Ok(_))) {
+                *state = State::Ready(Err(failure));
+            }
+        }
+    }
+    #[cfg(windows)]
+    if ready == 0
+        && matches!(*operation.state.lock_or_recover(), State::Cancelled)
+        && operation.file_cancel.cancel()
+    {
+        // A cancellation can precede kernel submission. Retry while this
+        // producer owns the registered handle, before allowing its loan to end.
+        // SAFETY: cleanup borrows the caller's live notification descriptor.
+        if let Some(waker) = unsafe { waker.as_ref() } {
+            // SAFETY: the descriptor stays live through this call.
+            unsafe { OwnedWaker::retain(waker) }.wake();
+        }
+    }
     ready
 }
 
@@ -609,7 +633,9 @@ unsafe fn take_watch_item(
     match &*state {
         State::Pending(_) => return (0, None),
         State::Cancelled => return (2, None),
-        State::Ready(Err(failure)) if failure.errno == libc::ECANCELED => return (2, None),
+        State::Ready(Err(failure)) if failure.errno == crate::stream_error::CANCELLED_ERRNO => {
+            return (2, None)
+        }
         State::Ready(Ok(_)) => {}
         _ => return (3, None),
     }
@@ -928,7 +954,7 @@ pub unsafe extern "C" fn hew_async_io_errno(operation: *const HewAsyncIo) -> i32
     unsafe { operation.as_ref() }.map_or(libc::EINVAL, |operation| {
         match &*operation.state.lock_or_recover() {
             State::Ready(Err(error)) => error.errno,
-            State::Cancelled => libc::ECANCELED,
+            State::Cancelled => crate::stream_error::CANCELLED_ERRNO,
             _ => 0,
         }
     })

@@ -40,11 +40,11 @@ fn show(worker: Worker) {
 }
 
 fn main() {
-    let quick = spawn Worker(name: "ready", size: 6, fast: true);
+    let quick = spawn Worker { name: "ready", size: 6, fast: true };
     show(quick);
     stop(quick);
     stopped(quick);
-    let slow = spawn Worker(name: "later", size: 41, fast: false);
+    let slow = spawn Worker { name: "later", size: 41, fast: false };
     show(slow);
     stop(slow);
     stopped(slow);

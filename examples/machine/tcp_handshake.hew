@@ -48,7 +48,7 @@ machine TcpHandshake {
         }
     }
 
-    on SynReceive(remote_port): Closed => SynReceived {
+    on SynReceive { remote_port }: Closed => SynReceived {
 
         // ── Named transitions ────────────────────────────────────────────────
 

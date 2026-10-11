@@ -23,8 +23,8 @@ actor Worker {
 supervisor App {
     strategy: one_for_all;
     intensity: 3 within 60s;
-    child left: Worker(name: "left");
-    child right: Worker(name: "right");
+    child left: Worker { name: "left" };
+    child right: Worker { name: "right" };
 }
 
 fn main() {

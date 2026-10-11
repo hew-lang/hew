@@ -2744,7 +2744,7 @@ impl Checker {
                 // Reject user-written `Task<T>` in any type-annotation position.
                 //
                 // `Task<T>` is a compiler-internal type produced exclusively by
-                // HIR lowering of `fork name = expr`; it has no surface syntax.
+                // checking `fork` and `race`; source annotations cannot name it.
                 // Any occurrence of the name "Task" in a user-source type
                 // annotation is an error. Emit `E_TASK_NOT_NAMEABLE` and
                 // return `Ty::Error` so downstream checks don't cascade.
@@ -2753,7 +2753,7 @@ impl Checker {
                 // the reservation does not fire — the user's declaration shadows
                 // the compiler-internal name (local-shadows-global rule).
                 // The retired actor-handle spellings. An actor is the type of
-                // its handle, so `spawn Orders(...)` has type `Orders` and a
+                // its handle, so `spawn Orders { ... }` has type `Orders` and a
                 // field, parameter or element that holds an actor is written
                 // with the actor's own name. A user declaration of the same
                 // name shadows the reservation.
@@ -2805,7 +2805,7 @@ impl Checker {
                         TypeErrorKind::TaskNotNameable,
                         &te.1,
                         "Task<T> is a compiler-internal type and cannot be written in source. \
-                         Use `fork name = expr` to create a task handle; the binding's type is \
+                         Use `let name = fork expr` to create a task handle; the binding's type is \
                          inferred automatically."
                             .to_string(),
                     );

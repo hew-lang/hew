@@ -11,7 +11,7 @@ actor ReliableWorker {
 }
 
 fn main() -> i64 {
-    let worker = spawn ReliableWorker(seen: 0);
+    let worker = spawn ReliableWorker { seen: 0 };
     let _ = worker.work(42);
     match worker.value() {
         .Ok(value) => if value == 42 {

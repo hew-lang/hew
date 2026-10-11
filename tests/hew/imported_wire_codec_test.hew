@@ -8,7 +8,7 @@
 //! "no method `to_json`" and the checker fix alone would have moved the
 //! failure to the codegen CBOR layout lookup — both surfaces are pinned here.
 
-import tests.hew.imported_wire_support.wire_defs.{Env, Signal, env_to_json};
+import imported_wire_support.wire_defs.{Env, Signal, env_to_json};
 
 import std.encoding.cbor;
 

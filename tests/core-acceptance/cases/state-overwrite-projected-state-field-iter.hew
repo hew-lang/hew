@@ -20,7 +20,7 @@ fn main() -> i64 {
     bv.push(20);
     bv.push(30);
     bv.push(40);
-    let a = spawn Summer(b: Box { v: bv });
+    let a = spawn Summer { b: Box { v: bv } };
     match a.total() {
         .Ok(v) => v,
         .Err(_) => -1,

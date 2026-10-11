@@ -132,7 +132,7 @@ fn pool_count_and_member_init_arg_are_separated() {
 
 supervisor Pool {
     strategy: simple_one_for_one;
-    pool worker: Worker(id: 7) count: 4;
+    pool worker: Worker { id: 7 } count: 4;
 }
 ",
     );
@@ -161,7 +161,7 @@ fn static_child_keeps_count_as_init_field() {
 }
 
 supervisor App {
-    child counter: Counter(count: 0);
+    child counter: Counter { count: 0 };
 }
 ",
     );

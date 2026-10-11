@@ -1,4 +1,5 @@
 import std.net;
+
 import std.stream;
 
 extern "C" {
@@ -8,8 +9,12 @@ extern "C" {
 
 // The lowest free descriptor number: it grows when a descriptor leaks.
 fn next_fd() -> i32 {
-    let fd = unsafe { dup(1) };
-    unsafe { close(fd) };
+    let fd = unsafe {
+        dup(1)
+    };
+    unsafe {
+        close(fd)
+    };
     fd
 }
 
@@ -30,20 +35,22 @@ fn main() {
     tx.send(net.connect(f"127.0.0.1:{port}").expect("connect")).expect("send");
     tx.close();
     var received = 0;
-    for conn in rx {
+    for conn in rx.take(1) {
         received += 1;
         conn.close();
     }
-    listener.accept().close();
+    listener.accept().expect("accept").close();
     println(f"received: {received}");
     for round in 0..20 {
         let (queue, unread) = connection_pipe();
         queue.send(net.connect(f"127.0.0.1:{port}").expect("connect")).expect("send");
         queue.send(net.connect(f"127.0.0.1:{port}").expect("connect")).expect("send");
         queue.close();
-        unread.close();
-        listener.accept().close();
-        listener.accept().close();
+        for conn in unread.take(1) {
+            conn.close();
+        }
+        listener.accept().expect("accept").close();
+        listener.accept().expect("accept").close();
     }
     println(f"descriptors leaked: {next_fd() - before}");
     listener.close();

@@ -13,7 +13,7 @@ type Payload {
 fn main() {
     let local = Payload { tag: 1 };
     println(local.tag);
-    let src = spawn rootreply.Source(seed: 2);
+    let src = spawn rootreply.Source { seed: 2 };
     match src.fetch() {
         .Ok(p) => println(p.code),
         .Err(_) => println("err"),

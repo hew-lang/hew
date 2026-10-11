@@ -24,15 +24,15 @@ actor Worker<T> {
 supervisor Group<T>(seed: T) {
     strategy: one_for_one;
     intensity: 1 within 60s;
-    child worker: Worker<T>(seed: seed);
+    child worker: Worker<T> { seed: seed };
 }
 
 supervisor InferredGroup<T>(seed: T) {
-    child worker: Worker(seed: seed);
+    child worker: Worker { seed: seed };
 }
 
 supervisor Batch<T>(items: Vec<T>) {
-    child worker: Worker<Vec<T>>(seed: items);
+    child worker: Worker<Vec<T>> { seed: items };
 }
 
 type Packet {
@@ -46,11 +46,11 @@ fn read_number(worker: ChildRef<Worker<i64>>) -> i64 {
 }
 
 fn main() {
-    let numbers = spawn Group<i64>(seed: 41);
-    let words = spawn InferredGroup(seed: "initial\0text".to_upper());
+    let numbers = spawn Group<i64> { seed: 41 };
+    let words = spawn InferredGroup { seed: "initial\0text".to_upper() };
     let seed = Packet { label: "original".to_upper(), data: "payload\0bytes".to_bytes(), history: ["first".to_upper()] };
-    let records = spawn Group(seed: seed);
-    let batches = spawn Batch(items: ["member".to_upper()]);
+    let records = spawn Group { seed: seed };
+    let batches = spawn Batch { items: ["member".to_upper()] };
     assert(batches.worker.get().expect("batch worker")[0] == "MEMBER");
     let number_role = numbers.worker;
     let record_role = records.worker;

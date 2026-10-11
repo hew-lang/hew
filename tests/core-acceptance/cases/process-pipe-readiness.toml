@@ -1,0 +1,15 @@
+[[case]]
+id = "process-pipe-readiness"
+intent = "Child output supports cancelled receives, losing select retry, delayed data, EOF and residual data after exit; closing pending reads releases their resources while one scheduler worker keeps useful work moving."
+source = "cases/process-pipe-readiness.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+HEW_IO_LEAK_CHECK = "1"
+
+[case.expected]
+stdout = "concurrent work: 42\ncancelled reads: 10\nselect timeout: true\ndelayed data: true\nselected EOF: true\noutput after exit: true\nbuffer refills: true\npending reads closed\nunrelated children retain no writers\nstderr data: true\n"
+stderr = ""
+exit = 0

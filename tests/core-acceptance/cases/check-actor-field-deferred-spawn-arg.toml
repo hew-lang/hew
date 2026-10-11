@@ -9,5 +9,5 @@ kind = "check"
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 line = 20
-column = 38
+column = 33
 message = "E_ACTOR_FIELD_DEFERRED: state field `label` of actor `Worker` is initialized by `init`"

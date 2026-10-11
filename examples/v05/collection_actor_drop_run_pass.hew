@@ -46,7 +46,7 @@ fn main() {
     scores.push(10);
     scores.push(20);
     scores.push(30);
-    let holder = spawn CollectionHolder(counts: counts, scores: scores);
+    let holder = spawn CollectionHolder { counts: counts, scores: scores };
     let r = holder.ping();
     match r {
         .Ok(acked) => {

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-state-explicit-close-reinit"
+intent = "An explicit terminal close takes a mutable actor state seat; replacing it initializes the empty seat and each resource closes once."
+source = "../../repros/ladder/state_reinit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\n2\nafter\nclose 2\n"
+exit = 0

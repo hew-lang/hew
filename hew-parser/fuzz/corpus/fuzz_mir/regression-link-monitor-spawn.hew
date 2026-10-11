@@ -11,10 +11,10 @@ actor Probe {
 }
 
 fn main() -> i64 {
-    let p = spawn Probe();
-    let q = spawn Probe();
-    let r = spawn Probe();
-    let s = spawn Probe();
+    let p = spawn Probe;
+    let q = spawn Probe;
+    let r = spawn Probe;
+    let s = spawn Probe;
     link(p, q);
     monitor(r, s);
     0

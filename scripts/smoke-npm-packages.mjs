@@ -33,7 +33,7 @@ actor Counter {
 }
 
 fn main() {
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     println(match counter.increment(5) { .Ok(value) => value, .Err(_) => 0 - 1 });
     println(match counter.increment(3) { .Ok(value) => value, .Err(_) => 0 - 1 });
 }

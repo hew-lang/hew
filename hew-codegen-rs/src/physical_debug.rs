@@ -4,6 +4,7 @@
 //! from SIR ([`hew_mir::physical::PhysicalDebug`]). This module decides only
 //! how those facts are spelled as LLVM debug metadata.
 
+use super::{coro, CodegenResult, LlvmResultExt, StorageId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,7 +23,7 @@ use inkwell::debug_info::{
     DebugInfoBuilder,
 };
 use inkwell::module::{FlagBehavior, Module};
-use inkwell::values::{FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
 const DW_ATE_BOOLEAN: u32 = 0x02;
@@ -108,6 +109,13 @@ pub(super) struct FunctionDebug<'ctx> {
     /// `(start, end, scope)` sorted innermost-first, so the first containing
     /// entry is the tightest scope around a byte.
     ranges: Vec<(u32, u32, u32)>,
+    locals: HashMap<StorageId, LocalValue<'ctx>>,
+}
+
+struct LocalValue<'ctx> {
+    variable: DILocalVariable<'ctx>,
+    location: DILocation<'ctx>,
+    anchor: PointerValue<'ctx>,
 }
 
 impl<'ctx> DebugEmitter<'ctx> {
@@ -220,6 +228,7 @@ impl<'ctx> DebugEmitter<'ctx> {
             subprogram,
             blocks: HashMap::new(),
             ranges: Vec::new(),
+            locals: HashMap::new(),
         };
         self.build_lexical_blocks(&mut function, attribution);
         function
@@ -328,6 +337,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         ty: &ResolvedTy,
         layout: &PhysicalLayout,
         target: &PhysicalTarget,
+        resumable: bool,
     ) -> Option<(DILocalVariable<'ctx>, DIScope<'ctx>, u32)> {
         let PhysicalDebugLocal {
             name,
@@ -336,7 +346,8 @@ impl<'ctx> DebugEmitter<'ctx> {
         } = local;
         let (decl, parameter) = (*decl, *parameter);
         let di_type = self.resolve_type(ty, layout, target)?;
-        if let Some(index) = parameter {
+        // A continuation body receives a frame pointer, not source parameters.
+        if let Some(index) = parameter.filter(|_| !resumable) {
             let line = self.lines.line(decl);
             let scope = function.subprogram.as_debug_info_scope();
             let variable = self.builder.create_parameter_variable(
@@ -393,6 +404,91 @@ impl<'ctx> DebugEmitter<'ctx> {
                 expression.as_mut_ptr(),
                 location.as_mut_ptr(),
                 block.as_mut_ptr(),
+            );
+        }
+    }
+
+    pub(super) fn local_value(
+        &self,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        value: BasicValueEnum<'ctx>,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> CodegenResult<()> {
+        let Some(local) = function.locals.get(&id) else {
+            return Ok(());
+        };
+        let builder = self.ctx.create_builder();
+        if let Some(terminator) = block.get_terminator() {
+            builder.position_before(&terminator);
+        } else {
+            builder.position_at_end(block);
+        }
+        builder
+            .build_store(local.anchor, value)
+            .llvm_ctx("retain current source local value")?;
+        self.value_record(
+            local.anchor.into(),
+            local.variable,
+            local.location,
+            block,
+            true,
+        );
+        Ok(())
+    }
+
+    fn value_record(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        variable: DILocalVariable<'ctx>,
+        location: DILocation<'ctx>,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+        indirect: bool,
+    ) {
+        let expression = self
+            .builder
+            .create_expression(if indirect { vec![0x06] } else { vec![] });
+        use inkwell::llvm_sys::debuginfo::{
+            LLVMDIBuilderInsertDbgValueRecordAtEnd, LLVMDIBuilderInsertDbgValueRecordBefore,
+        };
+        use inkwell::values::AsValueRef;
+        // SAFETY: the value, metadata and block belong to this live context.
+        unsafe {
+            if let Some(terminator) = block.get_terminator() {
+                LLVMDIBuilderInsertDbgValueRecordBefore(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    location.as_mut_ptr(),
+                    terminator.as_value_ref(),
+                );
+            } else {
+                LLVMDIBuilderInsertDbgValueRecordAtEnd(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    location.as_mut_ptr(),
+                    block.as_mut_ptr(),
+                );
+            }
+        }
+    }
+
+    pub(super) fn local_unavailable(
+        &self,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) {
+        if let Some(local) = function.locals.get(&id) {
+            self.value_record(
+                self.ctx.i8_type().get_undef().into(),
+                local.variable,
+                local.location,
+                block,
+                false,
             );
         }
     }
@@ -911,34 +1007,21 @@ fn type_name(ty: &ResolvedTy) -> String {
     }
 }
 
-/// Emit the variable DIE and whole-scope `llvm.dbg.declare` for every named
-/// source local this body allocates.
-pub(super) struct PendingLocal<'ctx> {
-    slot: PointerValue<'ctx>,
-    variable: DILocalVariable<'ctx>,
-    location: DILocation<'ctx>,
-}
-
-/// A suspend-carrying body cannot take `optnone`, so its slot stores are free
-/// to lag their source line and a prologue declare would let the debugger print
-/// stale bits as if they were the local. Those body locals are returned instead
-/// and resolved by [`resolve_coroutine_locals`] once the stores exist.
 #[allow(
     clippy::too_many_arguments,
-    reason = "debug emission threads the same explicit borrows as the body lowering"
+    reason = "debug emission consumes the explicit body attribution and storage"
 )]
 pub(super) fn declare_locals<'ctx>(
     ctx: &'ctx Context,
     emitter: &DebugEmitter<'ctx>,
-    function_debug: &FunctionDebug<'ctx>,
+    function_debug: &mut FunctionDebug<'ctx>,
     attribution: &PhysicalDebugFunction,
     function: &PhysicalFunction,
     target: &PhysicalTarget,
     slots: &[PointerValue<'ctx>],
     prologue: inkwell::basic_block::BasicBlock<'ctx>,
-    resumable: bool,
-) -> Vec<PendingLocal<'ctx>> {
-    let mut pending = Vec::new();
+    frame: Option<&coro::Frame<'ctx>>,
+) -> CodegenResult<()> {
     for (id, local) in &attribution.locals {
         let Some(storage) = function.storage.get(id.0 as usize) else {
             continue;
@@ -946,40 +1029,57 @@ pub(super) fn declare_locals<'ctx>(
         let Some(slot) = slots.get(id.0 as usize) else {
             continue;
         };
-        let Some((variable, scope, line)) =
-            emitter.local_variable(function_debug, local, &storage.ty, &storage.layout, target)
-        else {
+        let Some((variable, scope, line)) = emitter.local_variable(
+            function_debug,
+            local,
+            &storage.ty,
+            &storage.layout,
+            target,
+            frame.is_some(),
+        ) else {
             continue;
         };
         let location = emitter.location_in(ctx, scope, line);
-        if resumable && local.parameter.is_none() {
-            pending.push(PendingLocal {
-                slot: *slot,
+        if let Some(frame) = frame {
+            let builder = ctx.create_builder();
+            builder.position_before(
+                &frame
+                    .allocations
+                    .get_terminator()
+                    .expect("frame dispatch exists"),
+            );
+            let anchor = builder
+                .build_alloca(
+                    super::llvm_type(ctx, &storage.layout.repr)?,
+                    "debug.local.value",
+                )
+                .llvm_ctx("allocate source local value")?;
+            frame.stack(ctx, anchor)?;
+            function_debug.locals.insert(
+                *id,
+                LocalValue {
+                    variable,
+                    location,
+                    anchor,
+                },
+            );
+            emitter.value_record(
+                ctx.i8_type().get_undef().into(),
                 variable,
                 location,
-            });
-            continue;
+                frame.allocations,
+                false,
+            );
+        } else {
+            emitter.declare(*slot, variable, location, prologue);
         }
-        emitter.declare(*slot, variable, location, prologue);
     }
-    pending
+    Ok(())
 }
 
-/// Keep a `-g` body's slots faithfully inspectable.
-///
-/// `optnone` (which the verifier pairs with `noinline`) stops instruction
-/// selection from sinking a slot store past the line that wrote it, so a
-/// breakpoint reads what the source says. A suspend-carrying body cannot take
-/// it: `CoroSplit` has to run, and honest post-suspend locations are that
-/// path's own problem.
-pub(super) fn pin_for_inspection(ctx: &Context, value: FunctionValue<'_>, resumable: bool) {
+pub(super) fn pin_for_inspection(ctx: &Context, value: FunctionValue<'_>) {
     use inkwell::attributes::{Attribute, AttributeLoc};
-    let names: &[&str] = if resumable {
-        &["noinline"]
-    } else {
-        &["noinline", "optnone"]
-    };
-    for name in names {
+    for name in ["noinline", "optnone"] {
         let kind = Attribute::get_named_enum_kind_id(name);
         if kind != 0 {
             value.add_attribute(AttributeLoc::Function, ctx.create_enum_attribute(kind, 0));
@@ -1037,175 +1137,5 @@ pub(super) fn order_blocks_for_inspection(value: FunctionValue<'_>) {
     order.extend((0..blocks.len()).filter(|index| !visited[*index]));
     for pair in order.windows(2) {
         blocks[pair[1]].move_after(blocks[pair[0]]).ok();
-    }
-}
-
-/// Give each suspend-carrying body local an honest location.
-///
-/// Per local, read from the finished pre-`CoroSplit` IR:
-///
-/// - Every direct store precedes every suspend point: keep the prologue
-///   declare. `CoroSplit` rewrites it onto the coroutine frame, which is what
-///   makes a pre-suspend local readable after a resume.
-/// - A store is reachable at or after a suspend point: anchor a `dbg.value` of
-///   the stored value after each store instead. The variable's location list
-///   then begins where the assignment actually executes; before it the
-///   debugger reports the local unavailable rather than reading stale bits.
-/// - The slot has a user this pass cannot read as a plain load or store (a
-///   field-wise write through a GEP, a memcpy, the address escaping into a
-///   call): keep the declare, because value anchoring would miss that write
-///   and leave the last anchor confidently wrong.
-pub(super) fn resolve_coroutine_locals<'ctx>(
-    emitter: &DebugEmitter<'ctx>,
-    llvm: &Module<'ctx>,
-    value: FunctionValue<'ctx>,
-    prologue: inkwell::basic_block::BasicBlock<'ctx>,
-    pending: &[PendingLocal<'ctx>],
-) {
-    use inkwell::llvm_sys::core::{
-        LLVMGetBasicBlockTerminator, LLVMGetCalledValue, LLVMGetFirstUse, LLVMGetNextUse,
-        LLVMGetNumSuccessors, LLVMGetSuccessor, LLVMGetUser,
-    };
-    use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
-    use inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
-    use inkwell::values::{AsValueRef, BasicValueEnum, InstructionOpcode, InstructionValue};
-
-    if pending.is_empty() {
-        return;
-    }
-    let expression = emitter.builder.create_expression(vec![]);
-    // `DW_OP_deref, DW_OP_stack_value`: the variable's value IS the slot's
-    // contents, restated after every store. A bare trailing `DW_OP_deref`
-    // described a location instead, and LLVM appends it to the slot's own
-    // address on the ramp copy, so a debugger read the variable out of
-    // whatever address the slot's contents spell.
-    let through_slot = emitter.builder.create_expression(vec![0x06, 0x9f]);
-    let suspend = llvm
-        .get_function("llvm.coro.suspend")
-        .map(|function| function.as_value_ref());
-
-    // Blocks that can execute at or after a suspend: the transitive successors
-    // of every block holding a `llvm.coro.suspend`. A suspend block's own
-    // earlier stores stay pre-suspend; it joins the set only through a back
-    // edge, which errs toward honest absence.
-    let mut post_suspend: Vec<usize> = Vec::new();
-    let mut work: Vec<LLVMBasicBlockRef> = Vec::new();
-    if let Some(suspend) = suspend {
-        for block in value.get_basic_blocks() {
-            let mut cursor = block.get_first_instruction();
-            while let Some(instruction) = cursor {
-                // SAFETY: a live call instruction of this module; the call only
-                // reads its callee operand.
-                if instruction.get_opcode() == InstructionOpcode::Call
-                    && unsafe { LLVMGetCalledValue(instruction.as_value_ref()) } == suspend
-                {
-                    if let Some(terminator) = block.get_terminator() {
-                        // SAFETY: read-only successor iteration over this
-                        // function's CFG.
-                        unsafe {
-                            for index in 0..LLVMGetNumSuccessors(terminator.as_value_ref()) {
-                                work.push(LLVMGetSuccessor(terminator.as_value_ref(), index));
-                            }
-                        }
-                    }
-                    break;
-                }
-                cursor = instruction.get_next_instruction();
-            }
-        }
-    }
-    while let Some(block) = work.pop() {
-        if post_suspend.contains(&(block as usize)) {
-            continue;
-        }
-        post_suspend.push(block as usize);
-        // SAFETY: the block belongs to this function; a null terminator is
-        // guarded.
-        unsafe {
-            let terminator = LLVMGetBasicBlockTerminator(block);
-            if !terminator.is_null() {
-                for index in 0..LLVMGetNumSuccessors(terminator) {
-                    work.push(LLVMGetSuccessor(terminator, index));
-                }
-            }
-        }
-    }
-
-    for local in pending {
-        let slot = local.slot.as_value_ref();
-        let mut stores: Vec<InstructionValue<'ctx>> = Vec::new();
-        let mut any_post_suspend = false;
-        let mut opaque_user = false;
-        // SAFETY: read-only def-use iteration over live IR.
-        let mut next_use = unsafe { LLVMGetFirstUse(slot) };
-        while !next_use.is_null() {
-            // SAFETY: the use handle is live and owned by the module.
-            let user = unsafe { InstructionValue::new(LLVMGetUser(next_use)) };
-            match user.get_opcode() {
-                InstructionOpcode::Load => {}
-                // Matched only when the slot is the pointer operand: storing
-                // the slot's own address into memory is an escape.
-                InstructionOpcode::Store
-                    if user
-                        .get_operand(1)
-                        .and_then(|operand| operand.value())
-                        .is_some_and(|pointer| pointer.as_value_ref() == slot) =>
-                {
-                    any_post_suspend |= user
-                        .get_parent()
-                        .is_some_and(|block| post_suspend.contains(&(block.as_mut_ptr() as usize)));
-                    stores.push(user);
-                }
-                _ => {
-                    opaque_user = true;
-                    break;
-                }
-            }
-            // SAFETY: iteration over the same live use list.
-            next_use = unsafe { LLVMGetNextUse(next_use) };
-        }
-        if opaque_user || stores.is_empty() || !any_post_suspend {
-            emitter.declare(local.slot, local.variable, local.location, prologue);
-            continue;
-        }
-        for store in stores {
-            // A store is never a terminator, so a successor normally exists;
-            // without one the anchor is simply skipped.
-            let (Some(next), Some(stored)) = (
-                store.get_next_instruction(),
-                store.get_operand(0).and_then(|operand| operand.value()),
-            ) else {
-                continue;
-            };
-            // A constant-null pointer store is the release-and-null interior
-            // state of a reassignment, never a value the source can observe:
-            // Hew has no null. Anchoring undef ends the location list there, so
-            // the local reads unavailable until the replacement's range begins.
-            // Integer zero stays a real anchor.
-            let (anchor, anchor_expression) = match stored {
-                BasicValueEnum::PointerValue(pointer) if pointer.is_null() => {
-                    (pointer.get_type().get_undef().as_value_ref(), expression)
-                }
-                // Anchor the slot, not the stored SSA value. `CoroSplit` maps a
-                // spilled value onto whichever frame word held it, and that word
-                // is reused — a release-and-null of the source slot then reads
-                // back as the variable. The variable's own storage is the one
-                // address that stays true until the next assignment.
-                _ => (local.slot.as_value_ref(), through_slot),
-            };
-            // SAFETY: every wrapper belongs to this module's context and
-            // builder; the call inserts one record and returns a handle we
-            // discard.
-            unsafe {
-                LLVMDIBuilderInsertDbgValueRecordBefore(
-                    emitter.builder.as_mut_ptr(),
-                    anchor,
-                    local.variable.as_mut_ptr(),
-                    anchor_expression.as_mut_ptr(),
-                    local.location.as_mut_ptr(),
-                    next.as_value_ref(),
-                );
-            }
-        }
     }
 }

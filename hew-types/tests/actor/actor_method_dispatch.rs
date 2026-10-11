@@ -17,7 +17,7 @@ fn actor_method_dispatch_classifies_message_and_ask_sites() {
 }
 
 fn main() -> i32 {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     let _ = c.increment(10);
     let _ = c.print_total();
     return 0;

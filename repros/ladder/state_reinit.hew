@@ -23,7 +23,7 @@ actor Holder {
 }
 
 fn main() {
-    let h = spawn Holder();
+    let h = spawn Holder;
     match h.cycle() {
         .Ok(v) => println(f"{v}"),
         .Err(e) => println("err"),

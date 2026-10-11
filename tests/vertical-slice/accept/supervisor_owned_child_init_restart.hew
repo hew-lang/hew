@@ -2,7 +2,7 @@
 // restart independence.
 //
 // A supervised child's OWNED initial state (`name: string`) is deep-cloned from
-// the supervisor's config (`child t: Tagged(name: config.label)`) by the
+// the supervisor's config (`child t: Tagged { name: config.label }`) by the
 // codegen init thunk, on the initial spawn AND on every restart. Each
 // incarnation gets a FRESH, unaliased owned value — the structural fix for the
 // byte-copy-template aliasing hazard the permanent-owned-heap wall flagged.
@@ -41,12 +41,12 @@ supervisor App(config: AppConfig) {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child t: Tagged(name: config.label);
+    child t: Tagged { name: config.label };
 }
 
 fn main() -> i64 {
     let cfg = AppConfig { label: "restart-me" };
-    let sup = spawn App(config: cfg);
+    let sup = spawn App { config: cfg };
     let t = sup.t;
     // Initial deep-cloned owned value: "restart-me" (length 10).
     match t.name_len() {

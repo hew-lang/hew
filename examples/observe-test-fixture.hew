@@ -26,8 +26,8 @@ actor Pinger {
 }
 
 fn main() {
-    let counter = spawn Counter(count: 0);
-    let pinger = spawn Pinger(target: counter);
+    let counter = spawn Counter { count: 0 };
+    let pinger = spawn Pinger { target: counter };
     let sent = match pinger.ping(7) {
         .Ok(value) => value,
         .Err(_) => -1,

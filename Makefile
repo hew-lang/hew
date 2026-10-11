@@ -1545,8 +1545,8 @@ stdlib-errno-gate:
 
 COV_DIR          := coverage-out
 
-# Rust-only coverage (cargo test) — unchanged stable default.
-coverage:
+# Rust coverage includes native/WASI parity tests that need the WASI archives.
+coverage: wasm-runtime
 	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
 	cargo llvm-cov report --lcov --output-path $(COV_DIR)/lcov.info
 	cargo llvm-cov report
@@ -1658,7 +1658,7 @@ install: require-host-cargo-target
 		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a"; \
 	done
 	cp -r std/. "$(DESTDIR)$(PREFIX)/std/"
-	install -m 644 hew-cabi/include/hew.h "$(DESTDIR)$(PREFIX)/include/hew.h"
+	install -m 644 hew-cabi/include/hew.h hew-cabi/include/hew_host.h "$(DESTDIR)$(PREFIX)/include/"
 	@set -e; for shell in bash zsh fish; do \
 		"$(RELEASE_DIR)/hew" completions "$$shell" \
 			> "$(DESTDIR)$(PREFIX)/completions/hew.$$shell"; \

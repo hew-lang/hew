@@ -25,7 +25,7 @@ actor Server {
         };
         // The client dials only after the listener is bound.
         ready.send(1).expect("ready");
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         var raw = "";
         var reads = 0;
         var done = false;
@@ -114,8 +114,8 @@ actor Client {
 
 fn main() {
     let (ready_tx, ready) = stream.pipe(1).expect("ready");
-    let s = spawn Server(addr: "127.0.0.1:18110", ready: ready_tx);
-    let c = spawn Client(url: "http://127.0.0.1:18110/hello");
+    let s = spawn Server { addr: "127.0.0.1:18110", ready: ready_tx };
+    let c = spawn Client { url: "http://127.0.0.1:18110/hello" };
     let serving = fork s.serve(0);
     ready.recv();
     let fetching = fork c.go(0);

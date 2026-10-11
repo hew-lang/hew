@@ -2144,6 +2144,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         entry: BlockId(0),
         parameters: vec![],
         place_storage: BTreeMap::new(),
+        frame_storage: BTreeSet::new(),
         storage: vec![
             PhysicalStorage {
                 id: StorageId(0),

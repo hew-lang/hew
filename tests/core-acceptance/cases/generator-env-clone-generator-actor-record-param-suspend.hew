@@ -32,12 +32,12 @@ type AppConfig {
 supervisor App(config: AppConfig) {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child streamer: Streamer(state: config.label);
+    child streamer: Streamer { state: config.label };
 }
 
 fn main() {
     let config = AppConfig { label: "actor-state".to_upper() };
-    let sup = spawn App(config: config);
+    let sup = spawn App { config: config };
     let streamer = sup.streamer;
     let payload = Payload { label: "record-param".to_upper(), data: "bytes-param".to_bytes(), pair: ("tuple-param".to_upper(), 0) };
     let tree = Tree.Node(Tree.Leaf(0), Tree.Leaf(1));

@@ -19,14 +19,14 @@ machine Flow {
     state Idle;
     state Busy { count: i64; entry { let n = 1; } exit { let n = 2; } }
     on Start: Idle => Busy { count: 1 }
-    on Data(payload): Busy => Idle;
+    on Data { payload }: Busy => Idle;
     default { state }
 }
 actor Worker { receive fn work() {} }
 supervisor App {
     strategy: one_for_one;
     intensity: 5 within 60s;
-    child worker: Worker() restart: permanent stop: 5s;
+    child worker: Worker restart: permanent stop: 5s;
 }
 fn main() {
     let point = Point { x: 1, y: 2 };

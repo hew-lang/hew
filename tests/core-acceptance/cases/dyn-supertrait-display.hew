@@ -8,8 +8,7 @@ impl Display for ParseFailure {
     }
 }
 
-impl Error for ParseFailure {
-}
+impl Error for ParseFailure {}
 
 fn parse(text: string) -> i64 fails dyn Error {
     if text == "" {

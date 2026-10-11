@@ -31,7 +31,7 @@ const RECORD_EQ: &str = "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() 
 
 /// Negative control: `is` on an actor handle stays accepted end to end, so
 /// the rejection above is about the value class and not about `is` itself.
-const ACTOR_IS: &str = "actor Worker {\n    let _id: i64;\n    receive fn ping() {}\n}\n\nfn main() {\n    let a = spawn Worker(_id: 1);\n    let b = spawn Worker(_id: 2);\n    let same: bool = a is b;\n    println(same);\n}\n";
+const ACTOR_IS: &str = "actor Worker {\n    let _id: i64;\n    receive fn ping() {}\n}\n\nfn main() {\n    let a = spawn Worker { _id: 1 };\n    let b = spawn Worker { _id: 2 };\n    let same: bool = a is b;\n    println(same);\n}\n";
 
 /// `Vec` is a copy-on-write value (D340), rejected like an enum or record.
 const VEC_IS: &str = "fn main() {\n\
@@ -98,7 +98,7 @@ const INFERRED_LAMBDA_RECORD_IS: &str = "type Point {\n    x: i64;\n}\n\nfn main
 /// Negative control for the two above: the same inferred closure over actor
 /// handles stays accepted, so the deferred decision rejects the value class
 /// rather than every inferred operand.
-const INFERRED_LAMBDA_ACTOR_IS: &str = "actor Worker {\n    let _id: i64;\n    receive fn ping() {}\n}\n\nfn main() {\n    let same = |a, b| a is b;\n    println(same(spawn Worker(_id: 1), spawn Worker(_id: 2)));\n}\n";
+const INFERRED_LAMBDA_ACTOR_IS: &str = "actor Worker {\n    let _id: i64;\n    receive fn ping() {}\n}\n\nfn main() {\n    let same = |a, b| a is b;\n    println(same(spawn Worker { _id: 1 }, spawn Worker { _id: 2 }));\n}\n";
 
 /// Every `is` program this file checks, rejected and accepted alike. The
 /// codegen-front backstop must be unreachable from all of them.

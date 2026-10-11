@@ -1,0 +1,14 @@
+[[case]]
+id = "task-recursive-callback-escape"
+intent = "A recursive enum projection terminates provenance analysis and still refuses a returned callable capturing a scoped task."
+source = "cases/task-recursive-callback-escape.hew"
+suites = ["acceptance"]
+kind = "reject"
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+severity = "error"
+message = "a task handle cannot outlive its scope"
+line = 14
+column = 5

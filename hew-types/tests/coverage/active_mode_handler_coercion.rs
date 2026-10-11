@@ -39,7 +39,7 @@ actor Echo {
 fn use_handler(h: Handler) {}
 
 fn main() {
-    let echo = spawn Echo(n: 0);
+    let echo = spawn Echo { n: 0 };
     use_handler(echo);
 }
 ",
@@ -77,7 +77,7 @@ impl Handler for Bare {
 fn use_handler(h: Handler) {}
 
 fn main() {
-    let bare = spawn Bare(n: 0);
+    let bare = spawn Bare { n: 0 };
     use_handler(bare);
 }
 ",
@@ -178,7 +178,7 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
                 receive fn {data_handler}(value: {payload}) {{}}
             }}
             fn install(connection: {alias}.{receiver}) {{
-                let handler = spawn Handler();
+                let handler = spawn Handler;
                 let _ = connection.attach(handler);
             }}
         "

@@ -631,28 +631,108 @@ fn main() {
 }
 
 #[test]
+fn reassigned_callbacks_preserve_saved_values_and_reaching_branches() {
+    run_task(
+        r"
+fn choose(replace: bool) {
+    var job: fn[once,suspends]() -> i64 = move || { 1 };
+    let saved = job;
+    scope {
+        let child = fork { 7 };
+        job = move || { await child };
+        job = move || { 9 };
+    };
+    println(saved());
+    println(job());
+
+    var callback: fn() -> i64 = || 1;
+    let alias = callback;
+    callback = || 2;
+    println(alias());
+    println(callback());
+    if replace { callback = || 3; } else { callback = || 4; }
+    println(callback());
+}
+fn main() {
+    choose(true);
+    choose(false);
+}
+",
+        "1\n9\n1\n2\n3\n1\n9\n1\n2\n4\n",
+        0,
+        "",
+    );
+}
+
+#[test]
 fn a_scope_cannot_publish_a_child_handle_after_closing() {
     require_codegen();
     let dir = tempdir();
-    let input = dir.path().join("escape.hew");
-    std::fs::write(
-        &input,
-        "fn main() { let escaped = scope { fork { 42 } }; println(await escaped); }",
-    )
-    .unwrap();
-    let mut build = Command::new(hew_binary());
-    build
-        .arg("build")
-        .arg(&input)
-        .arg("-o")
-        .arg(dir.path().join("escape"));
-    let output = run_bounded_command(build, "reject escaped scoped task");
-    assert!(!output.status.success(), "{}", describe_output(&output));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("scoped task handle"),
-        "{}",
-        describe_output(&output)
-    );
+    let cases = [
+        (
+            "handle",
+            "fn main() { let escaped = scope { fork { 42 } }; println(await escaped); }",
+        ),
+        (
+            "saved alias",
+            r"
+fn make() -> fn[once,suspends]() -> i64 {
+    let child = fork { 7 };
+    var job: fn[once,suspends]() -> i64 = move || { await child };
+    let saved = job;
+    job = move || { 9 };
+    saved
+}
+fn main() {}
+",
+        ),
+        (
+            "saved capture",
+            r"
+fn make() -> fn[once,suspends]() -> i64 {
+    let child = fork { 7 };
+    var job: fn[once,suspends]() -> i64 = move || { await child };
+    let saved = move || { job() };
+    job = move || { 9 };
+    saved
+}
+fn main() {}
+",
+        ),
+        (
+            "unreplaced branch",
+            r"
+fn choose(replace: bool) {
+    var job: fn[once,suspends]() -> i64 = move || { 1 };
+    scope {
+        let child = fork { 7 };
+        job = move || { await child };
+        if replace { job = move || { 9 }; } else {}
+    };
+    println(job());
+}
+fn main() { choose(false); }
+",
+        ),
+    ];
+    for (case, source) in cases {
+        let input = dir.path().join("escape.hew");
+        std::fs::write(&input, source).unwrap();
+        let mut build = Command::new(hew_binary());
+        build
+            .arg("build")
+            .arg(&input)
+            .arg("-o")
+            .arg(dir.path().join("escape"));
+        let output = run_bounded_command(build, format!("reject escaped scoped task: {case}"));
+        assert!(!output.status.success(), "{}", describe_output(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("task handle cannot outlive its scope"),
+            "{case}: {}",
+            describe_output(&output)
+        );
+    }
 }
 
 #[test]

@@ -22,7 +22,7 @@ actor TestSink {
 }
 
 fn main() {
-    let s = spawn TestSink(total: 0);
+    let s = spawn TestSink { total: 0 };
     let _ = s.process("first", 5);
     let _ = s.process("second", 7);
     let left = "alpha";

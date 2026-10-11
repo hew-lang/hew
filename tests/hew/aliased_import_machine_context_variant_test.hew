@@ -6,7 +6,7 @@
 //! are covered because the alias takes a different registration path through
 //! the importer's binding tables.
 
-import tests.hew.machine_context_variant_support.light_defs as lights;
+import machine_context_variant_support.light_defs as lights;
 
 #[test]
 fn contextual_transition_bodies_run_under_an_aliased_import() {

@@ -10,6 +10,6 @@ actor Holder {
 
 fn main() {
     let val = json.from_int(1);
-    let holder = spawn Holder(val: val);
+    let holder = spawn Holder { val: val };
     let _ = holder.ping(0);
 }

@@ -280,7 +280,7 @@ fn actor_receive_gen_fn_yield_lowers_through_genblock() {
             init() {}
             receive gen fn count_up() -> i64 { yield 1; yield 2; }
         }
-        fn main() { let _s = spawn Seq(); }
+        fn main() { let _s = spawn Seq; }
         ",
     );
     assert!(
@@ -353,7 +353,7 @@ fn actor_receive_gen_fn_rejects_non_unit_return() {
             init() {}
             receive gen fn one_then_done() -> i64 { yield 42; return 7; }
         }
-        fn main() { let _s = spawn Seq(); }
+        fn main() { let _s = spawn Seq; }
         ",
     );
     assert!(
@@ -376,7 +376,7 @@ fn actor_receive_gen_fn_accepts_bare_return() {
             init() {}
             receive gen fn one_then_done() -> i64 { yield 42; return; }
         }
-        fn main() { let _s = spawn Seq(); }
+        fn main() { let _s = spawn Seq; }
         ",
     );
     assert!(
@@ -436,7 +436,7 @@ fn receive_gen_fn_state_field_capture_passes_verify() {
 }
 
 fn main() {
-    let _t = spawn Ticker(b: 100);
+    let _t = spawn Ticker { b: 100 };
 }
 ",
     );

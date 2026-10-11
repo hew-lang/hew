@@ -10,8 +10,7 @@ impl Display for AppError {
     }
 }
 
-impl Error for AppError {
-}
+impl Error for AppError {}
 
 fn check(value: i64) -> Result<(), AppError> {
     if value > 2 {

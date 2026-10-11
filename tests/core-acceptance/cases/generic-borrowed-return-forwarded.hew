@@ -1,0 +1,11 @@
+#[resource]
+type Token { id: i64; }
+impl Token {
+    fn close(consume self) {}
+}
+fn identity<T>(value: T) -> T { value }
+fn forward<T>(value: T) -> T { identity(value) }
+fn main() {
+    let token = forward(Token { id: 2 });
+    token.close();
+}

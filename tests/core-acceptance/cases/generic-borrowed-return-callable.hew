@@ -1,0 +1,11 @@
+#[resource]
+type Token { id: i64; }
+impl Token {
+    fn close(consume self) {}
+}
+fn identity<T>(value: T) -> T { value }
+fn main() {
+    let callback = identity<Token>;
+    let token = callback(Token { id: 3 });
+    token.close();
+}

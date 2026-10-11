@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-clone-independence"
+intent = "Prefix and method byte clones remain independent across mutation, including nonzero-offset slices and empty buffers."
+source = "cases/bytes-clone-independence.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "3 97\n3 120\n4 100\n2 98\n2 121\n0 1 101\n"
+exit = 0

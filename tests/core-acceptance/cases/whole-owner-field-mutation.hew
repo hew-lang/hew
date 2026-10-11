@@ -94,7 +94,7 @@ fn main() {
     };
     step(2);
     step(3);
-    let keeper = spawn Keeper(pool: Pool { items: [], ids: [], index: HashMap.new(), meta: Meta { tag: "keeper", count: 0 } });
+    let keeper = spawn Keeper { pool: Pool { items: [], ids: [], index: HashMap.new(), meta: Meta { tag: "keeper", count: 0 } } };
     println(keeper.add(7).expect("add"));
     println(keeper.add(8).expect("add"));
     stop(keeper);

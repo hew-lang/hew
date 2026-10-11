@@ -480,9 +480,9 @@ pub enum Expr {
     },
     Spawn {
         target: Box<Spanned<Expr>>,
-        /// Explicit turbofish type arguments: `spawn Foo<T>(...)`.
+        /// Explicit type arguments: `spawn Foo<T> { .. }`.
         ///
-        /// Empty when the user writes `spawn Foo(...)` without a type-argument
+        /// Empty when the user writes `spawn Foo { .. }` without a type-argument
         /// list. Generic actors require a non-empty list; the checker emits
         /// `MissingActorTypeArgs` when a generic actor is spawned without them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1823,6 +1823,9 @@ pub struct ActorInit {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldDecl {
     pub name: Ident,
+    /// The name token's span.
+    #[serde(skip)]
+    pub name_span: Span,
     pub ty: Spanned<TypeExpr>,
     /// `true` when declared with `var` (mutable actor field); `false` for `let`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1864,7 +1867,7 @@ pub struct SupervisorDecl {
     /// In scope throughout the body (the child init-arg exprs reference them, so
     /// a child's init value can derive from runtime config). Empty when the
     /// declaration omits the `(...)` clause. Mirrors the actor `init(params)` /
-    /// `spawn Actor(args)` shape — the dynamic-data source for the v0.6
+    /// `spawn Actor { args }` shape — the dynamic-data source for the v0.6
     /// init-closure restart model.
     #[serde(default)]
     pub params: Vec<Param>,
@@ -1905,11 +1908,12 @@ pub struct ChildSpec {
     pub actor_type: Path,
     #[serde(default)]
     pub type_args: Vec<Spanned<TypeExpr>>,
-    /// Named init args for this child's actor, e.g. `child w: Worker(id: 7)`.
-    /// Mirrors `Spawn.args` at the AST level: each entry is `(field_name, expr)`.
-    /// Positional args (no `name:` prefix) are rejected by the parser with a
-    /// migration diagnostic.
+    /// Keyed init values for this child's actor, e.g. `child w: Worker { id: 7 }`.
+    /// Mirrors `Spawn.args` at the AST level: each entry is `(key, expr)`.
     pub args: Vec<(Ident, Spanned<Expr>)>,
+    /// Written key labels, in `args` order.
+    #[serde(skip)]
+    pub arg_labels: Vec<FieldLabel>,
     #[serde(default)]
     pub restart: Option<RestartPolicy>,
     /// Declarative sibling wiring: maps init-param name → sibling child name.
@@ -1926,8 +1930,8 @@ pub struct ChildSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<Spanned<Expr>>,
     /// Pool arity, written as the per-child clause `count: <expr>` after the
-    /// init-arg parentheses (`pool ws: Worker(value: 7) count: 2;`). Arity
-    /// lives in the child's clause namespace, never in the parenthesised list,
+    /// key braces (`pool ws: Worker { value: 7 } count: 2;`). Arity
+    /// lives in the child's clause namespace, never among the keys,
     /// so an actor that declares a field named `count` pools like any other.
     /// Required on a `pool` child (`hew-types` reports
     /// `E_SUPERVISOR_POOL_COUNT_MISSING` when it is absent) and refused by the
@@ -2106,7 +2110,7 @@ pub struct MachineTransition {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub target_is_contextual: bool,
     /// Event-payload field names bound in the transition head
-    /// (`on E(a, b): …`). These alias the event's fields so the body can use
+    /// (`on E { a, b }: …`). These alias the event's fields so the body can use
     /// the bare names instead of `event.field`. The parser splices a
     /// `let a = event.a;` prelude into `body` for lowering (no new HIR kind);
     /// this list is retained purely so the formatter can re-emit the head form

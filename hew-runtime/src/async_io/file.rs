@@ -13,6 +13,7 @@ use crate::wake::HewWaker;
 enum FileRequest {
     StreamRead(*mut crate::stream::HewStream),
     SinkWrite(*mut crate::stream::HewSink, Vec<u8>),
+    SinkFinish(*mut crate::stream::HewSink),
 }
 
 // SAFETY: a stream or sink submission lends its heap handle exclusively
@@ -21,6 +22,17 @@ enum FileRequest {
 unsafe impl Send for FileRequest {}
 
 impl FileRequest {
+    #[cfg(windows)]
+    fn cancellation_handle(&self) -> Option<usize> {
+        match self {
+            Self::SinkWrite(sink, _) | Self::SinkFinish(sink) => {
+                // SAFETY: this request retains the exclusive sink loan.
+                unsafe { (**sink).native_pipe_handle() }
+            }
+            Self::StreamRead(_) => None,
+        }
+    }
+
     fn run(self) -> Result<IoValue, IoFailure> {
         match self {
             Self::StreamRead(stream) => {
@@ -34,7 +46,30 @@ impl FileRequest {
                     i64::try_from(data.len()).expect("stream item size"),
                 ))
             }
+            Self::SinkFinish(sink) => {
+                let _ = crate::stream_error::take_last_error();
+                // SAFETY: the producer retains the sink loan until quiescence.
+                unsafe { (*sink).close() };
+                match IoFailure::take_recorded() {
+                    Some(failure) => Err(failure),
+                    None => Ok(IoValue::Count(0)),
+                }
+            }
         }
+    }
+}
+
+pub(super) unsafe fn start_sink_finish(
+    sink: *mut crate::stream::HewSink,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the caller retains the exclusive sink loan and supplies the waker.
+    unsafe {
+        submit(
+            shared_blocking_pool_opt(),
+            waker,
+            Ok(FileRequest::SinkFinish(sink)),
+        )
     }
 }
 
@@ -46,6 +81,20 @@ struct FileJob {
 unsafe extern "C" fn run_file_job(context: *mut c_void) {
     // SAFETY: a successful submit transfers this unique Box to one pool callback.
     let FileJob { operation, request } = *unsafe { Box::from_raw(context.cast::<FileJob>()) };
+    #[cfg(windows)]
+    let _cancellation = match operation
+        .file_cancel
+        .register(request.cancellation_handle())
+    {
+        Ok(guard) => guard,
+        Err(error) => {
+            operation.complete(Err(IoFailure::from_io(
+                "register pipe cancellation",
+                &error,
+            )));
+            return;
+        }
+    };
     if !operation.is_pending() {
         drop(request);
         return;
@@ -126,5 +175,54 @@ pub(crate) unsafe fn start_sink_write(
             waker,
             Ok(FileRequest::SinkWrite(sink, data)),
         )
+    }
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+pub(super) struct FileCancellation {
+    handle: std::sync::Mutex<Option<std::os::windows::io::OwnedHandle>>,
+}
+
+#[cfg(windows)]
+impl FileCancellation {
+    fn register(&self, handle: Option<usize>) -> std::io::Result<FileCancellationGuard<'_>> {
+        use crate::util::MutexExt;
+        use std::os::windows::io::BorrowedHandle;
+        let handle = handle
+            .map(|handle| {
+                // SAFETY: the producer retains the exclusive backing loan until
+                // this guard is dropped, including any pending kernel operation.
+                unsafe { BorrowedHandle::borrow_raw(handle as *mut c_void) }.try_clone_to_owned()
+            })
+            .transpose()?;
+        *self.handle.lock_or_recover() = handle;
+        Ok(FileCancellationGuard(self))
+    }
+
+    pub(super) fn cancel(&self) -> bool {
+        use crate::util::MutexExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+        use windows_sys::Win32::System::IO::CancelIoEx;
+        let handle = self.handle.lock_or_recover();
+        let Some(handle) = handle.as_ref() else {
+            return false;
+        };
+        // SAFETY: the registered duplicate belongs only to this producer;
+        // clearing registration uses this same lock before releasing its loan.
+        (unsafe { CancelIoEx(handle.as_raw_handle(), std::ptr::null()) }) == 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(ERROR_NOT_FOUND as i32)
+    }
+}
+
+#[cfg(windows)]
+struct FileCancellationGuard<'a>(&'a FileCancellation);
+
+#[cfg(windows)]
+impl Drop for FileCancellationGuard<'_> {
+    fn drop(&mut self) {
+        use crate::util::MutexExt;
+        drop(self.0.handle.lock_or_recover().take());
     }
 }

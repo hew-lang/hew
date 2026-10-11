@@ -144,9 +144,8 @@ extension and saturation semantics apply.
 
 ## Concurrency
 
-These have no producer in a package the VM accepts today: the emitter routes a
-module that uses them to the concurrency path. They are listed so the registry
-stays closed against `SemOpKind`.
+The compiler emits these operations for generators, pipes and structured tasks.
+The VM executes them through the same value ownership and lexical scope contracts.
 
 | Opcode                  | Fields                        |
 | ----------------------- | ----------------------------- |
@@ -155,6 +154,7 @@ stays closed against `SemOpKind`.
 | `task_scope.enter`      | `scope`, `parent`, `duration` |
 | `task_scope.close`      | `scope`                       |
 | `task.spawn`            | `scope`, `callable`           |
+| `task.race`             | `scope`, `members`            |
 | `actor.ingress_adapter` | `adapter`                     |
 
 ## Control-flow terminators

@@ -1013,6 +1013,83 @@ fn lsp_exported_function_rename_refuses_incomplete_importers_and_capture_atomica
 }
 
 #[test]
+fn lsp_binding_rename_preserves_fields_and_expands_parameter_shorthand() {
+    let cases = [
+        (
+            "type Endpoint { port: i64; }\nfn main() {\n    let port = 5432;\n    let e = Endpoint { port: port };\n    { let port = 80; println(port); }\n    println(e.port);\n    println(port);\n}\n",
+            "port = 5432",
+            "pp",
+            "type Endpoint { port: i64; }\nfn main() {\n    let pp = 5432;\n    let e = Endpoint { port: pp };\n    { let port = 80; println(port); }\n    println(e.port);\n    println(pp);\n}\n",
+        ),
+        (
+            "type Win { lo: i64; hi: i64; }\nfn widen(w: Win, lo: i64) -> Win { Win { ..w, lo } }\nfn main() { let w = Win { lo: 1, hi: 2 }; println(widen(w, 3).lo); }\n",
+            "lo: i64) ->",
+            "low",
+            "type Win { lo: i64; hi: i64; }\nfn widen(w: Win, low: i64) -> Win { Win { ..w, lo: low } }\nfn main() { let w = Win { lo: 1, hi: 2 }; println(widen(w, 3).lo); }\n",
+        ),
+    ];
+    for (source, needle, new_name, expected) in cases {
+        for prefix in ["", "import missing;\n"] {
+            let source = format!("{prefix}{source}");
+            let expected = format!("{prefix}{expected}");
+            let parsed = hew_parser::parse(&source);
+            assert!(parsed.errors.is_empty());
+            let mut edits = hew_analysis::rename::plan_rename(
+                &source,
+                &parsed,
+                source.find(needle).expect("selected declaration"),
+                new_name,
+            )
+            .expect("standalone planner can use recoverable checker identities");
+            edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.start));
+            let mut standalone = source.clone();
+            for edit in edits {
+                standalone.replace_range(edit.span.start..edit.span.end, &edit.new_text);
+            }
+            assert_eq!(
+                standalone, expected,
+                "standalone rename must match the protocol edits"
+            );
+
+            let uri = "untitled:binding-identity";
+            let mut session = RenameSession::new(None, &[]);
+            let original = session.open_uri(uri, &source, 1);
+            if prefix.is_empty() {
+                assert_clean(&original);
+            }
+            let response = session.request(
+                "textDocument/rename",
+                json!({"textDocument":{"uri":uri},"position":position_of(&source, needle),"newName":new_name}),
+            );
+            assert_eq!(
+                session.apply(&response),
+                [uri.to_string()].into_iter().collect()
+            );
+            assert_eq!(session.buffers[uri].0, expected);
+            let mut verification = RenameSession::new(None, &[]);
+            let publish = verification.open_uri(uri, &expected, 2);
+            if prefix.is_empty() {
+                assert_clean(&publish);
+            } else {
+                let errors: Vec<_> = publish["params"]["diagnostics"]
+                    .as_array()
+                    .expect("diagnostics")
+                    .iter()
+                    .filter(|diagnostic| diagnostic["severity"] == 1)
+                    .collect();
+                assert!(!errors.is_empty(), "missing import remains visible");
+                assert!(
+                    errors
+                        .iter()
+                        .all(|diagnostic| diagnostic["code"] == "E_MODULE_NOT_FOUND"),
+                    "rename must preserve all binding and field identities: {errors:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn lsp_untitled_local_rename_preserves_fresh_buffers_without_project_roots() {
     let uri = "untitled:Untitled-1";
     let source = "fn main() { let answer = 7; println(answer); }\n";
@@ -1351,6 +1428,60 @@ fn lsp_unsaved_symlink_export_rename_updates_closed_importer() {
     let mut verification = RenameSession::new(Some(&project), &[]);
     assert_clean(&verification.open(&fresh, expected, 12));
     assert_clean(&verification.open(&main, &session.source(&main), 1));
+}
+
+/// An editor that opens a workspace through a symlink (macOS's `/var`, a
+/// Windows 8.3 name) names every file through that spelling. Closed consumers
+/// found on disk must come back under it too, or the client edits a document
+/// it never opened; the physical path stays only the source's identity.
+#[cfg(unix)]
+#[test]
+fn lsp_rename_and_symbols_keep_the_workspace_root_spelling() {
+    let project = TestProject::new("rename-root-spelling");
+    let holder = TestProject::new("rename-root-spelling-alias");
+    let alias = TestProject(holder.0.join("workspace"));
+    std::os::unix::fs::symlink(&project.0, &alias.0).expect("link workspace alias");
+    let util_source = "pub fn greet() -> i32 { 1 }\n";
+    project.write("util.hew", util_source);
+    project.write(
+        "main.hew",
+        "import util;\nfn main() { println(util.greet()); }\n",
+    );
+    project.write(
+        "caller.hew",
+        "import util.{ greet };\npub fn call() -> i32 { greet() }\n",
+    );
+    let util = alias.0.join("util.hew");
+    let main = alias.0.join("main.hew");
+    let caller = alias.0.join("caller.hew");
+
+    let mut session = RenameSession::new(Some(&alias), &[]);
+    assert_clean(&session.open(&util, util_source, 1));
+    let symbols = session.request("workspace/symbol", json!({"query":"greet"}));
+    let symbol_uris: BTreeSet<String> = symbols["result"]
+        .as_array()
+        .expect("workspace symbols")
+        .iter()
+        .map(|symbol| symbol["location"]["uri"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(symbol_uris, [file_uri(&util)].into_iter().collect());
+
+    let response = session.rename(&util, util_source, "greet", "salute");
+    assert_eq!(
+        session.apply(&response),
+        [&util, &main, &caller]
+            .into_iter()
+            .map(|path| file_uri(path))
+            .collect()
+    );
+    assert_eq!(
+        session.source(&main),
+        "import util;\nfn main() { println(util.salute()); }\n"
+    );
+    assert_eq!(
+        session.source(&caller),
+        "import util.{ salute };\npub fn call() -> i32 { salute() }\n"
+    );
 }
 
 #[test]

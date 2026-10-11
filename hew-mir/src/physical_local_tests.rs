@@ -196,7 +196,7 @@ fn physical_trap_certificate_cannot_survive_an_ordinary_exit_or_later_effect() {
             });
         }
         match verify_physical_module(&module) {
-            Ok(()) => accepted.push(mutation),
+            Ok(_) => accepted.push(mutation),
             Err(error) => assert!(
                 error.message.contains("certified trap cleanup region"),
                 "{error:?}"

@@ -44,7 +44,7 @@ supervisor App {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child w: Worker(label: "north", profile: Profile { region: "north", weight: 7 });
+    child w: Worker { label: "north", profile: Profile { region: "north", weight: 7 } };
 }
 
 fn main() -> i64 {

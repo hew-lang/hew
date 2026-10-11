@@ -45,7 +45,7 @@ message = "missing field `port` in initializer of `Endpoint`"
 severity = "error"
 code = "UndefinedVariable"
 line = 29
-column = 34
+column = 36
 message = "cannot find `greeting` in scope (field shorthand for `greeting`)"
 
 [[case.expected.diagnostics]]

@@ -9,6 +9,15 @@ syntax and semantics, and the [language guide](docs/hew-language-guide.md)
 for examples. The release-labelled entries below preserve migration history;
 old spellings and ABI layouts in them are not current programming guidance.
 
+## Keyed construction in v0.6.0
+
+`spawn`, supervisor children and machine transition heads take their keys in
+braces: `spawn Counter { count: 0 }`, `child w: Worker { id: 1 };`,
+`on Open { by }:`. A spawn with no keys is `spawn Store`. The parenthesised
+spellings are refused with a fix-it; run `hew fmt --migrate` to rewrite them.
+An unknown or repeated spawn key is a checker error at the key, and a
+supervisor may declare several header parameters.
+
 ## Errors in v0.6.0-rc5
 
 The `std.concurrency` module is gone; import `std.concurrency.lifecycle` for

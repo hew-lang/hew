@@ -39,7 +39,7 @@ fn mark(before: ChildRef<Counter>, leaf: ChildRef<Counter>, after: ChildRef<Coun
 }
 
 fn main() {
-    let all = spawn All();
+    let all = spawn All;
     let all_leaf = all.branch.leaf;
     mark(all.before, all_leaf, all.after);
     let _ = all.before.fail();
@@ -71,7 +71,7 @@ fn main() {
     assert(all.after.get().expect("all after nested failure") == 0);
     stop(all);
     stopped(all);
-    let rest = spawn Rest();
+    let rest = spawn Rest;
     let rest_leaf = rest.branch.leaf;
     mark(rest.before, rest_leaf, rest.after);
     let _ = rest.after.fail();

@@ -16,6 +16,10 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        test_name: "task_race",
+        source_rel: "examples/sandbox-graduation/task_race.hew",
+    },
+    ParityCase {
         // A lambda built, passed to a function taking a callable, and called
         // there through the same indirect path both engines use.
         test_name: "closure_values",
@@ -26,6 +30,13 @@ const PARITY_CASES: &[ParityCase] = &[
         // functions, methods, a trait object and an actor handler.
         test_name: "named_arguments",
         source_rel: "examples/sandbox-graduation/named_arguments.hew",
+    },
+    ParityCase {
+        // A spawn, supervisor child and transition head bind keys by name in
+        // braces, with defaults, init and supervisor parameters, while a call
+        // with the same bare names stays positional.
+        test_name: "spawn_keyed",
+        source_rel: "tests/core-acceptance/cases/spawn-keyed.hew",
     },
     ParityCase {
         // Deferred work runs as the scope ends, in reverse registration order.
@@ -544,6 +555,10 @@ const PARITY_CASES: &[ParityCase] = &[
         // postfix-try covers Result and Option success plus early propagation.
         test_name: "trap_residual",
         source_rel: "examples/sandbox-graduation/trap_residual.hew",
+    },
+    ParityCase {
+        test_name: "deferred_locals",
+        source_rel: "examples/sandbox-graduation/deferred_locals.hew",
     },
     ParityCase {
         // `f"{v:?}"` over scalars, strings, tuples, records, enums, Vec,

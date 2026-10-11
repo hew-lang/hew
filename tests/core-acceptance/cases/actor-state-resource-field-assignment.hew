@@ -27,7 +27,7 @@ actor Holder {
 }
 
 fn main() {
-    let holder = spawn Holder();
+    let holder = spawn Holder;
     match holder.poke(1) {
         .Ok(value) => println(f"first {value}"),
         .Err(_) => println("first failed"),

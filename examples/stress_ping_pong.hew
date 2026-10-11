@@ -28,8 +28,8 @@ actor Ponger {
 
 fn main() {
     println("=== Stress: Ping-Pong ===");
-    let pinger = spawn Pinger(count: 0);
-    let ponger = spawn Ponger(count: 0);
+    let pinger = spawn Pinger { count: 0 };
+    let ponger = spawn Ponger { count: 0 };
     // Rapid alternating message sends — simulates ping-pong
     for i in 0..1000 {
         let ping_value: i64 = i;

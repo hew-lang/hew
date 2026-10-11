@@ -1030,7 +1030,6 @@ pub(crate) fn runtime_variant_tags(
             (Role::SendErrorLocalShutdown, "LocalShutdown"),
             (Role::SendErrorCancelled, "Cancelled"),
             (Role::SendErrorVersionMismatch, "VersionMismatch"),
-            (Role::SendErrorUnauthorized, "Unauthorized"),
             (Role::SendErrorBackpressure, "Backpressure"),
             (Role::SendErrorDead, "Dead"),
             (Role::SendErrorWriteTimedOut, "WriteTimedOut"),

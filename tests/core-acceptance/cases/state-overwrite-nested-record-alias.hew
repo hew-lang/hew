@@ -19,7 +19,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let keeper = spawn Keeper(cur: Wrap { leaf: Leaf { text: "record-alias".to_upper() } });
+    let keeper = spawn Keeper { cur: Wrap { leaf: Leaf { text: "record-alias".to_upper() } } };
     var i: i64 = 0;
     while i < 50 {
         let _ = keeper.rewrite();

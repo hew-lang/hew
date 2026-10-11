@@ -17,7 +17,7 @@ use tower_lsp_server::ls_types::{
 };
 
 use super::navigation::find_named_import_spans;
-use super::uri::FileUriExt;
+use super::uri::{resolved_physical_path, FileUriExt};
 use super::{offset_range_to_lsp, DocumentState, HewLanguageServer, OpenDocument};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,46 +30,6 @@ struct Function {
 
 fn physical_path(path: &Path) -> PathBuf {
     resolved_physical_path(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// Resolve existing parents even when an editor has opened a new unsaved file.
-/// Appending an unresolved leaf to a lexical symlink path would misstate its
-/// workspace ownership. Resolve components before interpreting a later `..`.
-fn resolved_physical_path(path: &Path) -> std::io::Result<PathBuf> {
-    use std::path::Component;
-    if let Ok(path) = std::fs::canonicalize(path) {
-        return Ok(path);
-    }
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut resolved = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                resolved.pop();
-            }
-            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
-            Component::Normal(_) => {
-                resolved.push(component.as_os_str());
-                match std::fs::canonicalize(&resolved) {
-                    Ok(path) => resolved = path,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        if std::fs::symlink_metadata(&resolved)
-                            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-                        {
-                            return Err(error);
-                        }
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-    }
-    Ok(resolved)
 }
 
 fn function(output: &TypeCheckOutput, resolution: Resolution) -> Option<Function> {
@@ -310,6 +270,14 @@ fn checked_frontend(source: &Source, mut state: hew_compile::DocumentFrontendSta
     if let (Some(output), Some(index)) = (output.as_mut(), index) {
         hew_analysis::identity::focus_file(output, index);
     }
+    if output.is_none() {
+        output = Some(hew_analysis::identity::source_identities(
+            state
+                .parse_result
+                .as_ref()
+                .expect("source frontend parses its root"),
+        ));
+    }
     let functions = output.as_ref().map_or_else(HashMap::new, |output| {
         output
             .defs
@@ -434,25 +402,30 @@ fn source_snapshot(
     Ok((sources, overlay))
 }
 
+/// Sources are keyed by physical identity, but a closed file keeps the
+/// editor's spelling of its workspace root in its URI: the client names files
+/// through that root, and a resolved spelling (`/private/var` for `/var`, a
+/// long Windows name for an 8.3 one) would address a different document.
 fn project_sources(
-    roots: &[PathBuf],
+    root_paths: &[PathBuf],
     open: &BTreeMap<PathBuf, Source>,
     overlay: &mut hew_compile::DocumentSet,
 ) -> Result<BTreeMap<PathBuf, Source>, RenameError> {
+    let roots: Vec<_> = root_paths.iter().map(|root| physical_path(root)).collect();
     let mut sources: BTreeMap<_, _> = open
         .iter()
-        .filter(|(path, _)| editable(path, roots))
+        .filter(|(path, _)| editable(path, &roots))
         .map(|(path, source)| (path.clone(), source.clone()))
         .collect();
-    for root in roots {
-        super::workspace::for_each_hew_file(root, |path| -> Result<(), RenameError> {
-            let path = physical_path(path);
+    for root in root_paths {
+        super::workspace::for_each_hew_file(root, |spelled| -> Result<(), RenameError> {
+            let path = physical_path(spelled);
             if sources.contains_key(&path) {
                 return Ok(());
             }
             let text = std::fs::read_to_string(&path)
                 .map_err(|error| RenameError::from((path.clone(), error)))?;
-            let uri = Uri::from_checked_file_path(&path)
+            let uri = Uri::from_checked_file_path(spelled)
                 .ok_or_else(|| refused(&path, "source path has no file URI"))?;
             overlay.insert(path.clone(), text.clone());
             sources.insert(path.clone(), Source { uri, path, text });
@@ -649,8 +622,8 @@ fn query_source(snapshot: &HashMap<Uri, OpenDocument>, uri: &Uri) -> Option<Sour
     })
 }
 
-/// Legacy non-function targets still use their existing syntax queries, but
-/// their peers must have the same fresh authored text as the project planner.
+/// Single-file targets and their peers use the same fresh authored text as
+/// the project planner.
 fn legacy_documents(snapshot: &HashMap<Uri, OpenDocument>) -> dashmap::DashMap<Uri, DocumentState> {
     snapshot
         .iter()
@@ -670,7 +643,7 @@ fn legacy_documents(snapshot: &HashMap<Uri, OpenDocument>) -> dashmap::DashMap<U
         .collect()
 }
 
-/// A syntactic local or parameter has no external consumers. An incomplete
+/// A checked local or parameter has no external consumers. An incomplete
 /// exported/imported target must never fall through to declaration-only edits.
 fn potential_external_target(checked: &Checked, offset: usize) -> bool {
     let Some((name, word)) = hew_analysis::util::simple_word_at_offset(&checked.doc.source, offset)
@@ -703,16 +676,9 @@ fn potential_external_target(checked: &Checked, offset: usize) -> bool {
             return false;
         }
     }
-    if hew_analysis::definition::find_local_binding_definition(
-        &checked.doc.source,
-        &checked.doc.parse_result,
-        &name,
-        offset,
-    )
-    .is_some()
-        || hew_analysis::definition::find_param_definition(&checked.doc.parse_result, &name, offset)
-            .is_some()
-    {
+    if checked.doc.type_output.as_ref().is_some_and(|output| {
+        matches!(resolution_for_token(output, word), Some((span, Resolution::Local(_))) if span == word)
+    }) {
         return false;
     }
     if hew_analysis::rename::is_local_non_function_reference(
@@ -722,8 +688,8 @@ fn potential_external_target(checked: &Checked, offset: usize) -> bool {
     ) {
         return false;
     }
-    // A parsed non-function declaration remains eligible for the legacy
-    // syntactic rename even when an unrelated import could not be resolved.
+    // A parsed non-function declaration remains eligible for single-file
+    // rename even when an unrelated import could not be resolved.
     if let Some(span) = hew_analysis::definition::find_definition(
         &checked.doc.source,
         &checked.doc.parse_result,
@@ -953,7 +919,7 @@ fn complete_rename(
         verify_source_snapshot(
             &path,
             &physical_snapshot.sources,
-            &physical_snapshot.roots,
+            &physical_snapshot.root_paths,
             &open,
         )?;
     }
@@ -1166,7 +1132,7 @@ fn plan(
     if !within(&query.path, &roots) || !within(&target.source, &roots) {
         return Err(refused(&target.source, "exported function rename requires its declaration and request inside configured workspace roots"));
     }
-    let sources = project_sources(&roots, open, &mut overlay)?;
+    let sources = project_sources(&root_paths, open, &mut overlay)?;
     // Dependency checkpoints belong to this exact original source snapshot.
     // Real roots still resolve independently and keep their physical facts.
     let mut original = hew_compile::SourceAnalysisBatch::new(frontend_options(&overlay, pkg_paths));
@@ -1292,7 +1258,7 @@ fn plan(
     }
     // A changed or newly created closed consumer invalidates the proof too,
     // even when the first snapshot contained no references in that file.
-    verify_source_snapshot(&query.path, &sources, &roots, open)?;
+    verify_source_snapshot(&query.path, &sources, &root_paths, open)?;
     let mut lsp_changes = HashMap::new();
     for (path, found) in changes {
         if found.edits.is_empty() {
@@ -1326,7 +1292,7 @@ fn plan(
 fn verify_source_snapshot(
     query: &Path,
     sources: &BTreeMap<PathBuf, Source>,
-    roots: &[PathBuf],
+    root_paths: &[PathBuf],
     open: &BTreeMap<PathBuf, Source>,
 ) -> Result<(), RenameError> {
     for (path, source) in sources {
@@ -1342,7 +1308,7 @@ fn verify_source_snapshot(
             ));
         }
     }
-    let current = project_sources(roots, open, &mut hew_compile::DocumentSet::new())?;
+    let current = project_sources(root_paths, open, &mut hew_compile::DocumentSet::new())?;
     if current.len() != sources.len()
         || current.iter().any(|(path, source)| {
             sources
@@ -1811,9 +1777,12 @@ mod tests {
         }
 
         fn rename(&self, file: &str, new_name: &str) -> Result<Option<WorkspaceEdit>, RenameError> {
-            let path = physical_path(&self.0.join(file));
+            // The editor names the file through the root it opened; the
+            // physical path is only the source's identity.
+            let spelled = self.0.join(file);
+            let path = physical_path(&spelled);
             let source = Source {
-                uri: Uri::from_checked_file_path(&path).unwrap(),
+                uri: Uri::from_checked_file_path(&spelled).unwrap(),
                 text: std::fs::read_to_string(&path).unwrap(),
                 path: path.clone(),
             };
@@ -1845,6 +1814,7 @@ mod tests {
     #[test]
     fn directory_peer_function_keeps_its_physical_file_identity() {
         let project = Project::new(&[
+            ("hew.toml", "[package]\nname = \"app\"\n"),
             (
                 "greeting/greeting.hew",
                 "pub fn other() -> string { \"other\" }\n",
@@ -1938,17 +1908,21 @@ mod tests {
         let project = Project::new(&[("inside.hew", "fn main() {}")]);
         let outside = Project::new(&[("sentinel.hew", "fn main() {}")]);
         std::os::unix::fs::symlink(&outside.0, project.0.join("linked")).unwrap();
+        // The temporary directory may itself be reached through a symlink
+        // (`/var` is `/private/var` on macOS), so expectations are physical too.
+        let project_dir = std::fs::canonicalize(&project.0).unwrap();
+        let outside_dir = std::fs::canonicalize(&outside.0).unwrap();
         assert_eq!(
             physical_path(&project.0.join("linked/new.hew")),
-            outside.0.join("new.hew")
+            outside_dir.join("new.hew")
         );
         assert_eq!(
             physical_path(&project.0.join("missing/../new.hew")),
-            project.0.join("new.hew")
+            project_dir.join("new.hew")
         );
         assert_eq!(
             physical_path(&project.0.join("linked/missing/../new.hew")),
-            outside.0.join("new.hew")
+            outside_dir.join("new.hew")
         );
     }
 

@@ -1,0 +1,19 @@
+fn ready() -> i64 { 7 }
+indirect enum Jobs {
+    Leaf(fn[once,suspends]() -> i64);
+    Node(Jobs);
+}
+fn take(consume jobs: Jobs) -> fn[once,suspends]() -> i64 {
+    match jobs {
+        .Leaf(job) => job,
+        .Node(child) => take(child),
+    }
+}
+fn make() -> fn[once,suspends]() -> i64 {
+    let task = fork ready();
+    take(Jobs.Node(Jobs.Node(Jobs.Leaf(move || { await task }))))
+}
+fn main() {
+    let job = make();
+    println(job());
+}

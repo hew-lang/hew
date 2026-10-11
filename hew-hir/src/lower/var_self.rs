@@ -194,8 +194,7 @@ impl LowerCtx {
                 }
             }
             HirExprKind::Block(block)
-            | HirExprKind::Scope { body: block }
-            | HirExprKind::Race { body: block }
+            | HirExprKind::Scope { body: block, .. }
             | HirExprKind::ForkBlock { body: block, .. } => {
                 self.wrap_var_self_explicit_returns_in_block(block, receiver, abi_return_ty);
             }
@@ -331,7 +330,11 @@ impl LowerCtx {
             | HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
-            HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
+            HirExprKind::TaskRace {
+                members: elements, ..
+            }
+            | HirExprKind::TupleLiteral { elements }
+            | HirExprKind::ArrayLiteral { elements } => {
                 for elem in elements {
                     self.wrap_var_self_explicit_expr_returns(elem, receiver, abi_return_ty);
                 }
@@ -388,7 +391,7 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(scope, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(handler, receiver, abi_return_ty);
             }
-            HirExprKind::ScopeDeadline { duration, body } => {
+            HirExprKind::ScopeDeadline { duration, body, .. } => {
                 self.wrap_var_self_explicit_expr_returns(duration, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }

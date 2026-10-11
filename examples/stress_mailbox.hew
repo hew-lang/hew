@@ -34,7 +34,7 @@ fn read_count(counter: Counter) -> i64 {
 
 fn main() {
     println("=== Stress: Bounded Mailbox ===");
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     // Fill the bounded mailbox in deterministic batches without spelling out
     // ten separate completion calls in the main loop.
     for batch in 0..100 {

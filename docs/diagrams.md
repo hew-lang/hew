@@ -75,7 +75,7 @@ stateDiagram-v2
 | ----------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages                                         |
 | Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges (targeted v0.7.0; not in this build) |
-| Cooperative yield | Per-continuation                             | `llvm.coro.suspend` (`hew_cont_resume`) at every suspending call, including `await` of a `fork`-started task |
+| Cooperative yield | Per-continuation                             | `$body` resume-state dispatch (`hew_cont_resume`) at every suspending call, including `await` of a `fork`-started task |
 
 **Actor dispatch signature** (§9.1.1):
 

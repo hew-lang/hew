@@ -34,7 +34,7 @@ actor Ledger {
 }
 
 fn main() {
-    let ledger = spawn Ledger();
+    let ledger = spawn Ledger;
     match ledger.withdraw(30) {
         .Ok(left) => println(left),
         .Err(problem) => println(f"{problem}"),

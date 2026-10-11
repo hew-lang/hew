@@ -16,7 +16,7 @@ actor Holder {
 }
 
 fn main() {
-    let h = spawn Holder();
+    let h = spawn Holder;
     let c = Conn { fd: 1 };
     let _ = h.take(c);
     println("sent");

@@ -24,7 +24,7 @@ actor Holder {
 }
 
 fn main() {
-    let h = spawn Holder(conn: .None);
+    let h = spawn Holder { conn: .None };
     let c = Conn { fd: 7 };
     let _ = h.take(c);
     match h.show() {

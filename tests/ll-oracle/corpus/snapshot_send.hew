@@ -12,8 +12,8 @@ actor TestSink {
 }
 
 fn main() {
-    let a = spawn TestSink(observed: -1);
-    let b = spawn TestSink(observed: -1);
+    let a = spawn TestSink { observed: -1 };
+    let b = spawn TestSink { observed: -1 };
     var value = Boxed { payload: [1, 2] };
     let _ = a.take(value, 7);
     let _ = b.take(value, 8);

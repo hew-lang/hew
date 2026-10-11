@@ -251,49 +251,6 @@ impl LowerCtx {
         }
     }
 
-    /// `Some(reason)` when a channel/stream element type provably cannot ride
-    /// the element-layout queue witness; `None` for every describable class.
-    ///
-    /// This is defence-in-depth behind the checker's `queue_elem_admissible`
-    /// gate (which covers the `Stream<T>` method-call path): the for-await
-    /// desugar can reach a `Stream<T>`
-    /// whose element no method call ever validated. The HIR layer rejects only
-    /// the classes the witness can NEVER describe — builtin container/handle
-    /// nominals, function values and never — and admits the rest, including
-    /// the zero-sized `()` and opaque resources; codegen's witness synthesis stays the fail-closed authority
-    /// for anything that slips past both layers.
-    pub(super) fn queue_elem_witness_unsupported(ty: &ResolvedTy) -> Option<&'static str> {
-        match ty {
-            ResolvedTy::Unit
-            | ResolvedTy::String
-            | ResolvedTy::Bytes
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::Duration
-            | ResolvedTy::Tuple(_)
-            // An opaque resource rides its handle image, the same witness a
-            // `recv` uses (a listener's accepted connections, §6.4.5).
-            | ResolvedTy::Named {
-                head:
-                    hew_types::TypeHead::Nominal(_)
-                    | hew_types::TypeHead::Param(_)
-                    | hew_types::TypeHead::Unresolved(_),
-                ..
-            } => None,
-            ResolvedTy::Named {
-                head: hew_types::TypeHead::Builtin(_) | hew_types::TypeHead::Actor(_),
-                ..
-            } => Some(
-                "builtin container and handle types cannot ride the \
-                 element-layout queue witness",
-            ),
-            _ if Self::resolved_is_integer(ty) => None,
-            _ => Some("this type has no element-layout queue witness"),
-        }
-    }
-
     pub(super) fn resolved_is_integer(ty: &ResolvedTy) -> bool {
         matches!(
             ty,

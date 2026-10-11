@@ -1,0 +1,196 @@
+import std.os;
+import std.process;
+import std.io;
+
+fn child(program: string, mode: string) -> process.Child {
+    var command = process.command(program, [mode]);
+    command.stdout = process.Stdio.Piped;
+    process.start(command).expect("child starts")
+}
+
+fn delayed(program: string) {
+    let started = child(program, "delayed");
+    let output = started.stdout().expect("stdout");
+    var cancelled = 0;
+    for _ in 0..10 {
+        let deadline = scope within 2ms {
+            let _ = output.recv();
+            false
+        } handle failure {
+            match failure {
+                .Deadline { message } => true,
+                .Fault { message } => panic(message),
+            }
+        };
+        if deadline {
+            cancelled = cancelled + 1;
+        }
+    }
+    println(f"cancelled reads: {cancelled}");
+    let silent = select {
+        chunk from output.recv() => false,
+        after 10ms => true,
+    };
+    println(f"select timeout: {silent}");
+    let data = select {
+        value from output.recv() => value.expect("delayed data"),
+        after 5s => panic("delayed output did not wake"),
+    };
+    println(f"delayed data: {data == "late".to_bytes()}");
+    let eof = select {
+        value from output.recv() => value.is_none(),
+        after 5s => false,
+    };
+    println(f"selected EOF: {eof}");
+    assert(started.wait().expect("wait") == process.ExitStatus.Exited(0));
+}
+
+fn buffered_exit(program: string) {
+    let started = child(program, "buffered");
+    let output = started.stdout().expect("stdout");
+    assert(started.wait().expect("wait") == process.ExitStatus.Exited(0));
+    var bytes = 0;
+    loop {
+        let next = select {
+            value from output.recv() => value,
+            after 5s => panic("buffered output did not wake"),
+        };
+        match next {
+            .Some(chunk) => {
+                bytes = bytes + chunk.len();
+            }
+            .None => break,
+        }
+    }
+    println(f"output after exit: {bytes == 8192}");
+}
+
+fn streamed_exit(program: string) {
+    let started = child(program, "streamed");
+    let output = started.stdout().expect("stdout");
+    var data = bytes.new();
+    loop {
+        let next = select {
+            value from output.recv() => value,
+            after 5s => panic("streamed output did not wake"),
+        };
+        match next {
+            .Some(chunk) => data.append(chunk),
+            .None => break,
+        }
+    }
+    var expected = bytes.new();
+    let pattern = "0123456789abcdef".to_bytes();
+    for _ in 0..8193 {
+        expected.append(pattern);
+    }
+    assert(started.wait().expect("wait") == process.ExitStatus.Exited(0));
+    println(f"buffer refills: {data.len() == 131088 && data == expected}");
+}
+
+fn close_pending(program: string) {
+    for _ in 0..16 {
+        let started = child(program, "silent");
+        let output = started.stdout().expect("stdout");
+        let silent = select {
+            chunk from output.recv() => false,
+            after 2ms => true,
+        };
+        assert(silent);
+        output.close();
+        started.kill().expect("kill");
+        let _ = started.wait().expect("wait");
+    }
+    println("pending reads closed");
+}
+
+fn early_eof(program: string) -> bool {
+    let started = child(program, "short");
+    let output = started.stdout().expect("stdout");
+    var data = bytes.new();
+    loop {
+        let next = select {
+            value from output.recv() => value,
+            after 1s => panic("an unrelated child retained the output writer"),
+        };
+        match next {
+            .Some(chunk) => data.append(chunk),
+            .None => break,
+        }
+    }
+    assert(started.wait().expect("wait") == process.ExitStatus.Exited(0));
+    data == "short".to_bytes()
+}
+
+fn concurrent_children(program: string) {
+    for _ in 0..16 {
+        let reading = fork early_eof(program);
+        let unrelated = child(program, "silent");
+        assert(await reading);
+        unrelated.kill().expect("kill");
+        let _ = unrelated.wait().expect("wait");
+    }
+    println("unrelated children retain no writers");
+}
+
+fn stderr_output(program: string) {
+    var command = process.command(program, ["stderr"]);
+    command.stderr = process.Stdio.Piped;
+    let started = process.start(command).expect("child starts");
+    let output = started.stderr().expect("stderr");
+    var data = bytes.new();
+    loop {
+        let next = select {
+            value from output.recv() => value,
+            after 5s => panic("stderr did not wake"),
+        };
+        match next {
+            .Some(chunk) => data.append(chunk),
+            .None => break,
+        }
+    }
+    assert(started.wait().expect("wait") == process.ExitStatus.Exited(0));
+    println(f"stderr data: {data == "error".to_bytes()}");
+}
+
+fn useful() -> i64 {
+    sleep(5ms);
+    42
+}
+
+fn main() {
+    let args = os.args();
+    if args.len() > 1 {
+        match args.get(1).expect("mode") {
+            "delayed" => {
+                sleep(300ms);
+                print("late");
+            }
+            "buffered" => {
+                for _ in 0..512 {
+                    print("0123456789abcdef");
+                }
+            }
+            "silent" => sleep(30s),
+            "short" => print("short"),
+            "stderr" => io.write_err("error"),
+            "streamed" => {
+                for _ in 0..8193 {
+                    print("0123456789abcdef");
+                }
+            }
+            _ => panic("unknown child mode"),
+        }
+        return;
+    }
+    let program = args.get(0).expect("program");
+    let reading = fork delayed(program);
+    let work = fork useful();
+    println(f"concurrent work: {await work}");
+    await reading;
+    buffered_exit(program);
+    streamed_exit(program);
+    close_pending(program);
+    concurrent_children(program);
+    stderr_output(program);
+}

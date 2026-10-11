@@ -1,0 +1,20 @@
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+fn main() {
+    {
+        let ticket = Ticket { id: 1 };
+        println(f"used {ticket.id}");
+        println("first marker");
+        println("second marker");
+    };
+    println("after scope");
+}

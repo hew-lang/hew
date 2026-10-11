@@ -449,6 +449,8 @@ mod platform {
     const AFD_KEY: usize = 0xAFD0;
     /// Completion key of a posted wake.
     const WAKE_KEY: usize = 0x3A4E;
+    const PIPE_KEY: usize = 0x5049;
+    const PIPE_READY_KEY: usize = 0x5052;
 
     #[repr(C)]
     struct UNICODE_STRING {
@@ -814,13 +816,34 @@ mod platform {
             );
         }
 
+        pub(crate) fn bind_pipe(&self, pipe: HANDLE) -> io::Result<()> {
+            // SAFETY: the slot owns this overlapped handle for every completion.
+            if unsafe { CreateIoCompletionPort(pipe, self.iocp, PIPE_KEY, 0) } == self.iocp {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+
+        pub(crate) fn post_pipe_ready(&self, context: usize) -> io::Result<()> {
+            // SAFETY: context is a retained slot, released when this packet is dequeued.
+            if unsafe {
+                PostQueuedCompletionStatus(self.iocp, 0, PIPE_READY_KEY, context as *mut c_void)
+            } != 0
+            {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+
         pub(crate) fn wake(&self) {
             // SAFETY: posts a packet with no overlapped structure.
             unsafe { PostQueuedCompletionStatus(self.iocp, 0, WAKE_KEY, ptr::null_mut()) };
         }
 
-        /// Wait for completions. Each AFD completion reports its arm context
-        /// as the token with no events; the slot reads its own poll report.
+        /// Wait for completions. AFD reports its arm context and pipe reads
+        /// recover their retained slot from the completed request.
         pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> io::Result<()> {
             // SAFETY: plain data; all-zero is valid.
             let mut entries: [OVERLAPPED_ENTRY; MAX_EVENTS] = unsafe { std::mem::zeroed() };
@@ -853,6 +876,20 @@ mod platform {
                     out.push(Event {
                         token: entry.lpOverlapped as usize as u64,
                         events: 0,
+                    });
+                } else if entry.lpCompletionKey == PIPE_KEY {
+                    // SAFETY: the retained slot owns this completed PipeRead.
+                    let context = unsafe {
+                        crate::process::windows_pipe::PipeRead::context(entry.lpOverlapped as usize)
+                    };
+                    out.push(Event {
+                        token: context as u64,
+                        events: HEW_IO_READ,
+                    });
+                } else if entry.lpCompletionKey == PIPE_READY_KEY {
+                    out.push(Event {
+                        token: entry.lpOverlapped as usize as u64,
+                        events: HEW_IO_READ,
                     });
                 }
             }

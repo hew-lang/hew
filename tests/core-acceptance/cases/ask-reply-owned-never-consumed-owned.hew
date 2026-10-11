@@ -8,8 +8,8 @@ actor Replier {
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 400 {
-        let a = spawn Replier(tag: "alpha-owned-reply");
-        let b = spawn Replier(tag: "beta-owned-reply");
+        let a = spawn Replier { tag: "alpha-owned-reply" };
+        let b = spawn Replier { tag: "beta-owned-reply" };
         let r = select {
             reply from a.fetch() => 10,
             reply from b.fetch() => 20,

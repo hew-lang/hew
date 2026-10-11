@@ -157,7 +157,12 @@ pub fn migrate_syntax(source: &str) -> Result<String, MigrationError> {
                         | ParseDiagnosticKind::LegacyTurbofish
                         | ParseDiagnosticKind::UnitFailsArrow
                         | ParseDiagnosticKind::LegacySerialSpelling
+                        | ParseDiagnosticKind::LegacyRaceBraces
                         | ParseDiagnosticKind::WireVariantTagMissing
+                        | ParseDiagnosticKind::LegacySpawnArgs
+                        | ParseDiagnosticKind::LegacyChildArgs
+                        | ParseDiagnosticKind::LegacyEventHead
+                        | ParseDiagnosticKind::EmptyKeyBraces
                 )
         })
         .map(|error| MigrationRefusal {
@@ -400,14 +405,6 @@ impl<'a> Formatter<'a> {
             )
             || (after_dot
                 && self.source[self.tokens[open - 1].1.clone()].starts_with(char::is_alphabetic))
-    }
-
-    /// Whether the last source token inside `span` is `)`.
-    fn span_ends_with_paren(&self, span: &Span) -> bool {
-        let after = self.token_at_or_after(span.end);
-        after > 0
-            && self.tokens[after - 1].1.start >= span.start
-            && matches!(self.tokens[after - 1].0, hew_lexer::Token::RightParen)
     }
 
     /// The first `{` at or after `from`, before `to`.
@@ -2296,18 +2293,18 @@ impl<'a> Formatter<'a> {
     fn format_machine_transition(&mut self, transition: &MachineTransition, span_end: usize) {
         self.write("on ");
         self.write_ident(transition.event_name);
-        // Re-emit the `on E(a, b):` head binding from the side-list. The
+        // Re-emit the `on E { a, b }:` head binding from the side-list. The
         // parser splices a `let a = event.a;` prelude into the body for
         // lowering; we strip that prelude below so it does not double up.
         if !transition.event_bindings.is_empty() {
-            self.write("(");
+            self.write(" { ");
             for (i, name) in transition.event_bindings.iter().enumerate() {
                 if i > 0 {
                     self.write(", ");
                 }
                 self.write_ident(*name);
             }
-            self.write(")");
+            self.write(" }");
         }
         self.write(": ");
         // Source states are patterns and have no contextual form, so they are
@@ -2434,10 +2431,10 @@ impl<'a> Formatter<'a> {
     }
 
     /// Strip the leading `let <binding> = event.<binding>;` prelude statements
-    /// the parser splices in for an `on E(bindings): …` head binding, so the
+    /// the parser splices in for an `on E { bindings }: …` head binding, so the
     /// formatter can re-emit the head form without the desugar. If, after
     /// stripping, only a tail expression remains, that tail becomes the body
-    /// (collapsing a one-line `on E(x): S => T { Body }` back to its head form).
+    /// (collapsing a one-line `on E { x }: S => T { Body }` back to its head form).
     fn strip_event_binding_prelude(body: &Expr, bindings: &[Ident]) -> Expr {
         let Expr::Block(block) = body else {
             return body.clone();
@@ -2832,31 +2829,6 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
-    /// Whether the source writes `child name: Actor()` with an empty
-    /// argument list, which means the same as leaving it out.
-    fn child_writes_parens(&self, spec: &ChildSpec) -> bool {
-        let mut index = self.token_at_or_after(spec.span.start);
-        let end = self.token_at_or_after(spec.span.end);
-        while index < end
-            && !matches!(&self.tokens[index].0, hew_lexer::Token::Identifier(name) if spec.actor_type.as_single().is_some_and(|actor| *name == actor.name.as_str()))
-        {
-            index += 1;
-        }
-        index += 1;
-        let mut depth = 0usize;
-        while index < end {
-            match self.tokens[index].0 {
-                hew_lexer::Token::Less => depth += 1,
-                hew_lexer::Token::Greater if depth > 0 => depth -= 1,
-                hew_lexer::Token::LeftParen if depth == 0 => return true,
-                _ if depth == 0 => return false,
-                _ => {}
-            }
-            index += 1;
-        }
-        false
-    }
-
     fn format_child_spec(&mut self, spec: &ChildSpec) {
         self.write_indent();
         // `pool` vs `child` is load-bearing — a pool is a dynamic
@@ -2873,18 +2845,12 @@ impl<'a> Formatter<'a> {
             });
             self.write(">");
         }
-        if !spec.args.is_empty() || self.child_writes_parens(spec) {
-            self.write("(");
-            self.comma_sep(&spec.args, |f, (field_name, arg)| {
-                f.write_ident(*field_name);
-                f.write(": ");
-                f.format_expr(arg);
-            });
-            self.write(")");
+        if !spec.args.is_empty() {
+            self.format_record_literal_body(&spec.args, &spec.arg_labels, None, None);
         }
-        // Pool arity is a clause, so it prints outside the parentheses. It
-        // comes first among the clauses because arity binds to the template the
-        // parentheses just described.
+        // Pool arity is a clause, so it prints outside the braces. It comes
+        // first among the clauses because arity binds to the template the
+        // braces just described.
         if let Some(count) = &spec.count {
             self.write(" count: ");
             self.format_expr(count);
@@ -4022,6 +3988,16 @@ impl<'a> Formatter<'a> {
     // Expressions
     // ------------------------------------------------------------------
 
+    fn format_task_operand(&mut self, operand: &Spanned<Expr>) {
+        if matches!(operand.0, Expr::PostfixTry(_)) && !self.source_parenthesizes(&operand.1) {
+            self.write("(");
+            self.format_expr(operand);
+            self.write(")");
+        } else {
+            self.format_expr_prec(operand, 26, false);
+        }
+    }
+
     /// Return `true` when `expr` must be parenthesised before a postfix operator
     /// (`.field`, `.method()`, `[index]`, `?`).
     ///
@@ -4494,13 +4470,14 @@ impl<'a> Formatter<'a> {
                     });
                     self.write(">");
                 }
-                // `spawn Worker()` and `spawn Worker` are the same spawn;
-                // keep the empty argument list when the author wrote one.
-                if !args.is_empty() || self.span_ends_with_paren(&expr.1) {
-                    self.write("(");
-                    self.write_field_inits(args, arg_labels);
-                    self.flush_inline_comments(expr.1.end);
-                    self.write(")");
+                // An empty key list is written without braces.
+                if !args.is_empty() {
+                    self.format_record_literal_body(
+                        args,
+                        arg_labels,
+                        None,
+                        self.trailing_list(&expr.1, "}"),
+                    );
                 }
             }
             Expr::SpawnLambdaActor {
@@ -4529,7 +4506,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::ForkChild { expr } => {
                 self.write("fork ");
-                self.format_expr(expr);
+                self.format_task_operand(expr);
             }
             Expr::ForkBlock { body } => {
                 self.write("fork ");
@@ -4648,7 +4625,7 @@ impl<'a> Formatter<'a> {
                 self.write("}");
             }
             Expr::Race(exprs) => {
-                self.write("race {\n");
+                self.write("race [\n");
                 self.indent += 1;
                 for e in exprs {
                     self.write_indent();
@@ -4657,7 +4634,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.indent -= 1;
                 self.write_indent();
-                self.write("}");
+                self.write("]");
             }
             Expr::UnsafeBlock(block) => {
                 self.write("unsafe ");
@@ -4779,7 +4756,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Await(inner) => {
                 self.write("await ");
-                self.format_expr_prec(inner, 25, false);
+                self.format_task_operand(inner);
             }
             Expr::RegexLiteral(_) | Expr::ByteStringLiteral(_)
                 if self.literal_spelling(&expr.1).is_some() =>
@@ -5826,7 +5803,7 @@ pub actor Worker {
 pub supervisor Inner {
     strategy: one_for_one;
 
-    child worker: Worker(id: 23) restart: temporary;
+    child worker: Worker { id: 23 } restart: temporary;
 }
 ";
         let formatted = roundtrip(src);
@@ -7076,7 +7053,7 @@ impl<T> Vec<T> {
 
     #[test]
     fn generic_supervisor_and_child_arguments_roundtrip() {
-        let source = "supervisor Group<T: Send>(seed: Vec<T>) {\n    child worker: module.Worker<Vec<T>>(value: seed);\n}\n";
+        let source = "supervisor Group<T: Send>(seed: Vec<T>) {\n    child worker: module.Worker<Vec<T>> { value: seed };\n}\n";
         let formatted = roundtrip(source);
         let parsed = parse(&formatted);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -7121,12 +7098,12 @@ supervisor App(config: AppConfig) {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child cache: Cache(capacity: config.size, name: config.label);
+    child cache: Cache { capacity: config.size, name: config.label };
 }
 
 fn main() -> i64 {
     let cfg = AppConfig { size: 5, label: \"hi\" };
-    let sup = spawn App(config: cfg);
+    let sup = spawn App { config: cfg };
     let _c = sup.cache;
     supervisor_stop(sup);
     0
@@ -7180,30 +7157,31 @@ machine Socket {
     state Idle;
     state Active { h: Handle; }
 
-    on Connect(fd): Idle => _ { Socket.Active { h: Handle { fd: fd } } }
-    on Connect(fd): Active => Active { h: Handle { fd: fd } }
-    on Connect(fd): Active => Active reenter { ..state, h: Handle { fd: fd } }
-    on Connect(fd): Active => Idle;
+    on Connect { fd }: Idle => _ { Socket.Active { h: Handle { fd: fd } } }
+    on Connect { fd }: Active => Active { h: Handle { fd: fd } }
+    on Connect { fd }: Active => Active reenter { ..state, h: Handle { fd: fd } }
+    on Connect { fd }: Active => Idle;
 }
 ";
         let formatted = roundtrip(src);
         assert!(
-            formatted
-                .contains("on Connect(fd): Idle => _ { Socket.Active { h: Handle { fd: fd } } }"),
+            formatted.contains(
+                "on Connect { fd }: Idle => _ { Socket.Active { h: Handle { fd: fd } } }"
+            ),
             "computed-target block must retain its outer braces; got:\n{formatted}"
         );
         assert!(
-            formatted.contains("on Connect(fd): Active => Active { h: Handle { fd: fd } }"),
+            formatted.contains("on Connect { fd }: Active => Active { h: Handle { fd: fd } }"),
             "payload shorthand must remain shorthand; got:\n{formatted}"
         );
         assert!(
             formatted.contains(
-                "on Connect(fd): Active => Active reenter { ..state, h: Handle { fd: fd } }"
+                "on Connect { fd }: Active => Active reenter { ..state, h: Handle { fd: fd } }"
             ),
             "a transition field list writes its spread base first; got:\n{formatted}"
         );
         assert!(
-            formatted.contains("on Connect(fd): Active => Idle;"),
+            formatted.contains("on Connect { fd }: Active => Idle;"),
             "implicit transition must remain implicit; got:\n{formatted}"
         );
         assert_eq!(roundtrip(&formatted), formatted);

@@ -1,6 +1,6 @@
 [[case]]
 id = "pipe-unit-items"
-intent = "A `Stream<()>` pipe carries zero-sized items: each `()` sent is one item, a select arm observes it, and closing the sink ends the stream."
+intent = "Zero-sized unit, empty-record and tuple pipe elements retain item counts through select, try_recv and iteration, and finishing a sink publishes EOF."
 source = "cases/pipe-unit-items.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

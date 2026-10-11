@@ -137,6 +137,34 @@ struct RepairRegistry {
     handle: Option<JoinHandle<()>>,
 }
 
+struct RepairPackage {
+    name: &'static str,
+    tarball: Vec<u8>,
+    checksum: String,
+    before_metadata: Option<GenerationSwap>,
+}
+
+struct GenerationSwap {
+    cache: PathBuf,
+    generation: &'static str,
+    performed: Arc<AtomicBool>,
+}
+
+impl GenerationSwap {
+    fn apply(self, api: &str) {
+        let registry_id = hew_pkg::config::registry_identity(api);
+        let registry = hew_pkg::registry::Registry::with_root(self.cache);
+        let active = registry.package_dir_for(&registry_id, "foo", "0.2.1");
+        assert_eq!(
+            std::fs::read_to_string(active.join("foo.hew")).unwrap(),
+            "pub fn answer() -> i64 { 111 }\n"
+        );
+        let pointer = active.parent().unwrap().join(".0.2.1.current");
+        std::fs::write(pointer, format!("{}\n", self.generation)).unwrap();
+        self.performed.store(true, Ordering::Release);
+    }
+}
+
 impl Drop for RepairRegistry {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -151,10 +179,19 @@ impl Drop for RepairRegistry {
 }
 
 fn start_repair_registry(tarball: Vec<u8>, checksum: String) -> RepairRegistry {
+    start_repair_registry_packages(vec![RepairPackage {
+        name: "foo",
+        tarball,
+        checksum,
+        before_metadata: None,
+    }])
+}
+
+fn start_repair_registry_packages(mut packages: Vec<RepairPackage>) -> RepairRegistry {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock registry");
     let address = listener.local_addr().expect("mock registry address");
     let api_url = format!("http://{address}/api/v1");
-    let download_url = format!("http://{address}/packages/foo/0.2.1.tar.zst");
+    let thread_api_url = api_url.clone();
     let package_requests = Arc::new(AtomicUsize::new(0));
     let download_requests = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
@@ -177,13 +214,33 @@ fn start_repair_registry(tarball: Vec<u8>, checksum: String) -> RepairRegistry {
                 .and_then(|line| line.split_whitespace().nth(1))
                 .expect("request path");
 
-            if path == "/api/v1/packages/foo" {
+            let package = packages.iter_mut().find(|package| {
+                path == format!("/api/v1/packages/{}", package.name)
+                    || path == format!("/packages/{}/0.2.1.tar.zst", package.name)
+            });
+            let Some(package) = package else {
+                let body = r#"{"error":"not found"}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .expect("write not-found response");
+                continue;
+            };
+
+            if path.starts_with("/api/v1/packages/") {
+                if let Some(before_metadata) = package.before_metadata.take() {
+                    before_metadata.apply(&thread_api_url);
+                }
                 thread_package_requests.fetch_add(1, Ordering::Relaxed);
+                let download_url =
+                    format!("http://{address}/packages/{}/0.2.1.tar.zst", package.name);
                 let body = serde_json::json!({
                     "versions": [{
-                        "name": "foo",
+                        "name": package.name,
                         "vers": "0.2.1",
-                        "cksum": checksum,
+                        "cksum": package.checksum,
                         "sig": "",
                         "key_fp": "",
                         "dl": download_url,
@@ -196,23 +253,15 @@ fn start_repair_registry(tarball: Vec<u8>, checksum: String) -> RepairRegistry {
                     body.len()
                 )
                 .expect("write package response");
-            } else if path == "/packages/foo/0.2.1.tar.zst" {
+            } else {
                 thread_download_requests.fetch_add(1, Ordering::Relaxed);
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    tarball.len()
+                    package.tarball.len()
                 )
                 .expect("write tarball headers");
-                stream.write_all(&tarball).expect("write tarball");
-            } else {
-                let body = r#"{"error":"not found"}"#;
-                write!(
-                    stream,
-                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .expect("write not-found response");
+                stream.write_all(&package.tarball).expect("write tarball");
             }
         }
     });
@@ -688,7 +737,7 @@ fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
     std::fs::create_dir_all(&seed_project).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     write_manifest(&seed_project, "foo = \"0.2.1\"\n");
-    write_manifest(&project, "foo = \"0.2.1\"\n");
+    write_manifest(&project, "foo = \"0.2.1\"\nzzgate = \"0.2.1\"\n");
 
     let packed_b =
         package_tarball_variant(root.path(), "b", "pub fn answer() -> i64 { 222 }\n", None);
@@ -718,13 +767,34 @@ fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
     let packed_a =
         package_tarball_variant(root.path(), "a", "pub fn answer() -> i64 { 111 }\n", None);
     assert_ne!(packed_a.checksum, checksum_b);
-    let registry_a = start_repair_registry(packed_a.data, packed_a.checksum);
+    let gate_root = write_cached_package(root.path(), "zzgate", "0.2.1");
+    let gate_package = hew_pkg::tarball::pack(&gate_root, &[], &[]).unwrap();
+    let generation_b_name = ".0.2.1.generation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let swapped = Arc::new(AtomicBool::new(false));
+    let registry_a = start_repair_registry_packages(vec![
+        RepairPackage {
+            name: "foo",
+            tarball: packed_a.data,
+            checksum: packed_a.checksum,
+            before_metadata: None,
+        },
+        RepairPackage {
+            name: "zzgate",
+            tarball: gate_package.data,
+            checksum: gate_package.checksum,
+            before_metadata: Some(GenerationSwap {
+                cache: cache.clone(),
+                generation: generation_b_name,
+                performed: Arc::clone(&swapped),
+            }),
+        },
+    ]);
     write_config(&home, &cache, Some(&registry_a.api_url));
     let verified_registry_id = hew_pkg::config::registry_identity(&registry_a.api_url);
     let a_slot = cache_registry.package_dir_for(&verified_registry_id, "foo", "0.2.1");
     let a_package_root = a_slot.parent().unwrap();
     std::fs::create_dir_all(a_package_root).unwrap();
-    let adversarial_b = a_package_root.join(".0.2.1.generation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let adversarial_b = a_package_root.join(generation_b_name);
     std::fs::create_dir_all(&adversarial_b).unwrap();
     std::fs::copy(
         generation_b.join("hew.toml"),
@@ -732,30 +802,8 @@ fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
     )
     .unwrap();
     std::fs::copy(generation_b.join("foo.hew"), adversarial_b.join("foo.hew")).unwrap();
-    let generation_b_name = adversarial_b
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
     let pointer = a_package_root.join(".0.2.1.current");
     std::fs::write(&pointer, format!("{generation_b_name}\n")).unwrap();
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let writer_stop = Arc::clone(&stop);
-    let swaps = Arc::new(AtomicUsize::new(0));
-    let writer_swaps = Arc::clone(&swaps);
-    let writer = std::thread::spawn(move || {
-        let pointer_b = format!("{generation_b_name}\n");
-        while !writer_stop.load(Ordering::Acquire) {
-            if std::fs::read_to_string(&pointer)
-                .is_ok_and(|current| current.trim() != generation_b_name)
-            {
-                std::fs::write(&pointer, pointer_b.as_bytes()).unwrap();
-                writer_swaps.fetch_add(1, Ordering::Release);
-            }
-            std::thread::yield_now();
-        }
-    });
 
     let output = run_pkg_bounded(
         &home,
@@ -763,19 +811,17 @@ fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
         &["install", "--registry", "mock"],
         "online verified-generation pointer swap",
     );
-    stop.store(true, Ordering::Release);
-    writer.join().unwrap();
     assert!(
         output.status.success(),
         "install of confirmed generation A failed\n{}",
         describe_output(&output)
     );
     assert!(
-        swaps.load(Ordering::Acquire) > 0,
-        "counterfactual writer never replaced the A pointer with B"
+        swapped.load(Ordering::Acquire),
+        "registry gate never replaced the A pointer with B"
     );
-    assert_eq!(registry_a.package_requests.load(Ordering::Relaxed), 1);
-    assert_eq!(registry_a.download_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(registry_a.package_requests.load(Ordering::Relaxed), 2);
+    assert_eq!(registry_a.download_requests.load(Ordering::Relaxed), 2);
     assert_eq!(
         std::fs::read_to_string(project.join(".hew/packages/foo/foo.hew")).unwrap(),
         "pub fn answer() -> i64 { 111 }\n",

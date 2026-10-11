@@ -39,7 +39,7 @@ fn describe<Req>(problem: ActorError<Never, Req>) -> string {
 }
 
 fn main() {
-    let gate = spawn Gate();
+    let gate = spawn Gate;
     let refusing = policy(gate, on_full: .Reject);
     let inbox = mailbox(gate, on_full: .Wait);
     // Two accepted submissions: one the actor is running for a turn that lasts
@@ -62,7 +62,7 @@ fn main() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),
     }
-    let spare = spawn Spare();
+    let spare = spawn Spare;
     // Preserve the result in a binding before extracting its request: recovery
     // must derive the protocol from the value, without the original call site.
     let rejected = refusing.echo("déjà\0vu".to_upper());

@@ -13,8 +13,8 @@ use super::types::GenericLambdaSig;
 )]
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    PendingInstantiation,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericRequirement, PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;

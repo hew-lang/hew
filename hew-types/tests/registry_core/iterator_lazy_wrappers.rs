@@ -107,33 +107,33 @@ impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
     }
 }
 
-pub fn map<I, A, B>(it: I, consume f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
+pub fn map<I, A, B>(consume it: I, consume f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
     Map { iter: it, f: f }
 }
 
-pub fn filter<I, A>(it: I, consume pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
+pub fn filter<I, A>(consume it: I, consume pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
     Filter { iter: it, pred: pred }
 }
 
-pub fn take<I, A>(it: I, n: i64) -> Take<I> where I: Iterator<Item = A> {
+pub fn take<I, A>(consume it: I, n: i64) -> Take<I> where I: Iterator<Item = A> {
     Take { iter: it, remaining: n }
 }
 
-pub fn skip<I, A>(it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
+pub fn skip<I, A>(consume it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
     Skip { iter: it, remaining: n }
 }
 
-pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<Item = A> {
+pub fn fold<I, A, B>(consume it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<Item = A> {
     panic("iter.fold deferred pending Q004");
     init
 }
 
-pub fn count<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
+pub fn count<I, A>(consume it: I) -> i64 where I: Iterator<Item = A> {
     panic("iter.count deferred pending Q004");
     0
 }
 
-pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
+pub fn collect<I, A>(consume it: I) -> Vec<A> where I: Iterator<Item = A> {
     panic("iter.collect deferred pending Q004");
     Vec.new()
 }

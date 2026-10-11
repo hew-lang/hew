@@ -357,7 +357,7 @@ fn main() {{
     scope {{
         let _client_turn = fork client.connect_send_and_read(0);
 
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         let request = match conn.recv() {{ .Some(data) => utf8.decode(data).expect("server read is valid UTF-8"), .None => panic("server read hit end of data"), }};
         println(f"server-read={{request}}");
         conn.send("tcp-echo:hew-net-r319".to_bytes()).expect("send");
@@ -483,13 +483,13 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
 }
 
 fn main() {
-    let config = NodeConfig { bind: "127.0.0.1:0", transport: "quic-mesh", key: "node.key", trust: "pinned", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),
     }
     let me = Node.identity_key();
-    let counter = spawn Counter(count: 0);
+    let counter = spawn Counter { count: 0 };
     Node.register("counter", counter);
     let _ = counter.increment(5);
     Node.shutdown();
@@ -542,13 +542,7 @@ fn main() {
     );
 }
 
-/// F6 fail-closed: a bad-hex peer credential in `NodeConfig.peers` is rejected
-/// and surfaced (`hew_last_error` + a `hew:` stderr diagnostic) while staging
-/// the config; `Node::start` never reaches the low-level bind because the
-/// staged config transaction short-circuits on the first failing field,
-/// rather than silently coming up with an incomplete peer allowlist. The Hew
-/// call form discards the returned `Result`, so the operator-visible signal
-/// is the stderr diagnostic.
+/// Invalid peer credentials return a typed error before the node starts.
 #[test]
 fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     require_codegen();
@@ -561,15 +555,14 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "",
-                trust: "pinned",
                 peers: ["zznothexzz"],
                 seeds: [],
             };
             match Node.start(config) {
                 .Ok(_) => println("started"),
-                .Err(_) => println("refused"),
+                .Err(error) => println(f"refused: {error}"),
             }
         }
         "#,
@@ -581,10 +574,12 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
     assert!(
-        stderr.contains("Node::allow_peer")
-            && stderr.contains("hex-encoded SPKI")
-            && stderr.contains("fail-closed"),
-        "bad-hex allow_peer must be surfaced on stderr, fail-closed; stderr: {stderr}"
+        output.status.success(),
+        "typed refusal should complete: {stderr}"
+    );
+    assert!(
+        stdout.contains("Key: the node identity or peer key is invalid"),
+        "bad peer credentials must return their typed reason; stdout: {stdout}"
     );
     assert!(
         stdout.contains("refused") && !stdout.contains("started"),
@@ -612,9 +607,8 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "node.key",
-                trust: "pinned",
                 peers: [],
                 seeds: [],
             };
@@ -658,9 +652,8 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         fn main() {
             let config = NodeConfig {
                 bind: "127.0.0.1:0",
-                transport: "quic-mesh",
+                transport: NodeTransport.QuicMesh,
                 key: "no_such_dir/node.key",
-                trust: "pinned",
                 peers: [],
                 seeds: [],
             };
@@ -1196,41 +1189,6 @@ fn main() -> i64 {
     );
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, "42\ntrue\n", "stdout mismatch");
-}
-
-/// Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
-/// UPSTREAM by the channel element-layout witness — the existing check-time
-/// diagnostic, not a new one. No recv surface can type this element class
-/// today, so the recv-`Some` release seam is unreachable for it; this guard
-/// pins the witness so a future weakening cannot silently open the recv
-/// path into the Vec-element release seam.
-#[test]
-fn check_channel_vec_indirect_enum_rejected_by_layout_witness() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/reject/channel_vec_indirect_enum.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("cannot ride the element-layout queue witness"),
-        "expected the upstream element-layout witness diagnostic; got: {combined}"
-    );
 }
 
 /// A generator OWNS what its body reads from the enclosing frame: the capture
@@ -2421,7 +2379,7 @@ fn clone_string_survives_consuming_send() {
     let path = dir.path().join("clone_string_send.hew");
     std::fs::write(
         &path,
-        "actor ProbeSink {\n    let id: i64;\n    receive fn take(s: string) -> i64 {\n        s.len()\n    }\n}\n\nfn main() {\n    let s: string = \"hello\";\n    let dup = clone s;\n    let sink = spawn ProbeSink(id: 0);\n    let n = sink.take(dup);\n    match n {\n        .Ok(len) => println(f\"len={len}\"),\n        .Err(_) => println(\"ask failed\"),\n    }\n    println(f\"original still usable: {s}\");\n}\n",
+        "actor ProbeSink {\n    let id: i64;\n    receive fn take(s: string) -> i64 {\n        s.len()\n    }\n}\n\nfn main() {\n    let s: string = \"hello\";\n    let dup = clone s;\n    let sink = spawn ProbeSink { id: 0 };\n    let n = sink.take(dup);\n    match n {\n        .Ok(len) => println(f\"len={len}\"),\n        .Err(_) => println(\"ask failed\"),\n    }\n    println(f\"original still usable: {s}\");\n}\n",
     )
     .unwrap();
 
@@ -2609,7 +2567,7 @@ fn clone_on_unsupported_scalar_fails_closed() {
 /// sibling file pulled in with `import "counter.hew";` must spawn and answer
 /// `ask` calls exactly like a local actor. File imports flatten the imported
 /// items into the root program under their bare names, so the unqualified
-/// `spawn Counter()` is the correct surface.
+/// `spawn Counter` is the correct surface.
 ///
 /// This also guards the dedup path in the imported-module HIR walk: the
 /// file-import actor is already emitted by the source-order pass, and the walk
@@ -2631,7 +2589,7 @@ fn run_file_imported_actor_spawns_and_calls() {
         &main,
         "import \"counter.hew\";\n\
          fn main() {\n\
-         \x20   let c = spawn Counter();\n\
+         \x20   let c = spawn Counter;\n\
          \x20   match c.bump() {\n\
          \x20       .Ok(v) => println(f\"bumped: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
@@ -2650,6 +2608,40 @@ fn run_file_imported_actor_spawns_and_calls() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "bumped: 1\n");
 }
 
+/// A file-imported actor answers to its bare name at the spawn site but is
+/// registered under its file's identity; its spawn keys are checked all the
+/// same.
+#[test]
+fn file_imported_actor_spawn_keys_are_checked() {
+    let dir = support::tempdir();
+    std::fs::write(
+        dir.path().join("counter.hew"),
+        "pub actor Counter {\n    let step: i64;\n    receive fn bump() -> i64 {\n        step\n    }\n}\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import \"counter.hew\";\nfn main() {\n    let _c = spawn Counter { stpe: 1 };\n}\n",
+    )
+    .unwrap();
+
+    let check = Command::new(hew_binary())
+        .arg("check")
+        .arg(&main)
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert_eq!(check.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("actor `Counter` has no field `stpe`")
+            && stderr.contains("missing field `step` in spawn of actor `Counter`"),
+        "stderr: {stderr}"
+    );
+}
+
 /// A selectively-imported pub const must bind bare at root exactly like a
 /// selectively-imported pub fn from the same module. The HIR pre-pass
 /// registers imported consts only under the qualified `{module}.{CONST}` key;
@@ -2662,9 +2654,8 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     require_codegen();
 
     let dir = support::tempdir();
-    std::fs::create_dir_all(dir.path().join("src/reasons")).unwrap();
     std::fs::write(
-        dir.path().join("src/reasons/reasons.hew"),
+        dir.path().join("reasons.hew"),
         "pub const MAX_RETRIES: i64 = 5;\n\
          pub fn retries_label() -> string {\n\
          \x20   \"retries\"\n\
@@ -2674,7 +2665,7 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import src.reasons.{MAX_RETRIES, retries_label};\n\
+        "import reasons.{MAX_RETRIES, retries_label};\n\
          fn main() {\n\
          \x20   println(retries_label());\n\
          \x20   println(f\"max: {MAX_RETRIES}\");\n\
@@ -2776,7 +2767,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
         &main,
         "import \"summer.hew\";\n\
          fn main() {\n\
-         \x20   let s = spawn Summer();\n\
+         \x20   let s = spawn Summer;\n\
          \x20   match s.add_doubled(4) {\n\
          \x20       .Ok(v) => println(f\"sum: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
@@ -2798,7 +2789,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
 
 /// Regression for ecosystem Blocker 2 (package-import half): an actor exported
 /// from a separate compilation unit (`import hew::bank;`, resolved via the
-/// source-relative `hew/<pkg>/` layout) must spawn with `spawn bank.Account(...)`
+/// source-relative `hew/<pkg>/` layout) must spawn with `spawn bank.Account { ... }`
 /// and answer `ask` calls like a local actor. Before the fix, package imports
 /// were registered only in the module graph and never lowered into the root
 /// program, so MIR had no actor layout and failed with
@@ -2837,7 +2828,7 @@ fn run_package_module_actor_spawns_and_calls() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let acct = spawn bank.Account(opening: 100);\n\
+         \x20   let acct = spawn bank.Account { opening: 100 };\n\
          \x20   match acct.peek() { .Ok(v) => report(\"after_open\", v), .Err(_) => println(\"after_open=ERR\"), }\n\
          \x20   match acct.deposit(50) { .Ok(v) => report(\"after_deposit\", v), .Err(_) => println(\"after_deposit=ERR\"), }\n\
          \x20   match acct.withdraw(1000) { .Ok(v) => report(\"after_overdraw\", v), .Err(_) => println(\"after_overdraw=ERR\"), }\n\
@@ -2877,6 +2868,8 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_the_actor_type() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("conn");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("conn.hew"),
         "pub actor Inner {\n    receive fn ping() -> i64 {\n        41\n    }\n}\n\npub actor Outer {\n    let inner: Inner;\n    receive fn go() -> i64 {\n        match inner.ping() {\n            .Ok(v) => v + 1,\n            .Err(_) => -1,\n        }\n    }\n}\n",
@@ -2887,8 +2880,8 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_the_actor_type() {
         &main,
         "import hew.conn.{Inner, Outer};\n\
          fn main() {\n\
-         \x20   let i = spawn Inner();\n\
-         \x20   let o = spawn Outer(inner: i);\n\
+         \x20   let i = spawn Inner;\n\
+         \x20   let o = spawn Outer { inner: i };\n\
          \x20   match o.go() {\n\
          \x20       .Ok(v) => println(f\"v={v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
@@ -2926,6 +2919,8 @@ fn run_local_record_shadows_imported_actor_short_name() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("m");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("m.hew"),
         "pub actor Inner {\n\
@@ -2936,7 +2931,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.m;\n\ntype Inner {\n    x: i64;\n}\n\nactor Holder {\n    let inner: Inner;\n    receive fn get() -> i64 {\n        inner.x\n    }\n}\n\nfn main() {\n    let h = spawn Holder(inner: Inner { x: 7 });\n    match h.get() {\n        .Ok(v) => println(f\"v={v}\"),\n        .Err(_) => println(\"err\"),\n    }\n}\n",
+        "import hew.m;\n\ntype Inner {\n    x: i64;\n}\n\nactor Holder {\n    let inner: Inner;\n    receive fn get() -> i64 {\n        inner.x\n    }\n}\n\nfn main() {\n    let h = spawn Holder { inner: Inner { x: 7 } };\n    match h.get() {\n        .Ok(v) => println(f\"v={v}\"),\n        .Err(_) => println(\"err\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -2952,7 +2947,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
 }
 
 /// Fail-closed guard for Blocker 2: a *non-pub* actor in an imported package is
-/// not exported, so `spawn secret.Hidden()` must fail rather than silently
+/// not exported, so `spawn secret.Hidden` must fail rather than silently
 /// resolve. The fix deliberately lowers `HirItem::Actor` only for `pub` imported
 /// actors; a private one is never emitted, so MIR rejects the spawn as an
 /// unknown actor. This proves the fix did not introduce a broad fallback that
@@ -2964,6 +2959,8 @@ fn run_non_pub_imported_actor_fails_closed() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("secret");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("secret.hew"),
         "actor Hidden {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
@@ -2974,7 +2971,7 @@ fn run_non_pub_imported_actor_fails_closed() {
         &main,
         "import hew.secret;\n\
          fn main() {\n\
-         \x20   let c = spawn secret.Hidden();\n\
+         \x20   let c = spawn secret.Hidden;\n\
          \x20   match c.bump() {\n\
          \x20       .Ok(v) => println(f\"bumped: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
@@ -3004,7 +3001,7 @@ fn run_non_pub_imported_actor_fails_closed() {
 /// Qualified actor identity (a): two imported packages each exporting a
 /// `pub actor` with the same bare name (`Account`) coexist in one program.
 /// Identity is the qualified (module, name) pair end-to-end — the checker
-/// types `spawn bank.Account()` as `bank.Account`, MIR layouts key
+/// types `spawn bank.Account` as `bank.Account`, MIR layouts key
 /// on the dotted name, and native symbols mangle through `bank$Account` — so
 /// each spawn binds its own handlers/state/drop glue and the asks route to
 /// the right actor.
@@ -3016,6 +3013,8 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
     for (pkg, tag) in [("bank", 1_i64), ("store", 2_i64)] {
         let pkg_dir = dir.path().join("hew").join(pkg);
         std::fs::create_dir_all(&pkg_dir).unwrap();
+        // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+        std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
         std::fs::write(
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
@@ -3033,8 +3032,8 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
         "import hew.bank;\n\
          import hew.store;\n\
          fn main() {\n\
-         \x20   let a = spawn bank.Account();\n\
-         \x20   let s = spawn store.Account();\n\
+         \x20   let a = spawn bank.Account;\n\
+         \x20   let s = spawn store.Account;\n\
          \x20   match a.who() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
@@ -3073,6 +3072,8 @@ fn run_root_and_package_same_actor_name_route_independently() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("bank");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     std::fs::write(
         pkg_dir.join("bank.hew"),
         "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        999\n    }\n}\n",
@@ -3081,7 +3082,7 @@ fn run_root_and_package_same_actor_name_route_independently() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.bank;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn bank.Account();\n    let l = spawn Account();\n    match a.who() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    match l.who() {\n        .Ok(v) => println(f\"l={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
+        "import hew.bank;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn bank.Account;\n    let l = spawn Account;\n    match a.who() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    match l.who() {\n        .Ok(v) => println(f\"l={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3114,6 +3115,8 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
     for (pkg, tag) in [("bank", 1_i64), ("store", 2_i64)] {
         let pkg_dir = dir.path().join("hew").join(pkg);
         std::fs::create_dir_all(&pkg_dir).unwrap();
+        // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+        std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
         std::fs::write(
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
@@ -3244,7 +3247,7 @@ fn main() -> i64 {
 
 /// Security regression (private-actor routing): a root/pub actor `Account` and
 /// a *private* (non-pub) imported actor `secret.Account` must NOT let
-/// `spawn secret.Account()` silently route to the root actor. Module-qualified
+/// `spawn secret.Account` silently route to the root actor. Module-qualified
 /// actor identity is bare-name-keyed in HIR/MIR, and a private actor is not an
 /// export of its module, so the spawn must fail closed at type-check (before
 /// the qualifier is stripped to bare `Account`) rather than spawn the root
@@ -3257,6 +3260,8 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("secret");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     // Note: no `pub` — the actor is private to its module.
     std::fs::write(
         pkg_dir.join("secret.hew"),
@@ -3266,7 +3271,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
+        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account;\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3297,7 +3302,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
 
 /// Security regression (non-actor export routing): an imported module that
 /// exports a *public non-actor type* named `Account` (e.g. `pub type Account`)
-/// must NOT satisfy a module-qualified spawn `spawn secret.Account()` and route
+/// must NOT satisfy a module-qualified spawn `spawn secret.Account` and route
 /// to a same-named root actor. Module-qualified spawn is gated on the qualified
 /// definition being an actor (`TypeDefKind::Actor`), not merely a public type
 /// export, so the spawn fails closed at type-check before the qualifier is
@@ -3309,6 +3314,8 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     let dir = support::tempdir();
     let pkg_dir = dir.path().join("hew").join("secret");
     std::fs::create_dir_all(&pkg_dir).unwrap();
+    // An installed `hew.` package carries its manifest (HEW-SPEC-2026 §3.5.1).
+    std::fs::write(pkg_dir.join("hew.toml"), "[package]\nname = \"hew.pkg\"\n").unwrap();
     // `secret` exports a public *non-actor* type named `Account`.
     std::fs::write(
         pkg_dir.join("secret.hew"),
@@ -3318,7 +3325,7 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
+        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account;\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3354,7 +3361,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
     let source = dir.path().join("suspended_actor_state_handoff.hew");
     std::fs::write(
         &source,
-        "#[resource]\n#[opaque]\ntype Marker {\n}\n\nimpl Marker {\n    fn close(consume self) {\n        unsafe {\n            hew_deque_free(self)\n        };\n        println(\"closed\");\n    }\n}\n\nextern \"C\" {\n    fn hew_deque_new() -> Marker;\n    fn hew_deque_free(consume marker: Marker);\n}\n\nactor Child {\n    let label: string;\n    let marker: Marker;\n    receive fn ping() {}\n}\n\nactor Maker {\n    receive fn go() {\n        var i: i64 = 0;\n        while i < 3 {\n            sleep(1ms);\n            let label = f\"child-{i}\";\n            let child = spawn Child(label: label.clone(), marker: unsafe {\n                hew_deque_new()\n            });\n            stop(child);\n            stopped(child);\n            i = i + 1;\n        }\n        println(\"maker-done\");\n    }\n}\n\nfn main() {\n    let maker = spawn Maker;\n    let _ = maker.go();\n    sleep(200ms);\n}\n",
+        "#[resource]\n#[opaque]\ntype Marker {\n}\n\nimpl Marker {\n    fn close(consume self) {\n        unsafe {\n            hew_deque_free(self)\n        };\n        println(\"closed\");\n    }\n}\n\nextern \"C\" {\n    fn hew_deque_new() -> Marker;\n    fn hew_deque_free(consume marker: Marker);\n}\n\nactor Child {\n    let label: string;\n    let marker: Marker;\n    receive fn ping() {}\n}\n\nactor Maker {\n    receive fn go() {\n        var i: i64 = 0;\n        while i < 3 {\n            sleep(1ms);\n            let label = f\"child-{i}\";\n            let child = spawn Child {label: label.clone(), marker: unsafe {\n                hew_deque_new()\n            }};\n            stop(child);\n            stopped(child);\n            i = i + 1;\n        }\n        println(\"maker-done\");\n    }\n}\n\nfn main() {\n    let maker = spawn Maker;\n    let _ = maker.go();\n    sleep(200ms);\n}\n",
     )
     .expect("write suspended actor state handoff fixture");
 

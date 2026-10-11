@@ -40,7 +40,7 @@
 //!
 //! fn main() {
 //!     let listener = match net.listen(":9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-//!     let conn = listener.accept();
+//!     let conn = listener.accept().expect("accept");
 //!     // An echo turn: `None` is the peer's EOF; `send` answers `Closed` once
 //!     // the peer is gone, which an echo server treats as the end.
 //!     if let .Some(data) = conn.recv() {
@@ -347,7 +347,7 @@ pub type Listener {
 
 /// An established TCP connection for reading and writing.
 ///
-/// Obtained from `listener.accept()` or `net.connect(addr)`.
+/// Obtained from `listener.accept().expect("accept")` or `net.connect(addr)`.
 #[resource]
 #[opaque]
 pub type Connection {
@@ -357,7 +357,7 @@ pub type Connection {
 /// Methods available on a TCP `Listener`.
 trait ListenerMethods {
     /// Wait until a client connects and return the new `Connection`.
-    fn accept(self) -> Connection;
+    fn accept(self) -> Result<Connection, NetError>;
 
     /// Return the port selected for this listener, including an ephemeral port
     /// chosen by `listen("...:0")`. This is a borrowing inspection; it does
@@ -367,9 +367,16 @@ trait ListenerMethods {
 
 impl ListenerMethods for Listener {
     /// Wait until a client connects and return the new `Connection`.
-    fn accept(self) -> Connection {
+    fn accept(self) -> Result<Connection, NetError> {
         unsafe {
-            hew_tcp_accept(self)
+            let connection = hew_tcp_accept(self);
+            if hew_connection_is_valid(connection) {
+                .Ok(connection)
+            } else {
+                let errno = hew_stream_last_errno();
+                let _ = hew_stream_last_error();
+                .Err(net_error_from_errno(errno as i64))
+            }
         }
     }
     fn local_port(self) -> i64 {

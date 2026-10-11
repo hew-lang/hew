@@ -33,12 +33,8 @@ fn codecs() {
     let decoded = base64.decode(encoded).expect("valid base64");
     assert(decoded == source);
     assert(decoded[1] == 0);
-    let compressed = compress.gzip_compress(source) handle error {
-        panic(f"{error}")
-    };
-    let expanded = compress.gzip_decompress(compressed, 1024) handle error {
-        panic(f"{error}")
-    };
+    let compressed = compress.gzip_compress(source) handle error { panic(f"{error}") };
+    let expanded = compress.gzip_decompress(compressed, 1024) handle error { panic(f"{error}") };
     assert(expanded == source);
     // Codec errors must be ordinary managed strings, including after a
     // successful byte result. A later success must not retain the old error.
@@ -50,9 +46,7 @@ fn codecs() {
         .Ok(_) => panic("gzip output limit was ignored"),
         .Err(reason) => assert(f"{reason}".len() > 0),
     }
-    let again = compress.gzip_decompress(compressed, 1024) handle error {
-        panic(f"{error}")
-    };
+    let again = compress.gzip_decompress(compressed, 1024) handle error { panic(f"{error}") };
     assert(again == source);
 }
 
@@ -60,7 +54,7 @@ fn main() {
     unsafe {
         oracle_expect(34);
     };
-    for i in 0 .. 32 {
+    for i in 0..32 {
         round_trip(i);
     }
     // A discarded foreign result still transfers an owner to this scope.

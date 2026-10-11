@@ -90,8 +90,8 @@ supervisor ConnectionPool {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child reader: ConnWorker(role: 0, port: 8080);
-    child writer: ConnWorker(role: 1, port: 8081);
+    child reader: ConnWorker { role: 0, port: 8080 };
+    child writer: ConnWorker { role: 1, port: 8081 };
 }
 
 fn main() {

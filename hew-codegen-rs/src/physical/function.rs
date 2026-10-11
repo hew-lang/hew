@@ -26,7 +26,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         builder.position_at_end(prologue);
         // A body with debug info keeps a current location for every
         // instruction it builds: LLVM requires one on each inlinable call.
-        let debug = match (
+        let mut debug = match (
             &module.debug,
             module.module.debug.functions.get(&callable.id),
         ) {
@@ -37,7 +37,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &function_debug,
                     attribution.decl,
                 ));
-                debug::pin_for_inspection(ctx, value, callable.is_resumable);
+                debug::pin_for_inspection(ctx, value);
                 Some((emitter, function_debug, attribution))
             }
             _ => None,
@@ -53,9 +53,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         } else {
             None
         };
-        let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
-        let pending_locals = match &debug {
-            Some((emitter, function_debug, attribution)) => debug::declare_locals(
+        let slots =
+            partial::allocate_storage(module, function, callable, value, &builder, frame.as_ref())?;
+        if let Some((emitter, function_debug, attribution)) = &mut debug {
+            debug::declare_locals(
                 ctx,
                 emitter,
                 function_debug,
@@ -64,11 +65,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 &module.module.target,
                 &slots,
                 prologue,
-                callable.is_resumable,
-            ),
-            None => Vec::new(),
-        };
-        let place_flags = partial::allocate_flags(module, function, &builder, &slots)?;
+                frame.as_ref(),
+            )?;
+        }
+        let place_flags =
+            partial::allocate_flags(module, function, &builder, &slots, frame.as_ref())?;
         let active_fault = builder
             .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
             .llvm_ctx("allocate active fault")?;
@@ -144,6 +145,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             builder
                 .build_store(slots[storage_id.0 as usize], loaded)
                 .llvm_ctx("store physical parameter")?;
+            if let Some((emitter, function_debug, _)) = &debug {
+                emitter.local_value(function_debug, *storage_id, loaded, prologue)?;
+            }
             param_index += 1;
         }
         let result_out = if callable.return_layout.is_some() {
@@ -194,8 +198,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             frame,
             task_scopes,
             debug,
-            prologue,
-            pending_locals,
         })
     }
 
@@ -207,22 +209,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             // Blocks are emitted in id order, not execution order, so a block
             // opens on its own first source point rather than inheriting the
             // line of whichever block was emitted before it.
-            self.enter_block(block.id);
+            self.enter_block(block.id)?;
             for (index, operation) in block.ops.iter().enumerate() {
                 self.locate(block.id, index);
                 self.emit_op(operation)?;
             }
             self.locate(block.id, block.ops.len());
             self.emit_terminator(block)?;
-        }
-        if let Some((emitter, _, _)) = &self.debug {
-            debug::resolve_coroutine_locals(
-                emitter,
-                self.llvm,
-                value,
-                self.prologue,
-                &self.pending_locals,
-            );
         }
         if inspectable {
             debug::order_blocks_for_inspection(value);
@@ -232,10 +225,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     /// Open a block at the earliest source point anything in it names, or at
     /// the body's declaration when it names none.
-    fn enter_block(&self, block: BlockId) {
+    fn enter_block(&self, block: BlockId) -> CodegenResult<()> {
         let Some((emitter, function_debug, attribution)) = &self.debug else {
-            return;
+            return Ok(());
         };
+        if self.frame.is_some() {
+            self.builder.unset_current_debug_location();
+            if let Some(available) = attribution.available.get(&block) {
+                for id in available {
+                    self.load(*id, "debug.local.restore")?;
+                }
+            }
+        }
         let first = attribution
             .sites
             .range((block, 0)..=(block, u32::MAX))
@@ -246,6 +247,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             |offset| emitter.location(self.ctx, function_debug, offset),
         );
         self.builder.set_current_debug_location(location);
+        Ok(())
     }
 
     /// Point the builder at the source this operation lowered from. An
@@ -269,13 +271,30 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     pub(super) fn load(&self, id: StorageId, name: &str) -> CodegenResult<BasicValueEnum<'ctx>> {
-        self.builder
-            .build_load(
-                llvm_type(self.ctx, &self.storage(id)?.layout.repr)?,
-                self.slots[id.0 as usize],
-                name,
-            )
-            .llvm_ctx("load physical storage")
+        let value = self.value_emitter().load_value(
+            self.slots[id.0 as usize],
+            &self.storage(id)?.layout,
+            name,
+        )?;
+        self.debug_value(id, value)?;
+        Ok(value)
+    }
+
+    fn debug_value(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
+        if let Some((emitter, function_debug, _)) = &self.debug {
+            if let Some(block) = self.builder.get_insert_block() {
+                emitter.local_value(function_debug, id, value, block)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn debug_unavailable(&self, id: StorageId) {
+        if let Some((emitter, function_debug, _)) = &self.debug {
+            if let Some(block) = self.builder.get_insert_block() {
+                emitter.local_unavailable(function_debug, id, block);
+            }
+        }
     }
 
     pub(super) fn storage(&self, id: StorageId) -> CodegenResult<&PhysicalStorage> {
@@ -287,24 +306,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     pub(super) fn store(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
-        let expected = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?;
-        if value.get_type() != expected {
-            return Err(CodegenError::FailClosed(format!(
-                "physical storage {} expects {}, received {}",
-                id.0,
-                expected.print_to_string(),
-                value.get_type().print_to_string()
-            )));
-        }
-        self.builder
-            .build_store(self.slots[id.0 as usize], value)
-            .llvm_ctx("store physical storage")?;
+        self.value_emitter().store_value(
+            self.slots[id.0 as usize],
+            &self.storage(id)?.layout,
+            value,
+        )?;
         self.set_capture_initialized(id, true)?;
         self.set_place_initialized(id, true)?;
+        self.debug_value(id, value)?;
         Ok(())
     }
 
     pub(super) fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
+        if self.storage(id)?.own == OwnKind::Owned {
+            self.debug_unavailable(id);
+        }
         self.set_capture_initialized(id, false)?;
         self.set_place_initialized(id, false)?;
         // A local aggregate leaf records its transfer in this frame's
@@ -323,9 +339,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         if self.storage(id)?.own == OwnKind::Owned {
             let zero = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?.const_zero();
-            self.builder
-                .build_store(self.slots[id.0 as usize], zero)
-                .llvm_ctx("clear transferred physical owner")?;
+            self.value_emitter().store_value(
+                self.slots[id.0 as usize],
+                &self.storage(id)?.layout,
+                zero,
+            )?;
         }
         Ok(())
     }
@@ -353,6 +371,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 duration,
             } => self.emit_task_scope_enter(*scope, *parent, *duration),
             PhysicalOp::TaskScopeClose { scope } => self.emit_task_scope_close(*scope),
+            PhysicalOp::TaskRace {
+                scope,
+                members,
+                dest,
+                ..
+            } => self.emit_task_race(*scope, members, *dest),
             PhysicalOp::TaskSpawn {
                 scope,
                 callable,
@@ -669,8 +693,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.load(*source, "borrow")?;
                 self.store(*dest, value)
             }
-            PhysicalOp::EndBorrow { .. } => Ok(()),
-            PhysicalOp::StorageLive { storage } => self.set_place_initialized(*storage, false),
+            PhysicalOp::EndBorrow { source } => {
+                self.debug_unavailable(*source);
+                Ok(())
+            }
+            PhysicalOp::StorageLive { storage } => {
+                self.debug_unavailable(*storage);
+                self.set_place_initialized(*storage, false)
+            }
             PhysicalOp::Assign {
                 dest,
                 source,
@@ -689,6 +719,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 destroy,
                 cleanup,
             } => {
+                self.debug_unavailable(*storage);
                 if self.destroy_certified_contents(*storage, cleanup)? {
                     return Ok(());
                 }
@@ -795,9 +826,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
         let payload = self
-            .builder
-            .build_load(payload_ty, payload_ptr, "variant.project.payload")
-            .llvm_ctx("load physical variant payload")?
+            .value_emitter()
+            .load_value(
+                payload_ptr,
+                &layout.variants[variant as usize],
+                "variant.project.payload",
+            )?
             .into_struct_value();
         Ok((Some(payload), layout, object))
     }
@@ -841,12 +875,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.builder.position_at_end(*arm_block);
             let payload_layout = &layout.variants[arm.variant as usize];
             if !arm.fields.is_empty() {
-                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
                 let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
                 let payload = self
-                    .builder
-                    .build_load(payload_ty, payload_ptr, "variant.switch.payload")
-                    .llvm_ctx("load physical variant payload")?
+                    .value_emitter()
+                    .load_value(payload_ptr, payload_layout, "variant.switch.payload")?
                     .into_struct_value();
                 for (index, field) in arm.fields.iter().enumerate() {
                     let index = u32::try_from(index).map_err(|_| {
@@ -1105,6 +1137,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;
+        self.debug_unavailable(source);
         self.clear_owned(source)?;
         self.release_loaded(value, &self.storage(source)?.layout, action)
     }
@@ -1121,6 +1154,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;
+        self.debug_unavailable(source);
         self.clear_owned(source)?;
         self.release_loaded(value, &self.storage(source)?.layout, action)
     }

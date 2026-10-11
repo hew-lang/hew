@@ -2,9 +2,9 @@
 ///
 /// Covers:
 ///   • `actor Foo<T> { ... }` — type-param list parsed onto `ActorDecl.type_params`
-///   • `spawn Foo<i64>()` — turbofish parsed onto `Expr::Spawn.type_args`
-///   • `spawn Foo<T, U>(x: val)` — multiple type args with init args
-///   • Non-generic `spawn Foo()` — `type_args` is empty, no regression
+///   • `spawn Foo<i64>` — turbofish parsed onto `Expr::Spawn.type_args`
+///   • `spawn Foo<T, U> { x: val }` — multiple type args with init args
+///   • Non-generic `spawn Foo` — `type_args` is empty, no regression
 use hew_parser::ast::Ident;
 use hew_parser::ast::{Expr, Item, Stmt, TypeExpr};
 
@@ -20,7 +20,7 @@ actor Worker<T> {
 }
 
 fn main() {
-    let pid = spawn Worker<i64>();
+    let pid = spawn Worker<i64>;
 }
 ";
     let result = hew_parser::parse(source);
@@ -59,7 +59,7 @@ fn main() {
                                 assert_eq!(
                                     type_args.len(),
                                     1,
-                                    "expected 1 type arg on spawn Worker<i64>()"
+                                    "expected 1 type arg on spawn Worker<i64>"
                                 );
                                 // The type arg should be a Named TypeExpr for `i64`.
                                 if let (TypeExpr::Named { path, .. }, _) = &type_args[0] {
@@ -81,20 +81,17 @@ fn main() {
         found_actor_type_param,
         "actor Worker<T> type param not found"
     );
-    assert!(
-        found_spawn_type_arg,
-        "spawn Worker<i64>() type arg not found"
-    );
+    assert!(found_spawn_type_arg, "spawn Worker<i64> type arg not found");
 }
 
-/// `spawn Foo()` (non-generic) produces an empty `type_args` vec — no regression.
+/// `spawn Foo` (non-generic) produces an empty `type_args` vec — no regression.
 #[test]
 fn parser_spawn_non_generic_has_empty_type_args() {
     let source = r"
 actor Foo {}
 
 fn main() {
-    let _pid = spawn Foo();
+    let _pid = spawn Foo;
 }
 ";
     let result = hew_parser::parse(source);
@@ -129,7 +126,7 @@ actor Pair<A, B> {
 }
 
 fn main() {
-    let _pid = spawn Pair<i32, string>(a: 1, b: "x");
+    let _pid = spawn Pair<i32, string> { a: 1, b: "x" };
 }
 "#;
     let result = hew_parser::parse(source);

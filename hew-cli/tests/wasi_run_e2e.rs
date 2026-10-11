@@ -519,9 +519,8 @@ fn main() -> i64 {
         "scope diagnostic should name the missing wasm32 executor/join path\nstderr:\n{stderr}",
     );
     assert!(
-        stderr.contains(
-            "task spawn is thread-based and no cooperative task executor drives forked bodies"
-        ),
+        stderr.contains("Task handles spawned from scopes are not supported on WASM32")
+            && stderr.contains("no wasm32 task executor"),
         "task diagnostic should name the missing task spawn/executor path\nstderr:\n{stderr}",
     );
     assert!(
@@ -955,7 +954,7 @@ const COOPERATIVE_PERIODIC_SOURCE: &str = r#"actor Pulse {
 }
 
 fn main() {
-    let p = spawn Pulse(count: 0);
+    let p = spawn Pulse { count: 0 };
     println("spawned");
     sleep(120ms);
     println("done");
@@ -998,7 +997,7 @@ fn main() {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    let _p = spawn Pulse(ready: ready_tx, count: 0);
+    let _p = spawn Pulse { ready: ready_tx, count: 0 };
     println("spawned");
     let _ = ready_rx.recv();
     println("done");

@@ -7,7 +7,7 @@ import std.net;
 fn serve(listener: net.Listener, rounds: i64) -> net.Listener {
     var served = 0;
     while served < rounds {
-        let conn = listener.accept();
+        let conn = listener.accept().expect("accept");
         conn.close();
         served = served + 1;
     }

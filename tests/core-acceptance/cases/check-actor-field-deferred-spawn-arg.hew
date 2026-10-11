@@ -17,6 +17,6 @@ actor Worker {
 }
 
 fn main() {
-    let worker = spawn Worker(label: "ready", name: "ready");
+    let worker = spawn Worker { label: "ready", name: "ready" };
     let _ = worker.label();
 }

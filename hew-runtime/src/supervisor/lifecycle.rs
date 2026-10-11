@@ -2253,40 +2253,38 @@ mod tests {
     #[test]
     fn stop_supervisor_from_child_terminate_is_deferred() {
         let _rt = crate::runtime_test_guard();
-        // SAFETY: this test owns the supervisor tree and simulates a reentrant
-        // terminate callback by controlling the child actor state directly.
+        // SAFETY: the unfinished terminate keeps the child allocated until its
+        // owner releases the gate after observing the reentrant stop return.
         unsafe {
             let (sup, child, self_actor) = make_supervisor_with_child();
-            // Probe liveness by (id, ptr) — see
-            // stop_supervisor_from_child_dispatch_is_deferred for the ABA
-            // rationale.
             let child_id = (*child).id;
             let self_id = (*self_actor).id;
-            let child_ref = &*child;
-            child_ref
+            (*child)
                 .actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);
-            child_ref.terminate_called.store(true, Ordering::Release);
-            child_ref.terminate_finished.store(false, Ordering::Release);
+            (*child).terminate_called.store(true, Ordering::Release);
+            (*child).terminate_finished.store(false, Ordering::Release);
 
-            let _ctx = TestExecutionContext::install(HewExecutionContext {
-                actor: child,
-                actor_id: child_id,
-                ..HewExecutionContext::default()
+            let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+            let supervisor_addr = sup as usize;
+            let child_addr = child as usize;
+            let callback = std::thread::spawn(move || {
+                let _ctx = TestExecutionContext::install(HewExecutionContext {
+                    actor: child_addr as *mut HewActor,
+                    actor_id: child_id,
+                    ..HewExecutionContext::default()
+                });
+                hew_supervisor_stop(supervisor_addr as *mut HewSupervisor);
+                returned_tx.send(()).unwrap();
             });
-            // Terminate is still running on this thread, so a stop that waited
-            // for it here could never return.
-            hew_supervisor_stop(sup);
+            let returned = returned_rx.recv_timeout(Duration::from_secs(2));
+            (*child).terminate_finished.store(true, Ordering::Release);
+            callback.join().unwrap();
             assert!(
-                actor::is_actor_live_with_id(child_id, child),
-                "reentrant supervisor stop should defer instead of spinning inside terminate"
+                returned.is_ok(),
+                "reentrant supervisor stop must return before terminate completes"
             );
-
-            child_ref.terminate_finished.store(true, Ordering::Release);
-
-            // Child should be released after deferred supervisor stop.
             wait_until(|| !actor::is_actor_live_with_id(child_id, child));
-            // Supervisor self actor should be released after deferred stop.
             wait_until(|| !actor::is_actor_live_with_id(self_id, self_actor));
         }
     }

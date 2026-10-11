@@ -13,9 +13,10 @@
 //! so a second `wait` returns it again and a later `terminate` or `kill` does
 //! nothing. Dropping a `Child` that is still running kills and reaps it.
 //!
-//! On Unix a child's stdout and stderr streams are `select` sources. On
-//! Windows they are read on the blocking pool and are not `select` sources in
-//! edition 2026.
+//! A child's stdout and stderr streams are `select` sources on every native
+//! host. A losing selection leaves its data available for the next receive.
+//! Windows retains at most 64 KiB of completed output per pipe; pending reads
+//! use overlapped I/O and release their buffers after cancellation completes.
 //!
 //! # Examples
 //!

@@ -360,6 +360,7 @@ impl Checker {
                     })
                     .or_else(|| self.check_builtin_variant_call(constructor, args, span))
                     .expect("builtin enum variants are Some, None, Ok and Err");
+                self.record_construct_call(span);
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::EnumConstructorPath {

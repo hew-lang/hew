@@ -243,8 +243,8 @@ pub fn from(sink_permits: i64) -> PipelineI64TwoStage {
 
 /// Spawn and wire the source, fixed transform stage, sink, and control actor.
 pub fn run(pipeline: PipelineI64TwoStage) -> SourceI64 {
-    let control = spawn AdmissionControlI64(permits: pipeline.sink_permits, stage_attempts: 0, stage_post_sends: 0);
-    let sink = spawn SinkI64(count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control);
-    let stage = spawn StageI64(next: sink, control: control);
-    spawn SourceI64(next: stage, sink: sink, control: control)
+    let control = spawn AdmissionControlI64 { permits: pipeline.sink_permits, stage_attempts: 0, stage_post_sends: 0 };
+    let sink = spawn SinkI64 { count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control };
+    let stage = spawn StageI64 { next: sink, control: control };
+    spawn SourceI64 { next: stage, sink: sink, control: control }
 }

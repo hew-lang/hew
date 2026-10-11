@@ -1,12 +1,12 @@
 //! Independently verify deferred-region storage and optional fault carriers.
 
+use super::storage_uses::{operation_storage, terminator_storage};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    apply_edge, storage, ArgumentTransfer, BlockId, CallableId, DeferId, DeferScopeId, FaultParkId,
-    FaultState, FlowState, InitState, OwnKind, PhysicalBlock, PhysicalEdge, PhysicalError,
-    PhysicalFunction, PhysicalModule, PhysicalOp, PhysicalTerminator, StorageId, StorageOrigin,
-    TrapKind,
+    apply_edge, storage, BlockId, CallableId, DeferId, DeferScopeId, FaultParkId, FaultState,
+    FlowState, InitState, OwnKind, PhysicalBlock, PhysicalEdge, PhysicalError, PhysicalFunction,
+    PhysicalModule, PhysicalOp, PhysicalTerminator, StorageId, StorageOrigin, TrapKind,
 };
 
 pub(super) const ORDINARY: u8 = 1;
@@ -230,165 +230,6 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         | PhysicalTerminator::PropagateFault { .. }
         | PhysicalTerminator::Trap(_)
         | PhysicalTerminator::Unreachable => vec![],
-    }
-}
-
-fn operation_storage(
-    operation: &PhysicalOp,
-    used: &mut BTreeSet<StorageId>,
-    defined: &mut BTreeSet<StorageId>,
-    locals: &mut BTreeSet<StorageId>,
-) {
-    match operation {
-        PhysicalOp::TaskScopeEnter { duration, .. } => used.extend(duration),
-        PhysicalOp::TaskScopeClose { .. } => {}
-        PhysicalOp::StreamPipe { stream, sink, .. } => {
-            defined.extend([*stream, *sink]);
-        }
-        PhysicalOp::GeneratorMake { dest, callable, .. }
-        | PhysicalOp::TaskSpawn { dest, callable, .. } => {
-            defined.insert(*dest);
-            used.insert(*callable);
-        }
-        PhysicalOp::RegisterDefer { dependencies, .. } => used.extend(dependencies),
-        PhysicalOp::StorageLive { storage } => {
-            locals.insert(*storage);
-        }
-        PhysicalOp::StorageDead { storage, .. } => {
-            used.insert(*storage);
-        }
-        PhysicalOp::FunctionMake { dest, .. } | PhysicalOp::Const { dest, .. } => {
-            defined.insert(*dest);
-        }
-        PhysicalOp::Unary { dest, source, .. }
-        | PhysicalOp::Cast { dest, source, .. }
-        | PhysicalOp::CallableCoerce { dest, source }
-        | PhysicalOp::GeneratorCoerce { dest, source }
-        | PhysicalOp::DynMake { dest, source, .. }
-        | PhysicalOp::Transfer { dest, source }
-        | PhysicalOp::Clone { dest, source, .. }
-        | PhysicalOp::Borrow { dest, source } => {
-            defined.insert(*dest);
-            used.insert(*source);
-            used.insert(*dest);
-        }
-        PhysicalOp::Binary { dest, lhs, rhs, .. } => {
-            defined.insert(*dest);
-            used.extend([*lhs, *rhs]);
-        }
-        PhysicalOp::TupleMake { dest, elements } => {
-            defined.insert(*dest);
-            used.extend(elements);
-        }
-        PhysicalOp::TupleGet { dest, tuple, .. } => {
-            defined.insert(*dest);
-            used.insert(*tuple);
-        }
-        PhysicalOp::AggregateMake { dest, fields, .. }
-        | PhysicalOp::ArrayMake { dest, fields, .. }
-        | PhysicalOp::VariantMake { dest, fields, .. }
-        | PhysicalOp::ClosureMake { dest, fields, .. } => {
-            defined.insert(*dest);
-            used.extend(fields);
-        }
-        PhysicalOp::ArrayRepeat { dest, seed, .. } => {
-            defined.insert(*dest);
-            used.insert(*seed);
-        }
-        PhysicalOp::AggregateProjectCopy {
-            dest, aggregate, ..
-        }
-        | PhysicalOp::AggregateProjectBorrow {
-            dest, aggregate, ..
-        }
-        | PhysicalOp::VariantIs {
-            dest,
-            source: aggregate,
-            ..
-        }
-        | PhysicalOp::VariantProjectCopy {
-            dest,
-            source: aggregate,
-            ..
-        }
-        | PhysicalOp::VariantProjectBorrow {
-            dest,
-            source: aggregate,
-            ..
-        } => {
-            defined.insert(*dest);
-            used.insert(*aggregate);
-        }
-        PhysicalOp::AggregateDestructure {
-            aggregate, fields, ..
-        }
-        | PhysicalOp::VariantDestructure {
-            source: aggregate,
-            fields,
-            ..
-        } => {
-            defined.extend(fields);
-            used.insert(*aggregate);
-        }
-        PhysicalOp::Destroy { source, .. } | PhysicalOp::EndBorrow { source } => {
-            used.insert(*source);
-        }
-        PhysicalOp::Assign { dest, source, .. } => {
-            used.extend([*dest, *source]);
-        }
-    }
-}
-
-fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>) {
-    let source = |arg: &ArgumentTransfer| match arg {
-        ArgumentTransfer::Borrow(id)
-        | ArgumentTransfer::BorrowMut(id)
-        | ArgumentTransfer::Move(id)
-        | ArgumentTransfer::Clone { source: id, .. } => *id,
-    };
-    for edge in edges(term) {
-        used.extend(
-            edge.transfers
-                .iter()
-                .chain(&edge.leaf_transfers)
-                .flat_map(|(source, dest)| [*source, *dest]),
-        );
-    }
-    match term {
-        PhysicalTerminator::Branch { condition, .. } => {
-            used.insert(*condition);
-        }
-        PhysicalTerminator::CheckedBinary { lhs, rhs, .. } => {
-            used.extend([*lhs, *rhs]);
-        }
-        PhysicalTerminator::SwitchVariant { scrutinee, .. } => {
-            used.insert(*scrutinee);
-        }
-        PhysicalTerminator::NativeIo { args, .. }
-        | PhysicalTerminator::Offload { args, .. }
-        | PhysicalTerminator::Call { args, .. }
-        | PhysicalTerminator::RuntimeCall { args, .. }
-        | PhysicalTerminator::ValueCall { args, .. } => used.extend(args.iter().map(source)),
-        PhysicalTerminator::WireCodec { input, .. } => {
-            used.insert(source(input));
-        }
-        PhysicalTerminator::IndirectCall { callee, args, .. } => {
-            used.insert(source(callee));
-            used.extend(args.iter().map(source));
-        }
-        PhysicalTerminator::DynCall { receiver, args, .. } => {
-            used.insert(source(receiver));
-            used.extend(args.iter().map(source));
-        }
-        PhysicalTerminator::Panic {
-            message, assertion, ..
-        } => {
-            used.insert(source(message));
-            if let Some(assertion) = assertion {
-                used.extend(assertion.iter().map(source));
-            }
-        }
-        _ => {}
     }
 }
 

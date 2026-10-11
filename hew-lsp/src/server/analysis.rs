@@ -1077,14 +1077,23 @@ pub(super) mod tests {
         assert_eq!(combined[0], lower_diagnostic);
     }
 
+    /// The manifest that makes a fixture a package, which directory modules
+    /// belong to (HEW-SPEC-2026 §3.5.1).
+    const PACKAGE: &str = "[package]\nname = \"app\"\n";
+
     /// An open peer of a directory module is analysed with its entry and
     /// siblings, so names they declare resolve, and an error in the open
-    /// buffer still reaches that buffer.
+    /// buffer still reaches that buffer. Outside a package the same file is a
+    /// module of its own, exactly as `hew check` sees it.
     #[test]
     fn analyze_document_checks_a_directory_module_peer_with_its_module() {
         const ENTRY: &str = "pub type Config {\n    timeout: i64;\n}\n\npub fn describe(config: Config) -> i64 {\n    doubled(config)\n}\n";
         const PEER: &str = "pub fn doubled(config: Config) -> i64 {\n    config.timeout * 2\n}\n";
-        let root = make_temp_workspace_dir(&[("forge/forge.hew", ENTRY), ("forge/ado.hew", PEER)]);
+        let root = make_temp_workspace_dir(&[
+            ("hew.toml", PACKAGE),
+            ("forge/forge.hew", ENTRY),
+            ("forge/ado.hew", PEER),
+        ]);
         let peer_uri = Url::from_file_path(root.join("forge/ado.hew")).expect("absolute path");
 
         let document = analyze_document(&peer_uri, PEER, &DashMap::new(), &[]);
@@ -1108,6 +1117,19 @@ pub(super) mod tests {
                     .count()
             });
         assert_eq!(peer_errors, 1, "{:?}", document.diagnostics_by_uri);
+
+        let loose = make_temp_workspace_dir(&[("forge/forge.hew", ENTRY), ("forge/ado.hew", PEER)]);
+        let loose_uri = Url::from_file_path(loose.join("forge/ado.hew")).expect("absolute path");
+        let document = analyze_document(&loose_uri, PEER, &DashMap::new(), &[]);
+        assert!(
+            document
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR)),
+            "a loose peer does not see the entry's `Config`: {:?}",
+            document.diagnostics_by_uri
+        );
     }
 
     /// Position queries on an open module entry still read that file's own
@@ -1116,7 +1138,11 @@ pub(super) mod tests {
     fn hover_on_a_directory_module_entry_reads_its_own_facts() {
         const ENTRY: &str = "pub type Config {\n    timeout: i64;\n}\n\npub fn describe(config: Config) -> i64 {\n    let limit = config.timeout;\n    limit + doubled(config)\n}\n";
         const PEER: &str = "pub fn doubled(config: Config) -> i64 {\n    config.timeout * 2\n}\n";
-        let root = make_temp_workspace_dir(&[("forge/forge.hew", ENTRY), ("forge/ado.hew", PEER)]);
+        let root = make_temp_workspace_dir(&[
+            ("hew.toml", PACKAGE),
+            ("forge/forge.hew", ENTRY),
+            ("forge/ado.hew", PEER),
+        ]);
         let entry_uri = Url::from_file_path(root.join("forge/forge.hew")).expect("absolute path");
 
         let document = analyze_document(&entry_uri, ENTRY, &DashMap::new(), &[]);
@@ -1128,7 +1154,11 @@ pub(super) mod tests {
     fn hover_on_a_directory_module_peer_reads_its_own_facts() {
         const ENTRY: &str = "pub type Config {\n    timeout: i64;\n}\n\npub fn describe(config: Config) -> i64 {\n    doubled(config)\n}\n";
         const PEER: &str = "pub fn doubled(config: Config) -> i64 {\n    let twice = config.timeout * 2;\n    twice\n}\n";
-        let root = make_temp_workspace_dir(&[("forge/forge.hew", ENTRY), ("forge/ado.hew", PEER)]);
+        let root = make_temp_workspace_dir(&[
+            ("hew.toml", PACKAGE),
+            ("forge/forge.hew", ENTRY),
+            ("forge/ado.hew", PEER),
+        ]);
         let peer_uri = Url::from_file_path(root.join("forge/ado.hew")).expect("absolute path");
 
         let document = analyze_document(&peer_uri, PEER, &DashMap::new(), &[]);
@@ -1914,6 +1944,7 @@ pub(super) mod tests {
         let lib = "pub fn val() -> i64 { 1 }\n";
         let main_src = "import a.b;\n\nfn main() -> i64 { 0 }\n";
         let root = make_temp_workspace_dir(&[
+            ("hew.toml", "[package]\nname = \"app\"\n"),
             ("a/b/b.hew", lib),
             ("a/b.hew", lib),
             ("main.hew", main_src),

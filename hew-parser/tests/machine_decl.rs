@@ -249,7 +249,7 @@ fn parse_machine_with_event_payload() {
 
 #[test]
 fn parse_machine_event_head_binding() {
-    // `on E(field): …` head binding names the event payload at the rule site.
+    // `on E { field }: …` head binding names the event payload at the rule site.
     // It lowers identically to `event.field`; the parser splices a `let`
     // prelude in front of the body, so the body just sees the bare name.
     let source = r"machine Tcp {
@@ -260,7 +260,7 @@ fn parse_machine_event_head_binding() {
     state Closed;
     state Open { port: Int; }
 
-    on Connect(port): Closed => Open { port: port }
+    on Connect { port }: Closed => Open { port: port }
 }
 ";
     let result = hew_parser::parse(source);
@@ -301,7 +301,7 @@ fn parse_machine_event_head_binding() {
 
 #[test]
 fn machine_event_head_binding_round_trips_through_formatter() {
-    // The `on E(field): …` head form must survive parse → format → parse: the
+    // The `on E { field }: …` head form must survive parse → format → parse: the
     // formatter re-emits the head binding and strips the synthesized
     // `let field = event.field;` prelude, so the formatted source is the head
     // form again (not the desugar).
@@ -313,7 +313,7 @@ fn machine_event_head_binding_round_trips_through_formatter() {
     state Closed;
     state Open { port: Int; }
 
-    on Connect(port): Closed => Open { port: port }
+    on Connect { port }: Closed => Open { port: port }
 }
 ";
     let parsed = hew_parser::parse(source);
@@ -325,7 +325,7 @@ fn machine_event_head_binding_round_trips_through_formatter() {
 
     let formatted = hew_parser::fmt::format_program(&parsed.program);
     assert!(
-        formatted.contains("on Connect(port): Closed => Open"),
+        formatted.contains("on Connect { port }: Closed => Open"),
         "formatter must re-emit the head binding; got:\n{formatted}"
     );
     assert!(

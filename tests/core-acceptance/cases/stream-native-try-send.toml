@@ -1,0 +1,14 @@
+[[case]]
+id = "stream-native-try-send"
+intent = "Socket and child-pipe try_send accept partial items without waiting, keep the next item out while pending, flush the retained remainder before an ordinary send or normal closure, and release cancelled writers before a silent peer reads."
+source = "cases/stream-native-try-send.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "nonblocking pipe and socket sends retain item order\n"
+stderr = ""
+exit = 0

@@ -19,7 +19,7 @@ actor Fan {
 }
 
 fn main() -> i64 {
-    let fan = spawn Fan(seen: 0, held: Wrap { name: "seed" });
+    let fan = spawn Fan { seen: 0, held: Wrap { name: "seed" } };
     var i: i64 = 0;
     while i < 50 {
         let _ = fan.route("discard".to_upper(), false);

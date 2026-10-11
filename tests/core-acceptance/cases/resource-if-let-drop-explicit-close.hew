@@ -1,11 +1,13 @@
+import std.os;
+
 import std.stream;
 
 import std.fs;
 
 fn main() -> i64 {
-    fs.write("/tmp/hew-if-let-resource-oracle.txt", "frame").expect("write");
-    for i in 0 .. 200 {
-        if let .Ok(input) = stream.open("/tmp/hew-if-let-resource-oracle.txt") {
+    fs.write(f"{os.temp_dir()}/hew-if-let-resource-oracle-{os.pid()}.txt", "frame").expect("write");
+    for i in 0..200 {
+        if let .Ok(input) = stream.open(f"{os.temp_dir()}/hew-if-let-resource-oracle-{os.pid()}.txt") {
             let _ = input.try_recv();
             input.close();
             println("closed");

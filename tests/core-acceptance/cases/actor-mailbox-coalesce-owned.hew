@@ -33,7 +33,7 @@ actor Latest {
 fn main() {
     let (started_tx, started) = stream.pipe(1).expect("started");
     let (release, gate) = stream.pipe(1).expect("gate");
-    let worker = spawn Latest(processed: 0, length: -1, started: started_tx, gate: gate);
+    let worker = spawn Latest { processed: 0, length: -1, started: started_tx, gate: gate };
     // The actor declared the coalescing policy, so the view takes it.
     let intake = mailbox(worker);
     // The first message occupies the actor, so the rest queue behind it.

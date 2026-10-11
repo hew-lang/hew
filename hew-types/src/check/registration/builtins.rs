@@ -629,14 +629,19 @@ impl Checker {
     /// `register_builtins_hew_impls`; this adds only lexical prelude bindings
     /// and must never mint a second synthetic source owner.
     pub(super) fn register_builtin_error_prelude_bindings(&mut self) {
-        for name in ["LinkError", "LookupError", "NodeError", "ScopeFailure"]
-            .into_iter()
-            .chain(
-                crate::actor_delivery::DECLARATIONS
-                    .iter()
-                    .map(|known| known.path().trim_start_matches("std.builtins.")),
-            )
-        {
+        for name in [
+            "LinkError",
+            "LookupError",
+            "NodeError",
+            "NodeTransport",
+            "ScopeFailure",
+        ]
+        .into_iter()
+        .chain(
+            crate::actor_delivery::DECLARATIONS
+                .iter()
+                .map(|known| known.path().trim_start_matches("std.builtins.")),
+        ) {
             let canonical = format!("std.builtins.{name}");
             debug_assert!(
                 self.type_def_at(&canonical).is_some(),

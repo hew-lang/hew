@@ -37,7 +37,7 @@ fn nap_unit() {
 
 #[test]
 fn unit_task_await_resumes_after_child_done() {
-    let w = spawn Worker(ticks: 0);
+    let w = spawn Worker { ticks: 0 };
     // The child naps 15ms; `await t` suspends until it is Done, then the body
     // sets out = 1 and increments ticks. Exact value 1 proves the await resumed
     // exactly once after the child completed.
@@ -49,7 +49,7 @@ fn unit_task_await_resumes_after_child_done() {
 
 #[test]
 fn repeated_unit_task_await_each_resumes() {
-    let w = spawn Worker(ticks: 0);
+    let w = spawn Worker { ticks: 0 };
     // Two sequential handler calls, each spawning + awaiting a unit child. The
     // accumulated exact value (2) proves both awaits resumed and neither lost
     // its frame nor double-resumed.

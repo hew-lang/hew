@@ -15,16 +15,16 @@ actor Worker {
 
 supervisor Branch(seed: string) {
     intensity: 0 within 60s;
-    child worker: Worker(seed: seed);
+    child worker: Worker { seed: seed };
 }
 
 supervisor Root(seed: string) {
     intensity: 0 within 60s;
-    child branch: Branch(seed: seed);
+    child branch: Branch { seed: seed };
 }
 
 fn main() {
-    let root = spawn Root(seed: "one initial incarnation".to_upper());
+    let root = spawn Root { seed: "one initial incarnation".to_upper() };
     let worker = root.branch.worker;
     let _ = worker.fail();
     let _ = {

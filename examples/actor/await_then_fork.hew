@@ -32,8 +32,8 @@ actor Coordinator {
 }
 
 fn main() {
-    let w = spawn Worker(factor: 6);
-    let c = spawn Coordinator(worker: w, bias: 100);
+    let w = spawn Worker { factor: 6 };
+    let c = spawn Coordinator { worker: w, bias: 100 };
     let r = c.run(7);
     match r {
         // compute(7) = 42; + bias(100) = 142

@@ -39,6 +39,6 @@ actor Echo {
 }
 
 fn main() {
-    let e = spawn Echo(n: 2);
+    let e = spawn Echo { n: 2 };
     let _ = e.run(0);
 }

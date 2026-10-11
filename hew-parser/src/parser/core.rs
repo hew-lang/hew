@@ -500,6 +500,15 @@ impl<'src> Parser<'src> {
         });
     }
 
+    /// The source text of an absolute span, or `""` outside this source.
+    pub(crate) fn source_text(&self, span: Span) -> &'src str {
+        span.start
+            .checked_sub(self.source_offset)
+            .zip(span.end.checked_sub(self.source_offset))
+            .and_then(|(start, end)| self.source.get(start..end))
+            .unwrap_or("")
+    }
+
     pub(crate) fn error_at_with_kind_and_hint(
         &mut self,
         message: String,

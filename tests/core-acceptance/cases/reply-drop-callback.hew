@@ -55,7 +55,7 @@ actor Slow {
 
 fn main() {
     let builder = spawn Builder;
-    let caller = spawn Caller(builder: builder);
+    let caller = spawn Caller { builder: builder };
     var sum = 0;
     for depth in 0 .. 8 {
         match caller.walk(depth) {

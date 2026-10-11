@@ -73,15 +73,15 @@ supervisor App(gate: Gate) {
     strategy: rest_for_one;
     intensity: 10 within 60s;
 
-    child a: Worker(name: "a", gate: gate);
-    child x: Worker(name: "x", gate: gate);
-    child b: Worker(name: "b", gate: gate);
-    child c: Worker(name: "c", gate: gate);
+    child a: Worker { name: "a", gate: gate };
+    child x: Worker { name: "x", gate: gate };
+    child b: Worker { name: "b", gate: gate };
+    child c: Worker { name: "c", gate: gate };
 }
 
 fn main() {
-    let gate = spawn Gate(entered: false, released: false);
-    let app = spawn App(gate: gate);
+    let gate = spawn Gate { entered: false, released: false };
+    let app = spawn App { gate: gate };
     let _ = app.b.boom();
     // b's restart stopped c, and c now holds it open in its stop hook.
     wait_for(gate, false);

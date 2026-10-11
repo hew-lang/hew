@@ -2213,7 +2213,7 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
         .to_path_buf();
     let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root]));
 
-    let first = hew_parser::parse("import std.net;\n");
+    let first = hew_parser::parse("import std.net;\nfn accept(listener: net.Listener) -> Result<net.Connection, net.NetError> { listener.accept() }\n");
     assert!(
         first.errors.is_empty(),
         "first parse errors: {:?}",
@@ -2225,13 +2225,19 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
         "first compile should load std.net cleanly, got: {:?}",
         first_output.errors
     );
-    assert_eq!(
-        checker
-            .module_registry()
-            .resolve_handle_method("net.Listener", "accept")
-            .as_deref(),
-        Some("hew_tcp_accept"),
-        "first compile should seed the legacy extracted receiver spelling"
+    assert!(
+        first_output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction {
+                    target: crate::check::dispatch::CallTarget::ImplMethod(_),
+                    ..
+                }
+            )),
+        "first compile should resolve the checked std.net.Listener::accept implementation: {:?}",
+        first_output.method_call_rewrites
     );
 
     let second = hew_parser::parse(

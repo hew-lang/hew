@@ -32,8 +32,8 @@ actor Relay {
 }
 
 fn main() -> i64 {
-    let consumer = spawn Consumer(seen: 0, last: "seed");
-    let relay = spawn Relay(consumer: consumer, seen: 0);
+    let consumer = spawn Consumer { seen: 0, last: "seed" };
+    let relay = spawn Relay { consumer: consumer, seen: 0 };
     var i: i64 = 0;
     while i < 40 {
         let delivered = match relay.forward("forward".to_upper()) {

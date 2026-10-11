@@ -42,7 +42,7 @@ actor Worker {
 
 fn main() {
     let audit = spawn Audit;
-    let worker = spawn Worker(audit: audit, ledger: Ledger { name: "ledger" });
+    let worker = spawn Worker { audit: audit, ledger: Ledger { name: "ledger" } };
     worker.bump().expect("bump");
     worker.bump().expect("bump");
     stop(worker);

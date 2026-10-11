@@ -64,6 +64,8 @@ pub(crate) type StructInitFields = (
     Vec<FieldLabel>,
     Option<Box<Spanned<Expr>>>,
 );
+/// The keys of a `spawn` or supervisor child and their written labels.
+pub(crate) type ConstructionKeys = (Vec<(Ident, Spanned<Expr>)>, Vec<FieldLabel>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeParseContext {
@@ -784,8 +786,19 @@ pub enum ParseDiagnosticKind {
     /// A retired `#[json(..)]`/`#[yaml(..)]` attribute or `json(..)`/`yaml(..)`
     /// wire modifier; `#[serial(..)]` replaces them.
     LegacySerialSpelling,
+    LegacyRaceBraces,
     /// A `#[wire]` enum variant without its stable `@N` tag.
     WireVariantTagMissing,
+    /// `spawn A { k: v }`: spawn keys are written in braces.
+    LegacySpawnArgs,
+    /// `child c: A(k: v)`: supervisor child keys are written in braces.
+    LegacyChildArgs,
+    /// `on E { a, b }:`: a transition head binds event fields in braces.
+    LegacyEventHead,
+    /// `spawn A {}`: an empty key list is written without braces.
+    EmptyKeyBraces,
+    /// `spawn A { ..base }`: an actor has no value to spread from.
+    SpawnBase,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -815,6 +828,8 @@ pub enum ParseDiagnosticKind {
     DuplicateRecordBase,
     /// A testing attribute has an invalid literal, arity or named argument.
     AttributeArgument,
+    DeferredDeclType,
+    DeferredDeclPattern,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -833,7 +848,13 @@ impl ParseDiagnosticKind {
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
+            Self::LegacyRaceBraces => "E_RACE_LEGACY_BRACES",
             Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
+            Self::LegacySpawnArgs => "E_SPAWN_PAREN_ARGS",
+            Self::LegacyChildArgs => "E_CHILD_PAREN_ARGS",
+            Self::LegacyEventHead => "E_EVENT_HEAD_PARENS",
+            Self::EmptyKeyBraces => "E_EMPTY_KEY_BRACES",
+            Self::SpawnBase => "E_SPAWN_BASE",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",
@@ -844,6 +865,8 @@ impl ParseDiagnosticKind {
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
             Self::ReservedName => "E_RESERVED_NAME",
             Self::AttributeArgument => "E_ATTRIBUTE_ARGUMENT",
+            Self::DeferredDeclType => "E_DEFERRED_DECL_TYPE",
+            Self::DeferredDeclPattern => "E_DEFERRED_DECL_PATTERN",
             Self::Other => "Other",
         }
     }

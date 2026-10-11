@@ -39,13 +39,13 @@ fn main() {
     };
     var i = 0;
     while i < READER_COUNT {
-        let r = spawn Reader(id: i, port: "18078");
+        let r = spawn Reader { id: i, port: "18078" };
         fork r.go(0);
         i = i + 1;
     }
     var accepted = 0;
     while accepted < READER_COUNT {
-        let client = listener.accept();
+        let client = listener.accept().expect("accept");
         let _ = client.send(f"payload-{accepted}".to_bytes());
         accepted = accepted + 1;
     }

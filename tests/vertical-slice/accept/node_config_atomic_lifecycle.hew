@@ -24,32 +24,40 @@ fn configured_at(bind: string) -> NodeConfig {
 }
 
 fn main() -> i64 {
+    match Node.connect("127.0.0.1:1") {
+        .Err(.Refused) => {}
+        _ => return 8,
+    }
     let initial = configured_at("127.0.0.1:0");
     if !starts(initial) {
         return 1;
     }
     Node.shutdown();
-    let invalid = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: key_path(), trust: "open", peers: Vec.new(), seeds: Vec.new() };
-    if starts(invalid) {
-        return 2;
+    let invalid = NodeConfig.at("127.0.0.1:0");
+    match Node.start(invalid) {
+        .Err(.Key) => {}
+        _ => return 2,
     }
     // Empty bind reaches the first managed-field rejection while later owned
     // strings and vectors are populated; consuming Node.start must release all.
-    let empty_bind = NodeConfig { bind: "", transport: "tcp", key: key_path(), trust: "pinned", peers: ["later-peer"], seeds: ["127.0.0.1:1"] };
-    if starts(empty_bind) {
-        return 7;
+    let empty_bind = NodeConfig { bind: "", transport: NodeTransport.Tcp, key: key_path(), peers: ["later-peer"], seeds: ["127.0.0.1:1"] };
+    match Node.start(empty_bind) {
+        .Err(.Config) => {}
+        _ => return 7,
     }
-    let failed_seed = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: key_path(), trust: "pinned", peers: Vec.new(), seeds: ["127.0.0.1:1"] };
-    if starts(failed_seed) {
-        return 3;
+    let failed_seed = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key_path(), peers: Vec.new(), seeds: ["127.0.0.1:1"] };
+    match Node.start(failed_seed) {
+        .Err(.Unreachable) => {}
+        _ => return 3,
     }
     let retry = configured_at("127.0.0.1:0");
     if !starts(retry) {
         return 4;
     }
     let repeated = configured_at("127.0.0.1:0");
-    if starts(repeated) {
-        return 5;
+    match Node.start(repeated) {
+        .Err(.Refused) => {}
+        _ => return 5,
     }
     Node.shutdown();
     let restart = configured_at("127.0.0.1:0");

@@ -37,8 +37,8 @@ actor Pinger {
 }
 
 fn main() {
-    let e = spawn Echo();
-    let p = spawn Pinger(echo: e);
+    let e = spawn Echo;
+    let p = spawn Pinger { echo: e };
     let _ = p.ping();
     // Every printed line is produced by the ping -> hear -> ack chain, which is
     // ordered by its own sends; runtime shutdown drains it to quiescence. A

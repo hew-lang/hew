@@ -18,8 +18,8 @@ actor Coordinator {
 }
 
 fn main() {
-    let w = spawn Worker(factor: 6);
-    let c = spawn Coordinator(worker: w);
+    let w = spawn Worker { factor: 6 };
+    let c = spawn Coordinator { worker: w };
     let r = c.run(7);
     match r {
         .Ok(v) => println(f"result={v}"),

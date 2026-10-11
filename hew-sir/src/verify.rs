@@ -3173,6 +3173,23 @@ fn verify_operation_shape(
     }
     let result = &operation.results[0];
     match &operation.kind {
+        SemOpKind::TaskRace { members, .. } => {
+            if members.is_empty()
+                || !matches!(&result.ty, ResolvedTy::Task(_))
+                || members.iter().any(|member| {
+                    types.get(&member.value).is_none_or(|ty| {
+                        *ty != result.ty && *ty != ResolvedTy::Task(Box::new(ResolvedTy::Never))
+                    })
+                })
+            {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "race requires homogeneous owned task handles".into(),
+                    diagnostics,
+                );
+            }
+        }
         SemOpKind::TaskSpawn { callable, .. } => {
             let valid = types.get(&callable.value).is_some_and(|ty| {
                 crate::callable_parts(ty).is_ok_and(|(params, output, caps)| {
@@ -4806,9 +4823,7 @@ fn failure_cfg_matches_exit(
             SemTerminator::Suspend {
                 kind:
                     crate::SuspendKind::Join {
-                        mode:
-                            crate::TaskScopeJoinMode::PropagateFault
-                            | crate::TaskScopeJoinMode::CancelLosersAfterFault,
+                        mode: crate::TaskScopeJoinMode::PropagateFault,
                         ..
                     },
                 resumes,

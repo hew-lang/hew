@@ -25,7 +25,7 @@ fn drive(w: Worker) -> Result<(), SendError> {
 }
 
 fn main() {
-    let w = spawn Worker();
+    let w = spawn Worker;
     match drive(w) {
         .Ok(_) => {}
         .Err(_) => panic("submission refused"),

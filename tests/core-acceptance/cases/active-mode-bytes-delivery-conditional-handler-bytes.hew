@@ -18,8 +18,8 @@ actor Router {
 }
 
 fn main() -> i64 {
-    let sink = spawn ProbeSink();
-    let router = spawn Router(sink: sink);
+    let sink = spawn ProbeSink;
+    let router = spawn Router { sink: sink };
     let _ = router.route(b"forward-owner", true);
     let _ = router.route(b"local-owner", false);
     println("DONE");

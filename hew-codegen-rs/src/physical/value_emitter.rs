@@ -3,6 +3,46 @@
 use super::*;
 
 impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
+    /// A zero-sized value has no memory to read, including in an enum payload.
+    /// Materialize it directly so sanitizers never probe an empty slot.
+    pub(super) fn load_value(
+        &self,
+        slot: PointerValue<'ctx>,
+        layout: &PhysicalLayout,
+        name: &str,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let ty = llvm_type(self.ctx, &layout.repr)?;
+        if layout.size == 0 {
+            return Ok(ty.const_zero());
+        }
+        self.builder
+            .build_load(ty, slot, name)
+            .llvm_ctx("load physical value")
+    }
+
+    /// Store the physical bytes only; callers still publish initialization.
+    pub(super) fn store_value(
+        &self,
+        slot: PointerValue<'ctx>,
+        layout: &PhysicalLayout,
+        value: BasicValueEnum<'ctx>,
+    ) -> CodegenResult<()> {
+        let expected = llvm_type(self.ctx, &layout.repr)?;
+        if value.get_type() != expected {
+            return Err(CodegenError::FailClosed(format!(
+                "physical value expects {}, received {}",
+                expected.print_to_string(),
+                value.get_type().print_to_string()
+            )));
+        }
+        if layout.size != 0 {
+            self.builder
+                .build_store(slot, value)
+                .llvm_ctx("store physical value")?;
+        }
+        Ok(())
+    }
+
     pub(super) fn invoke_value_callback(
         &self,
         frame: Option<&coro::Frame<'ctx>>,
@@ -112,9 +152,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     .into_struct_value();
             }
             let payload_ptr = self.variant_payload_ptr(object, layout)?;
-            self.builder
-                .build_store(payload_ptr, payload)
-                .llvm_ctx("store physical variant payload")?;
+            self.store_value(payload_ptr, payload_layout, payload.into())?;
         }
         if layout.is_indirect {
             self.builder
@@ -1098,9 +1136,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
                 let source_ptr = self.variant_payload_ptr(source, variant_layout)?;
                 let source_payload = self
-                    .builder
-                    .build_load(payload_ty, source_ptr, "variant.clone.payload")
-                    .llvm_ctx("load physical variant clone payload")?
+                    .load_value(source_ptr, payload_layout, "variant.clone.payload")?
                     .into_struct_value();
                 let mut destination_payload = payload_ty.get_undef();
                 for (field_index, field) in recipe.fields.iter().enumerate() {
@@ -1133,9 +1169,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         .into_struct_value();
                 }
                 let destination_ptr = self.variant_payload_ptr(destination, variant_layout)?;
-                self.builder
-                    .build_store(destination_ptr, destination_payload)
-                    .llvm_ctx("store cloned physical variant payload")?;
+                self.store_value(destination_ptr, payload_layout, destination_payload.into())?;
             }
             self.builder
                 .build_unconditional_branch(complete)
@@ -1224,12 +1258,9 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             let recipe = &glue.variants[index];
             if !recipe.fields.is_empty() {
                 let payload_layout = &variant_layout.variants[index];
-                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
                 let source_ptr = self.variant_payload_ptr(source, variant_layout)?;
                 let payload = self
-                    .builder
-                    .build_load(payload_ty, source_ptr, "variant.destroy.payload")
-                    .llvm_ctx("load physical variant destroy payload")?
+                    .load_value(source_ptr, payload_layout, "variant.destroy.payload")?
                     .into_struct_value();
                 for field_index in (0..recipe.fields.len()).rev() {
                     let field = &recipe.fields[field_index];

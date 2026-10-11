@@ -24,7 +24,7 @@ actor Selector {
 
 fn main() {
     let fast = spawn FastText;
-    let selector = spawn Selector(fast: fast);
+    let selector = spawn Selector { fast: fast };
     match selector.run(1) {
         .Ok(_) => println("unexpected"),
         .Err(_) => println("select-handled-crash"),

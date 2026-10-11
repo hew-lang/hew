@@ -215,6 +215,7 @@ fn loop_carried_moves(scope: &LoopScope) -> Vec<LoopCarriedMove> {
 pub struct Binding {
     /// Stable checker-local identity for this lexical binding.
     pub id: TypeBindingId,
+    pub(crate) value_candidates: crate::check::IndirectCallCandidates,
     /// The type of the bound value
     pub ty: Ty,
     /// Whether the binding is mutable (var vs let)
@@ -228,6 +229,7 @@ pub struct Binding {
     pub collection_borrow: Option<Span>,
     /// Whether the value has been moved (e.g., sent to an actor)
     pub is_moved: bool,
+    pub init_state: InitState,
     /// Where the move happened, for error reporting
     pub moved_at: Option<Span>,
     /// Strict sub-places of this binding consumed on the current path.
@@ -340,10 +342,14 @@ pub enum BindingOrigin {
     /// A method receiver parameter. Receivers have caller-visible write-back
     /// semantics and are exempt from ordinary by-value parameter guards.
     ReceiverParameter,
-    /// An actor state field that `init` owns (D447): it enters the init body
-    /// uninitialized, so `is_moved` means "not yet initialized" until the
-    /// first store, and every branch join must agree on it.
+    /// An actor state field initialized by its `init` body.
     DeferredField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitState {
+    Unassigned,
+    Assigned,
 }
 
 impl Binding {
@@ -384,16 +390,16 @@ impl Binding {
 /// erase reads and writes that genuinely happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipState {
+    pub(crate) value_candidates: crate::check::IndirectCallCandidates,
     /// Parameter places definitely replaced by private values on this path.
     pub parameter_replacements: Vec<PlacePath>,
     /// A non-copy value loaned by a collection, rather than owned by this binding.
     pub collection_borrow: Option<Span>,
     /// Whether the value has been moved on this path.
     pub is_moved: bool,
+    pub init_state: InitState,
     /// Where the move happened, for error reporting.
     pub moved_at: Option<Span>,
-    /// See [`Binding::deferred_init`].
-    pub deferred_init: bool,
     /// Strict sub-places consumed on this path.
     pub moved_places: Vec<MovedPlace>,
     /// Where the close obligation was discharged on this path.
@@ -536,6 +542,7 @@ pub struct TypeEnv {
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
     /// Active loop labels, lexical floors and entry ownership snapshots.
     loop_scope_floors: Vec<LoopScope>,
+    initialization_floors: Vec<usize>,
     /// The lexical floor of each active `scope within` body, outermost first.
     /// A task defined at or above a floor is cancelled by that deadline.
     deadline_scope_floors: Vec<usize>,
@@ -561,6 +568,7 @@ impl TypeEnv {
             scopes: vec![HashMap::new()],
             deferred_scopes: vec![Vec::new()],
             loop_scope_floors: Vec::new(),
+            initialization_floors: Vec::new(),
             deadline_scope_floors: Vec::new(),
             mutation_root: None,
             next_binding_id: 0,
@@ -810,12 +818,14 @@ impl TypeEnv {
                 name,
                 Binding {
                     id,
+                    value_candidates: crate::check::IndirectCallCandidates::unknown(),
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
                     parameter_replacements: Vec::new(),
                     collection_borrow: None,
                     is_moved: false,
+                    init_state: InitState::Assigned,
                     moved_at: None,
                     moved_places: Vec::new(),
                     consumed_at: None,
@@ -845,16 +855,65 @@ impl TypeEnv {
             .and_then(|scope| scope.get_mut(&name))
         {
             binding.origin = BindingOrigin::DeferredField;
-            binding.is_moved = true;
+            binding.init_state = InitState::Unassigned;
         }
+    }
+
+    pub(crate) fn mark_unassigned(&mut self, name: impl LexicalName) {
+        let name = name.lexical_key();
+        if let Some(binding) = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.get_mut(&name))
+        {
+            binding.init_state = InitState::Unassigned;
+        }
+    }
+
+    pub(crate) fn unassigned(&self, name: impl LexicalName) -> bool {
+        self.lookup_ref(name)
+            .is_some_and(|binding| binding.init_state == InitState::Unassigned)
+    }
+
+    pub(crate) fn first_store_allowed(&self, name: impl LexicalName) -> bool {
+        let Some((depth, _)) = self.lookup_ref_with_depth(name) else {
+            return false;
+        };
+        self.initialization_floors
+            .iter()
+            .all(|floor| depth >= *floor)
+            && self
+                .loop_scope_floors
+                .iter()
+                .all(|scope| depth >= scope.floor)
+    }
+
+    pub(crate) fn enter_initialization_boundary(&mut self) {
+        self.initialization_floors.push(self.depth());
+    }
+
+    pub(crate) fn exit_initialization_boundary(&mut self) {
+        self.initialization_floors
+            .pop()
+            .expect("initialization boundary is active");
+    }
+
+    pub(crate) fn initialization_conflicts(&self, ids: &[TypeBindingId]) -> Vec<(String, Binding)> {
+        self.scopes
+            .iter()
+            .flat_map(HashMap::iter)
+            .filter(|(_, binding)| ids.contains(&binding.id))
+            .map(|(name, binding)| (name.to_string(), binding.clone()))
+            .collect()
     }
 
     /// Whether `name` is a deferred init field still awaiting its first store.
     #[must_use]
     pub fn deferred_field_uninitialized(&self, name: impl LexicalName) -> bool {
         let name = name.lexical_key();
-        self.lookup_ref(name)
-            .is_some_and(|binding| binding.deferred_init() && binding.is_moved)
+        self.lookup_ref(name).is_some_and(|binding| {
+            binding.deferred_init() && binding.init_state == InitState::Unassigned
+        })
     }
 
     /// The binding id of `name` when it is a deferred init field.
@@ -881,12 +940,14 @@ impl TypeEnv {
                 name,
                 Binding {
                     id,
+                    value_candidates: crate::check::IndirectCallCandidates::unknown(),
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
                     parameter_replacements: Vec::new(),
                     collection_borrow: None,
                     is_moved: false,
+                    init_state: InitState::Assigned,
                     moved_at: None,
                     moved_places: Vec::new(),
                     consumed_at: None,
@@ -978,12 +1039,14 @@ impl TypeEnv {
                 name,
                 Binding {
                     id,
+                    value_candidates: crate::check::IndirectCallCandidates::unknown(),
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
                     parameter_replacements: Vec::new(),
                     collection_borrow: None,
                     is_moved: false,
+                    init_state: InitState::Assigned,
                     moved_at: None,
                     moved_places: Vec::new(),
                     consumed_at: None,
@@ -1011,6 +1074,7 @@ impl TypeEnv {
     ) -> Self {
         let mut environment = self.clone();
         environment.loop_scope_floors.clear();
+        environment.enter_initialization_boundary();
         // A closure body may run after the enclosing deadline scope has ended.
         environment.deadline_scope_floors.clear();
         environment.mutation_root = None;
@@ -1198,6 +1262,7 @@ impl TypeEnv {
                 if path.is_empty() {
                     binding.collection_borrow = None;
                     binding.is_moved = false;
+                    binding.init_state = InitState::Assigned;
                     binding.moved_at = None;
                     // A fresh value carries a fresh close obligation.
                     binding.released_at = None;
@@ -1250,11 +1315,12 @@ impl TypeEnv {
                 states.insert(
                     binding.id,
                     OwnershipState {
+                        value_candidates: binding.value_candidates.clone(),
                         parameter_replacements: binding.parameter_replacements.clone(),
                         collection_borrow: binding.collection_borrow.clone(),
                         is_moved: binding.is_moved,
+                        init_state: binding.init_state,
                         moved_at: binding.moved_at.clone(),
-                        deferred_init: binding.deferred_init(),
                         moved_places: binding.moved_places.clone(),
                         released_at: binding.released_at.clone(),
                         loop_fresh: binding.loop_fresh.clone(),
@@ -1331,8 +1397,12 @@ impl TypeEnv {
             // Joining only reaching exits lets every arm repair a moved field.
             let mut state = reaching.next().unwrap_or(entry_state).clone();
             for exit_state in reaching {
-                if state.deferred_init && exit_state.is_moved != state.is_moved {
+                state
+                    .value_candidates
+                    .join(exit_state.value_candidates.clone());
+                if exit_state.init_state != state.init_state {
                     conflicts.push(*id);
+                    state.init_state = InitState::Unassigned;
                 }
                 state.parameter_replacements = common_parameter_replacements(
                     &state.parameter_replacements,
@@ -1376,6 +1446,7 @@ impl TypeEnv {
         for scope in scopes.iter_mut() {
             for binding in scope.values_mut() {
                 if let Some(state) = states.get(&binding.id) {
+                    binding.value_candidates.clone_from(&state.value_candidates);
                     binding
                         .parameter_replacements
                         .clone_from(&state.parameter_replacements);
@@ -1383,6 +1454,7 @@ impl TypeEnv {
                         .collection_borrow
                         .clone_from(&state.collection_borrow);
                     binding.is_moved = state.is_moved;
+                    binding.init_state = state.init_state;
                     binding.moved_at.clone_from(&state.moved_at);
                     binding.moved_places.clone_from(&state.moved_places);
                     binding.released_at.clone_from(&state.released_at);
@@ -1688,6 +1760,33 @@ impl TypeEnv {
             .iter()
             .rev()
             .flat_map(|scope| scope.keys().map(|key| key.name))
+    }
+
+    pub(crate) fn value_candidates(
+        &self,
+        id: TypeBindingId,
+    ) -> Option<&crate::check::IndirectCallCandidates> {
+        self.binding_by_id(id)
+            .map(|binding| &binding.value_candidates)
+    }
+
+    pub(crate) fn set_value_candidates(
+        &mut self,
+        id: TypeBindingId,
+        candidates: crate::check::IndirectCallCandidates,
+    ) {
+        if let Some(binding) = self
+            .scopes
+            .iter_mut()
+            .flat_map(HashMap::values_mut)
+            .find(|binding| binding.id == id)
+        {
+            binding.value_candidates = candidates;
+        }
+    }
+
+    pub(crate) fn visible_bindings(&self) -> impl Iterator<Item = &Binding> {
+        self.scopes.iter().flat_map(HashMap::values)
     }
 
     /// Yield `(name, binding id)` for every binding in the innermost (current)

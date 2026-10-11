@@ -6,7 +6,7 @@ actor Greeter {
 }
 
 fn main() -> i64 {
-    let g = spawn Greeter(name: "widget");
+    let g = spawn Greeter { name: "widget" };
     var i: i64 = 0;
     var sink: i64 = 0;
     while i < 50 {

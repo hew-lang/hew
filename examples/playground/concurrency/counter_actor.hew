@@ -11,7 +11,7 @@ actor Counter {
 }
 
 fn main() {
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter { count: 0 };
     // Statement-position match is not yet sandbox-admitted, so the first two
     // replies are discarded deliberately and the last is an expression match
     // (-1 marks a failed ask).

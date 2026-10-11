@@ -14,7 +14,7 @@ fn node_register_accepts_an_actor_handle() {
 }
 
 fn main() {
-    let pid = spawn Worker(n: 0);
+    let pid = spawn Worker { n: 0 };
     Node.register("worker", pid);
 }
 "#,
@@ -59,7 +59,7 @@ fn node_register_rejects_remote_pid() {
 }
 
 fn main() {
-    let pid = spawn Worker(n: 0);
+    let pid = spawn Worker { n: 0 };
     let remote: RemotePid<Worker> = pid;
     Node.register("worker", remote);
 }
@@ -84,7 +84,7 @@ fn node_register_result_eq_zero_typechecks() {
 }
 
 fn main() {
-    let pid = spawn Worker(n: 0);
+    let pid = spawn Worker { n: 0 };
     let ok: bool = Node.register("worker", pid) == 0;
 }
 "#,

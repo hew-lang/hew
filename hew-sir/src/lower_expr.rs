@@ -99,25 +99,39 @@ impl Builder<'_, '_> {
                 self.emit(expr, SemOpKind::ConstUnit)
             }
             HirExprKind::Closure { .. } => self.lower_closure(expr),
-            HirExprKind::ForkBlock { body, captures, .. } => {
-                self.lower_fork_block(expr, body, captures)
-            }
+            HirExprKind::ForkBlock {
+                body,
+                captures,
+                result_lifetime,
+                ..
+            } => self.lower_fork_block(expr, body, captures, *result_lifetime),
             HirExprKind::AwaitTask { operand, .. } => match self.lower_task_await(expr, operand)? {
                 Some(value) => Ok(value),
                 None => self.emit(expr, SemOpKind::ConstUnit),
             },
-            HirExprKind::Race { body } => match self.lower_race(body, true)? {
-                Some(value) => Ok(value),
-                None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
-                None => Err("divergent race cannot produce a SIR value".into()),
-            },
-            HirExprKind::Scope { body } => match self.lower_task_scope(body, true)? {
+            HirExprKind::TaskRace {
+                members,
+                result_lifetime,
+            } => self.lower_task_race(expr, members, *result_lifetime),
+            HirExprKind::Scope {
+                body,
+                result_lifetime,
+            } => match self.lower_task_scope(body, *result_lifetime, true)? {
                 Some(value) => Ok(value),
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent scope cannot produce a SIR value".into()),
             },
-            HirExprKind::ScopeDeadline { duration, body } => {
-                match self.lower_task_scope_with_deadline(body, Some(duration), true)? {
+            HirExprKind::ScopeDeadline {
+                duration,
+                body,
+                result_lifetime,
+            } => {
+                match self.lower_task_scope_with_deadline(
+                    body,
+                    Some(duration),
+                    *result_lifetime,
+                    true,
+                )? {
                     Some(value) => Ok(value),
                     None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                     None => Err("divergent scope cannot produce a SIR value".into()),

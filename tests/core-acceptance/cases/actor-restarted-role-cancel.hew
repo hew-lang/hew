@@ -23,7 +23,7 @@ fn main() {
     let app = spawn App;
     let _ = app.worker.fail();
     restarted(app.worker);
-    let observer = spawn Observer();
+    let observer = spawn Observer;
     mailbox(observer).watch(app.worker).expect("observe");
     sleep(20ms);
     terminate(observer);

@@ -28,7 +28,7 @@ actor Echo {
 }
 
 fn main() {
-    let echo = spawn Echo();
+    let echo = spawn Echo;
     for i in 0..3 {
         print(f"main {i} ");
         println(1.5);

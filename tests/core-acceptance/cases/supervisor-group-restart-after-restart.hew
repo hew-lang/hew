@@ -23,9 +23,9 @@ supervisor App {
     strategy: rest_for_one;
     intensity: 10 within 60s;
 
-    child a: Worker(name: "a");
-    child b: Worker(name: "b");
-    child c: Worker(name: "c");
+    child a: Worker { name: "a" };
+    child b: Worker { name: "b" };
+    child c: Worker { name: "c" };
 }
 
 fn main() {

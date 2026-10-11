@@ -49,7 +49,7 @@ fn main() {
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
     let peer = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-    let server = listener.accept();
+    let server = listener.accept().expect("accept");
     let (input, sink) = server.split();
     sink.close();
     input.close();

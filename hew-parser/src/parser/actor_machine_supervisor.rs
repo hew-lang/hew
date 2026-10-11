@@ -166,7 +166,7 @@ impl Parser<'_> {
             } else if self.peek() == Some(&Token::Let) {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
-                let field_name = self.expect_ident()?;
+                let (field_name, name_span) = self.expect_ident_spanned()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
                 let default = if self.eat(&Token::Equal) {
@@ -177,6 +177,7 @@ impl Parser<'_> {
                 self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
+                    name_span,
                     ty,
                     is_mutable: false,
                     default,
@@ -186,7 +187,7 @@ impl Parser<'_> {
             } else if self.peek() == Some(&Token::Var) {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
-                let field_name = self.expect_ident()?;
+                let (field_name, name_span) = self.expect_ident_spanned()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
                 let default = if self.eat(&Token::Equal) {
@@ -197,6 +198,7 @@ impl Parser<'_> {
                 self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
+                    name_span,
                     ty,
                     is_mutable: true,
                     default,
@@ -230,7 +232,7 @@ impl Parser<'_> {
                     "insert `let ` before the field",
                     ParseDiagnosticKind::ActorFieldBinding,
                 );
-                let field_name = self.expect_ident()?;
+                let (field_name, name_span) = self.expect_ident_spanned()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
                 let default = if self.eat(&Token::Equal) {
@@ -241,6 +243,7 @@ impl Parser<'_> {
                 self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
+                    name_span,
                     ty,
                     is_mutable: false,
                     default,
@@ -589,30 +592,75 @@ impl Parser<'_> {
         }
     }
 
+    /// The field names a transition head binds: `{ a, b }`, or the retired
+    /// `(a, b)`, which recovers to the same names with a fix-it.
+    fn parse_event_head_bindings(
+        &mut self,
+        rule_start: usize,
+        event_name: Ident,
+    ) -> Option<Vec<Ident>> {
+        let legacy = self.peek() == Some(&Token::LeftParen);
+        let close_token = if legacy {
+            Token::RightParen
+        } else {
+            Token::RightBrace
+        };
+        let open = self.peek_span();
+        self.advance();
+        let mut binds = Vec::new();
+        while !self.at_end() && self.peek() != Some(&close_token) {
+            binds.push(self.expect_ident()?);
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        let close = self.peek_span();
+        self.expect(&close_token)?;
+        let names = binds
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if legacy {
+            let fix = if binds.is_empty() {
+                format!("on {event_name}:")
+            } else {
+                format!("on {event_name} {{ {names} }}:")
+            };
+            self.error_at_with_kind_and_hint(
+                "a transition head binds event fields in braces".to_string(),
+                open.start..close.end,
+                format!("write `{fix}`"),
+                ParseDiagnosticKind::LegacyEventHead,
+            );
+        } else if binds.is_empty() {
+            self.error_at_with_kind_and_hint(
+                "an empty field list is written without braces".to_string(),
+                rule_start..close.end,
+                format!("write `on {event_name}:`"),
+                ParseDiagnosticKind::EmptyKeyBraces,
+            );
+        }
+        Some(binds)
+    }
+
     /// Parse a single `on …` machine transition (the new `=>` / `reenter`
-    /// surface, with optional `on E(bindings):` head binding). Used both at the
+    /// surface, with optional `on E { bindings }:` head binding). Used both at the
     /// top level of a machine body and inside composite blocks.
     pub(crate) fn parse_machine_transition(&mut self) -> Option<MachineTransition> {
         let rule_start = self.peek_span().start;
         self.expect(&Token::On)?;
         let event_name = self.expect_ident()?;
 
-        // Optional head binding: `on E(a, b): …`. The names alias the event's
-        // payload fields so the body can reference them directly instead of
-        // `event.field`. Threaded into the body as a let-binding prelude by
-        // `apply_event_head_bindings`.
-        let head_bindings = if self.eat(&Token::LeftParen) {
-            let mut binds = Vec::new();
-            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                binds.push(self.expect_ident()?);
-                if !self.eat(&Token::Comma) {
-                    break;
-                }
+        // Optional head binding: `on E { a, b }: …`. The names alias the
+        // event's payload fields so the body can reference them directly
+        // instead of `event.field`. Threaded into the body as a let-binding
+        // prelude by `apply_event_head_bindings`.
+        let head_bindings = match self.peek() {
+            Some(Token::LeftBrace | Token::LeftParen) => {
+                self.parse_event_head_bindings(rule_start, event_name)?
             }
-            self.expect(&Token::RightParen)?;
-            binds
-        } else {
-            Vec::new()
+            _ => Vec::new(),
         };
 
         self.expect(&Token::Colon)?;
@@ -627,7 +675,7 @@ impl Parser<'_> {
         } = target;
 
         // Optional `reenter` contextual keyword (self-transition Mealy
-        // re-entry). Grammar slot: `on E(b): Src => Tgt reenter [when g] [body]`.
+        // re-entry). Grammar slot: `on E { b }: Src => Tgt reenter [when g] [body]`.
         let reenter = self.eat_machine_kw("reenter");
 
         // Optional guard: `when <expr>`. A guard shares the `if`/`while`
@@ -1083,7 +1131,7 @@ impl Parser<'_> {
         transition.body.0 = Expr::Block(block);
     }
 
-    /// Rewrite a transition body so the named head bindings (`on E(a, b): …`)
+    /// Rewrite a transition body so the named head bindings (`on E { a, b }: …`)
     /// are in scope as `let a = event.a; let b = event.b;` prelude statements.
     /// This lowers identically to writing `event.a` directly — no new HIR kind.
     pub(crate) fn apply_event_head_bindings(
@@ -1393,65 +1441,13 @@ impl Parser<'_> {
                         Vec::new()
                     };
 
-                    // Parse named init args: `child w: Worker(field: expr, ...)`.
-                    // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
-                    // Positional args (no `name:` prefix) are rejected with a migration
-                    // diagnostic to guide users to the named form.
-                    let mut args: Vec<(Ident, Spanned<Expr>)> = Vec::new();
-                    if self.eat(&Token::LeftParen) {
-                        while !self.at_end() && !matches!(self.peek(), Some(Token::RightParen)) {
-                            // Try to parse `ident_or_kw: expr` (named form). Speculatively
-                            // consume the potential field name; if a `:` follows, commit.
-                            // If no `:` follows, it's a positional arg — reject it.
-                            let saved = self.save_pos();
-                            let maybe_field = self.expect_ident();
-                            if let Some(field_name) = maybe_field {
-                                if !matches!(self.peek(), Some(Token::Colon)) {
-                                    // Ident not followed by `:` — positional arg.
-                                    self.restore_pos(saved);
-                                    self.error(
-                                        "supervisor child init args must use named form: \
-                                         `child w: Worker(field: value)` \
-                                         — positional args are not accepted"
-                                            .to_string(),
-                                    );
-                                    while !self.at_end()
-                                        && !matches!(self.peek(), Some(Token::RightParen))
-                                    {
-                                        self.advance();
-                                    }
-                                    break;
-                                }
-                                // Named form confirmed: `field_name: expr`.
-                                self.expect(&Token::Colon)?;
-                                let value = self.parse_expr()?;
-                                args.push((field_name, value));
-                            } else {
-                                // Either the ident parse failed or no `:` follows — positional.
-                                self.restore_pos(saved);
-                                self.error(
-                                    "supervisor child init args must use named form: \
-                                     `child w: Worker(field: value)` \
-                                     — positional args are not accepted"
-                                        .to_string(),
-                                );
-                                // Consume through to `)` for error recovery.
-                                while !self.at_end()
-                                    && !matches!(self.peek(), Some(Token::RightParen))
-                                {
-                                    self.advance();
-                                }
-                                break;
-                            }
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&Token::RightParen)?;
-                    }
+                    let (mut args, mut arg_labels) = self.parse_construction_keys(
+                        child_start,
+                        ParseDiagnosticKind::LegacyChildArgs,
+                    )?;
 
                     // Pool arity is a clause, not an init field, so a `count:`
-                    // entry in the parenthesised list is the actor's own field.
+                    // key in the braces is the actor's own field.
                     // On a pool child with no arity clause it is instead the
                     // retired arity spelling; the decision needs the clause
                     // loop's result, so remember the position for now.
@@ -1602,7 +1598,7 @@ impl Parser<'_> {
                                          has no arity"
                                             .to_string(),
                                         format!(
-                                            "write `pool {child_name}: {actor_type}(..) \
+                                            "write `pool {child_name}: {actor_type} \
                                              count: N;` to declare a pool, or drop `count:`"
                                         ),
                                     );
@@ -1621,14 +1617,15 @@ impl Parser<'_> {
                     if is_pool && count.is_none() {
                         if let Some(pos) = paren_count_pos {
                             let (_, count_expr) = args.remove(pos);
+                            arg_labels.remove(pos);
                             self.error_at_with_hint(
                                 "pool arity is a child clause, not an init field: \
-                                 `count:` in the init-arg list is no longer the arity"
+                                 a `count:` key is no longer the arity"
                                     .to_string(),
                                 count_expr.1.clone(),
                                 format!(
-                                    "write `pool {child_name}: {actor_type}(..) count: N;` \
-                                     — the parenthesised list is the actor's own fields"
+                                    "write `pool {child_name}: {actor_type} {{ .. }} count: N;` \
+                                     — the braces hold the actor's own fields"
                                 ),
                             );
                             // Carry the expr into the clause slot regardless:
@@ -1645,6 +1642,7 @@ impl Parser<'_> {
                         actor_type,
                         type_args,
                         args,
+                        arg_labels,
                         restart,
                         wired_to,
                         is_pool,

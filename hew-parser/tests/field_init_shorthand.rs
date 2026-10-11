@@ -54,7 +54,7 @@ fn mixed_shorthand_and_update_desugar() {
 fn variant_spawn_and_emit_shorthand_desugar() {
     let body = |radius: &str, port: &str| {
         format!(
-            "{TYPES}fn f(radius: f64, port: i64) {{\n    let a = Shape.Circle {{ {radius} }};\n    let b: Shape = .Circle {{ {radius} }};\n    let w = spawn Worker({port});\n    emit Ping {{ {port} }};\n}}\n"
+            "{TYPES}fn f(radius: f64, port: i64) {{\n    let a = Shape.Circle {{ {radius} }};\n    let b: Shape = .Circle {{ {radius} }};\n    let w = spawn Worker {{ {port} }};\n    emit Ping {{ {port} }};\n}}\n"
         )
     };
     assert_desugars(
@@ -66,7 +66,7 @@ fn variant_spawn_and_emit_shorthand_desugar() {
 #[test]
 fn fmt_keeps_shorthand_and_explicit_as_written() {
     assert_fmt_preserves(&format!(
-        "{TYPES}fn f(host: string, port: i64, old: Config, radius: f64) {{\n    let a = Config {{ host, port: port }};\n    let b = Config {{ ..old, port }};\n    let c: Shape = .Circle {{ radius }};\n    let d = Shape.Circle {{ radius: radius }};\n    let w = spawn Worker(port);\n    emit Ping {{ port, host: host }};\n}}\n"
+        "{TYPES}fn f(host: string, port: i64, old: Config, radius: f64) {{\n    let a = Config {{ host, port: port }};\n    let b = Config {{ ..old, port }};\n    let c: Shape = .Circle {{ radius }};\n    let d = Shape.Circle {{ radius: radius }};\n    let w = spawn Worker {{ port }};\n    emit Ping {{ port, host: host }};\n}}\n"
     ));
 }
 

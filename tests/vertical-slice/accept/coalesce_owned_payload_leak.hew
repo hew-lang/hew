@@ -33,7 +33,7 @@ actor OwnedCoalescer {
 fn main() -> i64 {
     let (ready_tx, ready) = stream.pipe(1).expect("ready");
     let (open, gate) = stream.pipe(1).expect("gate");
-    let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1, ready: ready_tx, gate: gate);
+    let worker = spawn OwnedCoalescer { processed: 0, latest_len: -1, ready: ready_tx, gate: gate };
     mailbox(worker).update(0, "active", true).expect("submit");
     ready.recv();
     mailbox(worker).update(9, "one", false).expect("submit");

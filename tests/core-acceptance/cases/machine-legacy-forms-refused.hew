@@ -50,7 +50,7 @@ machine Log {
     state Empty;
     state Filled { items: Vec<i64>; }
 
-    on Append(item): Empty => Filled { Filled { items: [item] } }
+    on Append { item }: Empty => Filled { Filled { items: [item] } }
     on Append: Filled => Filled reenter { ..state }
 }
 

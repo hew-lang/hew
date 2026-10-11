@@ -97,7 +97,7 @@ actor ValueWorker {
 
 #[test]
 fn _value_task_await_binds_i64_result() {
-    let w = spawn ValueWorker(acc: 0);
+    let w = spawn ValueWorker { acc: 0 };
     match w.run_i64() {
         .Ok(n) => assert(n == 42),
         .Err(_) => assert(false),
@@ -106,7 +106,7 @@ fn _value_task_await_binds_i64_result() {
 
 #[test]
 fn _value_task_await_binds_string_result() {
-    let w = spawn ValueWorker(acc: 0);
+    let w = spawn ValueWorker { acc: 0 };
     match w.run_string() {
         .Ok(s) => assert(s == "forty-two"),
         .Err(_) => assert(false),
@@ -115,7 +115,7 @@ fn _value_task_await_binds_string_result() {
 
 #[test]
 fn _value_task_await_binds_record_result() {
-    let w = spawn ValueWorker(acc: 0);
+    let w = spawn ValueWorker { acc: 0 };
     match w.run_pair() {
         .Ok(n) => assert(n == 7),
         .Err(_) => assert(false),
@@ -124,7 +124,7 @@ fn _value_task_await_binds_record_result() {
 
 #[test]
 fn _two_value_awaits_in_one_handler_resume_in_order() {
-    let w = spawn ValueWorker(acc: 0);
+    let w = spawn ValueWorker { acc: 0 };
     match w.run_twice() {
         .Ok(n) => assert(n == 84),
         .Err(_) => assert(false),

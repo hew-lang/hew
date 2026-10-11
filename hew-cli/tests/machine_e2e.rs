@@ -400,7 +400,7 @@ fn emits_fixture() -> &'static str {
 /// satisfies exhaustiveness, which generic machines are checked for like any
 /// other.
 fn generic_fixture() -> &'static str {
-    "machine Box<T> {\n    events {\n        Put { value: T; }\n        Take;\n    }\n    state Empty;\n    state Full { value: T; }\n    on Put(value): Empty => Full { value: value }\n    on Take: Full => Empty;\n    default { state }\n}\n"
+    "machine Box<T> {\n    events {\n        Put { value: T; }\n        Take;\n    }\n    state Empty;\n    state Full { value: T; }\n    on Put { value }: Empty => Full { value: value }\n    on Take: Full => Empty;\n    default { state }\n}\n"
 }
 
 // ── fix 1: `has_default` arm visible in all renderers ────────────────────────

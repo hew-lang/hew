@@ -87,13 +87,13 @@ fn main() {
     // Create coordinator
     let empty_names: Vec<string> = Vec.new();
     let empty_totals: Vec<i64> = Vec.new();
-    let coord = spawn Coordinator(replica_names: empty_names, replica_totals: empty_totals, global_total: 0, sync_count: 0);
+    let coord = spawn Coordinator { replica_names: empty_names, replica_totals: empty_totals, global_total: 0, sync_count: 0 };
     // Create process-local replicas (a production deployment could place them
     // on separate nodes after adding the distributed message protocol).
     // Node.start("0.0.0.0:9000");
-    let r1 = spawn Replica(name: "node-1", coordinator: coord, local_count: 0);
-    let r2 = spawn Replica(name: "node-2", coordinator: coord, local_count: 0);
-    let r3 = spawn Replica(name: "node-3", coordinator: coord, local_count: 0);
+    let r1 = spawn Replica { name: "node-1", coordinator: coord, local_count: 0 };
+    let r2 = spawn Replica { name: "node-2", coordinator: coord, local_count: 0 };
+    let r3 = spawn Replica { name: "node-3", coordinator: coord, local_count: 0 };
     // Node.register("counter-1", r1); // for a RemotePid-based deployment
 
     // Register replicas with coordinator

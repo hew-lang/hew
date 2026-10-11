@@ -127,7 +127,7 @@ fn linear_transferred_to_ask_handler_is_redeemed_there() {
 fn distinct_resources_across_select_arms_each_transfer_once() {
     let sink = spawn TestSink;
     let other = spawn TestSink;
-    let racer = spawn Racer(left: sink, right: other);
+    let racer = spawn Racer { left: sink, right: other };
     // Both arm sources run; whichever reply wins must carry one of the two
     // fds, never the deadline sentinel and never a crossed value.
     match racer.run_pair() {
@@ -187,8 +187,8 @@ fn one_actor_reference_shared_by_two_peers_still_runs() {
     // nothing. Handing one leaf to two peers must keep compiling AND running,
     // and the caller must still be able to use its own handle afterwards.
     let leaf = spawn Leaf;
-    let a = spawn Peer(leaf: leaf);
-    let b = spawn Peer(leaf: leaf);
+    let a = spawn Peer { leaf: leaf };
+    let b = spawn Peer { leaf: leaf };
     match a.relay(5) {
         .Ok(v) => assert(v == 5),
         .Err(_) => assert(false),

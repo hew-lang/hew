@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-consume-identity"
+intent = "A generic consume parameter returns its resource owner to the caller, where the explicit close runs once."
+source = "../../docs/repros/final-core/own-generic-identity-transfer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "closing token id=99\n"
+exit = 0

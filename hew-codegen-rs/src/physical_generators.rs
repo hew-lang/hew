@@ -141,7 +141,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let invalid = self
             .ctx
             .append_basic_block(self.value, "generator.yield.invalid.destroy");
-        frame.suspend(self.ctx, self.llvm, &self.builder, resume, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, resume, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_generator_destroy()?;
         self.builder.position_at_end(resume);
@@ -288,6 +288,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let handle = self.load(*generator, "generator.receiver")?;
         let frame = self.generator_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
+        frame.carry(self.ctx, &self.builder, handle, "generator.receiver.slot")?;
         let option = self
             .module
             .variant_glue
@@ -351,7 +352,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("dispatch checked generator outcome")?;
         self.builder.position_at_end(wait);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, invalid)?;
         self.builder.position_at_end(invalid);
         self.reject_generator_destroy()?;
         self.builder.position_at_end(yielded);

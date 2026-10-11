@@ -14,10 +14,10 @@ fn succeeds(gate: stream.Stream<i64>) -> Result<i64, string> {
 
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    let result = race {
+    let result = await race [
         fails(),
         succeeds(gate),
-    };
+    ];
     match result {
         .Ok(value) => println("ok " + to_string(value)),
         .Err(message) => println("err " + message),

@@ -91,14 +91,27 @@ impl NativeActorCompletion {
 /// The caller owns terminal cleanup or the completed scheduler activation. No
 /// checked frame may still borrow the state. Other calls only observe the claim.
 pub(crate) unsafe fn finish_native_terminal(actor: &HewActor) {
+    if actor.actor_state.load(Ordering::Acquire) == HewActorState::Stopped as i32
+        && !actor.terminate_finished.load(Ordering::Acquire)
+    {
+        return;
+    }
+    // SAFETY: termination is complete or the actor crashed without a stop callback.
+    unsafe { finish_native_terminal_after_terminate(actor) };
+}
+
+/// Finish while the terminate owner still retains the actor allocation.
+///
+/// # Safety
+/// The caller retains the allocation and has completed or skipped its terminate
+/// callback. No checked turn may still borrow the state.
+pub(crate) unsafe fn finish_native_terminal_after_terminate(actor: &HewActor) {
     let Some(completion) = &actor.native_completion else {
         return;
     };
     let state = actor.actor_state.load(Ordering::Acquire);
     if !matches!(state, s if s == HewActorState::Stopped as i32 || s == HewActorState::Crashed as i32)
         || !actor.checked_invocation.load(Ordering::Acquire).is_null()
-        || (state == HewActorState::Stopped as i32
-            && !actor.terminate_finished.load(Ordering::Acquire))
         || completion
             .phase
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)

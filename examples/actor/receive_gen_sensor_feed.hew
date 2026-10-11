@@ -29,7 +29,7 @@ actor SensorFeed {
 }
 
 fn main() {
-    let sensor = spawn SensorFeed(start_offset: 0);
+    let sensor = spawn SensorFeed { start_offset: 0 };
     for reading in sensor.readings(3) {
         println(f"reading: {reading}");
     }

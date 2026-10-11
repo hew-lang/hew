@@ -39,7 +39,7 @@ const FIXTURES: &[(&str, &str)] = &[
     fixture!("v05_extern_unsafe"),
     fixture!("v05_generators"),
     fixture!("v05_impl_where_clause"),
-    fixture!("v05_index_trait"),
+    fixture!("v05_index_trait_reject"),
     fixture!("v05_is_operator"),
     fixture!("v05_link_monitor"),
     fixture!("v05_machine_generics"),
@@ -73,7 +73,7 @@ const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // accepted (intentional type error): `obj[key]` on a type that does not
     // implement Indexable — type error by design, exercising error-recovery in
     // the index-expression checker.
-    "v05_index_trait",
+    "v05_index_trait_reject",
     // accepted (intentional type error): `machine Boxed<T>` declares only one
     // state (`Idle`); the type checker requires at least two states per machine.
     // The fixture exercises generic machine syntax, not exhaustive state coverage.

@@ -23,7 +23,7 @@ fn expr_contains_remote_actor_ask(expr: &HirExpr) -> bool {
             matches!(reply_ty, hew_types::ResolvedTy::I64)
         }
         HirExprKind::Block(block)
-        | HirExprKind::Scope { body: block }
+        | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => block_contains_remote_actor_ask(block),
         HirExprKind::Call { callee, args, .. } => {
@@ -119,7 +119,7 @@ fn spawn_expr_type_is_the_actor_handle() {
 }
 
 fn main() {
-    let c = spawn Counter(n: 0);
+    let c = spawn Counter { n: 0 };
 }
 ";
     let (tc, _lower) = lower_with_types(source);
@@ -182,7 +182,7 @@ fn hir_module_has_main() {
 }
 
 fn main() {
-    let _f = spawn Foo(v: 0);
+    let _f = spawn Foo { v: 0 };
 }
 ";
     let (_tc, lower) = lower_with_types(source);
@@ -213,8 +213,7 @@ impl ActorMsg for Worker {
     type Reply = i64;
 }
 
-fn main() {
-    let remote: RemotePid<Worker>;
+fn use_remote(remote: RemotePid<Worker>) {
     let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
 }
 ";
@@ -229,10 +228,10 @@ fn main() {
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Function(f) if f.name == "main" => Some(f),
+            HirItem::Function(f) if f.name == "use_remote" => Some(f),
             _ => None,
         })
-        .expect("main function should lower");
+        .expect("remote function should lower");
     assert!(
         block_contains_remote_actor_ask(&main.body),
         "RemotePid.ask should lower to HirExprKind::RemoteActorAsk: {main:#?}"

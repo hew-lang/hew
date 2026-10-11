@@ -7,13 +7,21 @@
 
 use hew_parser::ast::{Item, RecordKind, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
-use hew_types::check::scope::Resolution;
+use hew_types::check::scope::{Binding, Resolution};
 use hew_types::check::SpanKey;
 use hew_types::TypeCheckOutput;
 use hew_types::{DeclarationKind, DeclarationOccurrence};
 use std::path::PathBuf;
 
 use crate::OffsetSpan;
+
+/// Recover source identities even when imports or types produce diagnostics.
+#[must_use]
+pub fn source_identities(parsed: &ParseResult) -> TypeCheckOutput {
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
+    checker.check_program(&parsed.program)
+}
 
 /// The checker resolution whose source segment contains `offset`.
 ///
@@ -182,6 +190,45 @@ pub fn field_declaration_at(
         }
     }
     None
+}
+
+/// The checked identity of a declaration token in the root source.
+#[must_use]
+pub fn declaration_at(
+    output: &TypeCheckOutput,
+    source: &str,
+    parsed: &ParseResult,
+    offset: usize,
+) -> Option<(OffsetSpan, Resolution)> {
+    if let Some(field) = field_declaration_at(output, source, parsed, offset) {
+        return Some(field);
+    }
+    output.defs.ids().find_map(|id| {
+        let resolution = match Binding::of_item(&output.defs, id) {
+            Some(Binding::Type(owner) | Binding::Actor(owner)) => Resolution::Nominal(owner),
+            Some(
+                Binding::Fn(id) | Binding::Const(id) | Binding::Trait(id) | Binding::Predicate(id),
+            ) => Resolution::Def(id),
+            None if matches!(
+                output.defs.kind(id),
+                DeclarationKind::ActorReceive
+                    | DeclarationKind::ActorMethod
+                    | DeclarationKind::TypeMethod
+                    | DeclarationKind::ImplMethod
+                    | DeclarationKind::TraitMethod
+            ) =>
+            {
+                Resolution::Member(id)
+            }
+            Some(Binding::Module(_) | Binding::Builtin(_)) | None => return None,
+        };
+        let target = declaration_target(output, resolution)?;
+        if target.occurrence.module() != output.defs.root_module() {
+            return None;
+        }
+        let span = declaration_name_span(source, parsed, &target)?;
+        (span.start <= offset && offset <= span.end).then_some((span, resolution))
+    })
 }
 
 /// A checker-owned declaration, with its physical source when available.

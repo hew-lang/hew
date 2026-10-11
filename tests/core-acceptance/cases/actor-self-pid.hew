@@ -28,9 +28,9 @@ actor Registry {
 }
 
 fn main() {
-    let decoy = spawn Worker(name: "decoy");
-    let registry = spawn Registry(target: decoy);
-    let real = spawn Worker(name: "real");
+    let decoy = spawn Worker { name: "decoy" };
+    let registry = spawn Registry { target: decoy };
+    let real = spawn Worker { name: "real" };
     let _ = real.register(registry);
     let _ = registry.call_back();
 }

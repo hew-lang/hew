@@ -321,20 +321,6 @@ impl LowerCtx {
             );
         }
 
-        // Intercept `.clone()` before any side-table lookup — but only when the
-        // type checker has NOT already resolved the call to a user-defined method
-        // (e.g. a user-declared `trait Clone { fn clone(self) -> Self; }`).
-        //
-        // Fail-closed per the no-silent-stub invariant (M-COW P0):
-        // `.clone()` must never silently return the same handle.  Collection
-        // clones with a ready runtime deep-copy (`HashMap`/`HashSet` via
-        // `hew_hashmap_clone_layout` / `hew_hashset_clone_layout`) are resolved
-        // by the checker to a `ResolvedCall` and never reach this gate.  The
-        // remaining heap types whose copy path is not yet wired (e.g.
-        // `hew_bytes_clone_ref` for `Bytes`) stay fail-closed here: every
-        // unresolved `.clone()` call is a compile error with an explicit
-        // diagnostic so the user is never left guessing why their code "works"
-        // but produces aliased references instead of independent copies.
         let key = self.mk_key(&span);
         if let Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) =
             self.method_call_receiver_kinds.get(&key).cloned()

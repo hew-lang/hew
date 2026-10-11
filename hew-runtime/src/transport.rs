@@ -1175,7 +1175,7 @@ pub fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
 fn refuse_for_shutdown(operation: &str) {
     hew_cabi::sink::set_last_error_with_errno(
         crate::shutdown::refusal_message(operation),
-        crate::shutdown::SHUTDOWN_REFUSAL_ERRNO,
+        crate::stream_error::CANCELLED_ERRNO,
     );
 }
 
@@ -1223,16 +1223,33 @@ pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
 /// Returns a positive connection handle, or -1 on error.
 #[no_mangle]
 pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
+    let _ = crate::stream_error::take_last_error();
+    if crate::reactor::listener_admission_closed() {
+        refuse_for_shutdown("hew_tcp_accept");
+        return -1;
+    }
     let Some(slot) = tcp_slot(listener) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_accept: invalid listener".into(),
+            libc::EBADF,
+        );
         return -1;
     };
     let Some(listener) = slot.listener() else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_accept: handle is not a listener".into(),
+            libc::EBADF,
+        );
         return -1;
     };
     let (stream, _) = match listener.accept() {
         Ok(accepted) => accepted,
         Err(e) => {
             record_tcp_error_kind(e.kind());
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_accept: {e}"),
+                e.raw_os_error().unwrap_or(0),
+            );
             return -1;
         }
     };

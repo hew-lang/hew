@@ -16,7 +16,7 @@ actor Swapper {
 }
 
 fn main() -> i64 {
-    let s = spawn Swapper(pair: Pair { a: "left".to_upper(), b: "right-side".to_upper() });
+    let s = spawn Swapper { pair: Pair { a: "left".to_upper(), b: "right-side".to_upper() } };
     var i: i64 = 0;
     while i < 25 {
         let _ = s.swap();

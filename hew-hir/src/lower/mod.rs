@@ -725,8 +725,6 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
     ///   has an unresolved callee with callable static type that the MIR
     ///   producer cannot dispatch.
-    /// - [`HirDiagnosticKind::SupervisorSpawnArgsUnsupported`] — the program
-    ///   calls `spawn AppSupervisor(...)` with init args.
     /// - [`HirDiagnosticKind::VecIndexElementTypeUnsupported`] — `xs[i]` on
     ///   a `Vec<T>` whose element type `T` has no `hew_vec_get_T` getter.
     /// - [`HirDiagnosticKind::VecSliceElementTypeUnsupported`] — `xs[a..b]`
@@ -769,7 +767,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
-                    | crate::HirDiagnosticKind::SupervisorSpawnArgsUnsupported { .. }
                     | crate::HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
                     | crate::HirDiagnosticKind::VecSliceElementTypeUnsupported { .. }
                     | crate::HirDiagnosticKind::CloneNotYetSupported { .. }
@@ -1071,8 +1068,13 @@ struct LowerCtx {
     /// Checker-bound parameter slot of each source argument, for calls whose
     /// named arguments bind out of source order.
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    /// Checker-bound slots of each spawn and supervisor child.
+    spawn_argument_slots: HashMap<SpanKey, Vec<hew_types::check::SpawnSlot>>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
     select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
+    race_operands: HashMap<SpanKey, Vec<hew_types::check::RaceOperandKind>>,
+    task_scope_results: HashSet<SpanKey>,
+    task_result_lifetimes: HashSet<SpanKey>,
     checked_fork_transfers: HashMap<SpanKey, hew_types::check::effects::ForkTransferFact>,
     fork_call_inputs: Option<fork::ForkCallInputs>,
     /// Checker-owned method-call receiver classifications. These facts prevent
@@ -1211,7 +1213,7 @@ struct LowerCtx {
     /// Type-annotation spans of state fields that `init` initializes (D447).
     actor_deferred_field_decls: HashSet<SpanKey>,
     /// Assignment target spans that are a deferred field's first store (D447).
-    actor_init_first_stores: HashSet<SpanKey>,
+    first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
     borrowed_element_for_loops: HashSet<SpanKey>,
     /// `xs[i]` spans the checker admitted as a borrowed element read (D432).

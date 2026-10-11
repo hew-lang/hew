@@ -16,7 +16,7 @@ actor Loader {
 }
 
 fn main() {
-    let loader = spawn Loader(path: "resource-read.bin");
+    let loader = spawn Loader { path: "resource-read.bin" };
     println(loader.describe().expect("describe"));
     stop(loader);
     stopped(loader);

@@ -143,6 +143,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?
         .into_pointer_value();
 
+        frame.carry(self.ctx, &self.builder, operation, "remote.operation.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "remote.poll");
         let inspect = self.ctx.append_basic_block(self.value, "remote.inspect");
         let pending = self.ctx.append_basic_block(self.value, "remote.pending");
@@ -181,7 +182,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(waiting, pending, completed)
             .llvm_ctx("select remote readiness")?;
         self.builder.position_at_end(pending);
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
             .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))

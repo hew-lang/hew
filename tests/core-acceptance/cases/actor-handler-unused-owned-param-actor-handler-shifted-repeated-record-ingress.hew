@@ -30,7 +30,7 @@ actor Fan {
 }
 
 fn main() -> i64 {
-    let fan = spawn Fan(seen: 0, held: Triple { a: Inner { name: "a" }, b: Inner { name: "b" }, c: Inner { name: "c" } });
+    let fan = spawn Fan { seen: 0, held: Triple { a: Inner { name: "a" }, b: Inner { name: "b" }, c: Inner { name: "c" } } };
     var i: i64 = 0;
     while i < 50 {
         let _ = fan.route("repeat".to_upper(), "other".to_upper(), i % 5);

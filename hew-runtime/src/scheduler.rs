@@ -465,7 +465,7 @@ impl Xorshift64 {
 
 /// Re-open the per-generation admission gates a previous generation's shutdown
 /// closed at drain start (periodic timers, listener accepts).
-fn reopen_admission_gates() {
+pub(crate) fn reopen_admission_gates() {
     crate::timer_periodic::reset_periodic_admission();
     crate::reactor::reset_listener_admission();
 }

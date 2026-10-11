@@ -1249,8 +1249,7 @@ fn register() {
     receive fn ping() {}
 }
 
-fn register() {
-    let remote: RemotePid<Worker>;
+fn register(remote: RemotePid<Worker>) {
     let result: Result<MonitorRef, LinkError> = monitor(remote);
     match result {
         .Ok(m) => {
@@ -1550,10 +1549,7 @@ fn main() {}
             output.errors
         );
         assert!(
-            platform_error_contains(
-                &output,
-                "task spawn is thread-based and no cooperative task executor drives forked bodies"
-            ),
+            platform_error_contains(&output, "no wasm32 task executor"),
             "error message should name the missing task spawn/executor path; got: {:?}",
             output.errors
         );
@@ -1586,7 +1582,7 @@ fn main() {}
             "actor Worker { receive fn ping(msg: Ping) {} }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
             "fn main() {\n",
-            "    let pid: RemotePid<Worker>;\n",
+            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
             "    let _ = pid.send(Ping { n: 0 });\n",
             "}\n",
         )
@@ -1598,7 +1594,7 @@ fn main() {}
             "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
             "fn main() {\n",
-            "    let pid: RemotePid<Worker>;\n",
+            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
             "    let _ = pid.ask(Ping { n: 0 }, 1000);\n",
             "}\n",
         )
@@ -1738,8 +1734,8 @@ fn main() {}
 }
 
 fn main() {
-    let a = spawn Responder(value: 1);
-    let b = spawn Responder(value: 2);
+    let a = spawn Responder { value: 1 };
+    let b = spawn Responder { value: 2 };
     let timeout = 1ms;
     let result = select {
         x from a.get() => match x {

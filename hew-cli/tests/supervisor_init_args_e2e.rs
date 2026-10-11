@@ -56,7 +56,7 @@ fn supervisor_child_init_args_seed_actor_state() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w1: Worker(id: 7);
+    child w1: Worker { id: 7 };
 }
 
 fn main() {
@@ -123,7 +123,7 @@ fn supervisor_child_i32_fields_reversed_arg_order() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(a: 7, b: 99);
+    child w: Worker { a: 7, b: 99 };
 }
 
 fn main() -> i64 {
@@ -155,7 +155,7 @@ fn main() -> i64 {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(b: 99, a: 7);
+    child w: Worker { b: 99, a: 7 };
 }
 
 fn main() -> i64 {
@@ -221,7 +221,7 @@ fn supervisor_child_i32_ask_reply_oracle_discriminates_wrong_values() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(b: 98, a: 7);
+    child w: Worker { b: 98, a: 7 };
 }
 
 fn main() -> i64 {
@@ -285,7 +285,7 @@ fn supervisor_child_mixed_width_fields_reversed_arg_order() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(z: true, x: 42, y: 1234567890123);
+    child w: Worker { z: true, x: 42, y: 1234567890123 };
 }
 
 fn main() {
@@ -369,7 +369,7 @@ fn supervisor_child_narrow_and_unsigned_widths_reversed_arg_order() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(f: 18000000000, e: 4000000000, d: 60000, c: 200, b: 30000, a: 120);
+    child w: Worker { f: 18000000000, e: 4000000000, d: 60000, c: 200, b: 30000, a: 120 };
 }
 
 fn main() {
@@ -415,7 +415,7 @@ fn supervisor_child_narrow_width_overflow_is_compile_error() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(a: 300);
+    child w: Worker { a: 300 };
 }
 
 fn main() {
@@ -496,9 +496,8 @@ fn main() {
     // We check for the missing field's name and the failure marker — exact
     // message wording is not load-bearing for this test.
     assert!(
-        stderr.contains("`id`") || stderr.contains("requires an initialized spawn value"),
-        "compile error for missing init args should mention the missing field \
-         or the uninitialized-state cause; stderr: {stderr}"
+        stderr.contains("missing field `id` in spawn of actor `Worker`"),
+        "compile error for missing init args should name the missing field; stderr: {stderr}"
     );
 }
 
@@ -530,7 +529,7 @@ fn supervisor_child_declared_default_fills_omitted_field() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(a: 7);
+    child w: Worker { a: 7 };
 }
 
 fn main() {
@@ -631,7 +630,7 @@ fn supervisor_child_explicit_arg_overrides_declared_default() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(b: 50);
+    child w: Worker { b: 50 };
 }
 
 fn main() {
@@ -708,12 +707,8 @@ fn main() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains("`a`")
-            || stderr.contains("missing")
-            || stderr.contains("required")
-            || stderr.contains("requires an initialized spawn value"),
-        "compile error for missing required field should mention the field, \
-         'missing', 'required', or the uninitialized-state cause; stderr: {stderr}"
+        stderr.contains("missing field `a` in spawn of actor"),
+        "compile error for missing required field should name the field; stderr: {stderr}"
     );
 }
 
@@ -741,7 +736,7 @@ fn supervisor_child_i32_field_with_declared_default() {
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
-    child w: Worker(b: 99);
+    child w: Worker { b: 99 };
 }
 
 fn main() {
@@ -795,8 +790,8 @@ fn stop_supervisor_with_stateful_child_exits_cleanly() {
 supervisor CounterGroup {
     strategy: one_for_one;
     intensity: 5 within 60s;
-    child c1: Counter(count: 0) restart: permanent;
-    child c2: Counter(count: 0) restart: permanent;
+    child c1: Counter { count: 0 } restart: permanent;
+    child c2: Counter { count: 0 } restart: permanent;
 }
 
 fn main() {

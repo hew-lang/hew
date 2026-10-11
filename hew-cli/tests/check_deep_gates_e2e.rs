@@ -270,17 +270,24 @@ fn duplicate_impl_cross_module_error_names_previous_source_without_artifacts() {
             describe_output(&output)
         );
         let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        // Imported modules are named by their resolved path: the temporary
+        // directory may be reached through a symlink (`/var` on macOS) or a
+        // Windows 8.3 short name, and the verbatim `\\?\` prefix is never shown.
+        let resolved = fs::canonicalize(dir.path()).expect("fixture directory resolves");
+        let resolved = resolved.display().to_string();
+        let resolved = resolved.strip_prefix(r"\\?\").unwrap_or(&resolved);
+        let module = |name: &str| std::path::Path::new(resolved).join(name);
         assert!(
             stderr.contains(&format!(
                 "{}:2:1: error: conflicting implementation",
-                dir.path().join("right.hew").display()
+                module("right.hew").display()
             )),
             "{stderr}"
         );
         assert!(
             stderr.contains(&format!(
                 "{}:2:1: note: previous implementation here",
-                dir.path().join("left.hew").display()
+                module("left.hew").display()
             )),
             "{stderr}"
         );
@@ -463,9 +470,8 @@ fn check_threads_pkg_path_and_project_dir_options() {
         "[package]\nname = \"app\"\n",
     )
     .expect("write manifest");
-    fs::create_dir(project.path().join("src")).expect("create src");
     fs::write(
-        project.path().join("src/helper.hew"),
+        project.path().join("helper.hew"),
         "pub fn answer() -> i64 { 42 }\n",
     )
     .expect("write helper");
@@ -641,7 +647,7 @@ fn check_sir_unsupported_renders_with_source_span() {
 #[test]
 fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     let (_dir, path) = write_fixture(
-        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nactor Holder {\n    var registry: Registry;\n\n    receive fn poke() {\n        let conn = Conn { fd: 1 };\n        registry.conns.insert(\"a\", conn);\n    }\n}\n\nfn main() {\n    let h = spawn Holder(registry: Registry { conns: HashMap.new() });\n    let _ = h.poke();\n}\n",
+        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nactor Holder {\n    var registry: Registry;\n\n    receive fn poke() {\n        let conn = Conn { fd: 1 };\n        registry.conns.insert(\"a\", conn);\n    }\n}\n\nfn main() {\n    let h = spawn Holder { registry: Registry { conns: HashMap.new() } };\n    let _ = h.poke();\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);

@@ -102,6 +102,29 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
                 }
             }
 
+            Some("E_LOCAL_UNINITIALIZED" | "E_LOCAL_CONDITIONAL_INIT") => {
+                if let Some(name) = diag.message.split('`').nth(1) {
+                    for suggestion in &diag.suggestions {
+                        if let Some(value) = suggestion
+                            .strip_prefix(&format!("initialize `{name}` with `"))
+                            .and_then(|value| value.strip_suffix('`'))
+                        {
+                            if let Some(span) =
+                                deferred_var_initializer_site(source, diag.span.start, name)
+                            {
+                                actions.push(CodeAction {
+                                    title: format!("Initialize `{name}` with `{value}`"),
+                                    edits: vec![RenameEdit {
+                                        span,
+                                        new_text: format!(" = {value}"),
+                                    }],
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             // Assigning to an immutable `let` binding — offer to change it to `var`.
             Some("MutabilityError") => {
                 let var_name = diag.message.split('`').nth(1);
@@ -294,6 +317,37 @@ fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
 /// Search backwards from `diag_offset` for `keyword` (either `"let"` or
 /// `"var"`), verifying that it declares `var_name` if provided. Returns the
 /// byte span covering the keyword itself.
+fn deferred_var_initializer_site(source: &str, before: usize, name: &str) -> Option<OffsetSpan> {
+    use hew_lexer::Token;
+    let tokens = hew_lexer::lex(source.get(..before)?);
+    let mut declarations = tokens.windows(2).enumerate().filter_map(|(index, pair)| {
+        (matches!(pair[0].0, Token::Var | Token::Let)
+            && matches!(pair[1].0, Token::Identifier(binding) if binding == name))
+        .then_some(index)
+    });
+    let declaration = declarations.next()?;
+    if declarations.next().is_some() {
+        return None;
+    }
+    if tokens[declaration].0 != Token::Var {
+        return None;
+    }
+    let tail = &tokens[declaration + 2..];
+    if tail.first()?.0 != Token::Colon {
+        return None;
+    }
+    let terminator = tail
+        .iter()
+        .find(|(token, _)| matches!(token, Token::Semicolon | Token::Equal))?;
+    if terminator.0 != Token::Semicolon {
+        return None;
+    }
+    Some(OffsetSpan {
+        start: terminator.1.start,
+        end: terminator.1.start,
+    })
+}
+
 fn find_keyword(
     source: &str,
     diag_offset: usize,

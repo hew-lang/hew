@@ -1346,7 +1346,7 @@ actor Sink {
         let output = check_with_socket_actor(
             r"
             fn probe() {
-                let a = spawn Sink();
+                let a = spawn Sink;
                 let s = Socket { fd: 1 };
                 let _ = await a.ask_socket(s);
                 let _ = s.detach();
@@ -1366,7 +1366,7 @@ actor Sink {
         let output = check_with_socket_actor(
             r"
             fn probe() {
-                let a = spawn Sink();
+                let a = spawn Sink;
                 let s = Socket { fd: 1 };
                 a.tell_socket(s);
                 let _ = s.detach();
@@ -1386,7 +1386,7 @@ actor Sink {
         let output = check_with_socket_actor(
             r"
             fn probe() {
-                let a = spawn Sink();
+                let a = spawn Sink;
                 let t = Ticket { id: 1 };
                 let _ = await a.ask_ticket(t);
                 let _ = t.redeem();
@@ -1409,8 +1409,8 @@ actor Sink {
         let output = check_with_socket_actor(
             r"actor Driver {
     receive fn go() {
-        let d1 = spawn Sink();
-        let d2 = spawn Sink();
+        let d1 = spawn Sink;
+        let d2 = spawn Sink;
         let s = Socket { fd: 1 };
         select {
             a from d1.ask_socket(s) => {
@@ -1437,8 +1437,8 @@ actor Sink {
         let output = check_with_socket_actor(
             r"actor Driver {
     receive fn go() {
-        let d1 = spawn Sink();
-        let d2 = spawn Sink();
+        let d1 = spawn Sink;
+        let d2 = spawn Sink;
         let s = Socket { fd: 1 };
         let t = Socket { fd: 2 };
         select {
@@ -1465,7 +1465,7 @@ actor Sink {
         let output = check_with_socket_actor(
             r"
             fn probe() {
-                let a = spawn Sink();
+                let a = spawn Sink;
                 let n = 7;
                 let _ = await a.count(n);
                 let _ = await a.count(n);
@@ -1484,7 +1484,7 @@ actor Sink {
         let output = check_with_socket_actor(
             r#"
             fn probe() {
-                let a = spawn Sink();
+                let a = spawn Sink;
                 let m = "hello";
                 let _ = await a.echo(m);
                 let _ = await a.echo(m);
@@ -1508,7 +1508,7 @@ actor Sink {
         let output = check_with_socket_actor(
             r"
             fn probe() {
-                let a = spawn Sink();
+                let a = spawn Sink;
                 let h = Holder { socket: Socket { fd: 1 } };
                 let _ = await a.hold(h);
                 let _ = await a.hold(h);
@@ -1529,7 +1529,7 @@ actor Sink {
         let output = check_with_socket_actor(
             r"
             fn probe() {
-                let a = spawn Sink();
+                let a = spawn Sink;
                 let o = Outer { inner: Inner { socket: Socket { fd: 1 } }, tag: 5 };
                 let _ = await a.nest(o);
                 let _ = await a.nest(o);
@@ -1561,7 +1561,7 @@ actor Store {
 }
 
 fn probe() {
-    let s = spawn Store();
+    let s = spawn Store;
     let p = Point { x: 1, y: 2 };
     let _ = await s.put(p);
     let _ = await s.put(p);
@@ -1594,8 +1594,8 @@ fn probe() {
     let printer = actor |x: i64| {
         println(x);
     };
-    let a = spawn Holder(printer: printer);
-    let b = spawn Holder(printer: printer);
+    let a = spawn Holder { printer: printer };
+    let b = spawn Holder { printer: printer };
     a.go(1);
     b.go(2);
 }
@@ -1634,7 +1634,7 @@ fn probe() {
     let child = spawn Child;
     match monitor(child) {
         .Ok(m) => {
-            let w = spawn Watcher(handle: m);
+            let w = spawn Watcher { handle: m };
             w.go();
             m.close();
         }
@@ -1665,9 +1665,9 @@ fn probe() {
             }
 
             fn probe() {
-                let leaf = spawn Leaf();
-                let r1 = spawn Registry();
-                let r2 = spawn Registry();
+                let leaf = spawn Leaf;
+                let r1 = spawn Registry;
+                let r2 = spawn Registry;
                 r1.register(leaf);
                 r2.register(leaf);
                 leaf.ping();

@@ -36,7 +36,7 @@ fn poll(svc: Svc) -> Snap {
 }
 
 fn main() {
-    let svc = spawn Svc(seed: 7);
+    let svc = spawn Svc { seed: 7 };
     // Driven 200k times so the leak oracle reads a slope, not one call: a
     // per-call residue of one allocation is invisible at a single iteration.
     var k = 0;

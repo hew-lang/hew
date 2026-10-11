@@ -741,6 +741,11 @@ pub enum TypeErrorKind {
     TestSignature,
     /// An actor spawn omitted a required state field or `init` parameter.
     MissingActorSpawnArgument,
+    /// A spawn named a key that is neither a spawn-supplied state field nor
+    /// an `init` (or supervisor) parameter.
+    SpawnArgUnknown,
+    /// A spawn named the same key more than once.
+    SpawnArgDuplicate,
     /// An ordering operator (`<`/`<=`/`>`/`>=`) on a record, enum, tuple, or
     /// `Option`/`Result` with no user `impl Ord`/`impl PartialOrd` for the
     /// type (D26 as amended by D340). Legal Hew — a derived lexicographic
@@ -794,6 +799,8 @@ pub enum TypeErrorKind {
     ReservedTypeName,
     /// Assigning to immutable variable
     MutabilityError,
+    LocalUninitialized,
+    LocalConditionalInit,
     /// Return statement type doesn't match function signature
     ReturnTypeMismatch,
     /// Value used after it was moved to an actor
@@ -886,7 +893,9 @@ pub enum TypeErrorKind {
     /// A fork body attempted to capture a caller-owned parameter. Function
     /// parameters use Hew's borrowed call boundary, so the child cannot take
     /// over their drop obligation.
-    ForkBorrowCapture { binding: String },
+    ForkBorrowCapture {
+        binding: String,
+    },
     /// An immutable foreign boundary view appeared outside an extern signature.
     BorrowTypeOutsideExternSignature,
     /// Branches of an or-pattern bind different names.
@@ -900,7 +909,7 @@ pub enum TypeErrorKind {
     /// User wrote `Task<T>` in a source type position (annotation, return type,
     /// parameter type, struct field). `Task<T>` is a compiler-internal type; it
     /// cannot be named in user source. Bindings of this type are inferred from
-    /// `fork name = expr` context only.
+    /// `let name = fork expr` context only.
     TaskNotNameable,
     /// A retired actor-handle spelling (`LocalPid<A>`, `Pid<A>`,
     /// `LambdaPid<M, R>`) was written in a type position. An actor is the type
@@ -1174,7 +1183,7 @@ pub enum TypeErrorKind {
     ///
     /// Generic actors declare `<T>` type parameters on their declaration.
     /// Every `spawn` call for such an actor must supply explicit type arguments
-    /// (`spawn Foo<i64>(...)`) so the type checker can substitute them into the
+    /// (`spawn Foo<i64> { ... }`) so the type checker can substitute them into the
     /// PID type and enforce bounds. Inference of actor type-args is not yet
     /// supported and may be added in a follow-on improvement.
     ///
@@ -1185,12 +1194,12 @@ pub enum TypeErrorKind {
         /// Number of type parameters the actor declaration declares.
         expected_arity: usize,
     },
-    /// A bare actor reference (e.g. `spawn Account(...)`) matches actors
+    /// A bare actor reference (e.g. `spawn Account { ... }`) matches actors
     /// exported by two or more modules, with no local actor of that name to
     /// win the local-first resolution.
     ///
     /// Resolution is never silent first-wins: the user must qualify the
-    /// reference (`spawn bank.Account(...)`) to pick a module. Mirrors the
+    /// reference (`spawn bank.Account { ... }`) to pick a module. Mirrors the
     /// `per-module-type-identity` bare-name policy for `pub type`s.
     ///
     /// Envelope code: `E_AMBIGUOUS_ACTOR_REFERENCE`.
@@ -1529,6 +1538,8 @@ impl TypeErrorKind {
             Self::ActorWaitsOnSelf => "E_ACTOR_WAITS_ON_SELF",
             Self::TestSignature => "E_TEST_SIGNATURE",
             Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",
+            Self::SpawnArgUnknown => "E_SPAWN_ARG_UNKNOWN",
+            Self::SpawnArgDuplicate => "E_SPAWN_ARG_DUPLICATE",
             Self::DerivedOrdUnavailable { .. } => "E_LIMIT_DERIVED_ORD",
             Self::ConstInitializer => "E_CONST_INITIALIZER",
             Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",
@@ -1542,6 +1553,8 @@ impl TypeErrorKind {
             Self::DuplicateDefinition => "DuplicateDefinition",
             Self::ReservedTypeName => "ReservedTypeName",
             Self::MutabilityError => "MutabilityError",
+            Self::LocalUninitialized => "E_LOCAL_UNINITIALIZED",
+            Self::LocalConditionalInit => "E_LOCAL_CONDITIONAL_INIT",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",

@@ -44,6 +44,7 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
             matches!(
                 op.kind,
                 SemOpKind::TaskSpawn { .. }
+                    | SemOpKind::TaskRace { .. }
                     | SemOpKind::TaskScopeEnter {
                         duration: Some(_),
                         ..
@@ -78,7 +79,6 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
 pub(super) struct TaskScopeFrame {
     pub scope: TaskScopeId,
     pub depth: usize,
-    pub race: bool,
 }
 
 impl Builder<'_, '_> {
@@ -102,7 +102,6 @@ impl Builder<'_, '_> {
         self.task_scopes.push(TaskScopeFrame {
             scope,
             depth: self.scopes.len() - 1,
-            race: false,
         });
         Ok(scope)
     }
@@ -145,33 +144,56 @@ impl Builder<'_, '_> {
     pub(super) fn lower_task_scope(
         &mut self,
         body: &HirBlock,
+        result_lifetime: hew_hir::HirTaskScopeResult,
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
-        self.lower_task_scope_with_deadline(body, None, value_required)
+        self.lower_task_scope_with_deadline(body, None, result_lifetime, value_required)
     }
 
     pub(super) fn lower_task_scope_with_deadline(
         &mut self,
         body: &HirBlock,
         duration: Option<&HirExpr>,
+        result_lifetime: hew_hir::HirTaskScopeResult,
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
-        self.lower_task_scope_body(body, duration, false, value_required)
+        self.lower_task_scope_body(body, duration, result_lifetime, value_required)
     }
 
-    pub(super) fn lower_race(
+    pub(super) fn lower_task_race(
         &mut self,
-        body: &HirBlock,
-        value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
-        self.lower_task_scope_body(body, None, true, value_required)
+        expression: &HirExpr,
+        members: &[HirExpr],
+        _result_lifetime: hew_hir::HirTaskScopeResult,
+    ) -> Result<ValueId, String> {
+        let ResolvedTy::Task(_) = self.ty(&expression.ty) else {
+            return Err("race result must be a Task".into());
+        };
+        let scope = self
+            .task_scopes
+            .last()
+            .ok_or("race has no lexical task scope")?
+            .scope;
+        let mut inputs = Vec::new();
+        for member in members {
+            let value = self.lower_consuming_value(member)?;
+            self.owned_live.remove(&value);
+            inputs.push(Operand { value });
+        }
+        self.emit(
+            expression,
+            SemOpKind::TaskRace {
+                scope,
+                members: inputs,
+            },
+        )
     }
 
     fn lower_task_scope_body(
         &mut self,
         body: &HirBlock,
         duration: Option<&HirExpr>,
-        race: bool,
+        _result_lifetime: hew_hir::HirTaskScopeResult,
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         // Deferred bodies cannot create children or suspend. A plain scope
@@ -187,25 +209,14 @@ impl Builder<'_, '_> {
         let floor = self.scopes.len();
         self.open_scope();
         self.enter_task_scope_with_deadline(duration)?;
-        self.task_scopes
-            .last_mut()
-            .expect("entered child scope")
-            .race = race;
         let mut result = self.lower_block(body, OwnedBindingUse::Return)?;
         if self.is_open() {
-            if result
-                .as_ref()
-                .and_then(|value| self.value_ty(value.value))
-                .is_some_and(|ty| contains_task(&ty))
+            if !value_required
+                && result
+                    .as_ref()
+                    .and_then(|value| self.value_ty(value.value))
+                    .is_some_and(|ty| contains_task(&ty))
             {
-                // The scope joins its children at exit, so a handle in tail
-                // position is dead at this boundary. Retaining it would hand
-                // the caller a join for a task already joined; discarding it is
-                // what the same `fork` written as a statement already does, and
-                // the two spellings mean the same thing.
-                if value_required {
-                    return Err("a scope result cannot retain a scoped task handle".into());
-                }
                 result = None;
             }
             self.finish_task_scopes(floor)?;
@@ -220,13 +231,11 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         body: &HirBlock,
         captures: &[hew_hir::HirClosureCapture],
+        _result_lifetime: hew_hir::HirTaskScopeResult,
     ) -> Result<ValueId, String> {
         let ResolvedTy::Task(output) = self.ty(&expression.ty) else {
             return Err("fork body must produce a checked Task".into());
         };
-        if contains_task(&output) {
-            return Err("a child result cannot transfer a nested scoped task handle".into());
-        }
         let scope = self
             .task_scopes
             .last()

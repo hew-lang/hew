@@ -185,7 +185,7 @@ pub struct App {
     // Message flow data
     pub trace_events: Vec<ObservedTraceEvent>,
     pub trace_paused: bool,
-    pub trace_pause_len: Option<usize>,
+    pub trace_pause_events: Option<Vec<ObservedTraceEvent>>,
     pub trace_scroll: usize,
     pub trace_filter_actor: Option<TraceActorKey>,
     pub trace_has_more: bool,
@@ -198,7 +198,7 @@ pub struct App {
     pub timeline_offset_ns: i64,
     pub timeline_window_ns: u64,
     pub timeline_paused: bool,
-    pub timeline_pause_len: Option<usize>,
+    pub timeline_pause_events: Option<Vec<ObservedTraceEvent>>,
     pub timeline_zoom_level: usize,
 
     // Connection
@@ -299,7 +299,7 @@ impl App {
             cluster_routing: RoutingSnapshot::default(),
             trace_events: Vec::new(),
             trace_paused: false,
-            trace_pause_len: None,
+            trace_pause_events: None,
             trace_scroll: 0,
             trace_filter_actor: None,
             trace_has_more: false,
@@ -310,7 +310,7 @@ impl App {
             timeline_offset_ns: 0,
             timeline_window_ns: ZOOM_LEVELS_NS[2], // default 5s
             timeline_paused: false,
-            timeline_pause_len: None,
+            timeline_pause_events: None,
             timeline_zoom_level: 2,
             cluster,
             connection_status: if demo {
@@ -571,7 +571,7 @@ impl App {
 
     pub fn messages_toggle_pause(&mut self) {
         self.trace_paused = !self.trace_paused;
-        self.trace_pause_len = self.trace_paused.then_some(self.trace_events.len());
+        self.trace_pause_events = self.trace_paused.then(|| self.trace_events.clone());
     }
 
     pub fn messages_set_filter(&mut self, actor: TraceActorKey) {
@@ -635,7 +635,7 @@ impl App {
 
     pub fn timeline_toggle_pause(&mut self) {
         self.timeline_paused = !self.timeline_paused;
-        self.timeline_pause_len = self.timeline_paused.then_some(self.trace_events.len());
+        self.timeline_pause_events = self.timeline_paused.then(|| self.trace_events.clone());
     }
 
     pub fn timeline_snap_to_now(&mut self) {
@@ -844,22 +844,10 @@ impl App {
                     // prevents this compact viewer from stitching two
                     // epochs into one apparently continuous timeline.
                     self.trace_events.retain(|event| event.endpoint != endpoint);
-                    if self.trace_paused {
-                        self.trace_pause_len = Some(self.trace_events.len());
-                    }
-                    if self.timeline_paused {
-                        self.timeline_pause_len = Some(self.trace_events.len());
-                    }
                 }
                 TraceContinuity::ProducerRestart => {
                     self.trace_producer_restarts = self.trace_producer_restarts.saturating_add(1);
                     self.trace_events.retain(|event| event.endpoint != endpoint);
-                    if self.trace_paused {
-                        self.trace_pause_len = Some(self.trace_events.len());
-                    }
-                    if self.timeline_paused {
-                        self.timeline_pause_len = Some(self.trace_events.len());
-                    }
                 }
             }
             if let Some(overrun) = page.batch.overrun {
@@ -902,12 +890,6 @@ impl App {
                 .trace_local_discarded
                 .saturating_add(u64::try_from(drain).unwrap_or(u64::MAX));
             self.trace_events.drain(..drain);
-            self.trace_pause_len = self
-                .trace_pause_len
-                .map(|visible| visible.saturating_sub(drain));
-            self.timeline_pause_len = self
-                .timeline_pause_len
-                .map(|visible| visible.saturating_sub(drain));
         }
     }
 
@@ -1786,7 +1768,11 @@ mod tests {
 
         app.refresh();
         assert_eq!(app.trace_events.len(), 1, "pause must not stop collection");
-        assert_eq!(app.timeline_pause_len, Some(0), "view remains frozen");
+        assert_eq!(
+            app.timeline_pause_events.as_deref().map(<[_]>::len),
+            Some(0),
+            "view remains frozen"
+        );
         assert_eq!(
             server.trace_requests(),
             1,
@@ -1910,6 +1896,41 @@ mod tests {
         assert_eq!(app.trace_events[0].correlated_unix_ns, 1_000);
         assert_eq!(app.trace_events[1].endpoint, "node-b");
         assert_eq!(app.trace_events[1].correlated_unix_ns, 2_000);
+    }
+
+    #[test]
+    fn paused_view_snapshot_does_not_change_when_new_events_sort_earlier() {
+        let mut app = App::build(None, "test".to_owned(), false, false);
+        let mut first = trace_page(
+            "first",
+            1,
+            "0000000000000000000000000000000a",
+            "000000000000000000000000000000a1",
+            TraceContinuity::Initial,
+        );
+        first.batch.clock_anchor.monotonic_ns = 1;
+        first.batch.clock_anchor.unix_epoch_ns = 2_000;
+        app.ingest_trace_pages(vec![("node-a".to_owned(), first)]);
+        app.timeline_toggle_pause();
+
+        let mut earlier = trace_page(
+            "earlier",
+            1,
+            "0000000000000000000000000000000b",
+            "000000000000000000000000000000b1",
+            TraceContinuity::Initial,
+        );
+        earlier.batch.clock_anchor.monotonic_ns = 1;
+        earlier.batch.clock_anchor.unix_epoch_ns = 1_000;
+        app.ingest_trace_pages(vec![("node-b".to_owned(), earlier)]);
+
+        assert_eq!(app.trace_events[0].endpoint, "node-b");
+        let frozen = app
+            .timeline_pause_events
+            .as_ref()
+            .expect("paused view keeps snapshot");
+        assert_eq!(frozen.len(), 1);
+        assert_eq!(frozen[0].endpoint, "node-a");
     }
 
     #[test]

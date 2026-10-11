@@ -622,11 +622,12 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Filter events
-    let visible_len = app.trace_pause_len.unwrap_or(app.trace_events.len());
-    let events: Vec<&crate::app::ObservedTraceEvent> = app
-        .trace_events
+    let source_events = app
+        .trace_pause_events
+        .as_deref()
+        .unwrap_or(&app.trace_events);
+    let events: Vec<&crate::app::ObservedTraceEvent> = source_events
         .iter()
-        .take(visible_len)
         .filter(|e| {
             app.trace_filter_actor.as_ref().is_none_or(|filter| {
                 trace_event_matches_actor(&e.producer_instance_id, &e.event, filter)
@@ -824,8 +825,10 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Collect node IDs from cluster members and trace events
-    let timeline_len = app.timeline_pause_len.unwrap_or(app.trace_events.len());
-    let timeline_events = &app.trace_events[..timeline_len.min(app.trace_events.len())];
+    let timeline_events = app
+        .timeline_pause_events
+        .as_deref()
+        .unwrap_or(&app.trace_events);
     let mut node_ids: Vec<String> = Vec::new();
     for evt in timeline_events {
         let nid = trace_event_lane_label(&evt.endpoint, &evt.producer_instance_id, &evt.event);
@@ -845,10 +848,8 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Determine visible time window
-    let latest_ns = app
-        .trace_events
+    let latest_ns = timeline_events
         .iter()
-        .take(timeline_len)
         .map(|e| e.correlated_unix_ns)
         .max()
         .unwrap_or(0);
@@ -898,10 +899,8 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
             vec![(' ', theme::TEXT_DIM); chart_width];
 
         // Place events
-        let node_events: Vec<&crate::app::ObservedTraceEvent> = app
-            .trace_events
+        let node_events: Vec<&crate::app::ObservedTraceEvent> = timeline_events
             .iter()
-            .take(timeline_len)
             .filter(|e| {
                 trace_event_lane_label(&e.endpoint, &e.producer_instance_id, &e.event) == *nid
                     && e.correlated_unix_ns >= window_start

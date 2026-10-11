@@ -10,12 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hew_runtime::actor::{HewActor, hew_actor_send};
-use hew_runtime::execution_context::{HewExecutionContext, set_current_context};
+use hew_runtime::actor::{hew_actor_send, HewActor};
+use hew_runtime::execution_context::{set_current_context, HewExecutionContext};
 use hew_runtime::profiler::actor_registry::{register_dispatch_type, register_handler_name};
-use hew_runtime::profiler::{ProfilerContext, run_tcp_with_listener};
+use hew_runtime::profiler::{run_tcp_with_listener, ProfilerContext};
 use hew_runtime::tracing::{
-    HewTraceContext, SPAN_SPAWN, SPAN_STOP, hew_trace_enable, hew_trace_lifecycle, hew_trace_reset,
+    hew_trace_enable, hew_trace_lifecycle, hew_trace_reset, HewTraceContext, SPAN_SPAWN, SPAN_STOP,
 };
 use hew_runtime_testkit::TestActor;
 
@@ -142,12 +142,10 @@ fn trace_http_cursors_are_independent_and_report_overflow_and_reset() {
 
     let (first_response, first) = json_get(addr, "/api/traces?limit=2");
     assert_eq!(first_response.status, 200);
-    assert!(
-        first_response
-            .headers
-            .lines()
-            .any(|line| line.eq_ignore_ascii_case("x-hew-schema-version: v1"))
-    );
+    assert!(first_response
+        .headers
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case("x-hew-schema-version: v1")));
     assert_eq!(first["schema_version"], "v1");
     let first = &first["data"];
     let producer_instance_id = first["producer_instance_id"]
@@ -156,16 +154,12 @@ fn trace_http_cursors_are_independent_and_report_overflow_and_reset() {
     let stream_id = first["stream_id"].as_str().expect("stream_id");
     assert_eq!(producer_instance_id.len(), 32);
     assert_eq!(stream_id.len(), 32);
-    assert!(
-        producer_instance_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    );
-    assert!(
-        stream_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    );
+    assert!(producer_instance_id
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    assert!(stream_id
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
     assert_eq!(first["events"].as_array().expect("events").len(), 2);
     assert_eq!(first["events"][0]["sequence"], "1");
     assert_eq!(first["events"][1]["sequence"], "2");
@@ -203,12 +197,10 @@ fn trace_http_cursors_are_independent_and_report_overflow_and_reset() {
     assert_eq!(tail["data"]["has_more"], false);
 
     let (_, caught_up) = json_get(addr, &format!("/api/traces?stream_id={stream_id}&after=3"));
-    assert!(
-        caught_up["data"]["events"]
-            .as_array()
-            .expect("events")
-            .is_empty()
-    );
+    assert!(caught_up["data"]["events"]
+        .as_array()
+        .expect("events")
+        .is_empty());
     assert_eq!(caught_up["data"]["next_cursor"], "3");
     assert_eq!(caught_up["data"]["has_more"], false);
 

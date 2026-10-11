@@ -3,7 +3,7 @@
 //! Runs on a dedicated OS thread (not a Hew actor) so it remains
 //! responsive even when the scheduler is overloaded.
 
-use crate::util::{MutexExt, json_array, push_json_string};
+use crate::util::{json_array, push_json_string, MutexExt};
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
@@ -11,8 +11,8 @@ use std::time::Duration;
 
 pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
 use hew_observe_protocol::{
-    ActorIdentity, TraceBatch, TraceClockAnchor, TraceEvent, TraceOverrun, TraceRequestError,
-    TraceStreamMismatch, TraceSubject, envelope_json_raw,
+    envelope_json_raw, ActorIdentity, TraceBatch, TraceClockAnchor, TraceEvent, TraceOverrun,
+    TraceRequestError, TraceStreamMismatch, TraceSubject,
 };
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -62,36 +62,13 @@ unsafe impl Sync for ProfilerContext {}
 
 // ── Server ───────────────────────────────────────────────���──────────────
 
-/// Start the profiling HTTP server on a TCP socket, blocking the current
-/// thread.
-///
-/// Creates a single-threaded tokio runtime for the async hyper server.
-/// Checks `PROFILER_SHUTDOWN` periodically to exit cleanly.
-pub fn run_tcp(bind_addr: &str, ctx: Arc<ProfilerContext>) {
-    let Some(rt) = build_runtime() else { return };
-
-    rt.block_on(async move {
-        let listener = match TcpListener::bind(bind_addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("[hew-pprof] failed to bind {bind_addr}: {e}");
-                return;
-            }
-        };
-
-        eprintln!("[hew-pprof] dashboard at http://{bind_addr}/");
-
-        serve_loop(Listener::Tcp(listener), ctx).await;
-    });
-}
-
 /// Start the profiling HTTP server on a pre-bound `std::net::TcpListener`,
 /// blocking the current thread.
 ///
-/// Like [`run_tcp`] but the caller owns the bind step — useful for tests that
-/// need to know the ephemeral port (`bind("127.0.0.1:0")`) before any client
-/// can connect. The listener is set to non-blocking and converted to a tokio
-/// listener inside the runtime.
+/// The caller owns the bind step so startup can fail before tracing is enabled,
+/// and tests can discover an ephemeral port (`bind("127.0.0.1:0")`) before any
+/// client connects. The listener is set to non-blocking and converted to a
+/// tokio listener inside the runtime.
 pub fn run_tcp_with_listener(listener: std::net::TcpListener, ctx: Arc<ProfilerContext>) {
     let Some(rt) = build_runtime() else { return };
     if let Err(e) = listener.set_nonblocking(true) {

@@ -3,8 +3,8 @@
 //! (`{"schema_version":"v1","data":<body>}`).
 //!
 //! Producer: `hew_runtime::profiler::server::json_response`, exercised here
-//! through `run_tcp_with_listener` (the same code path `run_tcp` uses in
-//! production), so the assertion covers the real hyper Response surface
+//! through `run_tcp_with_listener` (the production TCP server entry point), so
+//! the assertion covers the real hyper Response surface
 //! end-to-end — not just the `envelope_json` helper.
 //!
 //! Per R58 Q136 (Option B), the envelope is the ONLY new surface; the

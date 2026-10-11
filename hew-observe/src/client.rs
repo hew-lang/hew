@@ -18,7 +18,8 @@ pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
 use hew_observe_protocol::{decode_envelope, DecodeError};
 pub use hew_observe_protocol::{
     ActorIdentity, ActorInfo, ClusterMember, ConnectionInfo, CrashEntry, HistoryEntry, Metrics,
-    RouteEntry, RoutingSnapshot, SupervisorRow, TraceBatch, TraceEvent, TraceSubject,
+    RouteEntry, RoutingSnapshot, SupervisorRow, TraceBatch, TraceEvent, TraceStreamMismatch,
+    TraceSubject,
 };
 
 /// Relationship between a fetched trace page and the client's previous page.
@@ -46,6 +47,13 @@ struct TraceCursor {
     producer_instance_id: String,
     stream_id: String,
     after: u64,
+}
+
+#[derive(Debug)]
+struct HttpResponse {
+    status: String,
+    status_code: u16,
+    body: Vec<u8>,
 }
 
 /// Typed failure categories from a profiler client request.
@@ -245,26 +253,77 @@ impl ProfilerClient {
     pub fn fetch_traces(&mut self) -> Option<TracePage> {
         let previous = self.trace_cursor.clone();
         let mut retried_after_mismatch = false;
+        let mut bootstrap_after_mismatch = false;
+        let mut expected_after_mismatch: Option<(String, String)> = None;
 
         loop {
-            let path = self.trace_cursor.as_ref().map_or_else(
-                || "/api/traces?limit=256".to_owned(),
-                |cursor| {
-                    format!(
-                        "/api/traces?stream_id={}&after={}&limit=256",
-                        cursor.stream_id, cursor.after
-                    )
-                },
-            );
+            let path = if bootstrap_after_mismatch {
+                "/api/traces?limit=256".to_owned()
+            } else {
+                self.trace_cursor.as_ref().map_or_else(
+                    || "/api/traces?limit=256".to_owned(),
+                    |cursor| {
+                        format!(
+                            "/api/traces?stream_id={}&after={}&limit=256",
+                            cursor.stream_id, cursor.after
+                        )
+                    },
+                )
+            };
 
-            let Some(batch) = self.get_json::<TraceBatch>(&path) else {
-                if !retried_after_mismatch && self.last_error_is_status(409) {
-                    self.trace_cursor = None;
-                    retried_after_mismatch = true;
-                    continue;
+            let response = match self.fetch_response_inner(&path) {
+                Ok(response) => response,
+                Err(error) => {
+                    self.last_error = Some(error);
+                    return None;
                 }
+            };
+            let batch: TraceBatch = if (200..300).contains(&response.status_code) {
+                self.decode_json_body(&response.body)?
+            } else if response.status_code == 409 && !retried_after_mismatch {
+                let mismatch: TraceStreamMismatch = self.decode_json_body(&response.body)?;
+                let Some(cursor) = self.trace_cursor.as_ref() else {
+                    self.last_error = Some(ClientError::BadStatus(
+                        "409 trace_stream_mismatch without a local cursor".to_owned(),
+                    ));
+                    return None;
+                };
+                if mismatch.requested_stream_id != cursor.stream_id {
+                    self.last_error = Some(ClientError::BadStatus(format!(
+                        "409 trace_stream_mismatch requested {}, expected {}",
+                        mismatch.requested_stream_id, cursor.stream_id
+                    )));
+                    return None;
+                }
+                if mismatch.current_stream_id == cursor.stream_id {
+                    self.last_error = Some(ClientError::BadStatus(
+                        "409 trace_stream_mismatch did not change stream_id".to_owned(),
+                    ));
+                    return None;
+                }
+                expected_after_mismatch = Some((
+                    mismatch.current_stream_id,
+                    mismatch.current_producer_instance_id,
+                ));
+                bootstrap_after_mismatch = true;
+                retried_after_mismatch = true;
+                continue;
+            } else {
+                self.last_error = Some(ClientError::BadStatus(response.status));
                 return None;
             };
+            if let Some((expected_stream, expected_producer)) = expected_after_mismatch.as_ref() {
+                if batch.stream_id != *expected_stream
+                    || batch.producer_instance_id != *expected_producer
+                {
+                    self.last_error = Some(ClientError::BadStatus(format!(
+                        "trace_stream_mismatch advertised stream {expected_stream} from producer \
+                         {expected_producer}, retry returned stream {} from producer {}",
+                        batch.stream_id, batch.producer_instance_id
+                    )));
+                    return None;
+                }
+            }
 
             let continuity = match previous.as_ref() {
                 None => TraceContinuity::Initial,
@@ -279,6 +338,7 @@ impl ProfilerClient {
                 stream_id: batch.stream_id.clone(),
                 after: batch.next_cursor,
             });
+            self.last_error = None;
             return Some(TracePage { batch, continuity });
         }
     }
@@ -302,7 +362,11 @@ impl ProfilerClient {
     /// possibly-shape-shifted data.
     fn get_json<T: serde::de::DeserializeOwned>(&mut self, path: &str) -> Option<T> {
         let body = self.get_bytes(path)?;
-        match decode_envelope(&body) {
+        self.decode_json_body(&body)
+    }
+
+    fn decode_json_body<T: serde::de::DeserializeOwned>(&mut self, body: &[u8]) -> Option<T> {
+        match decode_envelope(body) {
             Ok(data) => Some(data),
             Err(DecodeError::Json(e)) => {
                 self.last_error = Some(ClientError::Parse(e));
@@ -333,17 +397,18 @@ impl ProfilerClient {
         }
     }
 
-    fn last_error_is_status(&self, status: u16) -> bool {
-        matches!(
-            &self.last_error,
-            Some(ClientError::BadStatus(value))
-                if value.split_ascii_whitespace().any(|part| part == status.to_string())
-        )
-    }
-
     /// Inner fetch that borrows `self` immutably and returns a typed `Result`.
     /// Called exclusively by [`Self::get_bytes`].
     fn fetch_bytes_inner(&self, path: &str) -> Result<Vec<u8>, ClientError> {
+        let response = self.fetch_response_inner(path)?;
+        if (200..300).contains(&response.status_code) {
+            Ok(response.body)
+        } else {
+            Err(ClientError::BadStatus(response.status))
+        }
+    }
+
+    fn fetch_response_inner(&self, path: &str) -> Result<HttpResponse, ClientError> {
         match &self.transport {
             Transport::Tcp { base_url, http } => {
                 let url = format!("{base_url}{path}");
@@ -351,16 +416,20 @@ impl ProfilerClient {
                     .get(&url)
                     .send()
                     .map_err(|e| ClientError::Connect(io::Error::other(e)))?;
-                if resp.status().is_success() {
-                    resp.bytes()
-                        .map_err(|e| ClientError::Read(io::Error::other(e)))
-                        .map(|b| b.to_vec())
-                } else {
-                    Err(ClientError::BadStatus(resp.status().to_string()))
-                }
+                let status_code = resp.status().as_u16();
+                let status = resp.status().to_string();
+                let body = resp
+                    .bytes()
+                    .map_err(|e| ClientError::Read(io::Error::other(e)))?
+                    .to_vec();
+                Ok(HttpResponse {
+                    status,
+                    status_code,
+                    body,
+                })
             }
             #[cfg(unix)]
-            Transport::Unix { socket_path } => unix_get(socket_path, path),
+            Transport::Unix { socket_path } => unix_get_response(socket_path, path),
         }
     }
 }
@@ -374,7 +443,7 @@ impl ProfilerClient {
 /// Returns a typed [`ClientError`] on failure so callers can distinguish
 /// connect errors (stale/missing socket path) from I/O failures and
 /// unexpected server responses.
-fn unix_get(socket_path: &Path, path: &str) -> Result<Vec<u8>, ClientError> {
+fn unix_get_response(socket_path: &Path, path: &str) -> Result<HttpResponse, ClientError> {
     let mut stream = UnixStream::connect(socket_path).map_err(ClientError::Connect)?;
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -396,9 +465,12 @@ fn unix_get(socket_path: &Path, path: &str) -> Result<Vec<u8>, ClientError> {
     reader
         .read_line(&mut status_line)
         .map_err(ClientError::Read)?;
-    if !status_line.contains(" 200 ") {
-        return Err(ClientError::BadStatus(status_line.trim_end().to_owned()));
-    }
+    let status_code = status_line
+        .split_ascii_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| ClientError::BadStatus(status_line.trim_end().to_owned()))?;
+    let status = status_line.trim_end().to_owned();
 
     // Headers — look for Content-Length, skip until blank line.
     let mut content_length: Option<usize> = None;
@@ -420,12 +492,20 @@ fn unix_get(socket_path: &Path, path: &str) -> Result<Vec<u8>, ClientError> {
     if let Some(len) = content_length {
         let mut body = vec![0u8; len];
         reader.read_exact(&mut body).map_err(ClientError::Read)?;
-        Ok(body)
+        Ok(HttpResponse {
+            status,
+            status_code,
+            body,
+        })
     } else {
         // No Content-Length — read until EOF (Connection: close).
         let mut body = Vec::new();
         reader.read_to_end(&mut body).map_err(ClientError::Read)?;
-        Ok(body)
+        Ok(HttpResponse {
+            status,
+            status_code,
+            body,
+        })
     }
 }
 
@@ -546,8 +626,16 @@ mod tests {
     }
 
     fn http_json_response(status: &str, data: &serde_json::Value) -> String {
+        http_envelope_response(status, OBSERVE_SCHEMA_VERSION, data)
+    }
+
+    fn http_envelope_response(
+        status: &str,
+        schema_version: &str,
+        data: &serde_json::Value,
+    ) -> String {
         let body = serde_json::json!({
-            "schema_version": OBSERVE_SCHEMA_VERSION,
+            "schema_version": schema_version,
             "data": data,
         })
         .to_string();
@@ -745,6 +833,158 @@ mod tests {
                 "GET /api/traces?limit=256 HTTP/1.1",
                 "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
                 "GET /api/traces?limit=256 HTTP/1.1",
+            ]
+        );
+    }
+
+    fn assert_invalid_mismatch_keeps_cursor(response: String) -> ClientError {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("invalid_trace_mismatch.sock");
+        let producer = "00000000000000000000000000000001";
+        let old_stream = "00000000000000000000000000000002";
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 7)),
+                response,
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 8)),
+            ],
+            Arc::clone(&requests),
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        client.fetch_traces().expect("initial trace attach");
+        assert!(
+            client.fetch_traces().is_none(),
+            "invalid mismatch must fail"
+        );
+        let error = client
+            .last_error
+            .take()
+            .expect("invalid mismatch must surface an error");
+        let continued = client
+            .fetch_traces()
+            .expect("invalid mismatch must retain the old cursor");
+        assert_eq!(continued.continuity, TraceContinuity::Continuous);
+        assert_eq!(continued.batch.stream_id, old_stream);
+        assert_eq!(
+            requests.lock().expect("lock captured requests").as_slice(),
+            [
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+            ]
+        );
+        error
+    }
+
+    #[test]
+    fn malformed_or_wrong_version_mismatch_does_not_reset_cursor() {
+        let malformed = "not json";
+        let malformed_response = format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{malformed}",
+            malformed.len()
+        );
+        assert!(matches!(
+            assert_invalid_mismatch_keeps_cursor(malformed_response),
+            ClientError::Parse(_)
+        ));
+
+        let mismatch = serde_json::json!({
+            "error": "trace_stream_mismatch",
+            "requested_stream_id": "00000000000000000000000000000002",
+            "current_stream_id": "00000000000000000000000000000003",
+            "current_producer_instance_id": "00000000000000000000000000000001",
+        });
+        assert!(matches!(
+            assert_invalid_mismatch_keeps_cursor(http_envelope_response(
+                "409 Conflict",
+                "v9",
+                &mismatch,
+            )),
+            ClientError::BadStatus(message) if message.contains("schema_version")
+        ));
+    }
+
+    #[test]
+    fn wrong_literal_or_inconsistent_mismatch_does_not_reset_cursor() {
+        let wrong_literal = serde_json::json!({
+            "error": "something_else",
+            "requested_stream_id": "00000000000000000000000000000002",
+            "current_stream_id": "00000000000000000000000000000003",
+            "current_producer_instance_id": "00000000000000000000000000000001",
+        });
+        assert!(matches!(
+            assert_invalid_mismatch_keeps_cursor(http_json_response(
+                "409 Conflict",
+                &wrong_literal,
+            )),
+            ClientError::Parse(_)
+        ));
+
+        let wrong_requested_stream = serde_json::json!({
+            "error": "trace_stream_mismatch",
+            "requested_stream_id": "00000000000000000000000000000004",
+            "current_stream_id": "00000000000000000000000000000003",
+            "current_producer_instance_id": "00000000000000000000000000000001",
+        });
+        assert!(matches!(
+            assert_invalid_mismatch_keeps_cursor(http_json_response(
+                "409 Conflict",
+                &wrong_requested_stream,
+            )),
+            ClientError::BadStatus(message) if message.contains("requested")
+        ));
+    }
+
+    #[test]
+    fn mismatch_retry_must_match_advertised_current_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("inconsistent_trace_retry.sock");
+        let producer = "00000000000000000000000000000001";
+        let old_stream = "00000000000000000000000000000002";
+        let advertised_stream = "00000000000000000000000000000003";
+        let unexpected_stream = "00000000000000000000000000000004";
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 7)),
+                http_json_response(
+                    "409 Conflict",
+                    &serde_json::json!({
+                        "error": "trace_stream_mismatch",
+                        "requested_stream_id": old_stream,
+                        "current_stream_id": advertised_stream,
+                        "current_producer_instance_id": producer,
+                    }),
+                ),
+                http_json_response("200 OK", &empty_trace_batch(producer, unexpected_stream, 0)),
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 8)),
+            ],
+            Arc::clone(&requests),
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        client.fetch_traces().expect("initial trace attach");
+        assert!(client.fetch_traces().is_none());
+        assert!(matches!(
+            client.last_error,
+            Some(ClientError::BadStatus(ref message)) if message.contains("advertised stream")
+        ));
+        let continued = client
+            .fetch_traces()
+            .expect("failed recovery must preserve old cursor");
+        assert_eq!(continued.continuity, TraceContinuity::Continuous);
+        assert_eq!(continued.batch.stream_id, old_stream);
+        assert_eq!(
+            requests.lock().expect("lock captured requests").as_slice(),
+            [
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
+                "GET /api/traces?limit=256 HTTP/1.1",
+                "GET /api/traces?stream_id=00000000000000000000000000000002&after=7&limit=256 HTTP/1.1",
             ]
         );
     }

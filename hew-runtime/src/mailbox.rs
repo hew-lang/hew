@@ -3601,10 +3601,19 @@ unsafe fn retire_pending_sys_lane(mailbox: &HewMailbox) -> usize {
 /// # Safety
 ///
 /// `mb` must have been returned by [`hew_mailbox_new`] or
-/// [`hew_mailbox_new_bounded`] and must not be used after this call.
+/// [`hew_mailbox_new_bounded`]. The caller must exclude new users and wait for
+/// existing users to release ownership. A terminal-reclaim owner may still be
+/// unlocking after publishing its release; this call waits for that tail.
+/// `mb` must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
     cabi_guard!(mb.is_null());
+
+    // Activation ownership is released under this lock so terminal producers
+    // cannot miss the final drain. Finish that owner's unlock before taking
+    // exclusive ownership of the mailbox allocation.
+    // SAFETY: the caller retains the allocation and excludes new users.
+    drop(unsafe { &*mb }.terminal_reclaiming.lock_or_recover());
 
     // SAFETY: Caller guarantees `mb` was Box-allocated and is exclusively owned.
     let mailbox = unsafe { Box::from_raw(mb) };

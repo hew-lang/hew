@@ -256,8 +256,8 @@ pub fn stdlib_search_paths() -> Vec<PathBuf> {
 /// every file the same module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleAnchor {
-    /// A file under `<root>/std/`, where `root` is a standard-library root.
-    Std { root: PathBuf },
+    /// A file under the standard-library directory.
+    Std { dir: PathBuf },
     /// A file in the package whose `hew.toml` sits in `dir`. `name` is the
     /// manifest's `[package] name`, when it has one.
     Package {
@@ -274,8 +274,7 @@ impl ModuleAnchor {
     #[must_use]
     pub fn dir(&self) -> Option<&std::path::Path> {
         match self {
-            Self::Std { root } => Some(root),
-            Self::Package { dir, .. } => Some(dir),
+            Self::Std { dir } | Self::Package { dir, .. } => Some(dir),
             Self::Loose => None,
         }
     }
@@ -370,10 +369,13 @@ fn directory_module_entry(
 /// The module path of the file or directory at `relative` below the anchor,
 /// with any extension removed.
 fn anchored_module_path(anchor: &ModuleAnchor, relative: &std::path::Path) -> Option<ModulePath> {
-    let segments = relative
+    let mut segments = relative
         .iter()
         .map(|component| component.to_str().map(crate::Symbol::intern))
         .collect::<Option<Vec<_>>>()?;
+    if matches!(anchor, ModuleAnchor::Std { .. }) {
+        segments.insert(0, crate::Symbol::intern("std"));
+    }
     let ModuleAnchor::Package {
         name: Some(package),
         ..
@@ -482,13 +484,10 @@ pub fn module_membership(
 #[must_use]
 pub fn std_anchor_for(file: &std::path::Path, roots: &[PathBuf]) -> Option<ModuleAnchor> {
     roots.iter().find_map(|root| {
-        let relative = file.strip_prefix(root).ok()?;
-        (relative
-            .components()
-            .next()
-            .is_some_and(|component| component.as_os_str() == "std")
-            && is_hew_source(relative))
-        .then(|| ModuleAnchor::Std { root: root.clone() })
+        let dir = root.join("std");
+        let dir = dir.canonicalize().unwrap_or(dir);
+        let relative = file.strip_prefix(&dir).ok()?;
+        is_hew_source(relative).then_some(ModuleAnchor::Std { dir })
     })
 }
 
@@ -1458,7 +1457,7 @@ mod tests {
             "./std/net/http/server.hew",
         ]);
         let anchor = ModuleAnchor::Std {
-            root: PathBuf::from("."),
+            dir: PathBuf::from("./std"),
         };
         let peer = module_membership(&anchor, Path::new("./std/net/http/http_client.hew"), &list);
         assert_eq!(peer.role, MembershipRole::Peer);

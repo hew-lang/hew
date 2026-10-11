@@ -966,7 +966,7 @@ impl OffloadProbe {
     reason = "the environment is allocated with OffloadTestEnv's own layout"
 )]
 unsafe extern "C" fn offload_test_run(env: *mut u8) {
-    // SAFETY: the test laid out this environment and keeps the probe alive.
+    // SAFETY: the environment owns a probe reference until release.
     let env = unsafe { &mut *env.cast::<OffloadTestEnv>() };
     // SAFETY: as above.
     let probe = unsafe { &*env.probe };
@@ -990,17 +990,19 @@ unsafe extern "C" fn offload_test_run(env: *mut u8) {
 unsafe extern "C" fn offload_test_release(env: *mut u8, result_live: i32) {
     // SAFETY: the runtime passes the environment it owns.
     let env = unsafe { &mut *env.cast::<OffloadTestEnv>() };
+    // SAFETY: submission transfers one strong reference to this environment.
+    let probe = unsafe { Arc::from_raw(env.probe) };
     // SAFETY: the argument is owned until this release; the result when live.
     unsafe {
         string_release(env.input);
         if result_live != 0 {
             string_release(env.result);
         }
-        (*env.probe).update(|state| {
-            state.arguments_released += 1;
-            state.results_released += usize::from(result_live != 0);
-        });
     }
+    probe.update(|state| {
+        state.arguments_released += 1;
+        state.results_released += usize::from(result_live != 0);
+    });
 }
 
 #[allow(
@@ -1014,7 +1016,7 @@ fn submit_offload(probe: &Arc<OffloadProbe>, waker: *const HewWaker) -> *const H
         let env = crate::mem::hew_alloc(layout.size() as u64, layout.align() as u64);
         env.cast::<OffloadTestEnv>().write(OffloadTestEnv {
             input: string_from_str("job"),
-            probe: Arc::as_ptr(probe),
+            probe: Arc::into_raw(Arc::clone(probe)),
             result: ptr::null_mut(),
         });
         hew_async_offload(

@@ -3,14 +3,17 @@
 //! Runs on a dedicated OS thread (not a Hew actor) so it remains
 //! responsive even when the scheduler is overloaded.
 
-use crate::util::{json_array, push_json_string, MutexExt};
+use crate::util::{MutexExt, json_array, push_json_string};
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use hew_observe_protocol::envelope_json_raw;
 pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
+use hew_observe_protocol::{
+    ActorIdentity, TraceBatch, TraceClockAnchor, TraceEvent, TraceOverrun, TraceRequestError,
+    TraceStreamMismatch, TraceSubject, envelope_json_raw,
+};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -230,7 +233,7 @@ fn handle_request(
         "/api/cluster/members" => serve_cluster_members(ctx),
         "/api/connections" => serve_connections(ctx),
         "/api/routing/table" => serve_routing_table(ctx),
-        "/api/traces" => serve_traces(),
+        "/api/traces" => serve_traces(req.uri().query()),
         "/api/supervisors" => serve_supervisors(),
         "/api/crashes" => serve_crashes(),
         "/debug/pprof/heap" => serve_pprof_heap(),
@@ -260,8 +263,12 @@ fn text_response(body: String, content_type: &str) -> Response<Full<Bytes>> {
 }
 
 fn json_response(body: &str) -> Response<Full<Bytes>> {
+    json_response_with_status(StatusCode::OK, body)
+}
+
+fn json_response_with_status(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
-        .status(StatusCode::OK)
+        .status(status)
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-Hew-Schema-Version", OBSERVE_SCHEMA_VERSION)
         .body(Full::new(Bytes::from(envelope_json_raw(body))))
@@ -458,10 +465,270 @@ fn serve_routing_table(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     json_response(&json)
 }
 
-/// `GET /api/traces` — drain trace events.
-fn serve_traces() -> Response<Full<Bytes>> {
-    let json = crate::tracing::drain_events_json();
-    json_response(&json)
+const MAX_TRACE_BATCH_LIMIT: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TraceQuery<'a> {
+    stream_id: Option<&'a str>,
+    after: Option<u64>,
+    limit: usize,
+}
+
+fn is_canonical_u64(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
+}
+
+fn is_canonical_stream_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn parse_trace_query(query: Option<&str>) -> Result<TraceQuery<'_>, &'static str> {
+    let mut parsed = TraceQuery {
+        stream_id: None,
+        after: None,
+        limit: MAX_TRACE_BATCH_LIMIT,
+    };
+
+    let Some(query) = query.filter(|query| !query.is_empty()) else {
+        return Ok(parsed);
+    };
+
+    let mut saw_after = false;
+    let mut saw_limit = false;
+    for field in query.split('&') {
+        let Some((name, value)) = field.split_once('=') else {
+            return Err("trace query parameters must use name=value");
+        };
+        match name {
+            "stream_id" => {
+                if parsed.stream_id.is_some() {
+                    return Err("stream_id must not be repeated");
+                }
+                if !is_canonical_stream_id(value) {
+                    return Err("stream_id must be 32 lowercase hexadecimal characters");
+                }
+                parsed.stream_id = Some(value);
+            }
+            "after" => {
+                if saw_after {
+                    return Err("after must not be repeated");
+                }
+                saw_after = true;
+                if !is_canonical_u64(value) {
+                    return Err("after must be a canonical unsigned decimal integer");
+                }
+                parsed.after = Some(
+                    value
+                        .parse()
+                        .map_err(|_| "after is outside the unsigned 64-bit range")?,
+                );
+            }
+            "limit" => {
+                if saw_limit {
+                    return Err("limit must not be repeated");
+                }
+                saw_limit = true;
+                if !is_canonical_u64(value) {
+                    return Err("limit must be a canonical unsigned decimal integer");
+                }
+                let limit: usize = value
+                    .parse()
+                    .map_err(|_| "limit is outside the platform integer range")?;
+                if !(1..=MAX_TRACE_BATCH_LIMIT).contains(&limit) {
+                    return Err("limit must be between 1 and 256");
+                }
+                parsed.limit = limit;
+            }
+            _ => return Err("unknown trace query parameter"),
+        }
+    }
+
+    if parsed.stream_id.is_some() != parsed.after.is_some() {
+        return Err("stream_id and after must be supplied together");
+    }
+
+    Ok(parsed)
+}
+
+fn trace_error_response(status: StatusCode, error: &str, message: &str) -> Response<Full<Bytes>> {
+    let error = TraceRequestError {
+        error: error.to_owned(),
+        message: message.to_owned(),
+    };
+    let body = serde_json::to_string(&error).expect("TraceRequestError must serialize");
+    json_response_with_status(status, &body)
+}
+
+fn actor_identity(
+    actor_id: Option<u64>,
+    spawn_serial: Option<u64>,
+    dispatch_ptr: usize,
+) -> Option<ActorIdentity> {
+    let actor_id = actor_id.filter(|id| *id != 0)?;
+    let actor_type =
+        crate::profiler::actor_registry::lookup_registered_dispatch_type_by_ptr_owned(dispatch_ptr);
+    Some(ActorIdentity {
+        actor_id,
+        spawn_serial,
+        actor_type,
+    })
+}
+
+fn trace_subject(record: &crate::tracing::TraceEventRecord) -> Option<TraceSubject> {
+    let kind = record.subject_kind?;
+    let id = record.subject_id?;
+    let actor = if kind == "actor" {
+        actor_identity(
+            record.subject_actor_id,
+            record.subject_spawn_serial,
+            record.subject_dispatch_ptr,
+        )
+    } else {
+        None
+    };
+    Some(TraceSubject {
+        kind: kind.to_owned(),
+        id,
+        actor,
+    })
+}
+
+fn trace_event_model(record: &crate::tracing::TraceEventRecord) -> TraceEvent {
+    let event = record.event;
+    let is_send = event.event_type == crate::tracing::SPAN_SEND;
+    let source_actor = if is_send {
+        actor_identity(
+            record.source_actor_id,
+            record.source_spawn_serial,
+            record.source_dispatch_ptr,
+        )
+    } else {
+        None
+    };
+    let destination_actor = if is_send {
+        actor_identity(
+            record.destination_actor_id,
+            record.destination_spawn_serial,
+            record.destination_dispatch_ptr,
+        )
+    } else {
+        None
+    };
+    let attribution_name = |attribution| match attribution {
+        crate::tracing::TraceActorAttribution::LocalActor => "local_actor",
+        crate::tracing::TraceActorAttribution::External => "external",
+        crate::tracing::TraceActorAttribution::RemoteUnknown => "remote_unknown",
+        crate::tracing::TraceActorAttribution::NotApplicable => "not_applicable",
+    };
+    let attribution_dispatch_ptr = if is_send {
+        record.destination_dispatch_ptr
+    } else {
+        record.subject_dispatch_ptr
+    };
+    let handler_name = if attribution_dispatch_ptr == 0 {
+        None
+    } else {
+        crate::profiler::actor_registry::handler_name_by_ptr(
+            attribution_dispatch_ptr,
+            event.msg_type,
+        )
+    };
+    let event_type = crate::tracing::event_type_name(event.event_type)
+        .map_or_else(|| format!("invalid:{}", event.event_type), str::to_owned);
+
+    TraceEvent {
+        sequence: record.sequence,
+        trace_id: format!("{:016x}{:016x}", event.trace_id_hi, event.trace_id_lo),
+        span_id: event.span_id,
+        parent_span_id: event.parent_span_id,
+        subject: trace_subject(record),
+        source_attribution: attribution_name(record.source_attribution).to_owned(),
+        source_actor,
+        destination_attribution: attribution_name(record.destination_attribution).to_owned(),
+        destination_actor,
+        event_type,
+        msg_type: event.msg_type,
+        timestamp_ns: event.timestamp_ns,
+        handler_name,
+    }
+}
+
+fn trace_batch_model(snapshot: &crate::tracing::TraceSnapshot) -> TraceBatch {
+    let overrun = (snapshot.overrun_count != 0).then(|| TraceOverrun {
+        first_missing_sequence: snapshot.oldest_sequence - snapshot.overrun_count,
+        last_missing_sequence: snapshot.oldest_sequence - 1,
+        count: snapshot.overrun_count,
+    });
+    TraceBatch {
+        producer_instance_id: snapshot.producer_instance_id.to_string(),
+        stream_id: snapshot.stream_id.to_string(),
+        oldest_sequence: snapshot.oldest_sequence,
+        next_sequence: snapshot.next_sequence,
+        next_cursor: snapshot.next_cursor,
+        has_more: snapshot.has_more,
+        overrun,
+        tracing_enabled: snapshot.enabled,
+        sampling_mode: snapshot.sampling_mode.to_owned(),
+        events_recorded_total: snapshot.events_recorded_total,
+        events_overwritten_total: snapshot.events_overwritten_total,
+        events_sampled_out_total: snapshot.events_sampled_out_total,
+        batch_source_monotonic_ns: snapshot.batch_source_monotonic_ns,
+        clock_anchor: TraceClockAnchor {
+            monotonic_ns: snapshot.clock_anchor.monotonic_ns,
+            unix_epoch_ns: snapshot.clock_anchor.unix_epoch_ns,
+            uncertainty_ns: snapshot.clock_anchor.uncertainty_ns,
+        },
+        events: snapshot.events.iter().map(trace_event_model).collect(),
+    }
+}
+
+/// `GET /api/traces` — read a non-destructive batch of retained trace events.
+fn serve_traces(query: Option<&str>) -> Response<Full<Bytes>> {
+    let query = match parse_trace_query(query) {
+        Ok(query) => query,
+        Err(message) => {
+            return trace_error_response(StatusCode::BAD_REQUEST, "invalid_trace_cursor", message);
+        }
+    };
+
+    let expected_stream_id = query
+        .stream_id
+        .and_then(crate::tracing::TraceStreamId::parse_hex);
+    match crate::tracing::trace_snapshot(expected_stream_id, query.after, query.limit) {
+        Ok(snapshot) => {
+            let batch = trace_batch_model(&snapshot);
+            let body = serde_json::to_string(&batch).expect("TraceBatch must serialize");
+            json_response(&body)
+        }
+        Err(crate::tracing::TraceSnapshotError::FutureCursor {
+            after,
+            next_sequence,
+        }) => trace_error_response(
+            StatusCode::BAD_REQUEST,
+            "future_trace_cursor",
+            &format!("after cursor {after} is not below the next sequence {next_sequence}"),
+        ),
+        Err(crate::tracing::TraceSnapshotError::StreamMismatch {
+            requested,
+            current,
+            producer_instance_id,
+        }) => {
+            let mismatch = TraceStreamMismatch {
+                error: "trace_stream_mismatch".to_owned(),
+                requested_stream_id: requested.to_string(),
+                current_stream_id: current.to_string(),
+                current_producer_instance_id: producer_instance_id.to_string(),
+            };
+            let body =
+                serde_json::to_string(&mismatch).expect("TraceStreamMismatch must serialize");
+            json_response_with_status(StatusCode::CONFLICT, &body)
+        }
+    }
 }
 
 /// `GET /api/supervisors` — supervision tree rows.
@@ -658,5 +925,65 @@ mod tests {
                 "tcp_error_count": "18"
             })
         );
+    }
+
+    #[test]
+    fn trace_query_defaults_to_oldest_retained_batch() {
+        assert_eq!(
+            parse_trace_query(None),
+            Ok(TraceQuery {
+                stream_id: None,
+                after: None,
+                limit: 256,
+            })
+        );
+    }
+
+    #[test]
+    fn trace_query_accepts_paired_canonical_cursor_and_limit() {
+        assert_eq!(
+            parse_trace_query(Some(
+                "stream_id=0123456789abcdef0123456789abcdef&after=18446744073709551615&limit=1"
+            )),
+            Ok(TraceQuery {
+                stream_id: Some("0123456789abcdef0123456789abcdef"),
+                after: Some(u64::MAX),
+                limit: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn trace_query_rejects_unpaired_or_noncanonical_cursor() {
+        for query in [
+            "stream_id=0123456789abcdef0123456789abcdef",
+            "after=1",
+            "stream_id=0123456789ABCDEF0123456789ABCDEF&after=1",
+            "stream_id=0123456789abcdef0123456789abcdef&after=01",
+            "stream_id=0123456789abcdef0123456789abcdef&after=+1",
+            "stream_id=0123456789abcdef0123456789abcdef&after=18446744073709551616",
+        ] {
+            assert!(
+                parse_trace_query(Some(query)).is_err(),
+                "query unexpectedly accepted: {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_query_rejects_duplicate_unknown_and_out_of_range_parameters() {
+        for query in [
+            "limit=0",
+            "limit=257",
+            "limit=01",
+            "limit=1&limit=2",
+            "wat=1",
+            "limit",
+        ] {
+            assert!(
+                parse_trace_query(Some(query)).is_err(),
+                "query unexpectedly accepted: {query}"
+            );
+        }
     }
 }

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import tomllib
 import zipfile
 
 
@@ -42,10 +43,13 @@ def main():
     receipt = {
         "archive": str(archive),
         "archive_sha256": digest(archive),
+        "script_sha256": digest(Path(__file__)),
+        "selector_sha256": digest(root / "tests/packaged-sdk/cases.json"),
         "source_revision": os.environ.get("GITHUB_SHA"),
         "platform": platform.platform(),
         "commands": [],
         "cases": [],
+        "case_inputs": {},
         "outcome": "running",
     }
     windows = sys.platform == "win32"
@@ -60,6 +64,7 @@ def main():
         "TMP",
         "LANG",
         "LC_ALL",
+        "LD_LIBRARY_PATH",
         "SYSTEMROOT",
         "WINDIR",
         "COMSPEC",
@@ -229,97 +234,6 @@ def main():
                 f"{label}: unexpected output",
             )
 
-        cases = json.loads((root / "tests/packaged-sdk/cases.json").read_text())
-        for case in cases:
-            source = root / case["source"]
-            previous = dict(env)
-            env.update(case.get("env", {}))
-            for level in (0, 2):
-                label = f"{case['id']}-O{level}"
-                executable = output / f"{label}{suffix}"
-                run(
-                    label + "-build",
-                    [
-                        hew,
-                        "build",
-                        "--opt-level",
-                        level,
-                        "--emit-llvm",
-                        source,
-                        "-o",
-                        executable,
-                    ],
-                )
-                _, stdout, stderr = run(
-                    label + "-run",
-                    [executable, *case.get("args", [])],
-                    seconds=case["timeout"],
-                    expected=case["exit"],
-                )
-                require(
-                    stdout == case["stdout"].encode()
-                    and stderr == case.get("stderr", "").encode(),
-                    f"{label}: unexpected output; see {logs}",
-                )
-                llvm = executable.with_suffix(".ll")
-                ir = llvm.read_text()
-                run(
-                    label + "-verify",
-                    ["opt", "-passes=verify", "-disable-output", llvm],
-                    seconds=30,
-                )
-                require(
-                    "llvm.coro." not in ir, f"{label}: obsolete LLVM coroutine lowering"
-                )
-                if case.get("expects_resume_frame", True):
-                    require(
-                        "$body" in ir
-                        and "hew_cont_frame_alloc" in ir
-                        and "switch i32" in ir,
-                        f"{label}: missing explicit suspension state machine",
-                    )
-                if case["id"] == "hot-loop-dynamic" and level == 2:
-                    blocks = [
-                        match.group()
-                        for match in re.finditer(
-                            r"(?ms)^[A-Za-z$._][-A-Za-z$._0-9]*:[^\n]*\n.*?(?=^[A-Za-z$._][-A-Za-z$._0-9]*:|^\})",
-                            ir,
-                        )
-                        if "1664525" in match.group()
-                        and "2147483647" in match.group()
-                        and re.search(
-                            r"\bbr[^\n]*label %"
-                            + re.escape(match.group().split(":", 1)[0])
-                            + r"(?:[,\s]|$)",
-                            match.group(),
-                        )
-                    ]
-                    require(
-                        blocks
-                        and all(
-                            not re.search(
-                                r"\b(?:load|store|alloca|call)\b",
-                                "\n".join(
-                                    line.split(";", 1)[0] for line in block.splitlines()
-                                ),
-                            )
-                            for block in blocks
-                        ),
-                        "optimized recurrence must keep loop state in registers",
-                    )
-                receipt["cases"].append(
-                    {
-                        "id": case["id"],
-                        "opt_level": level,
-                        "source_sha256": digest(source),
-                        "llvm_sha256": digest(llvm),
-                    }
-                )
-                save()
-                print(f"PASS {label}", flush=True)
-            env.clear()
-            env.update(previous)
-
         run(
             "native-host-clients",
             [
@@ -392,6 +306,112 @@ def main():
                 stdout == b"sdk-native-consumer-ok\n" and not stderr,
                 "packaged bytes ABI output changed",
             )
+        cases = json.loads((root / "tests/packaged-sdk/cases.json").read_text())
+        for selection in cases:
+            contract = None
+            if "contract" in selection:
+                contract = root / selection["contract"]
+                definitions = tomllib.loads(contract.read_text())["case"]
+                require(len(definitions) == 1, f"expected one core case: {contract}")
+                case = definitions[0]
+                source = contract.parent.parent / case["source"]
+            else:
+                case = selection
+                source = root / case["source"]
+            expected = case["expected"]
+            receipt["case_inputs"][case["id"]] = {
+                "source_sha256": digest(source),
+                "contract_sha256": digest(contract) if contract else None,
+            }
+            save()
+            previous = dict(env)
+            env.update(case.get("env", {}))
+            for level in (0, 2):
+                label = f"{case['id']}-O{level}"
+                executable = output / f"{label}{suffix}"
+                run(
+                    label + "-build",
+                    [
+                        hew,
+                        "build",
+                        "--opt-level",
+                        level,
+                        "--emit-llvm",
+                        source,
+                        "-o",
+                        executable,
+                    ],
+                )
+                _, stdout, stderr = run(
+                    label + "-run",
+                    [executable, *case.get("args", [])],
+                    seconds=case["timeout_seconds"],
+                    expected=expected["exit"],
+                )
+                require(
+                    stdout == expected["stdout"].encode()
+                    and stderr == expected.get("stderr", "").encode(),
+                    f"{label}: unexpected output; see {logs}",
+                )
+                llvm = executable.with_suffix(".ll")
+                ir = llvm.read_text()
+                run(
+                    label + "-verify",
+                    ["opt", "-passes=verify", "-disable-output", llvm],
+                    seconds=30,
+                )
+                require(
+                    "llvm.coro." not in ir, f"{label}: obsolete LLVM coroutine lowering"
+                )
+                if selection.get("expects_resume_frame", True):
+                    require(
+                        "$body" in ir
+                        and "hew_cont_frame_alloc" in ir
+                        and "switch i32" in ir,
+                        f"{label}: missing explicit suspension state machine",
+                    )
+                if case["id"] == "hot-loop-dynamic" and level == 2:
+                    blocks = [
+                        match.group()
+                        for match in re.finditer(
+                            r"(?ms)^[A-Za-z$._][-A-Za-z$._0-9]*:[^\n]*\n.*?(?=^[A-Za-z$._][-A-Za-z$._0-9]*:|^\})",
+                            ir,
+                        )
+                        if "1664525" in match.group()
+                        and "2147483647" in match.group()
+                        and re.search(
+                            r"\bbr[^\n]*label %"
+                            + re.escape(match.group().split(":", 1)[0])
+                            + r"(?:[,\s]|$)",
+                            match.group(),
+                        )
+                    ]
+                    require(
+                        blocks
+                        and all(
+                            not re.search(
+                                r"\b(?:load|store|alloca|call)\b",
+                                "\n".join(
+                                    line.split(";", 1)[0] for line in block.splitlines()
+                                ),
+                            )
+                            for block in blocks
+                        ),
+                        "optimized recurrence must keep loop state in registers",
+                    )
+                receipt["cases"].append(
+                    {
+                        "id": case["id"],
+                        "opt_level": level,
+                        **receipt["case_inputs"][case["id"]],
+                        "llvm_sha256": digest(llvm),
+                    }
+                )
+                save()
+                print(f"PASS {label}", flush=True)
+            env.clear()
+            env.update(previous)
+
         receipt["outcome"] = "passed"
         save()
         print(f"PASS packaged SDK: {output / 'receipt.json'}", flush=True)

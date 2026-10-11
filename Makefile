@@ -76,6 +76,7 @@
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug hew-lsp observe observe-functional-test observe-protocol-generate observe-protocol-check mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
 .PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate hew-fmt-check hew-fmt-fidelity test-migrate-corpus test-build-harness core-acceptance
 .PHONY: test-obligation-site-diff
+.PHONY: test-packaged-sdk
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall test-cabi-surface cabi-surface cabi-surface-check
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
@@ -943,6 +944,11 @@ publish-docs: ## Release: build docs and print the operator deploy command
 	@echo ""
 	@echo "Docs generated at $(CARGO_TARGET_ROOT)/doc/."
 	@echo "Deploy with: wrangler pages deploy $(CARGO_TARGET_ROOT)/doc/ --project-name hew-docs"
+
+PACKAGED_SDK_ARCHIVE ?=
+PACKAGED_SDK_RESULTS ?= build/packaged-sdk-acceptance
+test-packaged-sdk: ## Release: execute SDK source/ABI contracts (PACKAGED_SDK_ARCHIVE=...)
+	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)"
 
 # Prove the shipped archive can link a real Rust staticlib through the public
 # `hew build --link-lib` interface. Rust controls archive member names, so the

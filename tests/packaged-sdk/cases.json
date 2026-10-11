@@ -1,0 +1,74 @@
+[
+  {
+    "id": "task-race-handles",
+    "stdout": "7\ncreated\n7\n7\nbackground\njoined\n11\nordinary error\n",
+    "exit": 0,
+    "timeout": 15,
+    "source": "examples/sandbox-graduation/task_race.hew"
+  },
+  {
+    "id": "stream-owned-elements",
+    "stdout": "owned stream elements and early close\n",
+    "exit": 0,
+    "timeout": 30,
+    "source": "tests/core-acceptance/cases/stream-owned-elements.hew"
+  },
+  {
+    "id": "spawn-keyed",
+    "stdout": "a=2 b=1\na=1 b=2\na=2 b=1\nplain reads=0 limit=10\nevaluate set\nset reads=0 limit=3\nevaluate loader\nloader 4 9\n0\nrelay kind=2 failed=false\na=20 b=10\nopened by sam\n",
+    "exit": 0,
+    "timeout": 30,
+    "source": "tests/core-acceptance/cases/spawn-keyed.hew"
+  },
+  {
+    "id": "race-err-wins",
+    "stdout": "err fast failure\n",
+    "exit": 0,
+    "timeout": 15,
+    "source": "tests/core-acceptance/cases/race-err-wins.hew"
+  },
+  {
+    "id": "hot-loop-dynamic",
+    "stdout": "546014560\n",
+    "exit": 0,
+    "timeout": 30,
+    "args": ["30000000"],
+    "source": "tests/packaged-sdk/hot-loop-dynamic.hew"
+  },
+  {
+    "id": "task-surfaces",
+    "stdout": "4\nsingle started\n9\n37\n16\n25\n49\ndone\n64\n81\n100\nrace started\n144\n42\n-1\n196\n7\n41\n0\nchild finished\nscope drained\n",
+    "exit": 0,
+    "timeout": 30,
+    "args": [],
+    "source": "tests/packaged-sdk/task-surfaces.hew"
+  },
+  {
+    "id": "match-divergent-failure-tail",
+    "timeout": 20,
+    "exit": 0,
+    "stdout": "match exits preserve values\n",
+    "expects_resume_frame": false,
+    "source": "tests/core-acceptance/cases/match-divergent-failure-tail.hew"
+  },
+  {
+    "id": "resource-receiver-fallible-argument",
+    "timeout": 20,
+    "exit": 0,
+    "stdout": "true\nfailure\n",
+    "expects_resume_frame": false,
+    "source": "tests/core-acceptance/cases/resource-receiver-fallible-argument.hew"
+  },
+  {
+    "id": "process-pipe-readiness",
+    "timeout": 30,
+    "exit": 0,
+    "stdout": "concurrent work: 42\ncancelled reads: 10\nselect timeout: true\ndelayed data: true\nselected EOF: true\noutput after exit: true\nbuffer refills: true\npending reads closed\nunrelated children retain no writers\nstderr data: true\n",
+    "stderr": "",
+    "env": {
+      "HEW_WORKERS": "1",
+      "HEW_IO_LEAK_CHECK": "1"
+    },
+    "source": "tests/core-acceptance/cases/process-pipe-readiness.hew"
+  }
+]

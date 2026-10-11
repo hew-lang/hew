@@ -120,8 +120,6 @@ pub fn maybe_start_with_context(
         Ok(val) if !val.is_empty() => val,
         _ => return,
     };
-    crate::tracing::hew_trace_enable(1);
-
     let Some(mode) = parse_listen_mode(&env_val) else {
         return;
     };
@@ -150,9 +148,25 @@ pub fn maybe_start_with_context(
 
     // HTTP server thread — TCP or Unix depending on mode.
     let server_handle = match mode {
-        ListenMode::Tcp(bind_addr) => thread::Builder::new()
-            .name("hew-pprof-server".into())
-            .spawn(move || server::run_tcp(&bind_addr, ctx)),
+        ListenMode::Tcp(bind_addr) => {
+            // Bind before spawning so an invalid or unavailable address cannot
+            // create a phantom enabled tracing epoch with no listening server.
+            let listener = match std::net::TcpListener::bind(&bind_addr) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    eprintln!("[hew-pprof] failed to bind {bind_addr}: {error}");
+                    PROFILER_SHUTDOWN.store(true, Ordering::Release);
+                    crate::util::report_join_panic(
+                        "hew profiler sampler thread",
+                        sampler_handle.join(),
+                    );
+                    return;
+                }
+            };
+            thread::Builder::new()
+                .name("hew-pprof-server".into())
+                .spawn(move || server::run_tcp_with_listener(listener, ctx))
+        }
         #[cfg(unix)]
         ListenMode::Unix => {
             let Some(disc_dir) = discovery::discovery_dir() else {
@@ -189,6 +203,10 @@ pub fn maybe_start_with_context(
         crate::util::report_join_panic("hew profiler sampler thread", sampler_handle.join());
         return;
     };
+
+    // Start the trace epoch only after mode validation, resource setup, bind,
+    // and both background thread spawns succeeded.
+    crate::tracing::hew_trace_enable(1);
 
     // For unix mode, write the discovery file now that the thread is running.
     #[cfg(unix)]
@@ -386,6 +404,35 @@ mod tests {
 
         assert_eq!(bind_addr, "0.0.0.0:6060");
         assert!(warns_on_wildcard);
+    }
+
+    #[test]
+    fn invalid_tcp_address_does_not_enable_tracing() {
+        let _guard = PROFILER_TEST_MUTEX.lock_or_recover();
+        let _trace_guard = crate::tracing::tracing_test_guard();
+        shutdown();
+        crate::tracing::hew_trace_reset();
+
+        crate::env::ENV_LOCK.access(|()| {
+            let previous = std::env::var_os("HEW_PPROF");
+            // SAFETY: ENV_LOCK provides exclusive process-environment access.
+            unsafe { std::env::set_var("HEW_PPROF", "definitely-not-a-socket-address") };
+            maybe_start();
+            match previous {
+                Some(value) => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::set_var("HEW_PPROF", value) };
+                }
+                None => {
+                    // SAFETY: ENV_LOCK provides exclusive process-environment access.
+                    unsafe { std::env::remove_var("HEW_PPROF") };
+                }
+            }
+        });
+
+        assert_eq!(crate::tracing::hew_trace_is_enabled(), 0);
+        assert!(PROFILER_STATE.access(|state| state.is_none()));
+        crate::tracing::hew_trace_reset();
     }
 
     #[test]

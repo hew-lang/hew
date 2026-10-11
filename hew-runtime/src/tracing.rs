@@ -12,7 +12,7 @@
 //! `parent_span_id`). When an actor sends a message, the current span
 //! becomes the parent of the new span at the receiving actor.
 //!
-//! Trace events are collected in a lock-free ring buffer and can be
+//! Trace events are collected in a bounded sequence ring and can be
 //! exported by a background thread or on-demand.
 //!
 //! # C ABI
@@ -33,6 +33,7 @@
 
 use crate::lifetime::PoisonSafe;
 use crate::util::MutexExt;
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -196,19 +197,269 @@ pub struct HewTraceEvent {
     pub timestamp_ns: u64,
 }
 
+/// Opaque identity of one producer process or one continuous trace stream.
+///
+/// The Observe wire representation is exactly 32 lowercase hexadecimal digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TraceStreamId {
+    /// Upper 64 bits.
+    pub hi: u64,
+    /// Lower 64 bits.
+    pub lo: u64,
+}
+
+impl TraceStreamId {
+    /// Parse the canonical 32-lowercase-hex wire representation.
+    #[must_use]
+    pub fn parse_hex(value: &str) -> Option<Self> {
+        if value.len() != 32
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return None;
+        }
+        let hi = u64::from_str_radix(&value[..16], 16).ok()?;
+        let lo = u64::from_str_radix(&value[16..], 16).ok()?;
+        Some(Self { hi, lo })
+    }
+}
+
+impl std::fmt::Display for TraceStreamId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:016x}{:016x}", self.hi, self.lo)
+    }
+}
+
+/// A richer internal trace record. The embedded [`HewTraceEvent`] remains the
+/// stable C ABI projection while Observe receives lossless sequence and actor
+/// endpoint metadata.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceEventRecord {
+    /// Monotonic sequence within `stream_id`, starting at one.
+    pub sequence: u64,
+    /// Stable C ABI projection.
+    pub event: HewTraceEvent,
+    /// Semantic subject kind for non-send events (`actor` or `channel`). Send
+    /// and I/O events have no subject.
+    pub subject_kind: Option<&'static str>,
+    /// Stable subject ID in the namespace selected by `subject_kind`.
+    pub subject_id: Option<u64>,
+    /// Subject actor, only when `subject_kind == Some("actor")`.
+    pub subject_actor_id: Option<u64>,
+    /// Alias-proof subject actor incarnation when available.
+    pub subject_spawn_serial: Option<u64>,
+    /// Subject dispatch function captured while the actor is live.
+    pub subject_dispatch_ptr: usize,
+    /// Sending actor for a local send.
+    pub source_actor_id: Option<u64>,
+    /// Producer knowledge about the source endpoint.
+    pub source_attribution: TraceActorAttribution,
+    /// Alias-proof source incarnation where it is available at emission.
+    pub source_spawn_serial: Option<u64>,
+    /// Receiving actor for a local send; unknown for remote I/O events.
+    pub destination_actor_id: Option<u64>,
+    /// Producer knowledge about the destination endpoint.
+    pub destination_attribution: TraceActorAttribution,
+    /// Alias-proof destination incarnation where it is available at emission.
+    pub destination_spawn_serial: Option<u64>,
+    /// Source dispatch function captured while the actor is live.
+    ///
+    /// This is used only as a stable key into the profiler type/handler registry;
+    /// consumers must not call the function through this integer.
+    pub source_dispatch_ptr: usize,
+    /// Destination dispatch function captured while the actor is live.
+    pub destination_dispatch_ptr: usize,
+}
+
+/// Correlation between the producer's monotonic clock and Unix wall time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceClockAnchor {
+    /// Producer monotonic timestamp at the anchor.
+    pub monotonic_ns: u64,
+    /// Unix timestamp corresponding to `monotonic_ns`.
+    pub unix_epoch_ns: u64,
+    /// Conservative uncertainty introduced while sampling the two clocks.
+    pub uncertainty_ns: u64,
+}
+
+/// Producer knowledge about one actor endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceActorAttribution {
+    /// A process-local actor identity is available.
+    LocalActor,
+    /// The send originated outside any actor or transport receive context.
+    External,
+    /// A transport receive context exists, but the remote actor identity was
+    /// not propagated to this local mailbox boundary.
+    RemoteUnknown,
+    /// This event has no actor endpoint in this position.
+    NotApplicable,
+}
+
+/// A non-destructive bounded snapshot for one stateless Observe cursor.
+#[derive(Debug, Clone)]
+pub struct TraceSnapshot {
+    /// Stable for the lifetime of this runtime process.
+    pub producer_instance_id: TraceStreamId,
+    /// Changes whenever continuity is intentionally broken.
+    pub stream_id: TraceStreamId,
+    /// Whether tracing is currently accepting events.
+    pub enabled: bool,
+    /// First sequence still retained, or `next_sequence` when empty.
+    pub oldest_sequence: u64,
+    /// One greater than the largest sequence assigned in this stream.
+    pub next_sequence: u64,
+    /// Exclusive cursor to send on the next request.
+    pub next_cursor: u64,
+    /// More retained records follow `next_cursor`.
+    pub has_more: bool,
+    /// Exact number of records unavailable between the requested cursor and
+    /// `oldest_sequence`. Zero means no cursor overrun.
+    pub overrun_count: u64,
+    /// Events accepted into this stream, including overwritten records.
+    pub events_recorded_total: u64,
+    /// Events evicted from bounded retention.
+    pub events_overwritten_total: u64,
+    /// Events rejected by sampling. Sampling is not implemented yet, so this is zero.
+    pub events_sampled_out_total: u64,
+    /// Current producer sampling policy (`"all"` or `"off"`).
+    pub sampling_mode: &'static str,
+    /// Producer monotonic time at snapshot creation.
+    pub batch_source_monotonic_ns: u64,
+    /// Stable clock anchor for this stream.
+    pub clock_anchor: TraceClockAnchor,
+    /// Retained records after the exclusive cursor, limited by the caller.
+    pub events: Vec<TraceEventRecord>,
+}
+
+/// Invalid stateless-cursor requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceSnapshotError {
+    /// The cursor belongs to a previous stream.
+    StreamMismatch {
+        /// Stable identity of the current producer process.
+        producer_instance_id: TraceStreamId,
+        /// Stream requested by the observer.
+        requested: TraceStreamId,
+        /// Current producer stream.
+        current: TraceStreamId,
+    },
+    /// The exclusive cursor is beyond the largest sequence produced.
+    FutureCursor {
+        /// Cursor supplied by the observer.
+        after: u64,
+        /// One-past-last sequence in the current stream.
+        next_sequence: u64,
+    },
+}
+
 // ── Global state ───────────────────────────────────────────────────────
 
 /// Global tracing enable flag.
 static TRACING_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Cheap generation guard preventing an emitter that started before clear/reset
+/// from appending into the replacement stream.
+static STREAM_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Monotonically increasing span ID counter (xorshift for speed).
 static SPAN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Recorded trace events (bounded ring buffer).
-static TRACE_EVENTS: PoisonSafe<VecDeque<HewTraceEvent>> = PoisonSafe::new(VecDeque::new());
-
 /// Maximum number of trace events to retain.
 const MAX_TRACE_EVENTS: usize = 16384;
+
+#[derive(Debug)]
+struct TraceStore {
+    generation: u64,
+    stream_id: TraceStreamId,
+    next_sequence: u64,
+    events_recorded_total: u64,
+    events_overwritten_total: u64,
+    clock_anchor: TraceClockAnchor,
+    events: VecDeque<TraceEventRecord>,
+}
+
+impl TraceStore {
+    fn new() -> Self {
+        Self {
+            generation: STREAM_GENERATION.load(Ordering::Acquire),
+            stream_id: new_stream_id(),
+            next_sequence: 1,
+            events_recorded_total: 0,
+            events_overwritten_total: 0,
+            clock_anchor: sample_clock_anchor(),
+            events: VecDeque::with_capacity(MAX_TRACE_EVENTS),
+        }
+    }
+
+    fn begin_new_stream(&mut self) {
+        self.generation = STREAM_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+        self.stream_id = new_stream_id();
+        self.next_sequence = 1;
+        self.events_recorded_total = 0;
+        self.events_overwritten_total = 0;
+        self.clock_anchor = sample_clock_anchor();
+        self.events.clear();
+    }
+}
+
+/// Recorded trace events (bounded, non-destructive sequence ring).
+static TRACE_EVENTS: LazyLock<PoisonSafe<TraceStore>> =
+    LazyLock::new(|| PoisonSafe::new(TraceStore::new()));
+
+/// Stable identity of this producer process. It is deliberately distinct from
+/// stream identity: clear/reset and disable→enable start new streams without
+/// pretending that the runtime process restarted.
+static PRODUCER_INSTANCE_ID: LazyLock<TraceStreamId> = LazyLock::new(new_stream_id);
+
+#[derive(Debug, Clone, Copy)]
+struct InternalCursor {
+    stream_id: TraceStreamId,
+    after: u64,
+}
+
+static RUST_DRAIN_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
+static C_DRAIN_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
+#[cfg(feature = "otel")]
+static OTEL_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
+static TEST_REPORT_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
+#[cfg(feature = "profiler")]
+static LEGACY_JSON_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
+
+#[cfg(test)]
+#[derive(Clone)]
+struct RecordPreLockBarrier {
+    arrived: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static RECORD_PRE_LOCK_BARRIER: PoisonSafe<Option<RecordPreLockBarrier>> = PoisonSafe::new(None);
+
+thread_local! {
+    static REMOTE_SOURCE_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Scoped marker for a local mailbox submission originating from a remote
+/// transport frame. It carries no fabricated remote identity; it only prevents
+/// the producer from mislabelling the missing source as an external local send.
+pub(crate) struct RemoteTraceSourceGuard;
+
+impl Drop for RemoteTraceSourceGuard {
+    fn drop(&mut self) {
+        REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+pub(crate) fn enter_remote_trace_source() -> RemoteTraceSourceGuard {
+    REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    RemoteTraceSourceGuard
+}
+
+fn remote_trace_source_active() -> bool {
+    REMOTE_SOURCE_DEPTH.with(|depth| depth.get() != 0)
+}
 
 // ── Per-connection I/O span side table ────────────────────────────────
 //
@@ -290,6 +541,31 @@ fn next_random_id() -> u64 {
     }
 }
 
+fn new_stream_id() -> TraceStreamId {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rand::RngExt as _;
+        let mut rng = rand::rng();
+        let mut id = TraceStreamId {
+            hi: rng.random(),
+            lo: rng.random(),
+        };
+        if id.hi == 0 && id.lo == 0 {
+            id.lo = 1;
+        }
+        id
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The native Observe server is unavailable on wasm32. Keep the internal
+        // tracing module buildable there without adding a browser entropy ABI.
+        TraceStreamId {
+            hi: next_random_id(),
+            lo: next_random_id(),
+        }
+    }
+}
+
 /// Get current monotonic time in nanoseconds, anchored on the process-wide
 /// epoch ([`crate::monotonic`]).
 fn monotonic_ns() -> u64 {
@@ -339,58 +615,340 @@ pub fn unix_epoch_offset_ns() -> u64 {
     }
 }
 
+fn sample_clock_anchor() -> TraceClockAnchor {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Bracket the wall-clock read with monotonic samples. The midpoint is our
+    // best estimate of when the wall read occurred, and half the bracket width
+    // is the honest correlation uncertainty.
+    let monotonic_before = monotonic_ns();
+    let unix_epoch_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let monotonic_after = monotonic_ns();
+    let uncertainty_ns = monotonic_after.saturating_sub(monotonic_before).div_ceil(2);
+    let monotonic_ns = monotonic_before.saturating_add(uncertainty_ns);
+    TraceClockAnchor {
+        monotonic_ns,
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Unix epoch ns fits in u64 until the year 2554"
+        )]
+        unix_epoch_ns: unix_epoch_ns as u64,
+        uncertainty_ns,
+    }
+}
+
 // ── Rust-internal drain ────────────────────────────────────────────────
 
-/// Drain up to `max` trace events for internal consumers (e.g. the `OTel` exporter).
+/// Read a bounded, non-destructive snapshot after an exclusive sequence cursor.
 ///
-/// Unlike the C ABI [`hew_trace_drain`], this returns a `Vec` directly and
-/// is callable from Rust without unsafe code.
-pub fn drain_events(max: usize) -> Vec<HewTraceEvent> {
-    if max == 0 {
-        return Vec::new();
-    }
-    TRACE_EVENTS.access(|events| {
-        let count = events.len().min(max);
-        let mut out = Vec::with_capacity(count);
-        for _ in 0..count {
-            if let Some(ev) = events.pop_front() {
-                out.push(ev);
+/// With no cursor, reading begins at the oldest retained event. A stale cursor
+/// likewise begins at the oldest retained event but reports the exact missing
+/// count. `limit` is defensively capped at the Observe wire maximum of 256.
+///
+/// # Errors
+///
+/// Returns [`TraceSnapshotError::StreamMismatch`] for a cursor from another
+/// stream, or [`TraceSnapshotError::FutureCursor`] when `after` is beyond the
+/// largest sequence produced in the current stream.
+pub fn trace_snapshot(
+    expected_stream_id: Option<TraceStreamId>,
+    after: Option<u64>,
+    limit: usize,
+) -> Result<TraceSnapshot, TraceSnapshotError> {
+    trace_snapshot_inner(expected_stream_id, after, limit.min(256))
+}
+
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn trace_stream_is_current(stream_id: TraceStreamId) -> bool {
+    TRACE_EVENTS.access(|store| store.stream_id == stream_id)
+}
+
+fn trace_snapshot_inner(
+    expected_stream_id: Option<TraceStreamId>,
+    after: Option<u64>,
+    limit: usize,
+) -> Result<TraceSnapshot, TraceSnapshotError> {
+    TRACE_EVENTS.access(|store| {
+        if let Some(requested) = expected_stream_id {
+            if requested != store.stream_id {
+                return Err(TraceSnapshotError::StreamMismatch {
+                    producer_instance_id: *PRODUCER_INSTANCE_ID,
+                    requested,
+                    current: store.stream_id,
+                });
             }
         }
-        out
+
+        let last_produced = store.next_sequence.saturating_sub(1);
+        if let Some(after) = after {
+            if after > last_produced {
+                return Err(TraceSnapshotError::FutureCursor {
+                    after,
+                    next_sequence: store.next_sequence,
+                });
+            }
+        }
+
+        let oldest_sequence = store
+            .events
+            .front()
+            .map_or(store.next_sequence, |record| record.sequence);
+        let requested_next = after.map_or(oldest_sequence, |value| value.saturating_add(1));
+        let overrun_count = oldest_sequence.saturating_sub(requested_next);
+        let first_sequence = requested_next.max(oldest_sequence);
+        let events: Vec<_> = store
+            .events
+            .iter()
+            .skip_while(|record| record.sequence < first_sequence)
+            .take(limit)
+            .copied()
+            .collect();
+        let next_cursor = events.last().map_or_else(
+            || after.unwrap_or(store.next_sequence.saturating_sub(1)),
+            |record| record.sequence,
+        );
+        let has_more = next_cursor < last_produced;
+        let enabled = TRACING_ENABLED.load(Ordering::Acquire);
+
+        Ok(TraceSnapshot {
+            producer_instance_id: *PRODUCER_INSTANCE_ID,
+            stream_id: store.stream_id,
+            enabled,
+            oldest_sequence,
+            next_sequence: store.next_sequence,
+            next_cursor,
+            has_more,
+            overrun_count,
+            events_recorded_total: store.events_recorded_total,
+            events_overwritten_total: store.events_overwritten_total,
+            events_sampled_out_total: 0,
+            sampling_mode: if enabled { "all" } else { "off" },
+            batch_source_monotonic_ns: monotonic_ns(),
+            clock_anchor: store.clock_anchor,
+            events,
+        })
     })
+}
+
+#[derive(Debug)]
+pub(crate) struct TraceConsumerBatch {
+    pub events: Vec<HewTraceEvent>,
+    #[cfg(feature = "otel")]
+    pub discontinuity: bool,
+}
+
+fn read_internal_consumer(
+    cursor: &PoisonSafe<Option<InternalCursor>>,
+    max: usize,
+) -> TraceConsumerBatch {
+    if max == 0 {
+        return TraceConsumerBatch {
+            events: Vec::new(),
+            #[cfg(feature = "otel")]
+            discontinuity: false,
+        };
+    }
+    cursor.access(|saved| {
+        #[cfg(feature = "otel")]
+        let mut discontinuity = false;
+        let snapshot = match *saved {
+            Some(current) => {
+                match trace_snapshot_inner(Some(current.stream_id), Some(current.after), max) {
+                    Ok(snapshot) => snapshot,
+                    Err(
+                        TraceSnapshotError::StreamMismatch { .. }
+                        | TraceSnapshotError::FutureCursor { .. },
+                    ) => {
+                        #[cfg(feature = "otel")]
+                        {
+                            discontinuity = true;
+                        }
+                        trace_snapshot_inner(None, None, max)
+                            .expect("cursor-less snapshot cannot fail")
+                    }
+                }
+            }
+            None => {
+                trace_snapshot_inner(None, None, max).expect("cursor-less snapshot cannot fail")
+            }
+        };
+        #[cfg(feature = "otel")]
+        {
+            discontinuity |= snapshot.overrun_count != 0;
+        }
+        *saved = Some(InternalCursor {
+            stream_id: snapshot.stream_id,
+            after: snapshot.next_cursor,
+        });
+        TraceConsumerBatch {
+            events: snapshot
+                .events
+                .into_iter()
+                .map(|record| record.event)
+                .collect(),
+            #[cfg(feature = "otel")]
+            discontinuity,
+        }
+    })
+}
+
+/// Read events through the legacy Rust-internal consumer cursor without
+/// removing records needed by other observers.
+#[must_use]
+pub fn drain_events(max: usize) -> Vec<HewTraceEvent> {
+    read_internal_consumer(&RUST_DRAIN_CURSOR, max).events
+}
+
+/// Read through `OTel`'s independent cursor.
+#[cfg(feature = "otel")]
+pub(crate) fn read_otel_events(max: usize) -> TraceConsumerBatch {
+    read_internal_consumer(&OTEL_CURSOR, max)
+}
+
+/// Read through deterministic test reporting's independent cursor.
+pub(crate) fn read_test_report_events(max: usize) -> TraceConsumerBatch {
+    read_internal_consumer(&TEST_REPORT_CURSOR, max)
 }
 
 // ── Recording ──────────────────────────────────────────────────────────
 
 /// Record a trace event if tracing is enabled.
-fn record_event(event: HewTraceEvent) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
-        return;
+fn recording_generation() -> Option<u64> {
+    TRACING_ENABLED
+        .load(Ordering::Acquire)
+        .then(|| STREAM_GENERATION.load(Ordering::Acquire))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "hot-path scalar metadata avoids allocation and preserves the C ABI projection"
+)]
+fn record_event_with_attribution(
+    generation: u64,
+    event: HewTraceEvent,
+    subject_kind: Option<&'static str>,
+    subject_id: Option<u64>,
+    subject_actor_id: Option<u64>,
+    subject_spawn_serial: Option<u64>,
+    subject_dispatch_ptr: usize,
+    source_actor_id: Option<u64>,
+    source_spawn_serial: Option<u64>,
+    destination_actor_id: Option<u64>,
+    destination_spawn_serial: Option<u64>,
+    source_dispatch_ptr: usize,
+    destination_dispatch_ptr: usize,
+    source_attribution: TraceActorAttribution,
+    destination_attribution: TraceActorAttribution,
+) {
+    #[cfg(test)]
+    if let Some(barrier) = RECORD_PRE_LOCK_BARRIER.access(|slot| slot.clone()) {
+        barrier.arrived.wait();
+        barrier.release.wait();
     }
-    TRACE_EVENTS.access(|events| {
-        while events.len() >= MAX_TRACE_EVENTS {
-            events.pop_front();
+    TRACE_EVENTS.access(|store| {
+        // Serialize the second enabled check with every stream transition. An
+        // emitter that observed the old epoch cannot append after reset/clear.
+        if !TRACING_ENABLED.load(Ordering::Acquire) || store.generation != generation {
+            return;
         }
-        events.push_back(event);
+        if store.next_sequence == u64::MAX {
+            // The sequence cursor cannot represent one-past-u64::MAX. Rotate
+            // atomically at commit time and make this event sequence 1 of the
+            // replacement stream. Unlike a user reset, no other thread can
+            // observe a boundary between the rotation and this append because
+            // both happen while holding TRACE_EVENTS.
+            store.begin_new_stream();
+        }
+        let sequence = store.next_sequence;
+        store.next_sequence += 1;
+        store.events_recorded_total += 1;
+        while store.events.len() >= MAX_TRACE_EVENTS {
+            store.events.pop_front();
+            store.events_overwritten_total += 1;
+        }
+        store.events.push_back(TraceEventRecord {
+            sequence,
+            event,
+            subject_kind,
+            subject_id,
+            subject_actor_id,
+            subject_spawn_serial,
+            subject_dispatch_ptr,
+            source_actor_id,
+            source_attribution,
+            source_spawn_serial,
+            destination_actor_id,
+            destination_attribution,
+            destination_spawn_serial,
+            source_dispatch_ptr,
+            destination_dispatch_ptr,
+        });
     });
 }
 
+fn record_event_for_generation(generation: u64, event: HewTraceEvent) {
+    let subject_kind = match event.event_type {
+        SPAN_IO_ACCEPT | SPAN_IO_RECV | SPAN_SEND => None,
+        SPAN_DUPLEX_CREATED
+        | SPAN_DUPLEX_HALF_SPLIT
+        | SPAN_DUPLEX_CLOSED
+        | SPAN_SINK_CLOSED
+        | SPAN_STREAM_CLOSED => Some("channel"),
+        _ if event.actor_id != 0 => Some("actor"),
+        _ => None,
+    };
+    let subject_id = subject_kind.map(|_| event.actor_id);
+    let subject_actor_id = (subject_kind == Some("actor")).then_some(event.actor_id);
+    record_event_with_attribution(
+        generation,
+        event,
+        subject_kind,
+        subject_id,
+        subject_actor_id,
+        None,
+        0,
+        None,
+        None,
+        None,
+        None,
+        0,
+        0,
+        TraceActorAttribution::NotApplicable,
+        TraceActorAttribution::NotApplicable,
+    );
+}
+
+#[cfg(test)]
+fn record_event(event: HewTraceEvent) {
+    if let Some(generation) = recording_generation() {
+        record_event_for_generation(generation, event);
+    }
+}
+
 fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
+    let Some(generation) = recording_generation() else {
+        return;
+    };
     let Some(ctx) = trace_context() else {
         return;
     };
 
-    record_event(HewTraceEvent {
-        trace_id_hi: ctx.trace_id_hi,
-        trace_id_lo: ctx.trace_id_lo,
-        span_id: ctx.span_id,
-        parent_span_id: ctx.parent_span_id,
-        actor_id,
-        event_type,
-        msg_type,
-        timestamp_ns: monotonic_ns(),
-    });
+    record_event_for_generation(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: ctx.trace_id_hi,
+            trace_id_lo: ctx.trace_id_lo,
+            span_id: ctx.span_id,
+            parent_span_id: ctx.parent_span_id,
+            actor_id,
+            event_type,
+            msg_type,
+            timestamp_ns: monotonic_ns(),
+        },
+    );
 }
 
 /// Record a supervisor lifecycle decision (restart, escalate, circuit
@@ -445,9 +1003,9 @@ pub extern "C" fn hew_trace_new_span() -> u64 {
 /// `SPAN_BEGIN` event.
 #[no_mangle]
 pub extern "C" fn hew_trace_begin(actor_id: u64, msg_type: i32) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    let Some(generation) = recording_generation() else {
         return;
-    }
+    };
     let Some(parent) = trace_context() else {
         return;
     };
@@ -473,38 +1031,44 @@ pub extern "C" fn hew_trace_begin(actor_id: u64, msg_type: i32) {
         return;
     }
 
-    record_event(HewTraceEvent {
-        trace_id_hi: ctx.trace_id_hi,
-        trace_id_lo: ctx.trace_id_lo,
-        span_id: ctx.span_id,
-        parent_span_id: ctx.parent_span_id,
-        actor_id,
-        event_type: SPAN_BEGIN,
-        msg_type,
-        timestamp_ns: monotonic_ns(),
-    });
+    record_event_for_generation(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: ctx.trace_id_hi,
+            trace_id_lo: ctx.trace_id_lo,
+            span_id: ctx.span_id,
+            parent_span_id: ctx.parent_span_id,
+            actor_id,
+            event_type: SPAN_BEGIN,
+            msg_type,
+            timestamp_ns: monotonic_ns(),
+        },
+    );
 }
 
 /// End the current span and record a `SPAN_END` event.
 #[no_mangle]
 pub extern "C" fn hew_trace_end(actor_id: u64, msg_type: i32) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    let Some(generation) = recording_generation() else {
         return;
-    }
+    };
     let Some(ctx) = trace_context() else {
         return;
     };
 
-    record_event(HewTraceEvent {
-        trace_id_hi: ctx.trace_id_hi,
-        trace_id_lo: ctx.trace_id_lo,
-        span_id: ctx.span_id,
-        parent_span_id: ctx.parent_span_id,
-        actor_id,
-        event_type: SPAN_END,
-        msg_type,
-        timestamp_ns: monotonic_ns(),
-    });
+    record_event_for_generation(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: ctx.trace_id_hi,
+            trace_id_lo: ctx.trace_id_lo,
+            span_id: ctx.span_id,
+            parent_span_id: ctx.parent_span_id,
+            actor_id,
+            event_type: SPAN_END,
+            msg_type,
+            timestamp_ns: monotonic_ns(),
+        },
+    );
 
     // Restore parent context.
     let _ = write_trace_context(HewTraceContext {
@@ -519,7 +1083,7 @@ pub extern "C" fn hew_trace_end(actor_id: u64, msg_type: i32) {
 /// Record a lifecycle event (spawn, crash, stop).
 #[no_mangle]
 pub extern "C" fn hew_trace_lifecycle(actor_id: u64, event_type: i32) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return;
     }
     record_lifecycle_event(actor_id, event_type, 0);
@@ -574,7 +1138,7 @@ pub(crate) fn current_context() -> HewTraceContext {
     //
     // Fast path preserved: when tracing is disabled this returns the cheap
     // all-zero default without minting (the receiver never traces anyway).
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return HewTraceContext::default();
     }
     HewTraceContext {
@@ -623,7 +1187,7 @@ pub(crate) fn system_context() -> HewTraceContext {
 // is not.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ensure_supervisor_trace_root() {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return;
     }
     match trace_context() {
@@ -650,11 +1214,58 @@ pub(crate) fn set_context(ctx: HewTraceContext) {
     let _ = write_trace_context(ctx);
 }
 
-pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+pub(crate) fn record_send(
+    source_actor_id: Option<u64>,
+    source_spawn_serial: Option<u64>,
+    source_dispatch_ptr: usize,
+    destination_actor_id: u64,
+    destination_spawn_serial: u64,
+    destination_dispatch_ptr: usize,
+    msg_type: i32,
+) {
+    let Some(generation) = recording_generation() else {
         return;
-    }
-    record_lifecycle_event(actor_id, SPAN_SEND, msg_type);
+    };
+    // An external producer has no installed actor trace context. Preserve that
+    // truth explicitly instead of inventing a source actor or dropping the
+    // send event entirely.
+    let installed_context = trace_context();
+    let source_attribution = if source_actor_id.is_some() {
+        TraceActorAttribution::LocalActor
+    } else if remote_trace_source_active() {
+        TraceActorAttribution::RemoteUnknown
+    } else {
+        TraceActorAttribution::External
+    };
+    let ctx = installed_context.unwrap_or_default();
+    record_event_with_attribution(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: ctx.trace_id_hi,
+            trace_id_lo: ctx.trace_id_lo,
+            span_id: ctx.span_id,
+            parent_span_id: ctx.parent_span_id,
+            // Kept solely as the stable C ABI projection. Observe uses the
+            // explicit endpoint fields above and never interprets this value.
+            actor_id: source_actor_id.unwrap_or(destination_actor_id),
+            event_type: SPAN_SEND,
+            msg_type,
+            timestamp_ns: monotonic_ns(),
+        },
+        None,
+        None,
+        None,
+        None,
+        0,
+        source_actor_id,
+        source_spawn_serial,
+        Some(destination_actor_id),
+        Some(destination_spawn_serial),
+        source_dispatch_ptr,
+        destination_dispatch_ptr,
+        source_attribution,
+        TraceActorAttribution::LocalActor,
+    );
 }
 
 /// Record a channel lifecycle event (created, split, closed).
@@ -665,19 +1276,22 @@ pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
 /// This is the emission point for `SPAN_DUPLEX_*`, `SPAN_SINK_CLOSED` and
 /// `SPAN_STREAM_CLOSED`.
 pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    let Some(generation) = recording_generation() else {
         return;
-    }
-    record_event(HewTraceEvent {
-        trace_id_hi: 0,
-        trace_id_lo: 0,
-        span_id: 0,
-        parent_span_id: 0,
-        actor_id: handle_addr,
-        event_type,
-        msg_type: 0,
-        timestamp_ns: monotonic_ns(),
-    });
+    };
+    record_event_for_generation(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: 0,
+            trace_id_lo: 0,
+            span_id: 0,
+            parent_span_id: 0,
+            actor_id: handle_addr,
+            event_type,
+            msg_type: 0,
+            timestamp_ns: monotonic_ns(),
+        },
+    );
 }
 
 /// Record a single I/O-level event using an explicit `HewTraceContext`.
@@ -686,16 +1300,22 @@ pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
 /// actor ID (`actor_id` = 0) and carry their own freshly generated span context.
 #[cfg(not(target_arch = "wasm32"))]
 fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
-    record_event(HewTraceEvent {
-        trace_id_hi: ctx.trace_id_hi,
-        trace_id_lo: ctx.trace_id_lo,
-        span_id: ctx.span_id,
-        parent_span_id: ctx.parent_span_id,
-        actor_id: 0,
-        event_type,
-        msg_type: 0,
-        timestamp_ns: monotonic_ns(),
-    });
+    let Some(generation) = recording_generation() else {
+        return;
+    };
+    record_event_for_generation(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: ctx.trace_id_hi,
+            trace_id_lo: ctx.trace_id_lo,
+            span_id: ctx.span_id,
+            parent_span_id: ctx.parent_span_id,
+            actor_id: 0,
+            event_type,
+            msg_type: 0,
+            timestamp_ns: monotonic_ns(),
+        },
+    );
 }
 
 /// Called at `hew_connmgr_add` when a TCP connection is accepted.
@@ -708,7 +1328,7 @@ fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
 /// Fast path: returns immediately (no allocation) when tracing is disabled.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn io_accept_span_begin(conn_id: c_int) {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return;
     }
     let ctx = HewTraceContext {
@@ -737,7 +1357,7 @@ pub(crate) fn io_accept_span_begin(conn_id: c_int) {
 /// skips tracing entirely).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
-    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+    if !TRACING_ENABLED.load(Ordering::Acquire) {
         return None;
     }
 
@@ -846,7 +1466,14 @@ pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
 /// (a single atomic load).
 #[no_mangle]
 pub extern "C" fn hew_trace_enable(enable: c_int) {
-    TRACING_ENABLED.store(enable != 0, Ordering::Release);
+    let enable = enable != 0;
+    TRACE_EVENTS.access(|store| {
+        let was_enabled = TRACING_ENABLED.load(Ordering::Acquire);
+        if enable && !was_enabled {
+            store.begin_new_stream();
+        }
+        TRACING_ENABLED.store(enable, Ordering::Release);
+    });
 }
 
 /// Check if tracing is enabled. Returns 1 if enabled, 0 if not.
@@ -858,7 +1485,18 @@ pub extern "C" fn hew_trace_is_enabled() -> c_int {
 /// Return the number of recorded trace events.
 #[no_mangle]
 pub extern "C" fn hew_trace_event_count() -> u64 {
-    TRACE_EVENTS.access(|events| events.len() as u64)
+    C_DRAIN_CURSOR.access(|cursor| {
+        TRACE_EVENTS.access(|store| {
+            let after = cursor
+                .filter(|cursor| cursor.stream_id == store.stream_id)
+                .map_or(0, |cursor| cursor.after);
+            store
+                .events
+                .iter()
+                .filter(|record| record.sequence > after)
+                .count() as u64
+        })
+    })
 }
 
 /// Drain up to `max_count` trace events into the provided buffer.
@@ -871,28 +1509,25 @@ pub extern "C" fn hew_trace_event_count() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32) -> u32 {
     cabi_guard!(out.is_null() || max_count == 0, 0);
-    TRACE_EVENTS.access(|events| {
-        let count = events.len().min(max_count as usize);
-        for i in 0..count {
-            if let Some(event) = events.pop_front() {
-                // SAFETY: out has space for at least max_count events.
-                unsafe { *out.add(i) = event };
-            }
-        }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "count <= max_count which is u32"
-        )]
-        {
-            count as u32
-        }
-    })
+    let batch = read_internal_consumer(&C_DRAIN_CURSOR, max_count as usize);
+    for (index, event) in batch.events.iter().copied().enumerate() {
+        // SAFETY: out has space for at least max_count events and batch length
+        // is bounded by max_count.
+        unsafe { *out.add(index) = event };
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "batch length is bounded by max_count which is u32"
+    )]
+    {
+        batch.events.len() as u32
+    }
 }
 
 /// Clear all recorded trace events.
 #[no_mangle]
 pub extern "C" fn hew_trace_clear() {
-    TRACE_EVENTS.access(std::collections::VecDeque::clear);
+    TRACE_EVENTS.access(TraceStore::begin_new_stream);
 }
 
 /// Register `hew_trace_reset` as a session reset hook.
@@ -917,8 +1552,10 @@ pub(crate) fn register_trace_reset_hook() {
 /// Reset all tracing state (disable + clear events + reset context + clear I/O span table).
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
-    TRACING_ENABLED.store(false, Ordering::Release);
-    TRACE_EVENTS.access(std::collections::VecDeque::clear);
+    TRACE_EVENTS.access(|store| {
+        TRACING_ENABLED.store(false, Ordering::Release);
+        store.begin_new_stream();
+    });
     let ctx = crate::execution_context::current_context();
     if !ctx.is_null() {
         // SAFETY: ctx is the installed canonical context for this thread.
@@ -983,116 +1620,113 @@ fn drain_event_type_label(event_type: i32) -> std::borrow::Cow<'static, str> {
 }
 
 #[cfg(feature = "profiler")]
+#[must_use]
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
 
-    TRACE_EVENTS.access(|events| {
-    let count = events.len().min(256);
+    let events = read_internal_consumer(&LEGACY_JSON_CURSOR, 256).events;
     let mut json = String::from("[");
-    for i in 0..count {
-        if let Some(ev) = events.pop_front() {
-            if i > 0 {
-                json.push(',');
-            }
-            // FAIL-CLOSED: an `event_type` integer outside the closed
-            // `EVENT_TYPE_NAMES` taxonomy is a producer bug (a `SPAN_*`
-            // constant emitted without its taxonomy row). It must NOT be
-            // laundered into the valid-looking `"unknown"` sentinel that
-            // `hew-observe` reserves for genuinely-future-but-valid names —
-            // doing so would let trace corruption masquerade as a known
-            // event type, contradicting the `event_type_name` contract
-            // documented at its definition. `drain_event_type_label` returns a
-            // distinguishable `invalid:<code>` token instead; the `debug_assert`
-            // is a dev-time tripwire so the offending producer surfaces loudly.
-            let event_type_label = drain_event_type_label(ev.event_type);
-            debug_assert!(
-                !event_type_label.starts_with("invalid:"),
-                "drain_events_json: event_type {} is outside the closed \
+    for (i, ev) in events.into_iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        // FAIL-CLOSED: an `event_type` integer outside the closed
+        // `EVENT_TYPE_NAMES` taxonomy is a producer bug (a `SPAN_*`
+        // constant emitted without its taxonomy row). It must NOT be
+        // laundered into the valid-looking `"unknown"` sentinel that
+        // `hew-observe` reserves for genuinely-future-but-valid names —
+        // doing so would let trace corruption masquerade as a known
+        // event type, contradicting the `event_type_name` contract
+        // documented at its definition. `drain_event_type_label` returns a
+        // distinguishable `invalid:<code>` token instead; the `debug_assert`
+        // is a dev-time tripwire so the offending producer surfaces loudly.
+        let event_type_label = drain_event_type_label(ev.event_type);
+        debug_assert!(
+            !event_type_label.starts_with("invalid:"),
+            "drain_events_json: event_type {} is outside the closed \
                  EVENT_TYPE_NAMES taxonomy; a SPAN_* constant was emitted \
                  without its taxonomy row (fail-closed)",
-                ev.event_type
-            );
-            let event_type_str: &str = event_type_label.as_ref();
+            ev.event_type
+        );
+        let event_type_str: &str = event_type_label.as_ref();
 
-            // Resolve actor_type_id and actor_type via the profiler actor registry.
-            // Option B from #1260: drain-time lookup avoids adding a dispatch-fn
-            // pointer field to HewTraceEvent (which would break the C ABI).
-            //
-            // SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
-            //       hew_trace_drain callers.  Drain-time lookup is the zero-ABI-
-            //       impact path.
-            //       WHEN: Remove this lookup if a future ABI revision embeds
-            //       actor_type_id directly in HewTraceEvent.
-            //       REAL: Store dispatch_fn in HewTraceEvent when the C ABI is versioned.
-            let (actor_type_id, actor_type_str, handler_name) = {
-                // INTENTIONAL DEFAULT (not fail-open): a `None` from the
-                // registry means the actor was freed before this drain ran (or
-                // its type was never registered). Unlike the event_type case
-                // above, `0` here is NOT a corruption sentinel — it is the
-                // documented #1260 contract: `actor_type_id == 0` pairs with
-                // `actor_type == null` (handled below) to mean "attribution
-                // unavailable", a legitimate and detectable state distinct from
-                // a valid non-zero dispatch pointer.
-                //   WHY  — actor lifetime is shorter than the drain window; the
-                //          event itself (ids, type) is still valid and worth
-                //          emitting unattributed rather than dropped.
-                //   WHEN — revisit if event records ever carry the dispatch ptr
-                //          inline (ABI-versioned HewTraceEvent), removing the
-                //          lookup race entirely.
-                //   WHAT — consumers read (0, null) as "unattributed", never as
-                //          a real actor type.
-                let dispatch_ptr =
-                    crate::profiler::actor_registry::lookup_dispatch_for_actor_id(ev.actor_id)
-                        .unwrap_or(0);
-                let type_id = dispatch_ptr as u64;
-                // Owned variant: the name is copied under DISPATCH_TYPE_REGISTRY's
-                // lock, so a concurrent `clear_dispatch_registry` cannot free the
-                // leaked backing allocation between lookup and copy (the borrowing
-                // variant releases the lock before returning — a TOCTOU UAF).
-                let type_name =
-                    crate::profiler::actor_registry::lookup_dispatch_type_by_ptr_owned(
-                        dispatch_ptr,
-                    );
-                let hname = crate::profiler::actor_registry::handler_name_by_ptr(
-                    dispatch_ptr,
-                    ev.msg_type,
-                );
-                let actor_type = if type_name == "Actor" && type_id == 0 {
-                    None
-                } else {
-                    Some(type_name)
-                };
-                (type_id, actor_type, hname)
+        // Resolve actor_type_id and actor_type via the profiler actor registry.
+        // Option B from #1260: drain-time lookup avoids adding a dispatch-fn
+        // pointer field to HewTraceEvent (which would break the C ABI).
+        //
+        // SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
+        //       hew_trace_drain callers.  Drain-time lookup is the zero-ABI-
+        //       impact path.
+        //       WHEN: Remove this lookup if a future ABI revision embeds
+        //       actor_type_id directly in HewTraceEvent.
+        //       REAL: Store dispatch_fn in HewTraceEvent when the C ABI is versioned.
+        let (actor_type_id, actor_type_str, handler_name) = {
+            // INTENTIONAL DEFAULT (not fail-open): a `None` from the
+            // registry means the actor was freed before this drain ran (or
+            // its type was never registered). Unlike the event_type case
+            // above, `0` here is NOT a corruption sentinel — it is the
+            // documented #1260 contract: `actor_type_id == 0` pairs with
+            // `actor_type == null` (handled below) to mean "attribution
+            // unavailable", a legitimate and detectable state distinct from
+            // a valid non-zero dispatch pointer.
+            //   WHY  — actor lifetime is shorter than the drain window; the
+            //          event itself (ids, type) is still valid and worth
+            //          emitting unattributed rather than dropped.
+            //   WHEN — revisit if event records ever carry the dispatch ptr
+            //          inline (ABI-versioned HewTraceEvent), removing the
+            //          lookup race entirely.
+            //   WHAT — consumers read (0, null) as "unattributed", never as
+            //          a real actor type.
+            let dispatch_ptr =
+                crate::profiler::actor_registry::lookup_dispatch_for_actor_id(ev.actor_id)
+                    .unwrap_or(0);
+            let type_id = dispatch_ptr as u64;
+            // Owned variant: the name is copied under DISPATCH_TYPE_REGISTRY's
+            // lock, so a concurrent `clear_dispatch_registry` cannot free the
+            // leaked backing allocation between lookup and copy (the borrowing
+            // variant releases the lock before returning — a TOCTOU UAF).
+            let type_name =
+                crate::profiler::actor_registry::lookup_dispatch_type_by_ptr_owned(dispatch_ptr);
+            let hname =
+                crate::profiler::actor_registry::handler_name_by_ptr(dispatch_ptr, ev.msg_type);
+            let actor_type = if type_name == "Actor" && type_id == 0 {
+                None
+            } else {
+                Some(type_name)
             };
+            (type_id, actor_type, hname)
+        };
 
-            let actor_type_json = match actor_type_str {
-                Some(actor_type_str) if actor_type_id != 0 => format!("\"{actor_type_str}\""),
-                _ => "null".to_owned(),
-            };
-            let handler_name_json = match &handler_name {
-                Some(name) => format!("\"{name}\""),
-                None => "null".to_owned(),
-            };
-            let _ = write!(
-                json,
-                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"actor_type_id":{},"actor_type":{},"event_type":"{}","msg_type":{},"timestamp_ns":{},"handler_name":{}}}"#,
-                ev.trace_id_hi,
-                ev.trace_id_lo,
-                ev.span_id,
-                ev.parent_span_id,
-                ev.actor_id,
-                actor_type_id,
-                actor_type_json,
-                event_type_str,
-                ev.msg_type,
-                ev.timestamp_ns,
-                handler_name_json,
-            );
+        let mut actor_type_json = String::new();
+        if let Some(actor_type_str) = actor_type_str.filter(|_| actor_type_id != 0) {
+            crate::util::push_json_string(&mut actor_type_json, &actor_type_str);
+        } else {
+            actor_type_json.push_str("null");
         }
+        let mut handler_name_json = String::new();
+        if let Some(name) = &handler_name {
+            crate::util::push_json_string(&mut handler_name_json, name);
+        } else {
+            handler_name_json.push_str("null");
+        }
+        let _ = write!(
+            json,
+            r#"{{"trace_id":"{:016x}{:016x}","span_id":"{}","parent_span_id":"{}","actor_id":"{}","actor_type_id":"{}","actor_type":{},"event_type":"{}","msg_type":{},"timestamp_ns":"{}","handler_name":{}}}"#,
+            ev.trace_id_hi,
+            ev.trace_id_lo,
+            ev.span_id,
+            ev.parent_span_id,
+            ev.actor_id,
+            actor_type_id,
+            actor_type_json,
+            event_type_str,
+            ev.msg_type,
+            ev.timestamp_ns,
+            handler_name_json,
+        );
     }
     json.push(']');
     json
-    })
 }
 
 // ── Test serialisation ─────────────────────────────────────────────────
@@ -1330,9 +1964,12 @@ mod tests {
             .find(|e| e["event_type"] == "supervisor_restart")
             .expect("supervisor_restart event must be present on the export surface");
         assert_eq!(restart["msg_type"], 2);
-        assert_eq!(restart["actor_id"], 7);
+        assert_eq!(restart["actor_id"], "7");
         assert_ne!(
-            restart["span_id"].as_u64().unwrap(),
+            restart["span_id"]
+                .as_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap(),
             0,
             "supervisor event must inherit the live dispatch span, not a zero id"
         );
@@ -1898,15 +2535,11 @@ mod tests {
                 "event_type string must match for constant {span_const}"
             );
             // Wire-contract: actor_id field must be present and populated.
-            assert!(
-                parsed[0]["actor_id"].as_u64().is_some(),
-                "actor_id must be a u64 for {expected_str}"
-            );
-            assert_ne!(
-                parsed[0]["actor_id"].as_u64().unwrap(),
-                0,
-                "actor_id must be non-zero for {expected_str}"
-            );
+            let actor_id = parsed[0]["actor_id"]
+                .as_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("actor_id must be a decimal u64 for {expected_str}"));
+            assert_ne!(actor_id, 0, "actor_id must be non-zero for {expected_str}");
         }
     }
 
@@ -1935,5 +2568,338 @@ mod tests {
             IO_SPAN_TABLE.lock_or_recover().get(&11).is_none(),
             "hew_trace_reset must clear IO_SPAN_TABLE"
         );
+    }
+
+    #[test]
+    fn independent_observers_receive_identical_sequences() {
+        let _guard = setup();
+        for actor_id in 1..=4 {
+            hew_trace_lifecycle(actor_id, SPAN_SPAWN);
+        }
+
+        let first = trace_snapshot(None, None, 256).expect("initial snapshot");
+        let second = trace_snapshot(None, None, 256).expect("second observer snapshot");
+        let first_sequences: Vec<_> = first.events.iter().map(|event| event.sequence).collect();
+        let second_sequences: Vec<_> = second.events.iter().map(|event| event.sequence).collect();
+        assert_eq!(first_sequences, vec![1, 2, 3, 4]);
+        assert_eq!(first_sequences, second_sequences);
+
+        let mut c_event = HewTraceEvent {
+            trace_id_hi: 0,
+            trace_id_lo: 0,
+            span_id: 0,
+            parent_span_id: 0,
+            actor_id: 0,
+            event_type: 0,
+            msg_type: 0,
+            timestamp_ns: 0,
+        };
+        // SAFETY: one-element output buffer.
+        assert_eq!(unsafe { hew_trace_drain(&raw mut c_event, 1) }, 1);
+        let after_c = trace_snapshot(None, None, 256).expect("HTTP ring remains intact");
+        assert_eq!(
+            after_c.events.len(),
+            4,
+            "C consumer must not remove records"
+        );
+    }
+
+    #[cfg(feature = "otel")]
+    #[test]
+    fn internal_consumers_do_not_steal_each_others_records() {
+        let _guard = setup();
+        for actor_id in 1..=3 {
+            hew_trace_lifecycle(actor_id, SPAN_SPAWN);
+        }
+
+        let otel_first = read_otel_events(2);
+        assert_eq!(otel_first.events.len(), 2);
+
+        let report = read_test_report_events(3);
+        assert_eq!(report.events.len(), 3);
+        let legacy_rust = drain_events(3);
+        assert_eq!(legacy_rust.len(), 3);
+        let http = trace_snapshot(None, None, 3).expect("HTTP observer snapshot");
+        assert_eq!(http.events.len(), 3);
+
+        let otel_second = read_otel_events(2);
+        assert_eq!(otel_second.events.len(), 1);
+        assert_eq!(otel_second.events[0].actor_id, 3);
+    }
+
+    #[test]
+    fn stale_cursor_reports_exact_overrun() {
+        let _guard = setup();
+        for actor_id in 0..(MAX_TRACE_EVENTS as u64 + 5) {
+            hew_trace_lifecycle(actor_id + 1, SPAN_SPAWN);
+        }
+
+        let snapshot = trace_snapshot(None, Some(0), 1).expect("stale cursor snapshot");
+        assert_eq!(snapshot.oldest_sequence, 6);
+        assert_eq!(snapshot.next_sequence, MAX_TRACE_EVENTS as u64 + 6);
+        assert_eq!(snapshot.overrun_count, 5);
+        assert_eq!(snapshot.events_overwritten_total, 5);
+        assert_eq!(snapshot.events_recorded_total, MAX_TRACE_EVENTS as u64 + 5);
+        assert_eq!(snapshot.events[0].sequence, 6);
+        assert!(snapshot.has_more);
+    }
+
+    #[test]
+    fn reset_and_reenable_rotate_stream_but_not_producer() {
+        let _guard = setup();
+        let initial = trace_snapshot(None, None, 1).expect("initial snapshot");
+
+        hew_trace_clear();
+        let cleared = trace_snapshot(None, None, 1).expect("cleared snapshot");
+        assert_eq!(cleared.producer_instance_id, initial.producer_instance_id);
+        assert_ne!(cleared.stream_id, initial.stream_id);
+        assert_eq!(cleared.next_sequence, 1);
+
+        hew_trace_enable(0);
+        hew_trace_enable(1);
+        let reenabled = trace_snapshot(None, None, 1).expect("re-enabled snapshot");
+        assert_eq!(reenabled.producer_instance_id, initial.producer_instance_id);
+        assert_ne!(reenabled.stream_id, cleared.stream_id);
+    }
+
+    #[test]
+    fn enable_publishes_replacement_generation_before_recording() {
+        let _guard = tracing_test_guard();
+        hew_trace_reset();
+
+        for actor_id in 1..=256_u64 {
+            hew_trace_enable(1);
+            let emitter = std::thread::spawn(move || {
+                record_event(HewTraceEvent {
+                    trace_id_hi: 1,
+                    trace_id_lo: actor_id,
+                    span_id: actor_id,
+                    parent_span_id: 0,
+                    actor_id,
+                    event_type: SPAN_SPAWN,
+                    msg_type: 0,
+                    timestamp_ns: monotonic_ns(),
+                });
+            });
+            emitter.join().expect("post-enable emitter");
+
+            let snapshot = trace_snapshot(None, None, 2).expect("post-enable snapshot");
+            assert_eq!(snapshot.events.len(), 1);
+            assert_eq!(snapshot.events[0].sequence, 1);
+            assert_eq!(snapshot.events[0].event.actor_id, actor_id);
+
+            hew_trace_enable(0);
+        }
+        hew_trace_reset();
+    }
+
+    #[test]
+    fn sequence_exhaustion_rotates_before_cursor_overflow() {
+        let _guard = setup();
+        let before = trace_snapshot(None, None, 1).expect("initial stream");
+        TRACE_EVENTS.access(|store| {
+            store.next_sequence = u64::MAX;
+            store.events_recorded_total = u64::MAX - 1;
+        });
+
+        hew_trace_lifecycle(77, SPAN_SPAWN);
+
+        let after = trace_snapshot(None, None, 2).expect("replacement stream");
+        assert_ne!(after.stream_id, before.stream_id);
+        assert_eq!(after.oldest_sequence, 1);
+        assert_eq!(after.next_sequence, 2);
+        assert_eq!(after.next_cursor, 1);
+        assert_eq!(after.events_recorded_total, 1);
+        assert_eq!(after.events.len(), 1);
+        assert_eq!(after.events[0].sequence, 1);
+        assert_eq!(after.events[0].event.actor_id, 77);
+    }
+
+    #[test]
+    fn send_records_honest_local_endpoints() {
+        let _guard = setup();
+        record_send(Some(11), Some(111), 0xaaaa, 22, 222, 0xbbbb, 7);
+
+        let snapshot = trace_snapshot(None, None, 1).expect("send snapshot");
+        let record = snapshot.events[0];
+        assert_eq!(record.subject_kind, None);
+        assert_eq!(record.source_attribution, TraceActorAttribution::LocalActor);
+        assert_eq!(record.source_actor_id, Some(11));
+        assert_eq!(record.source_spawn_serial, Some(111));
+        assert_eq!(record.source_dispatch_ptr, 0xaaaa);
+        assert_eq!(record.destination_actor_id, Some(22));
+        assert_eq!(
+            record.destination_attribution,
+            TraceActorAttribution::LocalActor
+        );
+        assert_eq!(record.destination_spawn_serial, Some(222));
+        assert_eq!(record.destination_dispatch_ptr, 0xbbbb);
+        assert_eq!(
+            record.event.actor_id, 11,
+            "legacy C projection remains source"
+        );
+    }
+
+    #[test]
+    fn external_send_has_unknown_source_and_real_destination() {
+        let _guard = tracing_test_guard();
+        hew_trace_reset();
+        hew_trace_enable(1);
+        record_send(None, None, 0, 22, 222, 0xbbbb, 7);
+
+        let record = trace_snapshot(None, None, 1)
+            .expect("external send snapshot")
+            .events[0];
+        assert_eq!(record.source_actor_id, None);
+        assert_eq!(record.source_attribution, TraceActorAttribution::External);
+        assert_eq!(record.destination_actor_id, Some(22));
+        assert_eq!(record.destination_spawn_serial, Some(222));
+        assert_eq!(
+            record.event.actor_id, 22,
+            "legacy C projection remains useful"
+        );
+    }
+
+    #[test]
+    fn remote_source_marker_without_identity_is_explicitly_unknown() {
+        let _guard = setup();
+        let _remote_source = enter_remote_trace_source();
+        record_send(None, None, 0, 22, 222, 0xbbbb, 7);
+
+        let record = trace_snapshot(None, None, 1)
+            .expect("remote send snapshot")
+            .events[0];
+        assert_eq!(record.source_actor_id, None);
+        assert_eq!(
+            record.source_attribution,
+            TraceActorAttribution::RemoteUnknown
+        );
+        assert_eq!(record.destination_actor_id, Some(22));
+    }
+
+    #[test]
+    fn trace_context_alone_does_not_fabricate_remote_source() {
+        let _guard = setup();
+        record_send(None, None, 0, 22, 222, 0xbbbb, 7);
+
+        let record = trace_snapshot(None, None, 1)
+            .expect("context-only send snapshot")
+            .events[0];
+        assert_eq!(record.source_actor_id, None);
+        assert_eq!(record.source_attribution, TraceActorAttribution::External);
+    }
+
+    #[test]
+    fn reset_wins_against_emitter_paused_before_store_lock() {
+        let _guard = setup();
+        let arrived = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        RECORD_PRE_LOCK_BARRIER.access(|slot| {
+            *slot = Some(RecordPreLockBarrier {
+                arrived: arrived.clone(),
+                release: release.clone(),
+            });
+        });
+
+        let emitter = std::thread::spawn(|| {
+            record_event(HewTraceEvent {
+                trace_id_hi: 1,
+                trace_id_lo: 2,
+                span_id: 3,
+                parent_span_id: 0,
+                actor_id: 44,
+                event_type: SPAN_SPAWN,
+                msg_type: 0,
+                timestamp_ns: monotonic_ns(),
+            });
+        });
+        arrived.wait();
+        hew_trace_reset();
+        release.wait();
+        emitter.join().expect("emitter thread");
+        RECORD_PRE_LOCK_BARRIER.access(|slot| *slot = None);
+
+        let snapshot = trace_snapshot(None, None, 1).expect("post-reset snapshot");
+        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.next_sequence, 1);
+    }
+
+    #[test]
+    fn clear_wins_against_emitter_paused_before_store_lock() {
+        let _guard = setup();
+        let arrived = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        RECORD_PRE_LOCK_BARRIER.access(|slot| {
+            *slot = Some(RecordPreLockBarrier {
+                arrived: arrived.clone(),
+                release: release.clone(),
+            });
+        });
+
+        let emitter = std::thread::spawn(|| {
+            record_event(HewTraceEvent {
+                trace_id_hi: 1,
+                trace_id_lo: 2,
+                span_id: 3,
+                parent_span_id: 0,
+                actor_id: 44,
+                event_type: SPAN_SPAWN,
+                msg_type: 0,
+                timestamp_ns: monotonic_ns(),
+            });
+        });
+        arrived.wait();
+        hew_trace_clear();
+        release.wait();
+        emitter.join().expect("emitter thread");
+        RECORD_PRE_LOCK_BARRIER.access(|slot| *slot = None);
+
+        let snapshot = trace_snapshot(None, None, 1).expect("post-clear snapshot");
+        assert!(snapshot.enabled);
+        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.next_sequence, 1);
+    }
+
+    #[test]
+    fn concurrent_producers_assign_strict_total_sequence() {
+        let _guard = setup();
+        let mut producers = Vec::new();
+        for producer in 0..4_u64 {
+            producers.push(std::thread::spawn(move || {
+                for offset in 0..500_u64 {
+                    record_event(HewTraceEvent {
+                        trace_id_hi: producer,
+                        trace_id_lo: offset,
+                        span_id: offset + 1,
+                        parent_span_id: 0,
+                        actor_id: producer * 1_000 + offset + 1,
+                        event_type: SPAN_SPAWN,
+                        msg_type: 0,
+                        timestamp_ns: monotonic_ns(),
+                    });
+                }
+            }));
+        }
+        for producer in producers {
+            producer.join().expect("producer thread");
+        }
+
+        let snapshot = trace_snapshot_inner(None, None, 2_000).expect("full snapshot");
+        assert_eq!(snapshot.events.len(), 2_000);
+        for (index, record) in snapshot.events.iter().enumerate() {
+            assert_eq!(record.sequence, index as u64 + 1);
+        }
+    }
+
+    #[test]
+    fn stream_id_parser_requires_canonical_lowercase_hex() {
+        let id = TraceStreamId {
+            hi: 0x0123_4567_89ab_cdef,
+            lo: 0xfedc_ba98_7654_3210,
+        };
+        let encoded = id.to_string();
+        assert_eq!(TraceStreamId::parse_hex(&encoded), Some(id));
+        assert_eq!(TraceStreamId::parse_hex(&encoded.to_uppercase()), None);
+        assert_eq!(TraceStreamId::parse_hex("1234"), None);
     }
 }

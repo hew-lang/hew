@@ -142,6 +142,26 @@ pub fn lookup_dispatch_type_by_ptr_owned(dispatch_ptr: usize) -> String {
     })
 }
 
+/// Look up a registered Hew type name without inventing a fallback.
+///
+/// The Observe trace contract uses `null` when attribution is unavailable, so
+/// its serializer must distinguish a genuinely registered type named `Actor`
+/// from the historical synthetic `"Actor"` fallback returned by
+/// [`lookup_dispatch_type_by_ptr_owned`]. The owned copy is made while holding
+/// the registry lock, preserving the same clear/reset race safety.
+#[must_use]
+pub(crate) fn lookup_registered_dispatch_type_by_ptr_owned(dispatch_ptr: usize) -> Option<String> {
+    if dispatch_ptr == 0 {
+        return None;
+    }
+    DISPATCH_TYPE_REGISTRY.access(|guard| {
+        guard
+            .as_ref()
+            .and_then(|map| map.get(&dispatch_ptr).copied())
+            .map(str::to_owned)
+    })
+}
+
 /// Look up the Hew type name for a dispatch function pointer, copied into an
 /// owned `String` under the registry lock.
 ///
@@ -583,6 +603,28 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    unsafe extern "C-unwind" fn fake_dispatch_observe_registered_actor(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
+
+    unsafe extern "C-unwind" fn fake_dispatch_observe_unregistered(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
+
     #[test]
     fn unregistered_dispatch_defaults_to_actor() {
         let _lock = TEST_LOCK
@@ -603,6 +645,25 @@ mod tests {
         register_dispatch_type(Some(fake_dispatch_b), "MyCounter".to_owned());
         let name = lookup_dispatch_type(Some(fake_dispatch_b));
         assert_eq!(name, "MyCounter");
+    }
+
+    #[test]
+    fn observe_lookup_distinguishes_unavailable_from_type_named_actor() {
+        let _lock = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let missing = fake_dispatch_observe_unregistered as *const () as usize;
+        assert_eq!(lookup_registered_dispatch_type_by_ptr_owned(missing), None);
+
+        register_dispatch_type(
+            Some(fake_dispatch_observe_registered_actor),
+            "Actor".to_owned(),
+        );
+        let registered = fake_dispatch_observe_registered_actor as *const () as usize;
+        assert_eq!(
+            lookup_registered_dispatch_type_by_ptr_owned(registered),
+            Some("Actor".to_owned())
+        );
     }
 
     #[test]

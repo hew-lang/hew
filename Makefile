@@ -73,7 +73,7 @@
 #   make clean        — remove generated build and test artifacts
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
+.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug hew-lsp observe observe-functional-test observe-protocol-generate observe-protocol-check mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
 .PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate hew-fmt-check hew-fmt-fidelity test-migrate-corpus test-build-harness core-acceptance
 .PHONY: test-obligation-site-diff
 .PHONY: stdlib-user-build-clean
@@ -99,6 +99,16 @@ check-requirements: ## Develop: check local build and lint prerequisites on dema
 LINT_GATES += shell-script-lint
 shell-script-lint:
 	@$(PYTHON) scripts/shell-script-lint.py
+
+observe-protocol-generate: ## Generate: Rust, Swift and TypeScript Observe v1 bindings
+	@$(PYTHON) scripts/generate-observe-protocol.py
+
+observe-protocol-check: ## Check: validate Observe v1 generated bindings are current
+	@$(PYTHON) scripts/generate-observe-protocol.py --check
+	@node --experimental-strip-types protocol/observe/v1/tests/typescript-smoke.mts
+	@cargo test -p hew-observe-protocol
+
+LINT_GATES += observe-protocol-check
 
 # Installer ordering belongs to release validation, not general source lint.
 test-install-version-resolution:

@@ -326,6 +326,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
         let guard = InboundAskGuard(per_mgr_active);
         let _ = thread::spawn(move || {
             let _guard = guard;
+            let _remote_trace_source = crate::tracing::enter_remote_trace_source();
             handle_inbound_ask(
                 target_actor_id,
                 msg_type,
@@ -339,6 +340,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     } else {
         // Fire-and-forget message — reconstruct the value into THIS node's
         // address space before delivering it to the local mailbox.
+        let _remote_trace_source = crate::tracing::enter_remote_trace_source();
         // SAFETY: data is valid for `size` bytes (reader_loop contract).
         unsafe { deliver_inbound_send(target_actor_id, msg_type, data, size) };
     }

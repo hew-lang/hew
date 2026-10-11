@@ -1,5 +1,14 @@
 //! Trace event metadata shared by hew-observe views.
 
+use crate::client::{ActorIdentity, TraceEvent};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceActorKey {
+    pub producer_instance_id: String,
+    pub actor_id: u64,
+    pub spawn_serial: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceEventGroup {
     Lifecycle,
@@ -47,7 +56,7 @@ impl TraceEventMeta {
 }
 
 pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
-    // Runtime-emitted v0.5 trace events. MachineDispatchUnreachable is a
+    // Runtime-emitted v1 trace events. MachineDispatchUnreachable is a
     // diagnostic or crash kind, not a trace event type; it remains under
     // "crash".
     TraceEventMeta {
@@ -255,7 +264,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         actionable: false,
     },
     // SHIM: pending native-M3 producer-side emission. Auto-injected lock
-    // substrate is tracked for v0.5 observability, but lock spans are absent.
+    // substrate is tracked for v1 observability, but lock spans are absent.
     TraceEventMeta {
         name: "lock_acquire",
         label: "lock acquire",
@@ -368,12 +377,136 @@ pub fn trace_event_meta(event_type: &str) -> TraceEventMeta {
         .unwrap_or(UNKNOWN_TRACE_EVENT_META)
 }
 
+/// Actor used to place an event in the legacy single-lane TUI.
+///
+/// Send events prefer their real source. Other events prefer their explicit
+/// subject. Unknown attribution remains unknown instead of being synthesized
+/// from timing or message type.
+pub fn trace_event_primary_actor(event: &TraceEvent) -> Option<&ActorIdentity> {
+    if event.event_type == "send" {
+        event
+            .source_actor
+            .as_ref()
+            .or(event.destination_actor.as_ref())
+    } else {
+        event
+            .subject
+            .as_ref()
+            .and_then(|subject| subject.actor.as_ref())
+            .or(event.source_actor.as_ref())
+            .or(event.destination_actor.as_ref())
+    }
+}
+
+pub fn trace_event_actor_key(
+    producer_instance_id: &str,
+    event: &TraceEvent,
+) -> Option<TraceActorKey> {
+    trace_event_primary_actor(event).map(|actor| TraceActorKey {
+        producer_instance_id: producer_instance_id.to_owned(),
+        actor_id: actor.actor_id,
+        spawn_serial: actor.spawn_serial,
+    })
+}
+
+pub fn trace_event_matches_actor(
+    producer_instance_id: &str,
+    event: &TraceEvent,
+    key: &TraceActorKey,
+) -> bool {
+    if producer_instance_id != key.producer_instance_id {
+        return false;
+    }
+    let matches = |actor: &ActorIdentity| {
+        actor.actor_id == key.actor_id
+            && match (key.spawn_serial, actor.spawn_serial) {
+                (Some(expected), Some(actual)) => expected == actual,
+                _ => true,
+            }
+    };
+    event
+        .subject
+        .as_ref()
+        .and_then(|subject| subject.actor.as_ref())
+        .is_some_and(matches)
+        || event.source_actor.as_ref().is_some_and(matches)
+        || event.destination_actor.as_ref().is_some_and(matches)
+}
+
+/// Stable display lane label. Remote attribution stays explicitly unknown;
+/// the current transport does not expose a durable remote identity here.
+pub fn trace_event_lane_label(
+    endpoint: &str,
+    producer_instance_id: &str,
+    event: &TraceEvent,
+) -> String {
+    let Some(actor) = trace_event_primary_actor(event) else {
+        return format!("{endpoint}:unknown");
+    };
+    let producer = producer_instance_id
+        .get(..6)
+        .unwrap_or(producer_instance_id);
+    format!("{endpoint}:{producer}:{}", actor.actor_id >> 48)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn current_v05_trace_events_are_actionable() {
+    fn actor_filter_falls_back_to_packed_id_when_spawn_serial_is_missing() {
+        let producer = "00000000000000000000000000000001";
+        let actor_id = 42;
+        let event = TraceEvent {
+            subject: Some(crate::client::TraceSubject {
+                kind: "actor".to_owned(),
+                id: actor_id,
+                actor: Some(ActorIdentity {
+                    actor_id,
+                    spawn_serial: None,
+                    actor_type: Some("Counter".to_owned()),
+                }),
+            }),
+            ..TraceEvent::default()
+        };
+        let selected_from_send = TraceActorKey {
+            producer_instance_id: producer.to_owned(),
+            actor_id,
+            spawn_serial: Some(7),
+        };
+
+        assert!(trace_event_matches_actor(
+            producer,
+            &event,
+            &selected_from_send
+        ));
+
+        let conflicting_serial = TraceEvent {
+            subject: Some(crate::client::TraceSubject {
+                kind: "actor".to_owned(),
+                id: actor_id,
+                actor: Some(ActorIdentity {
+                    actor_id,
+                    spawn_serial: Some(8),
+                    actor_type: Some("Counter".to_owned()),
+                }),
+            }),
+            ..TraceEvent::default()
+        };
+        assert!(!trace_event_matches_actor(
+            producer,
+            &conflicting_serial,
+            &selected_from_send
+        ));
+        assert!(!trace_event_matches_actor(
+            "00000000000000000000000000000002",
+            &event,
+            &selected_from_send
+        ));
+    }
+
+    #[test]
+    fn current_v1_trace_events_are_actionable() {
         for event_type in CURRENT_TRACE_EVENT_METADATA
             .iter()
             .filter(|meta| meta.is_actionable())

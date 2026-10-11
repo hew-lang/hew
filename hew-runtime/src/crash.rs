@@ -416,7 +416,7 @@ pub fn snapshot_crashes_json() -> String {
                 crate::internal::types::ExitReason::from_error_code(crash.signal).trap_kind_name();
             let _ = write!(
                 json,
-                r#"{{"time_s":{time_s},"actor_id":{},"signal":{},"trap_kind":"{trap_kind}","msg_type":{},"fault_addr":{}}}"#,
+                r#"{{"time_s":{time_s},"actor_id":"{}","signal":{},"trap_kind":"{trap_kind}","msg_type":{},"fault_addr":"{}"}}"#,
                 crash.actor_id, crash.signal, crash.msg_type, crash.fault_addr,
             );
         }

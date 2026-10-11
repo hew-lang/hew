@@ -54,15 +54,31 @@ message flow across nodes, and distributed actor placement.
 
 ![Messages tab](docs/screenshots/observer-tab6-messages.png)
 
-Live message traffic between actors, with source, destination, kind, and
-recent rate.
+Live actionable trace events grouped by the actor ID currently recorded on
+each event. The v1 producer does not expose a message destination, so this is
+not yet a complete source-to-destination flow graph.
 
 ### 7. Timeline — temporal view
 
 ![Timeline tab](docs/screenshots/observer-tab7-timeline.png)
 
 Time-ordered trace of scheduler and mailbox events so causality and
-ordering are visible at a glance.
+ordering can be inspected within the events retained by the runtime queue.
+Fetching traces destructively drains a process-global queue; multiple viewers
+divide the stream rather than each receiving a copy.
+
+## Protocol contract
+
+The authoritative v1 HTTP/JSON contract is
+[`protocol/observe/v1/openapi.json`](../protocol/observe/v1/openapi.json).
+This client consumes the generated Rust models from `hew-observe-protocol`.
+Swift and `bigint` TypeScript bindings are generated beside the
+contract for native and web clients. Regenerate and verify all outputs with:
+
+```sh
+make observe-protocol-generate
+make observe-protocol-check
+```
 
 ## Usage
 

@@ -192,7 +192,7 @@ pub struct App {
     last_discovery_scan: Instant,
 
     prev_messages_sent: u64,
-    prev_timestamp: f64,
+    prev_timestamp: u64,
 }
 
 /// Scan interval for auto-discovery re-scans.
@@ -287,7 +287,7 @@ impl App {
             auto_discover,
             last_discovery_scan: Instant::now(),
             prev_messages_sent: 0,
-            prev_timestamp: 0.0,
+            prev_timestamp: 0,
         }
     }
 
@@ -390,7 +390,7 @@ impl App {
         self.active_node_label.push_str(label);
         self.msg_rate = 0.0;
         self.prev_messages_sent = 0;
-        self.prev_timestamp = 0.0;
+        self.prev_timestamp = 0;
     }
 
     fn cycle_active_node(&mut self, reverse: bool) -> bool {
@@ -750,14 +750,14 @@ impl App {
         self.set_active_node(&active_node);
 
         if let Some(m) = metrics {
-            if self.prev_timestamp > 0.0 && m.timestamp_secs > self.prev_timestamp {
+            if self.prev_timestamp > 0 && m.timestamp_secs > self.prev_timestamp {
                 let dt = m.timestamp_secs - self.prev_timestamp;
                 let dm = m.messages_sent.saturating_sub(self.prev_messages_sent);
                 #[expect(
                     clippy::cast_precision_loss,
-                    reason = "message count rate doesn't need full u64 precision"
+                    reason = "message rate display doesn't need full u64 precision"
                 )]
-                let rate = dm as f64 / dt;
+                let rate = dm as f64 / dt as f64;
                 self.msg_rate = rate;
             }
             self.prev_timestamp = m.timestamp_secs;
@@ -892,7 +892,7 @@ impl App {
     )]
     fn load_demo_data(&mut self) {
         self.metrics = Metrics {
-            timestamp_secs: 42.5,
+            timestamp_secs: 42,
             tasks_spawned: 128,
             tasks_completed: 115,
             steals: 47,
@@ -1056,21 +1056,21 @@ impl App {
         // Demo cluster members (3 nodes)
         self.cluster_members = vec![
             ClusterMember {
-                node_id: 1,
+                route_slot: 1,
                 state: "alive".into(),
                 incarnation: 2,
                 addr: "127.0.0.1:9000".into(),
                 last_seen_ms: 0,
             },
             ClusterMember {
-                node_id: 2,
+                route_slot: 2,
                 state: "alive".into(),
                 incarnation: 1,
                 addr: "192.168.1.11:9000".into(),
                 last_seen_ms: 500,
             },
             ClusterMember {
-                node_id: 3,
+                route_slot: 3,
                 state: "suspect".into(),
                 incarnation: 3,
                 addr: "192.168.1.12:9000".into(),
@@ -1082,13 +1082,13 @@ impl App {
         self.cluster_connections = vec![
             ConnectionInfo {
                 conn_id: 0,
-                peer_node_id: 2,
+                peer_route_slot: 2,
                 state: "active".into(),
                 last_activity_ms: 500,
             },
             ConnectionInfo {
                 conn_id: 1,
-                peer_node_id: 3,
+                peer_route_slot: 3,
                 state: "active".into(),
                 last_activity_ms: 8000,
             },
@@ -1096,14 +1096,20 @@ impl App {
 
         // Demo routing
         self.cluster_routing = RoutingSnapshot {
-            local_node_id: 1,
+            local_node_id: "00000000-0000-0000-0000-000000000001".into(),
+            local_route_slot: 1,
+            session_incarnation: 1,
             routes: vec![
                 RouteEntry {
-                    node_id: 2,
+                    node_id: "00000000-0000-0000-0000-000000000002".into(),
+                    route_slot: 2,
+                    session_incarnation: 1,
                     conn_id: 0,
                 },
                 RouteEntry {
-                    node_id: 3,
+                    node_id: "00000000-0000-0000-0000-000000000003".into(),
+                    route_slot: 3,
+                    session_incarnation: 1,
                     conn_id: 1,
                 },
             ],
@@ -1267,17 +1273,17 @@ mod tests {
     }
 
     struct TestTraceState {
-        metrics_timestamp: f64,
+        metrics_timestamp: u64,
         trace_requests: usize,
         trace_responses: VecDeque<String>,
     }
 
     impl TestTraceServer {
         fn new(trace_responses: Vec<String>) -> Self {
-            Self::with_metrics(trace_responses, 1.0)
+            Self::with_metrics(trace_responses, 1)
         }
 
-        fn with_metrics(trace_responses: Vec<String>, metrics_timestamp: f64) -> Self {
+        fn with_metrics(trace_responses: Vec<String>, metrics_timestamp: u64) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind trace test server");
             Self::from_listener(listener, trace_responses, metrics_timestamp)
         }
@@ -1290,7 +1296,7 @@ mod tests {
         fn from_dead_guard(
             guard: TcpListener,
             trace_responses: Vec<String>,
-            metrics_timestamp: f64,
+            metrics_timestamp: u64,
         ) -> Self {
             Self::from_listener(guard, trace_responses, metrics_timestamp)
         }
@@ -1298,7 +1304,7 @@ mod tests {
         fn from_listener(
             listener: TcpListener,
             trace_responses: Vec<String>,
-            metrics_timestamp: f64,
+            metrics_timestamp: u64,
         ) -> Self {
             listener
                 .set_nonblocking(true)
@@ -1414,14 +1420,14 @@ mod tests {
                     .expect("lock trace server state")
                     .metrics_timestamp;
                 format!(
-                    r#"{{"timestamp_secs":{metrics_timestamp},"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}}"#
+                    r#"{{"timestamp_secs":"{metrics_timestamp}","tasks_spawned":"0","tasks_completed":"0","steals":"0","messages_sent":"0","messages_received":"0","active_workers":"0","alloc_count":"0","dealloc_count":"0","bytes_allocated":"0","bytes_freed":"0","bytes_live":"0","peak_bytes_live":"0","tcp_bytes_read":"0","tcp_bytes_written":"0","tcp_accept_count":"0","tcp_connect_count":"0","tcp_error_count":"0"}}"#
                 )
             }
             "/api/actors" | "/api/metrics/history" | "/api/supervisors" | "/api/crashes" => {
                 "[]".to_owned()
             }
             "/api/cluster/members" | "/api/connections" => "[]".to_owned(),
-            "/api/routing/table" => r#"{"local_node_id":1,"routes":[]}"#.to_owned(),
+            "/api/routing/table" => r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#.to_owned(),
             "/api/traces" => {
                 let mut state = state.lock().expect("lock trace server state");
                 state.trace_requests += 1;
@@ -1441,12 +1447,15 @@ mod tests {
     fn trace_response(trace_id: &str, timestamp_ns: u64) -> String {
         serde_json::to_string(&vec![serde_json::json!({
             "trace_id": trace_id,
-            "span_id": 0,
-            "parent_span_id": 0,
-            "actor_id": 42,
+            "span_id": "0",
+            "parent_span_id": "0",
+            "actor_id": "42",
+            "actor_type_id": "0",
+            "actor_type": null,
             "event_type": "send",
             "msg_type": 7,
-            "timestamp_ns": timestamp_ns,
+            "timestamp_ns": timestamp_ns.to_string(),
+            "handler_name": null,
         })])
         .expect("serialize trace response")
     }
@@ -1609,7 +1618,7 @@ mod tests {
             app.configured_target_label(),
             format!("{dead_addr} +1 more")
         );
-        assert!((app.metrics.timestamp_secs - 1.0).abs() < f64::EPSILON);
+        assert_eq!(app.metrics.timestamp_secs, 1);
     }
 
     #[test]
@@ -1618,14 +1627,14 @@ mod tests {
             .expect("tcp app should build");
         app.msg_rate = 42.0;
         app.prev_messages_sent = 9;
-        app.prev_timestamp = 3.5;
+        app.prev_timestamp = 3;
 
         app.set_active_node("beta:6061");
 
         assert_eq!(app.active_node_label(), "beta:6061");
         assert!(app.msg_rate.abs() < f64::EPSILON);
         assert_eq!(app.prev_messages_sent, 0);
-        assert!(app.prev_timestamp.abs() < f64::EPSILON);
+        assert_eq!(app.prev_timestamp, 0);
     }
 
     #[test]
@@ -1646,8 +1655,8 @@ mod tests {
 
     #[test]
     fn switch_active_node_skips_disconnected_nodes_and_refreshes() {
-        let alpha = TestTraceServer::with_metrics(Vec::new(), 1.0);
-        let beta = TestTraceServer::with_metrics(Vec::new(), 2.0);
+        let alpha = TestTraceServer::with_metrics(Vec::new(), 1);
+        let beta = TestTraceServer::with_metrics(Vec::new(), 2);
         let (dead_addr, _dead_guard) = dead_addr_guard();
         let alpha_addr = alpha.addr();
         let beta_addr = beta.addr();
@@ -1656,20 +1665,20 @@ mod tests {
 
         app.refresh();
         assert_eq!(app.active_node_label(), alpha_addr);
-        assert!((app.metrics.timestamp_secs - 1.0).abs() < f64::EPSILON);
+        assert_eq!(app.metrics.timestamp_secs, 1);
 
         assert!(app.switch_active_node_next());
         assert_eq!(app.active_node_label(), beta_addr);
-        assert!((app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON);
+        assert_eq!(app.metrics.timestamp_secs, 2);
 
         assert!(app.switch_active_node_next());
         assert_eq!(app.active_node_label(), alpha_addr);
-        assert!((app.metrics.timestamp_secs - 1.0).abs() < f64::EPSILON);
+        assert_eq!(app.metrics.timestamp_secs, 1);
     }
 
     #[test]
     fn refresh_does_not_snap_back_to_recovered_first_node() {
-        let fallback = TestTraceServer::with_metrics(Vec::new(), 2.0);
+        let fallback = TestTraceServer::with_metrics(Vec::new(), 2);
         let (recovering_addr, recovering_guard) = dead_addr_guard();
         let fallback_addr = fallback.addr();
         let mut app = App::new_tcp(&[recovering_addr.clone(), fallback_addr.clone()])
@@ -1677,11 +1686,11 @@ mod tests {
 
         app.refresh();
         assert_eq!(app.active_node_label(), fallback_addr);
-        assert!((app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON);
+        assert_eq!(app.metrics.timestamp_secs, 2);
 
         // Promote the guard listener directly into a live server — no
         // release-and-rebind gap, so no sibling test can steal the port.
-        let _recovered = TestTraceServer::from_dead_guard(recovering_guard, Vec::new(), 1.0);
+        let _recovered = TestTraceServer::from_dead_guard(recovering_guard, Vec::new(), 1);
         app.refresh();
 
         assert_eq!(
@@ -1689,8 +1698,8 @@ mod tests {
             fallback_addr,
             "recovering earlier node must not steal the active pane source"
         );
-        assert!(
-            (app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON,
+        assert_eq!(
+            app.metrics.timestamp_secs, 2,
             "core panes must stay pinned to the current healthy node"
         );
     }

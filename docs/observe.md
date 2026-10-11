@@ -304,17 +304,39 @@ The key endpoints for observe users are:
 | `GET /api/metrics` | JSON envelope | Current profiler metrics: timestamp, task/message counters, active workers, allocator stats, and TCP counters. |
 | `GET /api/metrics/history` | JSON envelope | Five-minute, one-sample-per-second profiler ring buffer with abbreviated keys. |
 | `GET /api/memory` | JSON envelope | Current allocator stats. |
+| `GET /api/cluster/members` | JSON envelope | Cluster membership and relative last-seen ages. |
+| `GET /api/connections` | JSON envelope | Connection-manager state and monotonic last-activity readings. |
+| `GET /api/routing/table` | JSON envelope | Full node identities, route slots, session incarnations, and connection IDs. |
+| `GET /api/traces` | JSON envelope | Destructively drains up to 256 events from the process-global trace queue. |
+| `GET /api/supervisors` | JSON envelope | Flattened supervision tree rows. |
+| `GET /api/crashes` | JSON envelope | Recent actor crash records and resolved trap kinds. |
 | `GET /debug/pprof/heap` | gzip protobuf | pprof-compatible heap profile. |
 | `GET /debug/pprof/profile` | text | Flat profile text. |
 
 JSON endpoints are wrapped as:
 
 ```json
-{"schema_version":"v0.5","data":{}}
+{"schema_version":"v1","data":{}}
 ```
 
-They also include the `X-Hew-Schema-Version: v0.5` header. The scrape endpoint
+They also include the `X-Hew-Schema-Version: v1` header. The scrape endpoint
 is plain text and is not JSON-enveloped.
+
+All signed and unsigned 64-bit integer fields are canonical base-10 JSON
+strings. Bounded 32-bit and 16-bit fields remain JSON numbers. This preserves
+full precision through ordinary JavaScript JSON parsing and native-app IPC.
+
+The machine-readable authority is
+[`protocol/observe/v1/openapi.json`](../protocol/observe/v1/openapi.json).
+It defines required and nullable fields, integer widths, units, clock semantics,
+open string taxonomies, error bodies, and both TCP and Unix-socket transports.
+Rust, Swift, and TypeScript bindings are generated from that file; run
+`make observe-protocol-check` to validate the schema, generated-code drift, and
+lossless 64-bit codec tests.
+
+The v1 trace endpoint is a single-consumer-style destructive drain, not a
+broadcast or cursor API. It does not report message destinations, and actor/
+handler attribution may be `null` when metadata is unavailable at drain time.
 
 For the terminal UI, build or install the sibling binary and attach it to the
 running profiler:

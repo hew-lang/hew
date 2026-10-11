@@ -9,9 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
-
-const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
+use hew_observe_protocol::{
+    ActorInfo, ClusterMember, ConnectionInfo, CrashEntry, Envelope, HistoryEntry, Memory, Metrics,
+    RoutingSnapshot, SupervisorRow, TraceEvent, OBSERVE_SCHEMA_VERSION,
+};
 const FIXTURE_COUNTER_INCREMENTS: u64 = 7;
 const EXPECTED_COUNTER_MESSAGES: u64 = FIXTURE_COUNTER_INCREMENTS + 1;
 const EXPECTED_PINGER_MESSAGES: u64 = 1;
@@ -19,48 +20,18 @@ const EXPECTED_ACTORS_LIVE: u64 = 2;
 const EXPECTED_ACTOR_TURNS: u64 = EXPECTED_COUNTER_MESSAGES + EXPECTED_PINGER_MESSAGES;
 const EXPECTED_TASKS_SPAWNED: u64 = EXPECTED_ACTORS_LIVE;
 
-#[derive(Debug, Deserialize)]
-struct Envelope<T> {
-    schema_version: String,
-    data: T,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Metrics {
-    #[serde(default)]
-    tasks_spawned: u64,
-    #[serde(default)]
-    tasks_completed: u64,
-    #[serde(default)]
-    messages_sent: u64,
-    #[serde(default)]
-    messages_received: u64,
-    #[serde(default)]
-    alloc_count: u64,
-    #[serde(default)]
-    dealloc_count: u64,
-    #[serde(default)]
-    bytes_allocated: u64,
-    #[serde(default)]
-    bytes_freed: u64,
-    #[serde(default)]
-    bytes_live: u64,
-    #[serde(default)]
-    peak_bytes_live: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct ActorInfo {
-    #[serde(default)]
-    actor_type: String,
-    #[serde(default)]
-    msgs: u64,
-}
-
 #[derive(Debug, Default)]
 struct Snapshot {
     metrics: Metrics,
     actors: Vec<ActorInfo>,
+    _memory: Memory,
+    _history: Vec<HistoryEntry>,
+    _cluster_members: Vec<ClusterMember>,
+    _connections: Vec<ConnectionInfo>,
+    _routing: RoutingSnapshot,
+    _traces: Vec<TraceEvent>,
+    _supervisors: Vec<SupervisorRow>,
+    _crashes: Vec<CrashEntry>,
     scrape: String,
 }
 
@@ -330,7 +301,15 @@ fn wait_for_valid_snapshot(
 fn fetch_snapshot(client: &reqwest::blocking::Client, base_url: &str) -> Result<Snapshot, String> {
     Ok(Snapshot {
         metrics: fetch_json(client, base_url, "/api/metrics")?,
+        _memory: fetch_json(client, base_url, "/api/memory")?,
         actors: fetch_json(client, base_url, "/api/actors")?,
+        _history: fetch_json(client, base_url, "/api/metrics/history")?,
+        _cluster_members: fetch_json(client, base_url, "/api/cluster/members")?,
+        _connections: fetch_json(client, base_url, "/api/connections")?,
+        _routing: fetch_json(client, base_url, "/api/routing/table")?,
+        _traces: fetch_json(client, base_url, "/api/traces")?,
+        _supervisors: fetch_json(client, base_url, "/api/supervisors")?,
+        _crashes: fetch_json(client, base_url, "/api/crashes")?,
         scrape: fetch_text(client, base_url, "/api/observe/scrape")?,
     })
 }

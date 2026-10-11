@@ -31,6 +31,7 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use hew_observe_protocol::CrashEntry as ObserveCrashEntry;
 use hew_runtime::actor::hew_actor_send;
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last, snapshot_crashes_json};
 use hew_runtime::deterministic::hew_deterministic_reset;
@@ -39,43 +40,6 @@ use hew_runtime::supervisor::{
     test_wait_for_restart, HewChildSpec, HEW_TRAP_DIVIDE_BY_ZERO,
 };
 use hew_runtime_testkit::ensure_scheduler;
-use serde::Deserialize;
-
-/// Field-for-field mirror of `hew_observe::client::CrashEntry`
-/// (`hew-observe/src/client.rs`). The integration boundary between
-/// `hew-runtime`'s profiler `/api/crashes` producer and `hew-observe`'s
-/// downstream consumer is *the JSON shape* — by deserialising the
-/// producer's bytes into the exact same `#[derive(Deserialize)]`
-/// declaration the observe TUI uses, the test asserts that the wire
-/// contract is satisfied at the field level, not just that bytes flow.
-///
-/// `hew-observe` ships as a bin-only crate, so it cannot be added as a
-/// `dev-dependency` of `hew-runtime` without converting it into a lib
-/// (which would surface a wave of unrelated `pub` clippy lints across
-/// the TUI internals). The mirror here is intentional duplication; if
-/// the producer adds or renames a field, both this struct and the
-/// observe `CrashEntry` must update together.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[allow(
-    dead_code,
-    reason = "Mirror struct for the /api/crashes wire contract; fields are present \
-              to pin the JSON shape downstream consumers depend on, even when this \
-              test does not assert each one individually."
-)]
-struct ObserveCrashEntry {
-    #[serde(default)]
-    time_s: f64,
-    #[serde(default)]
-    actor_id: u64,
-    #[serde(default)]
-    signal: i32,
-    #[serde(default)]
-    trap_kind: String,
-    #[serde(default)]
-    msg_type: i32,
-    #[serde(default)]
-    fault_addr: u64,
-}
 
 /// Process-global lock — `RECENT_CRASHES`, fault-injection table, and the
 /// scheduler are shared with other integration tests in the same binary.

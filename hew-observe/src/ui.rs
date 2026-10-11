@@ -308,20 +308,20 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 break;
             }
             let m = &members[member_idx];
-            let is_self = m.node_id == app.cluster_routing.local_node_id;
+            let is_self = m.route_slot == app.cluster_routing.local_route_slot;
             let connection = app
                 .cluster_connections
                 .iter()
-                .find(|c| c.peer_node_id == m.node_id);
+                .find(|c| c.peer_route_slot == m.route_slot);
             let route = app
                 .cluster_routing
                 .routes
                 .iter()
-                .find(|r| r.node_id == m.node_id);
+                .find(|r| r.route_slot == m.route_slot);
             let title = if is_self {
-                format!(" node:{} (self) ", m.node_id)
+                format!(" slot:{} (self) ", m.route_slot)
             } else {
-                format!(" node:{} ", m.node_id)
+                format!(" slot:{} ", m.route_slot)
             };
 
             let colour = theme::member_state_colour(&m.state);
@@ -383,7 +383,7 @@ fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
         .map(|m| {
             let colour = theme::member_state_colour(&m.state);
             Row::new(vec![
-                Cell::from(format!("node:{}", m.node_id)),
+                Cell::from(format!("slot:{}", m.route_slot)),
                 Cell::from(m.state.as_str()).style(Style::default().fg(colour)),
                 Cell::from(format!("{}", m.incarnation)),
                 Cell::from(m.addr.as_str()),
@@ -440,7 +440,7 @@ fn draw_cluster_connections(f: &mut Frame, app: &App, area: Rect) {
                 route_targets_for_connection(&app.cluster_routing.routes, connection.conn_id);
             Row::new(vec![
                 Cell::from(format!("{}", connection.conn_id)),
-                Cell::from(format!("node:{}", connection.peer_node_id)),
+                Cell::from(format!("slot:{}", connection.peer_route_slot)),
                 Cell::from(connection.state.as_str())
                     .style(Style::default().fg(theme::connection_state_colour(&connection.state))),
                 Cell::from(format_relative_ms(connection.last_activity_ms)),
@@ -466,8 +466,8 @@ fn draw_cluster_connections(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(format!(
-        " Routing Table (local node:{}) ",
-        app.cluster_routing.local_node_id
+        " Routing Table (local {} / slot {}) ",
+        app.cluster_routing.local_node_id, app.cluster_routing.local_route_slot
     ));
     if app.cluster_routing.routes.is_empty() {
         let inner = block.inner(area);
@@ -495,10 +495,10 @@ fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
                 .find(|connection| connection.conn_id == route.conn_id);
             let state = connection.map_or("missing", |connection| connection.state.as_str());
             Row::new(vec![
-                Cell::from(format!("node:{}", route.node_id)),
+                Cell::from(route.node_id.clone()),
                 Cell::from(format!("{}", route.conn_id)),
                 Cell::from(connection.map_or("—".to_owned(), |connection| {
-                    format!("node:{}", connection.peer_node_id)
+                    format!("slot:{}", connection.peer_route_slot)
                 })),
                 Cell::from(state).style(Style::default().fg(match connection {
                     Some(connection) => theme::connection_state_colour(&connection.state),
@@ -522,25 +522,21 @@ fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-fn route_targets_for_connection(routes: &[RouteEntry], conn_id: i32) -> Vec<u16> {
-    let mut targets: Vec<u16> = routes
+fn route_targets_for_connection(routes: &[RouteEntry], conn_id: i32) -> Vec<String> {
+    let mut targets: Vec<String> = routes
         .iter()
         .filter(|route| route.conn_id == conn_id)
-        .map(|route| route.node_id)
+        .map(|route| route.node_id.clone())
         .collect();
     targets.sort_unstable();
     targets
 }
 
-fn format_route_targets(targets: &[u16]) -> String {
+fn format_route_targets(targets: &[String]) -> String {
     if targets.is_empty() {
         "\u{2014}".to_owned()
     } else {
-        targets
-            .iter()
-            .map(|target| format!("node:{target}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        targets.join(", ")
     }
 }
 
@@ -570,16 +566,16 @@ fn cluster_member_debug_summary(
 
     match (connection, route) {
         (Some(connection), Some(route)) => format!(
-            "conn:{} ↔ node:{} • route:{} • {}",
+            "conn:{} ↔ slot:{} • route:{} • {}",
             connection.conn_id,
-            connection.peer_node_id,
+            connection.peer_route_slot,
             route.conn_id,
             format_relative_ms(connection.last_activity_ms),
         ),
         (Some(connection), None) => format!(
-            "conn:{} ↔ node:{} • no route • {}",
+            "conn:{} ↔ slot:{} • no route • {}",
             connection.conn_id,
-            connection.peer_node_id,
+            connection.peer_route_slot,
             format_relative_ms(connection.last_activity_ms),
         ),
         (None, Some(route)) => format!("route:{} • no live connection", route.conn_id),
@@ -650,7 +646,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     // Collect unique node IDs
     let mut node_ids: Vec<u16> = events.iter().map(|e| (e.actor_id >> 48) as u16).collect();
     for m in &app.cluster_members {
-        node_ids.push(m.node_id);
+        node_ids.push(m.route_slot);
     }
     node_ids.sort_unstable();
     node_ids.dedup();
@@ -813,7 +809,7 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Collect node IDs from cluster members and trace events
-    let mut node_ids: Vec<u16> = app.cluster_members.iter().map(|m| m.node_id).collect();
+    let mut node_ids: Vec<u16> = app.cluster_members.iter().map(|m| m.route_slot).collect();
     for evt in &app.trace_events {
         let nid = (evt.actor_id >> 48) as u16;
         if !node_ids.contains(&nid) {
@@ -1596,13 +1592,7 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "duration seconds are always small positive values"
-)]
-fn format_duration(secs: f64) -> String {
-    let total = secs as u64;
+fn format_duration(total: u64) -> String {
     let h = total / 3600;
     let m = (total % 3600) / 60;
     let s = total % 60;
@@ -1654,23 +1644,29 @@ mod tests {
     fn route_targets_for_connection_returns_sorted_targets() {
         let routes = vec![
             RouteEntry {
-                node_id: 9,
+                node_id: "node-9".to_owned(),
+                route_slot: 9,
+                session_incarnation: 1,
                 conn_id: 3,
             },
             RouteEntry {
-                node_id: 4,
+                node_id: "node-4".to_owned(),
+                route_slot: 4,
+                session_incarnation: 1,
                 conn_id: 3,
             },
             RouteEntry {
-                node_id: 7,
+                node_id: "node-7".to_owned(),
+                route_slot: 7,
+                session_incarnation: 1,
                 conn_id: 8,
             },
         ];
 
         let targets = route_targets_for_connection(&routes, 3);
 
-        assert_eq!(targets, vec![4, 9]);
-        assert_eq!(format_route_targets(&targets), "node:4, node:9");
+        assert_eq!(targets, vec!["node-4", "node-9"]);
+        assert_eq!(format_route_targets(&targets), "node-4, node-9");
     }
 
     #[test]
@@ -1678,7 +1674,9 @@ mod tests {
         let summary = cluster_member_debug_summary(
             None,
             Some(&RouteEntry {
-                node_id: 42,
+                node_id: "node-42".to_owned(),
+                route_slot: 42,
+                session_incarnation: 1,
                 conn_id: 7,
             }),
             3,
@@ -1693,19 +1691,21 @@ mod tests {
         let summary = cluster_member_debug_summary(
             Some(&ConnectionInfo {
                 conn_id: 7,
-                peer_node_id: 42,
+                peer_route_slot: 42,
                 state: "active".to_owned(),
                 last_activity_ms: 1_250,
             }),
             Some(&RouteEntry {
-                node_id: 42,
+                node_id: "node-42".to_owned(),
+                route_slot: 42,
+                session_incarnation: 1,
                 conn_id: 7,
             }),
             1,
             false,
         );
 
-        assert_eq!(summary, "conn:7 ↔ node:42 • route:7 • 1.2s ago");
+        assert_eq!(summary, "conn:7 ↔ slot:42 • route:7 • 1.2s ago");
     }
 
     #[test]

@@ -1065,17 +1065,21 @@ pub fn drain_events_json() -> String {
                 (type_id, actor_type, hname)
             };
 
-            let actor_type_json = match actor_type_str {
-                Some(actor_type_str) if actor_type_id != 0 => format!("\"{actor_type_str}\""),
-                _ => "null".to_owned(),
-            };
-            let handler_name_json = match &handler_name {
-                Some(name) => format!("\"{name}\""),
-                None => "null".to_owned(),
-            };
+            let mut actor_type_json = String::new();
+            if let Some(actor_type_str) = actor_type_str.filter(|_| actor_type_id != 0) {
+                crate::util::push_json_string(&mut actor_type_json, &actor_type_str);
+            } else {
+                actor_type_json.push_str("null");
+            }
+            let mut handler_name_json = String::new();
+            if let Some(name) = &handler_name {
+                crate::util::push_json_string(&mut handler_name_json, name);
+            } else {
+                handler_name_json.push_str("null");
+            }
             let _ = write!(
                 json,
-                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"actor_type_id":{},"actor_type":{},"event_type":"{}","msg_type":{},"timestamp_ns":{},"handler_name":{}}}"#,
+                r#"{{"trace_id":"{:016x}{:016x}","span_id":"{}","parent_span_id":"{}","actor_id":"{}","actor_type_id":"{}","actor_type":{},"event_type":"{}","msg_type":{},"timestamp_ns":"{}","handler_name":{}}}"#,
                 ev.trace_id_hi,
                 ev.trace_id_lo,
                 ev.span_id,
@@ -1330,9 +1334,12 @@ mod tests {
             .find(|e| e["event_type"] == "supervisor_restart")
             .expect("supervisor_restart event must be present on the export surface");
         assert_eq!(restart["msg_type"], 2);
-        assert_eq!(restart["actor_id"], 7);
+        assert_eq!(restart["actor_id"], "7");
         assert_ne!(
-            restart["span_id"].as_u64().unwrap(),
+            restart["span_id"]
+                .as_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap(),
             0,
             "supervisor event must inherit the live dispatch span, not a zero id"
         );
@@ -1898,15 +1905,11 @@ mod tests {
                 "event_type string must match for constant {span_const}"
             );
             // Wire-contract: actor_id field must be present and populated.
-            assert!(
-                parsed[0]["actor_id"].as_u64().is_some(),
-                "actor_id must be a u64 for {expected_str}"
-            );
-            assert_ne!(
-                parsed[0]["actor_id"].as_u64().unwrap(),
-                0,
-                "actor_id must be non-zero for {expected_str}"
-            );
+            let actor_id = parsed[0]["actor_id"]
+                .as_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("actor_id must be a decimal u64 for {expected_str}"));
+            assert_ne!(actor_id, 0, "actor_id must be non-zero for {expected_str}");
         }
     }
 

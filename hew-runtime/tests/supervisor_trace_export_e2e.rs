@@ -183,10 +183,13 @@ fn restart_emits_supervisor_restart_on_export_surface() {
         trace_id.chars().any(|c| c != '0'),
         "supervisor_restart must carry a non-zero trace_id (S3 crash-recovery root); got {trace_id:?}"
     );
+    let span_id = restart["span_id"]
+        .as_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
     assert_ne!(
-        restart["span_id"].as_u64().unwrap_or(0),
-        0,
-        "supervisor_restart must carry a non-zero span id"
+        span_id, 0,
+        "supervisor_restart must carry a non-zero decimal-string span id"
     );
 
     eprintln!("ORACLE supervisor_restart event on export surface: {restart}");

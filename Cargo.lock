@@ -1935,6 +1935,7 @@ version = "0.6.0-rc8"
 dependencies = [
  "clap",
  "crossterm",
+ "hew-observe-protocol",
  "hew-runtime",
  "hew-testutil",
  "libc",
@@ -1943,6 +1944,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "hew-observe-protocol"
+version = "0.6.0-rc8"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1995,6 +2004,7 @@ dependencies = [
  "glob",
  "hew-cabi",
  "hew-codec",
+ "hew-observe-protocol",
  "hew-runtime-testkit",
  "http-body-util",
  "hyper",

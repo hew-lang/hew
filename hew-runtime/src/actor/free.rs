@@ -2415,13 +2415,26 @@ pub(crate) unsafe fn schedule_actor_after_enqueue(
     msg_type: i32,
 ) {
     let sender = hew_actor_self();
-    let trace_actor_id = if sender.is_null() {
-        a.id
+    let (source_actor_id, source_spawn_serial, source_dispatch_ptr) = if sender.is_null() {
+        (None, None, 0)
     } else {
         // SAFETY: the scheduler installs a live actor during dispatch.
-        unsafe { (*sender).id }
+        let sender = unsafe { &*sender };
+        (
+            Some(sender.id),
+            Some(sender.spawn_serial),
+            sender.dispatch.map_or(0, |dispatch| dispatch as usize),
+        )
     };
-    crate::tracing::record_send(trace_actor_id, msg_type);
+    crate::tracing::record_send(
+        source_actor_id,
+        source_spawn_serial,
+        source_dispatch_ptr,
+        a.id,
+        a.spawn_serial,
+        a.dispatch.map_or(0, |dispatch| dispatch as usize),
+        msg_type,
+    );
 
     // Deterministic ownership seam: the message (and an ask's retained sender
     // reference) is already owned by the mailbox, but this sender has not yet

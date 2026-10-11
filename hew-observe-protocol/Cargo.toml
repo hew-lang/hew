@@ -1,0 +1,15 @@
+[package]
+name = "hew-observe-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generated models for the versioned Hew Observe HTTP protocol"
+repository = "https://github.com/hew-lang/hew"
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

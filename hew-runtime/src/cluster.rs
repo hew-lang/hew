@@ -2922,7 +2922,7 @@ pub unsafe extern "C" fn hew_cluster_gossip_count(cluster: *mut HewCluster) -> c
 
 /// Build a JSON array of cluster members for the profiler HTTP API.
 ///
-/// Each element: `{"node_id":N,"state":"S","incarnation":N,"addr":"S","last_seen_ms":N}`
+/// Each element: `{"route_slot":N,"state":"S","incarnation":"N","addr":"S","last_seen_ms":"N"}`
 #[cfg(feature = "profiler")]
 pub fn snapshot_members_json(cluster: &HewCluster) -> String {
     use std::fmt::Write as _;
@@ -2947,11 +2947,11 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
         let last_seen_ago_ms = now_ms.saturating_sub(m.last_seen_ms);
         let _ = write!(
             json,
-            r#"{{"node_id":{},"state":"{}","incarnation":{},"addr":"#,
+            r#"{{"route_slot":{},"state":"{}","incarnation":"{}","addr":"#,
             m.node_id, state_str, m.incarnation,
         );
         crate::util::push_json_string(json, addr);
-        let _ = write!(json, r#","last_seen_ms":{last_seen_ago_ms}}}"#);
+        let _ = write!(json, r#","last_seen_ms":"{last_seen_ago_ms}"}}"#);
     })
 }
 
@@ -3007,7 +3007,7 @@ mod tests {
         let json = snapshot_members_json(&cluster);
         // SAFETY: hew_now_ms has no preconditions.
         let after_snapshot_ms = unsafe { crate::clock::hew_now_ms() };
-        let prefix = r#"[{"node_id":7,"state":"alive","incarnation":42,"addr":"node\"\\\\name\n:9000","last_seen_ms":"#;
+        let prefix = r#"[{"route_slot":7,"state":"alive","incarnation":"42","addr":"node\"\\\\name\n:9000","last_seen_ms":""#;
         assert!(
             json.starts_with(prefix),
             "snapshot should preserve field order and escape the address: {json}"
@@ -3019,9 +3019,9 @@ mod tests {
 
         let last_seen_ms = json
             .trim_start_matches(prefix)
-            .trim_end_matches("}]")
+            .trim_end_matches("\"}]")
             .parse::<u64>()
-            .expect("last_seen_ms should be numeric");
+            .expect("last_seen_ms should be a decimal string");
         let min_elapsed_ms = before_snapshot_ms.saturating_sub(fixture_last_seen_ms);
         let max_elapsed_ms = after_snapshot_ms.saturating_sub(fixture_last_seen_ms);
         assert!(

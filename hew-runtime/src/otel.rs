@@ -47,8 +47,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::tracing::{
-    drain_events, unix_epoch_offset_ns, HewTraceEvent, SPAN_BEGIN, SPAN_CRASH, SPAN_END, SPAN_SEND,
-    SPAN_SPAWN, SPAN_STOP,
+    read_otel_events, unix_epoch_offset_ns, HewTraceEvent, SPAN_BEGIN, SPAN_CRASH, SPAN_END,
+    SPAN_SEND, SPAN_SPAWN, SPAN_STOP,
 };
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -152,30 +152,12 @@ fn binary_name() -> String {
 /// Called from `hew_sched_init` during scheduler startup.
 /// If the env var is absent, this is a complete no-op.
 ///
-/// # Profiler conflict
-///
-/// When both the `profiler` and `otel` features are enabled and both
-/// `HEW_PPROF` and `HEW_OTEL_ENDPOINT` are set, both consumers drain the
-/// same shared `TRACE_EVENTS` ring buffer. This causes trace events to be
-/// split nondeterministically between the two consumers. A warning is emitted
-/// to stderr and the `OTel` exporter is **not** started; use one or the other.
+/// `OTel` and the profiler use independent cursors over the same bounded ring,
+/// so enabling both does not divide the event stream between consumers.
 pub fn maybe_start() {
     let Some(config) = OtelConfig::from_env() else {
         return;
     };
-
-    // Guard: if the profiler is also active and draining traces, refuse to
-    // start to avoid silent event loss. The user must choose one path.
-    #[cfg(feature = "profiler")]
-    if std::env::var("HEW_PPROF").is_ok_and(|v| !v.trim().is_empty()) {
-        eprintln!(
-            "[hew-otel] WARNING: both HEW_PPROF and HEW_OTEL_ENDPOINT are set. \
-             Both consumers share the same trace-event ring buffer and will each \
-             see only a fraction of events. The OTel exporter will NOT be started. \
-             Unset HEW_PPROF or build without the 'profiler' feature to use OTel."
-        );
-        return;
-    }
 
     eprintln!(
         "[hew-otel] exporting traces to {} (service: {}, interval: {}s, batch: {})",
@@ -218,9 +200,13 @@ fn exporter_loop(config: &OtelConfig) {
     loop {
         thread::sleep(config.flush_interval);
 
-        // Drain new events and reconstruct complete spans.
-        let events = drain_events(config.batch_size);
-        let mut spans = reconstruct_spans(events, &mut pending_begins);
+        // OTel owns an independent cursor. A reset or retention overrun makes
+        // unmatched begins from the previous continuity epoch unusable.
+        let batch = read_otel_events(config.batch_size);
+        if batch.discontinuity {
+            pending_begins.clear();
+        }
+        let mut spans = reconstruct_spans(batch.events, &mut pending_begins);
 
         // Age out begins that have been pending longer than the threshold.
         spans.extend(flush_stale_begins(&mut pending_begins, stale_threshold_ns));

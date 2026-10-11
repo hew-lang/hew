@@ -304,17 +304,62 @@ The key endpoints for observe users are:
 | `GET /api/metrics` | JSON envelope | Current profiler metrics: timestamp, task/message counters, active workers, allocator stats, and TCP counters. |
 | `GET /api/metrics/history` | JSON envelope | Five-minute, one-sample-per-second profiler ring buffer with abbreviated keys. |
 | `GET /api/memory` | JSON envelope | Current allocator stats. |
+| `GET /api/cluster/members` | JSON envelope | Cluster membership and relative last-seen ages. |
+| `GET /api/connections` | JSON envelope | Connection-manager state and monotonic last-activity readings. |
+| `GET /api/routing/table` | JSON envelope | Full node identities, route slots, session incarnations, and connection IDs. |
+| `GET /api/traces` | JSON envelope | Reads a non-destructive, cursor-addressed page from the bounded process trace stream. |
+| `GET /api/supervisors` | JSON envelope | Flattened supervision tree rows. |
+| `GET /api/crashes` | JSON envelope | Recent actor crash records and resolved trap kinds. |
 | `GET /debug/pprof/heap` | gzip protobuf | pprof-compatible heap profile. |
 | `GET /debug/pprof/profile` | text | Flat profile text. |
 
 JSON endpoints are wrapped as:
 
 ```json
-{"schema_version":"v0.5","data":{}}
+{"schema_version":"v1","data":{}}
 ```
 
-They also include the `X-Hew-Schema-Version: v0.5` header. The scrape endpoint
+They also include the `X-Hew-Schema-Version: v1` header. The scrape endpoint
 is plain text and is not JSON-enveloped.
+
+All signed and unsigned 64-bit integer fields are canonical base-10 JSON
+strings. Bounded 32-bit and 16-bit fields remain JSON numbers. This preserves
+full precision through ordinary JavaScript JSON parsing and native-app IPC.
+
+The machine-readable authority is
+[`protocol/observe/v1/openapi.json`](../protocol/observe/v1/openapi.json).
+It defines required and nullable fields, integer widths, units, clock semantics,
+open string taxonomies, error bodies, and both TCP and Unix-socket transports.
+Rust, Swift, and TypeScript bindings are generated from that file; run
+`make observe-protocol-check` to validate the schema, generated-code drift, and
+lossless 64-bit codec tests.
+
+The first trace request omits `stream_id` and `after` and starts at the oldest
+event still retained. Continue with the returned stream epoch and exclusive
+cursor:
+
+```sh
+curl -fsS 'http://127.0.0.1:6067/api/traces?stream_id=<stream_id>&after=<next_cursor>&limit=256'
+```
+
+Both cursor parameters must be supplied together. Each observer maintains its
+own cursor, so polling does not consume events needed by another observer. A
+page containing 256 events only reached the response limit: `has_more` reports
+whether retained events remain, while a non-null `overrun` gives the exact
+sequence range lost to bounded retention.
+
+`producer_instance_id` changes across process restarts, and `stream_id` changes
+when tracing is cleared, reset, or re-enabled. A `409 trace_stream_mismatch`
+therefore starts a new observation segment; an old cursor must never be applied
+to the new stream. Event `timestamp_ns` values use the producer's monotonic
+clock. `clock_anchor` supplies an approximate mapping to Unix time with an
+explicit uncertainty, not a cross-node synchronization guarantee.
+
+Trace events carry an honest nullable `subject`, `source_actor`, and
+`destination_actor`. Unknown attribution stays `null`; consumers must not infer
+causality or destinations from timestamp proximity. Producer overwrite and
+sampling counters describe source-side loss. Consumer storage or transport
+loss must be tracked separately by the consumer.
 
 For the terminal UI, build or install the sibling binary and attach it to the
 running profiler:

@@ -63,3 +63,5 @@ docs/syntax-data.json
 # WHY: xtask and the trace writer disagree with prettier about JSON shape.
 # WHEN: remove once both writers emit prettier-shaped output themselves.
 hew-sandbox-vm/fixtures/
+
+protocol/observe/v1/generated/observe-protocol-v1.ts

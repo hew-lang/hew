@@ -6,9 +6,15 @@
 use crate::util::{json_array, push_json_string, MutexExt};
 use std::convert::Infallible;
 use std::fmt::Write as _;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
+use hew_observe_protocol::{
+    envelope_json_raw, ActorIdentity, TraceBatch, TraceClockAnchor, TraceEvent, TraceOverrun,
+    TraceRequestError, TraceStreamMismatch, TraceSubject,
+};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -16,9 +22,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::path::Path;
+use std::os::unix::net::UnixListener as StdUnixListener;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -57,40 +61,44 @@ unsafe impl Sync for ProfilerContext {}
 
 // ── Server ───────────────────────────────────────────────���──────────────
 
-/// Start the profiling HTTP server on a TCP socket, blocking the current
-/// thread.
-///
-/// Creates a single-threaded tokio runtime for the async hyper server.
-/// Checks `PROFILER_SHUTDOWN` periodically to exit cleanly.
-pub fn run_tcp(bind_addr: &str, ctx: Arc<ProfilerContext>) {
-    let Some(rt) = build_runtime() else { return };
-
-    rt.block_on(async move {
-        let listener = match TcpListener::bind(bind_addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("[hew-pprof] failed to bind {bind_addr}: {e}");
-                return;
-            }
-        };
-
-        eprintln!("[hew-pprof] dashboard at http://{bind_addr}/");
-
-        serve_loop(Listener::Tcp(listener), ctx).await;
-    });
-}
-
 /// Start the profiling HTTP server on a pre-bound `std::net::TcpListener`,
 /// blocking the current thread.
 ///
-/// Like [`run_tcp`] but the caller owns the bind step — useful for tests that
-/// need to know the ephemeral port (`bind("127.0.0.1:0")`) before any client
-/// can connect. The listener is set to non-blocking and converted to a tokio
-/// listener inside the runtime.
+/// The caller owns the bind step so startup can fail before tracing is enabled,
+/// and tests can discover an ephemeral port (`bind("127.0.0.1:0")`) before any
+/// client connects. The listener is set to non-blocking and converted to a
+/// tokio listener inside the runtime.
 pub fn run_tcp_with_listener(listener: std::net::TcpListener, ctx: Arc<ProfilerContext>) {
-    let Some(rt) = build_runtime() else { return };
+    run_tcp_with_listener_inner(listener, ctx, None);
+}
+
+/// Start the TCP server and report when all fallible listener/runtime setup is
+/// complete. The profiler startup path waits for this signal before enabling
+/// tracing, so a server that cannot actually accept connections cannot create
+/// a phantom trace epoch.
+pub(super) fn run_tcp_with_listener_ready(
+    listener: std::net::TcpListener,
+    ctx: Arc<ProfilerContext>,
+    ready: SyncSender<Result<(), String>>,
+) {
+    run_tcp_with_listener_inner(listener, ctx, Some(ready));
+}
+
+fn run_tcp_with_listener_inner(
+    listener: std::net::TcpListener,
+    ctx: Arc<ProfilerContext>,
+    mut ready: Option<SyncSender<Result<(), String>>>,
+) {
+    let Some(rt) = build_runtime() else {
+        report_startup(&mut ready, Err("failed to create tokio runtime".to_owned()));
+        return;
+    };
     if let Err(e) = listener.set_nonblocking(true) {
         eprintln!("[hew-pprof] failed to set listener nonblocking: {e}");
+        report_startup(
+            &mut ready,
+            Err(format!("failed to set listener nonblocking: {e}")),
+        );
         return;
     }
 
@@ -99,46 +107,58 @@ pub fn run_tcp_with_listener(listener: std::net::TcpListener, ctx: Arc<ProfilerC
             Ok(l) => l,
             Err(e) => {
                 eprintln!("[hew-pprof] failed to wrap std listener: {e}");
+                report_startup(&mut ready, Err(format!("failed to wrap TCP listener: {e}")));
                 return;
             }
         };
+        report_startup(&mut ready, Ok(()));
         serve_loop(Listener::Tcp(tokio_listener), ctx).await;
     });
 }
 
 #[cfg(unix)]
-/// Start the profiling HTTP server on a unix domain socket, blocking the
-/// current thread.
-///
-/// The socket file must not already exist (caller should clean up stale
-/// sockets before calling).
-pub fn run_unix(socket_path: &Path, ctx: Arc<ProfilerContext>) {
-    let Some(rt) = build_runtime() else { return };
+/// Start the profiling HTTP server on an already bound Unix listener and
+/// report when all fallible runtime/listener setup is complete.
+pub(super) fn run_unix_with_listener_ready(
+    listener: StdUnixListener,
+    ctx: Arc<ProfilerContext>,
+    ready: SyncSender<Result<(), String>>,
+) {
+    let mut ready = Some(ready);
+    let Some(rt) = build_runtime() else {
+        report_startup(&mut ready, Err("failed to create tokio runtime".to_owned()));
+        return;
+    };
+    if let Err(e) = listener.set_nonblocking(true) {
+        eprintln!("[hew-pprof] failed to set unix listener nonblocking: {e}");
+        report_startup(
+            &mut ready,
+            Err(format!("failed to set unix listener nonblocking: {e}")),
+        );
+        return;
+    }
 
     rt.block_on(async move {
-        let listener = match UnixListener::bind(socket_path) {
+        let listener = match UnixListener::from_std(listener) {
             Ok(l) => l,
             Err(e) => {
-                eprintln!(
-                    "[hew-pprof] failed to bind unix socket {}: {e}",
-                    socket_path.display(),
+                eprintln!("[hew-pprof] failed to wrap unix listener: {e}");
+                report_startup(
+                    &mut ready,
+                    Err(format!("failed to wrap unix listener: {e}")),
                 );
                 return;
             }
         };
-
-        // Set socket to mode 0600 — only the owning user can connect.
-        if let Err(e) =
-            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
-        {
-            eprintln!("[hew-pprof] failed to set socket permissions: {e}");
-            return;
-        }
-
-        eprintln!("[hew-pprof] listening on unix:{}", socket_path.display());
-
+        report_startup(&mut ready, Ok(()));
         serve_loop(Listener::Unix(listener), ctx).await;
     });
+}
+
+fn report_startup(ready: &mut Option<SyncSender<Result<(), String>>>, result: Result<(), String>) {
+    if let Some(ready) = ready.take() {
+        let _ = ready.send(result);
+    }
 }
 
 fn build_runtime() -> Option<tokio::runtime::Runtime> {
@@ -228,7 +248,7 @@ fn handle_request(
         "/api/cluster/members" => serve_cluster_members(ctx),
         "/api/connections" => serve_connections(ctx),
         "/api/routing/table" => serve_routing_table(ctx),
-        "/api/traces" => serve_traces(),
+        "/api/traces" => serve_traces(req.uri().query()),
         "/api/supervisors" => serve_supervisors(),
         "/api/crashes" => serve_crashes(),
         "/debug/pprof/heap" => serve_pprof_heap(),
@@ -257,41 +277,16 @@ fn text_response(body: String, content_type: &str) -> Response<Full<Bytes>> {
         .expect("valid response")
 }
 
-/// Canonical schema version stamped on every JSON envelope emitted by the
-/// profiler/observe HTTP surface.
-///
-/// Consumers (`hew-observe`, sandbox-VM bridges, dashboard) read this value
-/// to detect when the producer's event shape has drifted. The string is
-/// duplicated on the consumer side (`hew_observe::client::OBSERVE_SCHEMA_VERSION`)
-/// because `hew-observe` does not depend on `hew-runtime`; both copies must
-/// move together when the envelope shape evolves. Per R58 Q136 (Option B),
-/// the field lives on the JSON envelope only — the `#[repr(C)]` payloads
-/// crossing the FFI boundary (e.g. `CrashReport`) are untouched.
-pub const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
-
-/// Wrap a raw JSON document body in the canonical observe envelope:
-/// `{"schema_version":"<OBSERVE_SCHEMA_VERSION>","data":<body>}`.
-///
-/// `body` MUST already be a valid JSON value (object, array, string, number,
-/// boolean, or null). The function does not validate; callers in this module
-/// build the inner JSON via `serde_json` / manual `format!` and always emit
-/// well-formed JSON.
-pub(crate) fn envelope_json(body: &str) -> String {
-    let mut out = String::with_capacity(body.len() + OBSERVE_SCHEMA_VERSION.len() + 32);
-    out.push_str(r#"{"schema_version":""#);
-    out.push_str(OBSERVE_SCHEMA_VERSION);
-    out.push_str(r#"","data":"#);
-    out.push_str(body);
-    out.push('}');
-    out
+fn json_response(body: &str) -> Response<Full<Bytes>> {
+    json_response_with_status(StatusCode::OK, body)
 }
 
-fn json_response(body: &str) -> Response<Full<Bytes>> {
+fn json_response_with_status(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
-        .status(StatusCode::OK)
+        .status(status)
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-Hew-Schema-Version", OBSERVE_SCHEMA_VERSION)
-        .body(Full::new(Bytes::from(envelope_json(body))))
+        .body(Full::new(Bytes::from(envelope_json_raw(body))))
         .expect("valid response")
 }
 
@@ -321,7 +316,7 @@ fn serve_observe_scrape() -> Response<Full<Bytes>> {
 
 fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> String {
     format!(
-        r#"{{"timestamp_secs":{},"tasks_spawned":{},"tasks_completed":{},"steals":{},"messages_sent":{},"messages_received":{},"active_workers":{},"alloc_count":{},"dealloc_count":{},"bytes_allocated":{},"bytes_freed":{},"bytes_live":{},"peak_bytes_live":{},"tcp_bytes_read":{},"tcp_bytes_written":{},"tcp_accept_count":{},"tcp_connect_count":{},"tcp_error_count":{}}}"#,
+        r#"{{"timestamp_secs":"{}","tasks_spawned":"{}","tasks_completed":"{}","steals":"{}","messages_sent":"{}","messages_received":"{}","active_workers":"{}","alloc_count":"{}","dealloc_count":"{}","bytes_allocated":"{}","bytes_freed":"{}","bytes_live":"{}","peak_bytes_live":"{}","tcp_bytes_read":"{}","tcp_bytes_written":"{}","tcp_accept_count":"{}","tcp_connect_count":"{}","tcp_error_count":"{}"}}"#,
         snap.timestamp_secs,
         snap.tasks_spawned,
         snap.tasks_completed,
@@ -347,7 +342,7 @@ fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> Str
 fn serve_memory() -> Response<Full<Bytes>> {
     let stats = allocator::snapshot();
     let json = format!(
-        r#"{{"alloc_count":{},"dealloc_count":{},"bytes_allocated":{},"bytes_freed":{},"bytes_live":{},"peak_bytes_live":{}}}"#,
+        r#"{{"alloc_count":"{}","dealloc_count":"{}","bytes_allocated":"{}","bytes_freed":"{}","bytes_live":"{}","peak_bytes_live":"{}"}}"#,
         stats.alloc_count,
         stats.dealloc_count,
         stats.bytes_allocated,
@@ -376,7 +371,7 @@ fn history_json(entries: &[crate::profiler::metrics::MetricsSnapshot]) -> String
         }
         let _ = write!(
             json,
-            r#"{{"t":{},"ts":{},"tc":{},"st":{},"ms":{},"mr":{},"aw":{},"ac":{},"dc":{},"ba":{},"bf":{},"bl":{},"pb":{},"tbr":{},"tbw":{},"tac":{},"tcc":{},"tec":{}}}"#,
+            r#"{{"t":"{}","ts":"{}","tc":"{}","st":"{}","ms":"{}","mr":"{}","aw":"{}","ac":"{}","dc":"{}","ba":"{}","bf":"{}","bl":"{}","pb":"{}","tbr":"{}","tbw":"{}","tac":"{}","tcc":"{}","tec":"{}"}}"#,
             s.timestamp_secs,
             s.tasks_spawned,
             s.tasks_completed,
@@ -427,13 +422,13 @@ fn serve_flat_profile() -> Response<Full<Bytes>> {
 /// U+0000–U+001F control characters) is handled by the canonical helper.
 fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> String {
     json_array(actors, |json, a| {
-        let _ = write!(json, r#"{{"id":{},"pid":{},"actor_type":"#, a.id, a.pid);
+        let _ = write!(json, r#"{{"id":"{}","pid":"{}","actor_type":"#, a.id, a.pid);
         push_json_string(json, &a.actor_type);
         let _ = write!(json, r#","state":"#);
         push_json_string(json, a.state);
         let _ = write!(
             json,
-            r#","msgs":{},"time_ns":{},"mbox_depth":{},"mbox_hwm":{}}}"#,
+            r#","msgs":"{}","time_ns":"{}","mbox_depth":"{}","mbox_hwm":"{}"}}"#,
             a.messages_processed, a.processing_time_ns, a.mailbox_depth, a.mailbox_hwm,
         );
     })
@@ -474,7 +469,9 @@ fn serve_connections(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
 /// `GET /api/routing/table` — routing table snapshot.
 fn serve_routing_table(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.routing.is_null() {
-        return json_response(r#"{"local_node_id":0,"routes":[]}"#);
+        return json_response(
+            r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#,
+        );
     }
     // SAFETY: pointer is non-null and points to a valid HewRoutingTable
     // that outlives the profiler thread. Internal access is RwLock-protected.
@@ -483,10 +480,289 @@ fn serve_routing_table(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     json_response(&json)
 }
 
-/// `GET /api/traces` — drain trace events.
-fn serve_traces() -> Response<Full<Bytes>> {
-    let json = crate::tracing::drain_events_json();
-    json_response(&json)
+const MAX_TRACE_BATCH_LIMIT: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TraceQuery<'a> {
+    stream_id: Option<&'a str>,
+    after: Option<u64>,
+    limit: usize,
+}
+
+fn is_canonical_u64(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
+}
+
+fn is_canonical_stream_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn parse_trace_query(query: Option<&str>) -> Result<TraceQuery<'_>, &'static str> {
+    let mut parsed = TraceQuery {
+        stream_id: None,
+        after: None,
+        limit: MAX_TRACE_BATCH_LIMIT,
+    };
+
+    let Some(query) = query.filter(|query| !query.is_empty()) else {
+        return Ok(parsed);
+    };
+
+    let mut saw_after = false;
+    let mut saw_limit = false;
+    for field in query.split('&') {
+        let Some((name, value)) = field.split_once('=') else {
+            return Err("trace query parameters must use name=value");
+        };
+        match name {
+            "stream_id" => {
+                if parsed.stream_id.is_some() {
+                    return Err("stream_id must not be repeated");
+                }
+                if !is_canonical_stream_id(value) {
+                    return Err("stream_id must be 32 lowercase hexadecimal characters");
+                }
+                parsed.stream_id = Some(value);
+            }
+            "after" => {
+                if saw_after {
+                    return Err("after must not be repeated");
+                }
+                saw_after = true;
+                if !is_canonical_u64(value) {
+                    return Err("after must be a canonical unsigned decimal integer");
+                }
+                parsed.after = Some(
+                    value
+                        .parse()
+                        .map_err(|_| "after is outside the unsigned 64-bit range")?,
+                );
+            }
+            "limit" => {
+                if saw_limit {
+                    return Err("limit must not be repeated");
+                }
+                saw_limit = true;
+                if !is_canonical_u64(value) {
+                    return Err("limit must be a canonical unsigned decimal integer");
+                }
+                let limit: usize = value
+                    .parse()
+                    .map_err(|_| "limit is outside the platform integer range")?;
+                if !(1..=MAX_TRACE_BATCH_LIMIT).contains(&limit) {
+                    return Err("limit must be between 1 and 256");
+                }
+                parsed.limit = limit;
+            }
+            _ => return Err("unknown trace query parameter"),
+        }
+    }
+
+    if parsed.stream_id.is_some() != parsed.after.is_some() {
+        return Err("stream_id and after must be supplied together");
+    }
+
+    Ok(parsed)
+}
+
+fn trace_error_response(status: StatusCode, error: &str, message: &str) -> Response<Full<Bytes>> {
+    let error = TraceRequestError {
+        error: error.to_owned(),
+        message: message.to_owned(),
+    };
+    let body = serde_json::to_string(&error).expect("TraceRequestError must serialize");
+    json_response_with_status(status, &body)
+}
+
+fn actor_identity(
+    actor_id: Option<u64>,
+    spawn_serial: Option<u64>,
+    dispatch_ptr: usize,
+) -> Option<ActorIdentity> {
+    let actor_id = actor_id.filter(|id| *id != 0)?;
+    let actor_type =
+        crate::profiler::actor_registry::lookup_registered_dispatch_type_by_ptr_owned(dispatch_ptr);
+    Some(ActorIdentity {
+        actor_id,
+        spawn_serial,
+        actor_type,
+    })
+}
+
+fn trace_subject(record: &crate::tracing::TraceEventRecord) -> Option<TraceSubject> {
+    let kind = record.subject_kind?;
+    let id = record.subject_id?;
+    let actor = if kind == "actor" {
+        actor_identity(
+            record.subject_actor_id,
+            record.subject_spawn_serial,
+            record.subject_dispatch_ptr,
+        )
+    } else {
+        None
+    };
+    Some(TraceSubject {
+        kind: kind.to_owned(),
+        id,
+        actor,
+    })
+}
+
+fn trace_event_model(record: &crate::tracing::TraceEventRecord) -> TraceEvent {
+    let event = record.event;
+    let is_send = event.event_type == crate::tracing::SPAN_SEND;
+    let source_actor = if is_send {
+        actor_identity(
+            record.source_actor_id,
+            record.source_spawn_serial,
+            record.source_dispatch_ptr,
+        )
+    } else {
+        None
+    };
+    let destination_actor = if is_send {
+        actor_identity(
+            record.destination_actor_id,
+            record.destination_spawn_serial,
+            record.destination_dispatch_ptr,
+        )
+    } else {
+        None
+    };
+    let attribution_name = |attribution| match attribution {
+        crate::tracing::TraceActorAttribution::LocalActor => "local_actor",
+        crate::tracing::TraceActorAttribution::External => "external",
+        crate::tracing::TraceActorAttribution::RemoteUnknown => "remote_unknown",
+        crate::tracing::TraceActorAttribution::NotApplicable => "not_applicable",
+    };
+    let attribution_dispatch_ptr = if is_send {
+        record.destination_dispatch_ptr
+    } else {
+        record.subject_dispatch_ptr
+    };
+    let handler_name = if attribution_dispatch_ptr == 0 {
+        None
+    } else {
+        crate::profiler::actor_registry::handler_name_by_ptr(
+            attribution_dispatch_ptr,
+            event.msg_type,
+        )
+    };
+    let event_type = crate::tracing::event_type_name(event.event_type)
+        .map_or_else(|| format!("invalid:{}", event.event_type), str::to_owned);
+
+    TraceEvent {
+        sequence: record.sequence,
+        trace_id: format!("{:016x}{:016x}", event.trace_id_hi, event.trace_id_lo),
+        span_id: event.span_id,
+        parent_span_id: event.parent_span_id,
+        subject: trace_subject(record),
+        source_attribution: attribution_name(record.source_attribution).to_owned(),
+        source_actor,
+        destination_attribution: attribution_name(record.destination_attribution).to_owned(),
+        destination_actor,
+        event_type,
+        msg_type: event.msg_type,
+        timestamp_ns: event.timestamp_ns,
+        handler_name,
+    }
+}
+
+fn trace_batch_model(snapshot: &crate::tracing::TraceSnapshot) -> TraceBatch {
+    let mut events: Vec<_> = snapshot.events.iter().map(trace_event_model).collect();
+    if !crate::tracing::trace_stream_is_current(snapshot.stream_id) {
+        for event in &mut events {
+            event.handler_name = None;
+            for actor in [
+                event
+                    .subject
+                    .as_mut()
+                    .and_then(|subject| subject.actor.as_mut()),
+                event.source_actor.as_mut(),
+                event.destination_actor.as_mut(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                actor.actor_type = None;
+            }
+        }
+    }
+    let overrun = (snapshot.overrun_count != 0).then(|| TraceOverrun {
+        first_missing_sequence: snapshot.oldest_sequence - snapshot.overrun_count,
+        last_missing_sequence: snapshot.oldest_sequence - 1,
+        count: snapshot.overrun_count,
+    });
+    TraceBatch {
+        producer_instance_id: snapshot.producer_instance_id.to_string(),
+        stream_id: snapshot.stream_id.to_string(),
+        oldest_sequence: snapshot.oldest_sequence,
+        next_sequence: snapshot.next_sequence,
+        next_cursor: snapshot.next_cursor,
+        has_more: snapshot.has_more,
+        overrun,
+        tracing_enabled: snapshot.enabled,
+        sampling_mode: snapshot.sampling_mode.to_owned(),
+        events_recorded_total: snapshot.events_recorded_total,
+        events_overwritten_total: snapshot.events_overwritten_total,
+        events_sampled_out_total: snapshot.events_sampled_out_total,
+        batch_source_monotonic_ns: snapshot.batch_source_monotonic_ns,
+        clock_anchor: TraceClockAnchor {
+            monotonic_ns: snapshot.clock_anchor.monotonic_ns,
+            unix_epoch_ns: snapshot.clock_anchor.unix_epoch_ns,
+            uncertainty_ns: snapshot.clock_anchor.uncertainty_ns,
+        },
+        events,
+    }
+}
+
+/// `GET /api/traces` — read a non-destructive batch of retained trace events.
+fn serve_traces(query: Option<&str>) -> Response<Full<Bytes>> {
+    let query = match parse_trace_query(query) {
+        Ok(query) => query,
+        Err(message) => {
+            return trace_error_response(StatusCode::BAD_REQUEST, "invalid_trace_cursor", message);
+        }
+    };
+
+    let expected_stream_id = query
+        .stream_id
+        .and_then(crate::tracing::TraceStreamId::parse_hex);
+    match crate::tracing::trace_snapshot(expected_stream_id, query.after, query.limit) {
+        Ok(snapshot) => {
+            let batch = trace_batch_model(&snapshot);
+            let body = serde_json::to_string(&batch).expect("TraceBatch must serialize");
+            json_response(&body)
+        }
+        Err(crate::tracing::TraceSnapshotError::FutureCursor {
+            after,
+            next_sequence,
+        }) => trace_error_response(
+            StatusCode::BAD_REQUEST,
+            "future_trace_cursor",
+            &format!("after cursor {after} is not below the next sequence {next_sequence}"),
+        ),
+        Err(crate::tracing::TraceSnapshotError::StreamMismatch {
+            requested,
+            current,
+            producer_instance_id,
+        }) => {
+            let mismatch = TraceStreamMismatch {
+                error: "trace_stream_mismatch".to_owned(),
+                requested_stream_id: requested.to_string(),
+                current_stream_id: current.to_string(),
+                current_producer_instance_id: producer_instance_id.to_string(),
+            };
+            let body =
+                serde_json::to_string(&mismatch).expect("TraceStreamMismatch must serialize");
+            json_response_with_status(StatusCode::CONFLICT, &body)
+        }
+    }
 }
 
 /// `GET /api/supervisors` — supervision tree rows.
@@ -585,44 +861,46 @@ mod tests {
         assert_eq!(
             parsed,
             json!([{
-                "t": 7,
-                "ts": 1,
-                "tc": 2,
-                "st": 3,
-                "ms": 4,
-                "mr": 5,
-                "aw": 6,
-                "ac": 8,
-                "dc": 9,
-                "ba": 10,
-                "bf": 11,
-                "bl": 12,
-                "pb": 13,
-                "tbr": 14,
-                "tbw": 15,
-                "tac": 16,
-                "tcc": 17,
-                "tec": 18
+                "t": "7",
+                "ts": "1",
+                "tc": "2",
+                "st": "3",
+                "ms": "4",
+                "mr": "5",
+                "aw": "6",
+                "ac": "8",
+                "dc": "9",
+                "ba": "10",
+                "bf": "11",
+                "bl": "12",
+                "pb": "13",
+                "tbr": "14",
+                "tbw": "15",
+                "tac": "16",
+                "tcc": "17",
+                "tec": "18"
             }])
         );
     }
 
     #[test]
     fn envelope_json_wraps_array_body_with_schema_version() {
-        let env = envelope_json("[]");
+        let env = envelope_json_raw("[]");
         let parsed: serde_json::Value =
             serde_json::from_str(&env).expect("envelope must be valid JSON");
-        assert_eq!(parsed["schema_version"], json!("v0.5"));
+        assert_eq!(parsed["schema_version"], json!("v1"));
         assert_eq!(parsed["data"], json!([]));
     }
 
     #[test]
     fn envelope_json_wraps_object_body_with_schema_version() {
-        let env = envelope_json(r#"{"local_node_id":1,"routes":[]}"#);
+        let env = envelope_json_raw(
+            r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#,
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&env).expect("envelope must be valid JSON");
-        assert_eq!(parsed["schema_version"], json!("v0.5"));
-        assert_eq!(parsed["data"]["local_node_id"], json!(1));
+        assert_eq!(parsed["schema_version"], json!("v1"));
+        assert_eq!(parsed["data"]["local_node_id"], json!("unconfigured"));
     }
 
     #[test]
@@ -630,7 +908,7 @@ mod tests {
         // The producer + consumer copies of the schema-version string must
         // stay in lockstep. Hard-coded here so a drift in either crate trips
         // a producer-side test alongside any consumer-side mismatch.
-        assert_eq!(OBSERVE_SCHEMA_VERSION, "v0.5");
+        assert_eq!(OBSERVE_SCHEMA_VERSION, "v1");
     }
 
     #[test]
@@ -661,25 +939,85 @@ mod tests {
         assert_eq!(
             parsed,
             json!({
-                "timestamp_secs": 1,
-                "tasks_spawned": 2,
-                "tasks_completed": 3,
-                "steals": 4,
-                "messages_sent": 5,
-                "messages_received": 6,
-                "active_workers": 7,
-                "alloc_count": 8,
-                "dealloc_count": 9,
-                "bytes_allocated": 10,
-                "bytes_freed": 11,
-                "bytes_live": 12,
-                "peak_bytes_live": 13,
-                "tcp_bytes_read": 14,
-                "tcp_bytes_written": 15,
-                "tcp_accept_count": 16,
-                "tcp_connect_count": 17,
-                "tcp_error_count": 18
+                "timestamp_secs": "1",
+                "tasks_spawned": "2",
+                "tasks_completed": "3",
+                "steals": "4",
+                "messages_sent": "5",
+                "messages_received": "6",
+                "active_workers": "7",
+                "alloc_count": "8",
+                "dealloc_count": "9",
+                "bytes_allocated": "10",
+                "bytes_freed": "11",
+                "bytes_live": "12",
+                "peak_bytes_live": "13",
+                "tcp_bytes_read": "14",
+                "tcp_bytes_written": "15",
+                "tcp_accept_count": "16",
+                "tcp_connect_count": "17",
+                "tcp_error_count": "18"
             })
         );
+    }
+
+    #[test]
+    fn trace_query_defaults_to_oldest_retained_batch() {
+        assert_eq!(
+            parse_trace_query(None),
+            Ok(TraceQuery {
+                stream_id: None,
+                after: None,
+                limit: 256,
+            })
+        );
+    }
+
+    #[test]
+    fn trace_query_accepts_paired_canonical_cursor_and_limit() {
+        assert_eq!(
+            parse_trace_query(Some(
+                "stream_id=0123456789abcdef0123456789abcdef&after=18446744073709551615&limit=1"
+            )),
+            Ok(TraceQuery {
+                stream_id: Some("0123456789abcdef0123456789abcdef"),
+                after: Some(u64::MAX),
+                limit: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn trace_query_rejects_unpaired_or_noncanonical_cursor() {
+        for query in [
+            "stream_id=0123456789abcdef0123456789abcdef",
+            "after=1",
+            "stream_id=0123456789ABCDEF0123456789ABCDEF&after=1",
+            "stream_id=0123456789abcdef0123456789abcdef&after=01",
+            "stream_id=0123456789abcdef0123456789abcdef&after=+1",
+            "stream_id=0123456789abcdef0123456789abcdef&after=18446744073709551616",
+        ] {
+            assert!(
+                parse_trace_query(Some(query)).is_err(),
+                "query unexpectedly accepted: {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_query_rejects_duplicate_unknown_and_out_of_range_parameters() {
+        for query in [
+            "limit=0",
+            "limit=257",
+            "limit=01",
+            "limit=1&limit=2",
+            "wat=1",
+            "limit",
+        ] {
+            assert!(
+                parse_trace_query(Some(query)).is_err(),
+                "query unexpectedly accepted: {query}"
+            );
+        }
     }
 }

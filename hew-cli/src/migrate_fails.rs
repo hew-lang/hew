@@ -29,14 +29,16 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use hew_compile::{DocumentSet, FrontendDiagnosticKind, FrontendOptions};
+use hew_compile::{DocumentSet, FrontendDiagnosticKind};
 use hew_parser::ast::{
-    Block, CallArg, Expr, Item, Span, Spanned, Stmt, TraitItem, TypeBodyItem, TypeExpr,
+    Block, CallArg, Expr, Item, Program, Span, Spanned, Stmt, TraitItem, TypeBodyItem, TypeExpr,
 };
 use hew_types::check::scope::Resolution;
 use hew_types::check::TypeCheckOutput;
 use hew_types::error::TypeErrorKind;
 use hew_types::{BuiltinType, CallTarget, MethodCallRewrite, NodeVisitor, SpanKey, Ty};
+
+use crate::migrate_checks::CheckUnits;
 
 /// A file the pass left unconverted, at its first location.
 pub(crate) struct EdgeReport {
@@ -50,40 +52,40 @@ pub(crate) struct EdgeReport {
 /// in place. Returns the refused files and the notes on files it could not
 /// check.
 ///
-/// Converting a callable keeps its type, so each check unit — a directory
-/// module, or a file of its own — is checked against the other units'
-/// unconverted text, and units convert one at a time.
 pub(crate) fn convert_failure_edges(
     files: &mut [(PathBuf, String)],
 ) -> (Vec<EdgeReport>, Vec<EdgeReport>) {
     let mut documents = DocumentSet::new();
-    let mut units: Vec<(PathBuf, Vec<usize>)> = Vec::new();
-    for (index, (path, text)) in files.iter().enumerate() {
+    let mut units = CheckUnits::new(files, "failure-edges");
+    let candidates: Vec<_> = files
+        .iter()
+        .map(|(_, text)| file_may_rewrite(text))
+        .collect();
+    units.retain_candidates(&candidates);
+    for (path, text) in files.iter() {
         documents.insert(path.clone(), text.clone());
-        let root = hew_compile::module_membership(path, &FrontendOptions::default())
-            .filter(hew_types::module_registry::ModuleMembership::checks_as_directory_module)
-            .map_or_else(|| path.clone(), |membership| membership.entry);
-        match units.iter_mut().find(|(known, _)| *known == root) {
-            Some((_, members)) => members.push(index),
-            None => units.push((root, vec![index])),
-        }
     }
     let mut refusals = Vec::new();
     let mut notes = Vec::new();
-    // A unit can load its whole import graph. Keep one semantic check live
-    // rather than multiplying that graph by the machine's CPU count.
-    for (root, members) in units {
-        let members: Vec<_> = members
+    while let Some(mut unit) = units.next() {
+        let before = check_unit(&unit.root, &documents, &mut units);
+        if before.output.is_some() {
+            units.include_loaded(&mut unit, files, &before.indices);
+        }
+        let members: Vec<_> = unit
+            .members
             .iter()
             .map(|&index| (index, files[index].0.as_path(), files[index].1.as_str()))
             .collect();
-        let outcome = convert_unit(&root, &members, &documents);
+        let outcome = convert_unit(&unit.root, &members, &documents, before, &mut units);
         for (index, converted) in outcome.converted {
+            documents.insert(files[index].0.clone(), converted.clone());
             files[index].1 = converted;
         }
         refusals.extend(outcome.refusals);
         notes.extend(outcome.notes);
     }
+    units.report();
     (refusals, notes)
 }
 
@@ -104,10 +106,11 @@ fn convert_unit(
     root: &Path,
     members: &[(usize, &Path, &str)],
     documents: &DocumentSet,
+    mut before: UnitCheck,
+    units: &mut CheckUnits,
 ) -> UnitOutcome {
     let mut documents = documents.clone();
     let mut outcome = UnitOutcome::default();
-    let mut before = check_unit(root, &documents);
     let mut candidates = Vec::new();
     for &(index, path, text) in members {
         let Some(file) = before.file_index(path, root) else {
@@ -142,41 +145,66 @@ fn convert_unit(
             }
         };
         documents.insert(path.to_path_buf(), rewrite.text.clone());
-        candidates.push((index, path, rewrite));
+        candidates.push((index, path, text, rewrite));
     }
     if candidates.is_empty() {
         return outcome;
     }
     before.output = None;
-    let after = check_unit(root, &documents);
-    for (index, path, rewrite) in candidates {
-        if let Some(diagnostic) = first_new_diagnostic(
-            &before.reported_in(path),
-            &after.reported_in(path),
-            &rewrite,
-        ) {
-            let text = members
-                .iter()
-                .find(|(member, _, _)| *member == index)
-                .map_or("", |(_, _, text)| text);
-            let (line, column) = crate::diagnostic::offset_to_line_col(
-                text,
-                rewrite.original_offset(diagnostic.span.start),
-            );
-            outcome.refusals.push(EdgeReport {
-                file: path.to_path_buf(),
-                line,
-                column,
-                message: format!(
-                    "converting its failure edges would leave `{}`: {}",
-                    diagnostic.code, diagnostic.message
-                ),
-            });
-        } else {
+    while !candidates.is_empty() {
+        let after = check_unit(root, &documents, units);
+        let mut remaining = Vec::new();
+        let mut refused = false;
+        for (index, path, text, rewrite) in candidates {
+            if let Some(diagnostic) = first_new_diagnostic(
+                &before.reported_in(path),
+                &after.reported_in(path),
+                &rewrite,
+            ) {
+                let (line, column) = crate::diagnostic::offset_to_line_col(
+                    text,
+                    rewrite.original_offset(diagnostic.span.start),
+                );
+                outcome.refusals.push(EdgeReport {
+                    file: path.to_path_buf(),
+                    line,
+                    column,
+                    message: format!(
+                        "converting its failure edges would leave `{}`: {}",
+                        diagnostic.code, diagnostic.message
+                    ),
+                });
+                documents.insert(path.to_path_buf(), text.to_string());
+                refused = true;
+            } else {
+                remaining.push((index, path, text, rewrite));
+            }
+        }
+        if refused {
+            candidates = remaining;
+            continue;
+        }
+        if after.output.is_none() {
+            outcome
+                .refusals
+                .extend(remaining.into_iter().map(|(_, path, _, _)| {
+                    EdgeReport {
+                        file: path.to_path_buf(),
+                        line: 1,
+                        column: 1,
+                        message: "its failure edges were not converted: the rewritten module \
+                              did not complete type checking"
+                            .to_string(),
+                    }
+                }));
+            break;
+        }
+        for (index, _, _, rewrite) in remaining {
             let parsed = hew_parser::parse(&rewrite.text);
             let formatted = hew_parser::fmt::format_source(&rewrite.text, &parsed.program);
             outcome.converted.push((index, formatted));
         }
+        break;
     }
     outcome
 }
@@ -205,12 +233,8 @@ impl FileDiagnostic {
     }
 }
 
-fn check_unit(root: &Path, documents: &DocumentSet) -> UnitCheck {
-    let options = FrontendOptions {
-        documents: documents.clone(),
-        ..FrontendOptions::default()
-    };
-    let state = hew_compile::run_document_frontend(&root.display().to_string(), &options);
+fn check_unit(root: &Path, documents: &DocumentSet, units: &mut CheckUnits) -> UnitCheck {
+    let state = units.check(root, documents);
     let indices = state
         .program
         .module_graph
@@ -290,15 +314,7 @@ impl UnitCheck {
     /// The span-key index of `path` in this unit's module graph. A file the
     /// graph does not list is the unit's own root only when it is that root.
     fn file_index(&self, path: &Path, root: &Path) -> Option<u32> {
-        let canonical = std::fs::canonicalize(path).ok();
-        canonical
-            .as_deref()
-            .and_then(|path| self.indices.path_index(path))
-            .or_else(|| self.indices.path_index(path))
-            .or_else(|| {
-                let root = std::fs::canonicalize(root).ok();
-                (canonical.is_some() && canonical == root).then_some(0)
-            })
+        crate::migrate_checks::source_index(&self.indices, path, root)
     }
 
     fn reported_in(&self, path: &Path) -> Vec<FileDiagnostic> {
@@ -503,6 +519,45 @@ enum Body<'a> {
     Expr(&'a Spanned<Expr>),
 }
 
+enum Callable<'a> {
+    Declared(Option<&'a Spanned<TypeExpr>>, Body<'a>),
+    Handler(Option<&'a Spanned<TypeExpr>>, &'a Block, &'a Span),
+    Closure(&'a Span, Option<&'a Spanned<TypeExpr>>, Body<'a>),
+}
+
+impl Callable<'_> {
+    fn may_rewrite(&self) -> bool {
+        match self {
+            Self::Declared(Some(annotation), _) | Self::Closure(_, Some(annotation), _) => {
+                Planner::result_arguments(annotation).is_some()
+            }
+            Self::Declared(None, _) => false,
+            Self::Handler(annotation, _, _) => annotation
+                .is_some_and(|annotation| !matches!(annotation.0, TypeExpr::Fallible { .. })),
+            Self::Closure(_, None, body) => {
+                let exits = Planner::exits(body);
+                !exits.return_errors.is_empty() || !exits.tries.is_empty()
+            }
+        }
+    }
+}
+
+fn file_may_rewrite(source: &str) -> bool {
+    let parsed = hew_parser::parse(source);
+    if parsed
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error)
+    {
+        return true;
+    }
+    let mut candidate = false;
+    visit_callables(&parsed.program, |callable| {
+        candidate |= callable.may_rewrite();
+    });
+    candidate
+}
+
 /// The rewrites of one file.
 fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
     let parsed = hew_parser::parse(source);
@@ -515,45 +570,54 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
         return changes;
     }
     let planner = Planner { source, file, unit };
-    let mut lambdas = LambdaFinder::default();
-    // A handler's reply is its callers' contract, so a `receive fn` keeps
-    // its value form.
-    let mut callable = |annotation: Option<&Spanned<TypeExpr>>,
-                        body: &Block,
-                        handler: Option<&Span>,
-                        changes: &mut Vec<Edit>| {
-        hew_types::walk_block(body, &mut lambdas);
-        if let Some(span) = handler {
-            planner.keep_value_form(annotation, body, span, changes);
-        } else {
-            planner.convert_declared(annotation, &Body::Block(body), changes);
+    visit_callables(&parsed.program, |callable| {
+        if !callable.may_rewrite() {
+            return;
         }
-    };
-    for (item, _) in &parsed.program.items {
+        match callable {
+            Callable::Declared(annotation, body) => {
+                planner.convert_declared(annotation, &body, &mut changes);
+            }
+            Callable::Closure(_, Some(annotation), body) => {
+                planner.convert_declared(Some(annotation), &body, &mut changes);
+            }
+            Callable::Handler(annotation, body, span) => {
+                planner.keep_value_form(annotation, body, span, &mut changes);
+            }
+            Callable::Closure(span, None, body) => {
+                planner.convert_closure(span, &body, &mut changes);
+            }
+        }
+    });
+    changes
+}
+
+fn visit_callables(program: &Program, mut visit: impl FnMut(Callable<'_>)) {
+    let mut lambdas = LambdaFinder::default();
+    let mut callable =
+        |annotation: Option<&Spanned<TypeExpr>>, body: &Block, handler: Option<&Span>| {
+            hew_types::walk_block(body, &mut lambdas);
+            if let Some(span) = handler {
+                visit(Callable::Handler(annotation, body, span));
+            } else {
+                visit(Callable::Declared(annotation, Body::Block(body)));
+            }
+        };
+    for (item, _) in &program.items {
         match item {
             Item::Function(function) if !function.is_generator => {
-                callable(
-                    function.return_type.as_ref(),
-                    &function.body,
-                    None,
-                    &mut changes,
-                );
+                callable(function.return_type.as_ref(), &function.body, None);
             }
             Item::Impl(implementation) => {
                 for method in implementation.methods.iter().filter(|m| !m.is_generator) {
-                    callable(
-                        method.return_type.as_ref(),
-                        &method.body,
-                        None,
-                        &mut changes,
-                    );
+                    callable(method.return_type.as_ref(), &method.body, None);
                 }
             }
             Item::Trait(declaration) => {
                 for trait_item in &declaration.items {
                     if let TraitItem::Method(method) = trait_item {
                         if let Some(body) = &method.body {
-                            callable(method.return_type.as_ref(), body, None, &mut changes);
+                            callable(method.return_type.as_ref(), body, None);
                         }
                     }
                 }
@@ -562,31 +626,20 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
                 for body_item in &declaration.body {
                     if let TypeBodyItem::Method(method) = body_item {
                         if !method.is_generator {
-                            callable(
-                                method.return_type.as_ref(),
-                                &method.body,
-                                None,
-                                &mut changes,
-                            );
+                            callable(method.return_type.as_ref(), &method.body, None);
                         }
                     }
                 }
             }
             Item::Actor(actor) => {
                 for method in actor.methods.iter().filter(|m| !m.is_generator) {
-                    callable(
-                        method.return_type.as_ref(),
-                        &method.body,
-                        None,
-                        &mut changes,
-                    );
+                    callable(method.return_type.as_ref(), &method.body, None);
                 }
                 for handler in actor.receive_fns.iter().filter(|h| !h.is_generator) {
                     callable(
                         handler.return_type.as_ref(),
                         &handler.body,
                         Some(&handler.span),
-                        &mut changes,
                     );
                 }
             }
@@ -594,14 +647,12 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
         }
     }
     for (span, return_type, body) in std::mem::take(&mut lambdas.found) {
-        let (return_type, body) = (return_type.as_ref(), &body);
-        if return_type.is_some() {
-            planner.convert_declared(return_type, &Body::Expr(body), &mut changes);
-        } else {
-            planner.convert_closure(&span, &Body::Expr(body), &mut changes);
-        }
+        visit(Callable::Closure(
+            &span,
+            return_type.as_ref(),
+            Body::Expr(&body),
+        ));
     }
-    changes
 }
 
 /// Every closure literal, with its declared return and body, cloned so the

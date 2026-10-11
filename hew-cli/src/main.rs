@@ -38,6 +38,7 @@ mod help;
 mod host;
 mod link;
 mod machine;
+mod migrate_checks;
 mod migrate_fails;
 mod migrate_variants;
 mod native_link;

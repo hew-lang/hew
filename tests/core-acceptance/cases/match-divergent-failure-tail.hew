@@ -1,0 +1,36 @@
+fn schema_version(parsed: Result<i64, string>) -> i64 fails string {
+    match parsed {
+        .Err(error) => return error error,
+        .Ok(value) => {
+            if value == 1 || value == 2 || value == 3 {
+                return value;
+            }
+            return error "unsupported schema";
+        }
+    }
+}
+
+fn decode(parsed: Result<string, string>, early: bool) -> string fails string {
+    match parsed {
+        .Err(error) => return error error,
+        .Ok(value) => {
+            if early {
+                return value;
+            }
+            value + " tail"
+        }
+    }
+}
+
+fn main() {
+    assert(schema_version(.Ok(2)) == Result.Ok(2));
+    assert(schema_version(.Ok(4)) == Result.Err("unsupported schema"));
+    assert(schema_version(.Err("malformed")) == Result.Err("malformed"));
+    for i in 0..40 {
+        let value = f"payload {i}";
+        assert(decode(.Ok(value), true) == Result.Ok(value));
+        assert(decode(.Ok(value), false) == Result.Ok(value + " tail"));
+        assert(decode(.Err(value), false) == Result.Err(value));
+    }
+    println("match exits preserve values");
+}

@@ -892,7 +892,9 @@ impl Checker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_expr(&scr_ty, scrutinee, arms, span, expected)
+                let ty = self.check_match_expr(&scr_ty, scrutinee, arms, span, expected);
+                self.record_type(span, &ty);
+                ty
             }
             Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es, span),
             Stmt::Return(value) => {
@@ -2494,6 +2496,12 @@ impl Checker {
         self.join_branch_ownership(&ownership_entry, &arm_exits, span);
 
         self.check_exhaustiveness(scrutinee_ty, arms, span);
+        let ty = if arm_exits.iter().all(|arm| arm.diverges) {
+            Ty::Never
+        } else {
+            Ty::Unit
+        };
+        self.record_type(span, &ty);
     }
 }
 

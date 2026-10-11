@@ -599,7 +599,7 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&env).expect("envelope must be valid JSON");
         assert_eq!(parsed["schema_version"], json!("v0.5"));
-        assert_eq!(parsed["data"]["local_node_id"], json!(1));
+        assert_eq!(parsed["data"]["local_node_id"], json!("unconfigured"));
     }
 
     #[test]

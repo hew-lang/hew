@@ -1,0 +1,51 @@
+[
+  {
+    "id": "task-race-handles",
+    "source": "examples/sandbox-graduation/task_race.hew",
+    "timeout_seconds": 15,
+    "expected": {
+      "stdout": "7\ncreated\n7\n7\nbackground\njoined\n11\nordinary error\n",
+      "exit": 0
+    }
+  },
+  {
+    "contract": "tests/core-acceptance/cases/stream-owned-elements.toml"
+  },
+  {
+    "contract": "tests/core-acceptance/cases/spawn-keyed.toml"
+  },
+  {
+    "contract": "tests/core-acceptance/cases/race-err-wins.toml"
+  },
+  {
+    "id": "hot-loop-dynamic",
+    "source": "tests/packaged-sdk/hot-loop-dynamic.hew",
+    "timeout_seconds": 30,
+    "expected": {
+      "stdout": "546014560\n",
+      "exit": 0
+    },
+    "args": ["30000000"]
+  },
+  {
+    "id": "task-surfaces",
+    "source": "tests/packaged-sdk/task-surfaces.hew",
+    "timeout_seconds": 30,
+    "expected": {
+      "stdout": "4\nsingle started\n9\n37\n16\n25\n49\ndone\n64\n81\n100\nrace started\n144\n42\n-1\n196\n7\n41\n0\nchild finished\nscope drained\n",
+      "exit": 0
+    },
+    "args": []
+  },
+  {
+    "contract": "tests/core-acceptance/cases/process-pipe-readiness.toml"
+  },
+  {
+    "contract": "tests/core-acceptance/cases/match-divergent-failure-tail.toml",
+    "expects_resume_frame": false
+  },
+  {
+    "contract": "tests/core-acceptance/cases/resource-receiver-fallible-argument.toml",
+    "expects_resume_frame": false
+  }
+]

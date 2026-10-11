@@ -1,0 +1,13 @@
+import std.os;
+import std.string;
+fn main() {
+    let arguments = os.args();
+    let iterations = string.to_int(arguments[1]).expect("iteration count");
+    sleep(1ms);
+    var value: i64 = 3;
+    for index in 0..iterations {
+        value = (value * 1664525 + 1013904223) % 2147483647;
+    }
+    println(value);
+    sleep(1ms);
+}

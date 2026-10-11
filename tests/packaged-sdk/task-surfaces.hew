@@ -1,0 +1,100 @@
+import std.stream;
+
+fn square(value: i64) -> i64 {
+    sleep(2ms);
+    value * value
+}
+
+fn slow_square(value: i64) -> i64 {
+    sleep(10s);
+    value * value
+}
+
+fn label() -> string {
+    "done"
+}
+
+fn successful() -> i64 fails string {
+    42
+}
+
+fn failing() -> i64 fails string {
+    return error "offline";
+}
+
+fn slow_result() -> i64 fails string {
+    sleep(10s);
+    99
+}
+
+fn join_result() -> i64 fails string {
+    await fork successful()?
+}
+
+fn first_result() -> i64 fails string {
+    await race [failing(), slow_result()]?
+}
+
+fn main() {
+    println(square(2));
+
+    let single = fork square(3);
+    println("single started");
+    println(await single);
+
+    let captured = 6;
+    let block = fork { square(captured) + 1 };
+    println(await block);
+
+    let batch = await fork [square(4), square(5)];
+    for value in batch { println(value); }
+
+    let (number, text) = await fork (square(7), label());
+    println(number);
+    println(text);
+
+    let tasks = [fork square(8), fork square(9)];
+    for value in await tasks { println(value); }
+
+    println(await race [square(10), slow_square(11)]);
+
+    let existing = fork square(12);
+    let fastest = race [existing, slow_square(13)];
+    println("race started");
+    println(await fastest);
+
+    println(join_result().expect("successful child"));
+    println(first_result() handle problem { -1 });
+
+    let pending = fork square(14);
+    select {
+        value from pending => println(value),
+        after 0ms => println(await pending),
+    };
+
+    let (sink, inbox): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    sink.send(7).expect("send");
+    select {
+        item from inbox.recv() => println(item.expect("item")),
+        after 1s => panic("missing queued item"),
+    };
+
+    let total = scope {
+        let first = fork square(4);
+        let second = fork square(5);
+        (await first) + (await second)
+    };
+    println(total);
+
+    let bounded = scope within 10ms {
+        slow_square(20)
+    } handle failure {
+        0
+    };
+    println(bounded);
+
+    scope {
+        fork { println("child finished"); };
+    };
+    println("scope drained");
+}

@@ -137,6 +137,11 @@ jobs:
         # entering the build, independently of the build itself.
         run: df -h /
 
+      - name: Install debugger
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb
+
       - name: Install WASI runner prerequisites
         # The instrumented run includes hew-cli's wasmtime-backed e2e tests
         # (e.g. sort_merge_authority_runs_under_wasmtime), whose support

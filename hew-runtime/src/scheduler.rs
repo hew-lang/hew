@@ -5479,41 +5479,44 @@ mod tests {
             shutdown_done2.store(true, Ordering::Release);
         });
 
-        while {
-            // SAFETY: the scheduler remains installed until cleanup below.
-            let sched = unsafe { &*sched_ptr };
-            !sched.shutdown.load(Ordering::Acquire)
-        } {
-            thread::sleep(Duration::from_millis(10));
-        }
-
         // worker_handles must stay accessible while shutdown joins a blocked
-        // worker; a join that held them would keep this poll spinning.
-        {
+        // worker; wait for the handles to transfer, not just the shutdown flag.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let handles_released = loop {
             // SAFETY: the scheduler remains installed until cleanup below.
             let sched = unsafe { &*sched_ptr };
-            while sched
+            if sched
                 .worker_handles
-                .try_access(|handles| assert!(handles.is_empty()))
-                .is_none()
+                .try_access(|handles| handles.is_empty())
+                == Some(true)
             {
-                thread::sleep(Duration::from_millis(10));
+                break true;
             }
-        }
-        assert!(
-            !shutdown_done.load(Ordering::Acquire),
-            "shutdown should still be waiting on the worker join during the concurrent touch"
-        );
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let join_pending = !shutdown_done.load(Ordering::Acquire);
 
         release_worker.store(true, Ordering::Release);
         shutdown_thread.join().unwrap();
-        assert!(shutdown_done.load(Ordering::Acquire));
         // SAFETY: sched_ptr remains valid until the cleanup swap below.
-        unsafe { &*sched_ptr }
+        let handles_empty = unsafe { &*sched_ptr }
             .worker_handles
-            .access(|handles| assert!(handles.is_empty()));
+            .access(|handles| handles.is_empty());
 
         take_default_runtime_for_test();
+        assert!(
+            handles_released,
+            "worker handles must be accessible and empty while the join is pending"
+        );
+        assert!(
+            join_pending,
+            "shutdown should still be waiting on the worker join during the concurrent touch"
+        );
+        assert!(shutdown_done.load(Ordering::Acquire));
+        assert!(handles_empty);
     }
 
     #[test]

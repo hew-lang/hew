@@ -53,6 +53,12 @@ struct TraceCursor {
 /// decoders. A malformed success response must never advance the private
 /// cursor: doing so could silently skip, duplicate, or reorder trace records.
 fn validate_trace_batch(batch: &TraceBatch, requested_after: Option<u64>) -> Result<(), String> {
+    let last_produced = validate_trace_batch_metadata(batch)?;
+    let requested_next = validate_trace_batch_overrun(batch, requested_after, last_produced)?;
+    validate_trace_batch_page(batch, requested_after, requested_next, last_produced)
+}
+
+fn validate_trace_batch_metadata(batch: &TraceBatch) -> Result<u64, String> {
     if batch.oldest_sequence == 0 || batch.next_sequence == 0 {
         return Err("oldest_sequence and next_sequence must be positive".to_owned());
     }
@@ -90,7 +96,14 @@ fn validate_trace_batch(batch: &TraceBatch, requested_after: Option<u64>) -> Res
     if batch.batch_source_monotonic_ns < batch.clock_anchor.monotonic_ns {
         return Err("batch source clock precedes its clock anchor".to_owned());
     }
+    Ok(last_produced)
+}
 
+fn validate_trace_batch_overrun(
+    batch: &TraceBatch,
+    requested_after: Option<u64>,
+    last_produced: u64,
+) -> Result<u64, String> {
     let requested_next = match requested_after {
         Some(after) => {
             if after > last_produced {
@@ -128,7 +141,15 @@ fn validate_trace_batch(batch: &TraceBatch, requested_after: Option<u64>) -> Res
             }
         }
     }
+    Ok(requested_next)
+}
 
+fn validate_trace_batch_page(
+    batch: &TraceBatch,
+    requested_after: Option<u64>,
+    requested_next: u64,
+    last_produced: u64,
+) -> Result<(), String> {
     let expected_first = requested_next.max(batch.oldest_sequence);
     if let Some(first) = batch.events.first() {
         if first.sequence != expected_first {

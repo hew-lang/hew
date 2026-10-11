@@ -1027,12 +1027,17 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     _ => unreachable!("matched collection destroy"),
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
-                self.emit_release_in_sink(|| {
+                let emit = || {
                     self.builder
                         .build_call(function, &[value.into()], "collection.drop")
                         .llvm_ctx("destroy descriptor-backed collection")?;
                     Ok(())
-                })
+                };
+                if self.module.releases.raises_fault(action) {
+                    self.emit_release_in_sink(emit)
+                } else {
+                    emit()
+                }
             }
         }
     }

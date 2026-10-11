@@ -15,11 +15,11 @@ use std::time::Duration;
 use hew_observe_protocol::Envelope;
 #[cfg(test)]
 pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
+use hew_observe_protocol::{decode_envelope, DecodeError};
 pub use hew_observe_protocol::{
     ActorIdentity, ActorInfo, ClusterMember, ConnectionInfo, CrashEntry, HistoryEntry, Metrics,
     RouteEntry, RoutingSnapshot, SupervisorRow, TraceBatch, TraceEvent, TraceSubject,
 };
-use hew_observe_protocol::{DecodeError, decode_envelope};
 
 /// Relationship between a fetched trace page and the client's previous page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,7 +545,7 @@ mod tests {
         });
     }
 
-    fn http_json_response(status: &str, data: serde_json::Value) -> String {
+    fn http_json_response(status: &str, data: &serde_json::Value) -> String {
         let body = serde_json::json!({
             "schema_version": OBSERVE_SCHEMA_VERSION,
             "data": data,
@@ -716,17 +716,17 @@ mod tests {
         serve_responses(
             &sock,
             vec![
-                http_json_response("200 OK", empty_trace_batch(producer, old_stream, 7)),
+                http_json_response("200 OK", &empty_trace_batch(producer, old_stream, 7)),
                 http_json_response(
                     "409 Conflict",
-                    serde_json::json!({
+                    &serde_json::json!({
                         "error": "trace_stream_mismatch",
                         "requested_stream_id": old_stream,
                         "current_stream_id": new_stream,
                         "current_producer_instance_id": producer,
                     }),
                 ),
-                http_json_response("200 OK", empty_trace_batch(producer, new_stream, 0)),
+                http_json_response("200 OK", &empty_trace_batch(producer, new_stream, 0)),
             ],
             Arc::clone(&requests),
         );

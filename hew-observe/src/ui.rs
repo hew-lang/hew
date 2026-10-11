@@ -764,14 +764,9 @@ fn draw_message_controls(f: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
-    let max_uncertainty = app
-        .trace_events
-        .iter()
-        .map(|event| event.clock_uncertainty_ns)
-        .max()
-        .unwrap_or(0);
+    let clock_status = trace_clock_status(app);
     let text = format!(
-        " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ Clock ±{max_uncertainty}ns{}{}",
+        " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ {clock_status}{}{}",
         app.trace_events.len(),
         app.trace_overrun_events,
         app.trace_local_discarded,
@@ -1009,14 +1004,9 @@ fn draw_timeline_controls(f: &mut Frame, app: &App, area: Rect) {
     let paused_str = if app.timeline_paused { "yes" } else { "no" };
     let window_s = app.timeline_window_ns as f64 / 1_000_000_000.0;
     let offset_s = app.timeline_offset_ns as f64 / 1_000_000_000.0;
-    let max_uncertainty = app
-        .trace_events
-        .iter()
-        .map(|event| event.clock_uncertainty_ns)
-        .max()
-        .unwrap_or(0);
+    let clock_status = trace_clock_status(app);
     let text = format!(
-        " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ Clock ±{max_uncertainty}ns{}",
+        " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ {clock_status}{}",
         app.trace_events.len(),
         app.trace_overrun_events,
         app.trace_local_discarded,
@@ -1030,6 +1020,16 @@ fn draw_timeline_controls(f: &mut Frame, app: &App, area: Rect) {
     );
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);
+}
+
+fn trace_clock_status(app: &App) -> String {
+    let max_uncertainty = app
+        .trace_events
+        .iter()
+        .map(|event| event.clock_uncertainty_ns)
+        .max()
+        .unwrap_or(0);
+    format!("Order: ~wall clock (unsynced) │ Anchor sample ±{max_uncertainty}ns")
 }
 
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
@@ -1659,7 +1659,7 @@ fn format_ns(ns: u64) -> String {
 mod tests {
     use super::{
         active_node_title, cluster_member_debug_summary, format_relative_ms, format_route_targets,
-        route_targets_for_connection, status_bar_text,
+        route_targets_for_connection, status_bar_text, trace_clock_status,
     };
     use crate::{
         app::App,
@@ -1672,6 +1672,15 @@ mod tests {
         assert_eq!(format_relative_ms(0), "—");
         assert_eq!(format_relative_ms(987), "987ms ago");
         assert_eq!(format_relative_ms(4_500), "4.5s ago");
+    }
+
+    #[test]
+    fn trace_clock_status_does_not_claim_cross_node_synchronization() {
+        let app = App::new_demo();
+        let status = trace_clock_status(&app);
+
+        assert!(status.contains("~wall clock (unsynced)"), "{status}");
+        assert!(status.contains("Anchor sample ±0ns"), "{status}");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Application state for the TUI observer.
 
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::Deref;
 #[cfg(unix)]
 use std::path::Path;
@@ -48,6 +49,10 @@ const ZOOM_LEVELS_NS: [u64; 6] = [
     30_000_000_000,
     60_000_000_000,
 ];
+
+/// Bound trace catch-up work per node so a hot producer cannot starve metrics
+/// or another node during one UI refresh.
+const MAX_TRACE_PAGES_PER_REFRESH: usize = 8;
 
 /// Sort column for actor list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -763,8 +768,15 @@ impl App {
                 traces = if fetch_traces {
                     let mut all_pages = Vec::new();
                     for node in &mut cluster.nodes {
-                        if let Some(page) = node.client.fetch_traces() {
+                        for _ in 0..MAX_TRACE_PAGES_PER_REFRESH {
+                            let Some(page) = node.client.fetch_traces() else {
+                                break;
+                            };
+                            let has_more = page.batch.has_more;
                             all_pages.push((node.addr.clone(), page));
+                            if !has_more {
+                                break;
+                            }
                         }
                     }
                     if all_pages.is_empty() {
@@ -834,7 +846,11 @@ impl App {
     }
 
     fn ingest_trace_pages(&mut self, pages: Vec<(String, TracePage)>) {
-        self.trace_has_more = pages.iter().any(|(_, page)| page.batch.has_more);
+        let mut endpoint_backlog = BTreeMap::new();
+        for (endpoint, page) in &pages {
+            endpoint_backlog.insert(endpoint, page.batch.has_more);
+        }
+        self.trace_has_more = endpoint_backlog.values().any(|has_more| *has_more);
         for (endpoint, page) in pages {
             match page.continuity {
                 TraceContinuity::Initial | TraceContinuity::Continuous => {}
@@ -881,7 +897,7 @@ impl App {
                     }),
             );
         }
-        self.trace_events.sort_by(compare_observed_trace_events);
+        self.trace_events = merge_observed_trace_events(std::mem::take(&mut self.trace_events));
         // Cap at 1000 entries and account for this consumer-local loss
         // separately from producer-declared ring overruns.
         if self.trace_events.len() > 1000 {
@@ -1291,19 +1307,57 @@ fn correlate_trace_time(timestamp_ns: u64, anchor_monotonic_ns: u64, anchor_unix
     }
 }
 
-fn compare_observed_trace_events(
-    left: &ObservedTraceEvent,
-    right: &ObservedTraceEvent,
-) -> Ordering {
-    if left.producer_instance_id == right.producer_instance_id && left.stream_id == right.stream_id
-    {
-        left.sequence.cmp(&right.sequence)
-    } else {
-        left.correlated_unix_ns
-            .cmp(&right.correlated_unix_ns)
-            .then_with(|| left.endpoint.cmp(&right.endpoint))
-            .then_with(|| left.sequence.cmp(&right.sequence))
+fn merge_observed_trace_events(events: Vec<ObservedTraceEvent>) -> Vec<ObservedTraceEvent> {
+    type StreamKey = (String, String, String);
+
+    let mut grouped: BTreeMap<StreamKey, Vec<ObservedTraceEvent>> = BTreeMap::new();
+    for event in events {
+        grouped
+            .entry((
+                event.endpoint.clone(),
+                event.producer_instance_id.clone(),
+                event.stream_id.clone(),
+            ))
+            .or_default()
+            .push(event);
     }
+
+    let mut queues: BTreeMap<StreamKey, VecDeque<ObservedTraceEvent>> = grouped
+        .into_iter()
+        .map(|(key, mut stream_events)| {
+            stream_events.sort_by_key(|event| event.sequence);
+            (key, stream_events.into())
+        })
+        .collect();
+    let event_count = queues.values().map(VecDeque::len).sum();
+    let mut merged = Vec::with_capacity(event_count);
+
+    while !queues.is_empty() {
+        let next_key = queues
+            .iter()
+            .filter_map(|(key, queue)| queue.front().map(|event| (key, event)))
+            .min_by(|(left_key, left), (right_key, right)| {
+                left.correlated_unix_ns
+                    .cmp(&right.correlated_unix_ns)
+                    .then_with(|| left_key.cmp(right_key))
+                    .then_with(|| left.sequence.cmp(&right.sequence))
+            })
+            .map(|(key, _)| key.clone())
+            .expect("non-empty stream map must contain a head event");
+        let queue = queues
+            .get_mut(&next_key)
+            .expect("selected trace stream must remain present");
+        merged.push(
+            queue
+                .pop_front()
+                .expect("selected trace stream must contain a head event"),
+        );
+        if queue.is_empty() {
+            queues.remove(&next_key);
+        }
+    }
+
+    merged
 }
 
 fn demo_trace_event(
@@ -1388,7 +1442,6 @@ fn flatten_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{
@@ -1631,6 +1684,14 @@ mod tests {
         .expect("serialize trace response")
     }
 
+    fn trace_response_with_more(trace_id: &str, timestamp_ns: u64, has_more: bool) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&trace_response(trace_id, timestamp_ns))
+                .expect("trace response fixture must parse");
+        value["has_more"] = serde_json::Value::Bool(has_more);
+        serde_json::to_string(&value).expect("serialize paged trace response")
+    }
+
     fn trace_empty_response() -> String {
         serde_json::to_string(&serde_json::json!({
             "producer_instance_id": "00000000000000000000000000000001",
@@ -1665,6 +1726,23 @@ mod tests {
         batch.producer_instance_id = producer.to_owned();
         batch.stream_id = stream.to_owned();
         TracePage { batch, continuity }
+    }
+
+    fn observed_event(
+        endpoint: &str,
+        producer: &str,
+        stream: &str,
+        sequence: u64,
+        correlated_unix_ns: u64,
+    ) -> ObservedTraceEvent {
+        ObservedTraceEvent {
+            endpoint: endpoint.to_owned(),
+            producer_instance_id: producer.to_owned(),
+            stream_id: stream.to_owned(),
+            correlated_unix_ns,
+            clock_uncertainty_ns: 1,
+            event: demo_trace_event(sequence, sequence, 42, "send", 7, sequence),
+        }
     }
 
     fn timeline_app(server: &TestTraceServer) -> App {
@@ -1819,6 +1897,44 @@ mod tests {
     }
 
     #[test]
+    fn timeline_refresh_follows_cursor_while_batch_has_more() {
+        let server = TestTraceServer::new(vec![
+            trace_response_with_more("first", 1, true),
+            trace_response_with_more("second", 2, false),
+        ]);
+        let mut app = timeline_app(&server);
+
+        app.refresh();
+
+        assert_eq!(server.trace_requests(), 2);
+        assert_eq!(trace_timestamps(&app), vec![1, 2]);
+        assert!(!app.trace_has_more, "final page caught the cursor up");
+        assert_eq!(
+            server.trace_paths(),
+            vec![
+                "/api/traces?limit=256".to_owned(),
+                "/api/traces?stream_id=00000000000000000000000000000002&after=1&limit=256"
+                    .to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn timeline_refresh_exposes_backlog_when_page_budget_is_exhausted() {
+        let responses = (1..=MAX_TRACE_PAGES_PER_REFRESH)
+            .map(|sequence| trace_response_with_more("busy", sequence as u64, true))
+            .collect();
+        let server = TestTraceServer::new(responses);
+        let mut app = timeline_app(&server);
+
+        app.refresh();
+
+        assert_eq!(server.trace_requests(), MAX_TRACE_PAGES_PER_REFRESH);
+        assert_eq!(app.trace_events.len(), MAX_TRACE_PAGES_PER_REFRESH);
+        assert!(app.trace_has_more, "exhausted budget must expose backlog");
+    }
+
+    #[test]
     fn node_reset_segments_only_that_endpoint() {
         let mut app = App::build(None, "test".to_owned(), false, false);
         app.ingest_trace_pages(vec![
@@ -1896,6 +2012,26 @@ mod tests {
         assert_eq!(app.trace_events[0].correlated_unix_ns, 1_000);
         assert_eq!(app.trace_events[1].endpoint, "node-b");
         assert_eq!(app.trace_events[1].correlated_unix_ns, 2_000);
+    }
+
+    #[test]
+    fn stream_merge_preserves_sequence_across_pairwise_order_cycle() {
+        let producer_a = "0000000000000000000000000000000a";
+        let producer_b = "0000000000000000000000000000000b";
+        let events = vec![
+            // Pairwise comparison is cyclic here: A1 < A2 by sequence,
+            // A2 < B1 by estimated time, and B1 < A1 by estimated time.
+            observed_event("a", producer_a, "a-stream", 1, 30),
+            observed_event("a", producer_a, "a-stream", 2, 10),
+            observed_event("b", producer_b, "b-stream", 1, 20),
+        ];
+
+        let merged = merge_observed_trace_events(events);
+        let order: Vec<(&str, u64)> = merged
+            .iter()
+            .map(|event| (event.endpoint.as_str(), event.sequence))
+            .collect();
+        assert_eq!(order, vec![("b", 1), ("a", 1), ("a", 2)]);
     }
 
     #[test]

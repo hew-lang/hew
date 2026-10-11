@@ -419,9 +419,10 @@ pub fn trace_event_matches_actor(
     }
     let matches = |actor: &ActorIdentity| {
         actor.actor_id == key.actor_id
-            && key
-                .spawn_serial
-                .is_none_or(|serial| actor.spawn_serial == Some(serial))
+            && match (key.spawn_serial, actor.spawn_serial) {
+                (Some(expected), Some(actual)) => expected == actual,
+                _ => true,
+            }
     };
     event
         .subject
@@ -451,6 +452,58 @@ pub fn trace_event_lane_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actor_filter_falls_back_to_packed_id_when_spawn_serial_is_missing() {
+        let producer = "00000000000000000000000000000001";
+        let actor_id = 42;
+        let event = TraceEvent {
+            subject: Some(crate::client::TraceSubject {
+                kind: "actor".to_owned(),
+                id: actor_id,
+                actor: Some(ActorIdentity {
+                    actor_id,
+                    spawn_serial: None,
+                    actor_type: Some("Counter".to_owned()),
+                }),
+            }),
+            ..TraceEvent::default()
+        };
+        let selected_from_send = TraceActorKey {
+            producer_instance_id: producer.to_owned(),
+            actor_id,
+            spawn_serial: Some(7),
+        };
+
+        assert!(trace_event_matches_actor(
+            producer,
+            &event,
+            &selected_from_send
+        ));
+
+        let conflicting_serial = TraceEvent {
+            subject: Some(crate::client::TraceSubject {
+                kind: "actor".to_owned(),
+                id: actor_id,
+                actor: Some(ActorIdentity {
+                    actor_id,
+                    spawn_serial: Some(8),
+                    actor_type: Some("Counter".to_owned()),
+                }),
+            }),
+            ..TraceEvent::default()
+        };
+        assert!(!trace_event_matches_actor(
+            producer,
+            &conflicting_serial,
+            &selected_from_send
+        ));
+        assert!(!trace_event_matches_actor(
+            "00000000000000000000000000000002",
+            &event,
+            &selected_from_send
+        ));
+    }
 
     #[test]
     fn current_v1_trace_events_are_actionable() {

@@ -1,6 +1,6 @@
 # Hew Observe protocol
 
-`v0.5/openapi.json` is the producer-owned, authoritative wire contract for the
+`v1/openapi.json` is the producer-owned, authoritative wire contract for the
 Hew profiler/Observe HTTP surface. It describes the existing HTTP/1.1 JSON,
 text, and binary endpoints rather than inventing a second transport.
 
@@ -13,38 +13,33 @@ authoritative. CBOR plus CDDL would have the same migration cost and materially
 weaker Swift and TypeScript generation. Neither binary choice fixes drift in
 the current JSON clients.
 
-The contract marks all full-width integer fields and the generator maps them to
-Rust `u64`/`i64`, Swift `UInt64`/`Int64`, and TypeScript `bigint`. TypeScript's
-generated decoder tokenizes integer literals before `JSON.parse`, so values are
-never rounded through IEEE-754 `number` first. Small bounded integers remain
-TypeScript `number` after a safe-integer check.
-
-The TypeScript decoders also accept decimal strings for full-width integer
-fields. That is the required projection when a Rust/Tauri command relays these
-models through JSON IPC: serialize each `u64`/`i64` as a decimal string, then
-decode it to `bigint` in TypeScript. Do not pass a full-width value through a
-JavaScript `number` or ordinary `JSON.parse` first.
+Every full-width integer is a canonical base-10 JSON string on the wire. The
+generator maps those strings to Rust `u64`/`i64`, Swift `UInt64`/`Int64`, and
+TypeScript `bigint`; JSON numbers are rejected. Small bounded integers remain
+JSON numbers and TypeScript `number` values after integer and range checks.
+This representation is safe through ordinary `JSON.parse` and Rust/Tauri JSON
+IPC without a custom tokenizer or an IEEE-754 rounding window.
 
 ## Compatibility policy
 
-- A v0.5 producer emits every property listed in a model's `required` array.
+- A v1 producer emits every property listed in a model's `required` array.
 - `actor_type` and `handler_name` keys are required and nullable. `null` means
-  attribution was unavailable; an omitted key is malformed v0.5.
+  attribution was unavailable; an omitted key is malformed v1.
 - Unknown object properties and unknown `event_type`, `state`, and `trap_kind`
   strings are accepted. Those taxonomies are intentionally not JSON enums.
 - Consumers reject malformed envelopes and any `schema_version` other than
-  exactly `v0.5`.
+  exactly `v1`.
 - Transport failures, endpoint failures, reconnection, and last-good-view state
   remain client service/view-model responsibilities. They are not wire fields.
 - `/api/traces` is a destructive, process-global drain (maximum 256 events per
-  request from a 16,384-event queue). v0.5 has no source/destination attribution
+  request from a 16,384-event queue). v1 has no source/destination attribution
   and no per-consumer cursor. Those require a future versioned contract.
 
 ## Generated outputs
 
 - Rust crate: `hew-observe-protocol/src/generated.rs`
-- Swift: `v0.5/generated/ObserveProtocolV05.swift`
-- TypeScript: `v0.5/generated/observe-protocol-v0.5.ts`
+- Swift: `v1/generated/ObserveProtocolV1.swift`
+- TypeScript: `v1/generated/observe-protocol-v1.ts`
 
 Python 3.12 (the repository minimum) is the pinned generator runtime. Run:
 

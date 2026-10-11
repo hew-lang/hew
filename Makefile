@@ -100,12 +100,12 @@ LINT_GATES += shell-script-lint
 shell-script-lint:
 	@$(PYTHON) scripts/shell-script-lint.py
 
-observe-protocol-generate: ## Generate: Rust, Swift and TypeScript Observe v0.5 bindings
+observe-protocol-generate: ## Generate: Rust, Swift and TypeScript Observe v1 bindings
 	@$(PYTHON) scripts/generate-observe-protocol.py
 
-observe-protocol-check: ## Check: validate Observe v0.5 generated bindings are current
+observe-protocol-check: ## Check: validate Observe v1 generated bindings are current
 	@$(PYTHON) scripts/generate-observe-protocol.py --check
-	@node --experimental-strip-types protocol/observe/v0.5/tests/typescript-smoke.mts
+	@node --experimental-strip-types protocol/observe/v1/tests/typescript-smoke.mts
 	@cargo test -p hew-observe-protocol
 
 LINT_GATES += observe-protocol-check

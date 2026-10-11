@@ -47,7 +47,7 @@ impl TraceEventMeta {
 }
 
 pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
-    // Runtime-emitted v0.5 trace events. MachineDispatchUnreachable is a
+    // Runtime-emitted v1 trace events. MachineDispatchUnreachable is a
     // diagnostic or crash kind, not a trace event type; it remains under
     // "crash".
     TraceEventMeta {
@@ -255,7 +255,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         actionable: false,
     },
     // SHIM: pending native-M3 producer-side emission. Auto-injected lock
-    // substrate is tracked for v0.5 observability, but lock spans are absent.
+    // substrate is tracked for v1 observability, but lock spans are absent.
     TraceEventMeta {
         name: "lock_acquire",
         label: "lock acquire",
@@ -373,7 +373,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_v05_trace_events_are_actionable() {
+    fn current_v1_trace_events_are_actionable() {
         for event_type in CURRENT_TRACE_EVENT_METADATA
             .iter()
             .filter(|meta| meta.is_actionable())

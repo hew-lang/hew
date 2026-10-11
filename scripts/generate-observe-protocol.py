@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Hew Observe v0.5 bindings from the checked-in OpenAPI document.
+"""Generate Hew Observe v1 bindings from the checked-in OpenAPI document.
 
 Python 3.12 is the pinned generator runtime (the repository-wide minimum).
 The generator intentionally supports only the small OpenAPI 3.1/JSON Schema
@@ -14,11 +14,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC_PATH = ROOT / "protocol/observe/v0.5/openapi.json"
+SPEC_PATH = ROOT / "protocol/observe/v1/openapi.json"
 OUTPUTS = {
     "rust": ROOT / "hew-observe-protocol/src/generated.rs",
-    "swift": ROOT / "protocol/observe/v0.5/generated/ObserveProtocolV05.swift",
-    "typescript": ROOT / "protocol/observe/v0.5/generated/observe-protocol-v0.5.ts",
+    "swift": ROOT / "protocol/observe/v1/generated/ObserveProtocolV1.swift",
+    "typescript": ROOT / "protocol/observe/v1/generated/observe-protocol-v1.ts",
 }
 
 HISTORY_NAMES = {
@@ -55,8 +55,8 @@ def load_spec() -> dict:
         spec = json.load(handle, object_pairs_hook=reject_duplicate_keys)
     if spec.get("openapi") != "3.1.0":
         raise ValueError("observe contract must remain OpenAPI 3.1.0")
-    if spec.get("x-hew-schema-version") != "v0.5":
-        raise ValueError("generator only supports the v0.5 contract")
+    if spec.get("x-hew-schema-version") != "v1":
+        raise ValueError("generator only supports the v1 contract")
     validate_local_references(spec)
     expected_json_paths = {
         "/api/metrics", "/api/memory", "/api/actors", "/api/metrics/history",
@@ -154,7 +154,7 @@ def is_nullable(schema: dict) -> bool:
 
 def rust_type(schema: dict) -> str:
     if (name := ref_name(schema)) is not None:
-        primitives = {"UInt64": "u64", "Int64": "i64", "UInt32": "u32", "UInt16": "u16", "Int32": "i32"}
+        primitives = {"UInt64Decimal": "u64", "Int64Decimal": "i64", "UInt32": "u32", "UInt16": "u16", "Int32": "i32"}
         return primitives.get(name, name)
     kind = schema.get("type")
     if isinstance(kind, list):
@@ -184,7 +184,7 @@ def camel(name: str) -> str:
 
 def swift_type(schema: dict) -> str:
     if (name := ref_name(schema)) is not None:
-        primitives = {"UInt64": "UInt64", "Int64": "Int64", "UInt32": "UInt32", "UInt16": "UInt16", "Int32": "Int32"}
+        primitives = {"UInt64Decimal": "UInt64", "Int64Decimal": "Int64", "UInt32": "UInt32", "UInt16": "UInt16", "Int32": "Int32"}
         return primitives.get(name, name)
     kind = schema.get("type")
     if isinstance(kind, list):
@@ -203,7 +203,7 @@ def swift_default(schema: dict) -> str:
     if is_nullable(schema):
         return "nil"
     if (name := ref_name(schema)) is not None:
-        if name in {"UInt64", "Int64", "UInt32", "UInt16", "Int32"}:
+        if name in {"UInt64Decimal", "Int64Decimal", "UInt32", "UInt16", "Int32"}:
             return "0"
         return f"{name}()"
     kind = schema.get("type")
@@ -216,9 +216,24 @@ def swift_default(schema: dict) -> str:
     raise ValueError(f"unsupported Swift default schema: {schema}")
 
 
+def swift_decode_expression(schema: dict, field: str) -> str:
+    name = ref_name(schema)
+    if name == "UInt64Decimal":
+        return f"try decodeUInt64Decimal(from: values, forKey: .{field})"
+    if name == "Int64Decimal":
+        return f"try decodeInt64Decimal(from: values, forKey: .{field})"
+    return f"try values.decode({swift_type(schema)}.self, forKey: .{field})"
+
+
+def swift_encode_expression(schema: dict, field: str) -> str:
+    if ref_name(schema) in {"UInt64Decimal", "Int64Decimal"}:
+        return f"try values.encode(String({field}), forKey: .{field})"
+    return f"try values.encode({field}, forKey: .{field})"
+
+
 def ts_type(schema: dict) -> str:
     if (name := ref_name(schema)) is not None:
-        primitives = {"UInt64": "bigint", "Int64": "bigint", "UInt32": "number", "UInt16": "number", "Int32": "number"}
+        primitives = {"UInt64Decimal": "bigint", "Int64Decimal": "bigint", "UInt32": "number", "UInt16": "number", "Int32": "number"}
         return primitives.get(name, name)
     kind = schema.get("type")
     if isinstance(kind, list):
@@ -257,12 +272,41 @@ def rust_output(spec: dict) -> str:
         "    Option::<String>::deserialize(deserializer)",
         "}",
         "",
+        "macro_rules! decimal_string_serde {",
+        "    ($module:ident, $native:ty) => {",
+        "        mod $module {",
+        "            use serde::{Deserialize, Deserializer, Serializer};",
+        "            pub fn serialize<S>(value: &$native, serializer: S) -> Result<S::Ok, S::Error>",
+        "            where",
+        "                S: Serializer,",
+        "            {",
+        "                serializer.serialize_str(&value.to_string())",
+        "            }",
+        "            pub fn deserialize<'de, D>(deserializer: D) -> Result<$native, D::Error>",
+        "            where",
+        "                D: Deserializer<'de>,",
+        "            {",
+        "                let wire = String::deserialize(deserializer)?;",
+        "                let value = wire.parse::<$native>().map_err(serde::de::Error::custom)?;",
+        "                if value.to_string() != wire {",
+        "                    return Err(serde::de::Error::custom(",
+        "                        \"expected canonical decimal string\",",
+        "                    ));",
+        "                }",
+        "                Ok(value)",
+        "            }",
+        "        }",
+        "    };",
+        "}",
+        "decimal_string_serde!(uint64_decimal, u64);",
+        "decimal_string_serde!(int64_decimal, i64);",
+        "",
     ]
     for model, schema in model_schemas(spec).items():
         required = set(schema.get("required", []))
         properties = schema.get("properties", {})
         if set(properties) != required:
-            raise ValueError(f"{model}: v0.5 model fields must all be required")
+            raise ValueError(f"{model}: v1 model fields must all be required")
         lines.extend(["#[derive(Debug, Clone, Default, Serialize, Deserialize)]", f"pub struct {model} {{"])
         for wire_name, prop in properties.items():
             field = snake_name(model, wire_name)
@@ -270,6 +314,10 @@ def rust_output(spec: dict) -> str:
                 lines.append(f'    #[serde(rename = "{wire_name}")]')
             if is_nullable(prop):
                 lines.append('    #[serde(deserialize_with = "deserialize_required_nullable")]')
+            if ref_name(prop) == "UInt64Decimal":
+                lines.append('    #[serde(with = "uint64_decimal")]')
+            elif ref_name(prop) == "Int64Decimal":
+                lines.append('    #[serde(with = "int64_decimal")]')
             lines.append(f"    pub {field}: {rust_type(prop)},")
         lines.extend(["}", ""])
     return "\n".join(lines)
@@ -280,6 +328,22 @@ def swift_output(spec: dict) -> str:
     lines = [
         "// @generated by scripts/generate-observe-protocol.py; DO NOT EDIT.",
         "import Foundation",
+        "",
+        "private func decodeUInt64Decimal<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> UInt64 {",
+        "    let wire = try values.decode(String.self, forKey: key)",
+        "    guard let value = UInt64(wire), String(value) == wire else {",
+        r'        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected canonical UInt64 decimal string")',
+        "    }",
+        "    return value",
+        "}",
+        "",
+        "private func decodeInt64Decimal<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> Int64 {",
+        "    let wire = try values.decode(String.self, forKey: key)",
+        "    guard let value = Int64(wire), String(value) == wire else {",
+        r'        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected canonical Int64 decimal string")',
+        "    }",
+        "    return value",
+        "}",
         "",
         f'public let observeSchemaVersion = "{spec["x-hew-schema-version"]}"',
         "public let actionableTraceEventTypes: Set<String> = [",
@@ -297,6 +361,11 @@ def swift_output(spec: dict) -> str:
         r'            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: values, debugDescription: "unsupported Hew Observe schema version \(schemaVersion)")',
         "        }",
         "        data = try values.decode(Data.self, forKey: .data)",
+        "    }",
+        "    public func encode(to encoder: Encoder) throws {",
+        "        var values = encoder.container(keyedBy: CodingKeys.self)",
+        "        try values.encode(schemaVersion, forKey: .schemaVersion)",
+        "        try values.encode(data, forKey: .data)",
         "    }",
         "}",
         "",
@@ -326,7 +395,11 @@ def swift_output(spec: dict) -> str:
         lines.extend(["    }", "", "    public init(from decoder: Decoder) throws {", "        let values = try decoder.container(keyedBy: CodingKeys.self)"])
         for wire_name, prop in properties.items():
             field = camel(snake_name(model, wire_name))
-            lines.append(f"        {field} = try values.decode({swift_type(prop)}.self, forKey: .{field})")
+            lines.append(f"        {field} = {swift_decode_expression(prop, field)}")
+        lines.extend(["    }", "", "    public func encode(to encoder: Encoder) throws {", "        var values = encoder.container(keyedBy: CodingKeys.self)"])
+        for wire_name, prop in properties.items():
+            field = camel(snake_name(model, wire_name))
+            lines.append(f"        {swift_encode_expression(prop, field)}")
         lines.extend(["    }", "}", ""])
     return "\n".join(lines)
 
@@ -334,8 +407,8 @@ def swift_output(spec: dict) -> str:
 def ts_decoder(schema: dict, expr: str) -> str:
     if (name := ref_name(schema)) is not None:
         integer_bounds = {
-            "UInt64": ("0n", "18446744073709551615n", "asBoundedBigInt"),
-            "Int64": ("-9223372036854775808n", "9223372036854775807n", "asBoundedBigInt"),
+            "UInt64Decimal": ("0n", "18446744073709551615n", "asBoundedBigInt"),
+            "Int64Decimal": ("-9223372036854775808n", "9223372036854775807n", "asBoundedBigInt"),
             "UInt32": ("0", "4294967295", "asBoundedNumber"),
             "UInt16": ("0", "65535", "asBoundedNumber"),
             "Int32": ("-2147483648", "2147483647", "asBoundedNumber"),
@@ -376,33 +449,12 @@ def ts_output(spec: dict) -> str:
         lines.extend(["  [key: string]: unknown;", "}", ""])
     lines.extend(
         [
-            "const INTEGER_MARKER = \"__hew_observe_integer__\";",
-            "",
-            "/** Parse JSON without first rounding 64-bit integer tokens through Number. */",
-            "export function parseLosslessJson(text: string): unknown {",
-            "  let output = \"\"; let index = 0; let inString = false; let escaped = false;",
-            "  while (index < text.length) {",
-            "    const char = text[index];",
-            r'''    if (inString) { output += char; if (escaped) escaped = false; else if (char === "\\") escaped = true; else if (char === '"') inString = false; index += 1; continue; }''',
-            "    if (char === '\"') { inString = true; output += char; index += 1; continue; }",
-            "    if (char === '-' || (char >= '0' && char <= '9')) {",
-            "      const start = index; index += 1; while (index < text.length && /[0-9eE+.-]/.test(text[index])) index += 1;",
-            "      const token = text.slice(start, index);",
-            "      if (!/[.eE]/.test(token) && !/^-?(0|[1-9][0-9]*)$/.test(token)) throw new SyntaxError(`invalid JSON integer ${token}`);",
-            "      output += /[.eE]/.test(token) ? token : `{\"${INTEGER_MARKER}\":${JSON.stringify(token)}}`; continue;",
-            "    }",
-            "    output += char; index += 1;",
-            "  }",
-            "  return JSON.parse(output);",
-            "}",
-            "",
             "function asRecord(value: unknown): Record<string, unknown> { if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('expected object'); return value as Record<string, unknown>; }",
             "function asArray(value: unknown): unknown[] { if (!Array.isArray(value)) throw new TypeError('expected array'); return value; }",
-            "function integerLexeme(value: unknown): string | number { if (typeof value === 'number') return value; if (typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value)) return value; const record = asRecord(value); const raw = record[INTEGER_MARKER]; if (typeof raw !== 'string') throw new TypeError('expected integer'); return raw; }",
             "function asString(value: unknown): string { if (typeof value !== 'string') throw new TypeError('expected string'); return value; }",
-            "function asBoundedNumber(value: unknown, minimum: number, maximum: number): number { const number = Number(integerLexeme(value)); if (!Number.isSafeInteger(number) || number < minimum || number > maximum) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return number === 0 ? 0 : number; }",
-            "function asBoundedBigInt(value: unknown, minimum: bigint, maximum: bigint): bigint { const number = BigInt(integerLexeme(value)); if (number < minimum || number > maximum) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return number; }",
-            "function asDouble(value: unknown): number { const number = typeof value === 'number' ? value : Number(integerLexeme(value)); if (!Number.isFinite(number)) throw new TypeError('expected finite number'); return number; }",
+            "function asBoundedNumber(value: unknown, minimum: number, maximum: number): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return value === 0 ? 0 : value; }",
+            "function asBoundedBigInt(value: unknown, minimum: bigint, maximum: bigint): bigint { if (typeof value !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(value)) throw new TypeError('expected canonical decimal string'); const number = BigInt(value); if (number < minimum || number > maximum || number.toString() !== value) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return number; }",
+            "function asDouble(value: unknown): number { if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('expected finite number'); return value; }",
             "",
         ]
     )
@@ -423,7 +475,7 @@ def ts_output(spec: dict) -> str:
         decoder = f"asArray(input.data).map((item) => decode{model}(item))" if is_array else f"decode{model}(input.data)"
         lines.extend([
             f"export function decode{endpoint}Envelope(text: string): ObserveEnvelope<{data_type}> {{",
-            "  const input = asRecord(parseLosslessJson(text));",
+            "  const input = asRecord(JSON.parse(text));",
             "  if (input.schema_version !== OBSERVE_SCHEMA_VERSION) throw new TypeError(`unsupported Hew Observe schema version ${String(input.schema_version)}`);",
             f"  return {{ ...input, schema_version: OBSERVE_SCHEMA_VERSION, data: {decoder} }} as ObserveEnvelope<{data_type}>;",
             "}", "",

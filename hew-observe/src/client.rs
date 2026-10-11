@@ -219,7 +219,7 @@ impl ProfilerClient {
     /// Fetch JSON from an endpoint. Does NOT affect connection status.
     ///
     /// Parses the canonical observe envelope
-    /// (`{"schema_version":"v0.5","data":<T>}`) — bare bodies emitted by a
+    /// (`{"schema_version":"v1","data":<T>}`) — bare bodies emitted by a
     /// pre-envelope producer fail with `ClientError::Parse`. The envelope's
     /// `schema_version` field is checked against [`OBSERVE_SCHEMA_VERSION`];
     /// a mismatch surfaces as `ClientError::BadStatus` so the caller's
@@ -449,7 +449,7 @@ mod tests {
         // (202). The runtime test asserts the exact same shape is
         // produced by a live trap; this test asserts the observe consumer
         // parses it correctly.
-        let body = r#"[{"time_s":1.5,"actor_id":42,"signal":202,"trap_kind":"DivideByZero","msg_type":7,"fault_addr":0}]"#;
+        let body = r#"[{"time_s":1.5,"actor_id":"42","signal":202,"trap_kind":"DivideByZero","msg_type":7,"fault_addr":"0"}]"#;
         let entries: Vec<CrashEntry> =
             serde_json::from_str(body).expect("profiler crash payload must parse");
         assert_eq!(entries.len(), 1);
@@ -460,11 +460,11 @@ mod tests {
         assert_eq!(entry.msg_type, 7);
     }
 
-    /// v0.5 requires `trap_kind`; omission is malformed rather than an empty
+    /// v1 requires `trap_kind`; omission is malformed rather than an empty
     /// value with different semantics.
     #[test]
     fn crash_entry_rejects_missing_required_trap_kind() {
-        let body = r#"[{"time_s":0.0,"actor_id":1,"signal":11,"msg_type":0,"fault_addr":0}]"#;
+        let body = r#"[{"time_s":0.0,"actor_id":"1","signal":11,"msg_type":0,"fault_addr":"0"}]"#;
         let error = serde_json::from_str::<Vec<CrashEntry>>(body)
             .expect_err("missing required trap_kind must fail");
         assert!(error.to_string().contains("trap_kind"), "{error}");
@@ -473,7 +473,7 @@ mod tests {
     // ── Schema-version envelope unwrapping ────────────────────────────────
 
     /// `get_json` MUST peel the canonical envelope
-    /// (`{"schema_version":"v0.5","data":<body>}`) before handing the inner
+    /// (`{"schema_version":"v1","data":<body>}`) before handing the inner
     /// `T` back. Producer-side coverage lives in
     /// `hew_runtime::profiler::server`; this test pins the consumer half.
     #[test]
@@ -481,7 +481,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sock = tmp.path().join("envelope_ok.sock");
 
-        let inner = r#"[{"time_s":2.5,"actor_id":17,"signal":202,"trap_kind":"DivideByZero","msg_type":3,"fault_addr":0}]"#;
+        let inner = r#"[{"time_s":2.5,"actor_id":"17","signal":202,"trap_kind":"DivideByZero","msg_type":3,"fault_addr":"0"}]"#;
         let body = format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{inner}}}"#);
         let body_len = body.len();
         let response: &'static str = Box::leak(
@@ -616,14 +616,19 @@ mod tests {
         ] {
             assert!(
                 data.contains_key(key),
-                "live metrics v0.5 payload must include {key}"
+                "live metrics v1 payload must include {key}"
             );
         }
 
         let metrics = client
             .fetch_metrics()
-            .expect("observe client must parse live v0.5 metrics snapshot");
-        assert_eq!(metrics.timestamp_secs, data["timestamp_secs"]);
+            .expect("observe client must parse live v1 metrics snapshot");
+        assert_eq!(
+            metrics.timestamp_secs.to_string(),
+            data["timestamp_secs"]
+                .as_str()
+                .expect("v1 timestamps are decimal strings")
+        );
         assert_eq!(client.status, ConnectionStatus::Connected);
         assert!(
             client.last_error.is_none(),
@@ -732,9 +737,9 @@ mod tests {
         assert!(client.last_error.is_some());
 
         // Swap to a socket that serves valid metrics JSON wrapped in the
-        // canonical observe envelope (producer/consumer at v0.5 emit/accept
-        // `{"schema_version":"v0.5","data":<body>}`).
-        let metrics_inner = r#"{"timestamp_secs":1,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
+        // canonical observe envelope (producer/consumer at v1 emit/accept
+        // `{"schema_version":"v1","data":<body>}`).
+        let metrics_inner = r#"{"timestamp_secs":"1","tasks_spawned":"0","tasks_completed":"0","steals":"0","messages_sent":"0","messages_received":"0","active_workers":"0","alloc_count":"0","dealloc_count":"0","bytes_allocated":"0","bytes_freed":"0","bytes_live":"0","peak_bytes_live":"0","tcp_bytes_read":"0","tcp_bytes_written":"0","tcp_accept_count":"0","tcp_connect_count":"0","tcp_error_count":"0"}"#;
         let metrics_json =
             format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{metrics_inner}}}"#);
         let body_len = metrics_json.len();
@@ -807,7 +812,7 @@ mod tests {
 
     fn make_trace_event(event_type: &str) -> TraceEvent {
         serde_json::from_str(&format!(
-            r#"{{"trace_id":"00000000000000000000000000000000","span_id":1,"parent_span_id":0,"actor_id":12345678,"actor_type_id":0,"actor_type":null,"event_type":"{event_type}","msg_type":0,"timestamp_ns":9999,"handler_name":null}}"#
+            r#"{{"trace_id":"00000000000000000000000000000000","span_id":"1","parent_span_id":"0","actor_id":"12345678","actor_type_id":"0","actor_type":null,"event_type":"{event_type}","msg_type":0,"timestamp_ns":"9999","handler_name":null}}"#
         ))
         .expect("TraceEvent JSON must deserialise")
     }

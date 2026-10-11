@@ -1,6 +1,6 @@
 //! E2E probe: every `/api/*` JSON response served by the profiler HTTP
 //! surface carries the canonical observe schema-version envelope
-//! (`{"schema_version":"v0.5","data":<body>}`).
+//! (`{"schema_version":"v1","data":<body>}`).
 //!
 //! Producer: `hew_runtime::profiler::server::json_response`, exercised here
 //! through `run_tcp_with_listener` (the same code path `run_tcp` uses in
@@ -21,7 +21,7 @@ use hew_runtime::profiler::{run_tcp_with_listener, ProfilerContext, OBSERVE_SCHE
 
 /// Spin up the profiler HTTP server on an ephemeral port and assert that
 /// `/api/actors` and `/api/routing/table` both come back wrapped in the
-/// canonical envelope with `schema_version == "v0.5"`.
+/// canonical envelope with `schema_version == "v1"`.
 ///
 /// Covers both an array-body endpoint (`/api/actors` → `[]`) and an
 /// object-body endpoint (`/api/routing/table` → current unconfigured routing shape)

@@ -2,7 +2,26 @@
 "use strict";
 
 const POLL_MS = 1000;
+const OBSERVE_SCHEMA_VERSION = "v1";
 let prevSnap = null;
+
+function unwrapObserveEnvelope(payload) {
+  if (!payload || payload.schema_version !== OBSERVE_SCHEMA_VERSION) {
+    throw new TypeError(
+      `unsupported Hew Observe schema version ${String(payload?.schema_version)}`,
+    );
+  }
+  return payload.data;
+}
+
+// The wire preserves full-width integers as decimal strings. The dashboard
+// deliberately converts only chart/calculation inputs to Number at its display
+// boundary; actor IDs remain exact strings.
+function numericRecord(record) {
+  return Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [key, Number(value)]),
+  );
+}
 
 // ── Formatting ──────────────────────────────────────────────────────────
 
@@ -93,12 +112,18 @@ async function poll() {
       fetch("/api/actors"),
     ]);
     // Every `/api/*` JSON response is wrapped in the canonical observe
-    // envelope `{"schema_version":"v0.5","data":<body>}`. Unwrap once at
+    // envelope `{"schema_version":"v1","data":<body>}`. Unwrap once at
     // the seam so the rest of the dashboard keeps working with the inner
     // shapes.
-    const snap = (await metricsRes.json()).data;
-    const history = (await historyRes.json()).data;
-    const actors = (await actorsRes.json()).data;
+    const snap = numericRecord(unwrapObserveEnvelope(await metricsRes.json()));
+    const history = unwrapObserveEnvelope(await historyRes.json()).map(numericRecord);
+    const actors = unwrapObserveEnvelope(await actorsRes.json()).map((actor) => ({
+      ...actor,
+      msgs: Number(actor.msgs),
+      time_ns: Number(actor.time_ns),
+      mbox_depth: Number(actor.mbox_depth),
+      mbox_hwm: Number(actor.mbox_hwm),
+    }));
 
     // Uptime.
     document.getElementById("uptime").textContent =

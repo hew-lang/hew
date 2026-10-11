@@ -316,21 +316,25 @@ The key endpoints for observe users are:
 JSON endpoints are wrapped as:
 
 ```json
-{"schema_version":"v0.5","data":{}}
+{"schema_version":"v1","data":{}}
 ```
 
-They also include the `X-Hew-Schema-Version: v0.5` header. The scrape endpoint
+They also include the `X-Hew-Schema-Version: v1` header. The scrape endpoint
 is plain text and is not JSON-enveloped.
 
+All signed and unsigned 64-bit integer fields are canonical base-10 JSON
+strings. Bounded 32-bit and 16-bit fields remain JSON numbers. This preserves
+full precision through ordinary JavaScript JSON parsing and native-app IPC.
+
 The machine-readable authority is
-[`protocol/observe/v0.5/openapi.json`](../protocol/observe/v0.5/openapi.json).
+[`protocol/observe/v1/openapi.json`](../protocol/observe/v1/openapi.json).
 It defines required and nullable fields, integer widths, units, clock semantics,
 open string taxonomies, error bodies, and both TCP and Unix-socket transports.
 Rust, Swift, and TypeScript bindings are generated from that file; run
 `make observe-protocol-check` to validate the schema, generated-code drift, and
 lossless 64-bit codec tests.
 
-The v0.5 trace endpoint is a single-consumer-style destructive drain, not a
+The v1 trace endpoint is a single-consumer-style destructive drain, not a
 broadcast or cursor API. It does not report message destinations, and actor/
 handler attribution may be `null` when metadata is unavailable at drain time.
 

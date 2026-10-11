@@ -308,20 +308,20 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 break;
             }
             let m = &members[member_idx];
-            let is_self = m.node_id == app.cluster_routing.local_route_slot;
+            let is_self = m.route_slot == app.cluster_routing.local_route_slot;
             let connection = app
                 .cluster_connections
                 .iter()
-                .find(|c| c.peer_node_id == m.node_id);
+                .find(|c| c.peer_route_slot == m.route_slot);
             let route = app
                 .cluster_routing
                 .routes
                 .iter()
-                .find(|r| r.route_slot == m.node_id);
+                .find(|r| r.route_slot == m.route_slot);
             let title = if is_self {
-                format!(" node:{} (self) ", m.node_id)
+                format!(" slot:{} (self) ", m.route_slot)
             } else {
-                format!(" node:{} ", m.node_id)
+                format!(" slot:{} ", m.route_slot)
             };
 
             let colour = theme::member_state_colour(&m.state);
@@ -383,7 +383,7 @@ fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
         .map(|m| {
             let colour = theme::member_state_colour(&m.state);
             Row::new(vec![
-                Cell::from(format!("node:{}", m.node_id)),
+                Cell::from(format!("slot:{}", m.route_slot)),
                 Cell::from(m.state.as_str()).style(Style::default().fg(colour)),
                 Cell::from(format!("{}", m.incarnation)),
                 Cell::from(m.addr.as_str()),
@@ -440,7 +440,7 @@ fn draw_cluster_connections(f: &mut Frame, app: &App, area: Rect) {
                 route_targets_for_connection(&app.cluster_routing.routes, connection.conn_id);
             Row::new(vec![
                 Cell::from(format!("{}", connection.conn_id)),
-                Cell::from(format!("node:{}", connection.peer_node_id)),
+                Cell::from(format!("slot:{}", connection.peer_route_slot)),
                 Cell::from(connection.state.as_str())
                     .style(Style::default().fg(theme::connection_state_colour(&connection.state))),
                 Cell::from(format_relative_ms(connection.last_activity_ms)),
@@ -498,7 +498,7 @@ fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
                 Cell::from(route.node_id.clone()),
                 Cell::from(format!("{}", route.conn_id)),
                 Cell::from(connection.map_or("—".to_owned(), |connection| {
-                    format!("node:{}", connection.peer_node_id)
+                    format!("slot:{}", connection.peer_route_slot)
                 })),
                 Cell::from(state).style(Style::default().fg(match connection {
                     Some(connection) => theme::connection_state_colour(&connection.state),
@@ -566,16 +566,16 @@ fn cluster_member_debug_summary(
 
     match (connection, route) {
         (Some(connection), Some(route)) => format!(
-            "conn:{} ↔ node:{} • route:{} • {}",
+            "conn:{} ↔ slot:{} • route:{} • {}",
             connection.conn_id,
-            connection.peer_node_id,
+            connection.peer_route_slot,
             route.conn_id,
             format_relative_ms(connection.last_activity_ms),
         ),
         (Some(connection), None) => format!(
-            "conn:{} ↔ node:{} • no route • {}",
+            "conn:{} ↔ slot:{} • no route • {}",
             connection.conn_id,
-            connection.peer_node_id,
+            connection.peer_route_slot,
             format_relative_ms(connection.last_activity_ms),
         ),
         (None, Some(route)) => format!("route:{} • no live connection", route.conn_id),
@@ -646,7 +646,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     // Collect unique node IDs
     let mut node_ids: Vec<u16> = events.iter().map(|e| (e.actor_id >> 48) as u16).collect();
     for m in &app.cluster_members {
-        node_ids.push(m.node_id);
+        node_ids.push(m.route_slot);
     }
     node_ids.sort_unstable();
     node_ids.dedup();
@@ -809,7 +809,7 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Collect node IDs from cluster members and trace events
-    let mut node_ids: Vec<u16> = app.cluster_members.iter().map(|m| m.node_id).collect();
+    let mut node_ids: Vec<u16> = app.cluster_members.iter().map(|m| m.route_slot).collect();
     for evt in &app.trace_events {
         let nid = (evt.actor_id >> 48) as u16;
         if !node_ids.contains(&nid) {
@@ -1691,7 +1691,7 @@ mod tests {
         let summary = cluster_member_debug_summary(
             Some(&ConnectionInfo {
                 conn_id: 7,
-                peer_node_id: 42,
+                peer_route_slot: 42,
                 state: "active".to_owned(),
                 last_activity_ms: 1_250,
             }),
@@ -1705,7 +1705,7 @@ mod tests {
             false,
         );
 
-        assert_eq!(summary, "conn:7 ↔ node:42 • route:7 • 1.2s ago");
+        assert_eq!(summary, "conn:7 ↔ slot:42 • route:7 • 1.2s ago");
     }
 
     #[test]

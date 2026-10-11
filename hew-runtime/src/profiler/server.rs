@@ -294,7 +294,7 @@ fn serve_observe_scrape() -> Response<Full<Bytes>> {
 
 fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> String {
     format!(
-        r#"{{"timestamp_secs":{},"tasks_spawned":{},"tasks_completed":{},"steals":{},"messages_sent":{},"messages_received":{},"active_workers":{},"alloc_count":{},"dealloc_count":{},"bytes_allocated":{},"bytes_freed":{},"bytes_live":{},"peak_bytes_live":{},"tcp_bytes_read":{},"tcp_bytes_written":{},"tcp_accept_count":{},"tcp_connect_count":{},"tcp_error_count":{}}}"#,
+        r#"{{"timestamp_secs":"{}","tasks_spawned":"{}","tasks_completed":"{}","steals":"{}","messages_sent":"{}","messages_received":"{}","active_workers":"{}","alloc_count":"{}","dealloc_count":"{}","bytes_allocated":"{}","bytes_freed":"{}","bytes_live":"{}","peak_bytes_live":"{}","tcp_bytes_read":"{}","tcp_bytes_written":"{}","tcp_accept_count":"{}","tcp_connect_count":"{}","tcp_error_count":"{}"}}"#,
         snap.timestamp_secs,
         snap.tasks_spawned,
         snap.tasks_completed,
@@ -320,7 +320,7 @@ fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> Str
 fn serve_memory() -> Response<Full<Bytes>> {
     let stats = allocator::snapshot();
     let json = format!(
-        r#"{{"alloc_count":{},"dealloc_count":{},"bytes_allocated":{},"bytes_freed":{},"bytes_live":{},"peak_bytes_live":{}}}"#,
+        r#"{{"alloc_count":"{}","dealloc_count":"{}","bytes_allocated":"{}","bytes_freed":"{}","bytes_live":"{}","peak_bytes_live":"{}"}}"#,
         stats.alloc_count,
         stats.dealloc_count,
         stats.bytes_allocated,
@@ -349,7 +349,7 @@ fn history_json(entries: &[crate::profiler::metrics::MetricsSnapshot]) -> String
         }
         let _ = write!(
             json,
-            r#"{{"t":{},"ts":{},"tc":{},"st":{},"ms":{},"mr":{},"aw":{},"ac":{},"dc":{},"ba":{},"bf":{},"bl":{},"pb":{},"tbr":{},"tbw":{},"tac":{},"tcc":{},"tec":{}}}"#,
+            r#"{{"t":"{}","ts":"{}","tc":"{}","st":"{}","ms":"{}","mr":"{}","aw":"{}","ac":"{}","dc":"{}","ba":"{}","bf":"{}","bl":"{}","pb":"{}","tbr":"{}","tbw":"{}","tac":"{}","tcc":"{}","tec":"{}"}}"#,
             s.timestamp_secs,
             s.tasks_spawned,
             s.tasks_completed,
@@ -400,13 +400,13 @@ fn serve_flat_profile() -> Response<Full<Bytes>> {
 /// U+0000–U+001F control characters) is handled by the canonical helper.
 fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> String {
     json_array(actors, |json, a| {
-        let _ = write!(json, r#"{{"id":{},"pid":{},"actor_type":"#, a.id, a.pid);
+        let _ = write!(json, r#"{{"id":"{}","pid":"{}","actor_type":"#, a.id, a.pid);
         push_json_string(json, &a.actor_type);
         let _ = write!(json, r#","state":"#);
         push_json_string(json, a.state);
         let _ = write!(
             json,
-            r#","msgs":{},"time_ns":{},"mbox_depth":{},"mbox_hwm":{}}}"#,
+            r#","msgs":"{}","time_ns":"{}","mbox_depth":"{}","mbox_hwm":"{}"}}"#,
             a.messages_processed, a.processing_time_ns, a.mailbox_depth, a.mailbox_hwm,
         );
     })
@@ -560,24 +560,24 @@ mod tests {
         assert_eq!(
             parsed,
             json!([{
-                "t": 7,
-                "ts": 1,
-                "tc": 2,
-                "st": 3,
-                "ms": 4,
-                "mr": 5,
-                "aw": 6,
-                "ac": 8,
-                "dc": 9,
-                "ba": 10,
-                "bf": 11,
-                "bl": 12,
-                "pb": 13,
-                "tbr": 14,
-                "tbw": 15,
-                "tac": 16,
-                "tcc": 17,
-                "tec": 18
+                "t": "7",
+                "ts": "1",
+                "tc": "2",
+                "st": "3",
+                "ms": "4",
+                "mr": "5",
+                "aw": "6",
+                "ac": "8",
+                "dc": "9",
+                "ba": "10",
+                "bf": "11",
+                "bl": "12",
+                "pb": "13",
+                "tbr": "14",
+                "tbw": "15",
+                "tac": "16",
+                "tcc": "17",
+                "tec": "18"
             }])
         );
     }
@@ -587,7 +587,7 @@ mod tests {
         let env = envelope_json_raw("[]");
         let parsed: serde_json::Value =
             serde_json::from_str(&env).expect("envelope must be valid JSON");
-        assert_eq!(parsed["schema_version"], json!("v0.5"));
+        assert_eq!(parsed["schema_version"], json!("v1"));
         assert_eq!(parsed["data"], json!([]));
     }
 
@@ -598,7 +598,7 @@ mod tests {
         );
         let parsed: serde_json::Value =
             serde_json::from_str(&env).expect("envelope must be valid JSON");
-        assert_eq!(parsed["schema_version"], json!("v0.5"));
+        assert_eq!(parsed["schema_version"], json!("v1"));
         assert_eq!(parsed["data"]["local_node_id"], json!("unconfigured"));
     }
 
@@ -607,7 +607,7 @@ mod tests {
         // The producer + consumer copies of the schema-version string must
         // stay in lockstep. Hard-coded here so a drift in either crate trips
         // a producer-side test alongside any consumer-side mismatch.
-        assert_eq!(OBSERVE_SCHEMA_VERSION, "v0.5");
+        assert_eq!(OBSERVE_SCHEMA_VERSION, "v1");
     }
 
     #[test]
@@ -638,24 +638,24 @@ mod tests {
         assert_eq!(
             parsed,
             json!({
-                "timestamp_secs": 1,
-                "tasks_spawned": 2,
-                "tasks_completed": 3,
-                "steals": 4,
-                "messages_sent": 5,
-                "messages_received": 6,
-                "active_workers": 7,
-                "alloc_count": 8,
-                "dealloc_count": 9,
-                "bytes_allocated": 10,
-                "bytes_freed": 11,
-                "bytes_live": 12,
-                "peak_bytes_live": 13,
-                "tcp_bytes_read": 14,
-                "tcp_bytes_written": 15,
-                "tcp_accept_count": 16,
-                "tcp_connect_count": 17,
-                "tcp_error_count": 18
+                "timestamp_secs": "1",
+                "tasks_spawned": "2",
+                "tasks_completed": "3",
+                "steals": "4",
+                "messages_sent": "5",
+                "messages_received": "6",
+                "active_workers": "7",
+                "alloc_count": "8",
+                "dealloc_count": "9",
+                "bytes_allocated": "10",
+                "bytes_freed": "11",
+                "bytes_live": "12",
+                "peak_bytes_live": "13",
+                "tcp_bytes_read": "14",
+                "tcp_bytes_written": "15",
+                "tcp_accept_count": "16",
+                "tcp_connect_count": "17",
+                "tcp_error_count": "18"
             })
         );
     }

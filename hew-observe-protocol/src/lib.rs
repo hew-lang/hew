@@ -1,6 +1,6 @@
 //! Generated, versioned models for the Hew Observe HTTP protocol.
 //!
-//! The authority is `protocol/observe/v0.5/openapi.json`. Regenerate this
+//! The authority is `protocol/observe/v1/openapi.json`. Regenerate this
 //! crate and the Swift/TypeScript siblings with
 //! `make observe-protocol-generate`.
 
@@ -39,7 +39,7 @@ impl std::error::Error for DecodeError {}
 /// # Errors
 ///
 /// Returns [`DecodeError::Json`] for malformed JSON or payloads and
-/// [`DecodeError::SchemaVersion`] when the envelope does not declare v0.5.
+/// [`DecodeError::SchemaVersion`] when the envelope does not declare v1.
 pub fn decode_envelope<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
     let envelope: Envelope<T> = serde_json::from_slice(bytes).map_err(DecodeError::Json)?;
     if envelope.schema_version != OBSERVE_SCHEMA_VERSION {
@@ -51,7 +51,7 @@ pub fn decode_envelope<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T
     Ok(envelope.data)
 }
 
-/// Wrap an already-serialized JSON value in the canonical v0.5 envelope.
+/// Wrap an already-serialized JSON value in the canonical v1 envelope.
 ///
 /// Runtime serializers use this zero-copy-ish path for hot snapshots. The
 /// compatibility suite validates each inner value against the contract before
@@ -88,7 +88,7 @@ impl ActorInfo {
 }
 
 impl TraceEvent {
-    /// Whether the event drives the v0.5 timeline and actor drill-down views.
+    /// Whether the event drives the v1 timeline and actor drill-down views.
     #[must_use]
     pub fn is_actionable(&self) -> bool {
         ACTIONABLE_TRACE_EVENT_TYPES.contains(&self.event_type.as_str())

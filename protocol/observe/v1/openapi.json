@@ -1,0 +1,136 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hew Observe HTTP API",
+    "version": "1.0.0",
+    "description": "Authoritative contract for the current Hew 0.6 profiler/observe HTTP surface. The Observe wire version is independent of Hew release labels. JSON responses use a strict versioned envelope, and 64-bit integers use canonical decimal strings."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "description": "Loopback TCP listener",
+      "variables": { "port": { "default": "6060" } }
+    }
+  ],
+  "x-hew-schema-version": "v1",
+  "x-hew-transports": {
+    "tcp": "HTTP/1.1 on the configured bind address; the default is loopback-only.",
+    "unix": "HTTP/1.1 over the per-process Unix socket discovered by hew-observe. The socket is mode 0600."
+  },
+  "x-hew-evolution": {
+    "required-properties": "Consumers reject missing required properties and properties with the wrong type.",
+    "additive-properties": "Consumers accept unknown object properties so producers may add fields without a wire-version bump.",
+    "open-string-taxonomies": "Consumers accept unknown event_type, state, and trap_kind strings.",
+    "breaking-change": "Any field, type, unit, taxonomy, or semantic change requires a new Observe wire version.",
+    "version-check": "Consumers reject an envelope whose schema_version is not exactly v1."
+  },
+  "paths": {
+    "/": { "$ref": "#/components/pathItems/Dashboard" },
+    "/dashboard.js": { "$ref": "#/components/pathItems/DashboardScript" },
+    "/api/metrics": { "$ref": "#/components/pathItems/Metrics" },
+    "/api/memory": { "$ref": "#/components/pathItems/Memory" },
+    "/api/actors": { "$ref": "#/components/pathItems/Actors" },
+    "/api/metrics/history": { "$ref": "#/components/pathItems/History" },
+    "/api/cluster/members": { "$ref": "#/components/pathItems/ClusterMembers" },
+    "/api/connections": { "$ref": "#/components/pathItems/Connections" },
+    "/api/routing/table": { "$ref": "#/components/pathItems/Routing" },
+    "/api/traces": { "$ref": "#/components/pathItems/Traces" },
+    "/api/supervisors": { "$ref": "#/components/pathItems/Supervisors" },
+    "/api/crashes": { "$ref": "#/components/pathItems/Crashes" },
+    "/api/observe/scrape": { "$ref": "#/components/pathItems/Scrape" },
+    "/debug/pprof/heap": { "$ref": "#/components/pathItems/HeapProfile" },
+    "/debug/pprof/profile": { "$ref": "#/components/pathItems/FlatProfile" }
+  },
+  "components": {
+    "headers": {
+      "SchemaVersion": {
+        "description": "Duplicates the JSON envelope version.",
+        "required": true,
+        "schema": { "type": "string", "const": "v1" }
+      }
+    },
+    "pathItems": {
+      "Dashboard": { "get": { "operationId": "getDashboard", "responses": { "200": { "description": "Embedded dashboard HTML", "content": { "text/html": { "schema": { "type": "string" } } } }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "DashboardScript": { "get": { "operationId": "getDashboardScript", "responses": { "200": { "description": "Embedded dashboard JavaScript", "content": { "application/javascript": { "schema": { "type": "string" } } } }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Metrics": { "get": { "operationId": "getMetrics", "responses": { "200": { "$ref": "#/components/responses/MetricsResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Memory": { "get": { "operationId": "getMemory", "responses": { "200": { "$ref": "#/components/responses/MemoryResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Actors": { "get": { "operationId": "getActors", "responses": { "200": { "$ref": "#/components/responses/ActorsResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "History": { "get": { "operationId": "getHistory", "responses": { "200": { "$ref": "#/components/responses/HistoryResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "ClusterMembers": { "get": { "operationId": "getClusterMembers", "responses": { "200": { "$ref": "#/components/responses/ClusterMembersResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Connections": { "get": { "operationId": "getConnections", "responses": { "200": { "$ref": "#/components/responses/ConnectionsResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Routing": { "get": { "operationId": "getRouting", "responses": { "200": { "$ref": "#/components/responses/RoutingResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Traces": { "get": { "operationId": "drainTraces", "description": "Destructively drains at most 256 oldest events from the process-global 16384-event queue. Concurrent consumers divide the stream; this is not a cursor API.", "responses": { "200": { "$ref": "#/components/responses/TracesResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Supervisors": { "get": { "operationId": "getSupervisors", "responses": { "200": { "$ref": "#/components/responses/SupervisorsResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Crashes": { "get": { "operationId": "getCrashes", "responses": { "200": { "$ref": "#/components/responses/CrashesResponse" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "Scrape": { "get": { "operationId": "getObserveScrape", "responses": { "200": { "description": "Prometheus-style scrape text. This endpoint is not JSON and has no schema envelope.", "content": { "text/plain": { "schema": { "type": "string" } } } }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "HeapProfile": { "get": { "operationId": "getHeapProfile", "responses": { "200": { "description": "gzip-compressed pprof protobuf heap profile", "headers": { "Content-Disposition": { "schema": { "type": "string", "const": "attachment; filename=\"heap.pb.gz\"" } } }, "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+      "FlatProfile": { "get": { "operationId": "getFlatProfile", "responses": { "200": { "description": "gprof-style flat profile", "content": { "text/plain": { "schema": { "type": "string" } } } }, "404": { "$ref": "#/components/responses/NotFound" } } } }
+    },
+    "responses": {
+      "NotFound": {
+        "description": "Unknown paths return status 404 and the literal plain-text body `404 Not Found`. This response is not JSON and has no observe version header.",
+        "content": { "text/plain": { "schema": { "type": "string", "const": "404 Not Found" } } }
+      },
+      "MetricsResponse": { "description": "Versioned metrics response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MetricsEnvelope" } } } },
+      "MemoryResponse": { "description": "Versioned memory response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MemoryEnvelope" } } } },
+      "ActorsResponse": { "description": "Versioned actors response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActorsEnvelope" } } } },
+      "HistoryResponse": { "description": "Versioned history response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HistoryEnvelope" } } } },
+      "ClusterMembersResponse": { "description": "Versioned cluster-member response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterMembersEnvelope" } } } },
+      "ConnectionsResponse": { "description": "Versioned connections response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConnectionsEnvelope" } } } },
+      "RoutingResponse": { "description": "Versioned routing response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutingEnvelope" } } } },
+      "TracesResponse": { "description": "Versioned, destructive trace-drain response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TracesEnvelope" } } } },
+      "SupervisorsResponse": { "description": "Versioned supervisors response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SupervisorsEnvelope" } } } },
+      "CrashesResponse": { "description": "Versioned crashes response", "headers": { "X-Hew-Schema-Version": { "$ref": "#/components/headers/SchemaVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CrashesEnvelope" } } } }
+    },
+    "schemas": {
+      "UInt64Decimal": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "maxLength": 20, "description": "Canonical base-10 u64 with no sign or leading zeroes; consumers must enforce the u64 upper bound.", "x-rust-type": "u64", "x-swift-type": "UInt64", "x-typescript-type": "bigint", "x-value-minimum": "0", "x-value-maximum": "18446744073709551615" },
+      "Int64Decimal": { "type": "string", "pattern": "^(0|-?[1-9][0-9]{0,18})$", "maxLength": 20, "description": "Canonical base-10 i64 with no plus sign, negative zero, or leading zeroes; consumers must enforce i64 bounds.", "x-rust-type": "i64", "x-swift-type": "Int64", "x-typescript-type": "bigint", "x-value-minimum": "-9223372036854775808", "x-value-maximum": "9223372036854775807" },
+      "UInt32": { "type": "integer", "minimum": 0, "maximum": 4294967295, "format": "uint32", "x-rust-type": "u32", "x-swift-type": "UInt32", "x-typescript-type": "number" },
+      "UInt16": { "type": "integer", "minimum": 0, "maximum": 65535, "format": "uint16", "x-rust-type": "u16", "x-swift-type": "UInt16", "x-typescript-type": "number" },
+      "Int32": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647, "format": "int32", "x-rust-type": "i32", "x-swift-type": "Int32", "x-typescript-type": "number" },
+      "Metrics": {
+        "type": "object", "x-hew-model": true, "additionalProperties": true,
+        "required": ["timestamp_secs", "tasks_spawned", "tasks_completed", "steals", "messages_sent", "messages_received", "active_workers", "alloc_count", "dealloc_count", "bytes_allocated", "bytes_freed", "bytes_live", "peak_bytes_live", "tcp_bytes_read", "tcp_bytes_written", "tcp_accept_count", "tcp_connect_count", "tcp_error_count"],
+        "properties": {
+          "timestamp_secs": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Whole monotonic seconds since this metrics ring was created.", "x-unit": "s", "x-clock": "monotonic-relative" },
+          "tasks_spawned": { "$ref": "#/components/schemas/UInt64Decimal" }, "tasks_completed": { "$ref": "#/components/schemas/UInt64Decimal" }, "steals": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "messages_sent": { "$ref": "#/components/schemas/UInt64Decimal" }, "messages_received": { "$ref": "#/components/schemas/UInt64Decimal" }, "active_workers": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "alloc_count": { "$ref": "#/components/schemas/UInt64Decimal" }, "dealloc_count": { "$ref": "#/components/schemas/UInt64Decimal" }, "bytes_allocated": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" },
+          "bytes_freed": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" }, "bytes_live": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" }, "peak_bytes_live": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" },
+          "tcp_bytes_read": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" }, "tcp_bytes_written": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" }, "tcp_accept_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "tcp_connect_count": { "$ref": "#/components/schemas/UInt64Decimal" }, "tcp_error_count": { "$ref": "#/components/schemas/UInt64Decimal" }
+        }
+      },
+      "Memory": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["alloc_count", "dealloc_count", "bytes_allocated", "bytes_freed", "bytes_live", "peak_bytes_live"], "properties": { "alloc_count": { "$ref": "#/components/schemas/UInt64Decimal" }, "dealloc_count": { "$ref": "#/components/schemas/UInt64Decimal" }, "bytes_allocated": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" }, "bytes_freed": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" }, "bytes_live": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" }, "peak_bytes_live": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "bytes" } } },
+      "ActorInfo": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["id", "pid", "actor_type", "state", "msgs", "time_ns", "mbox_depth", "mbox_hwm"], "properties": { "id": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Packed actor id: high 16 bits are the route slot and low 48 bits are the local serial." }, "pid": { "$ref": "#/components/schemas/UInt64Decimal" }, "actor_type": { "type": "string" }, "state": { "type": "string", "x-known-values": ["idle", "runnable", "running", "suspended", "stopping", "crashing", "crashed", "stopped", "unknown"] }, "msgs": { "$ref": "#/components/schemas/UInt64Decimal" }, "time_ns": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "ns", "x-clock": "duration" }, "mbox_depth": { "$ref": "#/components/schemas/Int64Decimal" }, "mbox_hwm": { "$ref": "#/components/schemas/Int64Decimal" } } },
+      "HistoryEntry": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["t", "ts", "tc", "st", "ms", "mr", "aw", "ac", "dc", "ba", "bf", "bl", "pb", "tbr", "tbw", "tac", "tcc", "tec"], "properties": { "t": { "$ref": "#/components/schemas/UInt64Decimal", "x-unit": "s", "x-clock": "monotonic-relative" }, "ts": { "$ref": "#/components/schemas/UInt64Decimal" }, "tc": { "$ref": "#/components/schemas/UInt64Decimal" }, "st": { "$ref": "#/components/schemas/UInt64Decimal" }, "ms": { "$ref": "#/components/schemas/UInt64Decimal" }, "mr": { "$ref": "#/components/schemas/UInt64Decimal" }, "aw": { "$ref": "#/components/schemas/UInt64Decimal" }, "ac": { "$ref": "#/components/schemas/UInt64Decimal" }, "dc": { "$ref": "#/components/schemas/UInt64Decimal" }, "ba": { "$ref": "#/components/schemas/UInt64Decimal" }, "bf": { "$ref": "#/components/schemas/UInt64Decimal" }, "bl": { "$ref": "#/components/schemas/UInt64Decimal" }, "pb": { "$ref": "#/components/schemas/UInt64Decimal" }, "tbr": { "$ref": "#/components/schemas/UInt64Decimal" }, "tbw": { "$ref": "#/components/schemas/UInt64Decimal" }, "tac": { "$ref": "#/components/schemas/UInt64Decimal" }, "tcc": { "$ref": "#/components/schemas/UInt64Decimal" }, "tec": { "$ref": "#/components/schemas/UInt64Decimal" } } },
+      "ClusterMember": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["route_slot", "state", "incarnation", "addr", "last_seen_ms"], "properties": { "route_slot": { "$ref": "#/components/schemas/UInt16", "description": "Ephemeral route slot used by the legacy cluster membership subsystem; not a stable NodeId." }, "state": { "type": "string", "x-known-values": ["alive", "suspect", "dead", "left", "unknown"] }, "incarnation": { "$ref": "#/components/schemas/UInt64Decimal" }, "addr": { "type": "string" }, "last_seen_ms": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Milliseconds elapsed since the member was last seen, not a timestamp.", "x-unit": "ms", "x-clock": "age" } } },
+      "ConnectionInfo": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["conn_id", "peer_route_slot", "state", "last_activity_ms"], "properties": { "conn_id": { "$ref": "#/components/schemas/Int32" }, "peer_route_slot": { "$ref": "#/components/schemas/UInt16", "description": "Ephemeral route slot of the peer; not a stable NodeId." }, "state": { "type": "string", "x-known-values": ["connecting", "active", "draining", "closed", "unknown"] }, "last_activity_ms": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Monotonic runtime millisecond reading at the last activity.", "x-unit": "ms", "x-clock": "monotonic-timestamp" } } },
+      "RouteEntry": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["node_id", "route_slot", "session_incarnation", "conn_id"], "properties": { "node_id": { "type": "string", "description": "Stable 128-bit NodeId rendered as lowercase hexadecimal groups." }, "route_slot": { "$ref": "#/components/schemas/UInt16" }, "session_incarnation": { "$ref": "#/components/schemas/UInt32" }, "conn_id": { "$ref": "#/components/schemas/Int32" } } },
+      "RoutingSnapshot": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["local_node_id", "local_route_slot", "session_incarnation", "routes"], "properties": { "local_node_id": { "type": "string", "description": "Stable NodeId, or the literal `unconfigured`." }, "local_route_slot": { "$ref": "#/components/schemas/UInt16" }, "session_incarnation": { "$ref": "#/components/schemas/UInt32" }, "routes": { "type": "array", "items": { "$ref": "#/components/schemas/RouteEntry" } } } },
+      "TraceEvent": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["trace_id", "span_id", "parent_span_id", "actor_id", "actor_type_id", "actor_type", "event_type", "msg_type", "timestamp_ns", "handler_name"], "properties": { "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" }, "span_id": { "$ref": "#/components/schemas/UInt64Decimal" }, "parent_span_id": { "$ref": "#/components/schemas/UInt64Decimal" }, "actor_id": { "$ref": "#/components/schemas/UInt64Decimal" }, "actor_type_id": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Native dispatch pointer or WASM metadata id. Zero means attribution unavailable." }, "actor_type": { "type": ["string", "null"], "description": "Required key. Null means attribution was unavailable at drain time; omission is invalid v1." }, "event_type": { "type": "string", "x-known-values": ["begin", "end", "spawn", "crash", "stop", "send", "io_accept", "io_recv", "duplex_created", "duplex_half_split", "duplex_closed", "sink_closed", "stream_closed", "supervisor_restart", "supervisor_escalate", "supervisor_circuit_open", "supervisor_circuit_half_open", "supervisor_circuit_close", "supervisor_max_restarts", "supervisor_backoff", "lambda_spawned", "lambda_released", "unknown"], "x-hew-actionable-values": ["send", "spawn", "crash", "stop", "duplex_created", "duplex_half_split", "duplex_closed", "sink_closed", "stream_closed", "lambda_spawned", "lambda_released"], "description": "Open taxonomy. `invalid:<code>` indicates producer corruption; other unknown strings are forward-compatible." }, "msg_type": { "$ref": "#/components/schemas/Int32" }, "timestamp_ns": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Nanoseconds since the tracing subsystem epoch; not wall-clock Unix time.", "x-unit": "ns", "x-clock": "monotonic-relative" }, "handler_name": { "type": ["string", "null"], "description": "Required key. Dot-qualified generated handler name, or null when metadata is unavailable; omission is invalid v1." } } },
+      "SupervisorRow": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["depth", "label", "state"], "properties": { "depth": { "$ref": "#/components/schemas/UInt16" }, "label": { "type": "string" }, "state": { "type": "string", "x-known-values": ["Supervisor", "Pool", "idle", "runnable", "running", "suspended", "stopping", "crashing", "crashed", "stopped", "unknown"] } } },
+      "CrashEntry": { "type": "object", "x-hew-model": true, "additionalProperties": true, "required": ["time_s", "actor_id", "signal", "trap_kind", "msg_type", "fault_addr"], "properties": { "time_s": { "type": "number", "format": "double", "description": "Monotonic crash timestamp converted from integer nanoseconds; not Unix time.", "x-unit": "s", "x-clock": "monotonic-relative" }, "actor_id": { "$ref": "#/components/schemas/UInt64Decimal" }, "signal": { "$ref": "#/components/schemas/Int32" }, "trap_kind": { "type": "string", "x-known-values": ["Normal", "Signal", "DivideByZero", "IntegerOverflow", "InvalidShift", "IndexOutOfBounds", "NullPointer", "InvalidUtf8", "Unreachable", "Unknown"] }, "msg_type": { "$ref": "#/components/schemas/Int32" }, "fault_addr": { "$ref": "#/components/schemas/UInt64Decimal" } } },
+      "MetricsEnvelope": { "$ref": "#/components/schemas/EnvelopeMetrics" },
+      "MemoryEnvelope": { "$ref": "#/components/schemas/EnvelopeMemory" },
+      "ActorsEnvelope": { "$ref": "#/components/schemas/EnvelopeActors" },
+      "HistoryEnvelope": { "$ref": "#/components/schemas/EnvelopeHistory" },
+      "ClusterMembersEnvelope": { "$ref": "#/components/schemas/EnvelopeClusterMembers" },
+      "ConnectionsEnvelope": { "$ref": "#/components/schemas/EnvelopeConnections" },
+      "RoutingEnvelope": { "$ref": "#/components/schemas/EnvelopeRouting" },
+      "TracesEnvelope": { "$ref": "#/components/schemas/EnvelopeTraces" },
+      "SupervisorsEnvelope": { "$ref": "#/components/schemas/EnvelopeSupervisors" },
+      "CrashesEnvelope": { "$ref": "#/components/schemas/EnvelopeCrashes" },
+      "EnvelopeMetrics": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "$ref": "#/components/schemas/Metrics" } } },
+      "EnvelopeMemory": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "$ref": "#/components/schemas/Memory" } } },
+      "EnvelopeActors": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/ActorInfo" } } } },
+      "EnvelopeHistory": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/HistoryEntry" } } } },
+      "EnvelopeClusterMembers": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/ClusterMember" } } } },
+      "EnvelopeConnections": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/ConnectionInfo" } } } },
+      "EnvelopeRouting": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "$ref": "#/components/schemas/RoutingSnapshot" } } },
+      "EnvelopeTraces": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/TraceEvent" } } } },
+      "EnvelopeSupervisors": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/SupervisorRow" } } } },
+      "EnvelopeCrashes": { "type": "object", "additionalProperties": true, "required": ["schema_version", "data"], "properties": { "schema_version": { "type": "string", "const": "v1" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/CrashEntry" } } } }
+    }
+  }
+}

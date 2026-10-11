@@ -328,7 +328,7 @@ fn snapshot_connections_json_emits_expected_array() {
 
     assert_eq!(
         snapshot_connections_json(&mgr),
-        r#"[{"conn_id":7,"peer_node_id":42,"state":"active","last_activity_ms":123},{"conn_id":8,"peer_node_id":9,"state":"draining","last_activity_ms":456}]"#
+        r#"[{"conn_id":7,"peer_route_slot":42,"state":"active","last_activity_ms":"123"},{"conn_id":8,"peer_route_slot":9,"state":"draining","last_activity_ms":"456"}]"#
     );
 }
 

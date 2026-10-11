@@ -1056,21 +1056,21 @@ impl App {
         // Demo cluster members (3 nodes)
         self.cluster_members = vec![
             ClusterMember {
-                node_id: 1,
+                route_slot: 1,
                 state: "alive".into(),
                 incarnation: 2,
                 addr: "127.0.0.1:9000".into(),
                 last_seen_ms: 0,
             },
             ClusterMember {
-                node_id: 2,
+                route_slot: 2,
                 state: "alive".into(),
                 incarnation: 1,
                 addr: "192.168.1.11:9000".into(),
                 last_seen_ms: 500,
             },
             ClusterMember {
-                node_id: 3,
+                route_slot: 3,
                 state: "suspect".into(),
                 incarnation: 3,
                 addr: "192.168.1.12:9000".into(),
@@ -1082,13 +1082,13 @@ impl App {
         self.cluster_connections = vec![
             ConnectionInfo {
                 conn_id: 0,
-                peer_node_id: 2,
+                peer_route_slot: 2,
                 state: "active".into(),
                 last_activity_ms: 500,
             },
             ConnectionInfo {
                 conn_id: 1,
-                peer_node_id: 3,
+                peer_route_slot: 3,
                 state: "active".into(),
                 last_activity_ms: 8000,
             },
@@ -1420,7 +1420,7 @@ mod tests {
                     .expect("lock trace server state")
                     .metrics_timestamp;
                 format!(
-                    r#"{{"timestamp_secs":{metrics_timestamp},"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}}"#
+                    r#"{{"timestamp_secs":"{metrics_timestamp}","tasks_spawned":"0","tasks_completed":"0","steals":"0","messages_sent":"0","messages_received":"0","active_workers":"0","alloc_count":"0","dealloc_count":"0","bytes_allocated":"0","bytes_freed":"0","bytes_live":"0","peak_bytes_live":"0","tcp_bytes_read":"0","tcp_bytes_written":"0","tcp_accept_count":"0","tcp_connect_count":"0","tcp_error_count":"0"}}"#
                 )
             }
             "/api/actors" | "/api/metrics/history" | "/api/supervisors" | "/api/crashes" => {
@@ -1447,14 +1447,14 @@ mod tests {
     fn trace_response(trace_id: &str, timestamp_ns: u64) -> String {
         serde_json::to_string(&vec![serde_json::json!({
             "trace_id": trace_id,
-            "span_id": 0,
-            "parent_span_id": 0,
-            "actor_id": 42,
-            "actor_type_id": 0,
+            "span_id": "0",
+            "parent_span_id": "0",
+            "actor_id": "42",
+            "actor_type_id": "0",
             "actor_type": null,
             "event_type": "send",
             "msg_type": 7,
-            "timestamp_ns": timestamp_ns,
+            "timestamp_ns": timestamp_ns.to_string(),
             "handler_name": null,
         })])
         .expect("serialize trace response")

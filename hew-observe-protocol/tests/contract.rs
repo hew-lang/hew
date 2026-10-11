@@ -7,46 +7,59 @@ use serde_json::json;
 #[test]
 fn max_width_integers_round_trip_without_loss() {
     let body = json!({
-        "timestamp_secs": u64::MAX,
-        "tasks_spawned": u64::MAX,
-        "tasks_completed": u64::MAX,
-        "steals": u64::MAX,
-        "messages_sent": u64::MAX,
-        "messages_received": u64::MAX,
-        "active_workers": u64::MAX,
-        "alloc_count": u64::MAX,
-        "dealloc_count": u64::MAX,
-        "bytes_allocated": u64::MAX,
-        "bytes_freed": u64::MAX,
-        "bytes_live": u64::MAX,
-        "peak_bytes_live": u64::MAX,
-        "tcp_bytes_read": u64::MAX,
-        "tcp_bytes_written": u64::MAX,
-        "tcp_accept_count": u64::MAX,
-        "tcp_connect_count": u64::MAX,
-        "tcp_error_count": u64::MAX,
+        "timestamp_secs": u64::MAX.to_string(),
+        "tasks_spawned": u64::MAX.to_string(),
+        "tasks_completed": u64::MAX.to_string(),
+        "steals": u64::MAX.to_string(),
+        "messages_sent": u64::MAX.to_string(),
+        "messages_received": u64::MAX.to_string(),
+        "active_workers": u64::MAX.to_string(),
+        "alloc_count": u64::MAX.to_string(),
+        "dealloc_count": u64::MAX.to_string(),
+        "bytes_allocated": u64::MAX.to_string(),
+        "bytes_freed": u64::MAX.to_string(),
+        "bytes_live": u64::MAX.to_string(),
+        "peak_bytes_live": u64::MAX.to_string(),
+        "tcp_bytes_read": u64::MAX.to_string(),
+        "tcp_bytes_written": u64::MAX.to_string(),
+        "tcp_accept_count": u64::MAX.to_string(),
+        "tcp_connect_count": u64::MAX.to_string(),
+        "tcp_error_count": u64::MAX.to_string(),
     });
     let decoded: Metrics = serde_json::from_value(body).expect("decode max-width metrics");
     assert_eq!(decoded.timestamp_secs, u64::MAX);
     assert_eq!(decoded.bytes_live, u64::MAX);
     let encoded = serde_json::to_value(decoded).expect("encode max-width metrics");
-    assert_eq!(encoded["messages_sent"], u64::MAX);
+    assert_eq!(encoded["messages_sent"], u64::MAX.to_string());
+    assert!(
+        serde_json::from_value::<Metrics>(json!({
+            "timestamp_secs": 0,
+            "tasks_spawned": "0", "tasks_completed": "0", "steals": "0",
+            "messages_sent": "0", "messages_received": "0", "active_workers": "0",
+            "alloc_count": "0", "dealloc_count": "0", "bytes_allocated": "0",
+            "bytes_freed": "0", "bytes_live": "0", "peak_bytes_live": "0",
+            "tcp_bytes_read": "0", "tcp_bytes_written": "0", "tcp_accept_count": "0",
+            "tcp_connect_count": "0", "tcp_error_count": "0"
+        }))
+        .is_err(),
+        "JSON numbers are not valid v1 64-bit wire values"
+    );
 }
 
 #[test]
 fn trace_required_nulls_and_unknown_values_are_distinct() {
     let trace = json!({
         "trace_id": "0123456789abcdef0123456789abcdef",
-        "span_id": u64::MAX,
-        "parent_span_id": 0,
-        "actor_id": u64::MAX,
-        "actor_type_id": 0,
+        "span_id": u64::MAX.to_string(),
+        "parent_span_id": "0",
+        "actor_id": u64::MAX.to_string(),
+        "actor_type_id": "0",
         "actor_type": null,
         "event_type": "future_event",
         "msg_type": -2_147_483_648,
-        "timestamp_ns": u64::MAX,
+        "timestamp_ns": u64::MAX.to_string(),
         "handler_name": null,
-        "future_property": {"kept_on_the_wire": true}
+        "future_property": {"accepted": true}
     });
     let decoded: TraceEvent = serde_json::from_value(trace.clone()).expect("decode open taxonomy");
     assert_eq!(decoded.event_type, "future_event");
@@ -68,14 +81,14 @@ fn trace_required_nulls_and_unknown_values_are_distinct() {
 fn actionable_trace_taxonomy_is_generated_from_the_contract() {
     let trace: TraceEvent = serde_json::from_value(json!({
         "trace_id": "0123456789abcdef0123456789abcdef",
-        "span_id": 1,
-        "parent_span_id": 0,
-        "actor_id": 2,
-        "actor_type_id": 0,
+        "span_id": "1",
+        "parent_span_id": "0",
+        "actor_id": "2",
+        "actor_type_id": "0",
         "actor_type": null,
         "event_type": "lambda_spawned",
         "msg_type": 3,
-        "timestamp_ns": 4,
+        "timestamp_ns": "4",
         "handler_name": null
     }))
     .expect("decode actionable trace");
@@ -119,7 +132,7 @@ fn routing_model_matches_current_full_identity_wire_shape() {
 fn raw_envelope_uses_generated_version() {
     assert_eq!(
         envelope_json_raw("[]"),
-        r#"{"schema_version":"v0.5","data":[]}"#
+        r#"{"schema_version":"v1","data":[]}"#
     );
 }
 

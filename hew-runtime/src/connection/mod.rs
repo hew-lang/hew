@@ -663,7 +663,7 @@ unsafe impl Send for SendConnMgr {}
 
 /// Build a JSON array of active connections for the profiler HTTP API.
 ///
-/// Each element: `{"conn_id":N,"peer_node_id":N,"state":"S","last_activity_ms":N}`
+/// Each element: `{"conn_id":N,"peer_route_slot":N,"state":"S","last_activity_ms":"N"}`
 #[cfg(feature = "profiler")]
 pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
     use std::fmt::Write as _;
@@ -681,7 +681,7 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
             let last_activity = c.last_activity_ms.load(Ordering::Acquire);
             let _ = write!(
                 json,
-                r#"{{"conn_id":{},"peer_node_id":{},"state":"{}","last_activity_ms":{}}}"#,
+                r#"{{"conn_id":{},"peer_route_slot":{},"state":"{}","last_activity_ms":"{}"}}"#,
                 c.conn_id, c.peer_node_id, state_str, last_activity,
             );
         })

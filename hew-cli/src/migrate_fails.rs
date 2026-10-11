@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use hew_compile::{DocumentSet, FrontendDiagnosticKind};
 use hew_parser::ast::{
-    Block, CallArg, Expr, Item, Span, Spanned, Stmt, TraitItem, TypeBodyItem, TypeExpr,
+    Block, CallArg, Expr, Item, Program, Span, Spanned, Stmt, TraitItem, TypeBodyItem, TypeExpr,
 };
 use hew_types::check::scope::Resolution;
 use hew_types::check::TypeCheckOutput;
@@ -57,6 +57,11 @@ pub(crate) fn convert_failure_edges(
 ) -> (Vec<EdgeReport>, Vec<EdgeReport>) {
     let mut documents = DocumentSet::new();
     let mut units = CheckUnits::new(files, "failure-edges");
+    let candidates: Vec<_> = files
+        .iter()
+        .map(|(_, text)| file_may_rewrite(text))
+        .collect();
+    units.retain_candidates(&candidates);
     for (path, text) in files.iter() {
         documents.insert(path.clone(), text.clone());
     }
@@ -514,6 +519,45 @@ enum Body<'a> {
     Expr(&'a Spanned<Expr>),
 }
 
+enum Callable<'a> {
+    Declared(Option<&'a Spanned<TypeExpr>>, Body<'a>),
+    Handler(Option<&'a Spanned<TypeExpr>>, &'a Block, &'a Span),
+    Closure(&'a Span, Option<&'a Spanned<TypeExpr>>, Body<'a>),
+}
+
+impl Callable<'_> {
+    fn may_rewrite(&self) -> bool {
+        match self {
+            Self::Declared(Some(annotation), _) | Self::Closure(_, Some(annotation), _) => {
+                Planner::result_arguments(annotation).is_some()
+            }
+            Self::Declared(None, _) => false,
+            Self::Handler(annotation, _, _) => annotation
+                .is_some_and(|annotation| !matches!(annotation.0, TypeExpr::Fallible { .. })),
+            Self::Closure(_, None, body) => {
+                let exits = Planner::exits(body);
+                !exits.return_errors.is_empty() || !exits.tries.is_empty()
+            }
+        }
+    }
+}
+
+fn file_may_rewrite(source: &str) -> bool {
+    let parsed = hew_parser::parse(source);
+    if parsed
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error)
+    {
+        return true;
+    }
+    let mut candidate = false;
+    visit_callables(&parsed.program, |callable| {
+        candidate |= callable.may_rewrite();
+    });
+    candidate
+}
+
 /// The rewrites of one file.
 fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
     let parsed = hew_parser::parse(source);
@@ -526,45 +570,54 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
         return changes;
     }
     let planner = Planner { source, file, unit };
-    let mut lambdas = LambdaFinder::default();
-    // A handler's reply is its callers' contract, so a `receive fn` keeps
-    // its value form.
-    let mut callable = |annotation: Option<&Spanned<TypeExpr>>,
-                        body: &Block,
-                        handler: Option<&Span>,
-                        changes: &mut Vec<Edit>| {
-        hew_types::walk_block(body, &mut lambdas);
-        if let Some(span) = handler {
-            planner.keep_value_form(annotation, body, span, changes);
-        } else {
-            planner.convert_declared(annotation, &Body::Block(body), changes);
+    visit_callables(&parsed.program, |callable| {
+        if !callable.may_rewrite() {
+            return;
         }
-    };
-    for (item, _) in &parsed.program.items {
+        match callable {
+            Callable::Declared(annotation, body) => {
+                planner.convert_declared(annotation, &body, &mut changes);
+            }
+            Callable::Closure(_, Some(annotation), body) => {
+                planner.convert_declared(Some(annotation), &body, &mut changes);
+            }
+            Callable::Handler(annotation, body, span) => {
+                planner.keep_value_form(annotation, body, span, &mut changes);
+            }
+            Callable::Closure(span, None, body) => {
+                planner.convert_closure(span, &body, &mut changes);
+            }
+        }
+    });
+    changes
+}
+
+fn visit_callables(program: &Program, mut visit: impl FnMut(Callable<'_>)) {
+    let mut lambdas = LambdaFinder::default();
+    let mut callable =
+        |annotation: Option<&Spanned<TypeExpr>>, body: &Block, handler: Option<&Span>| {
+            hew_types::walk_block(body, &mut lambdas);
+            if let Some(span) = handler {
+                visit(Callable::Handler(annotation, body, span));
+            } else {
+                visit(Callable::Declared(annotation, Body::Block(body)));
+            }
+        };
+    for (item, _) in &program.items {
         match item {
             Item::Function(function) if !function.is_generator => {
-                callable(
-                    function.return_type.as_ref(),
-                    &function.body,
-                    None,
-                    &mut changes,
-                );
+                callable(function.return_type.as_ref(), &function.body, None);
             }
             Item::Impl(implementation) => {
                 for method in implementation.methods.iter().filter(|m| !m.is_generator) {
-                    callable(
-                        method.return_type.as_ref(),
-                        &method.body,
-                        None,
-                        &mut changes,
-                    );
+                    callable(method.return_type.as_ref(), &method.body, None);
                 }
             }
             Item::Trait(declaration) => {
                 for trait_item in &declaration.items {
                     if let TraitItem::Method(method) = trait_item {
                         if let Some(body) = &method.body {
-                            callable(method.return_type.as_ref(), body, None, &mut changes);
+                            callable(method.return_type.as_ref(), body, None);
                         }
                     }
                 }
@@ -573,31 +626,20 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
                 for body_item in &declaration.body {
                     if let TypeBodyItem::Method(method) = body_item {
                         if !method.is_generator {
-                            callable(
-                                method.return_type.as_ref(),
-                                &method.body,
-                                None,
-                                &mut changes,
-                            );
+                            callable(method.return_type.as_ref(), &method.body, None);
                         }
                     }
                 }
             }
             Item::Actor(actor) => {
                 for method in actor.methods.iter().filter(|m| !m.is_generator) {
-                    callable(
-                        method.return_type.as_ref(),
-                        &method.body,
-                        None,
-                        &mut changes,
-                    );
+                    callable(method.return_type.as_ref(), &method.body, None);
                 }
                 for handler in actor.receive_fns.iter().filter(|h| !h.is_generator) {
                     callable(
                         handler.return_type.as_ref(),
                         &handler.body,
                         Some(&handler.span),
-                        &mut changes,
                     );
                 }
             }
@@ -605,14 +647,12 @@ fn plan_file(source: &str, file: u32, unit: &UnitCheck) -> Vec<Edit> {
         }
     }
     for (span, return_type, body) in std::mem::take(&mut lambdas.found) {
-        let (return_type, body) = (return_type.as_ref(), &body);
-        if return_type.is_some() {
-            planner.convert_declared(return_type, &Body::Expr(body), &mut changes);
-        } else {
-            planner.convert_closure(&span, &Body::Expr(body), &mut changes);
-        }
+        visit(Callable::Closure(
+            &span,
+            return_type.as_ref(),
+            Body::Expr(&body),
+        ));
     }
-    changes
 }
 
 /// Every closure literal, with its declared return and body, cloned so the

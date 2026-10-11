@@ -67,6 +67,12 @@ impl CheckUnits {
         Some(unit)
     }
 
+    pub fn retain_candidates(&mut self, candidates: &[bool]) {
+        self.pending
+            .retain(|unit| unit.members.iter().any(|&index| candidates[index]));
+        self.total = self.pending.len();
+    }
+
     pub fn include_loaded(
         &mut self,
         unit: &mut CheckUnit,

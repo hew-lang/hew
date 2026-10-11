@@ -56,6 +56,40 @@ private func encodeHex128Lower<Key: CodingKey>(_ value: String, to values: inout
     try values.encode(value, forKey: key)
 }
 
+private func actorAttributionError(endpoint: String, attribution: String, actorPresent: Bool) -> String? {
+    if attribution == "local_actor" && !actorPresent {
+        return "\(endpoint)_actor is required for local_actor attribution"
+    }
+    let knownNull = attribution == "external" || attribution == "remote_unknown" || attribution == "not_applicable"
+    if knownNull && actorPresent {
+        return "\(endpoint)_actor must be null for \(attribution) attribution"
+    }
+    return nil
+}
+
+private func traceSubjectError(kind: String, actorPresent: Bool) -> String? {
+    if kind == "actor" && !actorPresent { return "actor subject requires actor details" }
+    if (kind == "channel" || kind == "resource") && actorPresent {
+        return "\(kind) subject requires actor to be null"
+    }
+    return nil
+}
+
+private func decodeTraceStreamMismatchLiteral<Key: CodingKey>(from values: KeyedDecodingContainer<Key>, forKey key: Key) throws -> String {
+    let value = try values.decode(String.self, forKey: key)
+    guard value == "trace_stream_mismatch" else {
+        throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "expected trace_stream_mismatch")
+    }
+    return value
+}
+
+private func encodeTraceStreamMismatchLiteral<Key: CodingKey>(_ value: String, to values: inout KeyedEncodingContainer<Key>, forKey key: Key) throws {
+    guard value == "trace_stream_mismatch" else {
+        throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: values.codingPath + [key], debugDescription: "expected trace_stream_mismatch"))
+    }
+    try values.encode(value, forKey: key)
+}
+
 public let observeSchemaVersion = "v1"
 public let actionableTraceEventTypes: Set<String> = [
     "send",
@@ -698,10 +732,16 @@ public struct TraceSubject: Codable, Sendable {
         kind = try values.decode(String.self, forKey: .kind)
         id = try decodeUInt64Decimal(from: values, forKey: .id)
         actor = try values.decode(ActorIdentity?.self, forKey: .actor)
+        if let message = traceSubjectError(kind: kind, actorPresent: actor != nil) {
+            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: decoder.codingPath, debugDescription: message))
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
+        if let message = traceSubjectError(kind: kind, actorPresent: actor != nil) {
+            throw EncodingError.invalidValue(kind, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: message))
+        }
         try values.encode(kind, forKey: .kind)
         try values.encode(String(id), forKey: .id)
         try values.encode(actor, forKey: .actor)
@@ -856,10 +896,22 @@ public struct TraceEvent: Codable, Sendable {
         msgType = try values.decode(Int32.self, forKey: .msgType)
         timestampNs = try decodeUInt64Decimal(from: values, forKey: .timestampNs)
         handlerName = try values.decode(String?.self, forKey: .handlerName)
+        if let message = actorAttributionError(endpoint: "source", attribution: sourceAttribution, actorPresent: sourceActor != nil) {
+            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: decoder.codingPath, debugDescription: message))
+        }
+        if let message = actorAttributionError(endpoint: "destination", attribution: destinationAttribution, actorPresent: destinationActor != nil) {
+            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: decoder.codingPath, debugDescription: message))
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
+        if let message = actorAttributionError(endpoint: "source", attribution: sourceAttribution, actorPresent: sourceActor != nil) {
+            throw EncodingError.invalidValue(sourceAttribution, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: message))
+        }
+        if let message = actorAttributionError(endpoint: "destination", attribution: destinationAttribution, actorPresent: destinationActor != nil) {
+            throw EncodingError.invalidValue(destinationAttribution, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: message))
+        }
         try values.encode(String(sequence), forKey: .sequence)
         try encodeHex128Lower(traceId, to: &values, forKey: .traceId)
         try values.encode(String(spanId), forKey: .spanId)
@@ -1041,7 +1093,7 @@ public struct TraceStreamMismatch: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        error = try values.decode(String.self, forKey: .error)
+        error = try decodeTraceStreamMismatchLiteral(from: values, forKey: .error)
         requestedStreamId = try decodeHex128Lower(from: values, forKey: .requestedStreamId)
         currentStreamId = try decodeHex128Lower(from: values, forKey: .currentStreamId)
         currentProducerInstanceId = try decodeHex128Lower(from: values, forKey: .currentProducerInstanceId)
@@ -1049,7 +1101,7 @@ public struct TraceStreamMismatch: Codable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(error, forKey: .error)
+        try encodeTraceStreamMismatchLiteral(error, to: &values, forKey: .error)
         try encodeHex128Lower(requestedStreamId, to: &values, forKey: .requestedStreamId)
         try encodeHex128Lower(currentStreamId, to: &values, forKey: .currentStreamId)
         try encodeHex128Lower(currentProducerInstanceId, to: &values, forKey: .currentProducerInstanceId)

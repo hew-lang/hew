@@ -32,7 +32,6 @@ where
 
 macro_rules! decimal_string_serde {
     ($module:ident, $native:ty) => {
-        #[allow(dead_code)]
         mod $module {
             use serde::{Deserialize, Deserializer, Serializer};
             pub fn serialize<S>(value: &$native, serializer: S) -> Result<S::Ok, S::Error>
@@ -62,9 +61,12 @@ decimal_string_serde!(int64_decimal, i64);
 
 macro_rules! optional_decimal_string_serde {
     ($module:ident, $native:ty) => {
-        #[allow(dead_code)]
         mod $module {
             use serde::{Deserialize, Deserializer, Serializer};
+            #[expect(
+                clippy::ref_option,
+                reason = "serde with callback receives a field reference"
+            )]
             pub fn serialize<S>(value: &Option<$native>, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
@@ -93,7 +95,6 @@ macro_rules! optional_decimal_string_serde {
     };
 }
 optional_decimal_string_serde!(optional_uint64_decimal, u64);
-optional_decimal_string_serde!(optional_int64_decimal, i64);
 
 mod hex128_lower {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -103,12 +104,14 @@ mod hex128_lower {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     }
-    pub fn serialize<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         if !valid(value) {
-            return Err(serde::ser::Error::custom("expected 32 lowercase hexadecimal digits"));
+            return Err(serde::ser::Error::custom(
+                "expected 32 lowercase hexadecimal digits",
+            ));
         }
         serializer.serialize_str(value)
     }
@@ -118,7 +121,33 @@ mod hex128_lower {
     {
         let value = String::deserialize(deserializer)?;
         if !valid(&value) {
-            return Err(serde::de::Error::custom("expected 32 lowercase hexadecimal digits"));
+            return Err(serde::de::Error::custom(
+                "expected 32 lowercase hexadecimal digits",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+mod trace_stream_mismatch_literal {
+    use serde::{Deserialize, Deserializer, Serializer};
+    const EXPECTED: &str = "trace_stream_mismatch";
+    pub fn serialize<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if value != EXPECTED {
+            return Err(serde::ser::Error::custom("expected trace_stream_mismatch"));
+        }
+        serializer.serialize_str(value)
+    }
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<String, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value != EXPECTED {
+            return Err(serde::de::Error::custom("expected trace_stream_mismatch"));
         }
         Ok(value)
     }
@@ -301,13 +330,74 @@ pub struct ActorIdentity {
     pub actor_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TraceSubjectWire {
+    kind: String,
+    #[serde(with = "uint64_decimal")]
+    id: u64,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    actor: Option<ActorIdentity>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct TraceSubject {
     pub kind: String,
-    #[serde(with = "uint64_decimal")]
     pub id: u64,
-    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub actor: Option<ActorIdentity>,
+}
+
+fn validate_trace_subject(kind: &str, actor_present: bool) -> Result<(), String> {
+    match kind {
+        "actor" if !actor_present => Err("actor subject requires actor details".to_owned()),
+        "channel" | "resource" if actor_present => {
+            Err(format!("{kind} subject requires actor to be null"))
+        }
+        _ => Ok(()),
+    }
+}
+
+impl TryFrom<TraceSubjectWire> for TraceSubject {
+    type Error = String;
+
+    fn try_from(value: TraceSubjectWire) -> Result<Self, Self::Error> {
+        validate_trace_subject(&value.kind, value.actor.is_some())?;
+        Ok(Self {
+            kind: value.kind,
+            id: value.id,
+            actor: value.actor,
+        })
+    }
+}
+
+impl From<&TraceSubject> for TraceSubjectWire {
+    fn from(value: &TraceSubject) -> Self {
+        Self {
+            kind: value.kind.clone(),
+            id: value.id,
+            actor: value.actor.clone(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TraceSubject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = TraceSubjectWire::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for TraceSubject {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        validate_trace_subject(&self.kind, self.actor.is_some())
+            .map_err(serde::ser::Error::custom)?;
+        TraceSubjectWire::from(self).serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -330,30 +420,146 @@ pub struct TraceOverrun {
     pub count: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TraceEvent {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TraceEventWire {
     #[serde(with = "uint64_decimal")]
-    pub sequence: u64,
+    sequence: u64,
     #[serde(with = "hex128_lower")]
-    pub trace_id: String,
+    trace_id: String,
     #[serde(with = "uint64_decimal")]
-    pub span_id: u64,
+    span_id: u64,
     #[serde(with = "uint64_decimal")]
-    pub parent_span_id: u64,
+    parent_span_id: u64,
     #[serde(deserialize_with = "deserialize_required_nullable")]
+    subject: Option<TraceSubject>,
+    source_attribution: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    source_actor: Option<ActorIdentity>,
+    destination_attribution: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    destination_actor: Option<ActorIdentity>,
+    event_type: String,
+    msg_type: i32,
+    #[serde(with = "uint64_decimal")]
+    timestamp_ns: u64,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    handler_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TraceEvent {
+    pub sequence: u64,
+    pub trace_id: String,
+    pub span_id: u64,
+    pub parent_span_id: u64,
     pub subject: Option<TraceSubject>,
     pub source_attribution: String,
-    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub source_actor: Option<ActorIdentity>,
     pub destination_attribution: String,
-    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub destination_actor: Option<ActorIdentity>,
     pub event_type: String,
     pub msg_type: i32,
-    #[serde(with = "uint64_decimal")]
     pub timestamp_ns: u64,
-    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub handler_name: Option<String>,
+}
+
+fn validate_actor_attribution(
+    endpoint: &str,
+    attribution: &str,
+    actor_present: bool,
+) -> Result<(), String> {
+    match attribution {
+        "local_actor" if !actor_present => Err(format!(
+            "{endpoint}_actor is required for local_actor attribution"
+        )),
+        "external" | "remote_unknown" | "not_applicable" if actor_present => Err(format!(
+            "{endpoint}_actor must be null for {attribution} attribution"
+        )),
+        _ => Ok(()),
+    }
+}
+
+impl TryFrom<TraceEventWire> for TraceEvent {
+    type Error = String;
+
+    fn try_from(value: TraceEventWire) -> Result<Self, Self::Error> {
+        validate_actor_attribution(
+            "source",
+            &value.source_attribution,
+            value.source_actor.is_some(),
+        )?;
+        validate_actor_attribution(
+            "destination",
+            &value.destination_attribution,
+            value.destination_actor.is_some(),
+        )?;
+        Ok(Self {
+            sequence: value.sequence,
+            trace_id: value.trace_id,
+            span_id: value.span_id,
+            parent_span_id: value.parent_span_id,
+            subject: value.subject,
+            source_attribution: value.source_attribution,
+            source_actor: value.source_actor,
+            destination_attribution: value.destination_attribution,
+            destination_actor: value.destination_actor,
+            event_type: value.event_type,
+            msg_type: value.msg_type,
+            timestamp_ns: value.timestamp_ns,
+            handler_name: value.handler_name,
+        })
+    }
+}
+
+impl From<&TraceEvent> for TraceEventWire {
+    fn from(value: &TraceEvent) -> Self {
+        Self {
+            sequence: value.sequence,
+            trace_id: value.trace_id.clone(),
+            span_id: value.span_id,
+            parent_span_id: value.parent_span_id,
+            subject: value.subject.clone(),
+            source_attribution: value.source_attribution.clone(),
+            source_actor: value.source_actor.clone(),
+            destination_attribution: value.destination_attribution.clone(),
+            destination_actor: value.destination_actor.clone(),
+            event_type: value.event_type.clone(),
+            msg_type: value.msg_type,
+            timestamp_ns: value.timestamp_ns,
+            handler_name: value.handler_name.clone(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TraceEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = TraceEventWire::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for TraceEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        validate_actor_attribution(
+            "source",
+            &self.source_attribution,
+            self.source_actor.is_some(),
+        )
+        .map_err(serde::ser::Error::custom)?;
+        validate_actor_attribution(
+            "destination",
+            &self.destination_attribution,
+            self.destination_actor.is_some(),
+        )
+        .map_err(serde::ser::Error::custom)?;
+        TraceEventWire::from(self).serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -393,6 +599,7 @@ pub struct TraceRequestError {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TraceStreamMismatch {
+    #[serde(with = "trace_stream_mismatch_literal")]
     pub error: String,
     #[serde(with = "hex128_lower")]
     pub requested_stream_id: String,

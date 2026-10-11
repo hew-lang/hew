@@ -84,3 +84,26 @@ stale generated bindings. Hew owns the schema and Rust producer/reference-client
 integration. Native Observe apps should copy or package the generated Swift and
 TypeScript output at a pinned Hew commit, and validate their real-runtime golden
 fixtures against that same commit.
+
+The Linux gate cannot type-check Swift. The smallest targeted macOS/Clunk check
+is:
+
+```sh
+swiftc -typecheck protocol/observe/v1/generated/ObserveProtocolV1.swift
+tmpdir="$(mktemp -d)"
+cp protocol/observe/v1/generated/ObserveProtocolV1.swift "$tmpdir/ObserveProtocolV1.swift"
+cat >"$tmpdir/main.swift" <<'SWIFT'
+import Foundation
+
+let valid = #"{"sequence":"18446744073709551615","trace_id":"0123456789abcdef0123456789abcdef","span_id":"0","parent_span_id":"0","subject":null,"source_attribution":"local_actor","source_actor":{"actor_id":"18446744073709551615","spawn_serial":null,"actor_type":null},"destination_attribution":"remote_unknown","destination_actor":null,"event_type":"send","msg_type":0,"timestamp_ns":"0","handler_name":null}"#
+let event = try JSONDecoder().decode(TraceEvent.self, from: Data(valid.utf8))
+precondition(event.sequence == UInt64.max)
+let invalid = valid.replacingOccurrences(of: #""source_attribution":"local_actor""#, with: #""source_attribution":"remote_unknown""#)
+do {
+    _ = try JSONDecoder().decode(TraceEvent.self, from: Data(invalid.utf8))
+    fatalError("accepted inconsistent actor attribution")
+} catch is DecodingError {}
+SWIFT
+swiftc "$tmpdir/ObserveProtocolV1.swift" "$tmpdir/main.swift" -o "$tmpdir/observe-v1-smoke"
+"$tmpdir/observe-v1-smoke"
+```

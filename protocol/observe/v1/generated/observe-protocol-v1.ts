@@ -213,12 +213,14 @@ export interface CrashEntry {
 function asRecord(value: unknown): Record<string, unknown> { if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('expected object'); return value as Record<string, unknown>; }
 function asArray(value: unknown): unknown[] { if (!Array.isArray(value)) throw new TypeError('expected array'); return value; }
 function asString(value: unknown): string { if (typeof value !== 'string') throw new TypeError('expected string'); return value; }
+function asLiteral(value: unknown, expected: string): string { const text = asString(value); if (text !== expected) throw new TypeError(`expected ${expected}`); return text; }
 function asHex128Lower(value: unknown): string { const text = asString(value); if (!/^[0-9a-f]{32}$/.test(text)) throw new TypeError('expected 32 lowercase hexadecimal digits'); return text; }
 function asBoolean(value: unknown): boolean { if (typeof value !== 'boolean') throw new TypeError('expected boolean'); return value; }
 function asBoundedNumber(value: unknown, minimum: number, maximum: number): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return value === 0 ? 0 : value; }
 function asBoundedBigInt(value: unknown, minimum: bigint, maximum: bigint): bigint { if (typeof value !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(value)) throw new TypeError('expected canonical decimal string'); const number = BigInt(value); if (number < minimum || number > maximum || number.toString() !== value) throw new TypeError(`expected integer in [${minimum}, ${maximum}]`); return number; }
 function asDouble(value: unknown): number { if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('expected finite number'); return value; }
 function validateActorAttribution(endpoint: string, attribution: string, actor: ActorIdentity | null): void { const knownNull = attribution === 'external' || attribution === 'remote_unknown' || attribution === 'not_applicable'; if (attribution === 'local_actor' && actor === null) throw new TypeError(`${endpoint}_actor is required for local_actor attribution`); if (knownNull && actor !== null) throw new TypeError(`${endpoint}_actor must be null for ${attribution} attribution`); }
+function validateTraceSubject(kind: string, actor: ActorIdentity | null): void { if (kind === 'actor' && actor === null) throw new TypeError('actor subject requires actor details'); if ((kind === 'channel' || kind === 'resource') && actor !== null) throw new TypeError(`${kind} subject requires actor to be null`); }
 
 export function decodeMetrics(value: unknown): Metrics {
   const input = asRecord(value);
@@ -360,6 +362,7 @@ export function decodeTraceSubject(value: unknown): TraceSubject {
     id: asBoundedBigInt(input.id, 0n, 18446744073709551615n),
     actor: (input.actor === null ? null : decodeActorIdentity(input.actor)),
   } as TraceSubject;
+  validateTraceSubject(output.kind, output.actor);
   return output;
 }
 
@@ -439,7 +442,7 @@ export function decodeTraceRequestError(value: unknown): TraceRequestError {
 export function decodeTraceStreamMismatch(value: unknown): TraceStreamMismatch {
   const input = asRecord(value);
   const output = { ...input,
-    error: asString(input.error),
+    error: asLiteral(input.error, "trace_stream_mismatch"),
     requested_stream_id: asHex128Lower(input.requested_stream_id),
     current_stream_id: asHex128Lower(input.current_stream_id),
     current_producer_instance_id: asHex128Lower(input.current_producer_instance_id),

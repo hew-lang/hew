@@ -139,7 +139,12 @@
       },
       "TraceSubject": {
         "type": "object", "x-hew-model": true, "additionalProperties": true,
+        "description": "Actor subjects require actor details; channel and resource subjects require actor to be null. Unknown future kinds may carry a nullable actor.",
         "required": ["kind", "id", "actor"],
+        "allOf": [
+          { "if": { "properties": { "kind": { "const": "actor" } }, "required": ["kind"] }, "then": { "properties": { "actor": { "$ref": "#/components/schemas/ActorIdentity" } } } },
+          { "if": { "properties": { "kind": { "enum": ["channel", "resource"] } }, "required": ["kind"] }, "then": { "properties": { "actor": { "type": "null" } } } }
+        ],
         "properties": {
           "kind": { "type": "string", "x-known-values": ["actor", "channel", "resource"], "description": "Open subject taxonomy. Unknown values are forward-compatible." },
           "id": { "$ref": "#/components/schemas/UInt64Decimal", "description": "Raw process-local identity in the namespace selected by kind." },

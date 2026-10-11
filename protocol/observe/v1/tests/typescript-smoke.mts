@@ -61,6 +61,15 @@ const mismatch = decodeTraceStreamMismatchEnvelope(`{
   }
 }`);
 assert.equal(mismatch.data.current_producer_instance_id, "0123456789abcdef0123456789abcdef");
+assert.throws(() => decodeTraceStreamMismatchEnvelope(`{
+  "schema_version":"v1",
+  "data":{
+    "error":"future_value",
+    "requested_stream_id":"00112233445566778899aabbccddeeff",
+    "current_stream_id":"ffeeddccbbaa99887766554433221100",
+    "current_producer_instance_id":"0123456789abcdef0123456789abcdef"
+  }
+}`));
 
 const crashes = decodeCrashesEnvelope('{"schema_version":"v1","data":[{"time_s":1.5,"actor_id":"18446744073709551615","signal":202,"trap_kind":"Unknown","msg_type":-1,"fault_addr":"0"}]}');
 assert.equal(crashes.data[0].time_s, 1.5);
@@ -78,6 +87,7 @@ assert.throws(() => decodeMetricsEnvelope(`{"schema_version":"v1","data":${metri
 assert.throws(() => decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch(traceEvent.replace('"msg_type":-2147483648', '"msg_type":2147483648'))}}`));
 assert.throws(() => decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch(traceEvent.replace('"spawn_serial":"18446744073709551615",', ''))}}`));
 assert.throws(() => decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch(traceEvent.replace('"source_attribution":"local_actor"', '"source_attribution":"remote_unknown"'))}}`));
+assert.throws(() => decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch(traceEvent.replace('"subject":null', '"subject":{"kind":"actor","id":"1","actor":null}'))}}`));
 assert.throws(() => decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch().replace('ffeeddccbbaa99887766554433221100', 'FFEEDDCCBBAA99887766554433221100')}}`));
 assert.throws(() => decodeCrashesEnvelope('{"schema_version":"v1","data":[{"time_s":1e309,"actor_id":"0","signal":0,"trap_kind":"Normal","msg_type":0,"fault_addr":"0"}]}'));
 

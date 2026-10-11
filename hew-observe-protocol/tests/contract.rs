@@ -242,6 +242,16 @@ fn hex128_identifiers_reject_uppercase_and_wrong_length() {
     let mut short = valid;
     short["current_stream_id"] = json!("00");
     assert!(serde_json::from_value::<hew_observe_protocol::TraceStreamMismatch>(short).is_err());
+
+    let wrong_error = json!({
+        "error": "future_value",
+        "requested_stream_id": "00112233445566778899aabbccddeeff",
+        "current_stream_id": "ffeeddccbbaa99887766554433221100",
+        "current_producer_instance_id": "0123456789abcdef0123456789abcdef"
+    });
+    assert!(
+        serde_json::from_value::<hew_observe_protocol::TraceStreamMismatch>(wrong_error).is_err()
+    );
 }
 
 #[test]
@@ -260,6 +270,102 @@ fn actor_identity_nullable_fields_must_be_present() {
         .expect("object")
         .remove("spawn_serial");
     assert!(serde_json::from_value::<hew_observe_protocol::ActorIdentity>(missing).is_err());
+}
+
+#[test]
+fn trace_actor_attribution_matches_nullable_identity() {
+    let event = json!({
+        "sequence": "1",
+        "trace_id": "0123456789abcdef0123456789abcdef",
+        "span_id": "1",
+        "parent_span_id": "0",
+        "subject": null,
+        "source_attribution": "local_actor",
+        "source_actor": {
+            "actor_id": "7",
+            "spawn_serial": null,
+            "actor_type": null
+        },
+        "destination_attribution": "remote_unknown",
+        "destination_actor": null,
+        "event_type": "send",
+        "msg_type": 1,
+        "timestamp_ns": "2",
+        "handler_name": null
+    });
+    serde_json::from_value::<TraceEvent>(event.clone()).expect("consistent attribution");
+
+    let mut missing_local = event.clone();
+    missing_local["source_actor"] = serde_json::Value::Null;
+    let error = serde_json::from_value::<TraceEvent>(missing_local)
+        .expect_err("local_actor requires an actor identity");
+    assert!(
+        error.to_string().contains("source_actor is required"),
+        "{error}"
+    );
+
+    let mut fabricated_remote = event;
+    fabricated_remote["destination_actor"] = fabricated_remote["source_actor"].clone();
+    let error = serde_json::from_value::<TraceEvent>(fabricated_remote)
+        .expect_err("remote_unknown forbids a fabricated local identity");
+    assert!(
+        error.to_string().contains("destination_actor must be null"),
+        "{error}"
+    );
+
+    let mut constructed = serde_json::from_value::<TraceEvent>(json!({
+        "sequence": "1",
+        "trace_id": "0123456789abcdef0123456789abcdef",
+        "span_id": "1",
+        "parent_span_id": "0",
+        "subject": null,
+        "source_attribution": "not_applicable",
+        "source_actor": null,
+        "destination_attribution": "not_applicable",
+        "destination_actor": null,
+        "event_type": "send",
+        "msg_type": 1,
+        "timestamp_ns": "2",
+        "handler_name": null
+    }))
+    .expect("valid event");
+    constructed.source_attribution = "local_actor".to_owned();
+    assert!(serde_json::to_value(constructed).is_err());
+}
+
+#[test]
+fn trace_subject_kind_matches_actor_details() {
+    let actor = json!({
+        "actor_id": "7",
+        "spawn_serial": null,
+        "actor_type": null
+    });
+    serde_json::from_value::<hew_observe_protocol::TraceSubject>(json!({
+        "kind": "actor",
+        "id": "7",
+        "actor": actor
+    }))
+    .expect("actor subject carries actor details");
+    assert!(
+        serde_json::from_value::<hew_observe_protocol::TraceSubject>(json!({
+            "kind": "actor",
+            "id": "7",
+            "actor": null
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<hew_observe_protocol::TraceSubject>(json!({
+            "kind": "channel",
+            "id": "7",
+            "actor": {
+                "actor_id": "7",
+                "spawn_serial": null,
+                "actor_type": null
+            }
+        }))
+        .is_err()
+    );
 }
 
 #[test]

@@ -307,7 +307,7 @@ The key endpoints for observe users are:
 | `GET /api/cluster/members` | JSON envelope | Cluster membership and relative last-seen ages. |
 | `GET /api/connections` | JSON envelope | Connection-manager state and monotonic last-activity readings. |
 | `GET /api/routing/table` | JSON envelope | Full node identities, route slots, session incarnations, and connection IDs. |
-| `GET /api/traces` | JSON envelope | Destructively drains up to 256 events from the process-global trace queue. |
+| `GET /api/traces` | JSON envelope | Reads a non-destructive, cursor-addressed page from the bounded process trace stream. |
 | `GET /api/supervisors` | JSON envelope | Flattened supervision tree rows. |
 | `GET /api/crashes` | JSON envelope | Recent actor crash records and resolved trap kinds. |
 | `GET /debug/pprof/heap` | gzip protobuf | pprof-compatible heap profile. |
@@ -334,9 +334,32 @@ Rust, Swift, and TypeScript bindings are generated from that file; run
 `make observe-protocol-check` to validate the schema, generated-code drift, and
 lossless 64-bit codec tests.
 
-The v1 trace endpoint is a single-consumer-style destructive drain, not a
-broadcast or cursor API. It does not report message destinations, and actor/
-handler attribution may be `null` when metadata is unavailable at drain time.
+The first trace request omits `stream_id` and `after` and starts at the oldest
+event still retained. Continue with the returned stream epoch and exclusive
+cursor:
+
+```sh
+curl -fsS 'http://127.0.0.1:6067/api/traces?stream_id=<stream_id>&after=<next_cursor>&limit=256'
+```
+
+Both cursor parameters must be supplied together. Each observer maintains its
+own cursor, so polling does not consume events needed by another observer. A
+page containing 256 events only reached the response limit: `has_more` reports
+whether retained events remain, while a non-null `overrun` gives the exact
+sequence range lost to bounded retention.
+
+`producer_instance_id` changes across process restarts, and `stream_id` changes
+when tracing is cleared, reset, or re-enabled. A `409 trace_stream_mismatch`
+therefore starts a new observation segment; an old cursor must never be applied
+to the new stream. Event `timestamp_ns` values use the producer's monotonic
+clock. `clock_anchor` supplies an approximate mapping to Unix time with an
+explicit uncertainty, not a cross-node synchronization guarantee.
+
+Trace events carry an honest nullable `subject`, `source_actor`, and
+`destination_actor`. Unknown attribution stays `null`; consumers must not infer
+causality or destinations from timestamp proximity. Producer overwrite and
+sampling counters describe source-side loss. Consumer storage or transport
+loss must be tracked separately by the consumer.
 
 For the terminal UI, build or install the sibling binary and attach it to the
 running profiler:

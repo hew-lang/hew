@@ -12,7 +12,7 @@ use ratatui::Frame;
 
 use crate::app::{App, SortColumn, Tab};
 use crate::client::{ConnectionInfo, ConnectionStatus, RouteEntry};
-use crate::events::trace_event_meta;
+use crate::events::{trace_event_lane_label, trace_event_matches_actor, trace_event_meta};
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -612,8 +612,8 @@ fn make_vertical_lane_bar(segment_width: usize) -> String {
     reason = "swimlane rendering involves safe small-range conversions and is inherently verbose"
 )]
 fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
-    let subtitle = if let Some(actor) = app.trace_filter_actor {
-        format!(" Messages  [filtered: actor {actor}] ")
+    let subtitle = if let Some(actor) = app.trace_filter_actor.as_ref() {
+        format!(" Messages  [filtered: actor {}] ", actor.actor_id)
     } else {
         " Messages ".to_owned()
     };
@@ -622,15 +622,15 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Filter events
-    let events: Vec<&crate::client::TraceEvent> = app
+    let visible_len = app.trace_pause_len.unwrap_or(app.trace_events.len());
+    let events: Vec<&crate::app::ObservedTraceEvent> = app
         .trace_events
         .iter()
+        .take(visible_len)
         .filter(|e| {
-            if let Some(filter_id) = app.trace_filter_actor {
-                e.actor_id == filter_id
-            } else {
-                true
-            }
+            app.trace_filter_actor.as_ref().is_none_or(|filter| {
+                trace_event_matches_actor(&e.producer_instance_id, &e.event, filter)
+            })
         })
         .filter(|e| e.is_actionable())
         .collect();
@@ -644,10 +644,10 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Collect unique node IDs
-    let mut node_ids: Vec<u16> = events.iter().map(|e| (e.actor_id >> 48) as u16).collect();
-    for m in &app.cluster_members {
-        node_ids.push(m.route_slot);
-    }
+    let mut node_ids: Vec<String> = events
+        .iter()
+        .map(|e| trace_event_lane_label(&e.endpoint, &e.producer_instance_id, &e.event))
+        .collect();
     node_ids.sort_unstable();
     node_ids.dedup();
 
@@ -683,8 +683,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
 
     // Header line with node labels
     let mut header_spans = Vec::new();
-    for (i, &nid) in node_ids.iter().enumerate() {
-        let label = format!("node:{nid}");
+    for (i, label) in node_ids.iter().enumerate() {
         let colour = lane_colours[i % lane_colours.len()];
         let pad = lane_width as usize;
         let formatted = format!("{label:^pad$}");
@@ -700,15 +699,15 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(Span::styled(sep, theme::dim_style())));
 
     // Get base timestamp for relative display
-    let base_ns = events.first().map_or(0, |e| e.timestamp_ns);
+    let base_ns = events.first().map_or(0, |e| e.correlated_unix_ns);
 
     // Event rows
     for evt in visible_events {
-        let node_id = (evt.actor_id >> 48) as u16;
-        let lane_idx = node_ids.iter().position(|&n| n == node_id).unwrap_or(0);
+        let node_id = trace_event_lane_label(&evt.endpoint, &evt.producer_instance_id, &evt.event);
+        let lane_idx = node_ids.iter().position(|n| n == &node_id).unwrap_or(0);
 
         // Build the row: show vertical bars at each lane, with event info at the source lane
-        let relative_s = (evt.timestamp_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
+        let relative_s = (evt.correlated_unix_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
         let time_str = format!("{relative_s:>6.2}s");
 
         let event_label = trace_event_meta(&evt.event_type)
@@ -759,14 +758,30 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_message_controls(f: &mut Frame, app: &App, area: Rect) {
     let paused_str = if app.trace_paused { "yes" } else { "no" };
-    let filter_str = if let Some(actor) = app.trace_filter_actor {
-        format!("  │  Filter: actor {actor}")
+    let filter_str = if let Some(actor) = app.trace_filter_actor.as_ref() {
+        format!("  │  Filter: actor {}", actor.actor_id)
     } else {
         String::new()
     };
+    let max_uncertainty = app
+        .trace_events
+        .iter()
+        .map(|event| event.clock_uncertainty_ns)
+        .max()
+        .unwrap_or(0);
     let text = format!(
-        " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str}{filter_str}",
-        app.trace_events.len()
+        " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ Clock ±{max_uncertainty}ns{}{}",
+        app.trace_events.len(),
+        app.trace_overrun_events,
+        app.trace_local_discarded,
+        app.trace_stream_resets,
+        app.trace_producer_restarts,
+        if app.trace_has_more {
+            " │ Backlog"
+        } else {
+            ""
+        },
+        filter_str,
     );
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);
@@ -809,9 +824,11 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Collect node IDs from cluster members and trace events
-    let mut node_ids: Vec<u16> = app.cluster_members.iter().map(|m| m.route_slot).collect();
-    for evt in &app.trace_events {
-        let nid = (evt.actor_id >> 48) as u16;
+    let timeline_len = app.timeline_pause_len.unwrap_or(app.trace_events.len());
+    let timeline_events = &app.trace_events[..timeline_len.min(app.trace_events.len())];
+    let mut node_ids: Vec<String> = Vec::new();
+    for evt in timeline_events {
+        let nid = trace_event_lane_label(&evt.endpoint, &evt.producer_instance_id, &evt.event);
         if !node_ids.contains(&nid) {
             node_ids.push(nid);
         }
@@ -819,7 +836,7 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     node_ids.sort_unstable();
     node_ids.dedup();
 
-    if node_ids.is_empty() || app.trace_events.is_empty() {
+    if node_ids.is_empty() || timeline_events.is_empty() {
         let msg = Paragraph::new("No events in window")
             .style(theme::dim_style())
             .alignment(Alignment::Center);
@@ -831,7 +848,8 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     let latest_ns = app
         .trace_events
         .iter()
-        .map(|e| e.timestamp_ns)
+        .take(timeline_len)
+        .map(|e| e.correlated_unix_ns)
         .max()
         .unwrap_or(0);
     let window_ns = app.timeline_window_ns;
@@ -870,9 +888,9 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
     // One row per node
     let lane_colours = theme::LANE_COLOURS;
 
-    for (node_idx, &nid) in node_ids.iter().enumerate() {
+    for (node_idx, nid) in node_ids.iter().enumerate() {
         // Node label
-        let label = format!("node:{nid} \u{2502}");
+        let label = format!("{nid} \u{2502}");
         let padded_label = format!("{label:>width$}", width = label_width as usize);
 
         // Build the chart row
@@ -880,17 +898,19 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
             vec![(' ', theme::TEXT_DIM); chart_width];
 
         // Place events
-        let node_events: Vec<&crate::client::TraceEvent> = app
+        let node_events: Vec<&crate::app::ObservedTraceEvent> = app
             .trace_events
             .iter()
+            .take(timeline_len)
             .filter(|e| {
-                let enid = (e.actor_id >> 48) as u16;
-                enid == nid && e.timestamp_ns >= window_start && e.timestamp_ns < window_end
+                trace_event_lane_label(&e.endpoint, &e.producer_instance_id, &e.event) == *nid
+                    && e.correlated_unix_ns >= window_start
+                    && e.correlated_unix_ns < window_end
             })
             .collect();
 
         for evt in &node_events {
-            let x = ((evt.timestamp_ns - window_start) as f64 / window_ns as f64
+            let x = ((evt.correlated_unix_ns - window_start) as f64 / window_ns as f64
                 * chart_width as f64) as usize;
             if x < chart_width {
                 let (glyph, colour) = theme::timeline_event_glyph(&evt.event_type);
@@ -990,9 +1010,24 @@ fn draw_timeline_controls(f: &mut Frame, app: &App, area: Rect) {
     let paused_str = if app.timeline_paused { "yes" } else { "no" };
     let window_s = app.timeline_window_ns as f64 / 1_000_000_000.0;
     let offset_s = app.timeline_offset_ns as f64 / 1_000_000_000.0;
+    let max_uncertainty = app
+        .trace_events
+        .iter()
+        .map(|event| event.clock_uncertainty_ns)
+        .max()
+        .unwrap_or(0);
     let text = format!(
-        " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str}",
-        app.trace_events.len()
+        " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str} │ Lost: {}+{} │ Resets: {}+{} │ Clock ±{max_uncertainty}ns{}",
+        app.trace_events.len(),
+        app.trace_overrun_events,
+        app.trace_local_discarded,
+        app.trace_stream_resets,
+        app.trace_producer_restarts,
+        if app.trace_has_more {
+            " │ Backlog"
+        } else {
+            ""
+        },
     );
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);

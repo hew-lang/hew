@@ -1,6 +1,7 @@
 //! Application state for the TUI observer.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
+use std::ops::Deref;
 #[cfg(unix)]
 use std::path::Path;
 #[cfg(unix)]
@@ -8,12 +9,14 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::client::{
-    ActorInfo, ClientError, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
-    CrashEntry as ClientCrashEntry, HistoryEntry, Metrics, RouteEntry, RoutingSnapshot,
-    SupervisorRow as ClientSupervisorRow, TraceEvent,
+    ActorIdentity, ActorInfo, ClientError, ClusterClient, ClusterMember, ConnectionInfo,
+    ConnectionStatus, CrashEntry as ClientCrashEntry, HistoryEntry, Metrics, RouteEntry,
+    RoutingSnapshot, SupervisorRow as ClientSupervisorRow, TraceContinuity, TraceEvent, TracePage,
+    TraceSubject,
 };
 #[cfg(unix)]
 use crate::discovery;
+use crate::events::{trace_event_actor_key, trace_event_matches_actor, TraceActorKey};
 
 /// Active tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +103,26 @@ pub struct TreeRow {
     pub state: String,
 }
 
+/// A trace event together with the producer and clock domain required to
+/// interpret its process-local identities and monotonic timestamp honestly.
+#[derive(Debug, Clone)]
+pub struct ObservedTraceEvent {
+    pub endpoint: String,
+    pub producer_instance_id: String,
+    pub stream_id: String,
+    pub correlated_unix_ns: u64,
+    pub clock_uncertainty_ns: u64,
+    pub event: TraceEvent,
+}
+
+impl Deref for ObservedTraceEvent {
+    type Target = TraceEvent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.event
+    }
+}
+
 impl From<ClientCrashEntry> for CrashEntry {
     fn from(entry: ClientCrashEntry) -> Self {
         Self {
@@ -160,15 +183,22 @@ pub struct App {
     pub cluster_routing: RoutingSnapshot,
 
     // Message flow data
-    pub trace_events: Vec<TraceEvent>,
+    pub trace_events: Vec<ObservedTraceEvent>,
     pub trace_paused: bool,
+    pub trace_pause_len: Option<usize>,
     pub trace_scroll: usize,
-    pub trace_filter_actor: Option<u64>,
+    pub trace_filter_actor: Option<TraceActorKey>,
+    pub trace_has_more: bool,
+    pub trace_overrun_events: u64,
+    pub trace_stream_resets: u64,
+    pub trace_producer_restarts: u64,
+    pub trace_local_discarded: u64,
 
     // Timeline data
     pub timeline_offset_ns: i64,
     pub timeline_window_ns: u64,
     pub timeline_paused: bool,
+    pub timeline_pause_len: Option<usize>,
     pub timeline_zoom_level: usize,
 
     // Connection
@@ -269,11 +299,18 @@ impl App {
             cluster_routing: RoutingSnapshot::default(),
             trace_events: Vec::new(),
             trace_paused: false,
+            trace_pause_len: None,
             trace_scroll: 0,
             trace_filter_actor: None,
+            trace_has_more: false,
+            trace_overrun_events: 0,
+            trace_stream_resets: 0,
+            trace_producer_restarts: 0,
+            trace_local_discarded: 0,
             timeline_offset_ns: 0,
             timeline_window_ns: ZOOM_LEVELS_NS[2], // default 5s
             timeline_paused: false,
+            timeline_pause_len: None,
             timeline_zoom_level: 2,
             cluster,
             connection_status: if demo {
@@ -534,28 +571,29 @@ impl App {
 
     pub fn messages_toggle_pause(&mut self) {
         self.trace_paused = !self.trace_paused;
+        self.trace_pause_len = self.trace_paused.then_some(self.trace_events.len());
     }
 
-    pub fn messages_set_filter(&mut self, actor_id: u64) {
-        self.trace_filter_actor = Some(actor_id);
+    pub fn messages_set_filter(&mut self, actor: TraceActorKey) {
+        self.trace_filter_actor = Some(actor);
     }
 
     /// Filter messages by the `actor_id` of the currently scrolled-to event.
     pub fn messages_filter_selected(&mut self) {
-        let events: Vec<&TraceEvent> = self
+        let events: Vec<&ObservedTraceEvent> = self
             .trace_events
             .iter()
             .filter(|e| {
-                if let Some(filter_id) = self.trace_filter_actor {
-                    e.actor_id == filter_id
-                } else {
-                    true
-                }
+                self.trace_filter_actor.as_ref().is_none_or(|filter| {
+                    trace_event_matches_actor(&e.producer_instance_id, &e.event, filter)
+                })
             })
             .filter(|e| e.is_actionable())
             .collect();
         if let Some(evt) = events.get(self.trace_scroll) {
-            self.messages_set_filter(evt.actor_id);
+            if let Some(actor) = trace_event_actor_key(&evt.producer_instance_id, &evt.event) {
+                self.messages_set_filter(actor);
+            }
         }
     }
 
@@ -597,6 +635,7 @@ impl App {
 
     pub fn timeline_toggle_pause(&mut self) {
         self.timeline_paused = !self.timeline_paused;
+        self.timeline_pause_len = self.timeline_paused.then_some(self.trace_events.len());
     }
 
     pub fn timeline_snap_to_now(&mut self) {
@@ -604,11 +643,7 @@ impl App {
     }
 
     fn should_fetch_traces(&self) -> bool {
-        match self.active_tab {
-            Tab::Messages => !self.trace_paused,
-            Tab::Timeline => !self.timeline_paused,
-            _ => false,
-        }
+        matches!(self.active_tab, Tab::Messages | Tab::Timeline)
     }
 
     pub fn filtered_actors(&self) -> Vec<&ActorInfo> {
@@ -657,7 +692,7 @@ impl App {
         let mut cluster_members = None;
         let mut connections = None;
         let mut routing = None;
-        let mut traces = None;
+        let mut traces: Option<Vec<(String, TracePage)>> = None;
         let mut next_active_node = None;
         let cluster_status;
         let preferred_active_node = self.active_node_label().to_owned();
@@ -726,16 +761,16 @@ impl App {
                 }
 
                 traces = if fetch_traces {
-                    let mut all_traces = Vec::new();
+                    let mut all_pages = Vec::new();
                     for node in &mut cluster.nodes {
-                        if let Some(mut node_traces) = node.client.fetch_traces() {
-                            all_traces.append(&mut node_traces);
+                        if let Some(page) = node.client.fetch_traces() {
+                            all_pages.push((node.addr.clone(), page));
                         }
                     }
-                    if all_traces.is_empty() {
+                    if all_pages.is_empty() {
                         None
                     } else {
-                        Some(all_traces)
+                        Some(all_pages)
                     }
                 } else {
                     None
@@ -793,19 +828,86 @@ impl App {
             self.cluster_routing = r;
         }
 
-        if let Some(t) = traces {
+        if let Some(pages) = traces {
+            self.ingest_trace_pages(pages);
+        }
+    }
+
+    fn ingest_trace_pages(&mut self, pages: Vec<(String, TracePage)>) {
+        self.trace_has_more = pages.iter().any(|(_, page)| page.batch.has_more);
+        for (endpoint, page) in pages {
+            match page.continuity {
+                TraceContinuity::Initial | TraceContinuity::Continuous => {}
+                TraceContinuity::StreamReset => {
+                    self.trace_stream_resets = self.trace_stream_resets.saturating_add(1);
+                    // TraceEvent does not embed its stream epoch. Clearing
+                    // prevents this compact viewer from stitching two
+                    // epochs into one apparently continuous timeline.
+                    self.trace_events.retain(|event| event.endpoint != endpoint);
+                    if self.trace_paused {
+                        self.trace_pause_len = Some(self.trace_events.len());
+                    }
+                    if self.timeline_paused {
+                        self.timeline_pause_len = Some(self.trace_events.len());
+                    }
+                }
+                TraceContinuity::ProducerRestart => {
+                    self.trace_producer_restarts = self.trace_producer_restarts.saturating_add(1);
+                    self.trace_events.retain(|event| event.endpoint != endpoint);
+                    if self.trace_paused {
+                        self.trace_pause_len = Some(self.trace_events.len());
+                    }
+                    if self.timeline_paused {
+                        self.timeline_pause_len = Some(self.trace_events.len());
+                    }
+                }
+            }
+            if let Some(overrun) = page.batch.overrun {
+                self.trace_overrun_events = self.trace_overrun_events.saturating_add(overrun.count);
+            }
             // Filter out begin/end span events at ingestion — they carry
             // dispatch timing data but are not actionable in the swimlane
             // display, and including them inflates the event counter.
+            let producer_instance_id = page.batch.producer_instance_id;
+            let stream_id = page.batch.stream_id;
+            let anchor = page.batch.clock_anchor;
             self.trace_events.extend(
-                t.into_iter()
-                    .filter(|e| e.event_type != "begin" && e.event_type != "end"),
+                page.batch
+                    .events
+                    .into_iter()
+                    .filter(|e| e.event_type != "begin" && e.event_type != "end")
+                    .map(|event| {
+                        let correlated_unix_ns = correlate_trace_time(
+                            event.timestamp_ns,
+                            anchor.monotonic_ns,
+                            anchor.unix_epoch_ns,
+                        );
+                        ObservedTraceEvent {
+                            endpoint: endpoint.clone(),
+                            producer_instance_id: producer_instance_id.clone(),
+                            stream_id: stream_id.clone(),
+                            correlated_unix_ns,
+                            clock_uncertainty_ns: anchor.uncertainty_ns,
+                            event,
+                        }
+                    }),
             );
-            // Cap at 1000 entries
-            if self.trace_events.len() > 1000 {
-                let drain = self.trace_events.len() - 1000;
-                self.trace_events.drain(..drain);
-            }
+        }
+        self.trace_events.sort_by(compare_observed_trace_events);
+        // Cap at 1000 entries and account for this consumer-local loss
+        // separately from producer-declared ring overruns.
+        if self.trace_events.len() > 1000 {
+            let drain = self.trace_events.len() - 1000;
+            self.trace_local_discarded = self
+                .trace_local_discarded
+                .saturating_add(u64::try_from(drain).unwrap_or(u64::MAX));
+            self.trace_events.drain(..drain);
+            self.trace_pause_len = self
+                .trace_pause_len
+                .map(|visible| visible.saturating_sub(drain));
+            self.timeline_pause_len = self
+                .timeline_pause_len
+                .map(|visible| visible.saturating_sub(drain));
         }
     }
 
@@ -1119,101 +1221,151 @@ impl App {
         let base_ns: u64 = 40_000_000_000;
         let mut traces = Vec::new();
         // Spawns
-        traces.push(TraceEvent {
-            trace_id: "0001".into(),
-            span_id: 1,
-            parent_span_id: 0,
-            actor_id: (1u64 << 48) | 1,
-            actor_type_id: 0,
-            actor_type: None,
-            event_type: "spawn".into(),
-            msg_type: 0,
-            timestamp_ns: base_ns,
-            handler_name: None,
-        });
-        traces.push(TraceEvent {
-            trace_id: "0002".into(),
-            span_id: 2,
-            parent_span_id: 0,
-            actor_id: (2u64 << 48) | 0x65,
-            actor_type_id: 0,
-            actor_type: None,
-            event_type: "spawn".into(),
-            msg_type: 0,
-            timestamp_ns: base_ns + 100_000_000,
-            handler_name: None,
-        });
-        traces.push(TraceEvent {
-            trace_id: "0003".into(),
-            span_id: 3,
-            parent_span_id: 0,
-            actor_id: (3u64 << 48) | 0xC9,
-            actor_type_id: 0,
-            actor_type: None,
-            event_type: "spawn".into(),
-            msg_type: 0,
-            timestamp_ns: base_ns + 200_000_000,
-            handler_name: None,
-        });
+        traces.push(demo_trace_event(
+            1,
+            1,
+            (1u64 << 48) | 1,
+            "spawn",
+            0,
+            base_ns,
+        ));
+        traces.push(demo_trace_event(
+            2,
+            2,
+            (2u64 << 48) | 0x65,
+            "spawn",
+            0,
+            base_ns + 100_000_000,
+        ));
+        traces.push(demo_trace_event(
+            3,
+            3,
+            (3u64 << 48) | 0xC9,
+            "spawn",
+            0,
+            base_ns + 200_000_000,
+        ));
         // Message sends between nodes
         for i in 0..20u64 {
-            traces.push(TraceEvent {
-                trace_id: format!("t{:04}", 10 + i),
-                span_id: 100 + i,
-                parent_span_id: 0,
-                actor_id: (1u64 << 48) | 1,
-                actor_type_id: 0,
-                actor_type: None,
-                event_type: "send".into(),
-                msg_type: 3,
-                timestamp_ns: base_ns + 1_000_000_000 + i * 200_000_000,
-                handler_name: None,
-            });
+            traces.push(demo_trace_event(
+                4 + i,
+                10 + i,
+                (1u64 << 48) | 1,
+                "send",
+                3,
+                base_ns + 1_000_000_000 + i * 200_000_000,
+            ));
         }
         for i in 0..15u64 {
-            traces.push(TraceEvent {
-                trace_id: format!("t{:04}", 30 + i),
-                span_id: 200 + i,
-                parent_span_id: 0,
-                actor_id: (2u64 << 48) | 0x65,
-                actor_type_id: 0,
-                actor_type: None,
-                event_type: "send".into(),
-                msg_type: 7,
-                timestamp_ns: base_ns + 1_100_000_000 + i * 300_000_000,
-                handler_name: None,
-            });
+            traces.push(demo_trace_event(
+                24 + i,
+                30 + i,
+                (2u64 << 48) | 0x65,
+                "send",
+                7,
+                base_ns + 1_100_000_000 + i * 300_000_000,
+            ));
         }
         for i in 0..5u64 {
-            traces.push(TraceEvent {
-                trace_id: format!("t{:04}", 50 + i),
-                span_id: 300 + i,
-                parent_span_id: 0,
-                actor_id: (3u64 << 48) | 0xC9,
-                actor_type_id: 0,
-                actor_type: None,
-                event_type: "send".into(),
-                msg_type: 5,
-                timestamp_ns: base_ns + 500_000_000 + i * 500_000_000,
-                handler_name: None,
-            });
+            traces.push(demo_trace_event(
+                39 + i,
+                50 + i,
+                (3u64 << 48) | 0xC9,
+                "send",
+                5,
+                base_ns + 500_000_000 + i * 500_000_000,
+            ));
         }
         // Crash on node 3
-        traces.push(TraceEvent {
-            trace_id: "crash1".into(),
-            span_id: 400,
-            parent_span_id: 0,
-            actor_id: (3u64 << 48) | 0xC9,
-            actor_type_id: 0,
-            actor_type: None,
-            event_type: "crash".into(),
-            msg_type: 0,
-            timestamp_ns: base_ns + 8_000_000_000,
-            handler_name: None,
-        });
+        traces.push(demo_trace_event(
+            44,
+            60,
+            (3u64 << 48) | 0xC9,
+            "crash",
+            0,
+            base_ns + 8_000_000_000,
+        ));
         // Sort by timestamp
         traces.sort_by_key(|t| t.timestamp_ns);
-        self.trace_events = traces;
+        self.trace_events = traces
+            .into_iter()
+            .map(|event| ObservedTraceEvent {
+                endpoint: "demo".to_owned(),
+                producer_instance_id: "00000000000000000000000000000001".to_owned(),
+                stream_id: "00000000000000000000000000000001".to_owned(),
+                correlated_unix_ns: event.timestamp_ns,
+                clock_uncertainty_ns: 0,
+                event,
+            })
+            .collect();
+    }
+}
+
+fn correlate_trace_time(timestamp_ns: u64, anchor_monotonic_ns: u64, anchor_unix_ns: u64) -> u64 {
+    if timestamp_ns >= anchor_monotonic_ns {
+        anchor_unix_ns.saturating_add(timestamp_ns - anchor_monotonic_ns)
+    } else {
+        anchor_unix_ns.saturating_sub(anchor_monotonic_ns - timestamp_ns)
+    }
+}
+
+fn compare_observed_trace_events(
+    left: &ObservedTraceEvent,
+    right: &ObservedTraceEvent,
+) -> Ordering {
+    if left.producer_instance_id == right.producer_instance_id && left.stream_id == right.stream_id
+    {
+        left.sequence.cmp(&right.sequence)
+    } else {
+        left.correlated_unix_ns
+            .cmp(&right.correlated_unix_ns)
+            .then_with(|| left.endpoint.cmp(&right.endpoint))
+            .then_with(|| left.sequence.cmp(&right.sequence))
+    }
+}
+
+fn demo_trace_event(
+    sequence: u64,
+    trace_number: u64,
+    actor_id: u64,
+    event_type: &str,
+    msg_type: i32,
+    timestamp_ns: u64,
+) -> TraceEvent {
+    let actor = ActorIdentity {
+        actor_id,
+        spawn_serial: Some(actor_id & ((1u64 << 48) - 1)),
+        actor_type: None,
+    };
+    let is_send = event_type == "send";
+    TraceEvent {
+        sequence,
+        trace_id: format!("{trace_number:032x}"),
+        span_id: sequence,
+        parent_span_id: 0,
+        subject: (!is_send).then(|| TraceSubject {
+            kind: "actor".to_owned(),
+            id: actor_id,
+            actor: Some(actor.clone()),
+        }),
+        source_attribution: if is_send {
+            "local_actor"
+        } else {
+            "not_applicable"
+        }
+        .to_owned(),
+        source_actor: is_send.then_some(actor),
+        destination_attribution: if is_send {
+            "remote_unknown"
+        } else {
+            "not_applicable"
+        }
+        .to_owned(),
+        destination_actor: None,
+        event_type: event_type.to_owned(),
+        msg_type,
+        timestamp_ns,
+        handler_name: None,
     }
 }
 
@@ -1275,6 +1427,7 @@ mod tests {
     struct TestTraceState {
         metrics_timestamp: u64,
         trace_requests: usize,
+        trace_paths: Vec<String>,
         trace_responses: VecDeque<String>,
     }
 
@@ -1316,6 +1469,7 @@ mod tests {
             let state = Arc::new(Mutex::new(TestTraceState {
                 metrics_timestamp,
                 trace_requests: 0,
+                trace_paths: Vec::new(),
                 trace_responses: trace_responses.into(),
             }));
             let shutdown = Arc::new(AtomicBool::new(false));
@@ -1357,6 +1511,14 @@ mod tests {
                 .lock()
                 .expect("lock trace server state")
                 .trace_requests
+        }
+
+        fn trace_paths(&self) -> Vec<String> {
+            self.state
+                .lock()
+                .expect("lock trace server state")
+                .trace_paths
+                .clone()
         }
     }
 
@@ -1428,13 +1590,14 @@ mod tests {
             }
             "/api/cluster/members" | "/api/connections" => "[]".to_owned(),
             "/api/routing/table" => r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#.to_owned(),
-            "/api/traces" => {
+            path if path.starts_with("/api/traces?") => {
                 let mut state = state.lock().expect("lock trace server state");
                 state.trace_requests += 1;
+                state.trace_paths.push(path.to_owned());
                 state
                     .trace_responses
                     .pop_front()
-                    .unwrap_or_else(|| "[]".to_owned())
+                    .unwrap_or_else(trace_empty_response)
             }
             _ => "null".to_owned(),
         }
@@ -1445,19 +1608,81 @@ mod tests {
     }
 
     fn trace_response(trace_id: &str, timestamp_ns: u64) -> String {
-        serde_json::to_string(&vec![serde_json::json!({
-            "trace_id": trace_id,
+        let trace_number = trace_id.bytes().fold(0u64, |value, byte| {
+            value.wrapping_mul(31).wrapping_add(u64::from(byte))
+        });
+        serde_json::to_string(&serde_json::json!({
+            "producer_instance_id": "00000000000000000000000000000001",
+            "stream_id": "00000000000000000000000000000002",
+            "oldest_sequence": "1",
+            "next_sequence": (timestamp_ns + 1).to_string(),
+            "next_cursor": timestamp_ns.to_string(),
+            "has_more": false,
+            "overrun": null,
+            "tracing_enabled": true,
+            "sampling_mode": "all",
+            "events_recorded_total": timestamp_ns.to_string(),
+            "events_overwritten_total": "0",
+            "events_sampled_out_total": "0",
+            "batch_source_monotonic_ns": timestamp_ns.to_string(),
+            "clock_anchor": {
+                "monotonic_ns": "0",
+                "unix_epoch_ns": "0",
+                "uncertainty_ns": "1"
+            },
+            "events": [{
+            "sequence": timestamp_ns.to_string(),
+            "trace_id": format!("{trace_number:032x}"),
             "span_id": "0",
             "parent_span_id": "0",
-            "actor_id": "42",
-            "actor_type_id": "0",
-            "actor_type": null,
+            "subject": null,
+            "source_attribution": "local_actor",
+            "source_actor": {"actor_id":"42","spawn_serial":"42","actor_type":null},
+            "destination_attribution": "remote_unknown",
+            "destination_actor": null,
             "event_type": "send",
             "msg_type": 7,
             "timestamp_ns": timestamp_ns.to_string(),
             "handler_name": null,
-        })])
+        }]
+        }))
         .expect("serialize trace response")
+    }
+
+    fn trace_empty_response() -> String {
+        serde_json::to_string(&serde_json::json!({
+            "producer_instance_id": "00000000000000000000000000000001",
+            "stream_id": "00000000000000000000000000000002",
+            "oldest_sequence": "1",
+            "next_sequence": "1",
+            "next_cursor": "0",
+            "has_more": false,
+            "overrun": null,
+            "tracing_enabled": true,
+            "sampling_mode": "all",
+            "events_recorded_total": "0",
+            "events_overwritten_total": "0",
+            "events_sampled_out_total": "0",
+            "batch_source_monotonic_ns": "0",
+            "clock_anchor": {"monotonic_ns":"0","unix_epoch_ns":"0","uncertainty_ns":"1"},
+            "events": []
+        }))
+        .expect("serialize empty trace response")
+    }
+
+    fn trace_page(
+        trace_id: &str,
+        timestamp_ns: u64,
+        producer: &str,
+        stream: &str,
+        continuity: TraceContinuity,
+    ) -> TracePage {
+        let mut batch: crate::client::TraceBatch =
+            serde_json::from_str(&trace_response(trace_id, timestamp_ns))
+                .expect("trace batch fixture must parse");
+        batch.producer_instance_id = producer.to_owned();
+        batch.stream_id = stream.to_owned();
+        TracePage { batch, continuity }
     }
 
     fn timeline_app(server: &TestTraceServer) -> App {
@@ -1554,20 +1779,18 @@ mod tests {
     }
 
     #[test]
-    fn timeline_pause_skips_trace_drain_until_unpaused() {
+    fn timeline_pause_keeps_collecting_while_view_is_frozen() {
         let server = TestTraceServer::new(vec![trace_response("after-pause", 1)]);
         let mut app = timeline_app(&server);
-        app.timeline_paused = true;
+        app.timeline_toggle_pause();
 
         app.refresh();
-        assert!(
-            app.trace_events.is_empty(),
-            "paused timeline refresh must not drain traces"
-        );
+        assert_eq!(app.trace_events.len(), 1, "pause must not stop collection");
+        assert_eq!(app.timeline_pause_len, Some(0), "view remains frozen");
         assert_eq!(
             server.trace_requests(),
-            0,
-            "paused timeline refresh must not hit /api/traces"
+            1,
+            "paused timeline refresh must advance the private cursor"
         );
 
         app.timeline_toggle_pause();
@@ -1575,11 +1798,19 @@ mod tests {
 
         assert_eq!(
             server.trace_requests(),
-            1,
-            "unpaused timeline refresh must resume trace fetching"
+            2,
+            "unpaused timeline refresh must continue trace fetching"
         );
         assert_eq!(app.trace_events.len(), 1);
         assert_eq!(trace_timestamps(&app), vec![1]);
+        assert_eq!(
+            server.trace_paths(),
+            vec![
+                "/api/traces?limit=256".to_owned(),
+                "/api/traces?stream_id=00000000000000000000000000000002&after=1&limit=256"
+                    .to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -1599,6 +1830,86 @@ mod tests {
             "unpaused timeline refreshes must continue fetching traces"
         );
         assert_eq!(trace_timestamps(&app), vec![1, 2]);
+    }
+
+    #[test]
+    fn node_reset_segments_only_that_endpoint() {
+        let mut app = App::build(None, "test".to_owned(), false, false);
+        app.ingest_trace_pages(vec![
+            (
+                "node-a".to_owned(),
+                trace_page(
+                    "a1",
+                    1,
+                    "0000000000000000000000000000000a",
+                    "000000000000000000000000000000a1",
+                    TraceContinuity::Initial,
+                ),
+            ),
+            (
+                "node-b".to_owned(),
+                trace_page(
+                    "b1",
+                    2,
+                    "0000000000000000000000000000000b",
+                    "000000000000000000000000000000b1",
+                    TraceContinuity::Initial,
+                ),
+            ),
+        ]);
+
+        app.ingest_trace_pages(vec![(
+            "node-a".to_owned(),
+            trace_page(
+                "a2",
+                3,
+                "0000000000000000000000000000000a",
+                "000000000000000000000000000000a2",
+                TraceContinuity::StreamReset,
+            ),
+        )]);
+
+        assert_eq!(app.trace_stream_resets, 1);
+        assert_eq!(app.trace_events.len(), 2);
+        assert!(app.trace_events.iter().any(|event| {
+            event.endpoint == "node-b" && event.stream_id == "000000000000000000000000000000b1"
+        }));
+        assert!(app.trace_events.iter().any(|event| {
+            event.endpoint == "node-a" && event.stream_id == "000000000000000000000000000000a2"
+        }));
+    }
+
+    #[test]
+    fn cross_producer_order_uses_clock_anchor_not_raw_monotonic_time() {
+        let mut app = App::build(None, "test".to_owned(), false, false);
+        let mut later_wall = trace_page(
+            "later",
+            1,
+            "0000000000000000000000000000000b",
+            "000000000000000000000000000000b1",
+            TraceContinuity::Initial,
+        );
+        later_wall.batch.clock_anchor.monotonic_ns = 1;
+        later_wall.batch.clock_anchor.unix_epoch_ns = 2_000;
+        let mut earlier_wall = trace_page(
+            "earlier",
+            100,
+            "0000000000000000000000000000000a",
+            "000000000000000000000000000000a1",
+            TraceContinuity::Initial,
+        );
+        earlier_wall.batch.clock_anchor.monotonic_ns = 100;
+        earlier_wall.batch.clock_anchor.unix_epoch_ns = 1_000;
+
+        app.ingest_trace_pages(vec![
+            ("node-b".to_owned(), later_wall),
+            ("node-a".to_owned(), earlier_wall),
+        ]);
+
+        assert_eq!(app.trace_events[0].endpoint, "node-a");
+        assert_eq!(app.trace_events[0].correlated_unix_ns, 1_000);
+        assert_eq!(app.trace_events[1].endpoint, "node-b");
+        assert_eq!(app.trace_events[1].correlated_unix_ns, 2_000);
     }
 
     #[test]

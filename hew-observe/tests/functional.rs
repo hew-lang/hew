@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use hew_observe_protocol::{
     ActorInfo, ClusterMember, ConnectionInfo, CrashEntry, Envelope, HistoryEntry, Memory, Metrics,
-    RoutingSnapshot, SupervisorRow, TraceEvent, OBSERVE_SCHEMA_VERSION,
+    RoutingSnapshot, SupervisorRow, TraceBatch, OBSERVE_SCHEMA_VERSION,
 };
 const FIXTURE_COUNTER_INCREMENTS: u64 = 7;
 const EXPECTED_COUNTER_MESSAGES: u64 = FIXTURE_COUNTER_INCREMENTS + 1;
@@ -29,7 +29,7 @@ struct Snapshot {
     _cluster_members: Vec<ClusterMember>,
     _connections: Vec<ConnectionInfo>,
     _routing: RoutingSnapshot,
-    _traces: Vec<TraceEvent>,
+    _traces: TraceBatch,
     _supervisors: Vec<SupervisorRow>,
     _crashes: Vec<CrashEntry>,
     scrape: String,

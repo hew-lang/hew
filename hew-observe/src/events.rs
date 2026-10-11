@@ -1,5 +1,14 @@
 //! Trace event metadata shared by hew-observe views.
 
+use crate::client::{ActorIdentity, TraceEvent};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceActorKey {
+    pub producer_instance_id: String,
+    pub actor_id: u64,
+    pub spawn_serial: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceEventGroup {
     Lifecycle,
@@ -366,6 +375,77 @@ pub fn trace_event_meta(event_type: &str) -> TraceEventMeta {
         .copied()
         .find(|meta| meta.name == event_type)
         .unwrap_or(UNKNOWN_TRACE_EVENT_META)
+}
+
+/// Actor used to place an event in the legacy single-lane TUI.
+///
+/// Send events prefer their real source. Other events prefer their explicit
+/// subject. Unknown attribution remains unknown instead of being synthesized
+/// from timing or message type.
+pub fn trace_event_primary_actor(event: &TraceEvent) -> Option<&ActorIdentity> {
+    if event.event_type == "send" {
+        event
+            .source_actor
+            .as_ref()
+            .or(event.destination_actor.as_ref())
+    } else {
+        event
+            .subject
+            .as_ref()
+            .and_then(|subject| subject.actor.as_ref())
+            .or(event.source_actor.as_ref())
+            .or(event.destination_actor.as_ref())
+    }
+}
+
+pub fn trace_event_actor_key(
+    producer_instance_id: &str,
+    event: &TraceEvent,
+) -> Option<TraceActorKey> {
+    trace_event_primary_actor(event).map(|actor| TraceActorKey {
+        producer_instance_id: producer_instance_id.to_owned(),
+        actor_id: actor.actor_id,
+        spawn_serial: actor.spawn_serial,
+    })
+}
+
+pub fn trace_event_matches_actor(
+    producer_instance_id: &str,
+    event: &TraceEvent,
+    key: &TraceActorKey,
+) -> bool {
+    if producer_instance_id != key.producer_instance_id {
+        return false;
+    }
+    let matches = |actor: &ActorIdentity| {
+        actor.actor_id == key.actor_id
+            && key
+                .spawn_serial
+                .is_none_or(|serial| actor.spawn_serial == Some(serial))
+    };
+    event
+        .subject
+        .as_ref()
+        .and_then(|subject| subject.actor.as_ref())
+        .is_some_and(matches)
+        || event.source_actor.as_ref().is_some_and(matches)
+        || event.destination_actor.as_ref().is_some_and(matches)
+}
+
+/// Stable display lane label. Remote attribution stays explicitly unknown;
+/// the current transport does not expose a durable remote identity here.
+pub fn trace_event_lane_label(
+    endpoint: &str,
+    producer_instance_id: &str,
+    event: &TraceEvent,
+) -> String {
+    let Some(actor) = trace_event_primary_actor(event) else {
+        return format!("{endpoint}:unknown");
+    };
+    let producer = producer_instance_id
+        .get(..6)
+        .unwrap_or(producer_instance_id);
+    format!("{endpoint}:{producer}:{}", actor.actor_id >> 48)
 }
 
 #[cfg(test)]

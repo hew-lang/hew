@@ -793,6 +793,58 @@ fn compile_time_inputs_native_and_vm() {
 }
 
 #[cfg(unix)]
+#[test]
+fn typed_embedding_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    for (name, text) in [
+        (
+            "config.json",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.json"),
+        ),
+        (
+            "config.yaml",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.yaml"),
+        ),
+        (
+            "config.toml",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.toml"),
+        ),
+    ] {
+        inputs.insert(format!("typed-embed-data/{name}"), text);
+    }
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "typed_embed",
+            source_rel: "tests/core-acceptance/cases/typed-embed.hew",
+        },
+        "",
+        inputs,
+    );
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert_bytes("broken.json", vec![0xff]);
+    let invalid_data = compile_to_sandbox_bytecode_with_inputs(
+        "fn main() { let text: string = embed!(\"broken.json\"); println(text); }",
+        Some(SANDBOX_PROFILE),
+        inputs,
+    )
+    .expect("frontend diagnostic output");
+    assert!(
+        invalid_data.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("E_EMBED_DECODE")
+                && diagnostic
+                    .source_module
+                    .as_deref()
+                    .is_some_and(|source| source.ends_with("broken.json"))
+        }),
+        "{:?}",
+        invalid_data.diagnostics
+    );
+}
+
+#[cfg(unix)]
 fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::SourceSet) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);

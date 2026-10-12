@@ -1,0 +1,17 @@
+type Key {
+    id: i64;
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.id == other.id
+    }
+}
+
+type Outer {
+    key: Key;
+}
+
+const ITEMS: HashSet<Outer> = embed!("typed-embed-data/custom-key.json");
+
+fn main() {}

@@ -1,0 +1,14 @@
+[[case]]
+id = "typed-embed-untyped"
+source = "cases/typed-embed-untyped.hew"
+intent = "An embed invocation without a concrete expected type requests an annotation."
+kind = "reject"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 2
+column = 18
+message = "E_EMBED_NEEDS_TYPE"

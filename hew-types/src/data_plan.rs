@@ -431,6 +431,7 @@ impl<A, V> DataPlan<A, V> {
 }
 
 /// Project the checked codec walk into the shared generator and VM value vocabulary.
+/// Platform-sized integers use the consumer's target pointer width.
 ///
 /// # Errors
 /// Returns an error for missing child plans, unsupported scalars or oversized arrays.
@@ -441,6 +442,7 @@ impl<A, V> DataPlan<A, V> {
 pub fn property_shape<A, V>(
     root: &ResolvedTy,
     plans: &BTreeMap<ResolvedTy, DataPlan<A, V>>,
+    pointer_width: u8,
     aggregate: impl Fn(&A) -> Option<u32>,
     variant: impl Fn(&V) -> Option<u32>,
 ) -> Result<hew_codec::property::Shape, String> {
@@ -502,6 +504,10 @@ pub fn property_shape<A, V>(
                     min: i64::from(i32::MIN),
                     max: i64::from(i32::MAX),
                 },
+                ResolvedTy::Isize if pointer_width == 32 => Node::Signed {
+                    min: i64::from(i32::MIN),
+                    max: i64::from(i32::MAX),
+                },
                 ResolvedTy::I64 | ResolvedTy::Isize | ResolvedTy::Duration => Node::Signed {
                     min: i64::MIN,
                     max: i64::MAX,
@@ -513,6 +519,9 @@ pub fn property_shape<A, V>(
                     max: u64::from(u16::MAX),
                 },
                 ResolvedTy::U32 => Node::Unsigned {
+                    max: u64::from(u32::MAX),
+                },
+                ResolvedTy::Usize if pointer_width == 32 => Node::Unsigned {
                     max: u64::from(u32::MAX),
                 },
                 ResolvedTy::U64 | ResolvedTy::Usize => Node::Unsigned { max: u64::MAX },

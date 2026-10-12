@@ -1,0 +1,14 @@
+[[case]]
+id = "typed-embed-custom-eq"
+source = "cases/typed-embed-custom-eq.hew"
+intent = "Compile-time embedding refuses custom equality inside a structural collection key."
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 15
+column = 31
+message = "E_EMBED_KEY: embed! cannot execute user-defined equality for key `Key`"

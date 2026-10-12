@@ -134,9 +134,8 @@ pub struct TypeError {
     pub notes: Vec<TypeErrorNote>,
     /// "Did you mean?" suggestions
     pub suggestions: Vec<String>,
-    /// Dotted module path of the non-root module this diagnostic originates from
-    /// (e.g. `"net.http"`).  `None` means the root compilation unit.
-    /// Used by the CLI to route the error to the correct source file for display.
+    /// Source identity: a dotted module path or a consumed input's canonical path.
+    /// `None` means the root compilation unit.
     pub source_module: Option<String>,
 }
 
@@ -164,6 +163,13 @@ impl TypeError {
     #[must_use]
     pub fn with_source_module(mut self, module: impl Into<String>) -> Self {
         self.source_module = Some(module.into());
+        self
+    }
+
+    /// Attribute this diagnostic to a file consumed by the shared input provider.
+    #[must_use]
+    pub fn with_source_input(mut self, path: &std::path::Path) -> Self {
+        self.source_module = Some(path.to_string_lossy().into_owned());
         self
     }
 

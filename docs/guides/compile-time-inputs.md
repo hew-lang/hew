@@ -55,6 +55,43 @@ fn main() {
 }
 ```
 
+`embed!` decodes a JSON, YAML or TOML file during compilation. The expected
+type supplies its schema, including `#[serial]` field names and skipped
+fields, using the same decoder as `json.decode`, `yaml.decode` and
+`toml.decode`.
+
+```hew
+type Config {
+    host: string;
+    port: u16;
+    labels: Vec<string>;
+}
+
+const DEFAULTS: Config = embed!("config/defaults.toml");
+
+fn main() {
+    let local: Config = embed!("config/local.json");
+    println(f"{local.host}:{local.port}");
+    println(DEFAULTS.labels[0]);
+}
+```
+
+The filename must end in `.json`, `.yaml`, `.yml` or `.toml`. An invocation
+needs a concrete expected type, such as a binding annotation, a function
+parameter type or a return type. Data errors name the consumed file and
+failing field or element; syntax errors also retain their source position.
+Map keys and set elements with user-defined equality require runtime
+decoding because compilation cannot execute Hew methods. Structurally
+derived keys are supported, and duplicate keys or elements are rejected.
+The result contains ordinary Hew values and needs no decoder at runtime.
+Embedded files follow the same path, tracking and publication rules as
+included files.
+
+An aggregate constant produces an independent value at each use. Passing
+`DEFAULTS` to a consuming parameter or changing a local collection taken
+from it leaves subsequent uses of `DEFAULTS` intact. A closure can refer to
+the constant without capturing a local owner.
+
 Set `[package] hew` in `hew.toml` to the compiler version requirement your
 package needs, for example `hew = ">=0.6.1"`. The shared frontend checks this
 requirement before parsing source, including manifests supplied to browser

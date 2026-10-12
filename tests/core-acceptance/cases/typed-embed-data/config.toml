@@ -1,0 +1,19 @@
+serviceName = "api"
+enabled = true
+labels = ["green", "blue"]
+retryLimit = 3
+flags = ["fast", "portable"]
+origin = [4, 0.5, true]
+blob = "AP8="
+grade = "é"
+
+[workers]
+first = 2
+second = 3
+
+[transport.Tcp]
+host = "localhost"
+port = 8080
+
+[weights]
+cpu = 8

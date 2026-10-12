@@ -25,6 +25,7 @@ impl SemWirePlans {
         hew_types::data_plan::property_shape(
             &self.root,
             &self.plans,
+            64,
             |shape| Some(shape.0),
             |shape| Some(shape.0),
         )

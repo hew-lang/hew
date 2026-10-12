@@ -1301,6 +1301,11 @@ impl Checker {
         if self.report_bare_const_scope_error(name, span) {
             return Ty::Error;
         }
+        if self.is_constant_identifier(hew_parser::ast::Ident::new(surface_name)) {
+            if let Some(binding) = self.env.lookup(name) {
+                return binding.ty.clone();
+            }
+        }
         // Module-qualified value constructor reference encoded as a flat
         // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
         // call-args or brace-body follow.  Dispatch to the fail-closed

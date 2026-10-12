@@ -65,9 +65,22 @@ pub struct InputError {
 pub enum ConstantValue {
     Integer(i128),
     Float(f64),
+    Duration(i64),
+    Bool(bool),
+    Char(char),
+    Unit,
     String(String),
     Bytes(Vec<u8>),
     Record(Vec<(String, TypedConstant)>),
+    Tuple(Vec<TypedConstant>),
+    Array(Vec<TypedConstant>),
+    Vector(Vec<TypedConstant>),
+    Set(Vec<TypedConstant>),
+    Map(Vec<(TypedConstant, TypedConstant)>),
+    Variant {
+        index: usize,
+        fields: Vec<(String, TypedConstant)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

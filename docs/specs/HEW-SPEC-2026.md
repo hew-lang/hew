@@ -7974,8 +7974,8 @@ breaking change for callers that name it.
 
 ### 12.8 Compile-time inputs
 
-The compiler-provided invocations `include_str!(path)`, `include_bytes!(path)`
-and `stringify!(expression)` are expressions. Their names remain ordinary
+The compiler-provided invocations `include_str!(path)`, `include_bytes!(path)`,
+`stringify!(expression)`, `location!()` and `embed!(path)` are expressions. Their names remain ordinary
 identifiers outside invocation syntax. Invocations accept a trailing comma.
 
 `include_str!` and `include_bytes!` take exactly one string literal path and
@@ -8011,6 +8011,22 @@ record with `file: string`, `line: i64` and `column: i64`. The file is
 package-relative using `/` separators. Line and column are one-based;
 columns count Unicode characters. A constant initializer records its own
 invocation, rather than the place where the constant is later used.
+
+`embed!` takes one string literal path ending in `.json`, `.yaml`, `.yml` or
+`.toml`. It decodes the file against its concrete expected type during
+compilation, using the ordinary typed data decoder and `#[serial]` schema.
+It may appear in a constant initializer or an expression. Without an
+expected type it is an error; embedding does not infer types from data.
+The resulting records, variants and collections follow ordinary value and
+ownership semantics. Data errors are attributed to the consumed file.
+An aggregate constant is materialized as a fresh value at each use; consuming
+one materialization does not consume the constant declaration. A reference
+to a constant is therefore a value expression, rather than a mutable or
+consumable binding place.
+Duplicate map keys and set elements are errors. Keys using user-defined
+equality require runtime decoding, since compile-time embedding does not
+execute user methods. The input obeys the same package confinement and
+compilation dependency rules as `include_str!`.
 
 ## 13. Self-Hosting Roadmap
 

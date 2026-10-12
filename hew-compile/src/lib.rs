@@ -1732,7 +1732,24 @@ fn type_diagnostic_to_frontend(
     root_filename: &str,
     diagnostic: hew_types::TypeError,
     module_source_map: &ModuleSourceMap,
+    documents: &SourceSet,
 ) -> FrontendDiagnostic {
+    if let Some(input) = diagnostic.source_module.as_ref().and_then(|origin| {
+        documents
+            .inputs()
+            .into_iter()
+            .find(|input| input.path.to_string_lossy() == origin.as_str())
+    }) {
+        if let Ok(bytes) = documents.read_bytes(&input.path) {
+            let source = String::from_utf8_lossy(&bytes);
+            return FrontendDiagnostic::type_(
+                &source,
+                &display_path(&input.path),
+                diagnostic,
+                module_source_map,
+            );
+        }
+    }
     let (source, filename) = if let Some(ref mod_name) = diagnostic.source_module {
         module_source_map
             .get(mod_name.as_str())
@@ -1917,11 +1934,23 @@ fn typecheck_program_with_dependency_cache(
         .iter()
         .cloned()
         .map(|diagnostic| {
-            type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
+            type_diagnostic_to_frontend(
+                source,
+                input,
+                diagnostic,
+                &module_source_map,
+                &options.documents,
+            )
         })
         .collect::<Vec<_>>();
     diagnostics.extend(tco.warnings.iter().cloned().map(|diagnostic| {
-        type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
+        type_diagnostic_to_frontend(
+            source,
+            input,
+            diagnostic,
+            &module_source_map,
+            &options.documents,
+        )
     }));
 
     let module_registry = checker.into_module_registry();

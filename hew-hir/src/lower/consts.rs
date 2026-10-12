@@ -14,8 +14,103 @@ impl LowerCtx {
         let kind = match value {
             HirConstValue::Integer(value) => HirExprKind::Literal(HirLiteral::Integer(*value)),
             HirConstValue::Float(value) => HirExprKind::Literal(HirLiteral::Float(*value)),
+            HirConstValue::Duration(value) => HirExprKind::Literal(HirLiteral::Duration(*value)),
+            HirConstValue::Bool(value) => HirExprKind::Literal(HirLiteral::Bool(*value)),
+            HirConstValue::Char(value) => HirExprKind::Literal(HirLiteral::Char(*value)),
+            HirConstValue::Unit => HirExprKind::Literal(HirLiteral::Unit),
             HirConstValue::String(value) => HirExprKind::Literal(HirLiteral::String(value.clone())),
             HirConstValue::Bytes(value) => HirExprKind::Literal(HirLiteral::Bytes(value.clone())),
+            HirConstValue::Tuple(elements) => HirExprKind::TupleLiteral {
+                elements: elements
+                    .iter()
+                    .map(|element| {
+                        self.lower_constant_value(
+                            &element.value,
+                            &element.ty,
+                            span,
+                            IntentKind::Read,
+                        )
+                    })
+                    .collect(),
+            },
+            HirConstValue::Array(elements) => HirExprKind::ArrayLiteral {
+                elements: elements
+                    .iter()
+                    .map(|element| {
+                        self.lower_constant_value(
+                            &element.value,
+                            &element.ty,
+                            span,
+                            IntentKind::Read,
+                        )
+                    })
+                    .collect(),
+            },
+            HirConstValue::Vector(elements) => {
+                let elements = elements
+                    .iter()
+                    .map(|element| {
+                        self.lower_constant_value(
+                            &element.value,
+                            &element.ty,
+                            span,
+                            IntentKind::Read,
+                        )
+                    })
+                    .collect();
+                self.make_sequence_literal(elements, ty, span)
+            }
+            HirConstValue::Set(elements) => {
+                let elements = elements
+                    .iter()
+                    .map(|element| {
+                        self.lower_constant_value(
+                            &element.value,
+                            &element.ty,
+                            span,
+                            IntentKind::Read,
+                        )
+                    })
+                    .collect();
+                self.make_set_literal(elements, ty, span)
+            }
+            HirConstValue::Map(entries) => {
+                let entries = entries
+                    .iter()
+                    .map(|(key, value)| {
+                        (
+                            self.lower_constant_value(&key.value, &key.ty, span, IntentKind::Read),
+                            self.lower_constant_value(
+                                &value.value,
+                                &value.ty,
+                                span,
+                                IntentKind::Read,
+                            ),
+                        )
+                    })
+                    .collect();
+                self.make_map_literal(entries, ty, span)
+            }
+            HirConstValue::Variant { index, fields } => HirExprKind::MachineVariantCtor {
+                machine_name: ty.user_facing().to_string(),
+                state_idx: *index,
+                payload: (!fields.is_empty()).then(|| {
+                    fields
+                        .iter()
+                        .map(|(name, field)| {
+                            (
+                                name.clone(),
+                                self.lower_constant_value(
+                                    &field.value,
+                                    &field.ty,
+                                    span,
+                                    IntentKind::Read,
+                                ),
+                            )
+                        })
+                        .collect()
+                }),
+            },
             HirConstValue::Record(fields) => HirExprKind::StructInit {
                 name: ty.user_facing().to_string(),
                 type_args: Vec::new(),
@@ -28,7 +123,7 @@ impl LowerCtx {
                                 &field.value,
                                 &field.ty,
                                 span,
-                                IntentKind::Consume,
+                                IntentKind::Read,
                             ),
                         )
                     })

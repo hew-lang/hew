@@ -562,6 +562,9 @@ impl Checker {
             _ => None,
         };
         match (expr, expected) {
+            (Expr::MacroInvocation { name, args }, _) if name.name.as_str() == "embed" => {
+                self.check_embed(args, span, expected)
+            }
             (Expr::ContextVariant(context), _) => {
                 if let Some(result) = self.dispatch_context_builtin_variant(
                     expected,

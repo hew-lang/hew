@@ -1,0 +1,5 @@
+const KEYS: HashSet<i64> = embed!("typed-embed-data/duplicate.json");
+
+fn main() {
+    println(KEYS.len());
+}

@@ -380,6 +380,7 @@ impl Checker {
                 .chain_values
                 .last()
                 .and_then(|context| context.place.clone()),
+            Expr::Ident(name) if self.is_constant_identifier(*name) => None,
             Expr::Ident(name) => Some((name.to_string(), PlacePath::new())),
             Expr::FieldAccess { object, field } => {
                 // `self.count` in an actor body denotes the state binding
@@ -396,6 +397,12 @@ impl Checker {
             }
             _ => None,
         }
+    }
+
+    pub(super) fn is_constant_identifier(&self, name: hew_parser::ast::Ident) -> bool {
+        self.scope_site()
+            .and_then(|site| self.scopes.value_head(&self.env, site, name))
+            .is_some_and(|resolution| matches!(resolution, super::super::scope::Resolution::Def(id) if self.defs.kind(id) == crate::DeclarationKind::Const))
     }
 
     /// The actor state field an `object.field` projection names when `object`

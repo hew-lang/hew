@@ -583,6 +583,17 @@ impl Scopes {
         &self.resolutions
     }
 
+    /// Resolve a value head without publishing a source use.
+    pub(crate) fn value_head(
+        &self,
+        env: &TypeEnv,
+        site: ScopeSite,
+        head: Ident,
+    ) -> Option<Resolution> {
+        self.resolve_head(env, site, Namespace::Value, head, &(0..0))
+            .map(|(resolution, _)| resolution)
+    }
+
     /// Take the resolution table for publication.
     pub fn take_resolutions(&mut self) -> HashMap<SpanKey, Resolution> {
         std::mem::take(&mut self.resolutions)

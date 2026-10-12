@@ -3627,18 +3627,13 @@ impl<'a> Formatter<'a> {
                 }
                 self.write(";");
             }
-            Stmt::Defer { body: expr, .. } => {
-                self.write("defer ");
-                if matches!(
-                    stmt,
-                    Stmt::Defer {
-                        failure_only: true,
-                        ..
-                    }
-                ) {
-                    self.write("err ");
-                }
-                self.format_expr(expr);
+            Stmt::Defer { body, failure_only } => {
+                self.write(if *failure_only {
+                    "defer err "
+                } else {
+                    "defer "
+                });
+                self.format_expr(body);
                 self.write(";");
             }
             Stmt::Expression(expr) => {
@@ -3878,18 +3873,16 @@ impl<'a> Formatter<'a> {
                 self.format_expr(expr);
                 self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
-            Stmt::Defer { body: expr, .. } => {
+            Stmt::Defer {
+                body: expr,
+                failure_only,
+            } => {
                 self.write_indent();
-                self.write("defer ");
-                if matches!(
-                    stmt,
-                    Stmt::Defer {
-                        failure_only: true,
-                        ..
-                    }
-                ) {
-                    self.write("err ");
-                }
+                self.write(if *failure_only {
+                    "defer err "
+                } else {
+                    "defer "
+                });
                 self.format_expr(expr);
                 // Block expressions already end with `}`, no semicolon.
                 if matches!(expr.0, Expr::Block(_)) {

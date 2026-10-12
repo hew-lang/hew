@@ -727,6 +727,7 @@ impl Builder<'_, '_> {
         target: &hew_types::CallTarget,
         args: &[HirExpr],
         evaluation_order: &[usize],
+        value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         let hew_types::CallTarget::DynamicVtable { method, slot, .. } = target else {
             return Err("dynamic dispatch carries no checker vtable target".to_string());
@@ -775,7 +776,7 @@ impl Builder<'_, '_> {
             lowered_args,
             &loans,
             &live_before_arguments,
-            true,
+            value_required,
             None,
         )
     }

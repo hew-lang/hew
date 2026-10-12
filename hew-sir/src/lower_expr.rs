@@ -189,9 +189,21 @@ impl Builder<'_, '_> {
                 args,
                 evaluation_order,
                 ..
-            } => self
-                .lower_dyn_call(expr, receiver, target, args, evaluation_order)?
-                .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
+            } => {
+                let value_required = self.ty(&expr.ty) != ResolvedTy::Unit;
+                match self.lower_dyn_call(
+                    expr,
+                    receiver,
+                    target,
+                    args,
+                    evaluation_order,
+                    value_required,
+                )? {
+                    Some(value) => Ok(value),
+                    None if !value_required => self.emit(expr, SemOpKind::ConstUnit),
+                    None => Err("dynamic dispatch produced no SIR value".to_string()),
+                }
+            }
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),

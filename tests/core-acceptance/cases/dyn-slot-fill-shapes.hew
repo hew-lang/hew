@@ -26,7 +26,8 @@ impl Mutable for Both {
     fn touch(var self) { self.id = self.id + 1; }
 }
 
-resource Counter { id: i64; }
+#[resource]
+type Counter { id: i64; }
 impl Counter { fn close(consume self) { println(f"close {self.id}"); } }
 impl Mutable for Counter {
     fn value(self) -> i64 { self.id }

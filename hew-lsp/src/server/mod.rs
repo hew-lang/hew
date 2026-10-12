@@ -446,9 +446,7 @@ pub struct HewLanguageServer {
 impl HewLanguageServer {
     /// Create a new language server with the given LSP client.
     ///
-    /// `extra_pkg_paths` mirrors `hew check --pkg-path`: each directory is
-    /// appended to the module search roots so that `hew::pkg` imports that
-    /// resolve via `--pkg-path` in the CLI also resolve in the LSP.
+    /// Use the same optional package search directory as `hew check --pkg-path`.
     #[must_use]
     pub fn new_with_options(client: Client, extra_pkg_paths: Vec<PathBuf>) -> Self {
         Self {

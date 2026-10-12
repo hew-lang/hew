@@ -112,10 +112,7 @@ fn primitive_copy_layout_on_path(
     match ty {
         Ty::Bool | Ty::I8 | Ty::U8 => Some((1, 1)),
         Ty::I16 | Ty::U16 => Some((2, 2)),
-        // f32 is hash-ineligible (caught by ty_is_hash_eligible) but included
-        // for completeness so this function can serve as a general primitive sizer.
         Ty::I32 | Ty::U32 | Ty::Char | Ty::F32 => Some((4, 4)),
-        // f64 is hash-ineligible but included for the same reason.
         Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
         Ty::Array(elem, count) => {
             let (elem_size, elem_align) = primitive_copy_layout_on_path(elem, types, visiting)?;

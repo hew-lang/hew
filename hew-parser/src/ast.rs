@@ -579,6 +579,11 @@ pub enum Expr {
         ty: Spanned<TypeExpr>,
     },
     PostfixTry(Box<Spanned<Expr>>),
+    OptionalChain {
+        receiver: Box<Spanned<Expr>>,
+        body: Box<Spanned<Expr>>,
+    },
+    ChainValue,
     /// Evaluate the right operand only when the left Option is absent.
     Coalesce {
         left: Box<Spanned<Expr>>,

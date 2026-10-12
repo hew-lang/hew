@@ -436,6 +436,10 @@ impl Parser<'_> {
                     lhs = (Expr::PostfixTry(Box::new(lhs)), start..end);
                     continue;
                 }
+                Some(Token::QuestionDot) => {
+                    lhs = self.parse_optional_chain(lhs)?;
+                    continue;
+                }
                 Some(Token::As) => {
                     self.advance();
                     let ty = self.parse_type()?;
@@ -1797,6 +1801,32 @@ impl Parser<'_> {
         clippy::too_many_lines,
         reason = "single dispatch over all postfix-dot syntactic forms; splitting fragments shared start/cursor state"
     )]
+    fn parse_optional_chain(&mut self, receiver: Spanned<Expr>) -> Option<Spanned<Expr>> {
+        let start = receiver.1.start;
+        let placeholder = (
+            Expr::ChainValue,
+            self.peek_span().start..self.peek_span().start + 1,
+        );
+        let mut body = self.parse_dot_postfix(placeholder)?;
+        loop {
+            body = match self.peek() {
+                Some(Token::Dot) => self.parse_dot_postfix(body)?,
+                Some(Token::LeftParen) => self.parse_call_postfix(body)?,
+                Some(Token::LeftBracket) => self.parse_index_postfix(body)?,
+                Some(Token::QuestionDot) => self.parse_optional_chain(body)?,
+                _ => break,
+            };
+        }
+        let end = body.1.end;
+        Some((
+            Expr::OptionalChain {
+                receiver: Box::new(receiver),
+                body: Box::new(body),
+            },
+            start..end,
+        ))
+    }
+
     pub(crate) fn parse_dot_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let start = lhs.1.start;
         self.advance(); // consume .

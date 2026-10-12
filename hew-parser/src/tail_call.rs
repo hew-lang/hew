@@ -146,6 +146,10 @@ fn expr_contains_defer(expr: &Expr) -> bool {
     match expr {
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -159,6 +163,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -371,6 +376,10 @@ fn mark_stmt(stmt: &mut Stmt) {
 fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
     match expr {
         Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -395,6 +404,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

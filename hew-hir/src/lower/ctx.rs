@@ -65,6 +65,7 @@ impl LowerCtx {
             failing_generator_item: None,
             result_return_coercions: tc_output.result_return_coercions.clone(),
             recovery_kinds: tc_output.recovery_kinds.clone(),
+            chain_values: Vec::new(),
             call_argument_slots: tc_output.call_argument_slots.clone(),
             spawn_argument_slots: tc_output.spawn_argument_slots.clone(),
             checked_call_effects: tc_output.suspension_effects.calls.clone(),

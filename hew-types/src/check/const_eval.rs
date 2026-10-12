@@ -244,6 +244,8 @@ fn eval_inner(
         // NotConstant.
         Expr::Clone(_)
         | Expr::Coalesce { .. }
+        | Expr::OptionalChain { .. }
+        | Expr::ChainValue
         | Expr::Handle { .. }
         | Expr::Literal(_)
         | Expr::ContextVariant(_)

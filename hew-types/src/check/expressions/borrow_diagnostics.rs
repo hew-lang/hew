@@ -964,7 +964,9 @@ impl Checker {
                     );
                 }
             }
-            Expr::Coalesce { right: body, .. } | Expr::Handle { body, .. } => {
+            Expr::Coalesce { right: body, .. }
+            | Expr::Handle { body, .. }
+            | Expr::OptionalChain { body, .. } => {
                 let mut branch_bindings = bindings.clone();
                 if let Expr::Handle {
                     error: (Some(name), _),
@@ -991,6 +993,7 @@ impl Checker {
             | Expr::GenericApplySuffix { .. }
             | Expr::RecordInitSuffix { .. }
             | Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::Tuple(_)
             | Expr::Array(_)
             | Expr::ArrayRepeat { .. }

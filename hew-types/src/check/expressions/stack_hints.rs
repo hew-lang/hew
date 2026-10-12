@@ -189,6 +189,10 @@ impl Checker {
     pub(super) fn scan_expr_for_stack_hints(&mut self, expr: &Expr) {
         match expr {
             Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,

@@ -301,6 +301,10 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         }
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -352,6 +356,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
@@ -384,6 +389,8 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::GenericApplySuffix { .. }
             | Expr::RecordInitSuffix { .. }
             | Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
+            | Expr::OptionalChain { .. }
             | Expr::Unary { .. }
             | Expr::Clone(_)
             | Expr::Literal(_)
@@ -432,6 +439,8 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::GenericApplySuffix { .. }
         | Expr::RecordInitSuffix { .. }
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
+        | Expr::OptionalChain { .. }
         | Expr::Unary { .. }
         | Expr::Clone(_)
         | Expr::Literal(_)
@@ -606,6 +615,7 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,
@@ -709,6 +719,10 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
             .any(|(key, value)| bounded_expr_has_sleep(&key.0) || bounded_expr_has_sleep(&value.0)),
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -967,6 +981,10 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         }),
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -1004,6 +1022,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,

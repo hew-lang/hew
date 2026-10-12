@@ -904,7 +904,12 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 collect_locals_from_spanned_expr(arg.expr(), offset, locals);
             }
         }
-        Expr::Binary { left, right, .. } | Expr::Coalesce { left, right } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        } => {
             collect_locals_from_spanned_expr(left, offset, locals);
             collect_locals_from_spanned_expr(right, offset, locals);
         }

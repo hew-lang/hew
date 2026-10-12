@@ -562,6 +562,13 @@ impl Checker {
                 }
             }
 
+            Expr::ChainValue => self
+                .chain_values
+                .last()
+                .map_or(Ty::Error, |(ty, _)| ty.clone()),
+            Expr::OptionalChain { receiver, body } => {
+                self.check_optional_chain(receiver, body, span)
+            }
             Expr::Coalesce { left, right } => self.check_local_recovery(left, right, None, span),
             Expr::Handle {
                 operand,
@@ -928,6 +935,48 @@ impl Checker {
     /// Type one lazy recovery branch without introducing a callable boundary.
     /// The success path preserves the state after the operand; only the other
     /// path evaluates the fallback or binds the Result error.
+    fn check_optional_chain(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        span: &Span,
+    ) -> Ty {
+        let container = self.synthesize(&receiver.0, &receiver.1);
+        let container = self.subst.resolve(&container);
+        let Some(payload) = container.as_option().cloned() else {
+            if container != Ty::Error {
+                self.report_error(TypeErrorKind::InvalidOperation, &receiver.1,
+                    if container.as_result().is_some() {
+                        "E_OPTIONAL_CHAIN_RESULT: `?.` requires Option; propagate with `(value?).member` or recover with `handle`".to_string()
+                    } else {
+                        format!("E_OPTIONAL_CHAIN_NOT_OPTION: `?.` requires Option, found `{container}`; use `.`")
+                    });
+            }
+            return Ty::Error;
+        };
+        let entry = self.env.ownership_snapshot();
+        let place = self.expr_place(&receiver.0);
+        self.chain_values.push((payload, place));
+        let body_ty = self.synthesize(&body.0, &body.1);
+        self.chain_values.pop();
+        let taken = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: Self::arm_skips_join(&body_ty),
+        };
+        self.join_fall_through(&entry, taken, span);
+        let body_ty = self.subst.resolve(&body_ty);
+        let flatten = body_ty.as_option().is_some();
+        self.recovery_kinds.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            RecoveryKind::OptionalChain { flatten },
+        );
+        if flatten {
+            body_ty
+        } else {
+            self.named_ty_for_key("Option", vec![body_ty])
+        }
+    }
+
     pub(super) fn check_local_recovery(
         &mut self,
         operand: &Spanned<Expr>,

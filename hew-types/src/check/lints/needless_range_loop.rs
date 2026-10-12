@@ -227,6 +227,10 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::ForkChild { expr: inner, .. } => find_in_expr(ctx, levels, &inner.0, out),
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -554,6 +558,7 @@ impl BodyScan<'_> {
                 }
             }
             Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::Literal(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -584,6 +589,10 @@ impl BodyScan<'_> {
             }
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,

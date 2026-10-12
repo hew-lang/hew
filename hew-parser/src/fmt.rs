@@ -3409,6 +3409,7 @@ impl<'a> Formatter<'a> {
             Expr::Literal(_)
             | Expr::Ident(_)
             | Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
@@ -3445,6 +3446,10 @@ impl<'a> Formatter<'a> {
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,
@@ -4020,6 +4025,8 @@ impl<'a> Formatter<'a> {
             expr,
             Expr::Binary { .. }
                 | Expr::Coalesce { .. }
+                | Expr::OptionalChain { .. }
+                | Expr::PostfixTry(_)
                 | Expr::Handle { .. }
                 | Expr::ReturnError(_)
                 | Expr::Unary { .. }
@@ -4706,6 +4713,12 @@ impl<'a> Formatter<'a> {
                 self.format_receiver(expr);
                 self.write("?");
             }
+            Expr::OptionalChain { receiver, body } => {
+                self.format_receiver(receiver);
+                self.write("?");
+                self.format_expr(body);
+            }
+            Expr::ChainValue => {}
             Expr::Coalesce { left, right } => {
                 self.format_expr_prec(left, 1, false);
                 self.write(" ?? ");

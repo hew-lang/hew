@@ -934,6 +934,10 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         }
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,

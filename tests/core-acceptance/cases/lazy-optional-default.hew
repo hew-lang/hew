@@ -7,10 +7,40 @@ fn choose(value: Option<string>) -> string {
     value ?? fallback()
 }
 
+type Address { city: string; postcode: Option<string>; }
+type User { address: Option<Address>; }
+
+#[resource]
+type Session { id: i64; }
+impl Session {
+    fn peek(self) -> i64 { self.id }
+    fn close(consume self) { println("closed"); }
+}
+
+fn chained(value: Option<User>) -> Option<i64> {
+    .Some(value?.address?.city.len()?)
+}
+
+fn absent_index() -> i64 {
+    panic("absent chain evaluated its index")
+}
+
 fn main() -> i64 {
     let present = Option.Some("kept".to_upper());
     println(choose(present));
     println(choose(present));
     println(choose(.None));
+    let user: Option<User> = .Some(User { address: .Some(Address { city: "Regina", postcode: .None }) });
+    assert(user?.address?.city.len() == Option.Some(6));
+    assert((user?.address?.postcode?.len()).is_none());
+    assert(chained(user) == Option.Some(6));
+    let missing: Option<User> = .None;
+    assert((missing?.address?.city[absent_index()]).is_none());
+    assert((user?.address).is_some());
+    assert(present?.len() == Option.Some(4));
+    assert(present?.len() == Option.Some(4));
+    let session: Option<Session> = .Some(Session { id: 7 });
+    assert(session?.peek() == Option.Some(7));
+    assert(session?.peek() == Option.Some(7));
     0
 }

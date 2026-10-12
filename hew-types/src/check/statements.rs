@@ -433,6 +433,10 @@ impl Checker {
             Expr::Ident(name) => name.name.as_str() == binding,
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,

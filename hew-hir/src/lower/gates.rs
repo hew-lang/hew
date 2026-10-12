@@ -362,6 +362,10 @@ pub(super) fn scan_expr_for_binop_gates(
     match expr {
         Expr::Binary { .. } => unreachable!("handled above"),
         Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,

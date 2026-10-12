@@ -366,6 +366,10 @@ impl Checker {
 
     pub(in crate::check) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
         match expr {
+            Expr::ChainValue => self
+                .chain_values
+                .last()
+                .and_then(|(_, place)| place.clone()),
             Expr::Ident(name) => Some((name.to_string(), PlacePath::new())),
             Expr::FieldAccess { object, field } => {
                 // `self.count` in an actor body denotes the state binding

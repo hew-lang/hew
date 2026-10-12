@@ -1,10 +1,10 @@
 [[case]]
 id = "lazy-optional-default"
-intent = "Present owning options skip fallback side effects and survive repeated calls; absence evaluates the fallback once."
+intent = "Optional chains flatten final options, skip absent member/index work, preserve borrowed resource payloads and compose with propagation and lazy defaults."
 source = "cases/lazy-optional-default.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "KEPT\nKEPT\nfallback\nDEFAULT\n"
+stdout = "KEPT\nKEPT\nfallback\nDEFAULT\nclosed\n"
 exit = 0

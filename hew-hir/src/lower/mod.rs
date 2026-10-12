@@ -1065,6 +1065,7 @@ struct LowerCtx {
     failing_generator_item: Option<ResolvedTy>,
     result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
+    chain_values: Vec<HirExpr>,
     /// Checker-bound parameter slot of each source argument, for calls whose
     /// named arguments bind out of source order.
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,

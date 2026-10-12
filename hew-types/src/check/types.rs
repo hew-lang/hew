@@ -1778,6 +1778,9 @@ pub enum SpawnSlot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryKind {
     Option,
+    OptionalChain {
+        flatten: bool,
+    },
     Result,
     Scope {
         failure_ty: crate::resolved_ty::ResolvedTy,
@@ -3407,6 +3410,7 @@ pub struct Checker {
     pub(super) file_import_const_exports: HashMap<String, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
+    pub(super) chain_values: Vec<(Ty, Option<(String, crate::env::PlacePath)>)>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// See [`TypeCheckOutput::spawn_argument_slots`].
@@ -4456,6 +4460,7 @@ impl Checker {
             published_bare_const_owners: HashMap::new(),
             file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
+            chain_values: Vec::new(),
             call_argument_slots: HashMap::new(),
             spawn_argument_slots: HashMap::new(),
             named_argument_calls: HashSet::new(),

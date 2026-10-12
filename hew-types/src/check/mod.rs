@@ -2654,6 +2654,7 @@ impl Checker {
             published_bare_const_owners: self.published_bare_const_owners.clone(),
             file_import_const_exports: self.file_import_const_exports.clone(),
             recovery_kinds: self.recovery_kinds.clone(),
+            chain_values: self.chain_values.clone(),
             call_argument_slots: self.call_argument_slots.clone(),
             spawn_argument_slots: self.spawn_argument_slots.clone(),
             named_argument_calls: self.named_argument_calls.clone(),
@@ -4675,6 +4676,10 @@ impl Checker {
             }
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,
@@ -4783,6 +4788,7 @@ impl Checker {
             Expr::Literal(_)
             | Expr::Ident(_)
             | Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
@@ -5131,6 +5137,10 @@ fn collect_lambda_spans_in_expr(
         }
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -5217,6 +5227,7 @@ fn collect_lambda_spans_in_expr(
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

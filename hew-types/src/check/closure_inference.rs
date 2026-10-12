@@ -170,7 +170,7 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
                 esc_visit_expr(e, name, in_fork, acc, true);
             }
         }
-        Stmt::Defer(boxed) => esc_visit_expr(&boxed.0, name, in_fork, acc, false),
+        Stmt::Defer { body: boxed, .. } => esc_visit_expr(&boxed.0, name, in_fork, acc, false),
         Stmt::Expression((e, _)) => esc_visit_expr(e, name, in_fork, acc, false),
     }
 }

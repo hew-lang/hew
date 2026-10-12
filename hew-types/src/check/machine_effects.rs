@@ -718,7 +718,7 @@ impl EffectVisitor<'_> {
 
 impl NodeVisitor for EffectVisitor<'_> {
     fn visit_stmt(&mut self, stmt: &Stmt, span: &Span) {
-        if matches!(stmt, Stmt::Defer(_)) {
+        if matches!(stmt, Stmt::Defer { body: _, .. }) {
             self.refuse(span, "deferred effects are not admitted in machine helpers");
         }
     }

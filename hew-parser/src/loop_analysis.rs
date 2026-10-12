@@ -239,7 +239,7 @@ fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery, depth: usize) -> bool {
             ast_expr_has_break(&target.0, query, depth)
                 || ast_expr_has_break(&value.0, query, depth)
         }
-        Stmt::Defer(expr) => ast_expr_has_break(&expr.0, query, depth),
+        Stmt::Defer { body: expr, .. } => ast_expr_has_break(&expr.0, query, depth),
         Stmt::Expression(expr) => ast_expr_has_break(&expr.0, query, depth),
         // A `return` expression value is evaluated in the outer loop's scope;
         // a `break` inside `return unsafe { break; }` exits the outer loop.

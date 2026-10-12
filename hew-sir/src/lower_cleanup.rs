@@ -222,7 +222,7 @@ impl Builder<'_, '_> {
                     .rposition(|action| action.id == *id)
                     .expect("pending defer");
                 let action = self.defers.remove(index);
-                self.emit_deferred_body(&action)?;
+                self.emit_deferred_body(&action, fault || self.failure_exit)?;
                 if fault {
                     let next = self.new_block(Vec::new());
                     self.set_terminator(SemTerminator::CleanupDispatch {

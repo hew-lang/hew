@@ -562,7 +562,7 @@ pub(super) fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
             }
         }
-        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value, .. } => {
             if let Some(value) = value {
                 scan_expr_for_call_shape(value, callable, diagnostics);
             }

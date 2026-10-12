@@ -717,7 +717,9 @@ fn walk_expr(
         HirExprKind::Break {
             value: Some(value), ..
         }
-        | HirExprKind::Return { value: Some(value) } => {
+        | HirExprKind::Return {
+            value: Some(value), ..
+        } => {
             walk_expr(value, subst, residual_domain, disc);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
@@ -763,7 +765,7 @@ fn walk_expr(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Break { value: None, .. }
-        | HirExprKind::Return { value: None }
+        | HirExprKind::Return { value: None, .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}

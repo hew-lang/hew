@@ -650,7 +650,7 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             }
         }
         Stmt::Continue { .. } => {}
-        Stmt::Defer(expr) => walk_expr(&expr.0, &expr.1, visitor),
+        Stmt::Defer { body: expr, .. } => walk_expr(&expr.0, &expr.1, visitor),
         Stmt::Expression(expr) => walk_expr(&expr.0, &expr.1, visitor),
     }
 }

@@ -1072,7 +1072,13 @@ impl LowerCtx {
                         ));
                     }
                 }
-                (HirExprKind::Return { value }, ResolvedTy::Never)
+                (
+                    HirExprKind::Return {
+                        value,
+                        failure: false,
+                    },
+                    ResolvedTy::Never,
+                )
             }
             Expr::ReturnError(value) => {
                 if let Some(item_ty) = self.failing_generator_item.clone() {
@@ -1096,6 +1102,7 @@ impl LowerCtx {
                     (
                         HirExprKind::Return {
                             value: Some(Box::new(value)),
+                            failure: true,
                         },
                         ResolvedTy::Never,
                     )

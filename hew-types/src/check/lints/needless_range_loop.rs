@@ -139,7 +139,7 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
             find_in_expr(ctx, levels, &target.0, out);
             find_in_expr(ctx, levels, &value.0, out);
         }
-        Stmt::Defer(expr) => find_in_expr(ctx, levels, &expr.0, out),
+        Stmt::Defer { body: expr, .. } => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Expression(expr) => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Continue { .. } => {}
     }
@@ -512,7 +512,7 @@ impl BodyScan<'_> {
                 }
             }
             Stmt::Continue { .. } => {}
-            Stmt::Defer(expr) => self.expr(&expr.0),
+            Stmt::Defer { body: expr, .. } => self.expr(&expr.0),
             Stmt::Expression(expr) => self.expr(&expr.0),
         }
     }

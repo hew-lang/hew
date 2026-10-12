@@ -1167,6 +1167,7 @@ pub enum HirStmtKind {
     Defer {
         body: Box<HirExpr>,
         scope_id: ScopeId,
+        failure_only: bool,
     },
 }
 
@@ -2066,6 +2067,7 @@ pub enum HirExprKind {
     /// against the function's declared return type and synthesized `Never`.
     Return {
         value: Option<Box<HirExpr>>,
+        failure: bool,
     },
     /// `continue;` / `continue @label;` — skip to the next iteration of the
     /// innermost enclosing loop, or of the nearest enclosing loop carrying the

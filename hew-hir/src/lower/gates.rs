@@ -220,7 +220,7 @@ pub(super) fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut 
         Stmt::Return(Some(e)) => {
             scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
         }
-        Stmt::Defer(e) => {
+        Stmt::Defer { body: e, .. } => {
             scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
         }
         Stmt::Break { value: Some(v), .. } => {

@@ -844,13 +844,17 @@ impl LowerCtx {
                 };
                 HirStmtKind::Expr(match_expr)
             }
-            Stmt::Defer(body_expr) => {
+            Stmt::Defer {
+                body: body_expr,
+                failure_only,
+            } => {
                 self.defer_body_depth += 1;
                 let body = self.lower_expr(body_expr, IntentKind::Read);
                 self.defer_body_depth -= 1;
                 HirStmtKind::Defer {
                     body: Box::new(body),
                     scope_id: self.current_scope_id,
+                    failure_only: *failure_only,
                 }
             }
             Stmt::Loop { label, body } => {

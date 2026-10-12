@@ -14,6 +14,7 @@ pub(super) struct PendingDefer {
     scope: crate::DeferScopeId,
     pub(super) floor: usize,
     body: HirExpr,
+    run_flags: Option<(ValueId, ValueId)>,
     /// The bindings in scope where the defer was registered, which are the
     /// only ones its body can name.
     pub(super) visible: Vec<super::BindingId>,
@@ -101,7 +102,28 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    pub(super) fn register_defer(&mut self, body: &HirExpr, scope: u32) -> Result<(), String> {
+    pub(super) fn register_defer(
+        &mut self,
+        body: &HirExpr,
+        scope: u32,
+        failure_only: bool,
+    ) -> Result<(), String> {
+        let run_flags = if failure_only {
+            Some((
+                self.emit_typed(
+                    Provenance::Synthesized,
+                    &ResolvedTy::Bool,
+                    SemOpKind::ConstBool(false),
+                )?,
+                self.emit_typed(
+                    Provenance::Synthesized,
+                    &ResolvedTy::Bool,
+                    SemOpKind::ConstBool(true),
+                )?,
+            ))
+        } else {
+            None
+        };
         let id = crate::DeferId(self.ops);
         let scope = crate::DeferScopeId(scope);
         self.emit_place_operation(
@@ -119,6 +141,7 @@ impl Builder<'_, '_> {
             scope,
             floor: self.scopes.len() - 1,
             body: body.clone(),
+            run_flags,
             visible,
         });
         Ok(())
@@ -300,8 +323,34 @@ impl Builder<'_, '_> {
         self.finish_fault_exit()
     }
 
-    pub(super) fn emit_deferred_body(&mut self, action: &PendingDefer) -> Result<(), String> {
+    pub(super) fn emit_deferred_body(
+        &mut self,
+        action: &PendingDefer,
+        failure: bool,
+    ) -> Result<(), String> {
         let saved = self.control_state();
+        let run = if let Some((skip, run)) = action.run_flags.filter(|_| !failure) {
+            let argument = crate::BlockArg {
+                value: self.fresh_value(),
+                ty: ResolvedTy::Bool,
+                own: crate::OwnKind::None,
+            };
+            let entry = self.new_block(vec![argument.clone()]);
+            self.set_terminator(SemTerminator::CleanupDispatch {
+                normal: Edge {
+                    target: entry,
+                    args: vec![crate::Operand { value: skip }],
+                },
+                fault: Edge {
+                    target: entry,
+                    args: vec![crate::Operand { value: run }],
+                },
+            })?;
+            self.current = entry;
+            Some(argument.value)
+        } else {
+            None
+        };
         let park = crate::FaultParkId(action.scope.0);
         let body = self.new_block(Vec::new());
         let finish = self.new_block(Vec::new());
@@ -313,6 +362,15 @@ impl Builder<'_, '_> {
             body: edge(body),
         })?;
         self.current = body;
+        if let Some(run) = run {
+            let execute = self.new_block(Vec::new());
+            self.set_terminator(SemTerminator::Branch {
+                condition: crate::Operand { value: run },
+                then_target: edge(execute),
+                else_target: edge(finish),
+            })?;
+            self.current = execute;
+        }
         self.cleanup_draining = false;
         self.cleanup_may_fail = false;
         self.defer_bodies.push(BodyBoundary {
@@ -322,7 +380,11 @@ impl Builder<'_, '_> {
             loop_depth: self.loops.len(),
             loan_depth: self.argument_receiver_loans.len(),
         });
-        self.lower_discarded_expr(&action.body)?;
+        let previous_failure = self.failure_exit;
+        self.failure_exit = false;
+        let outcome = self.lower_discarded_expr(&action.body);
+        self.failure_exit = previous_failure;
+        outcome?;
         if self.is_open() {
             self.destroy_live_since(&saved.owned_live)?;
             self.set_terminator(SemTerminator::Goto(edge(finish)))?;

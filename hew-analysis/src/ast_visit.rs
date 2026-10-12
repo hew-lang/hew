@@ -682,7 +682,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Stmt::Return(Some(value)) => {
                 self.walk_expr(&value.0, &value.1, body);
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer { body: expr, .. } => {
                 self.walk_expr(&expr.0, &expr.1, body);
             }
             Stmt::Expression(expr) => {

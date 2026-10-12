@@ -3388,7 +3388,7 @@ impl<'a> Formatter<'a> {
                 .as_ref()
                 .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr)),
             Stmt::Continue { .. } => true,
-            Stmt::Defer(expr) => Self::can_format_expr_inline(&expr.0),
+            Stmt::Defer { body: expr, .. } => Self::can_format_expr_inline(&expr.0),
             Stmt::Expression(expr) => Self::can_format_expr_inline(&expr.0),
             Stmt::If { .. }
             | Stmt::IfLet { .. }
@@ -3627,8 +3627,17 @@ impl<'a> Formatter<'a> {
                 }
                 self.write(";");
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer { body: expr, .. } => {
                 self.write("defer ");
+                if matches!(
+                    stmt,
+                    Stmt::Defer {
+                        failure_only: true,
+                        ..
+                    }
+                ) {
+                    self.write("err ");
+                }
                 self.format_expr(expr);
                 self.write(";");
             }
@@ -3869,9 +3878,18 @@ impl<'a> Formatter<'a> {
                 self.format_expr(expr);
                 self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer { body: expr, .. } => {
                 self.write_indent();
                 self.write("defer ");
+                if matches!(
+                    stmt,
+                    Stmt::Defer {
+                        failure_only: true,
+                        ..
+                    }
+                ) {
+                    self.write("err ");
+                }
                 self.format_expr(expr);
                 // Block expressions already end with `}`, no semicolon.
                 if matches!(expr.0, Expr::Block(_)) {
@@ -3932,7 +3950,7 @@ impl<'a> Formatter<'a> {
                     | Stmt::Break { .. }
                     | Stmt::Continue { .. }
                     | Stmt::Return(_)
-                    | Stmt::Defer(_)
+                    | Stmt::Defer { body: _, .. }
                     | Stmt::Expression(_) => {
                         // Parser invariant: `else if`/`else if let` are the only shapes
                         // that populate `ElseBlock::if_stmt`. Reaching this arm means the

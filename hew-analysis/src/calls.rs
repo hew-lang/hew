@@ -160,7 +160,7 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
         Stmt::Expression(spanned) | Stmt::Return(Some(spanned)) => {
             collect_calls_in_expr(spanned, calls);
         }
-        Stmt::Defer(d) => {
+        Stmt::Defer { body: d, .. } => {
             collect_calls_in_expr(d.as_ref(), calls);
         }
         Stmt::Assign { target, value, .. } => {

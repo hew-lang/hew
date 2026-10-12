@@ -145,10 +145,21 @@ impl LowerCtx {
         &mut self,
         value: HirExpr,
         span: &std::ops::Range<usize>,
+        failure: bool,
     ) -> HirExpr {
         let return_stmt = HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::Return(Some(value)),
+            kind: HirStmtKind::Expr(HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: ResolvedTy::Never,
+                intent: IntentKind::Read,
+                kind: HirExprKind::Return {
+                    value: Some(Box::new(value)),
+                    failure,
+                },
+                span: span.clone(),
+            }),
             span: span.clone(),
         };
         let block = HirBlock {

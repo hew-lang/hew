@@ -160,7 +160,7 @@ pub(super) fn collect_captures_walk(
         }
         HirExprKind::Yield { value, .. }
         | HirExprKind::Break { value, .. }
-        | HirExprKind::Return { value } => {
+        | HirExprKind::Return { value, .. } => {
             if let Some(value) = value {
                 collect_captures_walk(value, param_ids, seen, captures, self_id);
             }
@@ -418,7 +418,7 @@ pub(super) fn collect_general_closure_captures_walk(
         }
         HirExprKind::Yield { value, .. }
         | HirExprKind::Break { value, .. }
-        | HirExprKind::Return { value } => {
+        | HirExprKind::Return { value, .. } => {
             if let Some(value) = value {
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }

@@ -48,7 +48,10 @@ fn fallible_returns_use_one_result_representation_with_exact_payloads() {
         let value = match &function.body.statements[0].kind {
             HirStmtKind::Return(Some(value)) => value,
             HirStmtKind::Expr(value) => {
-                let HirExprKind::Return { value: Some(value) } = &value.kind else {
+                let HirExprKind::Return {
+                    value: Some(value), ..
+                } = &value.kind
+                else {
                     panic!("typed error return");
                 };
                 value

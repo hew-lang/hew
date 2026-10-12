@@ -2030,6 +2030,7 @@ struct Builder<'hir, 'service> {
     defers: Vec<deferred::PendingDefer>,
     defer_bodies: Vec<deferred::BodyBoundary>,
     recovery_bodies: Vec<deferred::BodyBoundary>,
+    failure_exit: bool,
     task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,

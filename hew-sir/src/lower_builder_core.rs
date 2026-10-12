@@ -140,6 +140,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             task_scopes: Vec::new(),
             cleanup_may_fail: false,
             cleanup_draining: false,
+            failure_exit: false,
             deferred_initialized: BTreeSet::new(),
             state_taken: BTreeSet::new(),
             stream_sink,

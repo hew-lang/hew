@@ -153,7 +153,7 @@ impl Checker {
                     self.scan_expr_for_stack_hints(e);
                 }
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer { body: expr, .. } => {
                 self.scan_expr_for_stack_hints(&expr.0);
             }
             // Statement forms that cannot host a binding RHS: nothing to do.

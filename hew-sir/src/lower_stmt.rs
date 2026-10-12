@@ -113,7 +113,7 @@ impl Builder<'_, '_> {
                     }
                 }
                 HirStmtKind::Return(value) => {
-                    self.lower_function_return(value.as_ref())?;
+                    self.lower_function_return(value.as_ref(), false)?;
                 }
                 HirStmtKind::Assign {
                     target,
@@ -125,8 +125,12 @@ impl Builder<'_, '_> {
                 HirStmtKind::Destructure { value, fields } => {
                     self.lower_destructure(value, fields)?;
                 }
-                HirStmtKind::Defer { body, scope_id } => {
-                    self.register_defer(body, scope_id.0)?;
+                HirStmtKind::Defer {
+                    body,
+                    scope_id,
+                    failure_only,
+                } => {
+                    self.register_defer(body, scope_id.0, *failure_only)?;
                 }
             }
         }
@@ -564,7 +568,9 @@ impl Builder<'_, '_> {
                 return self.lower_discarded_expr(source);
             }
 
-            HirExprKind::Return { value } => return self.lower_function_return(value.as_deref()),
+            HirExprKind::Return { value, failure } => {
+                return self.lower_function_return(value.as_deref(), *failure)
+            }
             HirExprKind::Call {
                 target: CallTarget::Builtin { endpoint },
                 args,
@@ -750,7 +756,11 @@ impl Builder<'_, '_> {
     /// Both statement returns and Never-typed HIR return expressions use this
     /// path, so a divergent expression cannot manufacture a placeholder SSA
     /// value or continue evaluating sibling operands.
-    pub(super) fn lower_function_return(&mut self, value: Option<&HirExpr>) -> Result<(), String> {
+    pub(super) fn lower_function_return(
+        &mut self,
+        value: Option<&HirExpr>,
+        failure: bool,
+    ) -> Result<(), String> {
         if self.in_deferred_body() {
             return Err("return and error propagation cannot escape a deferred body".into());
         }
@@ -779,6 +789,10 @@ impl Builder<'_, '_> {
                 Provenance::Synthesized,
             )?;
         }
-        self.finish_return_value(value)
+        let previous = self.failure_exit;
+        self.failure_exit = failure;
+        let outcome = self.finish_return_value(value);
+        self.failure_exit = previous;
+        outcome
     }
 }

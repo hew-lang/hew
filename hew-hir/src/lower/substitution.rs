@@ -529,7 +529,7 @@ pub(super) fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
-        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value, .. } => {
             if let Some(value) = value {
                 collect_call_sites_in_expr(value, out, trait_out);
             }

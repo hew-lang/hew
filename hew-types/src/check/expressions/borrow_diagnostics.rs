@@ -847,7 +847,7 @@ impl Checker {
                 | Stmt::Continue { .. }
                 | Stmt::Return(None)
                 | Stmt::Expression(_)
-                | Stmt::Defer(_) => {}
+                | Stmt::Defer { body: _, .. } => {}
             }
         }
     }

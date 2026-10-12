@@ -139,7 +139,7 @@ fn find_in_stmt(
             find_in_expr(ctx, levels, &target.0, out);
             find_in_expr(ctx, levels, &value.0, out);
         }
-        Stmt::Defer(expr) => find_in_expr(ctx, levels, &expr.0, out),
+        Stmt::Defer { body: expr, .. } => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Expression(expr) => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Continue { .. } => {}
     }
@@ -571,7 +571,7 @@ fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
         Stmt::Assign { target, value, .. } => {
             bounded_expr_has_sleep(&target.0) || bounded_expr_has_sleep(&value.0)
         }
-        Stmt::Defer(expr) => bounded_expr_has_sleep(&expr.0),
+        Stmt::Defer { body: expr, .. } => bounded_expr_has_sleep(&expr.0),
         Stmt::Expression(expr) => bounded_expr_has_sleep(&expr.0),
     }
 }
@@ -836,7 +836,7 @@ fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
         Stmt::Var { value, .. } | Stmt::Break { value, .. } | Stmt::Return(value) => value
             .as_ref()
             .is_some_and(|value| expr_assigns_identifier(&value.0, name)),
-        Stmt::Defer(expr) => expr_assigns_identifier(&expr.0, name),
+        Stmt::Defer { body: expr, .. } => expr_assigns_identifier(&expr.0, name),
         Stmt::Expression(expr) => expr_assigns_identifier(&expr.0, name),
         Stmt::Continue { .. } => false,
     }

@@ -284,7 +284,17 @@ impl LowerCtx {
             },
             HirStmt {
                 node: self.ids.node(),
-                kind: HirStmtKind::Return(None),
+                kind: HirStmtKind::Expr(HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Never,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Return {
+                        value: None,
+                        failure: true,
+                    },
+                    span: span.clone(),
+                }),
                 span: span.clone(),
             },
         ];
@@ -711,7 +721,7 @@ impl LowerCtx {
                     return_ty,
                     span,
                 );
-                self.synthetic_return_block_expr(err_ctor, span)
+                self.synthetic_return_block_expr(err_ctor, span, true)
             }
             TryExit::GeneratorItem(item_ty) => {
                 self.failing_generator_exit(err_payload, &item_ty, span)
@@ -784,7 +794,7 @@ impl LowerCtx {
         let some_name = "__try_some";
         let some_body = self.synthetic_binding_ref(some_name, some_binding, some_ty.clone(), span);
         let none_ctor = self.synthetic_variant_ctor("Option", none_idx, None, return_ty, span);
-        let none_body = self.synthetic_return_block_expr(none_ctor, span);
+        let none_body = self.synthetic_return_block_expr(none_ctor, span, false);
 
         let arms = vec![
             HirMatchArm {

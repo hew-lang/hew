@@ -830,7 +830,7 @@ fn collect_locals_from_stmt(
                 }
             }
         }
-        Stmt::Defer(expr) => {
+        Stmt::Defer { body: expr, .. } => {
             collect_locals_from_expr(&expr.0, offset, locals);
         }
         Stmt::Assign { value, .. } => {

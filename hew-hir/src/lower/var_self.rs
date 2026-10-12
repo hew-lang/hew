@@ -428,7 +428,7 @@ impl LowerCtx {
             }
             HirExprKind::Yield { value, .. }
             | HirExprKind::Break { value, .. }
-            | HirExprKind::Return { value } => {
+            | HirExprKind::Return { value, .. } => {
                 if let Some(value) = value {
                     self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
                 }

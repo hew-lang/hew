@@ -335,7 +335,7 @@ fn collect_inlay_hints_from_stmt(
                 collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
             }
         }
-        Stmt::Defer(expr) => {
+        Stmt::Defer { body: expr, .. } => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
         }
         Stmt::Assign { target, value, .. } => {

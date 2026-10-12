@@ -2423,7 +2423,7 @@ impl Checker {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 self.check_match_stmt(&scr_ty, scrutinee, arms, span);
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer { body: expr, .. } => {
                 let ownership = self.env.ownership_snapshot();
                 let previous = self
                     .deferred_body

@@ -133,7 +133,7 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
         Stmt::Return(value) => value
             .as_ref()
             .is_some_and(|(expr, _)| expr_contains_defer(expr)),
-        Stmt::Defer(_) => true,
+        Stmt::Defer { body: _, .. } => true,
         Stmt::Expression((expr, _)) => expr_contains_defer(expr),
     }
 }
@@ -364,7 +364,7 @@ fn mark_stmt(stmt: &mut Stmt) {
         }
         Stmt::Continue { .. } | Stmt::Return(None) => {}
         Stmt::Return(Some((expr, _span))) => mark_expr(expr, true),
-        Stmt::Defer(expr) => mark_expr(&mut expr.0, false),
+        Stmt::Defer { body: expr, .. } => mark_expr(&mut expr.0, false),
         Stmt::Expression((expr, _)) => mark_expr(expr, false),
     }
 }

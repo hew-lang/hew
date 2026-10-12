@@ -781,7 +781,10 @@ pub enum Stmt {
         label: Option<Ident>,
     },
     Return(Option<Spanned<Expr>>),
-    Defer(Box<Spanned<Expr>>),
+    Defer {
+        body: Box<Spanned<Expr>>,
+        failure_only: bool,
+    },
     Expression(Spanned<Expr>),
 }
 

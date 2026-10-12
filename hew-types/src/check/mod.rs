@@ -4427,7 +4427,7 @@ impl Checker {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Returned);
                 }
             }
-            Stmt::Defer(boxed) => {
+            Stmt::Defer { body: boxed, .. } => {
                 self.classify_escapes_in_expr(&boxed.0, &boxed.1, in_fork, AnonContext::Other);
             }
             Stmt::Expression((e, s)) => {
@@ -5003,7 +5003,7 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
                 collect_lambda_spans_in_expr(e, s, out);
             }
         }
-        Stmt::Defer(boxed) => {
+        Stmt::Defer { body: boxed, .. } => {
             collect_lambda_spans_in_expr(&boxed.0, &boxed.1, out);
         }
         Stmt::Expression((e, s)) => collect_lambda_spans_in_expr(e, s, out),

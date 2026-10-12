@@ -194,7 +194,7 @@
     "fail": "Overflow policy: reject the send with Full"
   },
   "operators": {
-    "optional": ["?", "??"],
+    "optional": ["?", "?.", "??"],
     "arithmetic": [
       "+",
       "-",

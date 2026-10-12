@@ -102,7 +102,7 @@ pub(super) fn scan_stmt_for_vec_index_gate(
         Stmt::Return(Some(e)) => {
             scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
         }
-        Stmt::Defer(e) => {
+        Stmt::Defer { body: e, .. } => {
             scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
         }
         Stmt::Break { value: Some(v), .. } => {

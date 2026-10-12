@@ -135,7 +135,7 @@ fn call_callee_name(expr: &HirExpr) -> Option<&str> {
             }
         }
         HirExprKind::Block(block) => block.tail.as_deref().and_then(call_callee_name),
-        HirExprKind::Return { value } => value.as_deref().and_then(call_callee_name),
+        HirExprKind::Return { value, .. } => value.as_deref().and_then(call_callee_name),
         _ => None,
     }
 }

@@ -703,6 +703,7 @@ impl EffectVisitor<'_> {
                 | MethodCallRewrite::BuiltinVecIntoIter
                 | MethodCallRewrite::BuiltinVecIter
                 | MethodCallRewrite::BuiltinVecIterNext
+                | MethodCallRewrite::BuiltinVecIterNextBack
                 | MethodCallRewrite::VecFrom
                 | MethodCallRewrite::RecordCloneInplace { .. }
                 | MethodCallRewrite::CopyCloneNoop,

@@ -319,6 +319,21 @@ impl Checker {
         out
     }
 
+    pub(in crate::check) fn associated_type_owners(
+        &self,
+        trait_id: crate::DefId,
+        name: &str,
+    ) -> Vec<crate::DefId> {
+        self.trait_closure(trait_id)
+            .into_iter()
+            .filter(|owner| {
+                self.trait_info(*owner).is_some_and(|info| {
+                    info.associated_types.iter().any(|assoc| assoc.name == name)
+                })
+            })
+            .collect()
+    }
+
     /// Whether a bound on a binder provides `wanted`: the same trait, a trait
     /// extending it, or `Ord` for the `PartialOrd` predicate.
     pub(in crate::check) fn bound_provides(

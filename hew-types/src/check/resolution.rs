@@ -1147,17 +1147,15 @@ impl Checker {
                 );
             }
         }
-        if let Some(associated_type_names) =
-            trait_id
-                .and_then(|id| self.trait_info(id))
-                .map(|trait_info| {
-                    trait_info
-                        .associated_types
-                        .iter()
-                        .map(|assoc| assoc.name.clone())
-                        .collect::<Vec<_>>()
-                })
-        {
+        if let Some(trait_id) = trait_id {
+            let mut associated_type_names: Vec<_> = self
+                .trait_closure(trait_id)
+                .into_iter()
+                .filter_map(|owner| self.trait_info(owner))
+                .flat_map(|info| info.associated_types.iter().map(|assoc| assoc.name.clone()))
+                .collect();
+            associated_type_names.sort();
+            associated_type_names.dedup();
             let declared_assoc: HashSet<&str> =
                 associated_type_names.iter().map(String::as_str).collect();
             let missing: Vec<String> = associated_type_names
@@ -1209,6 +1207,15 @@ impl Checker {
                             "trait `{}` has no associated type `{}` for dyn binding",
                             bound.path,
                             assoc_name // TRANSITION(P1): deleted by A1 commit 2
+                        ),
+                    );
+                } else if self.associated_type_owners(trait_id, assoc_name).len() != 1 {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "ambiguous associated type `{assoc_name}` in `dyn {}`",
+                            bound.path
                         ),
                     );
                 }
@@ -1957,16 +1964,12 @@ impl Checker {
             );
             return Some(Ty::Error);
         }
-        // Super-trait projections are deferred per the precursor plan.
         let mut matches: Vec<crate::DefId> = Vec::new();
         for bound in &bounds {
-            let declares = self.trait_info(bound.trait_id).is_some_and(|info| {
-                info.associated_types
-                    .iter()
-                    .any(|assoc| assoc.name == assoc_name)
-            });
-            if declares && !matches.contains(&bound.trait_id) {
-                matches.push(bound.trait_id);
+            for owner in self.associated_type_owners(bound.trait_id, assoc_name) {
+                if !matches.contains(&owner) {
+                    matches.push(owner);
+                }
             }
         }
         match matches.as_slice() {
@@ -2057,6 +2060,11 @@ impl Checker {
                 let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
                     return carrier(projected_base);
                 };
+                let owners = self.associated_type_owners(trait_id, assoc_name);
+                let [trait_id] = owners.as_slice() else {
+                    return carrier(projected_base);
+                };
+                let trait_id = *trait_id;
                 // Resolve via the substitution so a `Ty::Var` bound to a
                 // concrete type also collapses.
                 let resolved_base = self.subst.resolve(&projected_base);
@@ -2071,7 +2079,7 @@ impl Checker {
                         let binding = self
                             .active_bounds_of(param.id)
                             .into_iter()
-                            .filter(|bound| bound.trait_id == trait_id)
+                            .filter(|bound| self.bound_provides(bound.trait_id, trait_id))
                             .find_map(|bound| {
                                 bound
                                     .assoc
@@ -2440,9 +2448,10 @@ impl Checker {
                 self.resolve_type_path_head(path);
             }
         }
+        let annotation_ty = self.project_assoc_types(&ty);
         self.annotation_types.insert(
             SpanKey::in_module(&te.1, self.current_module_idx),
-            (ty.clone(), self.current_module.clone()),
+            (annotation_ty, self.current_module.clone()),
         );
         ty
     }
@@ -2560,31 +2569,26 @@ impl Checker {
                 else {
                     return Ty::Error;
                 };
-                if let Some(info) = self.trait_info(trait_id) {
-                    if !info
-                        .associated_types
-                        .iter()
-                        .any(|associated| associated.name == assoc_name.name.as_str())
-                    {
-                        let kind = if info.methods.iter().any(|method| method.name == *assoc_name) {
-                            TypeErrorKind::PathKindMismatch
-                        } else {
+                let owners = self.associated_type_owners(trait_id, assoc_name.name.as_str());
+                let [owner] = owners.as_slice() else {
+                    self.report_error(
+                        if owners.is_empty() {
                             TypeErrorKind::PathMemberNotFound
-                        };
-                        self.report_error(
-                            kind,
-                            &te.1,
-                            format!(
-                                "trait `{}` has no associated type `{assoc_name}`",
-                                self.defs.path(trait_id)
-                            ),
-                        );
-                        return Ty::Error;
-                    }
-                }
+                        } else {
+                            TypeErrorKind::PathKindMismatch
+                        },
+                        &te.1,
+                        format!(
+                            "associated type `{}.{assoc_name}` must have one declaring trait; found {}",
+                            self.defs.path(trait_id),
+                            owners.len()
+                        ),
+                    );
+                    return Ty::Error;
+                };
                 Ty::AssocType {
                     base: Box::new(base),
-                    trait_name: self.defs.path(trait_id).into(),
+                    trait_name: self.defs.path(*owner).into(),
                     assoc_name: assoc_name.name.as_str().into(),
                 }
             }
@@ -2653,9 +2657,21 @@ impl Checker {
                     // still owns the distinct case where an impl body resolves
                     // its OWN `Self::Item` (projection flag unset).
                     if let Some(trait_id) = self.current_trait_for_self_projection {
+                        let owners = self.associated_type_owners(trait_id, alias_name);
+                        let [owner] = owners.as_slice() else {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &te.1,
+                                format!(
+                                    "associated type `Self.{alias_name}` must have one declaring trait; found {}",
+                                    owners.len()
+                                ),
+                            );
+                            return Ty::Error;
+                        };
                         return Ty::AssocType {
                             base: Box::new(Ty::param(crate::ParamHead::receiver(trait_id))),
-                            trait_name: self.defs.path(trait_id).into(),
+                            trait_name: self.defs.path(*owner).into(),
                             assoc_name: alias_name.into(),
                         };
                     }

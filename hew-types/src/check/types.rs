@@ -1954,6 +1954,7 @@ pub enum MethodCallRewrite {
     /// the call site so the caller's mutable iterator binding observes the
     /// cursor update.
     BuiltinVecIterNext,
+    BuiltinVecIterNextBack,
     /// Builtin `Generator<Y, R>::next()` consumption. HIR emits a dedicated
     /// `HirExprKind::GeneratorNext`; MIR lowers it to `Instr::GeneratorNext`,
     /// which codegen turns into a `hew_gen_next(ctx, &out_size)` runtime call

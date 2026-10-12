@@ -61,12 +61,14 @@ impl Checker {
         // TRANSITION(A1c4): WHY `Ty::AssocType` names its trait by the
         // declaration's path render, a carrier HIR also reads. WHEN the carrier
         // holds the trait's `DefId`, this compares ids. WHAT: `AssocType` by id.
-        let trait_key = self.defs.path(trait_id);
-        for param_ty in &mut sig.params {
-            *param_ty = substitute_trait_object_assoc_bindings(param_ty, trait_key, bound);
+        for owner in self.trait_closure(trait_id) {
+            let trait_key = self.defs.path(owner);
+            for param_ty in &mut sig.params {
+                *param_ty = substitute_trait_object_assoc_bindings(param_ty, trait_key, bound);
+            }
+            sig.return_type =
+                substitute_trait_object_assoc_bindings(&sig.return_type, trait_key, bound);
         }
-        sig.return_type =
-            substitute_trait_object_assoc_bindings(&sig.return_type, trait_key, bound);
     }
 
     pub(super) fn freshen_inner(&self, ty: &Ty, mapping: &mut HashMap<u32, Ty>) -> Ty {

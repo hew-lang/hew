@@ -884,6 +884,15 @@ pub(crate) fn contains_recursive_polymorphic_self(
     origin_name: &str,
     current_args: &[ResolvedTy],
 ) -> bool {
+    // A supplied argument may already contain this declaration. Following
+    // that finite subterm descends through the input, rather than expanding
+    // a recursive declaration into a new, larger instance.
+    if current_args
+        .iter()
+        .any(|argument| argument == ty || is_nested_subterm(ty, argument))
+    {
+        return false;
+    }
     match ty {
         ResolvedTy::Named { head, args, .. } => {
             let name = head.registry_key();

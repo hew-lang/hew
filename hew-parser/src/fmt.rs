@@ -3009,6 +3009,9 @@ impl<'a> Formatter<'a> {
                 }
             }
             TypeExpr::QualifiedAssocPath(assoc) => {
+                if self.output.ends_with('<') {
+                    self.write(" ");
+                }
                 self.write("<");
                 self.format_type_expr(&assoc.base.0);
                 self.write(" as ");

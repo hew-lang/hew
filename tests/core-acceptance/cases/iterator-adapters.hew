@@ -11,7 +11,7 @@ type Line {
 
 fn counts() -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
-    for i in 1 .. 7 {
+    for i in 1..7 {
         v.push(i);
     }
     v
@@ -60,4 +60,27 @@ fn main() {
     println(busy.len());
     println(busy[0].label);
     println(busy[1].label);
+    let reversed = counts().into_iter().rev().map(|x: i64| x * 2).filter(|x: i64| x > 6).collect();
+    assert(reversed == [12, 10, 8]);
+    let filtered = counts().into_iter().filter(|x: i64| x % 2 == 0).map(|x: i64| x * 10).rev().collect();
+    assert(filtered == [60, 40, 20]);
+    let restored = iter.collect(iter.rev(iter.rev(counts().into_iter())));
+    assert(restored == counts());
+    let labels = lines().into_iter().rev().map(|line: Line| line.label).collect();
+    assert(labels == ["washer", "nut", "bolt"]);
+    var both = counts().into_iter().filter(|x: i64| x % 2 == 0).map(|x: i64| x * 10);
+    assert(both.next_back().expect("filtered back") == 60);
+    assert(both.next().expect("filtered front") == 20);
+    assert(both.next_back().expect("filtered middle") == 40);
+    assert(both.next().is_none());
+    var backwards = [1, 2, 3].into_iter().rev();
+    assert(backwards.next_back().expect("reverse back") == 1);
+    assert(backwards.next().expect("reverse front") == 3);
+    assert(backwards.next_back().expect("reverse middle") == 2);
+    assert(backwards.next().is_none());
+    let observed = iter.collect(iter.rev(iter.map([1, 2, 3].into_iter(), |x: i64| {
+        println(f"mapped {x}");
+        x
+    })));
+    assert(observed == [3, 2, 1]);
 }

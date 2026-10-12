@@ -723,6 +723,15 @@ impl LowerCtx {
             .get(&format!("{declaring_trait}::{method_name}"))
             .copied()
             .or_else(|| {
+                self.lowering_injected_items
+                    .then(|| {
+                        self.trait_method_ids
+                            .get(&format!("std.builtins.{declaring_trait}::{method_name}"))
+                    })
+                    .flatten()
+                    .copied()
+            })
+            .or_else(|| {
                 // The prelude iterator may be available without a lexical
                 // import binding.  Its lang-item binding carries the exact
                 // checker-minted declaration identities; compare only its

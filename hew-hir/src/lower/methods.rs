@@ -750,9 +750,14 @@ impl LowerCtx {
             Some(
                 rewrite @ (MethodCallRewrite::BuiltinVecIntoIter
                 | MethodCallRewrite::BuiltinVecIter
-                | MethodCallRewrite::BuiltinVecIterNext),
+                | MethodCallRewrite::BuiltinVecIterNext
+                | MethodCallRewrite::BuiltinVecIterNextBack),
             ) => {
-                let expected = if matches!(rewrite, MethodCallRewrite::BuiltinVecIterNext) {
+                let expected = if matches!(
+                    rewrite,
+                    MethodCallRewrite::BuiltinVecIterNext
+                        | MethodCallRewrite::BuiltinVecIterNextBack
+                ) {
                     BuiltinType::VecIter
                 } else {
                     BuiltinType::Vec
@@ -789,7 +794,10 @@ impl LowerCtx {
                         self.lower_builtin_vec_iter(receiver, element, span)
                     }
                     MethodCallRewrite::BuiltinVecIterNext => {
-                        self.lower_builtin_vec_iter_next(receiver, &element, span)
+                        self.lower_builtin_vec_iter_next(receiver, &element, false, span)
+                    }
+                    MethodCallRewrite::BuiltinVecIterNextBack => {
+                        self.lower_builtin_vec_iter_next(receiver, &element, true, span)
                     }
                     _ => unreachable!("matched cursor operation"),
                 }

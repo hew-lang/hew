@@ -8,6 +8,10 @@ type Job {
     run: actor(i64) -> i64;
 }
 
+type ZeroJob {
+    run: actor() -> i64;
+}
+
 fn main() {
     // The captured environment becomes the actor's state, so the handler
     // reads it on every turn rather than re-reading the spawning frame.
@@ -40,5 +44,26 @@ fn main() {
     }
     stop(handle);
     stopped(handle);
+
+    let inferred = actor |n| -> i64 { n + 1 };
+    assert(inferred(41).expect("inferred actor reply") == 42);
+    stop(inferred);
+    stopped(inferred);
+
+    let add = actor |left: i64, right: i64| -> i64 { left + right };
+    assert(add(19, 23).expect("tuple reply") == 42);
+    stop(add);
+    stopped(add);
+
+    let zero_job = ZeroJob { run: actor || -> i64 { 42 } };
+    let answer = zero_job.run;
+    assert(answer().expect("zero-argument reply") == 42);
+    stop(answer);
+    stopped(answer);
+
+    let explicit_unit = actor |_unit: ()| -> i64 { 42 };
+    assert(explicit_unit(()).expect("explicit unit reply") == 42);
+    stop(explicit_unit);
+    stopped(explicit_unit);
     println("closed");
 }

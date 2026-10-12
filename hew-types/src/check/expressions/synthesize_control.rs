@@ -248,23 +248,17 @@ impl Checker {
                             .to_string(),
                     );
                 }
-                // Build the message type from the parameter list.
-                // Single param → that param's type; multiple params → Tuple.
-                // No params → Unit (actor takes no argument).
-                let msg_ty = {
-                    let param_types: Vec<Ty> = params
-                        .iter()
-                        .map(|p| {
-                            p.ty.as_ref().map_or(Ty::Var(TypeVar::fresh()), |ann| {
-                                self.resolve_type_expr(ann)
-                            })
-                        })
-                        .collect();
-                    match param_types.len() {
-                        0 => Ty::Unit,
-                        1 => param_types.into_iter().next().unwrap(),
-                        _ => Ty::Tuple(param_types),
+                let msg_ty = match &lambda_ty {
+                    Ty::Function { params, .. } | Ty::Closure { params, .. } => {
+                        let param_types: Vec<Ty> =
+                            params.iter().map(|ty| self.subst.resolve(ty)).collect();
+                        match param_types.len() {
+                            0 => Ty::Tuple(Vec::new()),
+                            1 => param_types.into_iter().next().unwrap(),
+                            _ => Ty::Tuple(param_types),
+                        }
                     }
+                    _ => Ty::Error,
                 };
                 // The reply type determines send vs ask:
                 //   send-shaped (`actor |p| { ... }` — no explicit return type, or `-> ()`)

@@ -32,22 +32,12 @@ binary.
 From a source checkout, run:
 
 ```sh
-cargo run -p hew-lsp --
+make hew-lsp
+target/debug/hew-lsp
 ```
 
-For editor integrations, point your LSP client at the `hew-lsp` binary. You
-can either build it in the workspace:
-
-```sh
-cargo build -p hew-lsp
-# binary: target/debug/hew-lsp
-```
-
-or install it onto your `PATH`:
-
-```sh
-cargo install --path hew-lsp
-```
+For editor integrations, point your LSP client at the built `hew-lsp` binary
+or an installed Hew SDK.
 
 See [`docs/dev/lsp-editor-setup.md`](../docs/dev/lsp-editor-setup.md) for the
 build/launch/VS Code walkthrough, and [`../editors/README.md`](../editors/README.md)

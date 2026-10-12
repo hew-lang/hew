@@ -1,16 +1,17 @@
 //! Per-function lowering: the `FunctionLowerer` walk from SIR blocks into physical operations.
 
 use super::{
-    clone_action_for_type, destroy_action_for_type, integer_bit_range, integer_width_bits,
-    mask_to_width, physical_value_recipe, required_layout, ArgumentTransfer, ArrayValueOp,
-    BTreeSet, BlockId, BoundaryDecision, BuiltinType, CallResult, CallUnwind, CloneAction,
-    DestroyAction, Edge, FunctionLowerer, MapValueOp, OwnKind, PhysicalAggregateId,
-    PhysicalCheckedFailure, PhysicalConst, PhysicalEdge, PhysicalError, PhysicalMapOp, PhysicalOp,
-    PhysicalRuntimeAction, PhysicalRuntimeCarrier, PhysicalSelectSource, PhysicalSetOp,
-    PhysicalStorage, PhysicalTerminator, PhysicalVariantArm, PhysicalVariantId, PhysicalVectorOp,
-    PhysicalVtableId, PhysicalWireDecodeResult, ResolvedTy, ReturnTransfer, RuntimeCallFamily,
-    RuntimePhysicalForm, SemOp, SemOpKind, SemTerminator, SetValueOp, SnapshotDecision, StorageId,
-    StorageOrigin, TypeInstanceKey, UnaryOp, ValueId, VecValueOp,
+    clone_action_for_type, destroy_action_for_type, extern_param_carrier, integer_bit_range,
+    integer_width_bits, mask_to_width, physical_value_recipe, required_layout,
+    runtime_param_carrier, ArgumentTransfer, ArrayValueOp, BTreeSet, BlockId, BoundaryDecision,
+    BuiltinType, CallResult, CallUnwind, CloneAction, DestroyAction, Edge, FunctionLowerer,
+    MapValueOp, OwnKind, PhysicalAggregateId, PhysicalArguments, PhysicalCheckedFailure,
+    PhysicalConst, PhysicalEdge, PhysicalError, PhysicalMapOp, PhysicalOp, PhysicalRuntimeAction,
+    PhysicalRuntimeCarrier, PhysicalSelectSource, PhysicalSetOp, PhysicalStorage,
+    PhysicalTerminator, PhysicalVariantArm, PhysicalVariantId, PhysicalVectorOp, PhysicalVtableId,
+    PhysicalWireDecodeResult, ResolvedTy, ReturnTransfer, RuntimeCallFamily, RuntimePhysicalForm,
+    SemOp, SemOpKind, SemTerminator, SetValueOp, SnapshotDecision, StorageId, StorageOrigin,
+    TypeInstanceKey, UnaryOp, ValueId, VecValueOp,
 };
 
 impl FunctionLowerer<'_> {
@@ -549,12 +550,6 @@ impl FunctionLowerer<'_> {
                     glue: self.variant_id(&self.storage[source.0 as usize].ty)?,
                 })
             }
-            SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } => {
-                Err(PhysicalError::new(format!(
-                    "SIR op {} is not yet admitted by physical MIR",
-                    operation.id.0
-                )))
-            }
         }
     }
 
@@ -729,7 +724,7 @@ impl FunctionLowerer<'_> {
             } => Ok(PhysicalTerminator::ExternCall {
                 symbol: signature.symbol.clone(),
                 runtime_capability: signature.runtime_capability,
-                args: self.argument_transfers(args)?,
+                args: self.physical_arguments(args, extern_param_carrier)?,
                 result_abi: self.target.extern_result_abi(&signature.result)?,
                 result: match result {
                     CallResult::Unit | CallResult::Never => None,
@@ -800,7 +795,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::RuntimeCall {
                 action: self.runtime_action(*family, args, result)?,
-                args: self.argument_transfers(args)?,
+                args: self.physical_arguments(args, runtime_param_carrier)?,
                 result: match result {
                     CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
@@ -1198,6 +1193,30 @@ impl FunctionLowerer<'_> {
         args.iter()
             .map(|argument| self.argument_transfer(argument.operand.value, argument.decision))
             .collect()
+    }
+
+    pub(crate) fn physical_arguments(
+        &self,
+        args: &[hew_sir::BoundaryOperand],
+        carrier: fn(&ResolvedTy) -> super::ParamCarrier,
+    ) -> Result<PhysicalArguments, PhysicalError> {
+        let transfers = self.argument_transfers(args)?;
+        let carriers = transfers
+            .iter()
+            .map(|transfer| {
+                let source = match transfer {
+                    ArgumentTransfer::Borrow(source)
+                    | ArgumentTransfer::BorrowMut(source)
+                    | ArgumentTransfer::Move(source)
+                    | ArgumentTransfer::Clone { source, .. } => *source,
+                };
+                self.storage
+                    .get(source.0 as usize)
+                    .map(|storage| carrier(&storage.ty))
+                    .ok_or_else(|| PhysicalError::new("physical argument names unknown storage"))
+            })
+            .collect::<Result<Vec<_>, PhysicalError>>()?;
+        PhysicalArguments::new(transfers, carriers)
     }
 
     pub(crate) fn argument_transfer(

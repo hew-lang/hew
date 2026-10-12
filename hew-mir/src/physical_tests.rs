@@ -1629,7 +1629,7 @@ fn verifier_rejects_changed_runtime_transfer_and_failure_contracts() {
         ArgumentTransfer::Move(source) => source,
         other => panic!("expected moved bytes receiver, got {other:?}"),
     };
-    push_args[0] = ArgumentTransfer::Borrow(moved);
+    push_args.transfers_mut()[0] = ArgumentTransfer::Borrow(moved);
     let error = verify_physical_module(&wrong_transfer)
         .expect_err("borrow must not replace the bytes owner move");
     assert!(error.message.contains("argument disagrees"));
@@ -2872,7 +2872,7 @@ fn verifier_checks_vector_element_types_and_result_ownership() {
     let PhysicalTerminator::RuntimeCall { args, .. } = &mut block.terminator else {
         unreachable!()
     };
-    args[2] = ArgumentTransfer::Borrow(integer);
+    args.transfers_mut()[2] = ArgumentTransfer::Borrow(integer);
     let error = verify_physical_module(&physical).expect_err("right arity, wrong element type");
     assert!(error.message.contains("runtime argument 2"), "{error}");
 
@@ -2937,7 +2937,7 @@ fn verifier_checks_vector_failure_presence_and_consuming_receiver_contracts() {
         let ArgumentTransfer::Move(receiver) = args[0] else {
             panic!("receiver must transfer");
         };
-        args[0] = ArgumentTransfer::Borrow(receiver);
+        args.transfers_mut()[0] = ArgumentTransfer::Borrow(receiver);
         let error =
             verify_physical_module(&physical).expect_err("mutation must transfer its receiver");
         assert!(

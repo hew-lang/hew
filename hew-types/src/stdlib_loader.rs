@@ -882,7 +882,7 @@ fn type_expr_to_ty_with_params_and_context(
                 })
                 .collect();
             let msg = match resolved.len() {
-                0 => Ty::Unit,
+                0 => Ty::Tuple(Vec::new()),
                 1 => resolved.into_iter().next().unwrap_or(Ty::Error),
                 _ => Ty::Tuple(resolved),
             };

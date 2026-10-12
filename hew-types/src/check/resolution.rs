@@ -2972,7 +2972,7 @@ impl Checker {
                 // An anonymous actor takes one message per turn, so several
                 // written parameters describe one tuple message.
                 let msg = match resolved.len() {
-                    0 => Ty::Unit,
+                    0 => Ty::Tuple(Vec::new()),
                     1 => resolved.into_iter().next().unwrap_or(Ty::Error),
                     _ => Ty::Tuple(resolved),
                 };

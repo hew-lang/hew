@@ -1477,7 +1477,8 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
-    is_initial_scalar(ty)
+    matches!(ty, ResolvedTy::Unit)
+        || is_initial_scalar(ty)
         || matches!(
             ty,
             ResolvedTy::Borrow { .. } | ResolvedTy::String

@@ -14,17 +14,13 @@ for discovery and configuration details.
 From a source checkout:
 
 ```sh
-cargo build -p hew-lsp
+make hew-lsp
 # binary: target/debug/hew-lsp
 ```
 
-To install it onto your `PATH`:
-
-```sh
-cargo install --path hew-lsp
-```
-
-For quick testing from a checkout, `cargo run -p hew-lsp --` also works. See
+For installation instructions, see the
+[LSP editor setup guide](../docs/dev/lsp-editor-setup.md).
+For quick testing from a checkout, run `target/debug/hew-lsp`. See
 [`../hew-lsp/README.md`](../hew-lsp/README.md) for crate-specific details.
 
 ## Vim / Neovim

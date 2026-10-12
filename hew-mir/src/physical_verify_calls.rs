@@ -352,7 +352,6 @@ pub(crate) fn actor_value_recipes(
     }));
     types
         .iter()
-        .filter(|ty| **ty != ResolvedTy::Unit)
         .map(|ty| physical_value_recipe(module, ids, ty).map(|recipe| (ty.clone(), recipe)))
         .collect::<Result<_, _>>()
 }

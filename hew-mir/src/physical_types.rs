@@ -391,6 +391,7 @@ pub struct PhysicalValueRecipe {
 pub struct PhysicalOffloadSlot {
     pub layout: PhysicalLayout,
     pub recipe: PhysicalValueRecipe,
+    pub carrier: ParamCarrier,
 }
 
 /// One `#[offload]` extern: the C endpoint the pool job calls and the
@@ -868,6 +869,57 @@ pub enum ArgumentTransfer {
     },
 }
 
+/// Physical ownership transfers paired with their target-realized carriers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalArguments {
+    transfers: Vec<ArgumentTransfer>,
+    carriers: Vec<ParamCarrier>,
+}
+
+impl PhysicalArguments {
+    pub(crate) fn new(
+        transfers: Vec<ArgumentTransfer>,
+        carriers: Vec<ParamCarrier>,
+    ) -> Result<Self, PhysicalError> {
+        if transfers.len() != carriers.len() {
+            return Err(PhysicalError::new(
+                "physical argument transfers and carriers differ in length",
+            ));
+        }
+        Ok(Self {
+            transfers,
+            carriers,
+        })
+    }
+
+    #[must_use]
+    pub fn carriers(&self) -> &[ParamCarrier] {
+        &self.carriers
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transfers_mut(&mut self) -> &mut [ArgumentTransfer] {
+        &mut self.transfers
+    }
+}
+
+impl std::ops::Deref for PhysicalArguments {
+    type Target = [ArgumentTransfer];
+
+    fn deref(&self) -> &Self::Target {
+        &self.transfers
+    }
+}
+
+impl<'a> IntoIterator for &'a PhysicalArguments {
+    type Item = &'a ArgumentTransfer;
+    type IntoIter = std::slice::Iter<'a, ArgumentTransfer>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.transfers.iter()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReturnTransfer {
     Borrow(StorageId),
@@ -1213,7 +1265,7 @@ pub enum PhysicalTerminator {
         symbol: String,
         /// Preserved declaration authority used by process entry setup.
         runtime_capability: Option<hew_types::ExternRuntimeCapability>,
-        args: Vec<ArgumentTransfer>,
+        args: PhysicalArguments,
         result: Option<StorageId>,
         result_abi: PhysicalExternResultAbi,
         normal: PhysicalEdge,
@@ -1222,7 +1274,7 @@ pub enum PhysicalTerminator {
     /// SIR-authored CFG edges and never become C unwinds.
     RuntimeCall {
         action: PhysicalRuntimeAction,
-        args: Vec<ArgumentTransfer>,
+        args: PhysicalArguments,
         result: Option<StorageId>,
         normal: PhysicalEdge,
         failure: Option<PhysicalEdge>,

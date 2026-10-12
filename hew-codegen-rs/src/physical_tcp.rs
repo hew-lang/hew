@@ -7,18 +7,13 @@ impl FunctionEmitter<'_, '_> {
     pub(super) fn emit_tcp_operation(
         &self,
         operation: TcpOp,
-        transfers: &[ArgumentTransfer],
+        arguments: &PhysicalArguments,
         result: Option<StorageId>,
     ) -> CodegenResult<()> {
+        let transfers: &[ArgumentTransfer] = arguments;
         let mut values = Vec::with_capacity(transfers.len());
-        for transfer in transfers {
-            let source = argument_source(transfer);
-            let value = if self.storage(source)?.ty == ResolvedTy::Bytes {
-                self.slots[source.0 as usize].into()
-            } else {
-                self.load(source, "tcp.argument")?
-            };
-            values.push(value);
+        for (transfer, carrier) in transfers.iter().zip(arguments.carriers()) {
+            values.push(self.emit_physical_argument(transfer, *carrier, "tcp.argument")?);
         }
         let parameters = values
             .iter()

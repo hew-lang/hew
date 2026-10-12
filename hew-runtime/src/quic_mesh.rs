@@ -214,147 +214,12 @@ impl MeshTls {
     }
 }
 
-/// Extract the `SubjectPublicKeyInfo` DER bytes from a DER-encoded X.509
-/// certificate.
-///
-/// The SPKI is the `subjectPublicKeyInfo` field, which starts at a fixed
-/// offset in a well-formed certificate. We use a minimal ASN.1 walk to avoid
-/// pulling in a full X.509 parser as a dependency.
-///
-/// Format:
-/// ```text
-/// Certificate ::= SEQUENCE {
-///   tbsCertificate  TBSCertificate,
-///   ...
-/// }
-/// TBSCertificate ::= SEQUENCE {
-///   version           [0] EXPLICIT INTEGER OPTIONAL,
-///   serialNumber      INTEGER,
-///   signature         AlgorithmIdentifier,
-///   issuer            Name,
-///   validity          Validity,
-///   subject           Name,
-///   subjectPublicKeyInfo SubjectPublicKeyInfo,  ← we want this
-///   ...
-/// }
-/// ```
-///
-/// This walks the DER without a dependency on an X.509 crate. A3 can
-/// replace this with `webpki` or `x509-cert` once that crate is added.
+/// Extract the `SubjectPublicKeyInfo` DER bytes from a parsed X.509 certificate.
 fn extract_spki_from_cert_der(cert_der: &[u8]) -> Result<Vec<u8>, MeshError> {
-    // The approach: rustls-webpki's EndEntityCert already validates and can
-    // give us the SPKI via the public_key() method — but that requires a trust
-    // anchor. Instead we use a minimal DER walk.
-    //
-    // Strategy: use rcgen to round-trip through rustls-pki-types' DER parser.
-    // We rely on the fact that rustls's built-in SPKI extraction is available
-    // via the server verifier path.
-    //
-    // Minimal ASN.1 DER walk:
-    // 1. Unwrap outer SEQUENCE (Certificate)
-    // 2. Unwrap inner SEQUENCE (TBSCertificate)
-    // 3. Skip fields until we hit the subjectPublicKeyInfo SEQUENCE
-    //
-    // This is intentionally simple and brittle — it works for rcgen-generated
-    // certs (PKCS8 / P-256 / P-384) that A2/A3 use. A full X.509 parser
-    // belongs in a follow-on lane.
-    //
-    // NATIVE-TODO(A3): replace with x509-cert crate or webpki SPKI extraction.
-
-    fn read_length(data: &[u8], pos: &mut usize) -> Option<usize> {
-        let first = *data.get(*pos)? as usize;
-        *pos += 1;
-        if first < 0x80 {
-            return Some(first);
-        }
-        let len_bytes = first & 0x7f;
-        if len_bytes > 4 || *pos + len_bytes > data.len() {
-            return None;
-        }
-        let mut length = 0usize;
-        for _ in 0..len_bytes {
-            length = (length << 8) | (*data.get(*pos)? as usize);
-            *pos += 1;
-        }
-        Some(length)
-    }
-
-    fn expect_tag(data: &[u8], pos: &mut usize, tag: u8) -> Option<usize> {
-        if *data.get(*pos)? != tag {
-            return None;
-        }
-        *pos += 1;
-        read_length(data, pos)
-    }
-
-    fn skip_element(data: &[u8], pos: &mut usize) -> Option<()> {
-        let _tag = *data.get(*pos)?;
-        *pos += 1;
-        let len = read_length(data, pos)?;
-        *pos += len;
-        if *pos > data.len() {
-            return None;
-        }
-        Some(())
-    }
-
-    const SEQUENCE: u8 = 0x30;
-    const CONTEXT_0: u8 = 0xa0; // [0] EXPLICIT
-
-    let mut pos = 0;
-
-    // Certificate SEQUENCE
-    let cert_len = expect_tag(cert_der, &mut pos, SEQUENCE)
-        .ok_or_else(|| MeshError::Tls("cert DER: expected outer SEQUENCE".into()))?;
-    if pos + cert_len > cert_der.len() {
-        return Err(MeshError::Tls("cert DER: truncated".into()));
-    }
-
-    // TBSCertificate SEQUENCE
-    let tbs_start = pos;
-    let tbs_len = expect_tag(cert_der, &mut pos, SEQUENCE)
-        .ok_or_else(|| MeshError::Tls("cert DER: expected TBSCertificate SEQUENCE".into()))?;
-    let tbs_end = pos + tbs_len;
-    let _ = tbs_start;
-
-    // version [0] EXPLICIT (optional, present in v2/v3 certs)
-    if pos < tbs_end && cert_der[pos] == CONTEXT_0 {
-        skip_element(cert_der, &mut pos)
-            .ok_or_else(|| MeshError::Tls("cert DER: bad version field".into()))?;
-    }
-
-    // serialNumber INTEGER
-    skip_element(cert_der, &mut pos)
-        .ok_or_else(|| MeshError::Tls("cert DER: bad serialNumber".into()))?;
-
-    // signature AlgorithmIdentifier (SEQUENCE)
-    skip_element(cert_der, &mut pos)
-        .ok_or_else(|| MeshError::Tls("cert DER: bad signature AlgId".into()))?;
-
-    // issuer Name (SEQUENCE)
-    skip_element(cert_der, &mut pos)
-        .ok_or_else(|| MeshError::Tls("cert DER: bad issuer".into()))?;
-
-    // validity Validity (SEQUENCE)
-    skip_element(cert_der, &mut pos)
-        .ok_or_else(|| MeshError::Tls("cert DER: bad validity".into()))?;
-
-    // subject Name (SEQUENCE)
-    skip_element(cert_der, &mut pos)
-        .ok_or_else(|| MeshError::Tls("cert DER: bad subject".into()))?;
-
-    // subjectPublicKeyInfo — this is what we want
-    let spki_start = pos;
-    let spki_len = expect_tag(cert_der, &mut pos, SEQUENCE)
-        .ok_or_else(|| MeshError::Tls("cert DER: expected subjectPublicKeyInfo SEQUENCE".into()))?;
-    let spki_end = pos + spki_len;
-    if spki_end > cert_der.len() {
-        return Err(MeshError::Tls(
-            "cert DER: subjectPublicKeyInfo truncated".into(),
-        ));
-    }
-
-    Ok(cert_der[spki_start..spki_end].to_vec())
+    let certificate = rustls_pki_types::CertificateDer::from(cert_der);
+    let parsed = webpki::EndEntityCert::try_from(&certificate)
+        .map_err(|error| MeshError::Tls(format!("invalid peer certificate: {error}")))?;
+    Ok(parsed.subject_public_key_info().as_ref().to_vec())
 }
 
 // ---------------------------------------------------------------------------
@@ -2445,8 +2310,8 @@ impl PeerConn {
 mod tests {
     use super::*;
 
-    /// Verify that the ASN.1 DER walk correctly extracts the SPKI from a
-    /// rcgen-generated certificate.
+    /// Verify that webpki extracts the SPKI from a valid certificate and
+    /// rejects malformed certificate bytes.
     #[test]
     fn spki_extraction_roundtrips() {
         let (tls, spki) = MeshTls::self_signed(vec!["test".into()]).unwrap();
@@ -2459,6 +2324,7 @@ mod tests {
             spki, extracted,
             "SPKI extracted from cert must match the one returned by self_signed()"
         );
+        assert!(extract_spki_from_cert_der(b"not a certificate").is_err());
     }
 
     /// CAP-12: keyfile frame round-trips, preserving the leaf SPKI.

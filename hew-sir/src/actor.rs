@@ -458,7 +458,7 @@ impl SemActor {
                     return Err("an anonymous actor declares exactly one handler".into());
                 };
                 let expected_msg = match handler.params.as_slice() {
-                    [] => ResolvedTy::Unit,
+                    [] => ResolvedTy::Tuple(Vec::new()),
                     [only] => only.clone(),
                     many => ResolvedTy::Tuple(many.to_vec()),
                 };

@@ -2,14 +2,15 @@
 
 use super::{
     actor_signature, aggregate_glue, apply_edge, call_successors, call_successors_with_handback,
-    callable, callable_for, consume_if_owned, defer, define, generators, initialized, partial,
-    runtime_receiver_release, semantic_type_facts, storage, variant_glue, vector_glue,
-    verify_map_call, verify_set_call, verify_value_recipe, verify_vector_call, wire,
-    ArgumentTransfer, BTreeSet, BlockId, BorrowDependents, BuiltinType, CloneAction, FaultState,
-    FlowState, InitState, OwnKind, PhysicalEdge, PhysicalError, PhysicalFunction, PhysicalModule,
-    PhysicalRuntimeCarrier, PhysicalSelectSource, PhysicalTerminator, PhysicalValueRecipe,
-    ResolvedTy, ReturnTransfer, RuntimeArgumentEffect, RuntimeCallFamily, RuntimeResultEffect,
-    SemParamPassing, StorageId, StorageOrigin, ValueCapability,
+    callable, callable_for, consume_if_owned, defer, define, extern_param_carrier, generators,
+    initialized, partial, runtime_param_carrier, runtime_receiver_release, semantic_type_facts,
+    storage, variant_glue, vector_glue, verify_map_call, verify_set_call, verify_value_recipe,
+    verify_vector_call, wire, ArgumentTransfer, BTreeSet, BlockId, BorrowDependents, BuiltinType,
+    CloneAction, FaultState, FlowState, InitState, OwnKind, PhysicalEdge, PhysicalError,
+    PhysicalFunction, PhysicalModule, PhysicalRuntimeCarrier, PhysicalSelectSource,
+    PhysicalTerminator, PhysicalValueRecipe, ResolvedTy, ReturnTransfer, RuntimeArgumentEffect,
+    RuntimeCallFamily, RuntimeResultEffect, SemParamPassing, StorageId, StorageOrigin,
+    ValueCapability,
 };
 
 #[allow(
@@ -1234,6 +1235,11 @@ pub(crate) fn verify_terminator(
                 if slot(*id)?.ty != parameter.recipe.ty {
                     return Err(PhysicalError::new("offload input differs from its extern"));
                 }
+                if parameter.carrier != extern_param_carrier(&parameter.recipe.ty) {
+                    return Err(PhysicalError::new(
+                        "offload argument carrier differs from its declared C ABI",
+                    ));
+                }
             }
             let owned = offload
                 .params
@@ -1831,6 +1837,19 @@ pub(crate) fn verify_terminator(
                 };
                 slot(id)?;
             }
+            for (argument, carrier) in args.iter().zip(args.carriers()) {
+                let id = match argument {
+                    ArgumentTransfer::Borrow(id)
+                    | ArgumentTransfer::BorrowMut(id)
+                    | ArgumentTransfer::Move(id)
+                    | ArgumentTransfer::Clone { source: id, .. } => *id,
+                };
+                if *carrier != extern_param_carrier(&slot(id)?.ty) {
+                    return Err(PhysicalError::new(
+                        "extern argument carrier differs from its declared C ABI",
+                    ));
+                }
+            }
             if symbol.is_empty() {
                 return Err(PhysicalError::new("extern call has no linker symbol"));
             }
@@ -1926,6 +1945,19 @@ pub(crate) fn verify_terminator(
                 {
                     return Err(PhysicalError::new(format!(
                         "physical runtime action {action:?} argument disagrees with its semantic contract"
+                    )));
+                }
+            }
+            for (argument, carrier) in args.iter().zip(args.carriers()) {
+                let id = match argument {
+                    ArgumentTransfer::Borrow(id)
+                    | ArgumentTransfer::BorrowMut(id)
+                    | ArgumentTransfer::Move(id)
+                    | ArgumentTransfer::Clone { source: id, .. } => *id,
+                };
+                if *carrier != runtime_param_carrier(&slot(id)?.ty) {
+                    return Err(PhysicalError::new(format!(
+                        "physical runtime action {action:?} argument carrier differs from its runtime ABI"
                     )));
                 }
             }

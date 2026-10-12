@@ -15,22 +15,22 @@ the server. For non-VS Code highlighting configs, see
 From a source checkout:
 
 ```sh
-cargo build -p hew-lsp
+make hew-lsp
 # binary: target/debug/hew-lsp
 ```
 
-Release build (what CI smoke-tests and what editors should use day to day):
+Build the optimized compiler toolchain:
 
 ```sh
-cargo build -p hew-lsp --release
+make release
 # binary: target/release/hew-lsp
 ```
 
-Or install it onto your `PATH`:
+After the release build, install the toolchain onto your `PATH`:
 
 ```sh
-cargo install --path hew-lsp
-# binary: ~/.cargo/bin/hew-lsp
+make install PREFIX="$HOME/.local"
+# binary: ~/.local/bin/hew-lsp
 ```
 
 ## Launch
@@ -43,8 +43,10 @@ hew-lsp                 # the standalone binary
 hew lsp                 # thin launcher; forwards args to hew-lsp on the same PATH/dir
 ```
 
-`--pkg-path <DIR>` mirrors `hew check --pkg-path`, adding package search roots so
-package imports resolve the same way in the editor as on the command line.
+`--pkg-path <DIR>` mirrors `hew check --pkg-path`, selecting one package search
+directory so package imports resolve the same way in the editor as on the
+command line. Missing values and repeated `--pkg-path` options are rejected
+before the server starts.
 `--version` and `--help` print and exit without starting a session.
 
 Confirm the binary runs:
@@ -99,10 +101,11 @@ and nano. Crate-level feature notes live in
 
 ## Verifying a session
 
-CI exercises the shipped binary end to end — `initialize` → `didOpen` →
-`publishDiagnostics` — in `hew-lsp/tests/protocol_smoke.rs`. Run it locally to
+Source CI exercises the built server end to end — `initialize` → `didOpen` →
+`publishDiagnostics` — in `hew-lsp/tests/protocol_smoke.rs`. This is separate
+from checking the server in a packaged SDK. Run the protocol tests locally to
 confirm a build serves diagnostics, not just `--version`:
 
 ```sh
-cargo nextest run -p hew-lsp --test protocol_smoke
+make test NEXTEST_WORKSPACE_FILTER='package(hew-lsp) and binary(protocol_smoke)'
 ```

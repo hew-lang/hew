@@ -185,8 +185,11 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
             used.extend(result);
         }
         PhysicalTerminator::Offload { args, result, .. }
-        | PhysicalTerminator::ActorCall { args, result, .. }
-        | PhysicalTerminator::ExternCall { args, result, .. }
+        | PhysicalTerminator::ActorCall { args, result, .. } => {
+            used.extend(args.iter().map(source));
+            used.extend(result);
+        }
+        PhysicalTerminator::ExternCall { args, result, .. }
         | PhysicalTerminator::RuntimeCall { args, result, .. } => {
             used.extend(args.iter().map(source));
             used.extend(result);

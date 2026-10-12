@@ -2983,7 +2983,11 @@ impl Checker {
         // for a single-tuple-param lambda — stays on the one-message
         // path below.
         let multi_component_tys: Option<Vec<Ty>> = match &msg_ty {
-            Ty::Tuple(parts) if parts.len() > 1 && parts.len() == args.len() => Some(parts.clone()),
+            Ty::Tuple(parts)
+                if (parts.is_empty() || parts.len() > 1) && parts.len() == args.len() =>
+            {
+                Some(parts.clone())
+            }
             _ => None,
         };
         let payload = if let Some(parts) = multi_component_tys {

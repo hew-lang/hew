@@ -1208,19 +1208,24 @@ impl Parser<'_> {
 
                 let is_move = self.eat(&Token::Move);
 
-                if self.peek() != Some(&Token::Pipe) {
-                    self.error_with_hint(
-                        "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `|` to begin actor parameter list"
-                            .to_string(),
-                        "use `actor |params| { body }` to declare a lambda actor".to_string(),
-                    );
-                    return None;
-                }
-                self.advance(); // consume `|`
+                let params = if self.eat(&Token::PipePipe) {
+                    Vec::new()
+                } else {
+                    if self.peek() != Some(&Token::Pipe) {
+                        self.error_with_hint(
+                            "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `|` to begin actor parameter list"
+                                .to_string(),
+                            "use `actor |params| { body }` to declare a lambda actor".to_string(),
+                        );
+                        return None;
+                    }
+                    self.advance(); // consume `|`
 
-                let params = self.try_parse_lambda_params().unwrap_or_default();
+                    let params = self.try_parse_lambda_params().unwrap_or_default();
 
-                self.expect(&Token::Pipe)?;
+                    self.expect(&Token::Pipe)?;
+                    params
+                };
 
                 let return_type = self.parse_opt_return_type()?;
 

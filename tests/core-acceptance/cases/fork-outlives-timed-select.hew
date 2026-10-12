@@ -1,50 +1,85 @@
 // A task whose only wait is a timed `select` keeps running when the timer
 // wins, and its scope waits for it anyway; a `scope within` deadline cancels
 // the work instead.
-fn slow() -> i64 {
-    sleep(30ms);
-    1
+import std.stream;
+
+fn wait_for(consume input: stream.Stream<i64>) -> i64 {
+    let value = input.recv().expect("released");
+    input.close();
+    value
 }
 
 fn stranded() -> bool {
-    scope {
-        let job = fork slow();
+    let (release, input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let won = scope {
+        let job = fork wait_for(input);
         select {
             value from job => false,
-            after 1ms => true,
+            after 1ms => {
+                release.send(1).expect("release");
+                true
+            }
         }
-    }
+    };
+    release.close();
+    won
 }
 
 fn bounded() -> bool {
-    scope within 1ms {
-        let _ = slow();
+    let (release, input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let cancelled = scope within 1ms {
+        let _ = wait_for(input);
         false
     } handle failure {
-        true
+        match failure {
+            .Deadline { message: _ } => true,
+            .Fault { message } => panic(message),
+        }
+    };
+    match release.try_send(1) {
+        .Err(SendError.Closed) => {}
+        _ => panic("cancelled reader must be drained"),
     }
+    release.close();
+    cancelled
 }
 
 fn within_deadline() -> i64 {
-    scope within 50ms {
-        let job = fork slow();
+    let (release, input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let outcome = scope within 50ms {
+        let job = fork wait_for(input);
         select {
             value from job => value,
             after 1ms => 0,
         }
     } handle failure {
-        -1
+        match failure {
+            .Deadline { message: _ } => -1,
+            .Fault { message } => panic(message),
+        }
+    };
+    match release.try_send(1) {
+        .Err(SendError.Closed) => {}
+        _ => panic("deadline child must be drained"),
     }
+    release.close();
+    outcome
 }
 
 fn joined() -> i64 {
-    scope {
-        let job = fork slow();
+    let (release, input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let outcome = scope {
+        let job = fork wait_for(input);
         select {
             value from job => value,
-            after 1ms => await job,
+            after 1ms => {
+                release.send(1).expect("release");
+                await job
+            }
         }
-    }
+    };
+    release.close();
+    outcome
 }
 
 fn main() {

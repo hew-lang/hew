@@ -211,8 +211,10 @@ pub fn lower_physical_module(
         .iter()
         .map(|signature| {
             let slot = |ty: &ResolvedTy| -> Result<PhysicalOffloadSlot, PhysicalError> {
+                let layout = required_layout(&target, ty)?.clone();
                 Ok(PhysicalOffloadSlot {
-                    layout: required_layout(&target, ty)?.clone(),
+                    carrier: extern_param_carrier(ty),
+                    layout,
                     recipe: physical_value_recipe(module, &ids, ty)?,
                 })
             };
@@ -935,6 +937,28 @@ pub(crate) fn param_carrier(
 ) -> ParamCarrier {
     if passing == hew_sir::SemParamPassing::BorrowMut
         || matches!(layout.repr, PhysicalRepr::Struct(_))
+    {
+        ParamCarrier::Indirect
+    } else {
+        ParamCarrier::Direct
+    }
+}
+
+/// C declarations use pointer adapters only for the managed bytes triple.
+pub(crate) fn extern_param_carrier(ty: &ResolvedTy) -> ParamCarrier {
+    if *ty == ResolvedTy::Bytes {
+        ParamCarrier::Indirect
+    } else {
+        ParamCarrier::Direct
+    }
+}
+
+/// Runtime adapters take their published aggregate handles by pointer.
+pub(crate) fn runtime_param_carrier(ty: &ResolvedTy) -> ParamCarrier {
+    if *ty == ResolvedTy::Bytes
+        || ty.is_builtin(BuiltinType::NodeId)
+        || ty.is_builtin(BuiltinType::Location)
+        || ty.is_builtin(BuiltinType::RemotePid)
     {
         ParamCarrier::Indirect
     } else {

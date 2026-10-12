@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use hew_lsp::server::HewLanguageServer;
 use tower_lsp_server::{LspService, Server};
 
+fn argument_error(message: &str) -> ! {
+    eprintln!("hew-lsp: {message}");
+    std::process::exit(2);
+}
+
 #[tokio::main]
 async fn main() {
     // Handle --version / --help before starting the LSP server
@@ -32,19 +37,26 @@ async fn main() {
         return;
     }
 
-    // Collect extra package-search paths from `--pkg-path DIR` arguments.
-    // Mirrors `hew check --pkg-path`: appended to the default module search
-    // roots so that `hew::pkg` imports resolve the same way in the editor.
     let mut extra_pkg_paths: Vec<PathBuf> = Vec::new();
-    let mut arg_iter = args.iter().skip(1).peekable();
+    let mut arg_iter = args.iter().skip(1);
     while let Some(arg) = arg_iter.next() {
-        if arg == "--pkg-path" {
-            if let Some(path_str) = arg_iter.next() {
-                extra_pkg_paths.push(PathBuf::from(path_str));
-            }
+        let path_str: &str = if arg == "--pkg-path" {
+            arg_iter
+                .next()
+                .filter(|value| !value.starts_with('-'))
+                .unwrap_or_else(|| argument_error("--pkg-path requires a directory"))
         } else if let Some(path_str) = arg.strip_prefix("--pkg-path=") {
-            extra_pkg_paths.push(PathBuf::from(path_str));
+            path_str
+        } else {
+            continue;
+        };
+        if path_str.is_empty() {
+            argument_error("--pkg-path requires a directory");
         }
+        if !extra_pkg_paths.is_empty() {
+            argument_error("--pkg-path may only be specified once");
+        }
+        extra_pkg_paths.push(PathBuf::from(path_str));
     }
 
     let (service, socket) = LspService::build(move |client| {

@@ -6,11 +6,12 @@ pub mod physical;
 pub use hew_sir::RuntimeVariantRole;
 pub use physical::{
     lower_physical_module, ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier,
-    PhysicalBlock, PhysicalCallable, PhysicalCheckedFailure, PhysicalConst, PhysicalEdge,
-    PhysicalError, PhysicalFunction, PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalParam,
-    PhysicalRepr, PhysicalRuntimeAction, PhysicalRuntimeCarrier, PhysicalStorage, PhysicalTarget,
-    PhysicalTerminator, PhysicalVectorDescriptor, PhysicalVectorGlue, PhysicalVectorId,
-    PhysicalVectorOp, ReturnTransfer, StorageId, StorageOrigin, VerifiedPhysicalModule,
+    PhysicalArguments, PhysicalBlock, PhysicalCallable, PhysicalCheckedFailure, PhysicalConst,
+    PhysicalEdge, PhysicalError, PhysicalFunction, PhysicalLayout, PhysicalModule, PhysicalOp,
+    PhysicalParam, PhysicalRepr, PhysicalRuntimeAction, PhysicalRuntimeCarrier, PhysicalStorage,
+    PhysicalTarget, PhysicalTerminator, PhysicalVectorDescriptor, PhysicalVectorGlue,
+    PhysicalVectorId, PhysicalVectorOp, ReturnTransfer, StorageId, StorageOrigin,
+    VerifiedPhysicalModule,
 };
 
 /// Pointer width selected by a compilation host.

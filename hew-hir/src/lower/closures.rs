@@ -3,55 +3,23 @@
 use super::*;
 
 impl LowerCtx {
-    /// Build the `actor(Msg) -> Reply` handle `ResolvedTy` for an actor-lambda
-    /// from its parameter list and optional return-type annotation.
-    /// Mirrors the forward-bind logic in `hew-types::check::statements`:
-    /// zero params → Unit message; one param → that param's type;
-    /// multiple params → tuple of param types. The HIR layer only needs
-    /// a placeholder shape so the forward-bind succeeds and capture
-    /// resolution sees the let-name.
-    ///
-    /// SHIM — `ResolvedTy::Unit` for missing param / return annotations.
-    ///
-    /// - WHY: HIR has no type-inference machinery; the slice-2 type
-    ///   checker uses `TypeVar::fresh()` to allocate inference variables
-    ///   which HIR cannot represent. The forward-bind only needs a
-    ///   syntactic placeholder so the body's recursive self-reference
-    ///   resolves to a `BindingId`; the actual type identity is
-    ///   reconstructed downstream.
-    /// - WHEN OBSOLETE: either HIR gains a placeholder type variant
-    ///   (an explicit `ResolvedTy::Hole` or equivalent) for forward-bind
-    ///   sites, or the post-typecheck pipeline rewrites HIR binding
-    ///   types from the slice-2 unifier's substitution table via a
-    ///   side-table keyed on `BindingId`.
-    /// - REAL SOLUTION: lift the slice-2 unifier's substitution into a
-    ///   `BindingId → Ty` side-table emitted alongside HIR and consumed
-    ///   by MIR lowering, so HIR never has to invent a stand-in.
-    pub(super) fn actor_lambda_handle_ty(
-        &mut self,
-        params: &[LambdaParam],
-        return_type: Option<&Spanned<TypeExpr>>,
-    ) -> ResolvedTy {
-        let param_tys: Vec<ResolvedTy> = params
-            .iter()
-            .map(|p| {
-                p.ty.as_ref()
-                    .map_or(ResolvedTy::Unit, |annotation| self.lower_type(annotation))
-            })
-            .collect();
-        let msg_ty = match param_tys.len() {
-            0 => ResolvedTy::Unit,
-            1 => param_tys.into_iter().next().unwrap(),
-            _ => ResolvedTy::Tuple(param_tys),
-        };
-        let reply_ty = return_type
-            .as_ref()
-            .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
-        ResolvedTy::Named {
-            args: vec![msg_ty, reply_ty],
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
-            is_opaque: false,
+    pub(super) fn checked_actor_lambda_handle_ty(&mut self, span: &Span) -> ResolvedTy {
+        if let Some(ty) = self.checker_expr_ty_if_present(span) {
+            if ty.is_builtin(hew_types::BuiltinType::ActorFn)
+                && matches!(&ty, ResolvedTy::Named { args, .. } if args.len() == 2)
+            {
+                return ty;
+            }
         }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "actor lambda".into(),
+                reason: "missing checked actor message and reply types".into(),
+            },
+            span.clone(),
+            "actor lambda lowering requires its checked handle type",
+        ));
+        ResolvedTy::Unit
     }
 
     pub(super) fn closure_signature_from_ty(

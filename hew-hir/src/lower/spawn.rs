@@ -147,14 +147,35 @@ impl LowerCtx {
     pub(super) fn lower_spawn_lambda_actor(
         &mut self,
         params: &[LambdaParam],
-        return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let actor_ty = self.actor_lambda_handle_ty(params, return_type);
-        let reply_ty = match &actor_ty {
-            ResolvedTy::Named { args, .. } if args.len() == 2 => args[1].clone(),
-            _ => ResolvedTy::Unit,
+        let actor_ty = self.checked_actor_lambda_handle_ty(span);
+        let ResolvedTy::Named { args, .. } = &actor_ty else {
+            return (
+                HirExprKind::Unsupported("missing actor lambda type".into()),
+                actor_ty,
+            );
+        };
+        let reply_ty = args[1].clone();
+        let param_tys = match (params.len(), &args[0]) {
+            (0, ResolvedTy::Unit) => Vec::new(),
+            (1, message) => vec![message.clone()],
+            (count, ResolvedTy::Tuple(elements)) if count == elements.len() => elements.clone(),
+            _ => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor lambda".into(),
+                        reason: "checked message type does not match parameter arity".into(),
+                    },
+                    span.clone(),
+                    "actor lambda parameters require their checked message types",
+                ));
+                return (
+                    HirExprKind::Unsupported("actor lambda parameter mismatch".into()),
+                    actor_ty,
+                );
+            }
         };
         // Lower params + body inside a new scope. Track the parameter
         // BindingIds so the capture walker can exclude them (params
@@ -164,11 +185,7 @@ impl LowerCtx {
         let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
         let mut param_ids: std::collections::HashSet<BindingId> =
             std::collections::HashSet::with_capacity(params.len());
-        for param in params {
-            let ty = param
-                .ty
-                .as_ref()
-                .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
+        for (param, ty) in params.iter().zip(param_tys) {
             let binding =
                 self.bind_checked(param.name.to_string(), ty, false, param.name_span.clone());
             param_ids.insert(binding.id);

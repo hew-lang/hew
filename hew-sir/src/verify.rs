@@ -5438,6 +5438,8 @@ fn verify_terminator_shape(
                 crate::CallResult::Value(value) => {
                     let ty_matches = if codec.is_serialize() {
                         value.ty == codec.document_ty()
+                    } else if codec.direction == hew_types::CodecDirection::TestInput {
+                        value.ty == plan.root
                     } else {
                         matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.first() == Some(&plan.root))
                     };
@@ -5465,7 +5467,9 @@ fn verify_terminator_shape(
                                         && plan.plans.contains_key(&cases.error_ty)
                                 })
                     }),
-                (None, _) => codec.is_serialize(),
+                (None, _) => {
+                    codec.is_serialize() || codec.direction == hew_types::CodecDirection::TestInput
+                }
                 _ => false,
             };
             if !valid_input

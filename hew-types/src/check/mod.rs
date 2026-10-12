@@ -107,9 +107,9 @@ pub use self::types::{
     PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
     PoolAccessor, PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation,
     ReceiverUpdate, RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, SpawnSlot,
-    StackHint, StructuralWitness, TraitRef, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
-    TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
-    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
+    StackHint, StructuralWitness, TestEntryPlan, TraitRef, TryConversionKind, TryWidthCastLowering,
+    TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch,
+    VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -1659,7 +1659,7 @@ impl Checker {
         &mut self,
         program: &Program,
         resolved_fn_sigs: crate::check::FnSigView<'_>,
-    ) -> Vec<EntryExitPlan> {
+    ) -> Vec<TestEntryPlan> {
         let Some(selections) = self.test_entry_selections.clone() else {
             return Vec::new();
         };
@@ -1682,11 +1682,10 @@ impl Checker {
                 invalid = true;
                 continue;
             }
-            if !declaration.params.is_empty()
-                || declaration
-                    .type_params
-                    .as_ref()
-                    .is_some_and(|params| !params.is_empty())
+            if declaration
+                .type_params
+                .as_ref()
+                .is_some_and(|params| !params.is_empty())
                 || declaration.where_clause.is_some()
                 || declaration.is_generator
             {
@@ -1694,7 +1693,7 @@ impl Checker {
                     TypeErrorKind::TestSignature,
                     span.clone(),
                     format!(
-                        "test `{}` must have no parameters or type parameters and cannot be a generator",
+                        "test `{}` must have no type parameters and cannot be a generator",
                         declaration.name
                     ),
                 ));
@@ -1723,7 +1722,8 @@ impl Checker {
                 continue;
             };
             let error_mark = self.errors.len();
-            let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs);
+            let action =
+                self.classify_entry_exit_action(return_type, span.clone(), resolved_fn_sigs);
             let Some(action) = action else {
                 for error in &mut self.errors[error_mark..] {
                     error.kind = TypeErrorKind::TestSignature;
@@ -1739,7 +1739,40 @@ impl Checker {
                 invalid = true;
                 continue;
             };
-            plans.push(EntryExitPlan { entry, action });
+            let signature = resolved_fn_sigs
+                .get(self.defs.path(entry))
+                .expect("selected test signature was checked above");
+            let arguments = signature
+                .params
+                .iter()
+                .map(|ty| ResolvedTy::from_ty(&self.normalize_for_use(&self.subst.resolve(ty))))
+                .collect::<Result<Vec<_>, _>>();
+            let Ok(arguments) = arguments else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    "property parameters must have concrete types",
+                ));
+                invalid = true;
+                continue;
+            };
+            if let Some(ty) = arguments.iter().find(|ty| !self.is_serializable(ty)) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    format!(
+                        "property parameter `{}` has no structural generator",
+                        ty.user_facing()
+                    ),
+                ));
+                invalid = true;
+                continue;
+            }
+            plans.push(TestEntryPlan {
+                entry,
+                action,
+                arguments,
+            });
         }
         if invalid {
             Vec::new()

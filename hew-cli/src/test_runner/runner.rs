@@ -246,6 +246,7 @@ impl TestCompilePaths {
 /// new positional argument every time the compiler pipeline gains a mode.
 #[derive(Clone, Copy)]
 pub struct TestRunOptions<'a> {
+    pub cases: u32,
     pub coverage: Option<&'a super::coverage::Coverage>,
     pub filter: Option<&'a str>,
     pub include_ignored: bool,
@@ -729,11 +730,13 @@ pub(super) enum CompiledTestArtifact {
         _emit_dir: tempfile::TempDir,
         binary_path: PathBuf,
         coverage: Option<hew_compile::SourceCoverageMap>,
+        properties: Vec<Vec<hew_codec::property::Shape>>,
     },
     Vm {
         _emit_dir: tempfile::TempDir,
         packages: Vec<PathBuf>,
         coverage: Option<hew_compile::SourceCoverageMap>,
+        properties: Vec<Vec<hew_codec::property::Shape>>,
     },
 }
 
@@ -828,6 +831,7 @@ fn compile_test(
         collector.include(map);
     }
     Ok(CompiledTestArtifact::Native {
+        properties: compile_result.expect("compilation succeeded above"),
         coverage,
         _emit_dir: emit_dir,
         binary_path,
@@ -841,6 +845,7 @@ fn execute_test_run(
     ordinal: u32,
     options: &TestRunOptions<'_>,
     merge_output: bool,
+    property: Option<&[hew_codec::Value]>,
 ) -> (
     Result<crate::process::BinaryRunOutcome, String>,
     Option<TestReport>,
@@ -856,6 +861,17 @@ fn execute_test_run(
             );
         }
     };
+    if let Some(values) = property {
+        let mut sink = hew_codec::Sink::new(hew_codec::Format::Cbor);
+        sink.value(&hew_codec::Value::Seq(values.to_vec()));
+        if let Err(error) = std::fs::write(dir.path().join("property.cbor"), sink.finish()) {
+            return (
+                Err(format!("cannot write property arguments: {error}")),
+                None,
+                Some(dir),
+            );
+        }
+    }
     let path = dir.path().join("report.json");
     let trace_path = options.trace_dir.map(|_| dir.path().join("trace.json"));
     let scratch = dir.path().join("tmp");
@@ -913,6 +929,89 @@ fn run_compiled_test(
     artifact: &CompiledTestArtifact,
     options: &TestRunOptions<'_>,
 ) -> TestResult {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngSeed, TestError, TestRunner};
+
+    let properties = match artifact {
+        CompiledTestArtifact::Native { properties, .. }
+        | CompiledTestArtifact::Vm { properties, .. } => properties,
+    };
+    let shapes = properties.get(ordinal).map_or(&[][..], Vec::as_slice);
+    if shapes.is_empty() {
+        return run_compiled_test_input(test, ordinal, artifact, options, None);
+    }
+    let start = std::time::Instant::now();
+    let strategies = shapes
+        .iter()
+        .map(super::property::strategy)
+        .collect::<Result<Vec<_>, _>>();
+    let strategies = match strategies {
+        Ok(strategies) => strategies,
+        Err(error) => {
+            return TestResult {
+                test: test.clone(),
+                outcome: TestOutcome::failed(TestFailureKind::Runtime, error),
+                output: String::new(),
+                duration: start.elapsed(),
+                report: None,
+            }
+        }
+    };
+    let seed = options
+        .schedules
+        .seed
+        .unwrap_or_else(|| super::stable_hash(&super::test_identity(test, options.root)));
+    let mut runner = TestRunner::new(Config {
+        cases: options.cases,
+        rng_seed: RngSeed::Fixed(seed),
+        failure_persistence: None,
+        max_shrink_iters: 4096,
+        ..Config::default()
+    });
+    let last = std::cell::RefCell::new(None);
+    let outcome = runner.run(&strategies, |values| {
+        let result = run_compiled_test_input(test, ordinal, artifact, options, Some(&values));
+        let outcome = match &result.outcome {
+            TestOutcome::Failed(failure) => Err(TestCaseError::fail(failure.message.clone())),
+            _ => Ok(()),
+        };
+        *last.borrow_mut() = Some(result);
+        outcome
+    });
+    let mut result = match outcome {
+        Ok(()) => last
+            .into_inner()
+            .expect("a property runs at least one case"),
+        Err(TestError::Fail(_, values)) => {
+            let mut result =
+                run_compiled_test_input(test, ordinal, artifact, options, Some(&values));
+            if let TestOutcome::Failed(failure) = &mut result.outcome {
+                let _ = write!(failure.message, "\nminimal counterexample: {values:?}\nproperty seed: {seed:#x}\nreproduce: hew test {} --seed {seed:#x} --cases {}", super::test_selector(test), options.cases);
+            }
+            result
+        }
+        Err(TestError::Abort(reason)) => TestResult {
+            test: test.clone(),
+            outcome: TestOutcome::failed(
+                TestFailureKind::Runtime,
+                format!("property generation stopped: {reason}"),
+            ),
+            output: String::new(),
+            duration: start.elapsed(),
+            report: None,
+        },
+    };
+    result.duration = start.elapsed();
+    result
+}
+
+fn run_compiled_test_input(
+    test: &TestCase,
+    ordinal: usize,
+    artifact: &CompiledTestArtifact,
+    options: &TestRunOptions<'_>,
+    property: Option<&[hew_codec::Value]>,
+) -> TestResult {
     let start = std::time::Instant::now();
     let timeout = test
         .timeout_ns
@@ -941,8 +1040,15 @@ fn run_compiled_test(
             .doc
             .as_ref()
             .is_none_or(|doc| doc.expected_stdout.is_none());
-        let (run_result, report, report_dir) =
-            execute_test_run(artifact, timeout, execution, ordinal, options, merge_output);
+        let (run_result, report, report_dir) = execute_test_run(
+            artifact,
+            timeout,
+            execution,
+            ordinal,
+            options,
+            merge_output,
+            property,
+        );
         let (mut outcome, output) = judge_run(test, run_result, timeout, report.as_ref());
         if matches!(outcome, TestOutcome::Passed) {
             if let Some(expected) = test
@@ -1476,6 +1582,7 @@ mod tests {
             &tests,
             TestRunOptions {
                 coverage: None,
+                cases: 100,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -1503,6 +1610,7 @@ mod tests {
             &discovered.tests,
             TestRunOptions {
                 coverage: None,
+                cases: 100,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -1926,6 +2034,7 @@ fn test_timeout() {
             &tests,
             TestRunOptions {
                 coverage: None,
+                cases: 100,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(&unused_paths),

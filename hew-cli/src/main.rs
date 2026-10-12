@@ -493,7 +493,7 @@ pub(crate) fn compile_native_binary(
     bin_path: &Path,
     options: &compile::CompileOptions,
 ) -> Result<(), DiagChannel> {
-    compile_native_binary_with_paths(input, bin_path, options, None)
+    compile_native_binary_with_paths(input, bin_path, options, None).map(|_| ())
 }
 
 fn compile_native_binary_with_paths(
@@ -501,7 +501,7 @@ fn compile_native_binary_with_paths(
     bin_path: &Path,
     options: &compile::CompileOptions,
     paths: Option<&NativeBuildPaths>,
-) -> Result<(), DiagChannel> {
+) -> Result<Vec<Vec<hew_codec::property::Shape>>, DiagChannel> {
     let target =
         target::TargetSpec::from_requested(options.target.as_deref()).map_err(|error| {
             eprintln!("Error: {error}");
@@ -534,7 +534,13 @@ fn compile_native_binary_with_paths(
         bin_path,
         paths.map(|paths| paths.hew_lib.as_path()),
         &native.libraries(&[]),
-    )
+    )?;
+    Ok(pipeline
+        .module()
+        .test_entries
+        .iter()
+        .map(|entry| entry.properties.clone())
+        .collect())
 }
 
 /// Build the `[native]` code of every package `inputs` owns, reporting a

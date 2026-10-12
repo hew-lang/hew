@@ -287,6 +287,14 @@ pub struct EntryExitPlan {
     pub action: EntryExitAction,
 }
 
+/// Checked arguments supplied by the test dispatcher, before exit conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestEntryPlan {
+    pub entry: crate::DefId,
+    pub action: EntryExitAction,
+    pub arguments: Vec<ResolvedTy>,
+}
+
 /// Source-selected constructor for the shared Result return representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultReturnKind {
@@ -675,7 +683,7 @@ pub struct TypeCheckOutput {
     /// The checker-selected process entry and its complete exit contract.
     pub entry_exit_plan: Option<EntryExitPlan>,
     /// Ordered checker-selected test entries and their complete exit contracts.
-    pub test_entry_plans: Vec<EntryExitPlan>,
+    pub test_entry_plans: Vec<TestEntryPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
     /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
     /// minted at the first declaration; later declarations must agree and
@@ -2120,6 +2128,8 @@ pub struct Codec {
 pub enum CodecDirection {
     Encode,
     Decode,
+    /// Read one runner-supplied property argument through the typed decode walk.
+    TestInput,
 }
 
 impl Codec {
@@ -2131,7 +2141,9 @@ impl Codec {
     /// The document type: `string` for text formats, `bytes` otherwise.
     #[must_use]
     pub fn document_ty(self) -> crate::resolved_ty::ResolvedTy {
-        if self.format.is_text() {
+        if self.direction == CodecDirection::TestInput {
+            crate::resolved_ty::ResolvedTy::I64
+        } else if self.format.is_text() {
             crate::resolved_ty::ResolvedTy::String
         } else {
             crate::resolved_ty::ResolvedTy::Bytes

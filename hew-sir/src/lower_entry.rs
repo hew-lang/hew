@@ -14,27 +14,42 @@ impl Builder<'_, '_> {
     /// `Ok(())` exits 0; `Err(error)` renders the error through the selected
     /// `Display::fmt`, writes `error: <text>` to stderr and exits 1.
     pub(super) fn lower_entry_adapter(&mut self, adapter: &EntryAdapter) -> Result<(), String> {
-        let EntryExitAction::Result { display, .. } = &adapter.action else {
-            return Err("entry adapter requires a Result exit action".into());
-        };
         let entry = self
             .service
             .callable(adapter.entry)
             .cloned()
             .ok_or("entry adapter has no entry callable")?;
         self.service.request_body(entry.id);
+        let mut arguments = Vec::with_capacity(entry.signature.params.len());
+        for (index, parameter) in entry.signature.params.iter().enumerate() {
+            let value = self.lower_property_argument(index, &parameter.ty)?;
+            arguments.push(BoundaryOperand {
+                operand: Operand { value },
+                decision: match parameter.passing {
+                    SemParamPassing::Consume => BoundaryDecision::Move,
+                    SemParamPassing::Borrow => BoundaryDecision::Borrow,
+                    SemParamPassing::BorrowMut => BoundaryDecision::BorrowMut,
+                    SemParamPassing::ReadOnly => BoundaryDecision::Copy,
+                },
+            });
+        }
         let live_before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
-        let result = self
-            .finish_user_call(
-                PreparedCallee::Direct(entry.id),
-                entry.signature.clone(),
-                Vec::new(),
-                &[],
-                &live_before,
-                true,
-                None,
-            )?
-            .ok_or("entry callable produced no result")?;
+        let result = self.finish_user_call(
+            PreparedCallee::Direct(entry.id),
+            entry.signature.clone(),
+            arguments,
+            &[],
+            &live_before,
+            true,
+            None,
+        )?;
+        let EntryExitAction::Result { display, .. } = &adapter.action else {
+            return self.finish_return_value(result.map(|value| BoundaryOperand {
+                operand: Operand { value },
+                decision: BoundaryDecision::Move,
+            }));
+        };
+        let result = result.ok_or("entry callable produced no result")?;
         let result_ty = entry.signature.return_ty.clone();
         let shape = self.service.require_variant_shape(&result_ty)?;
         let descriptor = self
@@ -86,6 +101,67 @@ impl Builder<'_, '_> {
             }))?;
         }
         Ok(())
+    }
+
+    fn lower_property_argument(
+        &mut self,
+        index: usize,
+        ty: &ResolvedTy,
+    ) -> Result<crate::ValueId, String> {
+        let plan = self.service.wire_plans(ty)?;
+        let input = self.emit_typed(
+            Provenance::Synthesized,
+            &ResolvedTy::I64,
+            SemOpKind::ConstInteger(
+                i64::try_from(index).map_err(|_| "property argument index exceeds i64")?,
+            ),
+        )?;
+        let own = OwnKind::of_ty(ty, self.service.checked_facts.rows())?;
+        let raw = self.fresh_value();
+        let value = self.fresh_value();
+        let normal = self.new_block(vec![crate::BlockArg {
+            value,
+            ty: ty.clone(),
+            own,
+        }]);
+        let unwind = self.new_block(Vec::new());
+        let live = self.owned_live.clone();
+        let id = crate::OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(SemTerminator::WireCodec {
+            id,
+            codec: hew_types::Codec {
+                format: hew_types::CodecFormat::Cbor,
+                direction: hew_types::CodecDirection::TestInput,
+            },
+            plan,
+            decode_result: None,
+            args: vec![BoundaryOperand {
+                operand: Operand { value: input },
+                decision: BoundaryDecision::Borrow,
+            }],
+            result: CallResult::Value(crate::ValueDef {
+                id: raw,
+                ty: ty.clone(),
+                own,
+            }),
+            normal: Edge {
+                target: normal,
+                args: vec![Operand { value: raw }],
+            },
+            unwind: crate::CallUnwind::Cleanup(Edge {
+                target: unwind,
+                args: Vec::new(),
+            }),
+        })?;
+        self.current = unwind;
+        self.finish_fault_exit()?;
+        self.current = normal;
+        self.owned_live = live;
+        if own == OwnKind::Owned {
+            self.owned_live.insert(value, ty.clone());
+        }
+        Ok(value)
     }
 
     /// Call the checker-selected `Display::fmt` on the entry error.

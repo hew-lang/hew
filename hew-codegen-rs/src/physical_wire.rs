@@ -1797,12 +1797,30 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(fault_out, pointer.const_null())
             .llvm_ctx("initialize codec callback fault owner")?;
-        let reader = runtime_value(
-            &values,
-            "hew_de_new",
-            pointer.into(),
-            &[format, self.slots[input.0 as usize].into()],
-        )?;
+        let test_input = codec.direction == hew_types::CodecDirection::TestInput;
+        let reader = if test_input {
+            let index = self
+                .builder
+                .build_load(
+                    self.ctx.i64_type(),
+                    self.slots[input.0 as usize],
+                    "property.argument",
+                )
+                .llvm_ctx("read property argument index")?;
+            runtime_value(
+                &values,
+                "hew_test_property_reader",
+                pointer.into(),
+                &[index],
+            )?
+        } else {
+            runtime_value(
+                &values,
+                "hew_de_new",
+                pointer.into(),
+                &[format, self.slots[input.0 as usize].into()],
+            )?
+        };
         if let Some(frame) = &self.frame {
             frame.carry(self.ctx, &self.builder, reader, "wire.reader.slot")?;
         }
@@ -1860,6 +1878,29 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.store_active_fault_value(fault, status)?;
         self.emit_edge(unwind)?;
         self.builder.position_at_end(malformed);
+        if test_input {
+            let fault = runtime_value(
+                &values,
+                "hew_test_property_fault",
+                pointer.into(),
+                &[reader],
+            )?;
+            runtime(&values, "hew_de_free", None, &[reader])?;
+            self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+            self.emit_edge(unwind)?;
+            self.builder.position_at_end(success);
+            runtime(&values, "hew_de_free", None, &[reader])?;
+            let value = self
+                .builder
+                .build_load(
+                    llvm_type(self.ctx, &layout.repr)?,
+                    decoded,
+                    "property.value",
+                )
+                .llvm_ctx("take decoded property argument")?;
+            self.store(result, value)?;
+            return self.emit_result_edge(Some(result), normal);
+        }
         let cases = decode_result.ok_or_else(|| {
             CodegenError::FailClosed("codec decode lacks its Result cases".into())
         })?;

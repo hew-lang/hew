@@ -78,6 +78,8 @@ pub struct Package {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    #[serde(skip)]
+    pub properties: Vec<hew_codec::property::Shape>,
     pub function: u32,
     pub exit: String,
 }
@@ -692,6 +694,7 @@ impl<'m> Walker<'m> {
 
         let entry = match (self.module.entry_callable, &self.module.entry_exit_plan) {
             (Some(callable), Some(plan)) => Some(Entry {
+                properties: Vec::new(),
                 function: self.function_id(callable)?,
                 // SIR consumes a `Result` action in the entry adapter and
                 // publishes the integer status that body returns, so it reaches

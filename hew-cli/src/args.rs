@@ -679,6 +679,9 @@ pub enum TestColour {
     reason = "clap maps these independent command-line switches directly"
 )]
 pub struct TestArgs {
+    /// Number of generated cases for each property test.
+    #[arg(long, default_value = "100")]
+    pub cases: std::num::NonZeroU32,
     /// Write native or VM source coverage to .hew/coverage/lcov.info.
     #[arg(long)]
     pub coverage: bool,

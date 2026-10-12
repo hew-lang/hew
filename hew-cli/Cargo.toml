@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 hew-analysis = { path = "../hew-analysis" }
+hew-codec = { path = "../hew-codec" }
 hew-compile = { path = "../hew-compile" }
 hew-wasm = { path = "../hew-wasm" }
 hew-hir = { path = "../hew-hir" }
@@ -38,6 +39,7 @@ notify = "8"
 dirs.workspace = true
 wasmparser = "0.259.0"
 object = "0.40"
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

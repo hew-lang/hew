@@ -89,6 +89,7 @@ pub(super) fn compile_test(tests: &[&TestCase]) -> Result<CompiledTestArtifact, 
         packages.push(path);
     }
     Ok(CompiledTestArtifact::Vm {
+        properties: output.properties,
         _emit_dir: emit_dir,
         packages,
     })

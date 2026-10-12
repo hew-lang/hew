@@ -10,7 +10,7 @@ pub(super) fn collect_imported_private_fn_closure(
     ctx: &LowerCtx,
     module: &hew_parser::module::Module,
     indices: &hew_parser::module::FileSpanIndices,
-    test_entries: &[hew_types::EntryExitPlan],
+    test_entries: &[hew_types::TestEntryPlan],
 ) -> HashSet<usize> {
     let mut private = HashMap::new();
     let mut roots = Vec::new();

@@ -214,6 +214,10 @@ pub fn compile_tests_to_sandbox_bytecode(
         },
         &mut entries,
     )?;
+    let properties = entries
+        .iter()
+        .map(|entry| entry.properties.clone())
+        .collect();
     let bytecodes = output.bytecode.map_or_else(Vec::new, |package| {
         entries
             .into_iter()
@@ -225,6 +229,7 @@ pub fn compile_tests_to_sandbox_bytecode(
             .collect()
     });
     Ok(TestCompileOutput {
+        properties,
         diagnostics: output.diagnostics,
         bytecodes,
     })
@@ -232,6 +237,7 @@ pub fn compile_tests_to_sandbox_bytecode(
 
 #[derive(Debug, Clone)]
 pub struct TestCompileOutput {
+    pub properties: Vec<Vec<hew_codec::property::Shape>>,
     pub diagnostics: Vec<Diagnostic>,
     pub bytecodes: Vec<SandboxBytecodePackageV1>,
 }
@@ -482,6 +488,7 @@ fn compile_from_semantics(
             }
         };
         test_entries.push(sir_emit::Entry {
+            properties: test.properties.clone(),
             function,
             exit: exit.into(),
         });

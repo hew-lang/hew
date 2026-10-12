@@ -8,6 +8,7 @@ mod coverage;
 pub mod discovery;
 mod doc_examples;
 pub mod output;
+mod property;
 pub mod runner;
 pub mod vm;
 
@@ -390,6 +391,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             root: &root,
             on_event: Some(&emit),
             coverage: coverage.as_ref(),
+            cases: args.cases.get(),
         },
     );
     if let Some(coverage) = coverage {

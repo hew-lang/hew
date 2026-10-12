@@ -365,6 +365,67 @@ fn reader_for(format: Format, bytes: &[u8]) -> *mut c_void {
     Box::into_raw(Box::new(reader)).cast()
 }
 
+/// Open a typed property argument supplied by the isolated test runner.
+#[no_mangle]
+pub extern "C" fn hew_test_property_reader(index: i64) -> *mut c_void {
+    let input = (|| {
+        let path = std::env::var_os("HEW_TEST_REPORT")
+            .map(std::path::PathBuf::from)
+            .and_then(|path| path.parent().map(|parent| parent.join("property.cbor")))
+            .ok_or("property input is missing")?;
+        let bytes = std::fs::read(path).map_err(|_| "cannot read property input")?;
+        let mut source =
+            Source::new(Format::Cbor, &bytes).map_err(|_| "invalid property input document")?;
+        let Value::Seq(mut arguments) = source
+            .read_any()
+            .map_err(|_| "invalid property arguments")?
+        else {
+            return Err("property arguments are not a sequence");
+        };
+        let index = usize::try_from(index).map_err(|_| "invalid property argument index")?;
+        if index >= arguments.len() {
+            return Err("property argument index is missing");
+        }
+        Ok(Source::from_value(
+            Format::Cbor,
+            std::mem::replace(&mut arguments[index], Value::Null),
+        ))
+    })();
+    let reader = match input {
+        Ok(source) => Reader {
+            source: Some(source),
+            error: None,
+        },
+        Err(reason) => Reader {
+            source: None,
+            error: Some(DecodeError::Invalid {
+                path: String::new(),
+                reason: reason.into(),
+            }),
+        },
+    };
+    Box::into_raw(Box::new(reader)).cast()
+}
+
+/// Convert a refused runner argument into a normal owned fault.
+///
+/// # Safety
+/// `r` is a live failed reader and remains owned by the caller.
+#[no_mangle]
+pub unsafe extern "C" fn hew_test_property_fault(r: *mut c_void) -> *mut crate::fault::HewFault {
+    // SAFETY: the caller retains the live reader for this operation.
+    let reason = unsafe { reader(r) }.error.as_ref().map_or_else(
+        || "invalid generated property argument".to_string(),
+        |error| format!("invalid generated property argument: {error}"),
+    );
+    let message = string_from_str(&reason);
+    // SAFETY: the new managed string remains alive until the fault copies it.
+    let fault = unsafe { crate::fault::hew_fault_new_panic(message) };
+    // SAFETY: this function owns the single managed string reference.
+    unsafe { hew_cabi::string::string_release(message) };
+    fault
+}
+
 /// Parse a document from a raw buffer (an actor payload).
 ///
 /// # Safety

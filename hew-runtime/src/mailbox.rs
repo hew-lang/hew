@@ -2335,7 +2335,9 @@ unsafe fn admit_native_request(
             // exempt from every discarding policy: superseding or discarding it
             // would leave its caller waiting for a reply no handler will send,
             // so it parks for a slot instead.
-            if !obligated {
+            if obligated {
+                SendOutcome::Failed
+            } else {
                 let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
                     // SAFETY: the queue is locked and the caller owns `envelope`.
                     match unsafe { coalesce_native_request(mb, &queue, msg_type, envelope) } {
@@ -2373,6 +2375,7 @@ unsafe fn admit_native_request(
                     DeclaredAdmission::EvictOldest => {
                         let Some(displaced) = evict_oldest_one_way(mb, &mut queue) else {
                             drop(queue);
+                            // SAFETY: the unpublished node is exclusively owned here.
                             unsafe {
                                 (*node).envelope = ptr::null_mut();
                                 hew_msg_node_free(node);
@@ -2383,7 +2386,7 @@ unsafe fn admit_native_request(
                         drop(queue);
                         // SAFETY: the removed node is exclusively owned outside the queue lock.
                         unsafe {
-                            hew_msg_node_free_with_message_drop(displaced, mb.message_drop_fn)
+                            hew_msg_node_free_with_message_drop(displaced, mb.message_drop_fn);
                         };
                         update_high_water_mark(mb);
                         MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
@@ -2397,8 +2400,6 @@ unsafe fn admit_native_request(
                         SendOutcome::Failed
                     }
                 }
-            } else {
-                SendOutcome::Failed
             }
         } else {
             enqueue_bounded_slow_path_node(mb, &mut queue, node);

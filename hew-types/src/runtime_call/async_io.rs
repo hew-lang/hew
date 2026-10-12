@@ -13,6 +13,7 @@ use strum::{EnumIter, IntoEnumIterator};
 pub enum IoHandleKind {
     Connection,
     Listener,
+    TlsStream,
 }
 
 impl IoHandleKind {
@@ -21,6 +22,7 @@ impl IoHandleKind {
         let expected = match self {
             Self::Connection => "std.net.Connection",
             Self::Listener => "std.net.Listener",
+            Self::TlsStream => "std.net.tls.TlsStream",
         };
         matches!(ty, ResolvedTy::Named { head, args, .. }
             if head.registry_key() == expected && args.is_empty())
@@ -28,7 +30,7 @@ impl IoHandleKind {
 
     #[must_use]
     pub fn of_ty(ty: &ResolvedTy) -> Option<Self> {
-        [Self::Connection, Self::Listener]
+        [Self::Connection, Self::Listener, Self::TlsStream]
             .into_iter()
             .find(|kind| kind.matches(ty))
     }
@@ -183,7 +185,7 @@ impl AsyncIoOp {
             effect: RuntimeArgumentEffect::Borrow,
         };
         const TLS: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: RuntimeValueKind::NamedOpaque("std.net.tls.TlsStream"),
+            ty: IoHandle(IoHandleKind::TlsStream),
             effect: RuntimeArgumentEffect::Borrow,
         };
         const TIMEOUT: RuntimeArgumentContract = RuntimeArgumentContract {

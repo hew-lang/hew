@@ -113,7 +113,13 @@ impl ResourceRelease {
                 // Opaque extern values use the pointer ABI. Native I/O's
                 // existing table-token contract is the exact i32 exception.
                 Ok(
-                    if hew_types::runtime_call::IoHandleKind::of_ty(owner).is_some() {
+                    if matches!(
+                        hew_types::runtime_call::IoHandleKind::of_ty(owner),
+                        Some(
+                            hew_types::runtime_call::IoHandleKind::Connection
+                                | hew_types::runtime_call::IoHandleKind::Listener
+                        )
+                    ) {
                         ResourceCarrier::I32
                     } else {
                         ResourceCarrier::Pointer

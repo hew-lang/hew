@@ -927,6 +927,22 @@ fn execute_test_run(
     clippy::too_many_lines,
     reason = "one isolated execution owns its timeout, report, output, and outcome"
 )]
+fn property_infrastructure_failure(result: &TestResult) -> bool {
+    let TestOutcome::Failed(failure) = &result.outcome else {
+        return false;
+    };
+    matches!(
+        failure.kind,
+        TestFailureKind::Launch
+            | TestFailureKind::Refused
+            | TestFailureKind::Timeout
+            | TestFailureKind::Crash
+    ) || (failure.kind == TestFailureKind::Runtime
+        && !result.report.as_ref().is_some_and(|report| {
+            report.outcome == "exit" || (report.outcome == "passed" && report.status == 0)
+        }))
+}
+
 fn run_compiled_test(
     test: &TestCase,
     ordinal: usize,
@@ -970,12 +986,21 @@ fn run_compiled_test(
         rng_seed: RngSeed::Fixed(seed),
         failure_persistence: None,
         max_shrink_iters: 4096,
+        max_global_rejects: 0,
         ..Config::default()
     });
     let last = std::cell::RefCell::new(None);
+    let stopped = std::cell::RefCell::new(None);
     let outcome = runner.run(&strategies, |values| {
+        if stopped.borrow().is_some() {
+            return Err(TestCaseError::reject("property execution stopped"));
+        }
         let result =
             run_compiled_test_input(test, ordinal, artifact, options, Some(&values), false);
+        if property_infrastructure_failure(&result) {
+            *stopped.borrow_mut() = Some(result);
+            return Err(TestCaseError::reject("property execution stopped"));
+        }
         let outcome = match &result.outcome {
             TestOutcome::Failed(failure) => Err(TestCaseError::fail(failure.message.clone())),
             _ => Ok(()),
@@ -983,6 +1008,10 @@ fn run_compiled_test(
         *last.borrow_mut() = Some(result);
         outcome
     });
+    if let Some(mut result) = stopped.into_inner() {
+        result.duration = start.elapsed();
+        return result;
+    }
     let mut result = match outcome {
         Ok(()) => last
             .into_inner()
@@ -993,6 +1022,12 @@ fn run_compiled_test(
             if !matches!(result.outcome, TestOutcome::Failed(_)) {
                 result.outcome = TestOutcome::failed(TestFailureKind::Runtime,
                     "property failed during generation or shrinking; the retained input passed on replay");
+                result.duration = start.elapsed();
+                return result;
+            }
+            if property_infrastructure_failure(&result) {
+                result.duration = start.elapsed();
+                return result;
             }
             if let TestOutcome::Failed(failure) = &mut result.outcome {
                 let _ = write!(failure.message, "\nminimal counterexample: {values:?}\nproperty seed: {seed:#x}\nreproduce: hew test {} --seed {seed:#x} --cases {}", super::test_selector(test), options.cases);

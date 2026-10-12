@@ -287,6 +287,15 @@ pub struct EntryExitPlan {
     pub action: EntryExitAction,
 }
 
+/// Checked arguments supplied by the test dispatcher, before exit conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestEntryPlan {
+    pub benchmark: bool,
+    pub entry: crate::DefId,
+    pub action: EntryExitAction,
+    pub arguments: Vec<ResolvedTy>,
+}
+
 /// Source-selected constructor for the shared Result return representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultReturnKind {
@@ -489,6 +498,7 @@ pub struct TypeCheckOutput {
     /// Resolved source annotations, keyed by their defining file and span.
     pub declaration_type_parameters:
         HashMap<crate::DefId, (crate::ModuleId, Span, Vec<crate::ParamHead>)>,
+    pub associated_type_schemas: super::AssociatedTypeSchemas,
     pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
     /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
@@ -674,7 +684,7 @@ pub struct TypeCheckOutput {
     /// The checker-selected process entry and its complete exit contract.
     pub entry_exit_plan: Option<EntryExitPlan>,
     /// Ordered checker-selected test entries and their complete exit contracts.
-    pub test_entry_plans: Vec<EntryExitPlan>,
+    pub test_entry_plans: Vec<TestEntryPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
     /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
     /// minted at the first declaration; later declarations must agree and
@@ -1773,10 +1783,21 @@ pub enum SpawnSlot {
     Default,
 }
 
+#[derive(Debug, Clone)]
+pub(in crate::check) struct ChainValueContext {
+    pub(in crate::check) ty: Ty,
+    pub(in crate::check) place: Option<(String, crate::env::PlacePath)>,
+    pub(in crate::check) consumed: bool,
+}
+
 /// Semantic authority for one checked `handle` or `??` expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryKind {
     Option,
+    OptionalChain {
+        flatten: bool,
+        consumes_receiver: bool,
+    },
     Result,
     Scope {
         failure_ty: crate::resolved_ty::ResolvedTy,
@@ -2058,16 +2079,14 @@ pub enum MethodCallRewrite {
 /// overrides the derived implementation"). HIR lowering consults
 /// [`crate::TypeCheckOutput::user_comparison_dispatch`] at `Expr::Binary`
 /// and emits a call to the resolved impl method — `<type>::eq` for `Eq`,
-/// negated for `!=`; `<type>::lt` for `Ord`/`PartialOrd`, permuted/negated
-/// per operator — rather than the structural comparison codegen path.
+/// negated for `!=`, or the exact ordering predicate — rather than the
+/// structural comparison codegen path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserComparisonDispatch {
     /// Dispatch `==`/`!=` to the selected `Eq::eq` implementation.
     Eq { method: crate::DefId },
-    /// Dispatch `<`/`<=`/`>`/`>=` to the selected `Ord::lt` implementation.
-    Ord { method: crate::DefId },
-    /// Dispatch `<`/`<=`/`>`/`>=` to the selected `PartialOrd::lt` implementation.
-    PartialOrd { method: crate::DefId },
+    /// Dispatch one ordering predicate to its exact selected implementation.
+    Ordering { method: crate::DefId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2121,6 +2140,8 @@ pub struct Codec {
 pub enum CodecDirection {
     Encode,
     Decode,
+    /// Read one runner-supplied property argument through the typed decode walk.
+    TestInput,
 }
 
 impl Codec {
@@ -2132,7 +2153,9 @@ impl Codec {
     /// The document type: `string` for text formats, `bytes` otherwise.
     #[must_use]
     pub fn document_ty(self) -> crate::resolved_ty::ResolvedTy {
-        if self.format.is_text() {
+        if self.direction == CodecDirection::TestInput {
+            crate::resolved_ty::ResolvedTy::I64
+        } else if self.format.is_text() {
             crate::resolved_ty::ResolvedTy::String
         } else {
             crate::resolved_ty::ResolvedTy::Bytes
@@ -3408,6 +3431,7 @@ pub struct Checker {
     pub(super) file_import_const_exports: HashMap<String, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
+    pub(super) chain_values: Vec<ChainValueContext>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// See [`TypeCheckOutput::spawn_argument_slots`].
@@ -4092,6 +4116,7 @@ pub struct Checker {
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings:
         HashMap<(ResolvedTy, crate::DefId, Symbol), ImplAssociatedType>,
+    pub(super) associated_schema_parameters: super::AssociatedTypeSchemas,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -4456,6 +4481,7 @@ impl Checker {
             published_bare_const_owners: HashMap::new(),
             file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
+            chain_values: Vec::new(),
             call_argument_slots: HashMap::new(),
             spawn_argument_slots: HashMap::new(),
             named_argument_calls: HashSet::new(),
@@ -4614,6 +4640,7 @@ impl Checker {
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),
+            associated_schema_parameters: super::AssociatedTypeSchemas::default(),
             wasm_target: false,
             repl_fragment: false,
             is_stdlib_source: false,

@@ -259,6 +259,7 @@ impl LowerCtx {
         let param_tys = func.params.iter().map(|p| self.lower_type(&p.ty)).collect();
         let type_params = self
             .source_type_parameters(&func.fn_span, func.type_params.as_ref().map_or(0, Vec::len));
+        let type_params = self.associated_type_schemas.binders(&type_params);
         self.fn_registry.insert(
             name.to_string(),
             FnEntry {
@@ -336,6 +337,7 @@ impl LowerCtx {
                 .reserve(impl_type_params.len() + method_type_params.len());
             entry.type_params.extend(impl_type_params.iter().copied());
             entry.type_params.extend(method_type_params);
+            entry.type_params = self.associated_type_schemas.binders(&entry.type_params);
         }
     }
 

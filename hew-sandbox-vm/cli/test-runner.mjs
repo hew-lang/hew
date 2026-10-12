@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import process from "node:process";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { classifyHewFault, runBytecode, traceToDownloadJson } from "../dist/interpreter/index.js";
 
 function parseArgs(args) {
@@ -19,7 +21,22 @@ const tracePath = process.env.HEW_TEST_TRACE_PATH;
 try {
   const args = parseArgs(process.argv.slice(2));
   const packageValue = JSON.parse(fs.readFileSync(args.path, "utf8"));
+  let codecBridge;
+  if (packageValue.codecs?.length) {
+    const local = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../hew-wasm/pkg/hew_wasm.js");
+    const location = process.env.HEW_WASM_MODULE ?? (fs.existsSync(local) ? pathToFileURL(local).href : "@hew-lang/wasm");
+    const wasm = await import(location);
+    if (typeof wasm.default === "function") {
+      const resolved = location.startsWith("file:") ? location : import.meta.resolve(location);
+      await wasm.default({ module_or_path: fs.readFileSync(new URL(resolved.replace(/\.js$/, "_bg.wasm"))) });
+    }
+    codecBridge = wasm.executeCodec ?? wasm.default?.executeCodec;
+    if (typeof codecBridge !== "function") throw new Error("hew-wasm executeCodec export is missing; rebuild the Wasm package");
+  }
+  const propertyPath = reportPath ? path.join(path.dirname(reportPath), "property.cbor") : null;
   const trace = runBytecode(packageValue, {
+    codecBridge,
+    propertyInput: propertyPath && fs.existsSync(propertyPath) ? [...fs.readFileSync(propertyPath)] : [],
     fixtureId: "hew-test",
     traceId: "trace:hew-test",
     schedulerPolicy: args.schedule === "random" ? "chaos" : "round_robin",
@@ -41,6 +58,7 @@ try {
   const faultKind = hewFault?.kind ?? fault?.kind ?? null;
   const report = {
     version: 1,
+    coverage: final.coverage ?? {},
     outcome,
     status: passed ? 0 : 1,
     fault_kind: faultKind,

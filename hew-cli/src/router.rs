@@ -14,6 +14,7 @@ pub(crate) trait CommandDispatcher {
     fn doc(&mut self, args: &args::DocArgs);
     fn eval(&mut self, args: &args::EvalArgs);
     fn test(&mut self, args: &args::TestArgs);
+    fn bench(&mut self, args: &args::BenchArgs);
     fn watch(&mut self, args: &args::WatchArgs);
     fn wire(&mut self, args: &args::WireCommand);
     fn machine(&mut self, args: &args::MachineCommand);
@@ -63,6 +64,10 @@ impl CommandDispatcher for MainCommandDispatcher {
 
     fn test(&mut self, args: &args::TestArgs) {
         crate::test_runner::cmd_test(args);
+    }
+
+    fn bench(&mut self, args: &args::BenchArgs) {
+        crate::test_runner::bench::cmd_bench(args);
     }
 
     fn watch(&mut self, args: &args::WatchArgs) {
@@ -140,6 +145,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Doc(args)) => dispatcher.doc(args),
         Some(Command::Eval(args)) => dispatcher.eval(args),
         Some(Command::Test(args)) => dispatcher.test(args),
+        Some(Command::Bench(args)) => dispatcher.bench(args),
         Some(Command::Watch(args)) => dispatcher.watch(args),
         Some(Command::Wire(args)) => dispatcher.wire(args),
         Some(Command::Machine(args)) => dispatcher.machine(args),
@@ -549,6 +555,10 @@ mod tests {
 
         fn test(&mut self, _args: &crate::args::TestArgs) {
             self.calls.push("test".to_string());
+        }
+
+        fn bench(&mut self, _args: &crate::args::BenchArgs) {
+            self.calls.push("bench".to_string());
         }
 
         fn watch(&mut self, _args: &crate::args::WatchArgs) {

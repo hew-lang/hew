@@ -571,6 +571,7 @@ mod tests {
             let _ = fact_service.require(ty);
         }
         SemModule {
+            coverage: crate::CoveragePlan::default(),
             offloads: Vec::new(),
             defs: hew_types::DefTable::fixture(),
             debug: crate::SemDebugFacts::default(),
@@ -590,6 +591,7 @@ mod tests {
                 symbol: function.name.clone(),
                 source_origin: function.source_origin.clone(),
                 signature: SemSignature {
+                    failure_domain: hew_types::CallableFailureDomain::HewFault,
                     params: function
                         .params
                         .iter()

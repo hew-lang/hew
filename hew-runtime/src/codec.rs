@@ -365,6 +365,67 @@ fn reader_for(format: Format, bytes: &[u8]) -> *mut c_void {
     Box::into_raw(Box::new(reader)).cast()
 }
 
+/// Open a typed property argument supplied by the isolated test runner.
+#[no_mangle]
+pub extern "C" fn hew_test_property_reader(index: i64) -> *mut c_void {
+    let input = (|| {
+        let path = std::env::var_os("HEW_TEST_REPORT")
+            .map(std::path::PathBuf::from)
+            .and_then(|path| path.parent().map(|parent| parent.join("property.cbor")))
+            .ok_or("property input is missing")?;
+        let bytes = std::fs::read(path).map_err(|_| "cannot read property input")?;
+        let mut source =
+            Source::new(Format::Cbor, &bytes).map_err(|_| "invalid property input document")?;
+        let Value::Seq(mut arguments) = source
+            .read_any()
+            .map_err(|_| "invalid property arguments")?
+        else {
+            return Err("property arguments are not a sequence");
+        };
+        let index = usize::try_from(index).map_err(|_| "invalid property argument index")?;
+        if index >= arguments.len() {
+            return Err("property argument index is missing");
+        }
+        Ok(Source::from_value(
+            Format::Cbor,
+            std::mem::replace(&mut arguments[index], Value::Null),
+        ))
+    })();
+    let reader = match input {
+        Ok(source) => Reader {
+            source: Some(source),
+            error: None,
+        },
+        Err(reason) => Reader {
+            source: None,
+            error: Some(DecodeError::Invalid {
+                path: String::new(),
+                reason: reason.into(),
+            }),
+        },
+    };
+    Box::into_raw(Box::new(reader)).cast()
+}
+
+/// Convert a refused runner argument into a normal owned fault.
+///
+/// # Safety
+/// `r` is a live failed reader and remains owned by the caller.
+#[no_mangle]
+pub unsafe extern "C" fn hew_test_property_fault(r: *mut c_void) -> *mut crate::fault::HewFault {
+    // SAFETY: the caller retains the live reader for this operation.
+    let reason = unsafe { reader(r) }.error.as_ref().map_or_else(
+        || "invalid generated property argument".to_string(),
+        |error| format!("invalid generated property argument: {error}"),
+    );
+    let message = string_from_str(&reason);
+    // SAFETY: the new managed string remains alive until the fault copies it.
+    let fault = unsafe { crate::fault::hew_fault_new_panic(message) };
+    // SAFETY: this function owns the single managed string reference.
+    unsafe { hew_cabi::string::string_release(message) };
+    fault
+}
+
 /// Parse a document from a raw buffer (an actor payload).
 ///
 /// # Safety
@@ -414,72 +475,10 @@ pub unsafe extern "C" fn hew_de_error_reader(r: *mut c_void) -> *mut c_void {
         .take()
         .expect("hew codec: the error reader needs a failed reader");
     Box::into_raw(Box::new(Reader {
-        source: Some(Source::from_value(Format::Json, error_value(error))),
+        source: Some(Source::from_value(Format::Json, error.into_value())),
         error: None,
     }))
     .cast()
-}
-
-fn error_value(error: DecodeError) -> Value {
-    let text = Value::Str;
-    let position = |at: Option<usize>| at.map_or(Value::Null, |at| Value::Int(at as i128));
-    let (variant, fields): (&str, Vec<(&str, Value)>) = match error {
-        DecodeError::Syntax {
-            offset,
-            line,
-            column,
-            reason,
-        } => (
-            "Syntax",
-            vec![
-                ("offset", Value::Int(offset as i128)),
-                ("line", position(line)),
-                ("column", position(column)),
-                ("reason", text(reason)),
-            ],
-        ),
-        DecodeError::Type {
-            path,
-            expected,
-            found,
-        } => (
-            "Type",
-            vec![
-                ("path", text(path)),
-                ("expected", text(expected)),
-                ("found", text(found)),
-            ],
-        ),
-        DecodeError::Missing { path } => ("Missing", vec![("path", text(path))]),
-        DecodeError::Range {
-            path,
-            value,
-            target,
-        } => (
-            "Range",
-            vec![
-                ("path", text(path)),
-                ("value", text(value)),
-                ("target", text(target)),
-            ],
-        ),
-        DecodeError::UnknownVariant { path, name } => (
-            "UnknownVariant",
-            vec![("path", text(path)), ("name", text(name))],
-        ),
-        DecodeError::Duplicate { path, key } => {
-            ("Duplicate", vec![("path", text(path)), ("key", text(key))])
-        }
-        DecodeError::Invalid { path, reason } => (
-            "Invalid",
-            vec![("path", text(path)), ("reason", text(reason))],
-        ),
-    };
-    let fields = fields
-        .into_iter()
-        .map(|(key, value)| (Value::Str(key.to_string()), value))
-        .collect();
-    Value::Map(vec![(Value::Str(variant.to_string()), Value::Map(fields))])
 }
 
 /// Latch a duplicate the walk found by the value's own equality.

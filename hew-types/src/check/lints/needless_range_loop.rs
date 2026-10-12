@@ -139,7 +139,7 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
             find_in_expr(ctx, levels, &target.0, out);
             find_in_expr(ctx, levels, &value.0, out);
         }
-        Stmt::Defer(expr) => find_in_expr(ctx, levels, &expr.0, out),
+        Stmt::Defer { body: expr, .. } => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Expression(expr) => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Continue { .. } => {}
     }
@@ -227,6 +227,10 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::ForkChild { expr: inner, .. } => find_in_expr(ctx, levels, &inner.0, out),
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -508,7 +512,7 @@ impl BodyScan<'_> {
                 }
             }
             Stmt::Continue { .. } => {}
-            Stmt::Defer(expr) => self.expr(&expr.0),
+            Stmt::Defer { body: expr, .. } => self.expr(&expr.0),
             Stmt::Expression(expr) => self.expr(&expr.0),
         }
     }
@@ -554,6 +558,7 @@ impl BodyScan<'_> {
                 }
             }
             Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::Literal(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -584,6 +589,10 @@ impl BodyScan<'_> {
             }
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,

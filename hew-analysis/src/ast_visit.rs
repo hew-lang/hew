@@ -682,7 +682,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Stmt::Return(Some(value)) => {
                 self.walk_expr(&value.0, &value.1, body);
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer { body: expr, .. } => {
                 self.walk_expr(&expr.0, &expr.1, body);
             }
             Stmt::Expression(expr) => {
@@ -751,7 +751,12 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&base.0, &base.1, body);
                 }
             }
-            Expr::Binary { left, right, .. } | Expr::Coalesce { left, right } => {
+            Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            } => {
                 self.walk_expr(&left.0, &left.1, body);
                 self.walk_expr(&right.0, &right.1, body);
             }
@@ -933,6 +938,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             }
             Expr::Literal(_)
             | Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::Yield(None)
             | Expr::Return(None)
             | Expr::RegexLiteral(_)

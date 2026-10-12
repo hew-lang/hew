@@ -169,6 +169,8 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Index { .. } => {}
         Expr::Cast { .. } => {}
         Expr::PostfixTry(_) => {}
+        Expr::OptionalChain { .. } => {}
+        Expr::ChainValue => {}
         Expr::Coalesce { .. } => {}
         Expr::Handle { .. } => {}
         Expr::Range { .. } => {}
@@ -206,7 +208,7 @@ fn _variant_coverage_guard_stmt(stmt: &Stmt) {
         Stmt::Break { .. } => {}
         Stmt::Continue { .. } => {}
         Stmt::Return(_) => {}
-        Stmt::Defer(_) => {}
+        Stmt::Defer { .. } => {}
         Stmt::Expression(_) => {} // NO wildcard arm — new variants cause a compile error until added above.
     }
 }

@@ -529,6 +529,7 @@ impl InstanceService<'_> {
             u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
         );
         let function = HirFn {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             id: source.id,
             node: body.node,
             declaration,
@@ -544,6 +545,7 @@ impl InstanceService<'_> {
             intrinsic_id: None,
         };
         let mut signature = SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![SemAbiParam {
                 ty: self.actors[actor.0 as usize].state_ty.clone(),
                 passing: SemParamPassing::BorrowMut,

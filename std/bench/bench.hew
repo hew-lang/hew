@@ -1,178 +1,52 @@
-//! Benchmark harness for measuring function performance.
+//! Benchmarks run with `hew bench` on the host clock.
 //!
-//! Provides a simple API for timing function execution with
-//! nanosecond precision, warm-up iterations, and formatted output.
-//!
-//! # Examples
-//!
-//! ```
+//! ```hew,no_run
 //! import std.bench;
 //!
-//! fn fibonacci(n: i64) -> i64 {
-//!     if n < 2 { return n; }
-//!     return fibonacci(n - 1) + fibonacci(n - 2);
-//! }
-//!
-//! fn main() {
-//!     var s = bench.suite("My Benchmarks");
-//!     s.add("fib_20", 1000, || { fibonacci(20); });
-//!     s.report();
+//! #[bench]
+//! fn concatenate(b: bench.Bencher) {
+//!     b.iter(|| "hello" + " world");
 //! }
 //! ```
 
 import std.time.datetime;
 
-// ── Types ─────────────────────────────────────────────────────────────
-/// A single benchmark result containing timing statistics.
-pub type BenchResult {
-    name: string;
-    iterations: i64;
-    avg_ns: i64;
-    min_ns: i64;
-    max_ns: i64;
-    total_ns: i64;
+/// Supplied by the benchmark dispatcher.
+pub type Bencher {
 }
 
-/// A collection of benchmark results.
-pub type Suite {
-    name: string;
-    results: Vec<BenchResult>;
+trait BencherMethods {
+    /// Calibrate a batch, then measure 31 samples with automatic result cleanup.
+    fn iter<T>(self, f: fn() -> T);
 }
 
-// ── Constructor ───────────────────────────────────────────────────────
-/// Create a new benchmark suite.
-pub fn suite(name: string) -> Suite {
-    let results: Vec<BenchResult> = Vec.new();
-    Suite { name: name, results: results }
-}
-
-// ── Suite methods ─────────────────────────────────────────────────────
-/// Methods available on a benchmark `Suite`.
-trait SuiteMethods {
-    /// Run a benchmark and record the result.
-    ///
-    /// Executes `f` for `iterations` times after a warmup phase
-    /// (10% of iterations, minimum 1). Records min, max, avg, and total
-    /// timing in nanoseconds.
-    fn add(var self, name: string, iterations: i64, f: fn());
-
-    /// Print results as a human-readable table.
-    fn report(self);
-
-    /// Print results as a JSON array.
-    fn report_json(self);
-}
-
-impl SuiteMethods for Suite {
-    /// Run a benchmark and record the result.
-    fn add(var self, name: string, iterations: i64, f: fn()) {
-
-        // Warmup: 10% of iterations, minimum 1
-        var warmup = iterations / 10;
-        if warmup < 1 {
-            warmup = 1;
-        }
-        for wi in 0..warmup {
-            f();
-        }
-        // Measure
-        var min_ns: i64 = 9223372036854775807;
-        var max_ns: i64 = 0;
-        var total_ns: i64 = 0;
-        for i in 0..iterations {
+impl BencherMethods for Bencher {
+    fn iter<T>(self, f: fn() -> T) {
+        var iterations: i64 = 1;
+        loop {
             let start = datetime.now_nanos();
-            f();
-            let end = datetime.now_nanos();
-            let elapsed = end - start;
-            total_ns = total_ns + elapsed;
-            if elapsed < min_ns {
-                min_ns = elapsed;
+            for i in 0..iterations {
+                f();
             }
-            if elapsed > max_ns {
-                max_ns = elapsed;
+            let elapsed = datetime.now_nanos() - start;
+            if elapsed >= 1000000 || iterations >= 1048576 {
+                break;
+            }
+            iterations = iterations * 2;
+        }
+        for sample in 0..31 {
+            let start = datetime.now_nanos();
+            for i in 0..iterations {
+                f();
+            }
+            let elapsed = datetime.now_nanos() - start;
+            unsafe {
+                hew_bench_record(elapsed, iterations);
             }
         }
-        let avg_ns = total_ns / iterations;
-        let result = BenchResult { name: name, iterations: iterations, avg_ns: avg_ns, min_ns: min_ns, max_ns: max_ns, total_ns: total_ns };
-        self.results.push(result);
-    }
-    /// Print results as a human-readable table.
-    fn report(self) {
-        println(f"=== {self.name} ===");
-        for i in 0..self.results.len() {
-            let r = self.results[i];
-            let avg_str = format_time(r.avg_ns);
-            let min_str = format_time(r.min_ns);
-            let max_str = format_time(r.max_ns);
-            let ops = format_ops(r.avg_ns);
-            println(f"  {r.name}  {r.iterations} iters  avg {avg_str}  min {min_str}  max {max_str}  {ops}");
-        }
-    }
-    /// Print results as a JSON array.
-    fn report_json(self) {
-        var json = f"\{\"suite\":\"{self.name}\",\"benchmarks\":[";
-        for i in 0..self.results.len() {
-            let r = self.results[i];
-            if i > 0 {
-                json = json + ",";
-            }
-            json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\\\}";
-        }
-        json = json + "]}";
-        println(json);
     }
 }
 
-// ── Time formatting helpers ───────────────────────────────────────────
-/// Format a nanosecond duration as a human-readable string with appropriate units.
-fn format_time(ns: i64) -> string {
-    if ns < 1000 {
-        f"{ns} ns"
-    } else if ns < 1000000 {
-        let whole = ns / 1000;
-        let frac = ns % 1000 / 10;
-        let frac_str = pad_two(frac);
-        f"{whole}.{frac_str} us"
-    } else if ns < 1000000000 {
-        let whole = ns / 1000000;
-        let frac = ns % 1000000 / 10000;
-        let frac_str = pad_two(frac);
-        f"{whole}.{frac_str} ms"
-    } else {
-        let whole = ns / 1000000000;
-        let frac = ns % 1000000000 / 10000000;
-        let frac_str = pad_two(frac);
-        f"{whole}.{frac_str} s"
-    }
-}
-
-/// Format an average nanosecond duration as an operations-per-second string.
-fn format_ops(avg_ns: i64) -> string {
-    if avg_ns <= 0 {
-        "inf ops/sec"
-    } else if avg_ns < 1000 {
-        let mops = 1000000000 / avg_ns;
-        let mops_m = mops / 1000000;
-        let mops_frac = mops % 1000000 / 10000;
-        let frac_str = pad_two(mops_frac);
-        f"{mops_m}.{frac_str}M ops/sec"
-    } else if avg_ns < 1000000 {
-        let ops = 1000000000 / avg_ns;
-        let kops = ops / 1000;
-        let kops_frac = ops % 1000 / 10;
-        let frac_str = pad_two(kops_frac);
-        f"{kops}.{frac_str}K ops/sec"
-    } else {
-        let ops = 1000000000 / avg_ns;
-        f"{ops} ops/sec"
-    }
-}
-
-/// Pad a number to two digits with a leading zero if needed.
-fn pad_two(n: i64) -> string {
-    if n < 10 {
-        f"0{n}"
-    } else {
-        f"{n}"
-    }
+extern "C" {
+    fn hew_bench_record(elapsed_ns: i64, iterations: i64);
 }

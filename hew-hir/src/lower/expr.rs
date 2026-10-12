@@ -1072,7 +1072,13 @@ impl LowerCtx {
                         ));
                     }
                 }
-                (HirExprKind::Return { value }, ResolvedTy::Never)
+                (
+                    HirExprKind::Return {
+                        value,
+                        failure: false,
+                    },
+                    ResolvedTy::Never,
+                )
             }
             Expr::ReturnError(value) => {
                 if let Some(item_ty) = self.failing_generator_item.clone() {
@@ -1096,6 +1102,7 @@ impl LowerCtx {
                     (
                         HirExprKind::Return {
                             value: Some(Box::new(value)),
+                            failure: true,
                         },
                         ResolvedTy::Never,
                     )
@@ -1687,6 +1694,13 @@ impl LowerCtx {
             }
             Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
             Expr::PostfixTry(inner) => self.lower_postfix_try(inner, &span),
+            Expr::OptionalChain { receiver, body } => {
+                self.lower_optional_chain(receiver, body, &span)
+            }
+            Expr::ChainValue => match self.chain_values.last() {
+                Some(value) => (value.kind.clone(), value.ty.clone()),
+                None => self.unsupported_postfix_try(&span, "optional payload outside its chain"),
+            },
             Expr::Coalesce { left, right } => self.lower_local_recovery(left, right, None, &span),
             Expr::Handle {
                 operand,

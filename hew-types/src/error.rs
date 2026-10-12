@@ -746,19 +746,6 @@ pub enum TypeErrorKind {
     SpawnArgUnknown,
     /// A spawn named the same key more than once.
     SpawnArgDuplicate,
-    /// An ordering operator (`<`/`<=`/`>`/`>=`) on a record, enum, tuple, or
-    /// `Option`/`Result` with no user `impl Ord`/`impl PartialOrd` for the
-    /// type (D26 as amended by D340). Legal Hew — a derived lexicographic
-    /// order is spec'd for this shape — that this compiler cannot yet lower:
-    /// no structural-ordering codegen thunk exists (only structural eq/hash
-    /// do). Limitation channel, not User: report a compiler gap, not a
-    /// program error.
-    ///
-    /// Envelope code: `E_LIMIT_DERIVED_ORD`.
-    DerivedOrdUnavailable {
-        /// The resolved (`user_facing`) name of the compared type.
-        type_name: String,
-    },
     /// A module constant initializer failed target-typed integer evaluation.
     ConstInitializer,
     /// A `#[wire]` field marked `optional` does not resolve to `Option<T>`.
@@ -1540,7 +1527,6 @@ impl TypeErrorKind {
             Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",
             Self::SpawnArgUnknown => "E_SPAWN_ARG_UNKNOWN",
             Self::SpawnArgDuplicate => "E_SPAWN_ARG_DUPLICATE",
-            Self::DerivedOrdUnavailable { .. } => "E_LIMIT_DERIVED_ORD",
             Self::ConstInitializer => "E_CONST_INITIALIZER",
             Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",
             Self::SupervisorError { subkind } => subkind.as_kind_str(),
@@ -1642,22 +1628,10 @@ impl TypeErrorKind {
         }
     }
 
-    /// Which of the three diagnostic channels this kind reports on.
-    ///
-    /// Every checker-authored `TypeError` was `DiagChannel::User` until
-    /// V060-DIAG-1 gave HIR/MIR diagnostics a real channel split; this is
-    /// the checker's own first Limitation-channel kind, so the default arm
-    /// covers every pre-existing variant unchanged (each is a genuine
-    /// program error, not a compiler gap) and only the one new case is
-    /// singled out. Mirrors `hew_hir::HirDiagnosticKind::channel` and
-    /// `hew_mir::MirDiagnosticKind::channel`, the HIR/MIR authorities for
-    /// the same three-way split.
+    /// Checker errors describe source violations; stage limitations use HIR/MIR diagnostics.
     #[must_use]
     pub const fn channel(&self) -> DiagChannel {
-        match self {
-            Self::DerivedOrdUnavailable { .. } => DiagChannel::Limitation,
-            _ => DiagChannel::User,
-        }
+        DiagChannel::User
     }
 }
 

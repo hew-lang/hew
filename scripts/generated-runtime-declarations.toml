@@ -1,5 +1,8 @@
 # Generated from #[runtime] stdlib declarations; do not edit.
-non-declarable-stdlib = ["hew_tls_attach_native", "hew_ws_attach_native"]
+non-declarable-stdlib = [
+  "hew_tls_attach_native",
+  "hew_ws_attach_native",
+]
 
 stable = [
   "hew_bytes_contains",

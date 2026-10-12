@@ -50,6 +50,8 @@ pub mod effects;
 mod error_display;
 mod exhaustiveness;
 mod expressions;
+mod generic_schema;
+pub use generic_schema::AssociatedTypeSchemas;
 mod generics;
 mod items;
 mod lints;
@@ -105,9 +107,9 @@ pub use self::types::{
     PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
     PoolAccessor, PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation,
     ReceiverUpdate, RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, SpawnSlot,
-    StackHint, StructuralWitness, TraitRef, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
-    TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
-    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
+    StackHint, StructuralWitness, TestEntryPlan, TraitRef, TryConversionKind, TryWidthCastLowering,
+    TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch,
+    VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -1657,7 +1659,7 @@ impl Checker {
         &mut self,
         program: &Program,
         resolved_fn_sigs: crate::check::FnSigView<'_>,
-    ) -> Vec<EntryExitPlan> {
+    ) -> Vec<TestEntryPlan> {
         let Some(selections) = self.test_entry_selections.clone() else {
             return Vec::new();
         };
@@ -1680,11 +1682,10 @@ impl Checker {
                 invalid = true;
                 continue;
             }
-            if !declaration.params.is_empty()
-                || declaration
-                    .type_params
-                    .as_ref()
-                    .is_some_and(|params| !params.is_empty())
+            if declaration
+                .type_params
+                .as_ref()
+                .is_some_and(|params| !params.is_empty())
                 || declaration.where_clause.is_some()
                 || declaration.is_generator
             {
@@ -1692,7 +1693,7 @@ impl Checker {
                     TypeErrorKind::TestSignature,
                     span.clone(),
                     format!(
-                        "test `{}` must have no parameters or type parameters and cannot be a generator",
+                        "test `{}` must have no type parameters and cannot be a generator",
                         declaration.name
                     ),
                 ));
@@ -1708,10 +1709,7 @@ impl Checker {
                 invalid = true;
                 continue;
             };
-            let Some(return_type) = resolved_fn_sigs
-                .get(self.defs.path(entry))
-                .map(|signature| signature.return_type.clone())
-            else {
+            let Some(signature) = resolved_fn_sigs.get(self.defs.path(entry)) else {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::TestSignature,
                     span.clone(),
@@ -1721,7 +1719,11 @@ impl Checker {
                 continue;
             };
             let error_mark = self.errors.len();
-            let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs);
+            let action = self.classify_entry_exit_action(
+                signature.return_type.clone(),
+                span,
+                resolved_fn_sigs,
+            );
             let Some(action) = action else {
                 for error in &mut self.errors[error_mark..] {
                     error.kind = TypeErrorKind::TestSignature;
@@ -1737,13 +1739,71 @@ impl Checker {
                 invalid = true;
                 continue;
             };
-            plans.push(EntryExitPlan { entry, action });
+            let benchmark = declaration
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "bench");
+            let Some(arguments) = self.classify_test_entry_arguments(signature, benchmark, span)
+            else {
+                invalid = true;
+                continue;
+            };
+            plans.push(TestEntryPlan {
+                benchmark,
+                entry,
+                action,
+                arguments,
+            });
         }
         if invalid {
             Vec::new()
         } else {
             plans
         }
+    }
+
+    fn classify_test_entry_arguments(
+        &mut self,
+        signature: &FnSig,
+        benchmark: bool,
+        span: &Span,
+    ) -> Option<Vec<ResolvedTy>> {
+        let arguments = signature
+            .params
+            .iter()
+            .map(|ty| ResolvedTy::from_ty(&self.normalize_for_use(&self.subst.resolve(ty))))
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(arguments) = arguments else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::TestSignature,
+                span.clone(),
+                "property parameters must have concrete types",
+            ));
+            return None;
+        };
+        if benchmark {
+            let valid = matches!(arguments.as_slice(), [ty] if ty.nominal_instance(&self.defs)
+                .is_some_and(|instance| self.defs.path(instance.nominal.declaration()) == "std.bench.Bencher"));
+            if !valid {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    "benchmark must take exactly one std.bench.Bencher parameter",
+                ));
+                return None;
+            }
+        } else if let Some(ty) = arguments.iter().find(|ty| !self.is_generatable(ty)) {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::TestSignature,
+                span.clone(),
+                format!(
+                    "property parameter `{}` has no structural generator",
+                    ty.user_facing()
+                ),
+            ));
+            return None;
+        }
+        Some(arguments)
     }
 
     #[expect(
@@ -2652,6 +2712,7 @@ impl Checker {
             published_bare_const_owners: self.published_bare_const_owners.clone(),
             file_import_const_exports: self.file_import_const_exports.clone(),
             recovery_kinds: self.recovery_kinds.clone(),
+            chain_values: self.chain_values.clone(),
             call_argument_slots: self.call_argument_slots.clone(),
             spawn_argument_slots: self.spawn_argument_slots.clone(),
             named_argument_calls: self.named_argument_calls.clone(),
@@ -2809,6 +2870,7 @@ impl Checker {
             impl_alias_scopes: self.impl_alias_scopes.clone(),
             current_trait_for_self_projection: self.current_trait_for_self_projection.clone(),
             impl_assoc_type_bindings: self.impl_assoc_type_bindings.clone(),
+            associated_schema_parameters: self.associated_schema_parameters.clone(),
             wasm_target: self.wasm_target.clone(),
             repl_fragment: self.repl_fragment.clone(),
             is_stdlib_source: self.is_stdlib_source.clone(),
@@ -3201,6 +3263,8 @@ impl Checker {
         // silently-defaulted closure.
         self.validate_closure_facts_complete(program);
 
+        self.prepare_associated_schema_parameters();
+
         // Apply final substitutions to all recorded types
         let mut expr_types: HashMap<SpanKey, Ty> = self
             .expr_types
@@ -3284,6 +3348,7 @@ impl Checker {
                     (k, resolved)
                 })
                 .collect();
+        self.complete_associated_schema_arguments(&mut resolved_call_type_args);
 
         // Same boundary resolution for record-init type args.
         // Mirrors `resolved_call_type_args` so downstream consumers see
@@ -3693,6 +3758,7 @@ impl Checker {
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
+            associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
             normalized_program: normalized_program.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),
@@ -4419,7 +4485,7 @@ impl Checker {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Returned);
                 }
             }
-            Stmt::Defer(boxed) => {
+            Stmt::Defer { body: boxed, .. } => {
                 self.classify_escapes_in_expr(&boxed.0, &boxed.1, in_fork, AnonContext::Other);
             }
             Stmt::Expression((e, s)) => {
@@ -4668,6 +4734,10 @@ impl Checker {
             }
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,
@@ -4776,6 +4846,7 @@ impl Checker {
             Expr::Literal(_)
             | Expr::Ident(_)
             | Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
@@ -4990,7 +5061,7 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
                 collect_lambda_spans_in_expr(e, s, out);
             }
         }
-        Stmt::Defer(boxed) => {
+        Stmt::Defer { body: boxed, .. } => {
             collect_lambda_spans_in_expr(&boxed.0, &boxed.1, out);
         }
         Stmt::Expression((e, s)) => collect_lambda_spans_in_expr(e, s, out),
@@ -5124,6 +5195,10 @@ fn collect_lambda_spans_in_expr(
         }
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -5210,6 +5285,7 @@ fn collect_lambda_spans_in_expr(
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

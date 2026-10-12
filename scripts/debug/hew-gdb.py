@@ -61,19 +61,6 @@ class HewHashMapPrinter:
         return f"HashMap@{ptr}"
 
 
-class HewActorRefPrinter:
-    """Pretty-print actor reference pointers."""
-
-    def __init__(self, val):
-        self.val = val
-
-    def to_string(self):
-        ptr = self.val
-        if int(ptr) == 0:
-            return "ActorRef(null)"
-        return f"ActorRef@{ptr}"
-
-
 def hew_lookup_function(val):
     """GDB pretty-printer lookup for Hew types."""
     tag = str(val.type.strip_typedefs())

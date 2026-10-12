@@ -170,7 +170,7 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
                 esc_visit_expr(e, name, in_fork, acc, true);
             }
         }
-        Stmt::Defer(boxed) => esc_visit_expr(&boxed.0, name, in_fork, acc, false),
+        Stmt::Defer { body: boxed, .. } => esc_visit_expr(&boxed.0, name, in_fork, acc, false),
         Stmt::Expression((e, _)) => esc_visit_expr(e, name, in_fork, acc, false),
     }
 }
@@ -247,7 +247,11 @@ fn esc_visit_expr(
             esc_visit_expr(&left.0, name, in_fork, acc, false);
             esc_visit_expr(&right.0, name, in_fork, acc, false);
         }
-        Expr::Coalesce { left, right } => {
+        Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        } => {
             esc_visit_expr(&left.0, name, in_fork, acc, false);
             esc_visit_expr(&right.0, name, in_fork, acc, is_tail);
         }
@@ -268,6 +272,7 @@ fn esc_visit_expr(
         Expr::ReturnError(value) => esc_visit_arg(&value.0, name, in_fork, acc),
         Expr::Literal(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

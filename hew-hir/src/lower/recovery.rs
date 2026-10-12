@@ -284,7 +284,17 @@ impl LowerCtx {
             },
             HirStmt {
                 node: self.ids.node(),
-                kind: HirStmtKind::Return(None),
+                kind: HirStmtKind::Expr(HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Never,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Return {
+                        value: None,
+                        failure: true,
+                    },
+                    span: span.clone(),
+                }),
                 span: span.clone(),
             },
         ];
@@ -401,6 +411,99 @@ impl LowerCtx {
     /// Normalize source-local recovery into the same typed variant branch as
     /// match. SIR decides payload transfers and cleanup; HIR supplies only
     /// the resolved types, variant identity, bindings and lexical bodies.
+    pub(super) fn lower_optional_chain(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some(hew_types::check::RecoveryKind::OptionalChain {
+            flatten,
+            consumes_receiver,
+        }) = self.recovery_kinds.get(&self.mk_key(span)).cloned()
+        else {
+            return self.unsupported_postfix_try(span, "missing checked optional chain semantics");
+        };
+        let scrutinee = self.lower_expr(
+            receiver,
+            if consumes_receiver {
+                IntentKind::Consume
+            } else {
+                IntentKind::Borrow
+            },
+        );
+        let Some(payload) = Self::resolved_option_inner(&scrutinee.ty).cloned() else {
+            return self
+                .unsupported_postfix_try(span, "optional chain receiver without Option type");
+        };
+        let Some(result_ty) = self.checker_expr_resolved_ty(span, "optional chain") else {
+            return self.unsupported_postfix_try(span, "optional chain result type missing");
+        };
+        self.try_register_enum_instantiation_ty(&scrutinee.ty, &receiver.1);
+        self.try_register_enum_instantiation_ty(&result_ty, span);
+        let Some((some_predicate, some_idx)) =
+            self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
+        else {
+            return self.unsupported_postfix_try(span, "optional chain Some identity");
+        };
+        let Some((none_predicate, none_idx)) =
+            self.builtin_variant_predicate(BuiltinType::Option, "None", span)
+        else {
+            return self.unsupported_postfix_try(span, "optional chain None identity");
+        };
+        let binding = self.ids.binding();
+        let value = self.synthetic_binding_ref("__chain_value", binding, payload.clone(), span);
+        self.chain_values.push(value);
+        let mut some_body = self.lower_expr(body, IntentKind::Read);
+        self.chain_values.pop();
+        if !flatten {
+            some_body = self.synthetic_variant_ctor(
+                "Option",
+                some_idx,
+                Some(vec![("0".into(), some_body)]),
+                result_ty.clone(),
+                span,
+            );
+        }
+        let none_body =
+            self.synthetic_variant_ctor("Option", none_idx, None, result_ty.clone(), span);
+        let arms = vec![
+            HirMatchArm {
+                scope: Some(self.ids.scope()),
+                predicate: some_predicate,
+                bindings: vec![HirMatchArmBinding {
+                    span: span.clone(),
+                    binding,
+                    field_idx: 0,
+                    name: "__chain_value".into(),
+                    ty: payload,
+                }],
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: some_body,
+                span: body.1.clone(),
+            },
+            HirMatchArm {
+                scope: None,
+                predicate: none_predicate,
+                bindings: Vec::new(),
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: none_body,
+                span: span.clone(),
+            },
+        ];
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            result_ty,
+        )
+    }
+
     pub(super) fn lower_local_recovery(
         &mut self,
         operand: &Spanned<Expr>,
@@ -627,7 +730,7 @@ impl LowerCtx {
                     return_ty,
                     span,
                 );
-                self.synthetic_return_block_expr(err_ctor, span)
+                self.synthetic_return_block_expr(err_ctor, span, true)
             }
             TryExit::GeneratorItem(item_ty) => {
                 self.failing_generator_exit(err_payload, &item_ty, span)
@@ -700,7 +803,7 @@ impl LowerCtx {
         let some_name = "__try_some";
         let some_body = self.synthetic_binding_ref(some_name, some_binding, some_ty.clone(), span);
         let none_ctor = self.synthetic_variant_ctor("Option", none_idx, None, return_ty, span);
-        let none_body = self.synthetic_return_block_expr(none_ctor, span);
+        let none_body = self.synthetic_return_block_expr(none_ctor, span, false);
 
         let arms = vec![
             HirMatchArm {

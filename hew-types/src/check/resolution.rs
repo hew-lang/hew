@@ -1279,9 +1279,15 @@ impl Checker {
             params: sig
                 .params
                 .iter()
-                .map(|param| self.normalize_for_type_params(param, &sig.type_params))
+                .map(|param| {
+                    self.bind_associated_schema_type(
+                        &self.normalize_for_type_params(param, &sig.type_params),
+                    )
+                })
                 .collect(),
-            return_type: self.normalize_for_type_params(&sig.return_type, &sig.type_params),
+            return_type: self.bind_associated_schema_type(
+                &self.normalize_for_type_params(&sig.return_type, &sig.type_params),
+            ),
             ..sig.clone()
         }
     }
@@ -2064,51 +2070,54 @@ impl Checker {
                 let [trait_id] = owners.as_slice() else {
                     return carrier(projected_base);
                 };
-                let trait_id = *trait_id;
-                // Resolve via the substitution so a `Ty::Var` bound to a
-                // concrete type also collapses.
-                let resolved_base = self.subst.resolve(&projected_base);
-                if let Ty::Named {
-                    head: crate::TypeHead::Param(param),
-                    args,
-                } = &resolved_base
-                {
-                    if args.is_empty() {
-                        // A binder's own bound may fix the projection
-                        // (`I: Iterator<Item = i64>`).
-                        let binding = self
-                            .active_bounds_of(param.id)
-                            .into_iter()
-                            .filter(|bound| self.bound_provides(bound.trait_id, trait_id))
-                            .find_map(|bound| {
-                                bound
-                                    .assoc
-                                    .into_iter()
-                                    .find(|(name, _)| name.as_str() == assoc_name.as_ref())
-                                    .map(|(_, ty)| ty)
-                            });
-                        return match binding {
-                            Some(binding) => self.project_assoc_types(&binding),
-                            None => carrier(projected_base),
-                        };
-                    }
-                }
-                // Associated-type projection is executable conformance
-                // authority: the impl registered for the base's head and the
-                // trait. Generic arguments remain instance data used only to
-                // substitute the selected binding.
-                if let Some(key) = Self::impl_self_key(&resolved_base) {
-                    if let Some(bound) = self
-                        .impl_assoc_type_bindings
-                        .get(&(key, trait_id, Symbol::intern(assoc_name)))
-                        .and_then(|binding| binding.instantiate(&resolved_base))
-                    {
-                        return self.project_assoc_types(&bound);
-                    }
-                }
-                carrier(projected_base)
+                self.project_associated_type(&projected_base, *trait_id, Symbol::intern(assoc_name))
             }
             _ => ty.map_children_pub(&|child| self.project_assoc_types(child)),
+        }
+    }
+
+    pub(super) fn project_associated_type(
+        &self,
+        base: &Ty,
+        trait_id: crate::DefId,
+        associated: Symbol,
+    ) -> Ty {
+        let resolved_base = self.subst.resolve(base);
+        if let Ty::Named {
+            head: crate::TypeHead::Param(parameter),
+            args,
+        } = &resolved_base
+        {
+            if args.is_empty() {
+                if let Some(binding) = self
+                    .active_bounds_of(parameter.id)
+                    .into_iter()
+                    .filter(|bound| self.bound_provides(bound.trait_id, trait_id))
+                    .find_map(|bound| {
+                        bound
+                            .assoc
+                            .into_iter()
+                            .find(|(name, _)| *name == associated)
+                            .map(|(_, ty)| ty)
+                    })
+                {
+                    return self.project_assoc_types(&binding);
+                }
+            }
+        }
+        if let Some(key) = Self::impl_self_key(&resolved_base) {
+            if let Some(binding) = self
+                .impl_assoc_type_bindings
+                .get(&(key, trait_id, associated))
+                .and_then(|binding| binding.instantiate(&resolved_base))
+            {
+                return self.project_assoc_types(&binding);
+            }
+        }
+        Ty::AssocType {
+            base: Box::new(resolved_base),
+            trait_name: self.defs.path(trait_id).into(),
+            assoc_name: associated.as_str().into(),
         }
     }
 
@@ -2132,7 +2141,8 @@ impl Checker {
     /// open-coding substitution, so projections and source identities cannot
     /// drift from the expression table.
     pub(super) fn finalize_type_for_handoff(&self, ty: &Ty) -> Ty {
-        self.normalize_for_use(ty).materialize_literal_defaults()
+        self.bind_associated_schema_type(&self.normalize_for_use(ty))
+            .materialize_literal_defaults()
     }
 
     /// Finalize every type a nested constructor pattern carries, so its

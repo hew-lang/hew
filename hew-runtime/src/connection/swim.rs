@@ -15,7 +15,7 @@ use super::control::authenticated_peer_identity;
 use super::handshake::supports_gossip;
 use super::peer::authenticated_peer_node_id_for_conn;
 use super::send::{
-    hew_connmgr_conn_id_for_node, hew_connmgr_feature_flags_for_node, send_preencoded_on_manager,
+    claim_send_to_route, hew_connmgr_conn_id_for_node, hew_connmgr_feature_flags_for_node,
 };
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
@@ -156,23 +156,16 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     if !supports_gossip(flags) {
         return -1;
     }
-    // issue #2652 (D9, outbound): SWIM membership traffic goes only to the exact
-    // authenticated owner of a published claim. An `Unverified` (delivery-only)
-    // or superseded connection resolves to 0 here and is refused — symmetric
-    // with the inbound SWIM cross-attribution gate.
-    if authenticated_peer_node_id_for_conn(mgr_ref, conn_id) == 0 {
+    let Some(send_claim) = claim_send_to_route(mgr_ref, conn_id, peer_node_id) else {
         return -1;
-    }
+    };
 
     // SAFETY: cluster pointer is owned by the live manager.
     let cluster = unsafe { &*mgr_ref.cluster };
     let Some(bytes) = build_swim_frame(mgr_ref, cluster, msg_type, target_node) else {
         return -1;
     };
-    // SAFETY: manager is live, bytes is a complete encoded control frame.
-    if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, None, bytes.as_ptr(), bytes.len()) }
-        == 0
-    {
+    if send_claim.send(&bytes) == 0 {
         0
     } else {
         -1

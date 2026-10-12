@@ -718,7 +718,7 @@ impl EffectVisitor<'_> {
 
 impl NodeVisitor for EffectVisitor<'_> {
     fn visit_stmt(&mut self, stmt: &Stmt, span: &Span) {
-        if matches!(stmt, Stmt::Defer(_)) {
+        if matches!(stmt, Stmt::Defer { body: _, .. }) {
             self.refuse(span, "deferred effects are not admitted in machine helpers");
         }
     }
@@ -727,8 +727,7 @@ impl NodeVisitor for EffectVisitor<'_> {
         self.releases(&key, span);
         if let Some(dispatch) = self.output.user_comparison_dispatch.get(&key) {
             let (UserComparisonDispatch::Eq { method }
-            | UserComparisonDispatch::Ord { method }
-            | UserComparisonDispatch::PartialOrd { method }) = dispatch;
+            | UserComparisonDispatch::Ordering { method }) = dispatch;
             self.summary.calls.push((*method, span.clone()));
         }
         match expr {

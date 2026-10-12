@@ -677,32 +677,11 @@ fn record_equality_comparison_typechecks_when_structurally_eligible() {
     );
 }
 
-/// `!=` is admitted for eligible records; ordering with no user `impl Ord`
-/// is a Limitation-channel `E_LIMIT_DERIVED_ORD` (D26 as amended by D340),
-/// not a plain `InvalidOperation` — no structural-ordering codegen thunk
-/// exists for aggregates, so this is a compiler gap, not a program error.
 #[test]
-fn record_inequality_typechecks_and_ordering_is_rejected() {
+fn record_inequality_and_ordering_typecheck() {
     let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}\n";
     let output = check_source(source);
-    assert!(
-        !output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("`!=` on record type `Pt`")),
-        "eligible record `!=` should typecheck: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.errors.iter().any(|e| e.kind
-            == (TypeErrorKind::DerivedOrdUnavailable {
-                type_name: "Pt".to_string()
-            })
-            && e.message.contains("E_LIMIT_DERIVED_ORD")
-            && e.kind.channel() == crate::error::DiagChannel::Limitation),
-        "expected E_LIMIT_DERIVED_ORD refusal for record `<`: {:#?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
 
 /// Fieldless enums are tag values; their `==` remains admitted so MIR/codegen
@@ -719,23 +698,11 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
     );
 }
 
-/// Enum ordering with no user `impl Ord` is the same Limitation-channel
-/// `E_LIMIT_DERIVED_ORD` refusal as the record case above, not a plain
-/// `InvalidOperation`.
 #[test]
-fn enum_ordering_reports_checker_diagnostic() {
+fn enum_ordering_typechecks() {
     let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}\n";
     let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| e.kind
-            == (TypeErrorKind::DerivedOrdUnavailable {
-                type_name: "Colour".to_string()
-            })
-            && e.message.contains("E_LIMIT_DERIVED_ORD")
-            && e.kind.channel() == crate::error::DiagChannel::Limitation),
-        "expected E_LIMIT_DERIVED_ORD refusal for enum ordering: {:#?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
 
 #[test]
@@ -2656,7 +2623,7 @@ fn selected_eq_checks_both_result_payload_capabilities() {
 }
 
 #[test]
-fn selected_eq_keeps_aggregate_ordering_gate_during_operand_inference() {
+fn aggregate_ordering_survives_operand_inference() {
     let source = r"type Pair {
     x: i64;
     y: i64;
@@ -2667,16 +2634,7 @@ fn compare(left: _, right: Pair) -> bool {
 }
 ";
     let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|error| {
-            matches!(
-                error.kind,
-                TypeErrorKind::InvalidOperation | TypeErrorKind::DerivedOrdUnavailable { .. }
-            ) && error.message.contains("PartialOrd")
-        }),
-        "{:?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 /// Member rows name the declaration they belong to, so a trait's methods and
@@ -2730,7 +2688,7 @@ fn binary_operand_diagnostics_identify_the_operator_site() {
 }
 
 #[test]
-fn user_ordering_trait_names_do_not_grant_operator_capabilities() {
+fn user_ordering_trait_names_do_not_block_derived_ordering() {
     for name in ["Ord", "PartialOrd"] {
         let source = format!(
             r"
@@ -2748,15 +2706,6 @@ fn user_ordering_trait_names_do_not_grant_operator_capabilities() {
         "
         );
         let output = check_source(&source);
-        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
-        assert!(
-            matches!(
-                output.errors[0].kind,
-                TypeErrorKind::DerivedOrdUnavailable { .. }
-            ),
-            "{:?}",
-            output.errors
-        );
-        assert_eq!(source[output.errors[0].span.clone()].trim(), "left < right");
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
 }

@@ -210,8 +210,8 @@
             },
             "op": "branch",
             "span": {
-              "end": 94,
-              "start": 94
+              "end": 89,
+              "start": 89
             },
             "then": {
               "args": [],
@@ -271,8 +271,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 129,
-              "start": 129
+              "end": 89,
+              "start": 89
             }
           }
         },

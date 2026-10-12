@@ -120,7 +120,7 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<Symbol>) {
             }
             block_targets(body, names);
         }
-        Stmt::Defer(expr) => expr_targets(&expr.0, names),
+        Stmt::Defer { body: expr, .. } => expr_targets(&expr.0, names),
         Stmt::Expression(expr) => expr_targets(&expr.0, names),
         Stmt::Continue { .. } => {}
     }

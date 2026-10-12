@@ -153,7 +153,7 @@ impl Checker {
                     self.scan_expr_for_stack_hints(e);
                 }
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer { body: expr, .. } => {
                 self.scan_expr_for_stack_hints(&expr.0);
             }
             // Statement forms that cannot host a binding RHS: nothing to do.
@@ -189,6 +189,10 @@ impl Checker {
     pub(super) fn scan_expr_for_stack_hints(&mut self, expr: &Expr) {
         match expr {
             Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,

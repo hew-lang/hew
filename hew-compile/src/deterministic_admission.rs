@@ -1166,7 +1166,7 @@ mod tests {
 
     #[test]
     fn imported_methods_use_their_checked_rewrite() {
-        let source = "import std.bench;\nfn main() { var s = bench.suite(\"suite\"); s.add(\"noop\", 1, || {}); s.report(); }";
+        let source = "import std.text.semver;\nfn main() fails semver.VersionError { let version = semver.parse(\"1.2.3-beta\")?; assert(version.pre() == \"beta\"); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 
@@ -1188,7 +1188,7 @@ mod tests {
 
     #[test]
     fn collected_iterator_reaches_its_callback_host_operation() {
-        let source = "import std.process;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let result = iter.collect(iter.map(v.into_iter(), |n: i64| { let _ = process.run(\"true\"); n })); assert(result.len() == 1); }";
+        let source = "import std.process;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let result = iter.collect(iter.map(v.into_iter(), |n: i64| { let _ = process.start(process.command(\"true\", Vec.new())); n })); assert(result.len() == 1); }";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -1202,7 +1202,7 @@ mod tests {
 
     #[test]
     fn uncollected_iterator_does_not_invoke_its_callback() {
-        let source = "import std.process;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let unused = iter.map(v.into_iter(), |n: i64| { let _ = process.run(\"true\"); n }); println(\"safe\"); }";
+        let source = "import std.process;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let unused = iter.map(v.into_iter(), |n: i64| { let _ = process.start(process.command(\"true\", Vec.new())); n }); println(\"safe\"); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 

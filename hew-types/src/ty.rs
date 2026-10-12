@@ -1968,7 +1968,7 @@ impl Ty {
 
     /// Apply a function to each child type, reconstructing the composite.
     /// Leaf types (primitives, Var, Error) return `self.clone()`.
-    fn map_children(&self, f: &mut impl FnMut(&Ty) -> Ty) -> Ty {
+    pub(crate) fn map_children(&self, f: &mut impl FnMut(&Ty) -> Ty) -> Ty {
         match self {
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(&mut *f).collect()),
             Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),

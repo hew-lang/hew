@@ -280,6 +280,7 @@ pub fn actor_signature(
                 .iter()
                 .find(|callable| callable.id == id)
                 .map(|callable| hew_sir::SemSignature {
+                    failure_domain: callable.failure_domain,
                     params: callable
                         .params
                         .iter()

@@ -41,6 +41,7 @@ pub(super) fn facts(class: ValueClass, clone: CloneKind) -> TypeFacts {
         send: SendFact::Known(true),
         hash: false,
         eq: false,
+        partial_ord: false,
     }
 }
 
@@ -142,6 +143,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
@@ -161,6 +163,7 @@ pub(super) fn decode_module() -> SemModule {
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![SemAbiParam {
                     ty: ResolvedTy::Bytes,
                     passing: SemParamPassing::Borrow,

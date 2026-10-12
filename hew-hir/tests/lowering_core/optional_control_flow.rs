@@ -1,6 +1,6 @@
 use hew_hir::{
-    lower_program_host_target, verify_hir, HirExprKind, HirItem, HirMatchArmPredicate, HirStmtKind,
-    ResolutionCtx, ResolvedRef,
+    lower_program_host_target, verify_hir, HirExpr, HirExprKind, HirItem, HirMatchArmPredicate,
+    HirStmtKind, ResolutionCtx, ResolvedRef,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -48,7 +48,10 @@ fn fallible_returns_use_one_result_representation_with_exact_payloads() {
         let value = match &function.body.statements[0].kind {
             HirStmtKind::Return(Some(value)) => value,
             HirStmtKind::Expr(value) => {
-                let HirExprKind::Return { value: Some(value) } = &value.kind else {
+                let HirExprKind::Return {
+                    value: Some(value), ..
+                } = &value.kind
+                else {
                     panic!("typed error return");
                 };
                 value
@@ -212,7 +215,13 @@ fn propagation_inside_handler_operand_retains_its_lexical_return_edge() {
     let HirExprKind::Block(failure) = &arms[1].body.kind else {
         panic!("propagation failure block");
     };
-    assert!(matches!(failure.statements[0].kind, HirStmtKind::Return(_)));
+    assert!(matches!(
+        failure.statements[0].kind,
+        HirStmtKind::Expr(HirExpr {
+            kind: HirExprKind::Return { .. },
+            ..
+        })
+    ));
 }
 
 #[test]

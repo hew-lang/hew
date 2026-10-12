@@ -5,15 +5,112 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::mailbox_envelope::MailboxPayloadClass;
-use crate::node_identity::{HewLocation, Location};
-use crate::peer_binding::ClaimState;
+use crate::node_identity::{HewLocation, Location, NodeId};
+use crate::peer_binding::{ClaimState, Posture};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::util::MutexExt;
 
 use super::channel::ChannelProtection;
 use super::control::encode_envelope;
-use super::{ClaimedSendLease, HewConnMgr, CONN_STATE_ACTIVE, CONN_STATE_CLOSED};
+use super::{HewConnMgr, ReaderLifecycleGuard, CONN_STATE_ACTIVE, CONN_STATE_CLOSED};
+
+/// One manager-issued authority for an authenticated peer and transport slot.
+/// The lease prevents removal or reuse of the slot until the send returns.
+pub(crate) struct SendClaim<'a> {
+    manager: &'a HewConnMgr,
+    conn_id: c_int,
+    identity: NodeId,
+    route_slot: u16,
+    session_incarnation: u32,
+    _guard: ReaderLifecycleGuard,
+    publication_removed: Arc<std::sync::atomic::AtomicBool>,
+    channel: Arc<ChannelProtection>,
+}
+
+impl SendClaim<'_> {
+    pub(crate) fn send(&self, frame: &[u8]) -> c_int {
+        if self.publication_removed.load(Ordering::Acquire) {
+            return -1;
+        }
+        // SAFETY: the manager owns the transport. The claim's lifecycle lease
+        // prevents this exact connection slot from being removed or reused.
+        match unsafe {
+            self.channel
+                .send(self.manager.transport, self.conn_id, frame)
+        } {
+            Ok(()) => 0,
+            Err(error) => {
+                set_last_error(format!("connection send on conn {}: {error}", self.conn_id));
+                -1
+            }
+        }
+    }
+}
+
+fn claim_send(
+    manager: &HewConnMgr,
+    conn_id: c_int,
+    expected_publication: Option<u64>,
+) -> Option<SendClaim<'_>> {
+    let (claim, publication_token, credential) = manager.connections.access(|connections| {
+        let connection = connections.iter().find(|connection| {
+            connection.conn_id == conn_id
+                && connection.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                && connection.posture == Posture::Strict
+                && connection.peer_node_id != 0
+                && connection.peer_session_incarnation != 0
+                && expected_publication.is_none_or(|token| token == connection.publication_token)
+        })?;
+        Some((
+            SendClaim {
+                manager,
+                conn_id,
+                identity: connection.peer_identity?,
+                route_slot: connection.peer_node_id,
+                session_incarnation: connection.peer_session_incarnation,
+                _guard: connection.claimed_send_lifecycle.register(),
+                publication_removed: Arc::clone(&connection.publication_removed),
+                channel: Arc::clone(&connection.channel),
+            },
+            connection.publication_token,
+            connection.credential.clone(),
+        ))
+    })?;
+    let published = manager
+        .claims
+        .0
+        .lock_or_recover()
+        .get(&claim.identity)
+        .is_some_and(|owner| {
+            owner.state == ClaimState::Published
+                && owner.conn_id == conn_id
+                && owner.publication_token == publication_token
+                && owner.route_slot == claim.route_slot
+                && owner.session_incarnation == claim.session_incarnation
+                && owner.credential == credential
+        });
+    (published && !claim.publication_removed.load(Ordering::Acquire)).then_some(claim)
+}
+
+pub(crate) fn claim_send_to_location(
+    manager: &HewConnMgr,
+    conn_id: c_int,
+    target: Location,
+) -> Option<SendClaim<'_>> {
+    let claim = claim_send(manager, conn_id, None)?;
+    (claim.identity == target.node() && claim.session_incarnation == target.incarnation())
+        .then_some(claim)
+}
+
+pub(crate) fn claim_send_to_route(
+    manager: &HewConnMgr,
+    conn_id: c_int,
+    route_slot: u16,
+) -> Option<SendClaim<'_>> {
+    let claim = claim_send(manager, conn_id, None)?;
+    (route_slot != 0 && claim.route_slot == route_slot).then_some(claim)
+}
 
 /// Legacy API: outbound queue tuning is no longer supported.
 ///
@@ -66,37 +163,10 @@ pub unsafe extern "C" fn hew_connmgr_send(
         return -1;
     };
 
-    // Verify the connection is the active authenticated owner of this exact
-    // node/session pair. This prevents conn-id and route-slot reuse from
-    // redirecting a carried location.
-    let active = mgr_ref.connections.access(|conns| {
-        conns
-            .iter()
-            .find(|c| {
-                c.conn_id == conn_id
-                    && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-                    && c.peer_identity == Some(target.node())
-                    && c.peer_session_incarnation == target.incarnation()
-            })
-            .map(|c| (c.publication_token, Arc::clone(&c.channel)))
-    });
-    let Some((publication_token, channel)) = active else {
+    let Some(claim) = claim_send_to_location(mgr_ref, conn_id, target) else {
+        set_last_error("hew_connmgr_send: no authenticated claim for the target");
         return -1;
     };
-    let owns_claim = mgr_ref
-        .claims
-        .0
-        .lock_or_recover()
-        .get(&target.node())
-        .is_some_and(|claim| {
-            claim.state == ClaimState::Published
-                && claim.conn_id == conn_id
-                && claim.publication_token == publication_token
-                && claim.session_incarnation == target.incarnation()
-        });
-    if !owns_claim {
-        return -1;
-    }
 
     // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
     let Some(encoded) = (unsafe {
@@ -112,105 +182,29 @@ pub unsafe extern "C" fn hew_connmgr_send(
         return -1;
     };
 
-    // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above.
-    unsafe { send_on_channel(mgr_ref, conn_id, &channel, &encoded) }
-}
-
-/// Seal one frame through the connection's channel and send it whole.
-///
-/// # Safety
-///
-/// `mgr_ref.transport` must be valid and `conn_id` must name the connection
-/// that owns `channel`.
-unsafe fn send_on_channel(
-    mgr_ref: &HewConnMgr,
-    conn_id: c_int,
-    channel: &ChannelProtection,
-    frame: &[u8],
-) -> c_int {
-    // SAFETY: forwarded caller contract.
-    match unsafe { channel.send(mgr_ref.transport, conn_id, frame) } {
-        Ok(()) => 0,
-        Err(err) => {
-            set_last_error(format!("connection send on conn {conn_id}: {err}"));
-            -1
-        }
-    }
+    claim.send(&encoded)
 }
 
 pub(super) unsafe fn send_preencoded_on_manager(
     mgr_ref: &HewConnMgr,
     conn_id: c_int,
-    expected_publication_token: Option<u64>,
+    publication_token: u64,
     data: *const u8,
     len: usize,
 ) -> c_int {
-    // SAFETY: data is valid for `len` bytes per caller contract.
-    let frame = unsafe { std::slice::from_raw_parts(data, len) };
-    if let Some(publication_token) = expected_publication_token {
-        let lease = mgr_ref.connections.access(|connections| {
-            let active = connections.iter().find(|connection| {
-                connection.conn_id == conn_id
-                    && connection.publication_token == publication_token
-                    && connection.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-            })?;
-            Some(ClaimedSendLease {
-                _guard: active.claimed_send_lifecycle.register(),
-                publication_removed: Arc::clone(&active.publication_removed),
-                channel: Arc::clone(&active.channel),
-            })
-        });
-        let Some(lease) = lease else {
-            return -1;
-        };
-        if lease.publication_removed.load(Ordering::Acquire) {
-            return -1;
-        }
-        // SAFETY: teardown closes the connection before waiting for this
-        // lease, so a blocked send is interrupted without slot reuse; the
-        // lease prevents slot removal/reuse until return.
-        return unsafe { send_on_channel(mgr_ref, conn_id, &lease.channel, frame) };
-    }
-
-    let channel = mgr_ref.connections.access(|conns| {
-        conns
-            .iter()
-            .find(|c| c.conn_id == conn_id && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE)
-            .map(|c| Arc::clone(&c.channel))
-    });
-    let Some(channel) = channel else {
+    let Some(claim) = claim_send(mgr_ref, conn_id, Some(publication_token)) else {
         return -1;
     };
-    // SAFETY: transport is valid per manager contract; conn_id verified active above.
-    unsafe { send_on_channel(mgr_ref, conn_id, &channel, frame) }
-}
-
-/// Send a pre-encoded wire frame over a specific connection through its
-/// channel protection.
-///
-/// Unlike [`hew_connmgr_send`], this function takes bytes that are already
-/// encoded into the Hew wire format (e.g., a full ask/reply envelope). The
-/// only transformation applied is the connection's channel seal.
-///
-/// Returns 0 on success, -1 on failure.
-///
-/// # Safety
-///
-/// - `mgr` must be a valid pointer for the duration of the call.
-/// - `data` must point to at least `len` readable bytes.
-pub(crate) unsafe fn hew_connmgr_send_preencoded(
-    mgr: *mut HewConnMgr,
-    conn_id: c_int,
-    data: *const u8,
-    len: usize,
-) -> c_int {
-    if mgr.is_null() {
+    if data.is_null() && len != 0 {
         return -1;
     }
-    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
-    let mgr_ref = unsafe { &*mgr };
-    // SAFETY: forwarded caller contract.
-    unsafe { send_preencoded_on_manager(mgr_ref, conn_id, None, data, len) }
+    let frame = if len == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller lends `len` readable bytes for this send.
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    claim.send(frame)
 }
 
 /// Send a pre-encoded frame only if `conn_id` still names the exact published
@@ -230,7 +224,7 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded_claimed(
         return -1;
     }
     // SAFETY: caller guarantees `mgr` and `data` validity.
-    unsafe { send_preencoded_on_manager(&*mgr, conn_id, Some(publication_token), data, len) }
+    unsafe { send_preencoded_on_manager(&*mgr, conn_id, publication_token, data, len) }
 }
 
 /// Return the connection ID of the first active connection whose handshake

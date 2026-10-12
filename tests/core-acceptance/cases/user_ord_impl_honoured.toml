@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "false\nfalse\n"
+stdout = "false\nfalse\ntrue\ntrue\n"
 exit = 0

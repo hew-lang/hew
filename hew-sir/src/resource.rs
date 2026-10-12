@@ -55,6 +55,7 @@ pub enum ResourceRelease {
 /// stages read it; none of them re-derive a mode from the symbol spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternSignature {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub declaration: hew_types::DefId,
     pub symbol: String,
     pub params: Vec<ResolvedTy>,
@@ -113,7 +114,13 @@ impl ResourceRelease {
                 // Opaque extern values use the pointer ABI. Native I/O's
                 // existing table-token contract is the exact i32 exception.
                 Ok(
-                    if hew_types::runtime_call::IoHandleKind::of_ty(owner).is_some() {
+                    if matches!(
+                        hew_types::runtime_call::IoHandleKind::of_ty(owner),
+                        Some(
+                            hew_types::runtime_call::IoHandleKind::Connection
+                                | hew_types::runtime_call::IoHandleKind::Listener
+                        )
+                    ) {
                         ResourceCarrier::I32
                     } else {
                         ResourceCarrier::Pointer
@@ -198,6 +205,7 @@ pub(crate) fn resource_release_from_hir(
                     return None;
                 };
                 (&function.declaration == declaration).then(|| ResourceExtern {
+                    failure_domain: function.failure_domain,
                     declaration: function.declaration,
                     symbol: function.name.clone(),
                     params: function.param_tys.clone(),

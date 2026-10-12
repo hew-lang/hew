@@ -178,6 +178,16 @@ impl Checker {
     /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
     /// Reporting here as well would double-diagnose one consuming use.
     pub(in crate::check) fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
+        let mut receiver = expr;
+        while let Expr::FieldAccess { object, .. } | Expr::Index { object, .. } = receiver {
+            receiver = &object.0;
+        }
+        if matches!(receiver, Expr::ChainValue) {
+            if let Some(context) = self.chain_values.last_mut() {
+                context.consumed = true;
+            }
+            return;
+        }
         let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
@@ -366,6 +376,10 @@ impl Checker {
 
     pub(in crate::check) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
         match expr {
+            Expr::ChainValue => self
+                .chain_values
+                .last()
+                .and_then(|context| context.place.clone()),
             Expr::Ident(name) => Some((name.to_string(), PlacePath::new())),
             Expr::FieldAccess { object, field } => {
                 // `self.count` in an actor body denotes the state binding
@@ -817,7 +831,8 @@ impl Checker {
             .params
             .iter()
             .filter_map(|p| {
-                let ty = self.resolve_type_expr(&p.ty);
+                let binding = self.env.lookup_ref(p.name)?;
+                let ty = self.subst.resolve(&binding.ty);
                 if matches!(
                     ty,
                     Ty::Named {

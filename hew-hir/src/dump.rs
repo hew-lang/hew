@@ -1173,7 +1173,7 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 dump_expr(defs, out, value, indent + 4);
             }
         }
-        HirExprKind::Return { value } => {
+        HirExprKind::Return { value, .. } => {
             writeln!(out, "{pad}  return").expect("write to string");
             if let Some(value) = value {
                 dump_expr(defs, out, value, indent + 4);

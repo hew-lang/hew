@@ -65,6 +65,7 @@ for (const [name, source, stdout] of [
   assert.equal(compiled.bytecode.schema_version, "hew.sandbox.bytecode.v1");
   const trace = vm.module.runBytecode(compiled.bytecode, {
     replay: { step_budget: 1000 },
+    codecBridge: compiler.module.executeCodec,
   });
   assert.equal(trace.result, "ok", `${name}: ${JSON.stringify(trace.final_state)}`);
   assert.equal(trace.final_state.exit_code, 0, `${name}: unsuccessful exit`);

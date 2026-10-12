@@ -30,6 +30,8 @@ mod deadline;
 #[cfg(not(target_arch = "wasm32"))]
 mod file;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod library;
+#[cfg(not(target_arch = "wasm32"))]
 mod net;
 mod offload;
 mod sink;
@@ -156,6 +158,8 @@ pub(crate) enum IoValue {
     StdinLine(stdin::Line),
     /// An `#[offload]` call's environment holding its result.
     Offload(offload::OffloadEnv),
+    #[cfg(not(target_arch = "wasm32"))]
+    Library(Box<dyn std::any::Any + Send>),
 }
 
 enum State {
@@ -184,6 +188,8 @@ pub struct HewAsyncIo {
     #[cfg(not(target_arch = "wasm32"))]
     net: Option<net::NetOp>,
     cleanup: Mutex<Cleanup>,
+    #[cfg(not(target_arch = "wasm32"))]
+    socket_cancel: Option<Arc<library::SocketCancellation>>,
     #[cfg(windows)]
     file_cancel: file::FileCancellation,
     #[cfg(not(target_arch = "wasm32"))]
@@ -290,6 +296,7 @@ impl HewAsyncIo {
         Arc::new(Self {
             state: Mutex::new(State::Pending(owned)),
             net,
+            socket_cancel: None,
             cleanup: Mutex::new(Cleanup::default()),
             deadline: Mutex::new(None),
             detach: Mutex::new(None),
@@ -423,6 +430,11 @@ impl HewAsyncIo {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.clear_deadline();
+            if won {
+                if let Some(cancel) = &self.socket_cancel {
+                    cancel.cancel();
+                }
+            }
             if let Some(net) = &self.net {
                 net.slot.forget(self);
             }

@@ -145,7 +145,11 @@ impl Checker {
             | Expr::Scope { body: block }
             | Expr::ScopeDeadline { body: block, .. } => self.callable_candidates_for_block(block),
             Expr::UnsafeBlock(block) => self.callable_candidates_for_block(block),
-            Expr::Coalesce { left, right } => {
+            Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            } => {
                 let mut candidates = self.callable_candidates_for_expr(&left.0, &left.1);
                 candidates.join(self.callable_candidates_for_expr(&right.0, &right.1));
                 candidates

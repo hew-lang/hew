@@ -28,6 +28,7 @@ impl Builder<'_, '_> {
     ) -> Result<ValueId, String> {
         let loan_floor = self.scope_loans.len();
         let value = self.lower_expr_inner(expr, binding_use)?;
+        self.current_site = Some(expr.site);
         if self.is_open()
             && matches!(
                 self.value_own_kind(value),
@@ -189,9 +190,21 @@ impl Builder<'_, '_> {
                 args,
                 evaluation_order,
                 ..
-            } => self
-                .lower_dyn_call(expr, receiver, target, args, evaluation_order)?
-                .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
+            } => {
+                let value_required = self.ty(&expr.ty) != ResolvedTy::Unit;
+                match self.lower_dyn_call(
+                    expr,
+                    receiver,
+                    target,
+                    args,
+                    evaluation_order,
+                    value_required,
+                )? {
+                    Some(value) => Ok(value),
+                    None if !value_required => self.emit(expr, SemOpKind::ConstUnit),
+                    None => Err("dynamic dispatch produced no SIR value".to_string()),
+                }
+            }
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
@@ -329,7 +342,11 @@ impl Builder<'_, '_> {
                         | ResolvedTy::Named { .. }
                         | ResolvedTy::Unit
                 ) {
-                    let equals = self.lower_value_equality(expr, [left, right])?;
+                    let equals = self.lower_value_comparison(
+                        expr,
+                        [left, right],
+                        hew_types::ValueCapability::Eq,
+                    )?;
                     return if *op == hew_parser::ast::BinaryOp::NotEqual {
                         self.emit(
                             expr,
@@ -341,6 +358,32 @@ impl Builder<'_, '_> {
                     } else {
                         Ok(equals)
                     };
+                }
+                let ordering = match op {
+                    hew_parser::ast::BinaryOp::Less => Some(hew_types::ValueCapability::Less),
+                    hew_parser::ast::BinaryOp::LessEqual => {
+                        Some(hew_types::ValueCapability::LessEqual)
+                    }
+                    hew_parser::ast::BinaryOp::Greater => Some(hew_types::ValueCapability::Greater),
+                    hew_parser::ast::BinaryOp::GreaterEqual => {
+                        Some(hew_types::ValueCapability::GreaterEqual)
+                    }
+                    _ => None,
+                };
+                if let Some(capability) = ordering {
+                    if matches!(
+                        self.ty(&left.ty),
+                        ResolvedTy::Tuple(_)
+                            | ResolvedTy::Named {
+                                head: hew_types::TypeHead::Builtin(
+                                    hew_types::BuiltinType::Option | hew_types::BuiltinType::Result
+                                ),
+                                ..
+                            }
+                            | ResolvedTy::Named { .. }
+                    ) {
+                        return self.lower_value_comparison(expr, [left, right], capability);
+                    }
                 }
                 if *op == hew_parser::ast::BinaryOp::Add && self.ty(&left.ty) == ResolvedTy::Bytes {
                     return self

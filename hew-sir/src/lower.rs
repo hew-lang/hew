@@ -5,6 +5,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 
+use crate::model::dyn_passing_admits;
+
 use hew_parser::ast::Span;
 
 #[path = "lower_projection.rs"]
@@ -1322,6 +1324,7 @@ enum BodySource {
 /// exit status.
 #[derive(Debug, Clone)]
 struct EntryAdapter {
+    benchmark: bool,
     entry: CallableId,
     action: EntryExitAction,
 }
@@ -1361,6 +1364,7 @@ fn generic_template_admission(function: &HirFn) -> Result<(), String> {
 fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> {
     generic_template_admission(function)?;
     Ok(SemSignature {
+        failure_domain: function.failure_domain,
         params: function
             .params
             .iter()
@@ -1436,7 +1440,11 @@ fn callable_signature_with_substitution(
             return_ty.user_facing()
         ));
     }
-    Ok(SemSignature { params, return_ty })
+    Ok(SemSignature {
+        failure_domain: function.failure_domain,
+        params,
+        return_ty,
+    })
 }
 
 /// How one argument crosses an erased dispatch boundary.
@@ -1450,20 +1458,6 @@ fn dyn_boundary_passing(own: OwnKind) -> SemParamPassing {
         SemParamPassing::Borrow
     } else {
         SemParamPassing::ReadOnly
-    }
-}
-
-/// Whether an implementation's declared transfer realizes the boundary's.
-fn dyn_passing_admits(boundary: SemParamPassing, implementation: SemParamPassing) -> bool {
-    match boundary {
-        SemParamPassing::Consume => implementation == SemParamPassing::Consume,
-        SemParamPassing::BorrowMut => implementation == SemParamPassing::BorrowMut,
-        // A borrowed boundary hands the callee a live value it does not own;
-        // a bit-copy receiver reads it and an owned one borrows it.
-        SemParamPassing::Borrow | SemParamPassing::ReadOnly => matches!(
-            implementation,
-            SemParamPassing::Borrow | SemParamPassing::ReadOnly
-        ),
     }
 }
 
@@ -1633,7 +1627,7 @@ fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
         // operation - `begin_borrow`, `move`, `destroy_value` - that the
         // initial scalar domain does not emit. Naming the intent rather than a
         // mode keeps the refusal precise without reviving the deleted mode set.
-        IntentKind::Modify | IntentKind::Consume | IntentKind::Discharge => Err(format!(
+        IntentKind::Borrow | IntentKind::Modify | IntentKind::Consume | IntentKind::Discharge => Err(format!(
             "HIR {intent:?} intent needs a SIR ownership operation; initial scalar SIR admits only read operands"
         )),
         IntentKind::Capture => Err(
@@ -1685,6 +1679,18 @@ fn lower_initial_value_transfer(
     binding_use: OwnedBindingUse,
 ) -> Result<ValueId, String> {
     let ty = builder.ty(&expr.ty);
+    if expr.intent == IntentKind::Borrow && binding_use == OwnedBindingUse::Probe {
+        if let Some(place) = builder.expression_projection(expr)? {
+            let value = builder.emit_typed(
+                Provenance::Site(expr.site),
+                &ty,
+                SemOpKind::LoadBorrow { place },
+            )?;
+            builder.scope_loans.push(value);
+            return Ok(value);
+        }
+        return builder.lower_owned_transfer(expr, binding_use);
+    }
     if ty == ResolvedTy::Unit && matches!(expr.intent, IntentKind::Read | IntentKind::Consume) {
         if matches!(
             expr.kind,
@@ -1829,6 +1835,7 @@ impl PreparedCallee {
 #[derive(Clone)]
 struct ControlState {
     block: BlockId,
+    source_site: Option<hew_hir::SiteId>,
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
@@ -2042,6 +2049,7 @@ struct Builder<'hir, 'service> {
     defers: Vec<deferred::PendingDefer>,
     defer_bodies: Vec<deferred::BodyBoundary>,
     recovery_bodies: Vec<deferred::BodyBoundary>,
+    failure_exit: bool,
     task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,

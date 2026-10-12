@@ -26,6 +26,16 @@ pub struct TestDeclaration {
 /// Return every top-level `#[test]` function in source order.
 #[must_use]
 pub fn discover_tests(program: &Program) -> Vec<TestDeclaration> {
+    discover_entries(program, "test")
+}
+
+/// Return every top-level benchmark with implicit host-clock execution.
+#[must_use]
+pub fn discover_benchmarks(program: &Program) -> Vec<TestDeclaration> {
+    discover_entries(program, "bench")
+}
+
+fn discover_entries(program: &Program, attribute: &str) -> Vec<TestDeclaration> {
     program
         .items
         .iter()
@@ -40,7 +50,7 @@ pub fn discover_tests(program: &Program) -> Vec<TestDeclaration> {
                     .iter()
                     .any(|attribute| attribute.name == name)
             };
-            has("test").then(|| TestDeclaration {
+            has(attribute).then(|| TestDeclaration {
                 name: function.name.to_string(),
                 span: span.clone(),
                 item_ordinal,
@@ -59,7 +69,7 @@ pub fn discover_tests(program: &Program) -> Vec<TestDeclaration> {
                     .and_then(|attribute| attribute.args.first())
                     .map(|argument| argument.as_str().to_string()),
                 serial: has("serial"),
-                real_time: has("real_time"),
+                real_time: attribute == "bench" || has("real_time"),
                 timeout_ns: function
                     .attributes
                     .iter()

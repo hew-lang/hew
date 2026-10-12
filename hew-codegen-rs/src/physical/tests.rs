@@ -602,6 +602,7 @@ fn scalar_entry_module() -> SemModule {
         symbol: "main".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::I64,
         },
@@ -644,6 +645,7 @@ fn scalar_entry_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
@@ -675,6 +677,7 @@ fn scalar_entry_module() -> SemModule {
                 send: SendFact::Known(true),
                 hash: true,
                 eq: true,
+                partial_ord: true,
             },
         )]),
         string_literals: BTreeMap::new(),
@@ -778,6 +781,7 @@ fn bytes_copy_module() -> SemModule {
         symbol: "copy_bytes".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::Bytes,
         },
@@ -842,6 +846,7 @@ fn bytes_copy_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
@@ -869,6 +874,7 @@ fn bytes_copy_module() -> SemModule {
                 send: SendFact::Known(true),
                 hash: true,
                 eq: true,
+                partial_ord: false,
             },
         )]),
         string_literals: BTreeMap::new(),

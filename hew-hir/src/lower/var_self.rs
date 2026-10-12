@@ -426,9 +426,20 @@ impl LowerCtx {
                     );
                 }
             }
-            HirExprKind::Yield { value, .. }
-            | HirExprKind::Break { value, .. }
-            | HirExprKind::Return { value } => {
+            HirExprKind::Return { value, .. } => {
+                let span = expr.span.clone();
+                let mut result = value
+                    .take()
+                    .map_or_else(|| self.make_unit_expr(span.clone()), |value| *value);
+                self.wrap_var_self_explicit_expr_returns(&mut result, receiver, abi_return_ty);
+                *value = Some(Box::new(self.make_var_self_return_expr(
+                    result,
+                    receiver,
+                    abi_return_ty,
+                    span,
+                )));
+            }
+            HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
                 if let Some(value) = value {
                     self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
                 }

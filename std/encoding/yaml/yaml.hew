@@ -218,7 +218,7 @@ impl ValueMethods for Value {
         };
         var strings: Vec<string> = Vec.new();
         for index in 0 .. keys.array_len()? {
-            let key = keys.array_get(index)?.expect("yaml: mapping key exists");
+            let key = (keys.array_get(index)?).expect("yaml: mapping key exists");
             let kind = key.type_of();
             if kind != Kind.String {
                 return error AccessError.UnsupportedMappingKey(kind);

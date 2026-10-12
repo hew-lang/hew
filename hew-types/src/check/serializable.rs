@@ -28,6 +28,12 @@ impl Checker {
         self.data_error(ty, false).is_none()
     }
 
+    pub(super) fn is_generatable(&self, ty: &ResolvedTy) -> bool {
+        TypeFactService::new(self.type_fact_context(), BTreeMap::new())
+            .property_error(ty)
+            .is_none()
+    }
+
     /// Why `ty` cannot cross to a remote actor: it is not data, or a record
     /// or enum it reaches has no `#[wire]` tags (D524).
     pub(super) fn remote_payload_error(&self, ty: &ResolvedTy) -> Option<NotData> {

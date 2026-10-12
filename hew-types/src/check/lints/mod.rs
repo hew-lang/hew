@@ -650,7 +650,7 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             }
         }
         Stmt::Continue { .. } => {}
-        Stmt::Defer(expr) => walk_expr(&expr.0, &expr.1, visitor),
+        Stmt::Defer { body: expr, .. } => walk_expr(&expr.0, &expr.1, visitor),
         Stmt::Expression(expr) => walk_expr(&expr.0, &expr.1, visitor),
     }
 }
@@ -702,6 +702,7 @@ pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
@@ -733,6 +734,10 @@ pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         }
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,

@@ -74,34 +74,48 @@ struct Verifier {
 }
 
 impl Verifier {
+    fn function(&mut self, func: &crate::node::HirFn) {
+        if func.failure_domain != hew_types::CallableFailureDomain::HewFault {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "callable failure domain".into(),
+                    reason: "declaration disagrees with its failure ABI".into(),
+                },
+                func.span.clone(),
+                "callable failure domain must agree with the checked declaration",
+            ));
+        }
+        self.node(func.node, func.span.clone());
+        if let Some(receiver) = func.var_self_receiver {
+            let valid = !func.is_generator
+                && func.params.first().is_some_and(|param| {
+                    param.id == receiver
+                        && param.mutable
+                        && matches!(&func.return_ty, ResolvedTy::Tuple(fields)
+                        if matches!(fields.as_slice(), [_, returned] if *returned == param.ty))
+                });
+            if !valid {
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "var self receiver".to_string(),
+                        reason: "marker must name the mutable first parameter returned as Self".to_string(),
+                    },
+                    func.span.clone(),
+                    "var self transfer requires one exact receiver binding and (result, Self) return type",
+                ));
+            }
+        }
+        for param in &func.params {
+            self.binding(param.id, param.span.clone());
+        }
+        self.block(&func.body);
+    }
+
     fn module(&mut self, module: &HirModule) {
         for item in &module.items {
             self.current_source_module = Self::item_source_module(module, item);
             match item {
-                HirItem::Function(func) => {
-                    self.node(func.node, func.span.clone());
-                    if let Some(receiver) = func.var_self_receiver {
-                        let valid = !func.is_generator && func.params.first().is_some_and(|param| {
-                            param.id == receiver && param.mutable
-                                && matches!(&func.return_ty, ResolvedTy::Tuple(fields)
-                                    if matches!(fields.as_slice(), [_, returned] if *returned == param.ty))
-                        });
-                        if !valid {
-                            self.diagnostics.push(self.diagnostic(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "var self receiver".to_string(),
-                                    reason: "marker must name the mutable first parameter returned as Self".to_string(),
-                                },
-                                func.span.clone(),
-                                "var self transfer requires one exact receiver binding and (result, Self) return type",
-                            ));
-                        }
-                    }
-                    for param in &func.params {
-                        self.binding(param.id, param.span.clone());
-                    }
-                    self.block(&func.body);
-                }
+                HirItem::Function(func) => self.function(func),
                 HirItem::TypeDecl(decl) => {
                     // Type declarations contribute only their HirNodeId
                     // uniqueness to the verifier — they carry no bindings,
@@ -191,6 +205,18 @@ impl Verifier {
                     self.node(block.node, block.span.clone());
                 }
                 HirItem::ExternFn(ef) => {
+                    if Some(ef.failure_domain)
+                        != hew_types::CallableFailureDomain::for_extern_abi(&ef.abi)
+                    {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "callable failure domain".into(),
+                                reason: "declaration disagrees with its failure ABI".into(),
+                            },
+                            ef.span.clone(),
+                            "callable failure domain must agree with the checked declaration",
+                        ));
+                    }
                     // Extern fns have no body, no parameter bindings — only
                     // their own HirNodeId contributes to uniqueness. The
                     // signature is verified by the checker before lowering.
@@ -1038,7 +1064,7 @@ impl Verifier {
                 self.expr(step);
                 self.block(body);
             }
-            HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
+            HirExprKind::Break { value, .. } | HirExprKind::Return { value, .. } => {
                 if let Some(value) = value {
                     self.expr(value);
                 }
@@ -1266,6 +1292,7 @@ mod tests {
 
     fn function_with_tail(ids: &mut IdGen, name: &str, tail: HirExpr) -> HirItem {
         HirItem::Function(HirFn {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             id: ids.item(),
             node: ids.node(),
             declaration: hew_types::DefId::for_test(name),

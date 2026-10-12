@@ -52,6 +52,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         symbol: "encoding_probe".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
         signature: sir::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: params
                 .iter()
                 .map(|ty| sir::SemAbiParam {
@@ -93,6 +94,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         blocks: vec![],
     };
     sir::SemModule {
+        coverage: sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),

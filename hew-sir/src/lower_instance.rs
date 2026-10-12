@@ -140,7 +140,9 @@ impl<'a> InstanceService<'a> {
             )
             .and_then(|components| {
                 for component in components {
-                    self.require_value_capability(&component, capability)?;
+                    for component_capability in capability.component_capabilities() {
+                        self.require_value_capability(&component, *component_capability)?;
+                    }
                 }
                 Ok(())
             });
@@ -491,6 +493,7 @@ impl<'a> InstanceService<'a> {
             symbol: "__hew_entry".to_string(),
             source_origin: source.source_origin,
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: Vec::new(),
                 return_ty: ResolvedTy::I64,
             },
@@ -510,8 +513,14 @@ impl<'a> InstanceService<'a> {
             &mut plan.action,
             EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
         );
-        self.entry_adapters
-            .insert(id, EntryAdapter { entry, action });
+        self.entry_adapters.insert(
+            id,
+            EntryAdapter {
+                entry,
+                action,
+                benchmark: false,
+            },
+        );
         self.request_body(id);
     }
 
@@ -521,7 +530,9 @@ impl<'a> InstanceService<'a> {
                 continue;
             };
             self.request_body(entry);
-            let (callable, action) = if matches!(plan.action, EntryExitAction::Result { .. }) {
+            let (callable, action) = if !plan.arguments.is_empty()
+                || matches!(plan.action, EntryExitAction::Result { .. })
+            {
                 let Some(source) = self.table.callable(entry).cloned() else {
                     continue;
                 };
@@ -537,8 +548,13 @@ impl<'a> InstanceService<'a> {
                     symbol: format!("__hew_test_entry_{ordinal}"),
                     source_origin: source.source_origin,
                     signature: SemSignature {
+                        failure_domain: hew_types::CallableFailureDomain::HewFault,
                         params: Vec::new(),
-                        return_ty: ResolvedTy::I64,
+                        return_ty: if matches!(plan.action, EntryExitAction::Result { .. }) {
+                            ResolvedTy::I64
+                        } else {
+                            source.signature.return_ty.clone()
+                        },
                     },
                     call_conv: SemCallConv::Default,
                     kind: SemCallableKind::HewDirect,
@@ -549,6 +565,7 @@ impl<'a> InstanceService<'a> {
                 self.entry_adapters.insert(
                     id,
                     EntryAdapter {
+                        benchmark: plan.benchmark,
                         entry,
                         action: plan.action.clone(),
                     },
@@ -556,15 +573,29 @@ impl<'a> InstanceService<'a> {
                 self.request_body(id);
                 (
                     id,
-                    EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
+                    if matches!(plan.action, EntryExitAction::Result { .. }) {
+                        EntryExitAction::Integer(hew_types::EntryIntegerType::I64)
+                    } else {
+                        plan.action.clone()
+                    },
                 )
             } else {
                 (entry, plan.action.clone())
+            };
+            let properties = plan
+                .arguments
+                .iter()
+                .filter(|_| !plan.benchmark)
+                .map(|ty| self.property_plans(ty)?.property_shape())
+                .collect::<Result<Vec<_>, String>>();
+            let Ok(properties) = properties else {
+                continue;
             };
             self.test_entries.push(crate::SemTestEntry {
                 callable,
                 declaration: plan.entry,
                 action,
+                properties,
             });
         }
     }
@@ -642,15 +673,14 @@ impl<'a> InstanceService<'a> {
                 hew_types::DynReceiver::BorrowMut => SemParamPassing::BorrowMut,
                 hew_types::DynReceiver::Consume => SemParamPassing::Consume,
             };
-            if receiver.ty != *concrete_ty
-                || !dyn_passing_admits(receiver_passing, receiver.passing)
-            {
+            if receiver.ty != *concrete_ty {
                 return Err(format!(
                     "slot {slot} implementation `{}` does not receive `{}` on the erased boundary",
                     target.symbol,
                     concrete_ty.user_facing()
                 ));
             }
+            let return_ty = target.signature.erased_return_ty(receiver_passing)?.clone();
             let mut params = Vec::with_capacity(arguments.len());
             for argument in arguments {
                 let passing =
@@ -674,8 +704,9 @@ impl<'a> InstanceService<'a> {
                 callee,
                 receiver: receiver_passing,
                 signature: SemSignature {
+                    failure_domain: target.signature.failure_domain,
                     params,
-                    return_ty: target.signature.return_ty.clone(),
+                    return_ty,
                 },
             });
         }
@@ -1580,6 +1611,10 @@ impl<'a> InstanceService<'a> {
         self.states[index] = state;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "construct the semantic module from one completed instance table"
+    )]
     pub(super) fn into_module(self) -> SemModule {
         let Self {
             module,
@@ -1667,6 +1702,7 @@ impl<'a> InstanceService<'a> {
             }
         }
         SemModule {
+            coverage: crate::CoveragePlan::new(),
             structural_display,
             debug,
             actors,

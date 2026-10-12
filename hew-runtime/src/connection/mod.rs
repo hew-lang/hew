@@ -493,12 +493,6 @@ impl TransportClose {
     }
 }
 
-struct ClaimedSendLease {
-    _guard: ReaderLifecycleGuard,
-    publication_removed: Arc<AtomicBool>,
-    channel: Arc<ChannelProtection>,
-}
-
 #[derive(Clone, Debug)]
 struct ReconnectSettings {
     target_addr: String,

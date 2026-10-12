@@ -1816,7 +1816,13 @@ impl Checker {
             types
         } else {
             let lt = self.synthesize(&left.0, &left.1);
-            let rt = self.synthesize(&right.0, &right.1);
+            let expected = self.subst.resolve(&lt);
+            let rt = if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) && !expected.is_numeric()
+            {
+                self.check_against(&right.0, &right.1, &expected)
+            } else {
+                self.synthesize(&right.0, &right.1)
+            };
             (lt, rt)
         };
 
@@ -2109,6 +2115,8 @@ impl Checker {
                     // types agree — a mismatch already produced the more
                     // precise error above.
                     if self.errors.len() == errors_before {
+                        let left_resolved = self.subst.resolve(&left_ty);
+                        let right_resolved = self.subst.resolve(&right_ty);
                         self.reject_unbounded_generic_ordering(
                             op,
                             &left_resolved,

@@ -39,6 +39,7 @@ fn callable_for(function: &SemFunction) -> SemCallable {
         symbol: function.name.clone(),
         source_origin: function.source_origin.clone(),
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: function
                 .params
                 .iter()
@@ -74,6 +75,7 @@ fn module(function: SemFunction) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         debug: hew_sir::SemDebugFacts::default(),

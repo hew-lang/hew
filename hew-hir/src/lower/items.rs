@@ -838,6 +838,10 @@ impl LowerCtx {
     /// The combined `type_params` is `impl_type_params ++ method.type_params`,
     /// matching how `Wrapper<U>::show` is logically `fn show<U>(w: Wrapper<U>) -> ...`
     /// once the impl-level binder is flattened into the method.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "constructs ordinary and generator functions with shared checked declaration and ABI facts"
+    )]
     pub(super) fn lower_fn_with_name_and_impl_params(
         &mut self,
         func: &FnDecl,
@@ -882,6 +886,7 @@ impl LowerCtx {
         // its body so lowering can recognise abstract-`T` operands (the
         // checker represents `T` as `ResolvedTy::Named { args: [] }`). Restored
         // on every return path below.
+        type_parameters = self.associated_type_schemas.binders(&type_parameters);
         let prior_fn_type_params = std::mem::replace(
             &mut self.current_fn_type_params,
             type_parameters.clone().into_iter().collect(),
@@ -909,6 +914,7 @@ impl LowerCtx {
             self.pop_scope();
             self.current_fn_type_params = prior_fn_type_params;
             return Some(HirFn {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 id,
                 node: self.ids.node(),
                 declaration,
@@ -961,6 +967,7 @@ impl LowerCtx {
             .filter(|_| self.consuming_inherent_methods.contains(&declaration))
             .map(|parameter| parameter.id);
         Some(HirFn {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             id,
             node: self.ids.node(),
             declaration,

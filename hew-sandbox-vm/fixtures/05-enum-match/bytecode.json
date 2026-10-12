@@ -74,8 +74,8 @@
               "value": 3
             },
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 213,
+              "start": 213
             },
             "unwind": {
               "args": [],
@@ -111,8 +111,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 208,
+              "start": 208
             },
             "structural": null,
             "unwind": null
@@ -129,8 +129,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 213,
+              "start": 213
             }
           }
         },
@@ -180,8 +180,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 208,
+              "start": 208
             }
           }
         },
@@ -192,8 +192,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 208,
+              "start": 208
             },
             "value": null
           }
@@ -480,8 +480,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 172,
-              "start": 172
+              "end": 129,
+              "start": 129
             }
           }
         },
@@ -536,8 +536,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 172,
-              "start": 172
+              "end": 168,
+              "start": 168
             }
           }
         },
@@ -590,8 +590,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 172,
-              "start": 172
+              "end": 93,
+              "start": 93
             }
           }
         },
@@ -602,8 +602,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 172,
-              "start": 172
+              "end": 93,
+              "start": 93
             },
             "value": {
               "decision": "move",

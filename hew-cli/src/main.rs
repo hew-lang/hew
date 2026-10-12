@@ -222,7 +222,7 @@ fn lower_file_to_semantics(
             DiagChannel::User,
         )
     })?;
-    let output = lower_program_to_semantics(
+    let mut output = lower_program_to_semantics(
         &state.program,
         &state.source,
         &input,
@@ -230,6 +230,21 @@ fn lower_file_to_semantics(
         target,
         hew_compile::CheckSet::Build,
     )?;
+    if let Some(path) = &options.coverage_map {
+        let coverage = output.instrument_coverage(&state.program, &state.source, &input);
+        let bytes = serde_json::to_vec(&coverage).map_err(|error| {
+            diagnostic::emit_plain_diagnostic_line(&format!(
+                "Error: cannot encode coverage: {error}"
+            ));
+            DiagChannel::User
+        })?;
+        std::fs::write(path, bytes).map_err(|error| {
+            diagnostic::emit_plain_diagnostic_line(&format!(
+                "Error: cannot write coverage: {error}"
+            ));
+            DiagChannel::User
+        })?;
+    }
     let std_roots = options
         .module_search_paths
         .clone()
@@ -493,7 +508,7 @@ pub(crate) fn compile_native_binary(
     bin_path: &Path,
     options: &compile::CompileOptions,
 ) -> Result<(), DiagChannel> {
-    compile_native_binary_with_paths(input, bin_path, options, None)
+    compile_native_binary_with_paths(input, bin_path, options, None).map(|_| ())
 }
 
 fn compile_native_binary_with_paths(
@@ -501,27 +516,21 @@ fn compile_native_binary_with_paths(
     bin_path: &Path,
     options: &compile::CompileOptions,
     paths: Option<&NativeBuildPaths>,
-) -> Result<(), DiagChannel> {
+) -> Result<Vec<Vec<hew_codec::property::Shape>>, DiagChannel> {
     let target =
         target::TargetSpec::from_requested(options.target.as_deref()).map_err(|error| {
             eprintln!("Error: {error}");
             DiagChannel::User
         })?;
     let (pipeline, inputs) = lower_file_to_physical_for_target(input, &target, options)?;
-    let native = link_program_native(&inputs, &target, false, hew_codegen_rs::OptLevel::O0)?;
+    let opt_level = options.opt_level.unwrap_or(hew_codegen_rs::OptLevel::O0);
+    let native = link_program_native(&inputs, &target, false, opt_level)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
-    let artefacts = emit_module(
-        &pipeline,
-        module_name,
-        emit_dir,
-        true,
-        hew_codegen_rs::OptLevel::O0,
-        false,
-    )?;
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, true, opt_level, false)?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         emit_semantic_error(
             "E_CODEGEN_ARTEFACT_MISSING",
@@ -534,7 +543,13 @@ fn compile_native_binary_with_paths(
         bin_path,
         paths.map(|paths| paths.hew_lib.as_path()),
         &native.libraries(&[]),
-    )
+    )?;
+    Ok(pipeline
+        .module()
+        .test_entries
+        .iter()
+        .map(|entry| entry.properties.clone())
+        .collect())
 }
 
 /// Build the `[native]` code of every package `inputs` owns, reporting a

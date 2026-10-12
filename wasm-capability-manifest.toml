@@ -471,8 +471,7 @@ deterministic_functions = [
   "std.process.Child.kill",
 ]
 deterministic_endpoints = [
-  "hew_process_run",
-  "hew_process_run_argv",
+  "hew_process_start_shell",
   "hew_process_start",
   "hew_process_exit_stream",
   "hew_process_poll",
@@ -481,7 +480,7 @@ deterministic_endpoints = [
 enum_variant = "ProcessExecution"
 label = "Process execution operations"
 prose_label = "`process.run`, `process.start`, `process.*`, `process.Child.*`"
-reason = "hew_process_run / hew_process_start require the native OS process model; the process runtime module is not compiled for wasm32"
+reason = "hew_process_start_shell / hew_process_start require the native OS process model; the process runtime module is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only runtime module"

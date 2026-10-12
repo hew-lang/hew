@@ -140,6 +140,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             task_scopes: Vec::new(),
             cleanup_may_fail: false,
             cleanup_draining: false,
+            failure_exit: false,
             deferred_initialized: BTreeSet::new(),
             state_taken: BTreeSet::new(),
             stream_sink,
@@ -1035,6 +1036,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     pub(super) fn control_state(&self) -> ControlState {
         ControlState {
             block: self.current,
+            source_site: self.current_site,
             bindings: self.bindings.clone(),
             binding_declarations: self.binding_declarations.clone(),
             owned_live: self.owned_live.clone(),
@@ -1054,6 +1056,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     pub(super) fn restore_control_state(&mut self, state: &ControlState) {
         self.current = state.block;
+        self.current_site = state.source_site;
         self.bindings.clone_from(&state.bindings);
         self.binding_declarations
             .clone_from(&state.binding_declarations);
@@ -1230,6 +1233,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let join = self.new_block(block_args);
         for (state, args) in states.into_iter().zip(edge_args) {
             self.current = state.block;
+            self.current_site = state.source_site;
             self.set_terminator(SemTerminator::Goto(Edge { target: join, args }))?;
         }
         joined.block = join;

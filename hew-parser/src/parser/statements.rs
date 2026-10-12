@@ -935,6 +935,10 @@ impl Parser<'_> {
             }
             Some(Token::Defer) => {
                 self.advance();
+                let failure_only = self.peek() == Some(&Token::Identifier("err"));
+                if failure_only {
+                    self.advance();
+                }
                 // A block body ends the statement, as for if/while/for, so a
                 // following `.Ok(x)` tail starts a new expression rather than
                 // calling a method on the deferred block.
@@ -948,7 +952,10 @@ impl Parser<'_> {
                     self.expect(&Token::Semicolon)?;
                     expr
                 };
-                Stmt::Defer(Box::new(expr))
+                Stmt::Defer {
+                    body: Box::new(expr),
+                    failure_only,
+                }
             }
             _ => {
                 // Not a recognized statement keyword - this will be handled by the caller

@@ -113,26 +113,28 @@ def report_failures(reports_dir: Path, shard_count: int) -> None:
                     file=sys.stderr,
                 )
                 continue
-            for testcase in report.testcases:
-                if testcase.outcome != "FAILED":
-                    continue
-                identity = normalized_identity(testcase.classname, testcase.name)
-                diagnostic_parts = [
-                    part.strip()
-                    for part in (testcase.failure_message, testcase.failure_text)
-                    if part and part.strip()
-                ]
-                system_out = testcase.system_out.strip()
-                if system_out:
-                    diagnostic_parts.append(f"output:\n{system_out}")
-                diagnostic = (
-                    "\n".join(diagnostic_parts) or "JUnit failure without a diagnostic"
-                )
-                print(
-                    f"COMPILED_HEW_FAILURE shard={shard} suite={label.upper()} "
-                    f"test={identity} kind={testcase.failure_kind}\n"
-                    f"assertion:\n{diagnostic}"
-                )
+            print_failures(report, shard, label)
+
+
+def print_failures(report: JUnitReport, shard: int, label: str) -> None:
+    for testcase in report.testcases:
+        if testcase.outcome != "FAILED":
+            continue
+        identity = normalized_identity(testcase.classname, testcase.name)
+        diagnostic_parts = [
+            part.strip()
+            for part in (testcase.failure_message, testcase.failure_text)
+            if part and part.strip()
+        ]
+        system_out = testcase.system_out.strip()
+        if system_out:
+            diagnostic_parts.append(f"output:\n{system_out}")
+        diagnostic = "\n".join(diagnostic_parts) or "JUnit failure without a diagnostic"
+        print(
+            f"COMPILED_HEW_FAILURE shard={shard} suite={label.upper()} "
+            f"test={identity} kind={testcase.failure_kind}\n"
+            f"assertion:\n{diagnostic}"
+        )
 
 
 def update_junit_totals(root: ET.Element) -> None:
@@ -352,8 +354,13 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
             )
         outcomes = parse_junit(report)
         if set(outcomes) != expected:
+            print_failures(parse_hew_junit(report, REPO_ROOT), shard, label)
+            missing = sorted(expected - set(outcomes))
+            unexpected = sorted(set(outcomes) - expected)
             die(
                 f"{label.upper()} report inventory differs from the listed {partition} inventory"
+                f"\nmissing ({len(missing)}): {', '.join(missing)}"
+                f"\nunexpected ({len(unexpected)}): {', '.join(unexpected)}"
             )
         expected_returncode = int(
             any(value in FAILURE_KINDS for value in outcomes.values())

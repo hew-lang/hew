@@ -67,6 +67,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/math_intrinsics.hew",
     },
     ParityCase {
+        // Selected component predicates preserve lexicographic ordering and
+        // IEEE incomparability in both physical and VM value representations.
+        test_name: "derived_ordering",
+        source_rel: "tests/vertical-slice/accept/derived_ord_lowering.hew",
+    },
+    ParityCase {
         // The f64 classification and bit methods, and the std.encoding.binary
         // f32 codecs that refuse non-finite input through them.
         test_name: "float_classification",

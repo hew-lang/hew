@@ -2202,6 +2202,7 @@ pub fn lower_program_with_mono_cap(
                         continue;
                     };
                     items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                        failure_domain: hew_types::CallableFailureDomain::Abort,
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
                         declaration,
@@ -2456,6 +2457,7 @@ pub fn lower_program_with_mono_cap(
                                     continue;
                                 };
                                 items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                                    failure_domain: hew_types::CallableFailureDomain::Abort,
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
                                     declaration,
@@ -2713,6 +2715,7 @@ pub fn lower_program_with_mono_cap(
                         };
                         let provenance = extern_provenance(Some("std.builtins"));
                         items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                            failure_domain: hew_types::CallableFailureDomain::Abort,
                             id: ctx.ids.item(),
                             node: ctx.ids.node(),
                             declaration,
@@ -2884,6 +2887,7 @@ pub fn lower_program_with_mono_cap(
         let provenance = extern_provenance(signature.declaring_module.as_deref());
         let runtime_capability = extern_runtime_capability(&provenance, &signature.endpoint);
         items.push(HirItem::ExternFn(crate::node::HirExternFn {
+            failure_domain: hew_types::CallableFailureDomain::Abort,
             id: ctx.ids.item(),
             node: ctx.ids.node(),
             declaration,

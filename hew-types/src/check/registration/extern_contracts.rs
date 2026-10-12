@@ -439,8 +439,14 @@ impl Checker {
         // runtime entry.
         //
         // `extern "C"` remains the raw user FFI surface (unsafe, no
-        // validation). Other ABI strings are not yet defined by the language
-        // and fall through to fn_sigs registration unchanged.
+        // validation). No foreign unwinding may cross a Hew frame.
+        if crate::CallableFailureDomain::for_extern_abi(&eb.abi).is_none() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                block_span.clone(),
+                format!("unsupported extern ABI `{}`; use `C` or `rt`, which cannot unwind across Hew frames", eb.abi),
+            ));
+        }
         if eb.abi == "rt" {
             let stable = crate::jit_symbols::stable_symbols();
             for f in &eb.functions {

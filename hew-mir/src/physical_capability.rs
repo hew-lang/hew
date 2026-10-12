@@ -118,6 +118,7 @@ pub(super) fn verify(module: &PhysicalModule) -> Result<(), PhysicalError> {
         let admitted = match capability {
             ValueCapability::Hash => facts.hash,
             ValueCapability::Eq => facts.eq,
+            _ => facts.partial_ord,
         };
         if !admitted {
             return Err(PhysicalError::new(
@@ -142,13 +143,15 @@ pub(super) fn verify(module: &PhysicalModule) -> Result<(), PhysicalError> {
             }
             let components = derived_components(module, ty, plan.method)?;
             for component in components {
-                if !module
-                    .value_capabilities
-                    .contains_key(&(component.clone(), *capability))
-                {
-                    return Err(PhysicalError::new(
-                        "physical derived capability lacks its selected component",
-                    ));
+                for component_capability in capability.component_capabilities() {
+                    if !module
+                        .value_capabilities
+                        .contains_key(&(component.clone(), *component_capability))
+                    {
+                        return Err(PhysicalError::new(
+                            "physical derived capability lacks its selected component",
+                        ));
+                    }
                 }
             }
         }
@@ -241,7 +244,7 @@ fn verify_user(
     }
     let (arity, return_ty) = match capability {
         ValueCapability::Hash => (1, ResolvedTy::I64),
-        ValueCapability::Eq => (2, ResolvedTy::Bool),
+        _ => (2, ResolvedTy::Bool),
     };
     let own = super::OwnKind::of_class(super::semantic_type_facts(module, ty)?.class);
     let passing = if own == super::OwnKind::Owned {
@@ -277,10 +280,12 @@ fn is_scalar(ty: &ResolvedTy) -> bool {
             | ResolvedTy::I16
             | ResolvedTy::I32
             | ResolvedTy::I64
+            | ResolvedTy::Isize
             | ResolvedTy::U8
             | ResolvedTy::U16
             | ResolvedTy::U32
             | ResolvedTy::U64
+            | ResolvedTy::Usize
             | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Duration

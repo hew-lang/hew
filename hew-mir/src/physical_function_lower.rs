@@ -722,6 +722,7 @@ impl FunctionLowerer<'_> {
                 normal,
                 ..
             } => Ok(PhysicalTerminator::ExternCall {
+                failure_domain: signature.failure_domain,
                 symbol: signature.symbol.clone(),
                 runtime_capability: signature.runtime_capability,
                 args: self.physical_arguments(args, extern_param_carrier)?,

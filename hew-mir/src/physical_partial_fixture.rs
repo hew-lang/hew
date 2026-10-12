@@ -185,6 +185,7 @@ pub fn module(case: Case) -> sir::SemModule {
         symbol: "partial_storage".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
         signature: sir::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![
                 sir::SemAbiParam {
                     ty: root_ty(),
@@ -238,6 +239,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
+        coverage: sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),

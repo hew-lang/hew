@@ -1,8 +1,64 @@
+import std.stream;
+
 fn divide(value: i64) -> i64 {
     7 / value
 }
 
+fn fallible(fail: bool) -> i64 fails string {
+    defer { println("always"); }
+    defer err { println("failed"); }
+    if fail { return error "edge"; }
+    7
+}
+
+fn propagated() -> i64 fails string {
+    defer err { println("propagated"); }
+    fallible(true)?
+}
+
+fn value_error() -> Result<i64, string> {
+    defer err { panic("ordinary Result.Err is a value"); }
+    .Err("value")
+}
+
+fn absent() -> Option<i64> {
+    defer err { panic("Option.None is a value"); }
+    .None
+}
+
+fn cleanup_fault() {
+    defer err { println("cleanup-failed"); }
+    defer { panic("cleanup-only"); }
+}
+
+fn blocked(consume ready: stream.Sink<i64>, consume input: stream.Stream<i64>) -> i64 {
+    defer err { println("cancelled"); }
+    ready.send(1).expect("ready");
+    ready.close();
+    input.recv().expect("released")
+}
+
+fn cancel_child() {
+    let (ready, started): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready pipe");
+    let (release, input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("release pipe");
+    let cancelled = scope {
+        let _child = fork blocked(ready, input);
+        started.recv().expect("child registered defer");
+        panic("cancel child");
+    } handle _ { true };
+    assert(cancelled);
+    started.close();
+    release.close();
+}
+
 fn main() {
+    assert(value_error().is_err());
+    assert(absent().is_none());
+    assert(fallible(false).expect("success") == 7);
+    assert((propagated() handle _ { 9 }) == 9);
+    assert(scope { cleanup_fault(); false } handle _ { true });
+    cancel_child();
+    defer err { println("fault"); }
     defer {
         panic("cleanup");
     }

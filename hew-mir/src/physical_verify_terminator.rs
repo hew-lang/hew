@@ -1221,6 +1221,11 @@ pub(crate) fn verify_terminator(
                 .ok()
                 .and_then(|index| module.offloads.get(index))
                 .ok_or_else(|| PhysicalError::new("offload names no published extern"))?;
+            if offload.failure_domain != hew_types::CallableFailureDomain::Abort {
+                return Err(PhysicalError::new(
+                    "offloaded foreign calls cannot unwind across Hew frames",
+                ));
+            }
             if args.len() != offload.params.len() {
                 return Err(PhysicalError::new("offload arity differs from its extern"));
             }
@@ -1657,6 +1662,11 @@ pub(crate) fn verify_terminator(
             unwind,
         } => {
             wire::verify_wire_plan(module, plan)?;
+            if plan.property_input != (codec.direction == hew_types::CodecDirection::TestInput) {
+                return Err(PhysicalError::new(
+                    "codec input purpose differs from its typed plan",
+                ));
+            }
             let ArgumentTransfer::Borrow(source) = input else {
                 return Err(PhysicalError::new("wire codec input must borrow its slot"));
             };
@@ -1673,6 +1683,8 @@ pub(crate) fn verify_terminator(
             let output = &slot(*result)?.ty;
             let valid_result = if codec.is_serialize() {
                 *output == codec.document_ty()
+            } else if codec.direction == hew_types::CodecDirection::TestInput {
+                *output == plan.root
             } else {
                 matches!(output, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.first() == Some(&plan.root))
             };
@@ -1704,7 +1716,7 @@ pub(crate) fn verify_terminator(
                     ));
                 }
             }
-            if decode_result.is_some() == codec.is_serialize() {
+            if decode_result.is_some() != (codec.direction == hew_types::CodecDirection::Decode) {
                 return Err(PhysicalError::new(
                     "wire Result cases differ from codec direction",
                 ));
@@ -1747,7 +1759,7 @@ pub(crate) fn verify_terminator(
             }
             let (arity, result_ty) = match capability {
                 ValueCapability::Hash => (1, ResolvedTy::I64),
-                ValueCapability::Eq => (2, ResolvedTy::Bool),
+                _ => (2, ResolvedTy::Bool),
             };
             if args.len() != arity {
                 return Err(PhysicalError::new(
@@ -1819,6 +1831,7 @@ pub(crate) fn verify_terminator(
             edge(unwind)
         }
         PhysicalTerminator::ExternCall {
+            failure_domain,
             symbol,
             args,
             result,
@@ -1826,6 +1839,11 @@ pub(crate) fn verify_terminator(
             normal,
             ..
         } => {
+            if *failure_domain != hew_types::CallableFailureDomain::Abort {
+                return Err(PhysicalError::new(
+                    "foreign calls cannot propagate Hew faults or host unwinds",
+                ));
+            }
             // SIR proved types and ownership against the declaration. Verify
             // the transfer/edge structure and the target's C result carrier.
             for argument in args {

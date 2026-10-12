@@ -295,6 +295,7 @@ pub enum ParamCarrier {
 /// The one native private ABI: `i32(args..., result_out?, fault_out)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalCallable {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub id: CallableId,
     pub declaration: hew_types::DefId,
     pub instance: hew_sir::CallableInstance,
@@ -398,6 +399,7 @@ pub struct PhysicalOffloadSlot {
 /// arguments and result its environment stores, in declaration order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalOffload {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub symbol: String,
     pub params: Vec<PhysicalOffloadSlot>,
     pub result: Option<PhysicalOffloadSlot>,
@@ -416,6 +418,7 @@ pub struct PhysicalClosure {
 /// The user argument/result ABI of an indirect invocation, excluding its receiver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalCallSignature {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub params: Vec<PhysicalParam>,
     pub return_ty: ResolvedTy,
     pub return_layout: Option<PhysicalLayout>,
@@ -1262,6 +1265,7 @@ pub enum PhysicalTerminator {
     /// signature. Argument transfers carry the ownership the `extern`
     /// declaration pinned; a C call has no fault ABI and no unwind edge.
     ExternCall {
+        failure_domain: hew_types::CallableFailureDomain,
         symbol: String,
         /// Preserved declaration authority used by process entry setup.
         runtime_capability: Option<hew_types::ExternRuntimeCapability>,
@@ -1318,6 +1322,7 @@ pub struct PhysicalFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
+    pub coverage: hew_sir::CoveragePlan,
     pub actors: Vec<hew_sir::SemActor>,
     pub supervisors: Vec<hew_sir::SemSupervisor>,
     pub actor_recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,

@@ -133,7 +133,7 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
         Stmt::Return(value) => value
             .as_ref()
             .is_some_and(|(expr, _)| expr_contains_defer(expr)),
-        Stmt::Defer(_) => true,
+        Stmt::Defer { body: _, .. } => true,
         Stmt::Expression((expr, _)) => expr_contains_defer(expr),
     }
 }
@@ -146,6 +146,10 @@ fn expr_contains_defer(expr: &Expr) -> bool {
     match expr {
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -159,6 +163,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -359,7 +364,7 @@ fn mark_stmt(stmt: &mut Stmt) {
         }
         Stmt::Continue { .. } | Stmt::Return(None) => {}
         Stmt::Return(Some((expr, _span))) => mark_expr(expr, true),
-        Stmt::Defer(expr) => mark_expr(&mut expr.0, false),
+        Stmt::Defer { body: expr, .. } => mark_expr(&mut expr.0, false),
         Stmt::Expression((expr, _)) => mark_expr(expr, false),
     }
 }
@@ -371,6 +376,10 @@ fn mark_stmt(stmt: &mut Stmt) {
 fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
     match expr {
         Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -395,6 +404,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

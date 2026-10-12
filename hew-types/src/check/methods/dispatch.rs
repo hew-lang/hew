@@ -63,6 +63,15 @@ impl Checker {
         description: &str,
         span: &Span,
     ) {
+        let mut root = &receiver.0;
+        while let Expr::FieldAccess { object, .. } | Expr::Index { object, .. } = root {
+            root = &object.0;
+        }
+        if matches!(root, Expr::ChainValue) {
+            self.report_error(TypeErrorKind::InvalidOperation, span,
+                "E_OPTIONAL_CHAIN_MUTATES: `?.` cannot mutate its payload; match on the Option and mutate the bound value".to_string());
+            return;
+        }
         self.reject_indexed_writable_borrow(receiver);
         let place = self.expr_place(&receiver.0).or_else(|| {
             self.assignment_root_binding_name(&receiver.0)

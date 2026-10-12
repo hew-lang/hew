@@ -47,3 +47,9 @@ make sandbox-fixtures-check
 The [package contract](bytecode/package-v1.md) describes the SIR projection.
 Source fixtures are compiled by the public compiler and executed to record
 deterministic traces. Tests also compare executable sources with native Hew.
+
+Typed serialization executes the shared Rust codecs in `@hew-lang/wasm`.
+Pass its initialized `executeCodec` export as `runBytecode`'s `codecBridge`
+option. The Node test host loads that package automatically; in a source
+checkout, run `make wasm` to build `hew-wasm/pkg` first. An explicit
+`HEW_WASM_MODULE` module URL can select another build of the same package.

@@ -2358,8 +2358,15 @@ fn assert_result_try_match(expr: &HirExpr) {
     let [return_stmt] = block.statements.as_slice() else {
         panic!("Err return block must contain exactly one statement: {block:#?}");
     };
-    let HirStmtKind::Return(Some(return_expr)) = &return_stmt.kind else {
-        panic!("Err block statement must be Return(Some), got {return_stmt:#?}");
+    let HirStmtKind::Expr(HirExpr {
+        kind: HirExprKind::Return {
+            value: Some(return_expr),
+            ..
+        },
+        ..
+    }) = &return_stmt.kind
+    else {
+        panic!("Err block statement must return a value, got {return_stmt:#?}");
     };
     match &return_expr.kind {
         HirExprKind::MachineVariantCtor {
@@ -2408,8 +2415,15 @@ fn assert_option_try_match(expr: &HirExpr) {
     let [return_stmt] = block.statements.as_slice() else {
         panic!("None return block must contain exactly one statement: {block:#?}");
     };
-    let HirStmtKind::Return(Some(return_expr)) = &return_stmt.kind else {
-        panic!("None block statement must be Return(Some), got {return_stmt:#?}");
+    let HirStmtKind::Expr(HirExpr {
+        kind: HirExprKind::Return {
+            value: Some(return_expr),
+            ..
+        },
+        ..
+    }) = &return_stmt.kind
+    else {
+        panic!("None block statement must return a value, got {return_stmt:#?}");
     };
     match &return_expr.kind {
         HirExprKind::MachineVariantCtor {

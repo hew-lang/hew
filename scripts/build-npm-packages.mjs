@@ -120,6 +120,7 @@ function buildSandboxVm({ version, source }) {
   mkdirSync(stagingDir, { recursive: true });
 
   cpSync(distDir, join(stagingDir, "dist"), { recursive: true });
+  cpSync(join(vmDir, "cli"), join(stagingDir, "cli"), { recursive: true });
 
   // Copy README if present.
   const readmeSrc = join(vmDir, "README.md");
@@ -146,7 +147,8 @@ function buildSandboxVm({ version, source }) {
       },
 
     },
-    files: ["dist/"],
+    files: ["dist/", "cli/"],
+    dependencies: { "@hew-lang/wasm": version },
     keywords: srcPkg.keywords ?? ["hew", "sandbox", "interpreter", "wasm"],
     license: "MIT OR Apache-2.0",
     repository: {

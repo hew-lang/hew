@@ -568,13 +568,20 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                 ));
                 continue;
             };
-            if receiver.ty != vtable.concrete_ty
+            if callee.signature.failure_domain != slot.signature.failure_domain
+                || receiver.ty != vtable.concrete_ty
                 || arguments.iter().map(|param| &param.ty).ne(slot
                     .signature
                     .params
                     .iter()
                     .map(|param| &param.ty))
-                || callee.signature.return_ty != slot.signature.return_ty
+                || callee.signature.erased_return_ty(slot.receiver) != Ok(&slot.signature.return_ty)
+                || arguments
+                    .iter()
+                    .zip(&slot.signature.params)
+                    .any(|(implementation, boundary)| {
+                        !crate::model::dyn_passing_admits(boundary.passing, implementation.passing)
+                    })
             {
                 refuse(format!(
                     "slot {} implementation `{}` differs from the dispatch signature",
@@ -1693,6 +1700,12 @@ fn verify_callable_table<'a>(
     let mut actor_members = HashSet::new();
     let mut symbols = HashSet::new();
     for (index, callable) in module.callables.iter().enumerate() {
+        if callable.signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: callable.id,
+                reason: "Hew bodies require the explicit recoverable fault ABI".into(),
+            }));
+        }
         let expected = CallableId(
             u32::try_from(index).expect("SIR callable count exceeds the module-local ID range"),
         );
@@ -2060,6 +2073,12 @@ fn verify_generic_template_headers<'a>(
     let mut templates = BTreeMap::new();
     for template in &module.generic_templates {
         let name = module.defs.path(template.id.declaration).to_string();
+        if template.signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
+                template: name.clone(),
+                reason: "Hew templates require the explicit recoverable fault ABI".into(),
+            }));
+        }
         if template.type_params.is_empty() {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
                 template: name.clone(),
@@ -2217,6 +2236,7 @@ fn substitute_template_signature(
     facts: &TypeFactTable,
 ) -> Result<SemSignature, String> {
     Ok(SemSignature {
+        failure_domain: template.signature.failure_domain,
         params: template
             .signature
             .params
@@ -2634,6 +2654,9 @@ fn verify_dyn_call(
     else {
         unreachable!()
     };
+    if signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+        return Err("dynamic dispatch requires the recoverable fault ABI".into());
+    }
     if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
     {
         return Err(
@@ -4181,7 +4204,8 @@ fn verify_direct_call_terminator(
 /// so an unwind edge is invalid.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the terminator's own fields plus the module type context"
+    clippy::too_many_lines,
+    reason = "verify the complete extern terminator against its declaration and module context"
 )]
 fn verify_extern_call_terminator(
     function: &SemFunction,
@@ -4196,6 +4220,14 @@ fn verify_extern_call_terminator(
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     let symbol = &signature.symbol;
+    if signature.failure_domain != hew_types::CallableFailureDomain::Abort {
+        invalid_operation(
+            function,
+            id,
+            "foreign calls cannot propagate Hew faults or host unwinds".into(),
+            diagnostics,
+        );
+    }
     if !matches!(unwind, crate::CallUnwind::NotApplicable) {
         invalid_operation(
             function,
@@ -4540,7 +4572,7 @@ fn verify_value_call_terminator(
     };
     let (arity, result_ty) = match capability {
         hew_types::ValueCapability::Hash => (1, ResolvedTy::I64),
-        hew_types::ValueCapability::Eq => (2, ResolvedTy::Bool),
+        _ => (2, ResolvedTy::Bool),
     };
     if args.len() != arity
         || args.iter().any(|arg| {
@@ -5394,6 +5426,14 @@ fn verify_terminator_shape(
             normal,
             unwind,
         } => {
+            if plan.property_input != (codec.direction == hew_types::CodecDirection::TestInput) {
+                invalid_operation(
+                    function,
+                    *id,
+                    "codec input purpose differs from its typed plan".into(),
+                    diagnostics,
+                );
+            }
             if let Err(reason) = plan.verify(variants.aggregate_shapes, variants.shapes) {
                 invalid_operation(function, *id, reason, diagnostics);
             }
@@ -5407,6 +5447,8 @@ fn verify_terminator_shape(
                 crate::CallResult::Value(value) => {
                     let ty_matches = if codec.is_serialize() {
                         value.ty == codec.document_ty()
+                    } else if codec.direction == hew_types::CodecDirection::TestInput {
+                        value.ty == plan.root
                     } else {
                         matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.first() == Some(&plan.root))
                     };
@@ -5434,7 +5476,9 @@ fn verify_terminator_shape(
                                         && plan.plans.contains_key(&cases.error_ty)
                                 })
                     }),
-                (None, _) => codec.is_serialize(),
+                (None, _) => {
+                    codec.is_serialize() || codec.direction == hew_types::CodecDirection::TestInput
+                }
                 _ => false,
             };
             if !valid_input
@@ -5607,7 +5651,8 @@ fn verify_terminator_shape(
                     .and_then(|context| context.offloads.get(usize::try_from(function.0).ok()?))
                     .is_some_and(|signature| {
                         let owns = |ty: &ResolvedTy| OwnKind::of_ty(ty, variants.facts);
-                        resumes.len() == 1
+                        signature.failure_domain == hew_types::CallableFailureDomain::Abort
+                            && resumes.len() == 1
                             && inputs.len() == signature.params.len()
                             && inputs
                                 .iter()
@@ -6206,6 +6251,7 @@ mod parameter_own_kind_tests {
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: function
                     .params
                     .iter()

@@ -1065,6 +1065,7 @@ struct LowerCtx {
     failing_generator_item: Option<ResolvedTy>,
     result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
+    chain_values: Vec<HirExpr>,
     /// Checker-bound parameter slot of each source argument, for calls whose
     /// named arguments bind out of source order.
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,
@@ -1164,6 +1165,7 @@ struct LowerCtx {
     declaration_type_parameters:
         HashMap<hew_types::DefId, (hew_types::ModuleId, Span, Vec<hew_types::ParamHead>)>,
     resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
+    associated_type_schemas: hew_types::AssociatedTypeSchemas,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a
     /// value expression to lower through lexical bindings.

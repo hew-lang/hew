@@ -436,6 +436,10 @@ impl Parser<'_> {
                     lhs = (Expr::PostfixTry(Box::new(lhs)), start..end);
                     continue;
                 }
+                Some(Token::QuestionDot) => {
+                    lhs = self.parse_optional_chain(lhs)?;
+                    continue;
+                }
                 Some(Token::As) => {
                     self.advance();
                     let ty = self.parse_type()?;
@@ -1791,6 +1795,42 @@ impl Parser<'_> {
         }
 
         Some(params)
+    }
+
+    fn parse_optional_chain(&mut self, receiver: Spanned<Expr>) -> Option<Spanned<Expr>> {
+        if matches!(
+            self.peek_at(self.pos + 1),
+            Some(Token::LeftBracket | Token::LeftParen)
+        ) {
+            self.error(
+                "optional chains require a named member; use `?.get(index)` instead of `?.[index]`"
+                    .to_string(),
+            );
+            return None;
+        }
+        let start = receiver.1.start;
+        let placeholder = (
+            Expr::ChainValue,
+            self.peek_span().start..self.peek_span().start + 1,
+        );
+        let mut body = self.parse_dot_postfix(placeholder)?;
+        loop {
+            body = match self.peek() {
+                Some(Token::Dot) => self.parse_dot_postfix(body)?,
+                Some(Token::LeftParen) => self.parse_call_postfix(body)?,
+                Some(Token::LeftBracket) => self.parse_index_postfix(body)?,
+                Some(Token::QuestionDot) => self.parse_optional_chain(body)?,
+                _ => break,
+            };
+        }
+        let end = body.1.end;
+        Some((
+            Expr::OptionalChain {
+                receiver: Box::new(receiver),
+                body: Box::new(body),
+            },
+            start..end,
+        ))
     }
 
     #[allow(

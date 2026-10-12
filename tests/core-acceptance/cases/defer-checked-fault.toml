@@ -1,11 +1,11 @@
 [[case]]
 id = "defer-checked-fault"
-intent = "A checked arithmetic failure is materialized before deferred code can add a secondary panic."
+intent = "Failure-only defers share LIFO cleanup for fails propagation, checked faults and causally blocked child cancellation; success and ordinary Err/None values skip them, and secondary cleanup faults preserve the primary."
 source = "cases/defer-checked-fault.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = ""
+stdout = "always\nfailed\nalways\npropagated\ncleanup-failed\ncancelled\nfault\n"
 stderr = "hew: failure: DivideByZero (202)\nhew: secondary failure: UserPanic (212): cleanup\n"
 exit = 1

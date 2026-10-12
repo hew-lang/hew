@@ -1,8 +1,8 @@
 //! Network transport abstraction with TCP and Unix socket implementations.
 //!
 //! Provides a vtable-based transport interface (`HewTransportOps`) and two
-//! concrete implementations (TCP, Unix). Also defines `HewActorRef` for
-//! network-transparent actor references.
+//! concrete implementations (TCP, Unix). Distributed actor traffic goes
+//! through the connection manager and its authenticated channel claims.
 //!
 //! The TCP and Unix transports use length-prefixed (4-byte little-endian)
 //! framing for send/recv. Connections are stored in a fixed-size array.
@@ -23,10 +23,6 @@ use crate::lifetime::poison_safe::PoisonSafeRw;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
-use crate::actor::{self, HewActor};
-use crate::envelope::encode_envelope_frame_from_raw_parts;
-use crate::internal::types::HewActorState;
-use crate::node_identity::{HewLocation, Location};
 use crate::reactor::{IoObject, Slot};
 use crate::set_last_error;
 
@@ -41,19 +37,8 @@ pub const HEW_CONN_INVALID: c_int = -1;
 const MAX_CONNS: usize = 64;
 /// Maximum accepted framed payload size (16 MiB).
 ///
-/// `pub(crate)` so `sim_transport` can pin its mirrored copy to this value via
-/// a `const _: () = assert!(...)` (the NW-1 native↔WASM parity guard) instead
-/// of holding the two in sync by comment.
+/// Shared with the deterministic simulated transport.
 pub(crate) const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
-
-// Error codes matching the C header.
-const HEW_OK: c_int = 0;
-const HEW_ERR_ACTOR_STOPPED: c_int = -2;
-const HEW_ERR_SERIALIZE: c_int = -12;
-/// Generic transport error returned across the `c_int` channel.
-///
-/// `pub(crate)` so `sim_transport`'s mirrored copy can be pinned to it (NW-1).
-pub(crate) const HEW_ERR_TRANSPORT: c_int = -14;
 
 // ---------------------------------------------------------------------------
 // Transport vtable
@@ -85,252 +70,6 @@ pub struct HewTransport {
 unsafe impl Send for HewTransport {}
 // SAFETY: Concurrent access is serialised by the node's mutex.
 unsafe impl Sync for HewTransport {}
-
-// ---------------------------------------------------------------------------
-// ActorRef — network-transparent actor reference
-// ---------------------------------------------------------------------------
-
-/// Remote portion of an actor reference.
-///
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HewActorRefRemote {
-    pub location: HewLocation,
-    pub conn: c_int,
-    pub transport: *mut HewTransport,
-}
-
-/// Data payload of an actor reference (union).
-///
-/// Active variant is determined by `HewActorRef::kind`.
-#[repr(C)]
-pub union HewActorRefData {
-    pub local: *mut HewActor,
-    pub remote: HewActorRefRemote,
-}
-
-impl std::fmt::Debug for HewActorRefData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("HewActorRefData { .. }")
-    }
-}
-
-/// Unified local/remote actor reference.
-#[repr(C)]
-#[derive(Debug)]
-pub struct HewActorRef {
-    /// 0 = LOCAL, 1 = REMOTE
-    pub kind: c_int,
-    pub data: HewActorRefData,
-}
-
-const ACTOR_REF_LOCAL: c_int = 0;
-const ACTOR_REF_REMOTE: c_int = 1;
-
-/// Create a local actor reference.
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer to a live [`HewActor`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ref_local(actor: *mut HewActor) -> HewActorRef {
-    HewActorRef {
-        kind: ACTOR_REF_LOCAL,
-        data: HewActorRefData { local: actor },
-    }
-}
-
-/// Create a remote actor reference.
-///
-/// # Safety
-///
-/// `location` must point to a valid exact actor location.
-/// `transport` must be a valid pointer to a live [`HewTransport`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ref_remote(
-    location: *const HewLocation,
-    conn: c_int,
-    transport: *mut HewTransport,
-) -> HewActorRef {
-    let location = if location.is_null() {
-        set_last_error("hew_actor_ref_remote: location is null");
-        HewLocation::default()
-    } else {
-        // SAFETY: caller guarantees `location` is readable.
-        unsafe { *location }
-    };
-    HewActorRef {
-        kind: ACTOR_REF_REMOTE,
-        data: HewActorRefData {
-            remote: HewActorRefRemote {
-                location,
-                conn,
-                transport,
-            },
-        },
-    }
-}
-
-/// Encode an actor-message envelope and send it over a transport connection.
-///
-/// Returns `HEW_OK` (0) on success, `HEW_ERR_SERIALIZE` (-12) if encoding
-/// fails, or `HEW_ERR_TRANSPORT` (-14) if the transport has no send
-/// implementation or the send fails.
-///
-/// # Safety
-///
-/// - `transport` must be a valid, non-null pointer to a [`HewTransport`] whose
-///   `ops` vtable and `impl` remain valid for the duration of the call.
-/// - `conn` must be a valid connection handle for `transport`.
-/// - `payload` must be valid for `payload_len` readable bytes (or null when
-///   `payload_len` is 0).
-pub(crate) unsafe fn wire_send_envelope(
-    transport: *mut HewTransport,
-    conn: c_int,
-    target: Location,
-    source: Option<Location>,
-    msg_type: i32,
-    payload: *mut u8,
-    payload_len: usize,
-) -> c_int {
-    // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
-    let bytes = match unsafe {
-        encode_envelope_frame_from_raw_parts(
-            Some(target),
-            source,
-            msg_type,
-            payload.cast_const(),
-            payload_len,
-            0,
-        )
-    } {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            set_last_error(format!("wire_send_envelope: {err}"));
-            return HEW_ERR_SERIALIZE;
-        }
-    };
-    // SAFETY: transport is valid per caller contract.
-    let t = unsafe { &*transport };
-    // SAFETY: t.ops was set during transport creation and remains valid for
-    // the transport's lifetime; caller guarantees transport is not freed.
-    let result = if let Some(ops) = unsafe { t.ops.as_ref() } {
-        if let Some(send_fn) = ops.send {
-            // SAFETY: bytes was successfully encoded; data/len are valid.
-            unsafe { send_fn(t.r#impl, conn, bytes.as_ptr().cast::<c_void>(), bytes.len()) }
-        } else {
-            -1
-        }
-    } else {
-        -1
-    };
-    if result > 0 {
-        HEW_OK
-    } else {
-        HEW_ERR_TRANSPORT
-    }
-}
-
-/// Send a message through an actor reference.
-///
-/// LOCAL path: direct call to `hew_actor_send`.
-/// REMOTE path: encode as CBOR envelope, send over transport.
-///
-/// # Safety
-///
-/// - `ref_ptr` must point to a valid [`HewActorRef`].
-/// - `data` must be valid for `size` bytes (or null when `size` is 0).
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ref_send(
-    ref_ptr: *mut HewActorRef,
-    msg_type: c_int,
-    data: *mut c_void,
-    size: usize,
-) -> c_int {
-    cabi_guard!(ref_ptr.is_null(), HEW_ERR_TRANSPORT);
-    // SAFETY: caller guarantees `ref_ptr` is valid.
-    let r = unsafe { &*ref_ptr };
-
-    if r.kind == ACTOR_REF_LOCAL {
-        // SAFETY: local union variant is active when kind == LOCAL.
-        let actor = unsafe { r.data.local };
-        if actor.is_null() {
-            return HEW_ERR_ACTOR_STOPPED;
-        }
-        // SAFETY: caller guarantees actor and data validity.
-        unsafe {
-            actor::hew_actor_send(actor, msg_type, data, size);
-        }
-        return HEW_OK;
-    }
-
-    // Remote path.
-    // SAFETY: remote union variant is active when kind == REMOTE.
-    let remote = unsafe { r.data.remote };
-    if remote.transport.is_null() || remote.conn == HEW_CONN_INVALID {
-        return HEW_ERR_TRANSPORT;
-    }
-
-    let Ok(target) = Location::try_from(remote.location) else {
-        return HEW_ERR_TRANSPORT;
-    };
-    // SAFETY: remote.transport and remote.conn are valid per the earlier null-check;
-    // data is valid for size bytes per caller contract.
-    unsafe {
-        wire_send_envelope(
-            remote.transport,
-            remote.conn,
-            target,
-            None,
-            msg_type,
-            data.cast::<u8>(),
-            size,
-        )
-    }
-}
-
-/// Check if an actor reference refers to a local actor.
-///
-/// # Safety
-///
-/// `ref_ptr` must be a valid pointer to a [`HewActorRef`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ref_is_local(ref_ptr: *const HewActorRef) -> c_int {
-    cabi_guard!(ref_ptr.is_null(), 0);
-    // SAFETY: caller guarantees the pointer is valid.
-    c_int::from(unsafe { (*ref_ptr).kind } == ACTOR_REF_LOCAL)
-}
-
-/// Check if a referenced actor is considered alive.
-///
-/// LOCAL: checks actor state. REMOTE: alive if connection is valid.
-///
-/// # Safety
-///
-/// `ref_ptr` must be a valid pointer to a [`HewActorRef`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> c_int {
-    cabi_guard!(ref_ptr.is_null(), 0);
-    // SAFETY: caller guarantees the pointer is valid.
-    let r = unsafe { &*ref_ptr };
-
-    if r.kind == ACTOR_REF_LOCAL {
-        // SAFETY: local variant is active.
-        let actor = unsafe { r.data.local };
-        if actor.is_null() {
-            return 0;
-        }
-        // SAFETY: actor pointer is valid per caller contract.
-        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-        let alive =
-            state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32;
-        return c_int::from(alive);
-    }
-
-    // Remote: alive if connection handle is valid.
-    // SAFETY: remote variant is active.
-    c_int::from(unsafe { r.data.remote.conn } != HEW_CONN_INVALID)
-}
 
 // ===========================================================================
 // TCP transport

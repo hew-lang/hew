@@ -537,6 +537,12 @@ fn send_rejection_reply(
         if conn_id < 0 {
             return;
         }
+        // SAFETY: the current-node guard pins this manager for the reply.
+        let Some(send_claim) =
+            (unsafe { connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id) })
+        else {
+            return;
+        };
 
         let reason_payload = [AskRejectionReasonCode::encode(reason)
             .expect("remote ask rejection reason must use a supported rejection-reason code")];
@@ -560,10 +566,7 @@ fn send_rejection_reply(
                 return;
             }
         };
-        // SAFETY: conn_mgr and conn_id are valid; bytes is CBOR encoded.
-        unsafe {
-            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
-        };
+        send_claim.send(&bytes);
     });
 }
 
@@ -608,6 +611,12 @@ pub(super) fn send_reply_envelope(
         if conn_id < 0 {
             return;
         }
+        // SAFETY: the current-node guard pins this manager for the reply.
+        let Some(send_claim) =
+            (unsafe { connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id) })
+        else {
+            return;
+        };
 
         // Encode the reply envelope with request_id set and source_node_id = 0
         // to mark it as a reply (not a new request).
@@ -629,13 +638,7 @@ pub(super) fn send_reply_envelope(
             }
         };
 
-        // Send via conn_mgr so noise encryption is applied when the connection
-        // is encrypted. This replaces the former raw transport send which would
-        // send unencrypted data over an encrypted connection.
-        // SAFETY: conn_mgr and conn_id are valid; bytes is CBOR encoded.
-        unsafe {
-            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
-        };
+        send_claim.send(&bytes);
     });
 }
 

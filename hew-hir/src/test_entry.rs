@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use hew_types::{DefId, EntryExitPlan};
+use hew_types::{DefId, TestEntryPlan};
 
 use crate::{HirItem, HirModule};
 
@@ -15,7 +15,7 @@ use crate::{HirItem, HirModule};
 /// points at a body HIR did not emit.
 pub fn install_test_entry_plans(
     module: &mut HirModule,
-    plans: &[EntryExitPlan],
+    plans: &[TestEntryPlan],
 ) -> Result<(), String> {
     if plans.is_empty() {
         return Err("selected tests have no checked entry plans".into());
@@ -38,10 +38,12 @@ pub fn install_test_entry_plans(
                 plan.entry
             ));
         };
-        if !function.params.is_empty() || !function.type_params.is_empty() || function.is_generator
+        if function.params.len() != plan.arguments.len()
+            || !function.type_params.is_empty()
+            || function.is_generator
         {
             return Err(format!(
-                "checked test entry {:?} is not parameterless and monomorphic",
+                "checked test entry {:?} does not match its checked arguments or is not monomorphic",
                 plan.entry
             ));
         }

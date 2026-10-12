@@ -88,8 +88,10 @@ pub(crate) enum ChannelRefusal {
     /// The authenticated Noise key differs from the key in the peer's record.
     KeyMismatch,
     /// A quic-mesh peer's record carried a Noise key.
+    #[cfg(feature = "quic")]
     MeshRecordCarriesNoiseKey,
     /// The quic-mesh transport has no authenticated peer certificate.
+    #[cfg(feature = "quic")]
     MeshCredentialUnavailable,
 }
 
@@ -104,9 +106,11 @@ impl fmt::Display for ChannelRefusal {
             Self::NoiseHandshake => "noise handshake failed",
             Self::KeyNotPinned => "peer Noise key is not pinned",
             Self::KeyMismatch => "authenticated Noise key does not match the v2 handshake key",
+            #[cfg(feature = "quic")]
             Self::MeshRecordCarriesNoiseKey => {
                 "quic-mesh v2 handshake carried a non-zero Noise key"
             }
+            #[cfg(feature = "quic")]
             Self::MeshCredentialUnavailable => "quic-mesh peer certificate is unavailable",
         })
     }

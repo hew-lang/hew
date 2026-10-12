@@ -43,7 +43,10 @@ pub mod vec_authority;
 mod wasm_capabilities_generated;
 
 mod callable;
-pub use callable::{ClosureCaptureAccess, ClosureCaptureAcquisition, ClosureCaptureConsumption};
+pub use callable::{
+    CallableFailureDomain, ClosureCaptureAccess, ClosureCaptureAcquisition,
+    ClosureCaptureConsumption,
+};
 
 pub use hew_parser::ast::{CallableCallMode, CallableCapabilities};
 
@@ -58,23 +61,23 @@ pub use builtin_type::{
 };
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,
-    AssignTargetKind, AssignTargetShape, BinderTraitCall, Bound, CallAbiHint, CallTarget,
-    CallableArgumentFlow, CallableCandidate, CallableFieldFlow, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec,
-    CodecDirection, CodecFormat, DynCoercion, DynMethodCall, DynReceiver, DynSlot,
-    EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType,
-    ErrorConversion, ExecutionContextReader, ExternMethodSignature, FnSig, HashMapMethod,
-    HashSetMethod, ImplDef, ImplId, ImplRegistry, IndirectCallCandidates, LintId, LintLevel,
-    LintLevels, LintSources, LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, MethodTarget, MethodTargetFamily, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
-    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    AssignTargetKind, AssignTargetShape, AssociatedTypeSchemas, BinderTraitCall, Bound,
+    CallAbiHint, CallTarget, CallableArgumentFlow, CallableCandidate, CallableFieldFlow, Checker,
+    ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind,
+    ClosureEscapeRule, Codec, CodecDirection, CodecFormat, DynCoercion, DynMethodCall, DynReceiver,
+    DynSlot, EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan,
+    EntryIntegerType, ErrorConversion, ExecutionContextReader, ExternMethodSignature, FnSig,
+    HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry, IndirectCallCandidates, LintId,
+    LintLevel, LintLevels, LintSources, LookupError, MachineMethodKind, MathGenericOp,
+    MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
+    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
+    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, ResolvedCall, ResolvedTraitDefault,
-    ResultReturnKind, RuntimeAbi, SlotEffect, SpanKey, StructuralWitness, TraitObjectLayout,
-    TryConversionKind, TryWidthCastLowering, TyPattern, TypeAliasDef, TypeCheckOutput,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind,
-    WidthCastLowering,
+    ResultReturnKind, RuntimeAbi, SlotEffect, SpanKey, StructuralWitness, TestEntryPlan,
+    TraitObjectLayout, TryConversionKind, TryWidthCastLowering, TyPattern, TypeAliasDef,
+    TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
+    WidthCastKind, WidthCastLowering,
 };
 pub use check::{walk_block, walk_expr, NodeVisitor};
 pub use def_table::{

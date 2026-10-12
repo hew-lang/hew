@@ -18,9 +18,6 @@ use hew_runtime::path::{
     hew_glob, hew_glob_count, hew_glob_error, hew_glob_free, hew_glob_get, hew_glob_is_valid,
     hew_path_absolute,
 };
-use hew_runtime::process::{
-    hew_process_result_free, hew_process_result_stderr, hew_process_result_stdout, HewProcessResult,
-};
 use hew_runtime::stream::{
     hew_file_read_stream_collect_string, hew_stream_collect_string, hew_stream_from_bytes,
 };
@@ -179,41 +176,6 @@ fn glob_get_result_is_transferred() {
     });
     // SAFETY: `result` is still live and has not been freed.
     unsafe { hew_glob_free(result) };
-}
-
-#[test]
-fn process_result_stdout_and_stderr_are_retained() {
-    for release_result_first in [false, true] {
-        let result = Box::into_raw(Box::new(HewProcessResult {
-            status: std::process::ExitStatus::default(),
-            stdout: string_from_str("stdout\0é中🙂"),
-            stderr: string_from_str("stderr\0é中🙂"),
-        }));
-        // SAFETY: result is live, and every accessor transfers a retained owner.
-        unsafe {
-            let out1 = hew_process_result_stdout(result);
-            let out2 = hew_process_result_stdout(result);
-            let err = hew_process_result_stderr(result);
-            assert_eq!(out1, (*result).stdout);
-            assert_eq!(out2, out1);
-            assert_eq!(err, (*result).stderr);
-            if release_result_first {
-                hew_process_result_free(result);
-            }
-            assert_eq!(string_as_bytes(out1), "stdout\0é中🙂".as_bytes());
-            string_release(out1);
-            assert_eq!(string_as_bytes(out2), "stdout\0é中🙂".as_bytes());
-            assert_eq!(string_as_bytes(err), "stderr\0é中🙂".as_bytes());
-            string_release(out2);
-            string_release(err);
-            if !release_result_first {
-                let again = hew_process_result_stdout(result);
-                assert_eq!(string_as_bytes(again), "stdout\0é中🙂".as_bytes());
-                string_release(again);
-                hew_process_result_free(result);
-            }
-        }
-    }
 }
 
 #[test]

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1623u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1621u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -313,30 +313,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "\"wasm32-wasip1\": \"fn hew_actor_pid( *mut HewActor) -> u64\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_is_alive",
-     "{\"native\": \"fn hew_actor_ref_is_alive( *const HewActorRef) -> "
-     "c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_is_local",
-     "{\"native\": \"fn hew_actor_ref_is_local( *const HewActorRef) -> "
-     "c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_local",
-     "{\"native\": \"fn hew_actor_ref_local( *mut HewActor) -> HewActorRef\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_remote",
-     "{\"native\": \"fn hew_actor_ref_remote( *const HewLocation, c_int, *mut "
-     "HewTransport, ) -> HewActorRef\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_send",
-     "{\"native\": \"fn hew_actor_ref_send( *mut HewActorRef, c_int, *mut "
-     "c_void, usize, ) -> c_int\"}",
-     "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_register_type",
      "{\"native\": \"fn hew_actor_register_type( *const c_void, *const c_char, "
      ")\", \"wasm32-wasip1\": \"fn hew_actor_register_type( *const c_void, "
@@ -888,6 +864,36 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "HewWaker, ) -> *const HewAsyncIo\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_connect",
+     "{\"native\": \"fn hew_async_tls_connect( *const HewString, c_int, c_int, "
+     "*const BytesTriple, i64, i64, *const HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_read",
+     "{\"native\": \"fn hew_async_tls_read( *const HewTlsStream, c_int, *const "
+     "HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable-stdlib", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_take_connect",
+     "{\"native\": \"fn hew_async_tls_take_connect( *const HewAsyncIo, *mut "
+     "*mut HewTlsStream, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_take_read",
+     "{\"native\": \"fn hew_async_tls_take_read( *const HewAsyncIo, *mut "
+     "HewTlsReadResult, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_take_write",
+     "{\"native\": \"fn hew_async_tls_take_write( *const HewAsyncIo, *mut "
+     "HewTlsWriteResult, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_write",
+     "{\"native\": \"fn hew_async_tls_write( *const HewTlsStream, *const "
+     "BytesTriple, *const HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_auto_mutex_alloc",
      "{\"native\": \"fn hew_auto_mutex_alloc() -> *mut HewAutoMutex\", "
      "\"wasm32-wasip1\": \"fn hew_auto_mutex_alloc() -> *mut HewAutoMutex\"}",
@@ -956,6 +962,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "HewAwaitCancel) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_bench_record",
+     "{\"native\": \"fn hew_bench_record( i64, i64)\", \"wasm32-wasip1\": \"fn "
+     "hew_bench_record( i64, i64)\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_blocking_pool_new",
      "{\"native\": \"fn hew_blocking_pool_new() -> *mut HewBlockingPool\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
@@ -1846,6 +1857,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "HewCoroState) -> *const HewWaker\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_coverage_hit",
+     "{\"native\": \"fn hew_coverage_hit( u32)\", \"wasm32-wasip1\": \"fn "
+     "hew_coverage_hit( u32)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_crash_log_count",
      "{\"native\": \"fn hew_crash_log_count() -> i32\", \"wasm32-wasip1\": "
      "\"fn hew_crash_log_count() -> i32\"}",
@@ -4636,45 +4652,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "{\"native\": \"fn hew_process_poll( *mut HewProcess) -> i32\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_free",
-     "{\"native\": \"fn hew_process_result_free( *mut HewProcessResult)\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_is_valid",
-     "{\"native\": \"fn hew_process_result_is_valid( *const HewProcessResult) "
-     "-> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_signalled",
-     "{\"native\": \"fn hew_process_result_signalled( *const HewProcessResult) "
-     "-> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_status",
-     "{\"native\": \"fn hew_process_result_status( *const HewProcessResult) -> "
-     "i64\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_stderr",
-     "{\"native\": \"fn hew_process_result_stderr( *const HewProcessResult) -> "
-     "*mut HewString\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_stdout",
-     "{\"native\": \"fn hew_process_result_stdout( *const HewProcessResult) -> "
-     "*mut HewString\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_run",
-     "{\"native\": \"fn hew_process_run( *const HewString) -> *mut "
-     "HewProcessResult\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_run_argv",
-     "{\"native\": \"fn hew_process_run_argv( *const HewString, *mut HewVec, ) "
-     "-> *mut HewProcessResult\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_signal",
      "{\"native\": \"fn hew_process_signal( *mut HewProcess, bool) -> i32\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
@@ -4686,6 +4663,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
     {"hew_process_start",
      "{\"native\": \"fn hew_process_start( *const HewString, *mut HewVec, i32, "
      "i32, i32, ) -> *mut HewProcess\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_process_start_shell",
+     "{\"native\": \"fn hew_process_start_shell( *const HewString) -> *mut "
+     "HewProcess\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_status",
@@ -6950,6 +6932,17 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "\"fn hew_test_driver_active() -> bool\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_test_property_fault",
+     "{\"native\": \"fn hew_test_property_fault( *mut c_void) -> *mut "
+     "HewFault\", \"wasm32-wasip1\": \"fn hew_test_property_fault( *mut "
+     "c_void) -> *mut HewFault\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_test_property_reader",
+     "{\"native\": \"fn hew_test_property_reader( i64) -> *mut c_void\", "
+     "\"wasm32-wasip1\": \"fn hew_test_property_reader( i64) -> *mut c_void\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_test_seed",
      "{\"native\": \"fn hew_test_seed() -> u64\", \"wasm32-wasip1\": \"fn "
      "hew_test_seed() -> u64\"}",

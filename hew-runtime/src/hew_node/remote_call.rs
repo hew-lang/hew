@@ -81,22 +81,14 @@ fn setup_remote_ask(
             return RemoteAskSetupResult::Error(AskError::Partition);
         }
 
-        // issue #2652 (outbound authority): an ask is control-bearing — its reply
-        // deposits into THIS node's pending table and its dispatch runs a handler
-        // on the peer, so it must go ONLY to the exact authenticated owner (Strict
-        // posture + published claim) of the target NodeId. An Unverified
-        // (delivery-only) or a superseded / non-exact-owner connection carries no
-        // control-plane authority; fail CLOSED here — before serializing the
-        // request or registering a pending reply — symmetric with the inbound ask
-        // gate (`inbound_ask_denied_unverified`) and D12's unverified-ask REJECT.
-        // Reply-completion validation stays a backstop, never the primary control.
-        // SAFETY: conn_mgr is non-null and valid while the node is running (the
-        // CURRENT_NODE read lock is held for the whole closure).
-        let authenticated =
-            unsafe { connection::authenticated_peer_node_id_for_conn(&*node.conn_mgr, conn_id) };
-        if authenticated != target_node_id {
+        // Bind this exact actor location to the authenticated manager claim
+        // before encoding or allocating a pending reply slot.
+        // SAFETY: CURRENT_NODE pins the running node's connection manager.
+        let Some(send_claim) =
+            (unsafe { connection::claim_send_to_location(&*node.conn_mgr, conn_id, target) })
+        else {
             return RemoteAskSetupResult::Error(AskError::Unauthorized);
-        }
+        };
 
         // Serialize the request value before it leaves this address space —
         // `data`/`size` is the raw in-memory struct (which may hold heap
@@ -176,17 +168,7 @@ fn setup_remote_ask(
             unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
         }
 
-        // Send the encoded envelope through the connection manager so noise
-        // encryption is applied when the connection is encrypted.
-        // SAFETY: conn_mgr is valid while node is running; bytes is CBOR encoded.
-        let send_ok = unsafe {
-            connection::hew_connmgr_send_preencoded(
-                node.conn_mgr,
-                conn_id,
-                bytes.as_ptr(),
-                bytes.len(),
-            ) == 0
-        };
+        let send_ok = send_claim.send(&bytes) == 0;
 
         if !send_ok {
             // The ask is already bound to an authenticated, active connection.

@@ -157,11 +157,21 @@ export type PlaceDecl =
 /// structural one over the VM's own value representation.
 export interface ValueCapability {
   id: number;
-  capability: "Eq" | "Hash";
+  capability: "Eq" | "Hash" | "Less" | "LessEqual" | "Greater" | "GreaterEqual";
   ty: string;
   callable?: number;
-  components?: number[];
-  variants?: number[][];
+  components?: ValueComponentCapabilities[];
+  variants?: ValueComponentCapabilities[][];
+}
+
+export interface ValueComponentCapabilities {
+  selected: number;
+  ordering?: {
+    less: number;
+    less_equal: number;
+    greater: number;
+    greater_equal: number;
+  };
 }
 
 export interface ClosureShape {
@@ -180,6 +190,7 @@ export interface VtableShape {
     method: string;
     callee: number;
     receiver: BoundaryDecision;
+    receiver_handback?: boolean;
   }>;
 }
 
@@ -206,6 +217,7 @@ interface OpBase {
 }
 
 export type OpV1 =
+  | (OpBase & { op: "coverage.hit"; counter: number })
   // Constants
   | (OpBase & { op: "const.int"; dst: number; value: string; ty: string })
   | (OpBase & { op: "const.bool"; dst: number; value: boolean })
@@ -448,6 +460,20 @@ export type TermV1 =
   | (TermBase & CallShape & { op: "value.call"; plan: number })
   | (TermBase &
       CallShape & {
+        op: "wire.codec";
+        codec: number;
+        format: number;
+        direction: "encode" | "decode" | "test_input";
+        decoded: {
+          shape: number;
+          ok: number;
+          error: number;
+          error_root: number;
+        } | null;
+        callbacks: Record<string, number[]>;
+      })
+  | (TermBase &
+      CallShape & {
         op: "runtime.call";
         family: number;
         structural?: number | null;
@@ -475,8 +501,6 @@ export type TermV1 =
         result_shape: number | null;
         error_shape: number | null;
       })
-  | (TermBase &
-      CallShape & { op: "wire.codec"; direction: string; plan: number })
   | (TermBase & {
       op: "panic";
       message: BoundaryOperand;
@@ -603,6 +627,7 @@ export interface SupervisorShape {
 }
 
 export interface PackageV1 {
+  codecs?: string[];
   resources?: Array<{
     kind: string;
     ty?: string;

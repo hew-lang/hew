@@ -583,6 +583,7 @@ fn module_with_return() -> SemModule {
         symbol: "main".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::I64,
         },
@@ -634,9 +635,11 @@ fn module_with_return() -> SemModule {
             send: SendFact::Known(true),
             hash: true,
             eq: true,
+            partial_ord: true,
         },
     );
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
@@ -680,6 +683,7 @@ fn module_with_call_and_unwind() -> SemModule {
         symbol: "helper".to_string(),
         source_origin: FunctionSourceOrigin::Unknown,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::I64,
         },
@@ -2129,6 +2133,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         },
     );
     let callable = PhysicalCallable {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         id: CallableId(0),
         declaration: hew_types::DefId::for_test("malformed_owner_merge"),
         instance: CallableInstance::Monomorphic,
@@ -2226,6 +2231,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         ],
     };
     let physical = PhysicalModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         debug: PhysicalDebug::default(),
@@ -3116,7 +3122,7 @@ fn failed_vector_index_clears_a_previous_iteration_scalar_result() {
 fn selected_value_call_module(capability: ValueCapability) -> PhysicalModule {
     let (method, invocation) = match capability {
         ValueCapability::Hash => ("fn selected(a: i64) -> i64 { a }", "selected(7)"),
-        ValueCapability::Eq => (
+        _ => (
             "fn selected(a: i64, b: i64) -> bool { a == b }",
             "if selected(1, 2) { 1 } else { 0 }",
         ),

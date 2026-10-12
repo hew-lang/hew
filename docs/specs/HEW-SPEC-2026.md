@@ -821,6 +821,20 @@ once. A present value supplies its payload; only absence evaluates `fallback`.
 The fallback must have the payload type (or diverge). `??` accepts only
 `Option`, never `Result`; it associates right and binds below logical operators.
 
+**Optional chains.** `value?.member` requires an `Option` receiver and evaluates
+it once. Absence skips the remaining postfix chain, including method arguments
+and indexes. Presence reads through the payload using ordinary member rules.
+The result is wrapped in `Some`, or flattened when the final member has an
+`Option` type at the checking site. A generic type parameter does not flatten
+based on a later instantiation. For example, `user?.address?.city.len() ?? 0`
+returns zero when either optional receiver is absent.
+
+Parentheses end the chain: `(value?).member` propagates absence before member
+access, whereas `value?.member` recovers it locally. A trailing `?` propagates
+the chain's final absence. `?.` does not accept `Result`, mutate a payload through
+a `var self` method, or form an assignment target. Direct `?.[index]` and
+`?.(arguments)` links are not admitted; use a named member such as `?.get(index)`.
+
 `result_value handle problem { recovery }` evaluates its Result operand once.
 Success supplies the success payload. Only an error runs the block, with
 `problem` bound to the error payload. The block must produce the success
@@ -2065,6 +2079,11 @@ impl PointRenderer for Point {
 `impl` is allowed and is what `==`, the ordering operators, and hashing dispatch
 to for that type.
 
+An `Ord` or `PartialOrd` override supplies `lt`, `le`, `gt`, and `ge`, each
+with `(self, other: Self) -> bool`. Keeping the four predicates explicit lets a
+partial order preserve incomparability instead of defining a non-strict result
+by negating the reverse strict comparison.
+
 - Records and enums are `Eq` and `Hash` structurally: field by field, variant by
   variant, with no declaration.
 - `bytes` is ordinary data and carries `Eq` and `Hash` like `string` (D451):
@@ -2085,12 +2104,10 @@ to for that type.
 - Derived comparison is structural, so it never observes handle identity; `is`
   is the operator that does (§12.2).
 
-> **Limitation at edition 2026 (`E_LIMIT_DERIVED_ORD`, Limitation channel).**
-> A record, enum, or tuple whose members derive ordering is legal, but its
-> lexicographic comparison lowering is not implemented yet. Direct ordering
-> reports `E_LIMIT_DERIVED_ORD`; use an explicit comparator (`sort_by`) or a
-> user `impl Ord`/`impl PartialOrd`. A shape with an unordered member does not
-> derive ordering and receives an ordinary type error instead.
+Records, enums, tuples, `Option` and `Result` compare lexicographically when
+their members derive ordering. Every predicate preserves partial-order
+incomparability; in particular, a NaN member makes `<`, `<=`, `>` and `>=`
+false at the first field where it is encountered.
 
 **The three receivers (normative):**
 
@@ -2833,6 +2850,13 @@ deferred action cannot escape with `return` or `?` or suspend. It may inspect a
 fallible operation locally, but a result that must reach the caller belongs in
 an explicit completion operation before cleanup. A secondary cleanup fault
 must not replace the primary fault.
+
+`defer err { body }` shares that LIFO stack but runs only when its scope exits
+through a declared `fails` edge, a fault or cancellation. Ordinary returned
+`Result.Err` and `Option.None` values do not trigger it. Neither normal scope
+completion nor an ordinary `return`, `break` or `continue` triggers it. It binds
+no error. A fault raised by another deferred action activates remaining
+failure-only actions while preserving the primary fault.
 
 A `close` that fails on a cancellation edge is not discarded. Cancellation
 marks a frame's fault rather than being a failure of its own, so the first real
@@ -7855,6 +7879,7 @@ refuses the name it does not know rather than dropping it.
 | `#[serial(...)]` | type declaration, field | Text-key case (`case = ".."`) on a type; text key (`key = ".."`) or `skip` on a field (§7.3.2). On a `#[test]` fn, runs it alone. |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
+| `#[bench]` | free function | Optimized host-clock benchmark taking one `std.bench.Bencher`; run with `hew bench`. Exempt from the dead-code lint. |
 | `#[ignore]` | `#[test]` function | Discovered but not run; accepts an optional reason string. |
 | `#[should_panic]` | `#[test]` function | Passes on a Hew panic, assertion or checked trap; an optional string must match the fault report. Normal return, error return, process exit and signals do not satisfy it. |
 | `#[timeout(D)]` | `#[test]` function | A positive duration literal sets the per-test wall-clock hang guard. |
@@ -7867,11 +7892,11 @@ refuses the name it does not know rather than dropping it.
 | `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |
 | `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
 
-Testing attribute arguments are positional. `test`, `serial` and `real_time`
+Testing attribute arguments are positional. `test`, `bench`, `serial` and `real_time`
 accept no arguments; `ignore` and `should_panic` accept at most one quoted
 string; `timeout` requires one positive duration literal. Named arguments,
 extra arguments and other literal shapes produce `E_ATTRIBUTE_ARGUMENT` with
-an actionable correction. All test modifiers require `#[test]` on the same
+an actionable correction. Test modifiers require `#[test]` or `#[bench]` on the same
 free function.
 
 **Substrate attributes** carry compiler-internal identity and are legal only

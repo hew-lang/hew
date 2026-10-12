@@ -919,6 +919,11 @@ impl<'a> Flow<'a> {
         state: &mut State,
         emit: &mut impl FnMut(Violation),
     ) {
+        for &index in self.owned_places(value) {
+            if self.projections.projection(self.places[index].0).is_some() {
+                state.places[index] = LIVE;
+            }
+        }
         let Some(&index) = self.indices.get(&value) else {
             return;
         };
@@ -939,11 +944,6 @@ impl<'a> Flow<'a> {
         state
             .linear_origins
             .define(value, self.linear_values.contains(&value));
-        for &index in self.owned_places(value) {
-            if self.projections.projection(self.places[index].0).is_some() {
-                state.places[index] = LIVE;
-            }
-        }
     }
 
     fn edge(
@@ -2637,6 +2637,7 @@ mod tests {
                             decision,
                         },
                         signature: crate::SemSignature {
+                            failure_domain: hew_types::CallableFailureDomain::HewFault,
                             params: vec![],
                             return_ty: ResolvedTy::Unit,
                         },
@@ -3175,6 +3176,7 @@ mod tests {
                 decision: BoundaryDecision::BorrowMut,
             },
             signature: crate::SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
             },

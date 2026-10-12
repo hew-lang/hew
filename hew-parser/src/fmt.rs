@@ -3388,7 +3388,7 @@ impl<'a> Formatter<'a> {
                 .as_ref()
                 .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr)),
             Stmt::Continue { .. } => true,
-            Stmt::Defer(expr) => Self::can_format_expr_inline(&expr.0),
+            Stmt::Defer { body: expr, .. } => Self::can_format_expr_inline(&expr.0),
             Stmt::Expression(expr) => Self::can_format_expr_inline(&expr.0),
             Stmt::If { .. }
             | Stmt::IfLet { .. }
@@ -3409,6 +3409,7 @@ impl<'a> Formatter<'a> {
             Expr::Literal(_)
             | Expr::Ident(_)
             | Expr::QualifiedAssoc(_)
+            | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
@@ -3445,6 +3446,10 @@ impl<'a> Formatter<'a> {
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
             | Expr::Handle {
                 operand: left,
                 body: right,
@@ -3565,7 +3570,6 @@ impl<'a> Formatter<'a> {
                     self.write_else();
                     self.format_block(else_block, self.source.len());
                 }
-                self.write(";");
             }
             Stmt::Var {
                 name, ty, value, ..
@@ -3580,7 +3584,6 @@ impl<'a> Formatter<'a> {
                     self.write(" = ");
                     self.format_expr(expr);
                 }
-                self.write(";");
             }
             Stmt::Assign { target, op, value } => {
                 self.format_expr(target);
@@ -3592,7 +3595,6 @@ impl<'a> Formatter<'a> {
                     self.write(" = ");
                 }
                 self.format_expr(value);
-                self.write(";");
             }
             Stmt::Break { label, value } => {
                 self.write("break");
@@ -3604,7 +3606,6 @@ impl<'a> Formatter<'a> {
                     self.write(" ");
                     self.format_expr(expr);
                 }
-                self.write(";");
             }
             Stmt::Continue { label } => {
                 self.write("continue");
@@ -3612,7 +3613,6 @@ impl<'a> Formatter<'a> {
                     self.write(" @");
                     self.write_ident(*label);
                 }
-                self.write(";");
             }
             Stmt::Return(value) => {
                 self.write("return");
@@ -3620,16 +3620,17 @@ impl<'a> Formatter<'a> {
                     self.write(" ");
                     self.format_expr(expr);
                 }
-                self.write(";");
             }
-            Stmt::Defer(expr) => {
-                self.write("defer ");
-                self.format_expr(expr);
-                self.write(";");
+            Stmt::Defer { body, failure_only } => {
+                self.write(if *failure_only {
+                    "defer err "
+                } else {
+                    "defer "
+                });
+                self.format_expr(body);
             }
             Stmt::Expression(expr) => {
                 self.format_expr(expr);
-                self.write(";");
             }
             Stmt::If { .. }
             | Stmt::IfLet { .. }
@@ -3641,6 +3642,7 @@ impl<'a> Formatter<'a> {
                 unreachable!("non-inline statement reached gen block inline formatter")
             }
         }
+        self.write(";");
     }
 
     #[expect(clippy::too_many_lines, reason = "match on all Stmt variants")]
@@ -3864,9 +3866,16 @@ impl<'a> Formatter<'a> {
                 self.format_expr(expr);
                 self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
-            Stmt::Defer(expr) => {
+            Stmt::Defer {
+                body: expr,
+                failure_only,
+            } => {
                 self.write_indent();
-                self.write("defer ");
+                self.write(if *failure_only {
+                    "defer err "
+                } else {
+                    "defer "
+                });
                 self.format_expr(expr);
                 // Block expressions already end with `}`, no semicolon.
                 if matches!(expr.0, Expr::Block(_)) {
@@ -3927,7 +3936,7 @@ impl<'a> Formatter<'a> {
                     | Stmt::Break { .. }
                     | Stmt::Continue { .. }
                     | Stmt::Return(_)
-                    | Stmt::Defer(_)
+                    | Stmt::Defer { body: _, .. }
                     | Stmt::Expression(_) => {
                         // Parser invariant: `else if`/`else if let` are the only shapes
                         // that populate `ElseBlock::if_stmt`. Reaching this arm means the
@@ -4020,6 +4029,8 @@ impl<'a> Formatter<'a> {
             expr,
             Expr::Binary { .. }
                 | Expr::Coalesce { .. }
+                | Expr::OptionalChain { .. }
+                | Expr::PostfixTry(_)
                 | Expr::Handle { .. }
                 | Expr::ReturnError(_)
                 | Expr::Unary { .. }
@@ -4706,6 +4717,12 @@ impl<'a> Formatter<'a> {
                 self.format_receiver(expr);
                 self.write("?");
             }
+            Expr::OptionalChain { receiver, body } => {
+                self.format_receiver(receiver);
+                self.write("?");
+                self.format_expr(body);
+            }
+            Expr::ChainValue => {}
             Expr::Coalesce { left, right } => {
                 self.format_expr_prec(left, 1, false);
                 self.write(" ?? ");

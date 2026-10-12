@@ -6,6 +6,7 @@
 /// follows the `unwind` edge the package names, and takes the failure edge a
 /// `checked.binary` names rather than trapping on its own.
 
+import { executeCodec } from "./codecs.js";
 import { TraceBuilder, runtimeFailure } from "../trace.js";
 import type {
   JsonValue,
@@ -212,6 +213,7 @@ interface Activation {
   /// Where the caller binds the receiver a failing `var self` method hands
   /// back on the unwind edge.
   handback?: ValueDef | null;
+  erasedHandback?: Extract<VmValue, { kind: "dyn" }>;
 }
 
 /// Ends the run. The status is already recorded on the trace.
@@ -290,6 +292,7 @@ export function runPackageV1(
     trace,
     StdinReader.fromReplay(replay.inputs),
     options.schedulerPolicy ?? "round_robin",
+    options,
   );
   try {
     vm.run();
@@ -336,6 +339,7 @@ class ExecutorV1 {
     private readonly trace: TraceBuilder,
     private readonly stdin: StdinReader,
     policy: "round_robin" | "chaos",
+    private readonly options: RunOptions,
   ) {
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
@@ -410,7 +414,7 @@ class ExecutorV1 {
       const act = this.current;
       while (act.opIndex < act.block.ops.length) {
         const op = act.block.ops[act.opIndex++]!;
-        this.commitStep();
+        if (op.op !== "coverage.hit") this.commitStep();
         try {
           this.execute(act, op);
         } catch (error) {
@@ -631,6 +635,11 @@ class ExecutorV1 {
 
   private execute(act: Activation, op: OpV1): void {
     switch (op.op) {
+      case "coverage.hit": {
+        const key = String(op.counter);
+        this.trace.coverage[key] = (this.trace.coverage[key] ?? 0) + 1;
+        return;
+      }
       case "const.int":
         this.define(act, op.dst, {
           kind: "i64",
@@ -1314,6 +1323,7 @@ class ExecutorV1 {
           term.normal,
           term.unwind,
         );
+        if (entry.receiver_handback) this.current.erasedHandback = receiver;
         return;
       }
       case "call": {
@@ -1429,6 +1439,22 @@ class ExecutorV1 {
         this.callShim(act, term, shim);
         return;
       }
+      case "wire.codec": {
+        const args = term.args.map((operand) => this.boundary(act, operand));
+        this.runValueProgram(
+          act,
+          term,
+          args,
+          executeCodec(
+            this.pkg,
+            term,
+            args[0]!,
+            this.options.codecBridge,
+            this.options.propertyInput ?? [],
+          ),
+        );
+        return;
+      }
       case "value.call": {
         const args = term.args.map((operand) => this.boundary(act, operand));
         this.runValueProgram(
@@ -1530,8 +1556,10 @@ class ExecutorV1 {
 
       case "unreachable":
         throw new Error(`${act.fn.name}: reached an unreachable endpoint`);
-      default:
-        throw new Error(`terminator ${term.op} has no sequential executor`);
+      default: {
+        const exhaustive: never = term;
+        throw new Error(`unhandled terminator: ${String(exhaustive)}`);
+      }
     }
   }
 
@@ -1597,7 +1625,7 @@ class ExecutorV1 {
     act: Activation,
     term: Extract<
       TermV1,
-      { op: "runtime.call" | "extern.call" | "value.call" }
+      { op: "runtime.call" | "extern.call" | "value.call" | "wire.codec" }
     >,
     args: VmValue[],
   ): void {
@@ -1610,7 +1638,7 @@ class ExecutorV1 {
 
   private runValueProgram(
     act: Activation,
-    term: Extract<TermV1, { op: "runtime.call" | "value.call" }>,
+    term: Extract<TermV1, { op: "runtime.call" | "value.call" | "wire.codec" }>,
     args: VmValue[],
     iterator: ValueProgram,
   ): void {
@@ -1787,6 +1815,13 @@ class ExecutorV1 {
         `${act.fn.name}: returned from a call with a "never" result`,
       );
     }
+    if (act.erasedHandback) {
+      if (value.kind !== "record" || value.fields.length !== 2) {
+        throw new Error(`${act.fn.name}: invalid erased receiver dual return`);
+      }
+      act.erasedHandback.value = value.fields[1]!;
+      value = value.fields[0]!;
+    }
     // The result is defined on the normal edge, like a block parameter, so it
     // is in scope for that edge's arguments.
     if (act.result && act.result !== "never") {
@@ -1847,13 +1882,16 @@ class ExecutorV1 {
     }
     // A failing `var self` method hands its receiver back, defined on the
     // unwind edge like a result on the normal edge.
-    if ((handback === null) !== !act.handback) {
+    if ((handback === null) !== !(act.handback || act.erasedHandback)) {
       throw new Error(
         `${act.fn.name}: receiver handback disagrees with its call`,
       );
     }
     if (handback !== null && act.handback) {
       this.define(caller, act.handback.value, handback);
+    }
+    if (handback !== null && act.erasedHandback) {
+      act.erasedHandback.value = handback;
     }
     caller.fault = fault;
     this.current = caller;

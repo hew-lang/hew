@@ -427,8 +427,8 @@
             "scrutinee": 18,
             "shape": 0,
             "span": {
-              "end": 135,
-              "start": 135
+              "end": 124,
+              "start": 124
             }
           }
         },
@@ -520,8 +520,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 197,
-              "start": 197
+              "end": 160,
+              "start": 160
             }
           }
         },
@@ -552,8 +552,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 197,
-              "start": 197
+              "end": 160,
+              "start": 160
             }
           }
         },
@@ -571,8 +571,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 197,
-              "start": 197
+              "end": 160,
+              "start": 160
             },
             "value": null
           }

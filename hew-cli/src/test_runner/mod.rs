@@ -4,9 +4,12 @@
 //! isolated program via the native compilation pipeline, and reports results
 //! with coloured output.
 
+pub mod bench;
+mod coverage;
 pub mod discovery;
 mod doc_examples;
 pub mod output;
+mod property;
 pub mod runner;
 pub mod vm;
 
@@ -169,11 +172,15 @@ fn requested_test_paths(args: &crate::args::TestArgs) -> (Vec<String>, Vec<Optio
     (paths, names)
 }
 
+pub fn cmd_test(args: &crate::args::TestArgs) {
+    cmd_entries(args, None);
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "test discovery, parse-failure handling, partitioning, and stable output form one fail-closed CLI transaction"
 )]
-pub fn cmd_test(args: &crate::args::TestArgs) {
+fn cmd_entries(args: &crate::args::TestArgs, benchmark: Option<&crate::args::BenchArgs>) {
     use std::io::IsTerminal as _;
     if args.watch {
         crate::watch::cmd_test_watch(args);
@@ -232,7 +239,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             if !seen_files.insert(path.clone()) {
                 continue;
             }
-            match discovery::discover_tests_in_file(path) {
+            match discovery::discover_entries_in_file(path, benchmark.is_some()) {
                 Ok(discovered) => {
                     discovered_files += 1;
                     had_parse_errors |= handle_discovered_file(&discovered);
@@ -250,7 +257,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
                         if !seen_files.insert(file.clone()) {
                             continue;
                         }
-                        match discovery::discover_tests_in_file(&file) {
+                        match discovery::discover_entries_in_file(&file, benchmark.is_some()) {
                             Ok(discovered) => {
                                 discovered_files += 1;
                                 had_parse_errors |= handle_discovered_file(&discovered);
@@ -352,7 +359,9 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         })
     });
 
-    output::run_started(all_tests.len(), format);
+    if benchmark.is_none() {
+        output::run_started(all_tests.len(), format);
+    }
     let output_gate = std::sync::Mutex::new(());
     let emit = |event| {
         let _guard = output_gate
@@ -360,6 +369,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         output::output_event(event, format, &root, use_color, args.show_output);
     };
+    let coverage = args.coverage.then(coverage::Coverage::default);
     let summary = runner::run_tests(
         &all_tests,
         runner::TestRunOptions {
@@ -386,9 +396,38 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
                 explore: args.schedules,
             },
             root: &root,
-            on_event: Some(&emit),
+            on_event: if benchmark.is_none() {
+                Some(&emit)
+            } else {
+                None
+            },
+            coverage: coverage.as_ref(),
+            cases: args.cases.get(),
+            benchmark: benchmark.is_some(),
         },
     );
+    if let Some(coverage) = coverage {
+        let path = root.join(".hew/coverage/lcov.info");
+        if let Err(error) = coverage.write(&path) {
+            eprintln!("Error: cannot write source coverage: {error}");
+            std::process::exit(1);
+        }
+        if format == output::OutputFormat::Json {
+            println!("{}", serde_json::json!({"event": "coverage", "path": path}));
+        } else {
+            eprintln!("Coverage: {}", path.display());
+        }
+    }
+    if let Some(benchmark) = benchmark {
+        if let Err(error) = bench::report(&summary, benchmark, &root) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        if summary.failed > 0 {
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = save_failed_tests(&summary, &all_tests, &root) {
         eprintln!("Warning: cannot save failed test identities: {error}");
     }

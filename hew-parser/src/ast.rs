@@ -579,6 +579,11 @@ pub enum Expr {
         ty: Spanned<TypeExpr>,
     },
     PostfixTry(Box<Spanned<Expr>>),
+    OptionalChain {
+        receiver: Box<Spanned<Expr>>,
+        body: Box<Spanned<Expr>>,
+    },
+    ChainValue,
     /// Evaluate the right operand only when the left Option is absent.
     Coalesce {
         left: Box<Spanned<Expr>>,
@@ -776,7 +781,10 @@ pub enum Stmt {
         label: Option<Ident>,
     },
     Return(Option<Spanned<Expr>>),
-    Defer(Box<Spanned<Expr>>),
+    Defer {
+        body: Box<Spanned<Expr>>,
+        failure_only: bool,
+    },
     Expression(Spanned<Expr>),
 }
 

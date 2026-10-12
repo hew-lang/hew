@@ -43,6 +43,7 @@ pub struct SemTestEntry {
     pub callable: CallableId,
     pub declaration: DefId,
     pub action: hew_types::EntryExitAction,
+    pub properties: Vec<hew_codec::property::Shape>,
 }
 
 /// Stable semantic identity for one generic HIR template.
@@ -310,15 +311,9 @@ impl SemFunction {
     }
 }
 
-/// The call convention SIR is permitted to model before ownership/layout MIR
-/// decides concrete ABI carriers.
-///
-/// Runtime, C-ABI, coroutine, actor, and other specialised conventions stay
-/// outside this initial domain.  Keeping this enum explicit prevents a
-/// resolved SIR call from silently acquiring a target-specific ABI policy.
-/// Default calls return normally or propagate an unrecoverable trap. They do
-/// not transport cooperative cancellation; admitting another exit cause must
-/// extend this contract and the lifetime flow together.
+/// The Hew call convention before physical MIR selects concrete carriers.
+/// Failure transport is the signature's explicit failure-domain contract;
+/// runtime and foreign boundaries retain their own typed signatures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemCallConv {
     Default,
@@ -367,6 +362,7 @@ pub struct SemAbiParam {
 /// ABI-neutral signature of a resolved SIR callable.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemSignature {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub params: Vec<SemAbiParam>,
     pub return_ty: ResolvedTy,
 }
@@ -384,6 +380,49 @@ impl SemSignature {
                     SemParamPassing::Consume | SemParamPassing::ReadOnly
                 )
         })
+    }
+
+    pub(crate) fn erased_return_ty(
+        &self,
+        boundary: SemParamPassing,
+    ) -> Result<&ResolvedTy, String> {
+        let receiver = self
+            .params
+            .first()
+            .ok_or_else(|| "erased implementation takes no receiver".to_string())?;
+        if self.hands_back_receiver() {
+            if boundary != SemParamPassing::BorrowMut {
+                return Err("receiver handback requires a mutable erased boundary".into());
+            }
+            let ResolvedTy::Tuple(fields) = &self.return_ty else {
+                return Err("receiver handback requires a dual result".into());
+            };
+            if let [result, returned_receiver] = fields.as_slice() {
+                if *returned_receiver == receiver.ty {
+                    return Ok(result);
+                }
+            }
+            return Err("dual result does not return the erased receiver".into());
+        }
+        if dyn_passing_admits(boundary, receiver.passing) {
+            Ok(&self.return_ty)
+        } else {
+            Err("implementation changes the erased receiver transfer".into())
+        }
+    }
+}
+
+pub(crate) fn dyn_passing_admits(
+    boundary: SemParamPassing,
+    implementation: SemParamPassing,
+) -> bool {
+    match boundary {
+        SemParamPassing::Consume => implementation == SemParamPassing::Consume,
+        SemParamPassing::BorrowMut => implementation == SemParamPassing::BorrowMut,
+        SemParamPassing::Borrow | SemParamPassing::ReadOnly => matches!(
+            implementation,
+            SemParamPassing::Borrow | SemParamPassing::ReadOnly
+        ),
     }
 }
 
@@ -805,6 +844,7 @@ pub struct SemStructuralRender {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    pub coverage: crate::CoveragePlan,
     /// Checked rendering selections and alias-preserving child identities.
     /// Only each key's value type participates in ownership and target layout.
     pub structural_display: BTreeMap<StructuralType, SemStructuralRender>,
@@ -1221,10 +1261,10 @@ pub enum CallResult {
     Value(ValueDef),
 }
 
-/// Whether an invoke-style call has an unwind CFG successor.
+/// Whether a call has an explicit fault-cleanup CFG successor.
 ///
-/// Applicability is decided by the producer. Later passes inspect this closed
-/// value instead of deriving unwind behaviour from a callee or symbol.
+/// The verifier checks applicability against the callable's failure domain.
+/// This edge carries a Hew status/fault result, never a host unwind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallUnwind {
     NotApplicable,

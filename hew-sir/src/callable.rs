@@ -83,6 +83,7 @@ pub fn callable_value_signature(
 ) -> Result<SemSignature, String> {
     let (params, ret, _) = callable_parts(ty)?;
     Ok(SemSignature {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         params: params
             .iter()
             .map(|ty| {
@@ -341,6 +342,7 @@ mod tests {
             symbol: "counter".to_string(),
             source_origin: FunctionSourceOrigin::Unknown,
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
             },
@@ -353,6 +355,7 @@ mod tests {
             symbol: "counter_closure".to_string(),
             kind: SemCallableKind::HewClosure,
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![SemAbiParam {
                     ty: ty.clone(),
                     passing: SemParamPassing::BorrowMut,

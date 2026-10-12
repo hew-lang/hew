@@ -1264,7 +1264,12 @@ impl Builder {
                     args: vec![CallArg::Positional(value)],
                 };
             }
-            Expr::Binary { left, right, .. } | Expr::Coalesce { left, right } => {
+            Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            } => {
                 **left = self.rewrite(left, machine, state, event)?;
                 **right = self.rewrite(right, machine, state, event)?;
             }

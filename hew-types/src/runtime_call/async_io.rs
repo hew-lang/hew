@@ -13,6 +13,7 @@ use strum::{EnumIter, IntoEnumIterator};
 pub enum IoHandleKind {
     Connection,
     Listener,
+    TlsStream,
 }
 
 impl IoHandleKind {
@@ -21,6 +22,7 @@ impl IoHandleKind {
         let expected = match self {
             Self::Connection => "std.net.Connection",
             Self::Listener => "std.net.Listener",
+            Self::TlsStream => "std.net.tls.TlsStream",
         };
         matches!(ty, ResolvedTy::Named { head, args, .. }
             if head.registry_key() == expected && args.is_empty())
@@ -28,7 +30,7 @@ impl IoHandleKind {
 
     #[must_use]
     pub fn of_ty(ty: &ResolvedTy) -> Option<Self> {
-        [Self::Connection, Self::Listener]
+        [Self::Connection, Self::Listener, Self::TlsStream]
             .into_iter()
             .find(|kind| kind.matches(ty))
     }
@@ -46,6 +48,10 @@ pub enum AsyncIoResume {
     WriteCount,
     /// Transfer an accepted connection; return the invalid handle on failure.
     Connection,
+    /// The native library restores its diagnostics and writes the source result.
+    TlsConnect,
+    TlsRead,
+    TlsWrite,
 }
 
 /// How long a native request needs a borrowed source argument.
@@ -80,15 +86,21 @@ pub enum AsyncIoOp {
     TcpConnectTimeout,
     StdinReadLine,
     SinkFinish,
+    TlsConnect,
+    TlsRead,
+    TlsWrite,
 }
 
 impl AsyncIoOp {
     #[must_use]
     pub const fn argument_loan(self) -> AsyncIoLoan {
         match self {
-            Self::TcpConnect | Self::TcpConnectTimeout | Self::StdinReadLine => {
-                AsyncIoLoan::UntilSubmitReturns
-            }
+            Self::TcpConnect
+            | Self::TcpConnectTimeout
+            | Self::StdinReadLine
+            | Self::TlsConnect
+            | Self::TlsRead
+            | Self::TlsWrite => AsyncIoLoan::UntilSubmitReturns,
             Self::TcpRead | Self::TcpWrite | Self::TcpAccept | Self::SinkFinish => {
                 AsyncIoLoan::UntilQuiescent
             }
@@ -97,6 +109,9 @@ impl AsyncIoOp {
     #[must_use]
     pub const fn c_symbol(self) -> &'static str {
         match self {
+            Self::TlsConnect => "hew_tls_connect",
+            Self::TlsRead => "hew_tls_read_result",
+            Self::TlsWrite => "hew_tls_write_result",
             Self::SinkFinish => "hew_sink_finish",
             Self::TcpRead => "hew_tcp_read",
             Self::TcpWrite => "hew_tcp_write",
@@ -112,6 +127,9 @@ impl AsyncIoOp {
     #[must_use]
     pub const fn submit_symbol(self) -> &'static str {
         match self {
+            Self::TlsConnect => "hew_async_tls_connect",
+            Self::TlsRead => "hew_async_tls_read",
+            Self::TlsWrite => "hew_async_tls_write",
             Self::SinkFinish => "hew_async_sink_finish",
             Self::TcpRead => "hew_async_tcp_read",
             Self::TcpWrite => "hew_async_tcp_write",
@@ -131,6 +149,9 @@ impl AsyncIoOp {
             }
             Self::TcpWrite => AsyncIoResume::WriteCount,
             Self::SinkFinish => AsyncIoResume::Unit,
+            Self::TlsConnect => AsyncIoResume::TlsConnect,
+            Self::TlsRead => AsyncIoResume::TlsRead,
+            Self::TlsWrite => AsyncIoResume::TlsWrite,
         }
     }
 
@@ -163,9 +184,32 @@ impl AsyncIoOp {
             ty: IoHandle(IoHandleKind::Listener),
             effect: RuntimeArgumentEffect::Borrow,
         };
+        const TLS: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: IoHandle(IoHandleKind::TlsStream),
+            effect: RuntimeArgumentEffect::Borrow,
+        };
+        const TIMEOUT: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: RuntimeValueKind::I64,
+            effect: RuntimeArgumentEffect::Borrow,
+        };
         // I/O errors belong to the source wrapper's Result/error channel,
         // not the logical-fault set on RuntimeSemanticContract.
         match self {
+            Self::TlsConnect => runtime_semantic_contract(
+                &[PATH, INTEGER, INTEGER, DATA, TIMEOUT, TIMEOUT],
+                FreshOwned(TLS.ty),
+                &[],
+            ),
+            Self::TlsRead => runtime_semantic_contract(
+                &[TLS, INTEGER],
+                FreshOwned(RuntimeValueKind::Named("std.net.tls.TlsReadFfiResult")),
+                &[],
+            ),
+            Self::TlsWrite => runtime_semantic_contract(
+                &[TLS, DATA],
+                BitCopy(RuntimeValueKind::Named("std.net.tls.TlsWriteFfiResult")),
+                &[],
+            ),
             Self::SinkFinish => runtime_semantic_contract(
                 &[RuntimeArgumentContract {
                     ty: RuntimeValueKind::PipeHalf(crate::runtime_call::PipeHalfKind::Sink),
@@ -224,6 +268,7 @@ impl RuntimeCallFamily {
             | AsyncIoOp::TcpConnectTimeout => "std.net",
             AsyncIoOp::StdinReadLine => "std.io",
             AsyncIoOp::SinkFinish => "std.stream",
+            AsyncIoOp::TlsConnect | AsyncIoOp::TlsRead | AsyncIoOp::TlsWrite => "std.net.tls",
         };
         module == owner
             && symbol == op.c_symbol()

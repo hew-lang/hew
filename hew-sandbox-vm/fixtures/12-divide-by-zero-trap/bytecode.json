@@ -105,8 +105,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 53,
-              "start": 53
+              "end": 49,
+              "start": 49
             },
             "structural": null,
             "unwind": null
@@ -224,8 +224,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 53,
-              "start": 53
+              "end": 49,
+              "start": 49
             }
           }
         },
@@ -236,8 +236,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 53,
-              "start": 53
+              "end": 49,
+              "start": 49
             },
             "value": null
           }

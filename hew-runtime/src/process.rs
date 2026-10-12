@@ -7,11 +7,9 @@
 //! reaped: the PID cannot be reused while a signal can still name it, and the
 //! reaped status is cached so a second wait returns it again. A wait parks on
 //! a stream that ends when the child exits (see [`hew_process_exit_stream`]),
-//! so it holds no thread. Stdout/stderr
-//! strings in [`HewProcessResult`] are owned managed UTF-8 handles, preserving
-//! embedded NUL. Command and argument inputs borrow managed handles and reject
-//! interior NUL before crossing the OS boundary. Captured non-UTF-8 output is
-//! decoded lossily.
+//! so it holds no thread. Command and argument inputs borrow managed handles
+//! and reject interior NUL before crossing the OS boundary. Capture and lossy
+//! UTF-8 decoding belong to the standard library's concurrent stream consumers.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -20,21 +18,8 @@
 use crate::stream::HewStreamPair;
 use crate::util::{cstr_to_str, MutexExt};
 use crate::vec::{ElemKind, HewTypeOwnershipKind, HewVec};
-use hew_cabi::string::{
-    string_from_str, string_release, string_retain, string_to_cstring, HewString,
-};
+use hew_cabi::string::{string_from_str, string_to_cstring, HewString};
 use std::process::{Command, ExitStatus, Stdio};
-
-/// Result of a completed process.
-#[derive(Debug)]
-pub struct HewProcessResult {
-    /// How the process ended.
-    pub status: ExitStatus,
-    /// Captured stdout, an owned managed UTF-8 string.
-    pub stdout: *mut HewString,
-    /// Captured stderr, an owned managed UTF-8 string.
-    pub stderr: *mut HewString,
-}
 
 #[cfg(unix)]
 mod exit_watch;
@@ -85,13 +70,6 @@ fn status_number(status: ExitStatus) -> i64 {
         .map_or_else(|| i64::from(status.code().unwrap_or_default()), i64::from)
 }
 
-/// Convert a byte slice to an owned managed UTF-8 string, replacing invalid UTF-8
-/// with the replacement character.
-fn bytes_to_string(bytes: &[u8]) -> *mut HewString {
-    let s = String::from_utf8_lossy(bytes);
-    string_from_str(&s)
-}
-
 /// Copy and validate a managed command or argument at the OS boundary.
 unsafe fn process_input(value: *const HewString, context: &str) -> Option<String> {
     // SAFETY: the caller holds a live managed owner for this copy.
@@ -111,21 +89,6 @@ fn refused_for_shutdown(context: &str) -> bool {
         crate::set_last_error(crate::shutdown::refusal_message(context));
     }
     refused
-}
-
-/// Build a [`HewProcessResult`] from an [`std::process::Output`].
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Output is consumed to extract owned fields"
-)]
-fn output_to_result(output: std::process::Output) -> *mut HewProcessResult {
-    let stdout = bytes_to_string(&output.stdout);
-    let stderr = bytes_to_string(&output.stderr);
-    Box::into_raw(Box::new(HewProcessResult {
-        status: output.status,
-        stdout,
-        stderr,
-    }))
 }
 
 impl HewProcess {
@@ -158,29 +121,6 @@ impl HewProcess {
                 ),
                 None => format!("hew_process_drop: {wait_error}"),
             }),
-        }
-    }
-}
-
-/// Execute a prepared [`Command`] and convert its output into a Hew result.
-fn command_output_to_result(
-    command: &mut Command,
-    context: &str,
-    command_name: &str,
-) -> *mut HewProcessResult {
-    if refused_for_shutdown(context) {
-        return std::ptr::null_mut();
-    }
-    match command.output() {
-        Ok(output) => {
-            crate::hew_clear_error();
-            output_to_result(output)
-        }
-        Err(error) => {
-            crate::set_last_error(format!(
-                "{context}: failed to execute '{command_name}': {error}"
-            ));
-            std::ptr::null_mut()
         }
     }
 }
@@ -251,53 +191,6 @@ fn shell_command(cmd_str: &str) -> Command {
     }
 }
 
-/// Run a command via the system shell (`sh -c "cmd"` on Unix, `cmd /C "cmd"` on
-/// Windows) and wait for completion.
-///
-/// Returns a heap-allocated [`HewProcessResult`], or null on error.
-/// The caller must free the result with [`hew_process_result_free`].
-///
-/// # Safety
-///
-/// `cmd` must be a live managed handle, or null (empty).
-#[no_mangle]
-pub unsafe extern "C" fn hew_process_run(cmd: *const HewString) -> *mut HewProcessResult {
-    // SAFETY: cmd is a borrowed managed handle at this ABI boundary.
-    let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_run") }) else {
-        return std::ptr::null_mut();
-    };
-    let mut command = shell_command(&cmd_str);
-    command_output_to_result(&mut command, "hew_process_run", &cmd_str)
-}
-
-/// Run a command with an explicit `Vec<String>` argv surface (no shell).
-///
-/// Returns a heap-allocated [`HewProcessResult`], or null on error.
-/// The caller must free the result with [`hew_process_result_free`].
-///
-/// # Safety
-///
-/// `cmd` must be a live managed handle, or null (empty). `args` must be a
-/// valid `Vec<String>` handle or null (treated as an empty argv).
-#[no_mangle]
-pub unsafe extern "C" fn hew_process_run_argv(
-    cmd: *const HewString,
-    argv_vec: *mut HewVec,
-) -> *mut HewProcessResult {
-    // SAFETY: cmd is a borrowed managed handle at this ABI boundary.
-    let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_run_argv") }) else {
-        return std::ptr::null_mut();
-    };
-    // SAFETY: argv_vec is either null or a valid Vec<String>-backed HewVec.
-    let Some(owned_args) = (unsafe { hewvec_string_args(argv_vec, "hew_process_run_argv") }) else {
-        return std::ptr::null_mut();
-    };
-
-    let mut command = Command::new(&cmd_str);
-    command.args(owned_args);
-    command_output_to_result(&mut command, "hew_process_run_argv", &cmd_str)
-}
-
 /// `std.process.Stdio` in declaration order.
 fn stdio(code: i32, context: &str) -> Option<Stdio> {
     match code {
@@ -341,12 +234,45 @@ pub unsafe extern "C" fn hew_process_start(
     let Some(args) = (unsafe { hewvec_string_args(args, CONTEXT) }) else {
         return std::ptr::null_mut();
     };
+    let mut command = Command::new(&program);
+    command.args(args);
+    spawn_child(command, &program, stdin, stdout, stderr, CONTEXT)
+}
+
+/// Start a captured shell command without waiting for it to finish.
+///
+/// The shell follows the same platform contract as `std.process.run`.
+/// Stdin is null and both output streams are piped to the returned child.
+///
+/// # Safety
+/// `command` is a live borrowed managed string or null (empty).
+#[no_mangle]
+pub unsafe extern "C" fn hew_process_start_shell(command: *const HewString) -> *mut HewProcess {
+    const CONTEXT: &str = "hew_process_run";
+    if refused_for_shutdown(CONTEXT) {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the caller lends this managed command through submission.
+    let Some(command) = (unsafe { process_input(command, CONTEXT) }) else {
+        return std::ptr::null_mut();
+    };
+    spawn_child(shell_command(&command), &command, 1, 2, 2, CONTEXT)
+}
+
+fn spawn_child(
+    mut command: Command,
+    program: &str,
+    stdin: i32,
+    stdout: i32,
+    stderr: i32,
+    context: &str,
+) -> *mut HewProcess {
     #[cfg(windows)]
     let output_modes = [stdout, stderr];
     let (Some(stdin), Some(stdout), Some(stderr)) = (
-        stdio(stdin, CONTEXT),
-        stdio(stdout, CONTEXT),
-        stdio(stderr, CONTEXT),
+        stdio(stdin, context),
+        stdio(stdout, context),
+        stdio(stderr, context),
     ) else {
         return std::ptr::null_mut();
     };
@@ -363,7 +289,7 @@ pub unsafe extern "C" fn hew_process_start(
                         modes[index] = Stdio::from(child);
                     }
                     Err(error) => {
-                        crate::set_last_error(format!("{CONTEXT}: create output pipe: {error}"));
+                        crate::set_last_error(format!("{context}: create output pipe: {error}"));
                         return std::ptr::null_mut();
                     }
                 }
@@ -372,12 +298,7 @@ pub unsafe extern "C" fn hew_process_start(
         let [stdout, stderr] = modes;
         (stdout, stderr)
     };
-    let mut command = Command::new(&program);
-    command
-        .args(args)
-        .stdin(stdin)
-        .stdout(stdout)
-        .stderr(stderr);
+    command.stdin(stdin).stdout(stdout).stderr(stderr);
     // An inheriting child shares stdout and stderr: queued output goes first.
     crate::output::flush();
     match command.spawn() {
@@ -394,7 +315,7 @@ pub unsafe extern "C" fn hew_process_start(
             }))
         }
         Err(error) => {
-            crate::set_last_error(format!("{CONTEXT}: failed to execute '{program}': {error}"));
+            crate::set_last_error(format!("{context}: failed to execute '{program}': {error}"));
             std::ptr::null_mut()
         }
     }
@@ -649,82 +570,6 @@ pub extern "C" fn hew_process_last_error() -> *mut HewString {
     string_from_str(text)
 }
 
-/// Return whether a process result pointer is non-null.
-#[no_mangle]
-pub extern "C" fn hew_process_result_is_valid(r: *const HewProcessResult) -> bool {
-    !r.is_null()
-}
-
-/// Whether a completed process was ended by a signal.
-///
-/// # Safety
-///
-/// `r` must be a valid pointer returned by a `hew_process_run*` function.
-#[no_mangle]
-pub unsafe extern "C" fn hew_process_result_signalled(r: *const HewProcessResult) -> bool {
-    // SAFETY: r is valid per caller contract.
-    terminating_signal(unsafe { (*r).status }).is_some()
-}
-
-/// A completed process's exit code, or its signal number when signalled.
-///
-/// # Safety
-///
-/// `r` must be a valid pointer returned by a `hew_process_run*` function.
-#[no_mangle]
-pub unsafe extern "C" fn hew_process_result_status(r: *const HewProcessResult) -> i64 {
-    // SAFETY: r is valid per caller contract.
-    status_number(unsafe { (*r).status })
-}
-
-/// Retain an owned stdout handle that survives freeing the process result.
-///
-/// # Safety
-///
-/// `r` must be a valid pointer returned by a `hew_process_run*` function.
-#[no_mangle]
-pub unsafe extern "C" fn hew_process_result_stdout(r: *const HewProcessResult) -> *mut HewString {
-    cabi_guard!(r.is_null(), std::ptr::null_mut());
-    crate::hew_clear_error();
-    // SAFETY: r is valid per caller contract.
-    unsafe { string_retain((*r).stdout) }
-}
-
-/// Retain an owned stderr handle that survives freeing the process result.
-///
-/// # Safety
-///
-/// `r` must be a valid pointer returned by a `hew_process_run*` function.
-#[no_mangle]
-pub unsafe extern "C" fn hew_process_result_stderr(r: *const HewProcessResult) -> *mut HewString {
-    cabi_guard!(r.is_null(), std::ptr::null_mut());
-    crate::hew_clear_error();
-    // SAFETY: r is valid per caller contract.
-    unsafe { string_retain((*r).stderr) }
-}
-
-/// Free a [`HewProcessResult`] previously returned by a `hew_process_run*`
-/// function, including its owned managed stdout and stderr strings.
-///
-/// # Safety
-///
-/// `r` must be a pointer previously returned by a `hew_process_run*` function,
-/// and must not have been freed already. Null is accepted (no-op).
-#[no_mangle]
-pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
-    if r.is_null() {
-        return;
-    }
-    // SAFETY: r was allocated with Box::into_raw and has not been freed.
-    let result = unsafe { Box::from_raw(r) };
-    // SAFETY: the result owns one reference to each managed field. Accessors
-    // retain independent owners, which remain valid after this result is freed.
-    unsafe {
-        string_release(result.stdout);
-        string_release(result.stderr);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -735,12 +580,6 @@ mod tests {
     use crate::test_string::ManagedString;
     use hew_cabi::string::string_as_str;
     use std::ffi::CStr;
-
-    /// Read a borrowed managed result, including the canonical empty value.
-    unsafe fn read_string(ptr: *mut HewString) -> String {
-        // SAFETY: the test keeps the result owner live for this read.
-        unsafe { string_as_str(ptr) }.to_owned()
-    }
 
     /// Helper: read the thread-local last error string.
     ///
@@ -800,11 +639,9 @@ mod tests {
         let nul = ManagedString::new("prefix\0suffix");
         // SAFETY: managed values remain live; no OS call may run.
         unsafe {
-            assert!(hew_process_run(nul.as_ptr()).is_null());
+            assert!(hew_process_start_shell(nul.as_ptr()).is_null());
             assert!(read_last_error().contains("interior NUL"));
             let args = string_vec(&["prefix\0suffix"]);
-            assert!(hew_process_run_argv(cmd.as_ptr(), args).is_null());
-            assert!(read_last_error().contains("interior NUL"));
             assert!(hew_process_start(cmd.as_ptr(), args, 0, 0, 0).is_null());
             assert!(read_last_error().contains("interior NUL"));
             crate::vec::hew_vec_free(args);
@@ -846,80 +683,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn captured_output_retains_nul_and_decodes_invalid_utf8_lossily() {
-        let cmd = ManagedString::new("printf 'A\\000é中🙂\\377'; printf 'err\\000or' >&2");
-        // SAFETY: the command is live; result and accessor owners are released once.
-        unsafe {
-            let result = hew_process_run(cmd.as_ptr());
-            assert!(!result.is_null());
-            drop(cmd);
-            assert!(!hew_process_result_signalled(result));
-            assert_eq!(hew_process_result_status(result), 0);
-            let first = hew_process_result_stdout(result);
-            let second = hew_process_result_stdout(result);
-            let err = hew_process_result_stderr(result);
-            hew_process_result_free(result);
-            assert_eq!(read_string(first), "A\0é中🙂�");
-            string_release(first);
-            assert_eq!(read_string(second), "A\0é中🙂�");
-            assert_eq!(read_string(err), "err\0or");
-            string_release(second);
-            string_release(err);
-        }
-    }
-
-    #[test]
-    fn run_reports_the_exit_code() {
-        let cmd = ManagedString::new("exit 42");
-        // SAFETY: cmd is live; the result is released once.
-        unsafe {
-            let result = hew_process_run(cmd.as_ptr());
-            assert!(!result.is_null());
-            assert!(!hew_process_result_signalled(result));
-            assert_eq!(hew_process_result_status(result), 42);
-            hew_process_result_free(result);
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn run_reports_a_terminating_signal_apart_from_an_exit_code() {
-        let cmd = ManagedString::new("kill -TERM $$");
-        // SAFETY: cmd is live; the result is released once.
-        unsafe {
-            let result = hew_process_run(cmd.as_ptr());
-            assert!(!result.is_null());
-            assert!(hew_process_result_signalled(result));
-            assert_eq!(hew_process_result_status(result), i64::from(libc::SIGTERM));
-            hew_process_result_free(result);
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn run_argv_preserves_spaced_and_empty_arguments() {
-        let cmd = ManagedString::new("printf");
-        let args = string_vec(&["<%s>|<%s>|<%s>", "hello world", "", "tail"]);
-        // SAFETY: cmd and argv are valid handles, released once.
-        unsafe {
-            let result = hew_process_run_argv(cmd.as_ptr(), args);
-            assert!(!result.is_null());
-            assert_eq!(read_string((*result).stdout), "<hello world>|<>|<tail>");
-            hew_process_result_free(result);
-            crate::vec::hew_vec_free(args);
-        }
-    }
-
-    #[test]
-    fn run_argv_rejects_non_string_vec() {
+    fn start_rejects_non_string_vec() {
         let cmd = ManagedString::new("printf");
         // SAFETY: an i32 vector is the wrong element kind on purpose.
         unsafe {
             let args = crate::vec::hew_vec_new();
             crate::vec::hew_vec_push_i32(args, 7);
-            assert!(hew_process_run_argv(cmd.as_ptr(), args).is_null());
-            assert!(read_last_error().contains("Vec<String>"));
             assert!(hew_process_start(cmd.as_ptr(), args, 0, 0, 0).is_null());
             assert!(read_last_error().contains("Vec<String>"));
             crate::vec::hew_vec_free(args);
@@ -1090,8 +859,6 @@ mod tests {
         crate::set_last_error("sentinel process error".to_owned());
         // SAFETY: null is explicitly accepted by all process release functions.
         unsafe {
-            hew_process_result_free(std::ptr::null_mut());
-            assert_eq!(read_last_error(), "sentinel process error");
             hew_process_drop(std::ptr::null_mut());
             assert_eq!(read_last_error(), "sentinel process error");
         }

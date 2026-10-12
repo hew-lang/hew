@@ -33,10 +33,12 @@ pub fn derived_capability_components(
         | ResolvedTy::I16
         | ResolvedTy::I32
         | ResolvedTy::I64
+        | ResolvedTy::Isize
         | ResolvedTy::U8
         | ResolvedTy::U16
         | ResolvedTy::U32
         | ResolvedTy::U64
+        | ResolvedTy::Usize
         | ResolvedTy::F32
         | ResolvedTy::F64
         | ResolvedTy::Duration
@@ -92,6 +94,7 @@ pub(crate) fn verify_value_capability(
     if !match capability {
         ValueCapability::Hash => facts.hash,
         ValueCapability::Eq => facts.eq,
+        _ => facts.partial_ord,
     } {
         return Err("selected operation disagrees with checker capability facts".to_string());
     }
@@ -106,11 +109,15 @@ pub(crate) fn verify_value_capability(
         for component in
             derived_capability_components(ty, &module.aggregate_shapes, &module.variant_shapes)?
         {
-            if !module
-                .value_capabilities
-                .contains_key(&(component, capability))
-            {
-                return Err("derived operation lacks a selected component capability".to_string());
+            for component_capability in capability.component_capabilities() {
+                if !module
+                    .value_capabilities
+                    .contains_key(&(component.clone(), *component_capability))
+                {
+                    return Err(
+                        "derived operation lacks a selected component capability".to_string()
+                    );
+                }
             }
         }
         return Ok(());
@@ -148,7 +155,7 @@ pub(crate) fn verify_capability_signature(
 ) -> Result<(), String> {
     let (arity, result) = match capability {
         ValueCapability::Hash => (1, ResolvedTy::I64),
-        ValueCapability::Eq => (2, ResolvedTy::Bool),
+        _ => (2, ResolvedTy::Bool),
     };
     let passing = if OwnKind::of_class(facts.class) == OwnKind::Owned {
         SemParamPassing::Borrow

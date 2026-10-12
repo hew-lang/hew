@@ -1,0 +1,75 @@
+// Slow TLS operations preserve one-worker progress and retained-stream recovery.
+import std.net.tls;
+
+import std.fs;
+
+import std.process;
+
+actor Probe {
+    receive fn ping() -> bool {
+        true
+    }
+}
+
+actor Client {
+    receive fn run(port: i64, ca: bytes) -> bool {
+        var options = tls.options();
+        options.trust = tls.Trust.Pem(ca);
+        let connection = tls.connect("localhost", port, options).expect("connect");
+        connection.write(b"hello").expect("hello");
+        let read_cancelled = scope within 100ms {
+            connection.read(5).expect("read");
+            false
+        } handle failure {
+            match failure {
+                .Deadline { message } => true,
+                .Fault { message } => panic(message),
+            }
+        };
+        assert(read_cancelled);
+        match connection.read(5) {
+            .Ok(data) => assert(data.len() == 5),
+            .Err(error) => panic(tls.last_error()),
+        }
+        let payload = "0123456789abcdef".repeat(1024 * 1024).to_bytes();
+        let write_cancelled = scope within 100ms {
+            connection.write(payload).expect("write");
+            false
+        } handle failure {
+            match failure {
+                .Deadline { message } => true,
+                .Fault { message } => panic(message),
+            }
+        };
+        assert(write_cancelled);
+        connection.write(b"DONE").expect("retained write");
+        assert(connection.read(2).expect("reply").len() == 2);
+        connection.close();
+        true
+    }
+}
+
+fn main() {
+    let probe = spawn Probe;
+    let client = spawn Client;
+    var command = process.command("python3", ["server.py"]);
+    command.stdout = process.Stdio.Piped;
+    let peer = process.start(command).expect("TLS peer");
+    let ready = peer.stdout().expect("peer stdout");
+    var address = bytes.new();
+    while address.len() < 2 {
+        address.append(ready.recv().expect("peer port"));
+    }
+    let port = (address[0] as i64) * 256 + (address[1] as i64);
+    let ca = fs.read_bytes("ca.pem").expect("CA");
+    let work = fork client.run(port, ca);
+    for i in 0..80 {
+        sleep(20ms);
+        let started = instant.now();
+        assert(probe.ping().expect("progress"));
+        assert(started.elapsed() < 300ms);
+    }
+    assert((await work).expect("client"));
+    assert(peer.wait().expect("peer exit") == process.ExitStatus.Exited(0));
+    println("TLS progress and retained read/write recovery");
+}

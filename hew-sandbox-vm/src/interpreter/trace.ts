@@ -30,6 +30,7 @@ interface TracedPackage {
 }
 
 export class TraceBuilder {
+  readonly coverage: Record<string, number> = {};
   readonly stdout: string[] = [];
   readonly stderr: string[] = [];
   readonly runtimeFailures: RuntimeFailure[] = [];
@@ -235,6 +236,9 @@ export class TraceBuilder {
       replay: this.replay,
       events: this.events,
       final_state: {
+        ...(Object.keys(this.coverage).length > 0
+          ? { coverage: this.coverage }
+          : {}),
         status: this.status,
         exit_code: this.status === "ok" ? this.exitCode : null,
         step_count: this.stepCount,

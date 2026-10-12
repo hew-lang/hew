@@ -50,6 +50,8 @@ impl std::error::Error for EmitError {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Package {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub codecs: Vec<String>,
     pub structural_render: Vec<serde_json::Value>,
     pub resources: Vec<serde_json::Value>,
     pub schema_version: String,
@@ -78,6 +80,8 @@ pub struct Package {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    #[serde(skip)]
+    pub properties: Vec<hew_codec::property::Shape>,
     pub function: u32,
     pub exit: String,
 }
@@ -243,6 +247,8 @@ pub struct VtableSlot {
     /// decision, which the verifier proves matches the boundary the concrete
     /// type was erased under.
     pub receiver: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub receiver_handback: bool,
 }
 
 /// The checker's selection for one `(type, capability)` pair.
@@ -257,9 +263,24 @@ pub struct ValueCapabilityPlan {
     pub ty: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callable: Option<u32>,
-    pub components: Vec<u32>,
+    pub components: Vec<ValueComponentCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub variants: Option<Vec<Vec<u32>>>,
+    pub variants: Option<Vec<Vec<ValueComponentCapabilities>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueComponentCapabilities {
+    pub selected: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordering: Option<ValueOrderingCapabilities>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueOrderingCapabilities {
+    pub less: u32,
+    pub less_equal: u32,
+    pub greater: u32,
+    pub greater_equal: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -363,6 +384,7 @@ pub fn emit_package(
 
 struct Walker<'m> {
     module: &'m SemModule,
+    codecs: Vec<String>,
     strings: BTreeMap<hew_sir::StringLiteralId, u32>,
     bytes: BTreeMap<hew_sir::BytesLiteralId, u32>,
     functions: BTreeMap<CallableId, u32>,
@@ -408,6 +430,7 @@ impl<'m> Walker<'m> {
             .collect();
         Self {
             module,
+            codecs: Vec::new(),
             strings,
             bytes,
             functions,
@@ -598,7 +621,7 @@ impl<'m> Walker<'m> {
                         )
                         .map_err(EmitError::new)?
                         .iter()
-                        .map(|component| self.capability_id(component, *capability))
+                        .map(|component| self.component_capabilities(component, *capability))
                         .collect::<Result<Vec<_>, _>>()?
                     } else {
                         Vec::new()
@@ -614,7 +637,9 @@ impl<'m> Walker<'m> {
                                         variant
                                             .fields
                                             .iter()
-                                            .map(|field| self.capability_id(&field.ty, *capability))
+                                            .map(|field| {
+                                                self.component_capabilities(&field.ty, *capability)
+                                            })
                                             .collect::<Result<Vec<_>, _>>()
                                     })
                                     .collect::<Result<Vec<_>, _>>()
@@ -673,6 +698,7 @@ impl<'m> Walker<'m> {
 
         let entry = match (self.module.entry_callable, &self.module.entry_exit_plan) {
             (Some(callable), Some(plan)) => Some(Entry {
+                properties: Vec::new(),
                 function: self.function_id(callable)?,
                 // SIR consumes a `Result` action in the entry adapter and
                 // publishes the integer status that body returns, so it reaches
@@ -688,6 +714,7 @@ impl<'m> Walker<'m> {
         };
 
         Ok(Package {
+            codecs: self.codecs.clone(),
             structural_render: self.structural_render()?,
             resources: self.resources()?,
             schema_version: SCHEMA_VERSION.to_string(),
@@ -730,6 +757,12 @@ impl<'m> Walker<'m> {
                                     method: self.module.defs.name(slot.method).to_string(),
                                     callee: self.function_id(slot.callee)?,
                                     receiver: passing_name(slot.receiver).to_string(),
+                                    receiver_handback: self
+                                        .module
+                                        .callable(slot.callee)
+                                        .is_some_and(|callee| {
+                                            callee.signature.hands_back_receiver()
+                                        }),
                                 })
                             })
                             .collect::<Result<Vec<_>, EmitError>>()?,
@@ -994,6 +1027,28 @@ impl<'m> Walker<'m> {
             })
     }
 
+    fn component_capabilities(
+        &self,
+        ty: &hew_types::ResolvedTy,
+        capability: hew_types::ValueCapability,
+    ) -> Result<ValueComponentCapabilities, EmitError> {
+        use hew_types::ValueCapability as C;
+        Ok(ValueComponentCapabilities {
+            selected: self.capability_id(ty, capability)?,
+            ordering: capability
+                .is_ordering()
+                .then(|| {
+                    Ok(ValueOrderingCapabilities {
+                        less: self.capability_id(ty, C::Less)?,
+                        less_equal: self.capability_id(ty, C::LessEqual)?,
+                        greater: self.capability_id(ty, C::Greater)?,
+                        greater_equal: self.capability_id(ty, C::GreaterEqual)?,
+                    })
+                })
+                .transpose()?,
+        })
+    }
+
     fn collection_callbacks(
         &self,
         family: hew_types::RuntimeCallFamily,
@@ -1095,20 +1150,31 @@ impl<'m> Walker<'m> {
             blocks: function
                 .blocks
                 .iter()
-                .map(|block| self.block(block))
+                .map(|block| self.block(function.callable, block))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
-    fn block(&mut self, block: &SemBlock) -> Result<Block, EmitError> {
+    fn block(
+        &mut self,
+        callable: hew_sir::CallableId,
+        block: &SemBlock,
+    ) -> Result<Block, EmitError> {
+        let mut ops = block
+            .ops
+            .iter()
+            .map(|op| self.op(op))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(counter) = self.module.coverage.get(&(callable, block.id)) {
+            ops.insert(
+                0,
+                serde_json::json!({ "op": "coverage.hit", "counter": counter.id }),
+            );
+        }
         Ok(Block {
             id: block.id.0,
             params: block.args.iter().map(block_arg).collect(),
-            ops: block
-                .ops
-                .iter()
-                .map(|op| self.op(op))
-                .collect::<Result<Vec<_>, _>>()?,
+            ops,
             term: self.terminator(&block.terminator, &block.terminator_provenance)?,
         })
     }
@@ -1737,10 +1803,57 @@ impl<'m> Walker<'m> {
                 "normal": encode_edge(normal),
                 "unwind": encode_unwind(unwind),
             }),
-            SemTerminator::WireCodec { .. } => {
-                return Err(EmitError::new(
-                    "wire codec calls have no sandbox package table",
-                ))
+            SemTerminator::WireCodec {
+                codec,
+                plan,
+                decode_result,
+                args,
+                result,
+                normal,
+                unwind,
+                ..
+            } => {
+                let shape = plan.property_shape().map_err(EmitError::new)?;
+                let encoded = serde_json::to_string(&shape)
+                    .map_err(|error| EmitError::new(error.to_string()))?;
+                let index = if let Some(index) =
+                    self.codecs.iter().position(|existing| *existing == encoded)
+                {
+                    index
+                } else {
+                    self.codecs.push(encoded);
+                    self.codecs.len() - 1
+                };
+                let mut callbacks = BTreeMap::new();
+                if !codec.is_serialize() {
+                    for (index, (_, member)) in plan.plans.iter().enumerate() {
+                        let key = match &member.kind {
+                            hew_sir::SemWireKind::Map { key, .. }
+                            | hew_sir::SemWireKind::Set(key) => Some(key),
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            callbacks.insert(
+                                index,
+                                [
+                                    self.capability_id(key, hew_types::ValueCapability::Hash)?,
+                                    self.capability_id(key, hew_types::ValueCapability::Eq)?,
+                                ],
+                            );
+                        }
+                    }
+                }
+                let decoded = decode_result.as_ref().map(|decode| {
+                    let error_root = plan.plans.keys().position(|ty| *ty == decode.error_ty).expect("verified codec error plan");
+                    serde_json::json!({"shape": decode.shape.0, "ok": decode.ok, "error": decode.error, "error_root": error_root})
+                });
+                serde_json::json!({
+                    "op": "wire.codec", "codec": index, "format": codec.format.code(),
+                    "direction": if codec.is_serialize() { "encode" } else if codec.direction == hew_types::CodecDirection::TestInput { "test_input" } else { "decode" },
+                    "decoded": decoded, "callbacks": callbacks,
+                    "args": boundaries(args), "result": call_result(result),
+                    "normal": encode_edge(normal), "unwind": encode_unwind(unwind),
+                })
             }
         };
         encoded["span"] = span;
@@ -2076,6 +2189,10 @@ const fn capability_name(capability: hew_types::ValueCapability) -> &'static str
     match capability {
         hew_types::ValueCapability::Hash => "Hash",
         hew_types::ValueCapability::Eq => "Eq",
+        hew_types::ValueCapability::Less => "Less",
+        hew_types::ValueCapability::LessEqual => "LessEqual",
+        hew_types::ValueCapability::Greater => "Greater",
+        hew_types::ValueCapability::GreaterEqual => "GreaterEqual",
     }
 }
 

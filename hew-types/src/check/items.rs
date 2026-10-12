@@ -946,9 +946,19 @@ impl Checker {
 
     /// Bind parameters and establish independent mutable parameter values.
     fn bind_function_parameters(&mut self, fd: &FnDecl, in_actor: bool) {
+        let signature = self.checking_sig();
+        let receiver_offset = usize::from(fd.params.first().is_some_and(|param| param.is_receiver));
         // Only the first parameter can be the receiver.
         for (i, p) in fd.params.iter().enumerate() {
             let (ty, is_receiver) = self.resolve_param_binding_ty(i, p);
+            if !is_receiver && ty.has_inference_var() {
+                if let Some(declared) = signature
+                    .as_ref()
+                    .and_then(|signature| signature.params.get(i - receiver_offset))
+                {
+                    self.expect_type(declared, &ty, &p.ty.1);
+                }
+            }
             let private_copy = p.is_mutable
                 && !p.is_consume
                 && !is_receiver
@@ -3071,12 +3081,13 @@ impl Checker {
 impl Checker {
     fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
         let is_receiver = index == 0 && param.is_receiver;
+        let ty = self.resolve_type_expr(&param.ty);
         if is_receiver {
             if let Some((_, self_ty)) = &self.current_self_type {
                 return (self_ty.clone(), true);
             }
         }
-        (self.resolve_type_expr(&param.ty), is_receiver)
+        (ty, is_receiver)
     }
 }
 

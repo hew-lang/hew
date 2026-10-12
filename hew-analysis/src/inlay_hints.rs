@@ -335,7 +335,7 @@ fn collect_inlay_hints_from_stmt(
                 collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
             }
         }
-        Stmt::Defer(expr) => {
+        Stmt::Defer { body: expr, .. } => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
         }
         Stmt::Assign { target, value, .. } => {
@@ -396,6 +396,10 @@ fn collect_inlay_hints_from_expr(
         }
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
+        | Expr::OptionalChain {
+            receiver: left,
+            body: right,
+        }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -578,6 +582,7 @@ fn collect_inlay_hints_from_expr(
         Expr::Literal(_)
         | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
+        | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

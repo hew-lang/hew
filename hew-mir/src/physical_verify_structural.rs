@@ -164,6 +164,11 @@ pub(crate) fn verify_physical_module(
     }
     verify_collection_glue_tables(module)?;
     for (index, callable) in module.callables.iter().enumerate() {
+        if callable.failure_domain != hew_types::CallableFailureDomain::HewFault {
+            return Err(PhysicalError::new(
+                "Hew bodies require the explicit recoverable fault ABI",
+            ));
+        }
         if usize::try_from(callable.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(
                 "physical callable {} is not at its canonical table index {index}",

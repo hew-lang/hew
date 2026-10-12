@@ -71,6 +71,7 @@ fn explicit_next_uses_the_common_vector_and_aggregate_contracts() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one cursor ownership contract")]
 fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
     let module = lower_source(
         r"

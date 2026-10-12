@@ -18,7 +18,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "native I/O input must be borrowed".into(),
                 ));
             };
-            if operation == AsyncIoOp::TcpWrite && index == 1 {
+            if operation.contract().arguments[index].ty
+                == hew_types::runtime_call::RuntimeValueKind::Bytes
+            {
                 arguments.push(self.slots[source.0 as usize].into());
             } else {
                 arguments.push(self.load(*source, "io.input")?.into());
@@ -112,6 +114,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let (symbol, output) = match operation.resume() {
             AsyncIoResume::Bytes => ("hew_async_io_take_bytes", self.slots[result.0 as usize]),
+            AsyncIoResume::TlsConnect => {
+                ("hew_async_tls_take_connect", self.slots[result.0 as usize])
+            }
+            AsyncIoResume::TlsRead => ("hew_async_tls_take_read", self.slots[result.0 as usize]),
+            AsyncIoResume::TlsWrite => ("hew_async_tls_take_write", self.slots[result.0 as usize]),
             AsyncIoResume::WriteCount | AsyncIoResume::Unit => {
                 let output = self
                     .builder
@@ -317,11 +324,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
             self.free_handle("hew_async_io_free", request)?;
             self.emit_edge(unwind)?;
+        } else if matches!(
+            operation.resume(),
+            AsyncIoResume::TlsConnect | AsyncIoResume::TlsRead | AsyncIoResume::TlsWrite
+        ) {
+            self.take_native_io(operation, request, result)?;
+            self.builder
+                .build_unconditional_branch(resume)
+                .llvm_ctx("resume library I/O error")?;
         } else {
             let result_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?;
             let failed = match operation.resume() {
                 AsyncIoResume::Bytes => result_ty.const_zero(),
                 AsyncIoResume::Unit => unreachable!("unit finish uses its fault edge"),
+                AsyncIoResume::TlsConnect | AsyncIoResume::TlsRead | AsyncIoResume::TlsWrite => {
+                    unreachable!("library adapter writes its error result")
+                }
                 AsyncIoResume::WriteCount | AsyncIoResume::Connection => {
                     result_ty.into_int_type().const_all_ones().into()
                 }

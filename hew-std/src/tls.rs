@@ -4,6 +4,10 @@
 //! All `extern "C"` functions are designed to be called from compiled Hew
 //! programs via FFI. `host` and the result of [`hew_tls_last_error`] use
 //! managed UTF-8 strings; null is the canonical empty string.
+mod native_io;
+mod socket;
+use socket::TlsTcp;
+
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::raw::c_int;
@@ -51,7 +55,7 @@ const TLS_STATUS_IO_ERROR: c_int = 3;
 type TlsInner = Arc<TlsShared>;
 
 pub struct TlsShared {
-    stream: Mutex<Option<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>>,
+    stream: Mutex<Option<rustls::StreamOwned<rustls::ClientConnection, TlsTcp>>>,
     /// Independent handle used to interrupt a blocking rustls read before join.
     shutdown: Option<TcpStream>,
     closed: AtomicBool,
@@ -110,7 +114,10 @@ impl HewTlsStream {
         let shutdown = stream.sock.try_clone().expect("clone test TLS socket");
         Box::into_raw(Box::new(HewTlsStream {
             inner: Arc::new(TlsShared {
-                stream: Mutex::new(Some(stream)),
+                stream: Mutex::new(Some(rustls::StreamOwned::new(
+                    stream.conn,
+                    TlsTcp::new(stream.sock).expect("test TLS socket timeouts"),
+                ))),
                 shutdown: Some(shutdown),
                 closed: AtomicBool::new(false),
                 reader: Mutex::new(None),
@@ -311,12 +318,18 @@ fn connect_tls(
     trust: Trust<'_>,
     handshake_ms: i64,
     io_ms: i64,
+    cancellation: Option<&hew_runtime::async_io::library::SocketCancellation>,
 ) -> Result<HewTlsStream, ConnectFailure> {
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|err| ConnectFailure::invalid(format!("server name {host:?}: {err}")))?;
     let config = client_config(trust)?;
     let deadline = io_timeout(handshake_ms).map(|limit| Instant::now() + limit);
     let mut tcp = connect_tcp(host, port, deadline)?;
+    if let Some(cancellation) = cancellation {
+        cancellation
+            .bind(&tcp)
+            .map_err(|err| ConnectFailure::from_io("connect TLS", &err))?;
+    }
     let mut connection = rustls::ClientConnection::new(config, server_name)
         .map_err(|err| ConnectFailure::invalid(format!("tls client: {err}")))?;
     complete_handshake(&mut connection, &mut tcp, deadline)?;
@@ -329,7 +342,10 @@ fn connect_tls(
         .map_err(|err| ConnectFailure::from_io("clone socket for shutdown", &err))?;
     Ok(HewTlsStream {
         inner: Arc::new(TlsShared {
-            stream: Mutex::new(Some(rustls::StreamOwned::new(connection, tcp))),
+            stream: Mutex::new(Some(rustls::StreamOwned::new(
+                connection,
+                TlsTcp::new(tcp).map_err(|err| ConnectFailure::from_io("socket timeout", &err))?,
+            ))),
             shutdown: Some(shutdown),
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
@@ -508,18 +524,7 @@ pub unsafe extern "C" fn hew_tls_connect(
     let host_str = unsafe { string_as_str(host) };
     // SAFETY: the caller passes a live triple or null.
     let pem_bytes = unsafe { bytes_view(pem) };
-    let trust = match trust {
-        TLS_TRUST_BUNDLED => Some(Trust::Bundled),
-        TLS_TRUST_PEM => Some(Trust::Pem(pem_bytes)),
-        _ => None,
-    };
-    let attempt = if host_str.is_empty() {
-        Err(ConnectFailure::invalid("host is empty"))
-    } else if let (Ok(port), Some(trust)) = (u16::try_from(port), trust) {
-        connect_tls(host_str, port, trust, handshake_ms, io_ms)
-    } else {
-        Err(ConnectFailure::invalid(format!("invalid port {port}")))
-    };
+    let attempt = connect_validated(host_str, port, trust, pem_bytes, handshake_ms, io_ms, None);
     match attempt {
         Ok(stream) => {
             LAST_CONNECT_FAILURE.with(|slot| slot.set((0, 0)));
@@ -530,6 +535,29 @@ pub unsafe extern "C" fn hew_tls_connect(
             record_connect_failure(&failure);
             std::ptr::null_mut()
         }
+    }
+}
+
+fn connect_validated(
+    host: &str,
+    port: c_int,
+    trust: c_int,
+    pem: &[u8],
+    handshake_ms: i64,
+    io_ms: i64,
+    cancellation: Option<&hew_runtime::async_io::library::SocketCancellation>,
+) -> Result<HewTlsStream, ConnectFailure> {
+    let trust = match trust {
+        TLS_TRUST_BUNDLED => Some(Trust::Bundled),
+        TLS_TRUST_PEM => Some(Trust::Pem(pem)),
+        _ => None,
+    };
+    if host.is_empty() {
+        Err(ConnectFailure::invalid("host is empty"))
+    } else if let (Ok(port), Some(trust)) = (u16::try_from(port), trust) {
+        connect_tls(host, port, trust, handshake_ms, io_ms, cancellation)
+    } else {
+        Err(ConnectFailure::invalid(format!("invalid port {port}")))
     }
 }
 
@@ -617,21 +645,6 @@ pub unsafe extern "C" fn hew_tls_write(
     }
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &*stream };
-    if s.inner.closed.load(Ordering::Acquire) {
-        set_tls_last_error("hew_tls_write: stream is closed");
-        let _ = write_out_status(out_status, TLS_STATUS_IO_ERROR);
-        return -1;
-    }
-    let mut guard = s
-        .inner
-        .stream
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(stream_ref) = guard.as_mut() else {
-        set_tls_last_error("hew_tls_write: stream is closed");
-        let _ = write_out_status(out_status, TLS_STATUS_IO_ERROR);
-        return -1;
-    };
     // SAFETY: `data` is valid for `data_len` bytes per caller contract.
     let buf = if data_len == 0 {
         &[]
@@ -639,7 +652,7 @@ pub unsafe extern "C" fn hew_tls_write(
         // SAFETY: caller guarantees `data` points to `data_len` readable bytes.
         unsafe { std::slice::from_raw_parts(data, data_len) }
     };
-    let result = write_tls_bytes(stream_ref, buf);
+    let result = write_tls_shared(&s.inner, buf, None);
     let _ = write_out_status(out_status, result.status);
     result.written
 }
@@ -676,19 +689,50 @@ pub unsafe extern "C" fn hew_tls_read(
     }
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &*stream };
-    let mut guard = s
-        .inner
-        .stream
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(stream_ref) = guard.as_mut() else {
-        set_tls_last_error("hew_tls_read: stream is closed");
-        let _ = write_out_status(out_status, TLS_STATUS_IO_ERROR);
-        return empty_bytes_triple();
-    };
-    let result = read_tls_vec(stream_ref, size);
+    let result = read_tls_shared(&s.inner, size, None);
     let _ = write_out_status(out_status, result.status);
     result.data
+}
+
+fn read_tls_shared(
+    inner: &TlsShared,
+    size: c_int,
+    cancellation: Option<Arc<hew_runtime::async_io::library::SocketCancellation>>,
+) -> HewTlsReadResult {
+    let mut guard = inner.stream.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(stream) = guard.as_mut() else {
+        set_tls_last_error("hew_tls_read: stream is closed");
+        return HewTlsReadResult {
+            data: empty_bytes_triple(),
+            status: TLS_STATUS_IO_ERROR,
+        };
+    };
+    stream.sock.set_cancellation(cancellation);
+    let result = read_tls_vec(stream, size);
+    stream.sock.set_cancellation(None);
+    result
+}
+
+fn write_tls_shared(
+    inner: &TlsShared,
+    data: &[u8],
+    cancellation: Option<Arc<hew_runtime::async_io::library::SocketCancellation>>,
+) -> HewTlsWriteResult {
+    let mut guard = inner.stream.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(stream) = guard
+        .as_mut()
+        .filter(|_| !inner.closed.load(Ordering::Acquire))
+    else {
+        set_tls_last_error("hew_tls_write: stream is closed");
+        return HewTlsWriteResult {
+            written: -1,
+            status: TLS_STATUS_IO_ERROR,
+        };
+    };
+    stream.sock.set_cancellation(cancellation);
+    let result = write_tls_bytes(stream, data);
+    stream.sock.set_cancellation(None);
+    result
 }
 
 /// Hew-facing bridge that packages `hew_tls_write` status into a repr(C) struct

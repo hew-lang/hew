@@ -173,18 +173,17 @@ than with the runtime work above.
 
 ### 2.1 Closures — transitive (skip-level) capture
 
-**[Target: v0.6]**
+**[Landed in v0.6; not deferred]**
 
 Closure literals parse and lower for the general case: captured-state
 closures, `move` captures, closure-typed record/struct fields, and
 `Option<T>`-returning closures are all implemented with drop-safe
-handling of the captured environment. The remaining gap is narrower —
-transitive capture through two or more nested scope levels (a closure
-capturing a binding from an enclosing closure that itself captured it
-from a further-enclosing scope) fails with `E_HIR
-CheckerBoundaryViolation`. Direct one-level closure-captures-closure
-(`let wrap = |y| base(y);` where `base` is itself a closure) already
-works.
+handling of the captured environment. Nested closures propagate their capture
+requirements through enclosing environments. The source acceptance corpus
+includes a closure capturing an enclosing closure's parameter and transitive
+generator captures that survive reassignment or outlive the generator. The
+earlier blanket `CheckerBoundaryViolation` limitation is obsolete; capture
+legality still follows the ordinary ownership and lifetime rules.
 
 ### 2.2 Advanced trait surface (dyn, object safety, associated-type bounds, heavy where-clauses)
 
@@ -223,7 +222,7 @@ is via owned messages and actor state.
 
 ### 2.4 `DoubleEndedIterator`
 
-**[Target: v0.6 / Cluster 6]**
+**[Target: v0.6; implementation outstanding]**
 
 Edition 2026 ships the lazy `Iterator`/`IntoIterator` trait hierarchy
 (`std/builtins.hew`) with chainable adapter types — `Map`, `Filter`,
@@ -231,22 +230,25 @@ Edition 2026 ships the lazy `Iterator`/`IntoIterator` trait hierarchy
 `collect`, `any`, `all`, `sum`, `product`) over `Vec`, `HashMap`,
 `Generator`. The earlier eager per-type helper
 table (`map_int`, `filter_int`, `fold_int`, ...) has been retired. The
-only member of the hierarchy still absent is `DoubleEndedIterator`
-(back-to-front adapters like `.rev()`), which is deferred to Cluster 6's
-stdlib port-forward.
+trait-based double-ended hierarchy, including `DoubleEndedIterator`,
+`next_back()` and `.rev()` for general iterators, remains unimplemented.
+Range-loop reversal already works; it does not supply this trait surface.
+The general iterator surface remains an open v0.6 commitment.
 
 ### 2.5 Generic `HashMap<K, V>` over arbitrary `K`
 
-**[Target: v0.6 / Cluster 6]**
+**[Remaining target: v0.6]**
 
 Edition 2026 admits `HashMap<K, V>`/`HashSet<K>` keys for any
-structural-hash-eligible `K` — scalars, strings, and records/enums whose
-leaves are hash-eligible (structural hashing descends string fields via
-FNV-1a, the hash twin of structural equality). The remaining gap is
-narrower than "generic keys": keys containing an owned `Vec`/`bytes`
-field, and float-typed keys, are rejected with a diagnostic (not a
-fixed-size-`Copy` shape). Lifting that gap lands with the stdlib port in
-Cluster 6.
+structural-hash-eligible `K`, including fixed-width scalars, strings, bytes,
+floats and plain records whose fields are hash-eligible. Bytes use their
+payload rather than a heap address; float hashing follows the selected
+bitwise structural equality. The source acceptance corpus includes bytes-key
+map overwrite/removal and set deduplication.
+
+Keys containing an owned `Vec` field remain rejected; admitting them is an
+open v0.6 commitment. This does not promise that arbitrary resource,
+indirect or tuple keys are eligible: the checker still refuses those shapes.
 
 ---
 
@@ -337,10 +339,12 @@ native cutover PR is open and the surface lanes are integrated. The full text wi
 - Tooling: `hew tool expand`, LSP show-expansion and generated-symbol
   navigation, formatter treats macro bodies as token trees, grammar sync for
   `macro`, `!(` and `$`.
-- Not planned: procedural macros, derive and reflection. `Eq`, `Ord`,
-  `PartialOrd` and `Hash` already derive structurally (HEW-SPEC-2026 §3.8),
-  so no derive attribute exists (D438). Idea only: a structural inspect
-  rendering for debugging output, distinct from `Display`.
+- Not planned: procedural macros, derive and reflection. `Eq` and `Hash`
+  have compiler-provided structural support for eligible types. Derived
+  aggregate `Ord`/`PartialOrd` lowering is still a compiler gap, reported as
+  `E_LIMIT_DERIVED_ORD`; a user `impl Ord` or `impl PartialOrd` supplies the
+  comparison today. No derive attribute exists (D438). Idea only: a structural
+  inspect rendering for debugging output, distinct from `Display`.
 
 ## 6. Long-horizon
 

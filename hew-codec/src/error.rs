@@ -131,3 +131,70 @@ impl fmt::Display for DecodeError {
 }
 
 impl std::error::Error for DecodeError {}
+
+impl DecodeError {
+    /// Represent this error as the source-language DecodeError value.
+    #[must_use]
+    pub fn into_value(self) -> crate::Value {
+        use crate::Value;
+        let text = Value::Str;
+        let position = |at: Option<usize>| at.map_or(Value::Null, |at| Value::Int(at as i128));
+        let (variant, fields): (&str, Vec<(&str, Value)>) = match self {
+            DecodeError::Syntax {
+                offset,
+                line,
+                column,
+                reason,
+            } => (
+                "Syntax",
+                vec![
+                    ("offset", Value::Int(offset as i128)),
+                    ("line", position(line)),
+                    ("column", position(column)),
+                    ("reason", text(reason)),
+                ],
+            ),
+            DecodeError::Type {
+                path,
+                expected,
+                found,
+            } => (
+                "Type",
+                vec![
+                    ("path", text(path)),
+                    ("expected", text(expected)),
+                    ("found", text(found)),
+                ],
+            ),
+            DecodeError::Missing { path } => ("Missing", vec![("path", text(path))]),
+            DecodeError::Range {
+                path,
+                value,
+                target,
+            } => (
+                "Range",
+                vec![
+                    ("path", text(path)),
+                    ("value", text(value)),
+                    ("target", text(target)),
+                ],
+            ),
+            DecodeError::UnknownVariant { path, name } => (
+                "UnknownVariant",
+                vec![("path", text(path)), ("name", text(name))],
+            ),
+            DecodeError::Duplicate { path, key } => {
+                ("Duplicate", vec![("path", text(path)), ("key", text(key))])
+            }
+            DecodeError::Invalid { path, reason } => (
+                "Invalid",
+                vec![("path", text(path)), ("reason", text(reason))],
+            ),
+        };
+        let fields = fields
+            .into_iter()
+            .map(|(key, value)| (Value::Str(key.to_string()), value))
+            .collect();
+        Value::Map(vec![(Value::Str(variant.to_string()), Value::Map(fields))])
+    }
+}

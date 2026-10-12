@@ -1,6 +1,10 @@
-fn last<I, A>(consume input: I) -> Option<I.Item> where I: DoubleEndedIterator<Item = A> {
+fn last<I>(consume input: I) -> Option<I.Item> where I: DoubleEndedIterator {
     var cursor = input;
     cursor.next_back()
+}
+
+fn forwarded_last<I>(consume input: I) -> Option<I.Item> where I: DoubleEndedIterator {
+    last(input)
 }
 
 fn first<I, A>(consume input: I) -> Option< <I as DoubleEndedIterator>.Item> where I: DoubleEndedIterator<Item = A> {
@@ -75,6 +79,7 @@ fn main() -> i64 {
     assert(single.next().is_none());
     assert(single.next_back().is_none());
     assert(last([8, 9].into_iter()).expect("generic last item") == 9);
+    assert(forwarded_last(["left", "right"].into_iter()).expect("owned generic item") == "right");
     assert(first([8, 9].into_iter()).expect("generic first item") == 8);
     var mixed = [1, 2, 3, 4].into_iter();
     assert(mixed.next().expect("concrete front") == 1);

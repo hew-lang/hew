@@ -50,6 +50,7 @@ pub mod effects;
 mod error_display;
 mod exhaustiveness;
 mod expressions;
+mod generic_schema;
 mod generics;
 mod items;
 mod lints;
@@ -2809,6 +2810,7 @@ impl Checker {
             impl_alias_scopes: self.impl_alias_scopes.clone(),
             current_trait_for_self_projection: self.current_trait_for_self_projection.clone(),
             impl_assoc_type_bindings: self.impl_assoc_type_bindings.clone(),
+            associated_schema_parameters: self.associated_schema_parameters.clone(),
             wasm_target: self.wasm_target.clone(),
             repl_fragment: self.repl_fragment.clone(),
             is_stdlib_source: self.is_stdlib_source.clone(),
@@ -3201,6 +3203,8 @@ impl Checker {
         // silently-defaulted closure.
         self.validate_closure_facts_complete(program);
 
+        self.prepare_associated_schema_parameters();
+
         // Apply final substitutions to all recorded types
         let mut expr_types: HashMap<SpanKey, Ty> = self
             .expr_types
@@ -3284,6 +3288,7 @@ impl Checker {
                     (k, resolved)
                 })
                 .collect();
+        self.complete_associated_schema_arguments(&mut resolved_call_type_args);
 
         // Same boundary resolution for record-init type args.
         // Mirrors `resolved_call_type_args` so downstream consumers see
@@ -3692,7 +3697,7 @@ impl Checker {
         let shorthand_field_labels = self.scopes.take_shorthand_labels();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
-            declaration_type_parameters: self.scopes.declaration_parameter_facts(),
+            declaration_type_parameters: self.associated_schema_declarations(),
             resolved_annotation_types,
             normalized_program: normalized_program.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),

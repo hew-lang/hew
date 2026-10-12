@@ -4092,6 +4092,8 @@ pub struct Checker {
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings:
         HashMap<(ResolvedTy, crate::DefId, Symbol), ImplAssociatedType>,
+    pub(super) associated_schema_parameters:
+        BTreeMap<(crate::ParamHead, crate::DefId, Symbol), crate::ParamHead>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -4614,6 +4616,7 @@ impl Checker {
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),
+            associated_schema_parameters: BTreeMap::new(),
             wasm_target: false,
             repl_fragment: false,
             is_stdlib_source: false,

@@ -4672,6 +4672,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_coverage_hit( u32)",
+        "wasm32-wasip1": "fn hew_coverage_hit( u32)"
+      },
+      "symbol": "hew_coverage_hit"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",

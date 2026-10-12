@@ -591,6 +591,7 @@ pub use machine_emit::{
 };
 pub mod parse_error_slot;
 
+mod coverage;
 pub mod internal;
 mod send_ptr;
 mod trap_code;

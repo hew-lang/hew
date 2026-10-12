@@ -23,6 +23,7 @@ const NATIVE_FAMILIES = new Set(["AsyncIo", "FileRead", "Tcp"]);
 const NATIVE_SUSPENSIONS = new Set(["NativeIo", "RemoteAsk", "Read", "Accept"]);
 
 const OPS = new Set([
+  "coverage.hit",
   "const.int",
   "const.bool",
   "const.float",
@@ -174,6 +175,23 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         !ACTOR_OPS.has(block.term.operation.op)
       )
         return unavailable(`actor.${block.term.operation.op}`);
+      if (
+        block.ops.some(
+          (op) =>
+            op.op === "coverage.hit" &&
+            (!Number.isSafeInteger(op.counter) ||
+              op.counter < 0 ||
+              op.counter > 0xffff_ffff),
+        )
+      ) {
+        return {
+          category: "invalid_package",
+          code: "sandbox.package.invalid_counter",
+          capability: "coverage.hit",
+          message: "coverage counter must be a u32",
+          span: null,
+        };
+      }
       const unknown =
         block.ops.find((op) => !OPS.has(op.op))?.op ??
         (!TERMS.has(block.term.op) ? block.term.op : null);

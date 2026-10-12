@@ -222,7 +222,7 @@ fn lower_file_to_semantics(
             DiagChannel::User,
         )
     })?;
-    let output = lower_program_to_semantics(
+    let mut output = lower_program_to_semantics(
         &state.program,
         &state.source,
         &input,
@@ -230,6 +230,21 @@ fn lower_file_to_semantics(
         target,
         hew_compile::CheckSet::Build,
     )?;
+    if let Some(path) = &options.coverage_map {
+        let coverage = output.instrument_coverage(&state.program, &state.source, &input);
+        let bytes = serde_json::to_vec(&coverage).map_err(|error| {
+            diagnostic::emit_plain_diagnostic_line(&format!(
+                "Error: cannot encode coverage: {error}"
+            ));
+            DiagChannel::User
+        })?;
+        std::fs::write(path, bytes).map_err(|error| {
+            diagnostic::emit_plain_diagnostic_line(&format!(
+                "Error: cannot write coverage: {error}"
+            ));
+            DiagChannel::User
+        })?;
+    }
     let std_roots = options
         .module_search_paths
         .clone()

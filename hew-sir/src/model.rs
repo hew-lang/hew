@@ -843,6 +843,7 @@ pub struct SemStructuralRender {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    pub coverage: crate::CoveragePlan,
     /// Checked rendering selections and alias-preserving child identities.
     /// Only each key's value type participates in ownership and target layout.
     pub structural_display: BTreeMap<StructuralType, SemStructuralRender>,

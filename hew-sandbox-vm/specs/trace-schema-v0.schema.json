@@ -235,6 +235,10 @@
         "globals"
       ],
       "properties": {
+        "coverage": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
         "status": {
           "enum": [
             "ok",

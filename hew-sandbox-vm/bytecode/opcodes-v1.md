@@ -26,6 +26,13 @@ Every instruction is `{ "op": <name>, "dst": <value id> | null, "span": ... }`
 plus the fields named below. Every terminator is `{ "op": <name>, "span": ... }`
 plus its fields.
 
+## Coverage
+
+`coverage.hit { counter: u32 }` records entry to a source-bearing SIR block.
+The shared SIR plan assigns counter identities; this bookkeeping does not
+consume execution steps or change scheduler decisions. Test reports carry the
+counter totals for the compiler's source-line map.
+
 ## Constants
 
 | Opcode           | `dst`    | Fields                                                                               | Notes                                                                                                     |

@@ -1,0 +1,14 @@
+//! Branches retained for source coverage through both test engines.
+
+fn classify(value: i64) -> i64 {
+    if value > 0 {
+        value + 1
+    } else {
+        value - 1
+    }
+}
+
+#[test]
+fn positive_branch() {
+    assert(classify(5) == 6);
+}

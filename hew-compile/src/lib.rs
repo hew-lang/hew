@@ -8,7 +8,9 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_parser::module::ModulePath;
 use serde::{de::DeserializeOwned, Deserialize};
 
+mod coverage;
 mod deterministic_admission;
+pub use coverage::{SourceCoverageCounter, SourceCoverageMap};
 mod host;
 
 /// Source entries checked for operations the deterministic driver cannot

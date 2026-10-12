@@ -237,6 +237,7 @@ pub fn lower_physical_module(
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
     let mut physical = PhysicalModule {
+        coverage: module.coverage.clone(),
         releases: ReleaseEffects::default(),
         actor_recipes: actor_value_recipes(module, &ids)?,
         actors: module.actors.clone(),

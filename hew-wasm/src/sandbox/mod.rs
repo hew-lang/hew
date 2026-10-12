@@ -181,6 +181,7 @@ pub fn compile_to_sandbox_bytecode(
         SANDBOX_BUFFER_LABEL,
         hew_compile::FrontendOptions::default(),
         &mut Vec::new(),
+        None,
     )
 }
 
@@ -196,9 +197,11 @@ pub fn compile_tests_to_sandbox_bytecode(
     selections: &[hew_types::DeclarationOccurrence],
     companion: Option<&std::path::Path>,
     project_dir: &std::path::Path,
+    coverage_enabled: bool,
 ) -> Result<TestCompileOutput, CompileError> {
     let label = source_path.to_string_lossy();
     let mut entries = Vec::new();
+    let mut coverage = coverage_enabled.then(hew_compile::SourceCoverageMap::default);
     let output = compile_from_semantics(
         source,
         Some(DEFAULT_PROFILE_ALIAS),
@@ -213,6 +216,7 @@ pub fn compile_tests_to_sandbox_bytecode(
             ..Default::default()
         },
         &mut entries,
+        coverage.as_mut(),
     )?;
     let bytecodes = output.bytecode.map_or_else(Vec::new, |package| {
         entries
@@ -225,6 +229,7 @@ pub fn compile_tests_to_sandbox_bytecode(
             .collect()
     });
     Ok(TestCompileOutput {
+        coverage,
         diagnostics: output.diagnostics,
         bytecodes,
     })
@@ -232,6 +237,7 @@ pub fn compile_tests_to_sandbox_bytecode(
 
 #[derive(Debug, Clone)]
 pub struct TestCompileOutput {
+    pub coverage: Option<hew_compile::SourceCoverageMap>,
     pub diagnostics: Vec<Diagnostic>,
     pub bytecodes: Vec<SandboxBytecodePackageV1>,
 }
@@ -293,7 +299,7 @@ pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String 
         })
         .to_string();
     }
-    match compile_tests_to_sandbox_bytecode(source, path, &selections, None, project_dir) {
+    match compile_tests_to_sandbox_bytecode(source, path, &selections, None, project_dir, false) {
         Ok(output) => {
             if output.bytecodes.len() != eligible.len() {
                 if output
@@ -382,6 +388,7 @@ fn compile_from_semantics(
     source_label: &str,
     mut options: hew_compile::FrontendOptions,
     test_entries: &mut Vec<sir_emit::Entry>,
+    coverage: Option<&mut hew_compile::SourceCoverageMap>,
 ) -> Result<CompileOutput, CompileError> {
     let canonical_profile = match canonical_profile(profile) {
         Ok(profile) => profile,
@@ -443,7 +450,7 @@ fn compile_from_semantics(
         hew_compile::SessionTarget::browser(),
         hew_compile::DiagnosticPolicy::default(),
     );
-    let semantics = match session.lower_program(program, type_output) {
+    let mut semantics = match session.lower_program(program, type_output) {
         Ok(output) => output,
         Err(error) => {
             diagnostics.push(semantic_diagnostic(&error));
@@ -454,6 +461,9 @@ fn compile_from_semantics(
         }
     };
 
+    if let Some(map) = coverage {
+        *map = semantics.instrument_coverage(program, source, source_label);
+    }
     let module = &semantics.semantics().module;
     let package = sir_emit::emit_package(
         module,

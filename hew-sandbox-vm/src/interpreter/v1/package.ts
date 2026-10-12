@@ -217,6 +217,7 @@ interface OpBase {
 }
 
 export type OpV1 =
+  | (OpBase & { op: "coverage.hit"; counter: number })
   // Constants
   | (OpBase & { op: "const.int"; dst: number; value: string; ty: string })
   | (OpBase & { op: "const.bool"; dst: number; value: boolean })

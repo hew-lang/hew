@@ -546,8 +546,10 @@
       "type": "object",
       "required": ["op"],
       "properties": {
+        "counter": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
         "op": {
           "enum": [
+            "coverage.hit",
             "const.int",
             "const.bool",
             "const.float",

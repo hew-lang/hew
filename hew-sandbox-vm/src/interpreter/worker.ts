@@ -31,13 +31,31 @@ worker.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
       return;
     }
     const { bytecode, options } = event.data;
-    const trace = runBytecode(bytecode, options);
-    worker.postMessage({ id, ok: true, trace, playground: buildPlaygroundState(trace) });
+    const trace = runBytecode(bytecode, {
+      ...options,
+      codecBridge: globalThis.__hewSandboxExecuteCodec,
+    });
+    worker.postMessage({
+      id,
+      ok: true,
+      trace,
+      playground: buildPlaygroundState(trace),
+    });
   } catch (error) {
     if (error instanceof BytecodeValidationError) {
-      worker.postMessage({ id, ok: false, error: "bytecode_validation", diagnostics: error.errors });
+      worker.postMessage({
+        id,
+        ok: false,
+        error: "bytecode_validation",
+        diagnostics: error.errors,
+      });
       return;
     }
-    worker.postMessage({ id, ok: false, error: "interpreter_error", message: String(error) });
+    worker.postMessage({
+      id,
+      ok: false,
+      error: "interpreter_error",
+      message: String(error),
+    });
   }
 });

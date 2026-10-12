@@ -74,10 +74,10 @@ pub use check::{
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
     PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, ResolvedCall, ResolvedTraitDefault,
-    ResultReturnKind, RuntimeAbi, SlotEffect, SpanKey, StructuralWitness, TraitObjectLayout,
-    TryConversionKind, TryWidthCastLowering, TyPattern, TypeAliasDef, TypeCheckOutput,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind,
-    WidthCastLowering,
+    ResultReturnKind, RuntimeAbi, SlotEffect, SpanKey, StructuralWitness, TestEntryPlan,
+    TraitObjectLayout, TryConversionKind, TryWidthCastLowering, TyPattern, TypeAliasDef,
+    TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
+    WidthCastKind, WidthCastLowering,
 };
 pub use check::{walk_block, walk_expr, NodeVisitor};
 pub use def_table::{

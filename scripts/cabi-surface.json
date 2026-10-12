@@ -2391,6 +2391,21 @@
     },
     {
       "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bench_record( i64, i64)",
+        "wasm32-wasip1": "fn hew_bench_record( i64, i64)"
+      },
+      "symbol": "hew_bench_record"
+    },
+    {
+      "availability": [
         "native"
       ],
       "classification": "stable",
@@ -18388,6 +18403,36 @@
         "wasm32-wasip1": "fn hew_test_driver_active() -> bool"
       },
       "symbol": "hew_test_driver_active"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_test_property_fault( *mut c_void) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_test_property_fault( *mut c_void) -> *mut HewFault"
+      },
+      "symbol": "hew_test_property_fault"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_test_property_reader( i64) -> *mut c_void",
+        "wasm32-wasip1": "fn hew_test_property_reader( i64) -> *mut c_void"
+      },
+      "symbol": "hew_test_property_reader"
     },
     {
       "availability": [

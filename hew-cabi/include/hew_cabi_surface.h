@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1618u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1621u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -962,6 +962,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
      "HewAwaitCancel) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_bench_record",
+     "{\"native\": \"fn hew_bench_record( i64, i64)\", \"wasm32-wasip1\": \"fn "
+     "hew_bench_record( i64, i64)\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_blocking_pool_new",
      "{\"native\": \"fn hew_blocking_pool_new() -> *mut HewBlockingPool\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
@@ -6927,6 +6932,17 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
      "\"fn hew_test_driver_active() -> bool\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_test_property_fault",
+     "{\"native\": \"fn hew_test_property_fault( *mut c_void) -> *mut "
+     "HewFault\", \"wasm32-wasip1\": \"fn hew_test_property_fault( *mut "
+     "c_void) -> *mut HewFault\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_test_property_reader",
+     "{\"native\": \"fn hew_test_property_reader( i64) -> *mut c_void\", "
+     "\"wasm32-wasip1\": \"fn hew_test_property_reader( i64) -> *mut c_void\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_test_seed",
      "{\"native\": \"fn hew_test_seed() -> u64\", \"wasm32-wasip1\": \"fn "
      "hew_test_seed() -> u64\"}",

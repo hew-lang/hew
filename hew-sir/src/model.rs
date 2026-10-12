@@ -43,6 +43,7 @@ pub struct SemTestEntry {
     pub callable: CallableId,
     pub declaration: DefId,
     pub action: hew_types::EntryExitAction,
+    pub properties: Vec<hew_codec::property::Shape>,
 }
 
 /// Stable semantic identity for one generic HIR template.

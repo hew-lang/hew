@@ -116,8 +116,8 @@
             "scrutinee": 2,
             "shape": 0,
             "span": {
-              "end": 109,
-              "start": 109
+              "end": 97,
+              "start": 97
             }
           }
         },
@@ -222,8 +222,8 @@
             },
             "op": "cleanup.dispatch",
             "span": {
-              "end": 109,
-              "start": 109
+              "end": 97,
+              "start": 97
             }
           }
         },
@@ -299,8 +299,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 178,
-              "start": 178
+              "end": 97,
+              "start": 97
             }
           }
         },
@@ -315,8 +315,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 109,
-              "start": 109
+              "end": 97,
+              "start": 97
             }
           }
         },
@@ -1396,8 +1396,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 397,
-              "start": 397
+              "end": 359,
+              "start": 359
             }
           }
         },
@@ -1435,8 +1435,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 448,
-              "start": 448
+              "end": 359,
+              "start": 359
             }
           }
         },

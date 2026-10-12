@@ -1,0 +1,87 @@
+import std.encoding.json;
+import std.encoding.cbor;
+import std.encoding.yaml;
+import std.encoding.toml;
+import std.encoding.msgpack;
+
+type Sample {
+    exact: i64;
+    payload: bytes;
+    label: string;
+}
+
+type GeneratedFields {
+    #[serial(skip)]
+    transient: Option<i64>;
+    nested: Option<Option<i64>>;
+}
+
+enum Layered {
+    Absent;
+    PresentEmpty;
+    Present(i64);
+}
+
+fn check(back: Sample) {
+    assert(back.exact == 9007199254740993);
+    assert(back.payload == bytes [0, 128, 255]);
+    assert(back.label == "Montréal");
+}
+
+#[test]
+fn formats_preserve_typed_values_and_errors() {
+    let value = Sample { exact: 9007199254740993, payload: bytes [0, 128, 255], label: "Montréal" };
+    check(json.decode<Sample>(json.encode(value)).expect("JSON"));
+    check(cbor.decode<Sample>(cbor.encode(value)).expect("CBOR"));
+    check(yaml.decode<Sample>(yaml.encode(value)).expect("YAML"));
+    check(toml.decode<Sample>(toml.encode(value)).expect("TOML"));
+    check(msgpack.decode<Sample>(msgpack.encode(value)).expect("MessagePack"));
+    assert(json.decode<u64>("18446744073709551615").expect("u64") == 18446744073709551615);
+    let narrow: f32 = 0.1;
+    assert(cbor.decode<f32>(cbor.encode(narrow)).expect("f32") == narrow);
+    let infinity = yaml.decode<f64>(".inf").expect("infinity");
+    assert(cbor.decode<f64>(cbor.encode(infinity)).expect("infinity round-trip") == infinity);
+    let negative_zero: f64 = -0.0;
+    let encoded_zero = cbor.encode(negative_zero);
+    assert(cbor.encode(cbor.decode<f64>(encoded_zero).expect("negative zero")) == encoded_zero);
+    let map = json.decode<HashMap<string, i64>>("{\"north\":9007199254740993}").expect("map");
+    assert(map.get("north").expect("key") == value.exact);
+    let set = cbor.decode<HashSet<i64>>(cbor.encode([4, 5])).expect("set");
+    assert(set.contains(5));
+    match json.decode<Sample>("{") {
+        .Err(.Syntax { offset, line, column, reason }) => {
+            assert(offset == 1);
+            assert(line == .Some(1));
+            assert(column == .Some(2));
+            assert(!reason.is_empty());
+        }
+        _ => panic("expected a syntax location"),
+    }
+    match json.decode<i8>("128") {
+        .Err(.Range { path, value: decoded_value, target }) => {
+            assert(path == "");
+            assert(decoded_value == "128");
+            assert(target == "i8");
+        }
+        _ => panic("expected a typed range error"),
+    }
+    match json.decode<Sample>("{}") {
+        .Err(.Missing { path }) => assert(path == ".exact"),
+        _ => panic("expected a missing field"),
+    }
+}
+
+#[test]
+fn generated_input_uses_the_typed_codec_bridge(value: Sample, fields: GeneratedFields) {
+    let back = cbor.decode<Sample>(cbor.encode(value)).expect("generated round-trip");
+    assert(back.exact == value.exact);
+    assert(back.payload == value.payload);
+    assert(back.label == value.label);
+    let layered: Layered = match fields.nested {
+        .None => .Absent,
+        .Some(.None) => .PresentEmpty,
+        .Some(.Some(number)) => .Present(number),
+    };
+    assert(cbor.decode<Layered>(cbor.encode(layered)).expect("nested input") == layered);
+    assert(cbor.decode<Option<i64>>(cbor.encode(fields.transient)).expect("generated field") == fields.transient);
+}

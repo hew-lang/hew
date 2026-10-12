@@ -31,11 +31,78 @@ impl InstanceService<'_> {
             plans.insert(ty, plan);
         }
         let plans = Arc::new(SemWirePlans {
+            property_input: false,
             root: root.clone(),
             plans,
         });
         self.wire_plans.insert(root.clone(), Arc::clone(&plans));
         Ok(plans)
+    }
+
+    /// Generation uses the same layouts, retaining fields and every Option state.
+    pub(super) fn property_plans(
+        &mut self,
+        root: &ResolvedTy,
+    ) -> Result<Arc<SemWirePlans>, String> {
+        let mut plans = (*self.wire_plans(root)?).clone();
+        plans.property_input = true;
+        let preserve_fields = |table: &mut SemWireTable| {
+            for member in &mut table.members {
+                member.flags &= !(hew_codec::Member::SKIP
+                    | hew_codec::Member::ACCEPT_ABSENT
+                    | hew_codec::Member::OMIT_NULL);
+            }
+        };
+        for plan in plans.plans.values_mut() {
+            match &mut plan.kind {
+                SemWireKind::Option {
+                    shape,
+                    none,
+                    some,
+                    value,
+                } => {
+                    let mut members = vec![
+                        SemWireMember {
+                            key: String::new(),
+                            tag: 0,
+                            flags: 0
+                        };
+                        2
+                    ];
+                    members[*none as usize].key = "None".into();
+                    members[*some as usize] = SemWireMember {
+                        key: "Some".into(),
+                        tag: 0,
+                        flags: hew_codec::Member::PAYLOAD,
+                    };
+                    let mut variants = vec![SemWirePayload::Unit; 2];
+                    variants[*some as usize] = SemWirePayload::Single(value.clone());
+                    plan.kind = SemWireKind::Enum {
+                        shape: *shape,
+                        table: SemWireTable {
+                            tagged: false,
+                            members,
+                        },
+                        variants,
+                    };
+                }
+                SemWireKind::Record {
+                    table: Some(table), ..
+                } => preserve_fields(table),
+                SemWireKind::Enum {
+                    table, variants, ..
+                } => {
+                    preserve_fields(table);
+                    for variant in variants {
+                        if let SemWirePayload::Record { table, .. } = variant {
+                            preserve_fields(table);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(Arc::new(plans))
     }
 
     fn serial_table(

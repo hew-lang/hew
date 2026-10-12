@@ -340,7 +340,11 @@ impl Checker {
                         scoped_name.clone(),
                         (span.clone(), self.current_module.clone()),
                     );
-                    if fd.attributes.iter().any(|a| a.name.as_str() == "test") {
+                    if fd
+                        .attributes
+                        .iter()
+                        .any(|a| matches!(a.name.as_str(), "test" | "bench"))
+                    {
                         self.test_fn_names.insert(scoped_name.clone());
                     }
                     self.fn_visibility.insert(scoped_name, fd.visibility);

@@ -7,9 +7,14 @@ use super::*;
 use hew_mir::physical::{SemWireKind, SemWirePayload, SemWirePlan, SemWirePlans, SemWireTable};
 use hew_types::Codec;
 
-fn wire_symbol(ty: &ResolvedTy, decode: bool) -> String {
+fn wire_symbol(ty: &ResolvedTy, decode: bool, property_input: bool) -> String {
     format!(
-        "__hew_wire_{}_{}",
+        "__hew_wire_{}_{}_{}",
+        if property_input {
+            "property"
+        } else {
+            "document"
+        },
         if decode { "decode" } else { "encode" },
         hew_types::mangle_resolved_ty(ty)
     )
@@ -135,8 +140,16 @@ fn table_global<'ctx>(
     )
 }
 
-fn table_symbol(ty: &ResolvedTy, variant: Option<usize>) -> String {
-    let base = format!("__hew_wire_table_{}", hew_types::mangle_resolved_ty(ty));
+fn table_symbol(ty: &ResolvedTy, variant: Option<usize>, property_input: bool) -> String {
+    let base = format!(
+        "__hew_wire_table_{}_{}",
+        if property_input {
+            "property"
+        } else {
+            "document"
+        },
+        hew_types::mangle_resolved_ty(ty)
+    );
     variant.map_or(base.clone(), |index| format!("{base}_v{index}"))
 }
 
@@ -195,7 +208,7 @@ pub(super) fn emit_callback<'ctx>(
     callbacks: &key::CallbackTable<'ctx>,
     decode: bool,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let name = wire_symbol(ty, decode);
+    let name = wire_symbol(ty, decode, plans.property_input);
     if let Some(function) = llvm.get_function(&name) {
         return Ok(function);
     }
@@ -349,7 +362,12 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         variant: Option<usize>,
         table: &SemWireTable,
     ) -> BasicValueEnum<'ctx> {
-        table_global(&self.values, &table_symbol(ty, variant), table).into()
+        table_global(
+            &self.values,
+            &table_symbol(ty, variant, self.plans.property_input),
+            table,
+        )
+        .into()
     }
     fn child(&self, ty: &ResolvedTy, slot: PointerValue<'ctx>) -> CodegenResult<()> {
         let function = emit_callback(
@@ -1085,7 +1103,12 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         variant: Option<usize>,
         table: &SemWireTable,
     ) -> BasicValueEnum<'ctx> {
-        table_global(&self.values, &table_symbol(ty, variant), table).into()
+        table_global(
+            &self.values,
+            &table_symbol(ty, variant, self.plans.property_input),
+            table,
+        )
+        .into()
     }
     fn check_status(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         let success = self
@@ -1540,6 +1563,9 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
     }
     /// A key the collection already holds by its own `Eq` is a duplicate.
     fn refuse_duplicate(&self, unique: IntValue<'ctx>) -> CodegenResult<()> {
+        if self.plans.property_input {
+            return Ok(());
+        }
         let accepted = self
             .values
             .ctx
@@ -1797,12 +1823,30 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(fault_out, pointer.const_null())
             .llvm_ctx("initialize codec callback fault owner")?;
-        let reader = runtime_value(
-            &values,
-            "hew_de_new",
-            pointer.into(),
-            &[format, self.slots[input.0 as usize].into()],
-        )?;
+        let test_input = codec.direction == hew_types::CodecDirection::TestInput;
+        let reader = if test_input {
+            let index = self
+                .builder
+                .build_load(
+                    self.ctx.i64_type(),
+                    self.slots[input.0 as usize],
+                    "property.argument",
+                )
+                .llvm_ctx("read property argument index")?;
+            runtime_value(
+                &values,
+                "hew_test_property_reader",
+                pointer.into(),
+                &[index],
+            )?
+        } else {
+            runtime_value(
+                &values,
+                "hew_de_new",
+                pointer.into(),
+                &[format, self.slots[input.0 as usize].into()],
+            )?
+        };
         if let Some(frame) = &self.frame {
             frame.carry(self.ctx, &self.builder, reader, "wire.reader.slot")?;
         }
@@ -1860,6 +1904,29 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.store_active_fault_value(fault, status)?;
         self.emit_edge(unwind)?;
         self.builder.position_at_end(malformed);
+        if test_input {
+            let fault = runtime_value(
+                &values,
+                "hew_test_property_fault",
+                pointer.into(),
+                &[reader],
+            )?;
+            runtime(&values, "hew_de_free", None, &[reader])?;
+            self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+            self.emit_edge(unwind)?;
+            self.builder.position_at_end(success);
+            runtime(&values, "hew_de_free", None, &[reader])?;
+            let value = self
+                .builder
+                .build_load(
+                    llvm_type(self.ctx, &layout.repr)?,
+                    decoded,
+                    "property.value",
+                )
+                .llvm_ctx("take decoded property argument")?;
+            self.store(result, value)?;
+            return self.emit_result_edge(Some(result), normal);
+        }
         let cases = decode_result.ok_or_else(|| {
             CodegenError::FailClosed("codec decode lacks its Result cases".into())
         })?;

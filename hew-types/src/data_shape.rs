@@ -79,6 +79,11 @@ impl NotData {
 }
 
 impl TypeFactService {
+    /// Property generation keeps presence explicit, so nested options are data.
+    pub(crate) fn property_error(&self, ty: &ResolvedTy) -> Option<NotData> {
+        self.data_error_within(ty, false, true, &|_, _| false, &mut HashSet::new())
+    }
+
     /// The one `Serializable` admission check. `tagged` adds the remote-payload
     /// rule: every record or enum reached must be `#[wire]`. `param` answers a
     /// bound on a type parameter of the code being checked.
@@ -88,7 +93,7 @@ impl TypeFactService {
         tagged: bool,
         param: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> Option<NotData> {
-        self.data_error_within(ty, tagged, param, &mut HashSet::new())
+        self.data_error_within(ty, tagged, false, param, &mut HashSet::new())
     }
 }
 
@@ -101,6 +106,7 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         tagged: bool,
+        property: bool,
         param: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
         visiting: &mut HashSet<ResolvedTy>,
     ) -> Option<NotData> {
@@ -112,7 +118,7 @@ impl TypeFactService {
             })
         };
         let member = |segment: String, member: &ResolvedTy, visiting: &mut HashSet<ResolvedTy>| {
-            self.data_error_within(member, tagged, param, visiting)
+            self.data_error_within(member, tagged, property, param, visiting)
                 .map(|mut error| {
                     error.path.insert_str(0, &segment);
                     error
@@ -177,8 +183,9 @@ impl TypeFactService {
                         .or_else(|| member("[]".to_string(), value, visiting))
                 }
                 (BuiltinType::Option, [value]) => {
-                    if value.is_builtin(BuiltinType::Option)
-                        || matches!(value, ResolvedTy::TypeParam { .. })
+                    if !property
+                        && (value.is_builtin(BuiltinType::Option)
+                            || matches!(value, ResolvedTy::TypeParam { .. }))
                     {
                         return refuse(NotDataReason::NestedOption);
                     }

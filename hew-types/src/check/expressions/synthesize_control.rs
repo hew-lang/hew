@@ -1816,7 +1816,13 @@ impl Checker {
             types
         } else {
             let lt = self.synthesize(&left.0, &left.1);
-            let rt = self.synthesize(&right.0, &right.1);
+            let expected = self.subst.resolve(&lt);
+            let rt = if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) && !expected.is_numeric()
+            {
+                self.check_against(&right.0, &right.1, &expected)
+            } else {
+                self.synthesize(&right.0, &right.1)
+            };
             (lt, rt)
         };
 

@@ -93,6 +93,7 @@ pub(super) fn compile_test(
         packages.push(path);
     }
     Ok(CompiledTestArtifact::Vm {
+        properties: output.properties,
         coverage: output.coverage,
         _emit_dir: emit_dir,
         packages,

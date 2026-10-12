@@ -386,8 +386,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 199,
+              "start": 199
             },
             "structural": null,
             "unwind": null
@@ -466,8 +466,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 199,
+              "start": 199
             }
           }
         },
@@ -478,8 +478,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 227,
-              "start": 227
+              "end": 199,
+              "start": 199
             },
             "value": null
           }

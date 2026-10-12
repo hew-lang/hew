@@ -96,8 +96,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 60,
-              "start": 60
+              "end": 31,
+              "start": 31
             }
           }
         },
@@ -185,8 +185,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 60,
-              "start": 60
+              "end": 56,
+              "start": 56
             }
           }
         },
@@ -292,8 +292,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 60,
-              "start": 60
+              "end": 31,
+              "start": 31
             },
             "value": null
           }

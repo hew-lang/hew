@@ -80,9 +80,7 @@ impl DiscoveredTestFile {
     }
 }
 
-/// Walk a parsed program's AST and collect all `#[test]` functions.
-#[must_use]
-pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
+fn discover_entries(program: &Program, file: &str, benchmark: bool) -> Vec<TestCase> {
     let mut tests = Vec::new();
     let path = std::path::Path::new(file);
     let companion = hew_compile::module_membership(path, &hew_compile::FrontendOptions::default())
@@ -91,7 +89,12 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
                 .test_companion(&path.canonicalize().ok()?)
                 .map(|companion| companion.display().to_string())
         });
-    for declaration in hew_analysis::test_discovery::discover_tests(program) {
+    let declarations = if benchmark {
+        hew_analysis::test_discovery::discover_benchmarks(program)
+    } else {
+        hew_analysis::test_discovery::discover_tests(program)
+    };
+    for declaration in declarations {
         tests.push(TestCase {
             name: declaration.name,
             file: file.to_string(),
@@ -126,11 +129,18 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
 ///
 /// Returns an error string if the file cannot be read.
 pub fn discover_tests_in_file(path: &str) -> Result<DiscoveredTestFile, String> {
+    discover_entries_in_file(path, false)
+}
+
+pub(super) fn discover_entries_in_file(
+    path: &str,
+    benchmark: bool,
+) -> Result<DiscoveredTestFile, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let result = hew_parser::parse(&source);
     Ok(DiscoveredTestFile {
         path: path.to_string(),
-        tests: discover_tests(&result.program, path),
+        tests: discover_entries(&result.program, path, benchmark),
         source,
         parse_errors: result.errors,
     })
@@ -180,7 +190,7 @@ fn test_panic() {
 }
 ";
         let result = hew_parser::parse(source);
-        let tests = discover_tests(&result.program, "test.hew");
+        let tests = discover_entries(&result.program, "test.hew", false);
         assert_eq!(tests.len(), 3);
 
         assert_eq!(tests[0].name, "test_basic");
@@ -199,7 +209,7 @@ fn test_panic() {
     fn discover_serial_test() {
         let source = "#[test]\n#[serial]\nfn touches_shared_state() {}\n";
         let result = hew_parser::parse(source);
-        let tests = discover_tests(&result.program, "test.hew");
+        let tests = discover_entries(&result.program, "test.hew", false);
 
         assert_eq!(tests.len(), 1);
         assert!(tests[0].serial);
@@ -209,7 +219,7 @@ fn test_panic() {
     fn no_tests_in_plain_program() {
         let source = "fn main() -> i32 { 0 }";
         let result = hew_parser::parse(source);
-        let tests = discover_tests(&result.program, "main.hew");
+        let tests = discover_entries(&result.program, "main.hew", false);
         assert!(tests.is_empty());
     }
 

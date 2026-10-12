@@ -11,6 +11,8 @@ use crate::{AggregateShapeId, VariantShapeId};
 /// by its type and planned once, so recursive types terminate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemWirePlans {
+    /// Generated arguments preserve fields and explicit optional presence.
+    pub property_input: bool,
     pub root: ResolvedTy,
     pub plans: BTreeMap<ResolvedTy, SemWirePlan>,
 }
@@ -121,6 +123,175 @@ impl SemWirePlan {
 }
 
 impl SemWirePlans {
+    /// Project the checked codec walk into the shared generator and VM value vocabulary.
+    pub fn property_shape(&self) -> Result<hew_codec::property::Shape, String> {
+        use hew_codec::property::{Key, Node, Shape};
+        let ids: BTreeMap<_, _> = self
+            .plans
+            .keys()
+            .enumerate()
+            .map(|(index, ty)| (ty, index))
+            .collect();
+        let child = |ty: &ResolvedTy| {
+            ids.get(ty)
+                .copied()
+                .ok_or_else(|| format!("property shape lacks `{}`", ty.user_facing()))
+        };
+        let keys = |table: &SemWireTable| {
+            table
+                .members
+                .iter()
+                .map(|member| Key {
+                    name: member.key.clone(),
+                    tag: table.tagged.then_some(member.tag),
+                    flags: member.flags,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut nodes = vec![Node::Unit; self.plans.len()];
+        let mut names = self
+            .plans
+            .keys()
+            .map(|ty| ty.user_facing().to_string())
+            .collect::<Vec<_>>();
+        let mut aggregates = vec![None; self.plans.len()];
+        let mut variant_shapes = vec![None; self.plans.len()];
+        let mut grouped_payloads = vec![false; self.plans.len()];
+        for (ty, plan) in &self.plans {
+            match plan.kind {
+                SemWireKind::Record { shape, .. } => aggregates[child(ty)?] = Some(shape.0),
+                SemWireKind::Enum { shape, .. } | SemWireKind::Option { shape, .. } => {
+                    variant_shapes[child(ty)?] = Some(shape.0)
+                }
+                _ => {}
+            }
+            let node = match &plan.kind {
+                SemWireKind::Scalar => match ty {
+                    ResolvedTy::Bool => Node::Bool,
+                    ResolvedTy::Char => Node::Char,
+                    ResolvedTy::String => Node::String,
+                    ResolvedTy::Bytes => Node::Bytes,
+                    ResolvedTy::F32 => Node::Float { bits: 32 },
+                    ResolvedTy::F64 => Node::Float { bits: 64 },
+                    ResolvedTy::I8 => Node::Signed {
+                        min: i64::from(i8::MIN),
+                        max: i64::from(i8::MAX),
+                    },
+                    ResolvedTy::I16 => Node::Signed {
+                        min: i64::from(i16::MIN),
+                        max: i64::from(i16::MAX),
+                    },
+                    ResolvedTy::I32 => Node::Signed {
+                        min: i64::from(i32::MIN),
+                        max: i64::from(i32::MAX),
+                    },
+                    ResolvedTy::I64 | ResolvedTy::Isize | ResolvedTy::Duration => Node::Signed {
+                        min: i64::MIN,
+                        max: i64::MAX,
+                    },
+                    ResolvedTy::U8 => Node::Unsigned {
+                        max: u64::from(u8::MAX),
+                    },
+                    ResolvedTy::U16 => Node::Unsigned {
+                        max: u64::from(u16::MAX),
+                    },
+                    ResolvedTy::U32 => Node::Unsigned {
+                        max: u64::from(u32::MAX),
+                    },
+                    ResolvedTy::U64 | ResolvedTy::Usize => Node::Unsigned { max: u64::MAX },
+                    _ => {
+                        return Err(format!(
+                            "property scalar `{}` is unsupported",
+                            ty.user_facing()
+                        ))
+                    }
+                },
+                SemWireKind::Unit => Node::Unit,
+                SemWireKind::Tuple(fields) => {
+                    Node::Tuple(fields.iter().map(&child).collect::<Result<_, _>>()?)
+                }
+                SemWireKind::Array { element, len } => Node::Array {
+                    element: child(element)?,
+                    len: usize::try_from(*len).map_err(|_| "property array is too large")?,
+                },
+                SemWireKind::Vector(element) => Node::Sequence(child(element)?),
+                SemWireKind::Set(element) => Node::Set(child(element)?),
+                SemWireKind::Map { key, value } => Node::Map {
+                    key: child(key)?,
+                    value: child(value)?,
+                },
+                SemWireKind::Option { value, .. } => Node::Option(child(value)?),
+                SemWireKind::Record {
+                    table: None,
+                    fields,
+                    ..
+                } => Node::Tuple(fields.iter().map(&child).collect::<Result<_, _>>()?),
+                SemWireKind::Record {
+                    table: Some(table),
+                    fields,
+                    ..
+                } => Node::Record(
+                    keys(table)
+                        .into_iter()
+                        .zip(fields.iter().map(&child).collect::<Result<Vec<_>, _>>()?)
+                        .collect(),
+                ),
+                SemWireKind::Enum {
+                    table, variants, ..
+                } => {
+                    let mut cases = Vec::new();
+                    for (key, variant) in keys(table).into_iter().zip(variants) {
+                        let payload = match variant {
+                            SemWirePayload::Unit => None,
+                            SemWirePayload::Single(ty) => Some(child(ty)?),
+                            SemWirePayload::Tuple(fields) => {
+                                let index = nodes.len();
+                                names.push(String::new());
+                                grouped_payloads.push(true);
+                                aggregates.push(None);
+                                variant_shapes.push(None);
+                                nodes.push(Node::Tuple(
+                                    fields.iter().map(&child).collect::<Result<_, _>>()?,
+                                ));
+                                Some(index)
+                            }
+                            SemWirePayload::Record { table, fields } => {
+                                let index = nodes.len();
+                                names.push(String::new());
+                                grouped_payloads.push(true);
+                                aggregates.push(None);
+                                variant_shapes.push(None);
+                                nodes.push(Node::Record(
+                                    keys(table)
+                                        .into_iter()
+                                        .zip(
+                                            fields
+                                                .iter()
+                                                .map(&child)
+                                                .collect::<Result<Vec<_>, _>>()?,
+                                        )
+                                        .collect(),
+                                ));
+                                Some(index)
+                            }
+                        };
+                        cases.push((key, payload));
+                    }
+                    Node::Variant(cases)
+                }
+            };
+            nodes[child(ty)?] = node;
+        }
+        Ok(Shape {
+            root: child(&self.root)?,
+            nodes,
+            names,
+            aggregates,
+            variants: variant_shapes,
+            grouped_payloads,
+        })
+    }
+
     #[must_use]
     pub fn get(&self, ty: &ResolvedTy) -> Option<&SemWirePlan> {
         self.plans.get(ty)

@@ -345,8 +345,8 @@
             },
             "op": "branch",
             "span": {
-              "end": 100,
-              "start": 100
+              "end": 44,
+              "start": 44
             },
             "then": {
               "args": [],
@@ -455,8 +455,8 @@
             },
             "op": "branch",
             "span": {
-              "end": 68,
-              "start": 68
+              "end": 64,
+              "start": 64
             },
             "then": {
               "args": [],
@@ -521,8 +521,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 100,
-              "start": 100
+              "end": 64,
+              "start": 64
             }
           }
         },
@@ -553,8 +553,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 100,
-              "start": 100
+              "end": 92,
+              "start": 92
             }
           }
         },
@@ -630,8 +630,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 100,
-              "start": 100
+              "end": 92,
+              "start": 92
             }
           }
         },
@@ -648,8 +648,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 100,
-              "start": 100
+              "end": 44,
+              "start": 44
             }
           }
         },

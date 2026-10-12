@@ -45,7 +45,7 @@ pub struct HirModule {
     pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
     /// Checker-selected test entries in dispatcher ordinal order. Each entry
     /// retains its own typed process-exit action.
-    pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
+    pub test_entry_plans: Vec<hew_types::TestEntryPlan>,
     /// The checker's layout of every trait object the program names, keyed
     /// by its canonical type: the one slot list dispatch and tables read.
     pub trait_object_layouts:

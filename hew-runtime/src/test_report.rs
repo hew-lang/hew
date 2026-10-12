@@ -17,6 +17,18 @@ struct FaultEvidence {
     assertion: Option<crate::fault::AssertionOperands>,
 }
 
+static BENCHMARKS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+/// Record one calibrated benchmark sample for the selected entry.
+#[no_mangle]
+pub extern "C" fn hew_bench_record(elapsed_ns: i64, iterations: i64) {
+    if let (Ok(elapsed), Ok(iterations)) = (u64::try_from(elapsed_ns), u64::try_from(iterations)) {
+        if iterations > 0 {
+            BENCHMARKS.lock_or_recover().push((elapsed, iterations));
+        }
+    }
+}
+
 static FAULT: Mutex<Option<FaultEvidence>> = Mutex::new(None);
 
 /// Return the zero-based entry chosen by the test runner. An absent or
@@ -71,6 +83,7 @@ pub(crate) fn finish(status: i32) {
     let record = serde_json::json!({
         "version": 1,
         "coverage": crate::coverage::snapshot(),
+        "benchmarks": *BENCHMARKS.lock_or_recover(),
         "outcome": outcome,
         "status": status,
         "fault_kind": fault.as_ref().map(|fault| fault.kind),

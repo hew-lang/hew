@@ -236,6 +236,7 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
     }
     return str(chars[at]!);
   },
+  StringIsEmpty: (_host, args) => bool(text(args, 0).length === 0),
   StringReplace: (_host, args) =>
     str(text(args, 0).split(text(args, 1)).join(text(args, 2))),
   // Native slicing is by codepoint and clamps rather than trapping.

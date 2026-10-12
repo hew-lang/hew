@@ -513,8 +513,14 @@ impl<'a> InstanceService<'a> {
             &mut plan.action,
             EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
         );
-        self.entry_adapters
-            .insert(id, EntryAdapter { entry, action });
+        self.entry_adapters.insert(
+            id,
+            EntryAdapter {
+                entry,
+                action,
+                benchmark: false,
+            },
+        );
         self.request_body(id);
     }
 
@@ -524,7 +530,9 @@ impl<'a> InstanceService<'a> {
                 continue;
             };
             self.request_body(entry);
-            let (callable, action) = if matches!(plan.action, EntryExitAction::Result { .. }) {
+            let (callable, action) = if !plan.arguments.is_empty()
+                || matches!(plan.action, EntryExitAction::Result { .. })
+            {
                 let Some(source) = self.table.callable(entry).cloned() else {
                     continue;
                 };
@@ -542,7 +550,11 @@ impl<'a> InstanceService<'a> {
                     signature: SemSignature {
                         failure_domain: hew_types::CallableFailureDomain::HewFault,
                         params: Vec::new(),
-                        return_ty: ResolvedTy::I64,
+                        return_ty: if matches!(plan.action, EntryExitAction::Result { .. }) {
+                            ResolvedTy::I64
+                        } else {
+                            source.signature.return_ty.clone()
+                        },
                     },
                     call_conv: SemCallConv::Default,
                     kind: SemCallableKind::HewDirect,
@@ -553,6 +565,7 @@ impl<'a> InstanceService<'a> {
                 self.entry_adapters.insert(
                     id,
                     EntryAdapter {
+                        benchmark: plan.benchmark,
                         entry,
                         action: plan.action.clone(),
                     },
@@ -560,15 +573,29 @@ impl<'a> InstanceService<'a> {
                 self.request_body(id);
                 (
                     id,
-                    EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
+                    if matches!(plan.action, EntryExitAction::Result { .. }) {
+                        EntryExitAction::Integer(hew_types::EntryIntegerType::I64)
+                    } else {
+                        plan.action.clone()
+                    },
                 )
             } else {
                 (entry, plan.action.clone())
+            };
+            let properties = plan
+                .arguments
+                .iter()
+                .filter(|_| !plan.benchmark)
+                .map(|ty| self.property_plans(ty)?.property_shape())
+                .collect::<Result<Vec<_>, String>>();
+            let Ok(properties) = properties else {
+                continue;
             };
             self.test_entries.push(crate::SemTestEntry {
                 callable,
                 declaration: plan.entry,
                 action,
+                properties,
             });
         }
     }

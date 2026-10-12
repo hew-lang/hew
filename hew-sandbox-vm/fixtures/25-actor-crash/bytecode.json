@@ -509,8 +509,8 @@
             },
             "op": "branch",
             "span": {
-              "end": 316,
-              "start": 316
+              "end": 271,
+              "start": 271
             },
             "then": {
               "args": [],
@@ -551,8 +551,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 316,
-              "start": 316
+              "end": 303,
+              "start": 303
             }
           }
         },
@@ -613,8 +613,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 316,
-              "start": 316
+              "end": 265,
+              "start": 265
             },
             "structural": null,
             "unwind": null
@@ -638,8 +638,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 316,
-              "start": 316
+              "end": 265,
+              "start": 265
             }
           }
         },
@@ -650,8 +650,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 316,
-              "start": 316
+              "end": 265,
+              "start": 265
             },
             "value": null
           }

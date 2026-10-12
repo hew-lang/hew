@@ -246,6 +246,8 @@ impl TestCompilePaths {
 /// new positional argument every time the compiler pipeline gains a mode.
 #[derive(Clone, Copy)]
 pub struct TestRunOptions<'a> {
+    pub benchmark: bool,
+    pub cases: u32,
     pub coverage: Option<&'a super::coverage::Coverage>,
     pub filter: Option<&'a str>,
     pub include_ignored: bool,
@@ -319,6 +321,8 @@ struct Execution {
 /// Private record written by the runtime after the selected test settles.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TestReport {
+    #[serde(default)]
+    pub(super) benchmarks: Vec<(u64, u64)>,
     #[serde(default)]
     coverage: std::collections::BTreeMap<u32, u64>,
     #[serde(default)]
@@ -729,11 +733,13 @@ pub(super) enum CompiledTestArtifact {
         _emit_dir: tempfile::TempDir,
         binary_path: PathBuf,
         coverage: Option<hew_compile::SourceCoverageMap>,
+        properties: Vec<Vec<hew_codec::property::Shape>>,
     },
     Vm {
         _emit_dir: tempfile::TempDir,
         packages: Vec<PathBuf>,
         coverage: Option<hew_compile::SourceCoverageMap>,
+        properties: Vec<Vec<hew_codec::property::Shape>>,
     },
 }
 
@@ -782,6 +788,7 @@ fn compile_test(
         .target
         .executable_path(emit_dir.path(), binary_name);
     let compile_options = crate::compile::CompileOptions {
+        opt_level: options.benchmark.then_some(hew_codegen_rs::OptLevel::O2),
         coverage_map: options
             .coverage
             .map(|_| emit_dir.path().join("coverage.json")),
@@ -828,6 +835,7 @@ fn compile_test(
         collector.include(map);
     }
     Ok(CompiledTestArtifact::Native {
+        properties: compile_result.expect("compilation succeeded above"),
         coverage,
         _emit_dir: emit_dir,
         binary_path,
@@ -841,6 +849,7 @@ fn execute_test_run(
     ordinal: u32,
     options: &TestRunOptions<'_>,
     merge_output: bool,
+    property: Option<&[hew_codec::Value]>,
 ) -> (
     Result<crate::process::BinaryRunOutcome, String>,
     Option<TestReport>,
@@ -856,6 +865,17 @@ fn execute_test_run(
             );
         }
     };
+    if let Some(values) = property {
+        let mut sink = hew_codec::Sink::new(hew_codec::Format::Cbor);
+        sink.value(&hew_codec::Value::Seq(values.to_vec()));
+        if let Err(error) = std::fs::write(dir.path().join("property.cbor"), sink.finish()) {
+            return (
+                Err(format!("cannot write property arguments: {error}")),
+                None,
+                Some(dir),
+            );
+        }
+    }
     let path = dir.path().join("report.json");
     let trace_path = options.trace_dir.map(|_| dir.path().join("trace.json"));
     let scratch = dir.path().join("tmp");
@@ -907,11 +927,135 @@ fn execute_test_run(
     clippy::too_many_lines,
     reason = "one isolated execution owns its timeout, report, output, and outcome"
 )]
+fn property_infrastructure_failure(result: &TestResult) -> bool {
+    let TestOutcome::Failed(failure) = &result.outcome else {
+        return false;
+    };
+    matches!(
+        failure.kind,
+        TestFailureKind::Launch
+            | TestFailureKind::Refused
+            | TestFailureKind::Timeout
+            | TestFailureKind::Crash
+    ) || (failure.kind == TestFailureKind::Runtime
+        && !result.report.as_ref().is_some_and(|report| {
+            report.outcome == "exit" || (report.outcome == "passed" && report.status == 0)
+        }))
+}
+
 fn run_compiled_test(
     test: &TestCase,
     ordinal: usize,
     artifact: &CompiledTestArtifact,
     options: &TestRunOptions<'_>,
+) -> TestResult {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngSeed, TestError, TestRunner};
+
+    let properties = match artifact {
+        CompiledTestArtifact::Native { properties, .. }
+        | CompiledTestArtifact::Vm { properties, .. } => properties,
+    };
+    let shapes = properties.get(ordinal).map_or(&[][..], Vec::as_slice);
+    if shapes.is_empty() {
+        return run_compiled_test_input(test, ordinal, artifact, options, None, true);
+    }
+    let start = std::time::Instant::now();
+    let strategies = shapes
+        .iter()
+        .map(super::property::strategy)
+        .collect::<Result<Vec<_>, _>>();
+    let strategies = match strategies {
+        Ok(strategies) => strategies,
+        Err(error) => {
+            return TestResult {
+                test: test.clone(),
+                outcome: TestOutcome::failed(TestFailureKind::Runtime, error),
+                output: String::new(),
+                duration: start.elapsed(),
+                report: None,
+            }
+        }
+    };
+    let seed = options
+        .schedules
+        .seed
+        .unwrap_or_else(|| super::stable_hash(&super::test_identity(test, options.root)));
+    let mut runner = TestRunner::new(Config {
+        cases: options.cases,
+        rng_seed: RngSeed::Fixed(seed),
+        failure_persistence: None,
+        max_shrink_iters: 4096,
+        max_global_rejects: 0,
+        ..Config::default()
+    });
+    let last = std::cell::RefCell::new(None);
+    let stopped = std::cell::RefCell::new(None);
+    let outcome = runner.run(&strategies, |values| {
+        if stopped.borrow().is_some() {
+            return Err(TestCaseError::reject("property execution stopped"));
+        }
+        let result =
+            run_compiled_test_input(test, ordinal, artifact, options, Some(&values), false);
+        if property_infrastructure_failure(&result) {
+            *stopped.borrow_mut() = Some(result);
+            return Err(TestCaseError::reject("property execution stopped"));
+        }
+        let outcome = match &result.outcome {
+            TestOutcome::Failed(failure) => Err(TestCaseError::fail(failure.message.clone())),
+            _ => Ok(()),
+        };
+        *last.borrow_mut() = Some(result);
+        outcome
+    });
+    if let Some(mut result) = stopped.into_inner() {
+        result.duration = start.elapsed();
+        return result;
+    }
+    let mut result = match outcome {
+        Ok(()) => last
+            .into_inner()
+            .expect("a property runs at least one case"),
+        Err(TestError::Fail(_, values)) => {
+            let mut result =
+                run_compiled_test_input(test, ordinal, artifact, options, Some(&values), true);
+            if !matches!(result.outcome, TestOutcome::Failed(_)) {
+                result.outcome = TestOutcome::failed(TestFailureKind::Runtime,
+                    "property failed during generation or shrinking; the retained input passed on replay");
+                result.duration = start.elapsed();
+                return result;
+            }
+            if property_infrastructure_failure(&result) {
+                result.duration = start.elapsed();
+                return result;
+            }
+            if let TestOutcome::Failed(failure) = &mut result.outcome {
+                let _ = write!(failure.message, "\nminimal counterexample: {values:?}\nproperty seed: {seed:#x}\nreproduce: hew test {} --seed {seed:#x} --cases {}", super::test_selector(test), options.cases);
+            }
+            result
+        }
+        Err(TestError::Abort(reason)) => TestResult {
+            test: test.clone(),
+            outcome: TestOutcome::failed(
+                TestFailureKind::Runtime,
+                format!("property generation stopped: {reason}"),
+            ),
+            output: String::new(),
+            duration: start.elapsed(),
+            report: None,
+        },
+    };
+    result.duration = start.elapsed();
+    result
+}
+
+fn run_compiled_test_input(
+    test: &TestCase,
+    ordinal: usize,
+    artifact: &CompiledTestArtifact,
+    options: &TestRunOptions<'_>,
+    property: Option<&[hew_codec::Value]>,
+    preserve_failure: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
     let timeout = test
@@ -941,8 +1085,15 @@ fn run_compiled_test(
             .doc
             .as_ref()
             .is_none_or(|doc| doc.expected_stdout.is_none());
-        let (run_result, report, report_dir) =
-            execute_test_run(artifact, timeout, execution, ordinal, options, merge_output);
+        let (run_result, report, report_dir) = execute_test_run(
+            artifact,
+            timeout,
+            execution,
+            ordinal,
+            options,
+            merge_output,
+            property,
+        );
         let (mut outcome, output) = judge_run(test, run_result, timeout, report.as_ref());
         if matches!(outcome, TestOutcome::Passed) {
             if let Some(expected) = test
@@ -961,7 +1112,10 @@ fn run_compiled_test(
         match outcome {
             TestOutcome::Failed(mut failure) => {
                 failed_runs += 1;
-                if let (Some(trace_dir), Some(dir)) = (options.trace_dir, report_dir.as_ref()) {
+                if let (Some(trace_dir), Some(dir)) = (
+                    options.trace_dir.filter(|_| preserve_failure),
+                    report_dir.as_ref(),
+                ) {
                     let source = dir.path().join("trace.json");
                     let hash = super::stable_hash(&super::test_selector(test));
                     let target = trace_dir.join(format!("test-{hash:016x}-{run_index}.trace.json"));
@@ -987,7 +1141,7 @@ fn run_compiled_test(
                     }
                 }
                 if first_failure.is_none() {
-                    if let Some(dir) = report_dir {
+                    if let Some(dir) = report_dir.filter(|_| preserve_failure) {
                         if dir.path().join("tmp").is_dir() {
                             let scratch = dir.keep().join("tmp");
                             let _ =
@@ -1476,6 +1630,8 @@ mod tests {
             &tests,
             TestRunOptions {
                 coverage: None,
+                cases: 100,
+                benchmark: false,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -1503,6 +1659,8 @@ mod tests {
             &discovered.tests,
             TestRunOptions {
                 coverage: None,
+                cases: 100,
+                benchmark: false,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -1926,6 +2084,8 @@ fn test_timeout() {
             &tests,
             TestRunOptions {
                 coverage: None,
+                cases: 100,
+                benchmark: false,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(&unused_paths),

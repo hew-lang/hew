@@ -1324,6 +1324,7 @@ enum BodySource {
 /// exit status.
 #[derive(Debug, Clone)]
 struct EntryAdapter {
+    benchmark: bool,
     entry: CallableId,
     action: EntryExitAction,
 }

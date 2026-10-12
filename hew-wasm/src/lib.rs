@@ -32,6 +32,9 @@ pub mod sandbox;
 use std::fmt;
 
 use serde::{de::DeserializeOwned, Serialize};
+mod codec;
+pub use codec::execute_codec;
+
 use wasm_bindgen::prelude::*;
 
 // ── Diagnostics API ──────────────────────────────────────────────────────

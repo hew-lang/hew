@@ -1662,6 +1662,11 @@ pub(crate) fn verify_terminator(
             unwind,
         } => {
             wire::verify_wire_plan(module, plan)?;
+            if plan.property_input != (codec.direction == hew_types::CodecDirection::TestInput) {
+                return Err(PhysicalError::new(
+                    "codec input purpose differs from its typed plan",
+                ));
+            }
             let ArgumentTransfer::Borrow(source) = input else {
                 return Err(PhysicalError::new("wire codec input must borrow its slot"));
             };
@@ -1678,6 +1683,8 @@ pub(crate) fn verify_terminator(
             let output = &slot(*result)?.ty;
             let valid_result = if codec.is_serialize() {
                 *output == codec.document_ty()
+            } else if codec.direction == hew_types::CodecDirection::TestInput {
+                *output == plan.root
             } else {
                 matches!(output, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.first() == Some(&plan.root))
             };
@@ -1709,7 +1716,7 @@ pub(crate) fn verify_terminator(
                     ));
                 }
             }
-            if decode_result.is_some() == codec.is_serialize() {
+            if decode_result.is_some() != (codec.direction == hew_types::CodecDirection::Decode) {
                 return Err(PhysicalError::new(
                     "wire Result cases differ from codec direction",
                 ));

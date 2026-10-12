@@ -26,6 +26,7 @@ use crate::target::TargetSpec;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
+    pub opt_level: Option<hew_codegen_rs::OptLevel>,
     /// Write the shared source coverage map and instrument block entries.
     pub coverage_map: Option<PathBuf>,
     pub no_typecheck: bool,

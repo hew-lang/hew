@@ -581,8 +581,8 @@
             },
             "op": "branch",
             "span": {
-              "end": 449,
-              "start": 449
+              "end": 387,
+              "start": 387
             },
             "then": {
               "args": [],
@@ -623,8 +623,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 449,
-              "start": 449
+              "end": 426,
+              "start": 426
             }
           }
         },
@@ -685,8 +685,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 449,
-              "start": 449
+              "end": 381,
+              "start": 381
             },
             "structural": null,
             "unwind": null

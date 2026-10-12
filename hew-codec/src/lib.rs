@@ -33,6 +33,7 @@ pub mod property;
 mod sink;
 mod source;
 mod table;
+pub mod typed;
 mod value;
 
 pub use error::DecodeError;

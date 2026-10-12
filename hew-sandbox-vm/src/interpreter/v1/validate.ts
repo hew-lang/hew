@@ -89,6 +89,7 @@ const TERMS = new Set([
   "runtime.call",
   "extern.call",
   "value.call",
+  "wire.codec",
   "panic",
   "checked_raise",
   "trap",
@@ -168,8 +169,21 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     for (const block of function_.blocks) {
       if (block.ops.some((op) => op.op === "actor.ingress_adapter"))
         return unavailable("actor.ingress_adapter");
-      if (String(block.term.op) === "wire.codec")
-        return unavailable("wire.codec");
+      if (
+        block.term.op === "wire.codec" &&
+        (!Number.isSafeInteger(block.term.codec) ||
+          block.term.codec < 0 ||
+          typeof pkg.codecs?.[block.term.codec] !== "string" ||
+          ![0, 1, 2, 3, 4].includes(block.term.format) ||
+          !["encode", "decode", "test_input"].includes(block.term.direction))
+      )
+        return {
+          category: "invalid_package",
+          code: "sandbox.package.invalid_codec",
+          capability: "wire.codec",
+          message: "codec call lacks its checked shape or format",
+          span: null,
+        };
       if (
         block.term.op === "actor.call" &&
         !ACTOR_OPS.has(block.term.operation.op)

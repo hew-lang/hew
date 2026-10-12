@@ -167,6 +167,8 @@ export interface SandboxTrace {
 }
 
 export interface RunOptions {
+  codecBridge?: (request: string) => string;
+  propertyInput?: number[];
   fixtureId?: string;
   traceId?: string;
   replay?: Partial<ReplayConfig>;

@@ -18,10 +18,12 @@ const wasmModule = await import(pathToFileURL(path.join(wasmDir, "hew_wasm.js"))
 globalThis.__hewSandboxCompileToSandboxBytecode =
   wasmModule.compileToSandboxBytecode ?? wasmModule.default?.compileToSandboxBytecode;
 assert.equal(typeof globalThis.__hewSandboxCompileToSandboxBytecode, "function");
+globalThis.__hewSandboxExecuteCodec = wasmModule.executeCodec ?? wasmModule.default?.executeCodec;
 
 test.after(() => {
   fs.rmSync(wasmDir, { recursive: true, force: true });
   delete globalThis.__hewSandboxCompileToSandboxBytecode;
+  delete globalThis.__hewSandboxExecuteCodec;
 });
 
 test("runProgram hello_world returns stdout and zero exit code", () => {

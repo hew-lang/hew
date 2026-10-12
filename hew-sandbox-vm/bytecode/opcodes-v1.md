@@ -180,16 +180,16 @@ The VM executes them through the same value ownership and lexical scope contract
 Every call is a terminator because it has a normal successor and may have an
 unwind successor.
 
-| Opcode          | Fields                                                                         |
-| --------------- | ------------------------------------------------------------------------------ |
-| `call`          | `callee` (function id), `args`, `result`, `normal`, `unwind`                   |
-| `indirect.call` | `callee` (boundary operand), `args`, `result`, `normal`, `unwind`              |
-| `dyn.call`      | `receiver`, `slot`, `args`, `result`, `normal`, `unwind`                       |
-| `value.call`    | `capability`, `args`, `result`, `normal`, `unwind`                             |
-| `runtime.call`  | `family` (index into `runtime_families`), `args`, `result`, `normal`, `unwind` |
-| `extern.call`   | `extern` (index into `externs`), `args`, `result`, `normal`, `unwind`          |
-| `actor.call`    | `operation`, `args`, `result`, `normal`, `unwind`                              |
-| `wire.codec`    | `direction`, `plan`, `args`, `result`, `normal`, `unwind`                      |
+| Opcode          | Fields                                                                                       |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| `call`          | `callee` (function id), `args`, `result`, `normal`, `unwind`                                 |
+| `indirect.call` | `callee` (boundary operand), `args`, `result`, `normal`, `unwind`                            |
+| `dyn.call`      | `receiver`, `slot`, `args`, `result`, `normal`, `unwind`                                     |
+| `value.call`    | `capability`, `args`, `result`, `normal`, `unwind`                                           |
+| `runtime.call`  | `family` (index into `runtime_families`), `args`, `result`, `normal`, `unwind`               |
+| `extern.call`   | `extern` (index into `externs`), `args`, `result`, `normal`, `unwind`                        |
+| `actor.call`    | `operation`, `args`, `result`, `normal`, `unwind`                                            |
+| `wire.codec`    | `direction`, `codec`, `format`, `decoded`, `callbacks`, `args`, `result`, `normal`, `unwind` |
 
 `Print` carries the kind of the value it is given, so a program printing a
 scalar reaches `Print` directly with that kind; the `ToString` families appear
@@ -275,3 +275,8 @@ a sequential package may carry:
 | `NativeIo` | Reject at load: native I/O is not a sandbox capability.                         |
 
 Every other kind belongs to the concurrency path.
+
+`wire.codec` names a checked portable shape in `codecs`, a format, direction,
+Result cases and selected collection callbacks. The host executes the shape
+through `hew-wasm.executeCodec`, which uses the native Rust format engine.
+Integer bridge values are decimal strings; format documents remain unchanged.

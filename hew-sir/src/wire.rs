@@ -150,7 +150,7 @@ impl SemWirePlans {
         let mut names = self
             .plans
             .keys()
-            .map(ResolvedTy::user_facing)
+            .map(|ty| ty.user_facing().to_string())
             .collect::<Vec<_>>();
         let mut aggregates = vec![None; self.plans.len()];
         let mut variant_shapes = vec![None; self.plans.len()];

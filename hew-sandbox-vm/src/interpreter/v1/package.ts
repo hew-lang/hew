@@ -460,6 +460,20 @@ export type TermV1 =
   | (TermBase & CallShape & { op: "value.call"; plan: number })
   | (TermBase &
       CallShape & {
+        op: "wire.codec";
+        codec: number;
+        format: number;
+        direction: "encode" | "decode" | "test_input";
+        decoded: {
+          shape: number;
+          ok: number;
+          error: number;
+          error_root: number;
+        } | null;
+        callbacks: Record<string, number[]>;
+      })
+  | (TermBase &
+      CallShape & {
         op: "runtime.call";
         family: number;
         structural?: number | null;
@@ -615,6 +629,7 @@ export interface SupervisorShape {
 }
 
 export interface PackageV1 {
+  codecs?: string[];
   resources?: Array<{
     kind: string;
     ty?: string;

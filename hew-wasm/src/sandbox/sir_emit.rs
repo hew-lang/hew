@@ -50,6 +50,8 @@ impl std::error::Error for EmitError {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Package {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub codecs: Vec<String>,
     pub structural_render: Vec<serde_json::Value>,
     pub resources: Vec<serde_json::Value>,
     pub schema_version: String,
@@ -382,6 +384,7 @@ pub fn emit_package(
 
 struct Walker<'m> {
     module: &'m SemModule,
+    codecs: Vec<String>,
     strings: BTreeMap<hew_sir::StringLiteralId, u32>,
     bytes: BTreeMap<hew_sir::BytesLiteralId, u32>,
     functions: BTreeMap<CallableId, u32>,
@@ -427,6 +430,7 @@ impl<'m> Walker<'m> {
             .collect();
         Self {
             module,
+            codecs: Vec::new(),
             strings,
             bytes,
             functions,
@@ -710,6 +714,7 @@ impl<'m> Walker<'m> {
         };
 
         Ok(Package {
+            codecs: self.codecs.clone(),
             structural_render: self.structural_render()?,
             resources: self.resources()?,
             schema_version: SCHEMA_VERSION.to_string(),
@@ -1798,10 +1803,57 @@ impl<'m> Walker<'m> {
                 "normal": encode_edge(normal),
                 "unwind": encode_unwind(unwind),
             }),
-            SemTerminator::WireCodec { .. } => {
-                return Err(EmitError::new(
-                    "wire codec calls have no sandbox package table",
-                ))
+            SemTerminator::WireCodec {
+                codec,
+                plan,
+                decode_result,
+                args,
+                result,
+                normal,
+                unwind,
+                ..
+            } => {
+                let shape = plan.property_shape().map_err(EmitError::new)?;
+                let encoded = serde_json::to_string(&shape)
+                    .map_err(|error| EmitError::new(error.to_string()))?;
+                let index = if let Some(index) =
+                    self.codecs.iter().position(|existing| *existing == encoded)
+                {
+                    index
+                } else {
+                    self.codecs.push(encoded);
+                    self.codecs.len() - 1
+                };
+                let mut callbacks = BTreeMap::new();
+                if !codec.is_serialize() {
+                    for (index, (_, member)) in plan.plans.iter().enumerate() {
+                        let key = match &member.kind {
+                            hew_sir::SemWireKind::Map { key, .. }
+                            | hew_sir::SemWireKind::Set(key) => Some(key),
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            callbacks.insert(
+                                index,
+                                [
+                                    self.capability_id(key, hew_types::ValueCapability::Hash)?,
+                                    self.capability_id(key, hew_types::ValueCapability::Eq)?,
+                                ],
+                            );
+                        }
+                    }
+                }
+                let decoded = decode_result.as_ref().map(|decode| {
+                    let error_root = plan.plans.keys().position(|ty| *ty == decode.error_ty).expect("verified codec error plan");
+                    serde_json::json!({"shape": decode.shape.0, "ok": decode.ok, "error": decode.error, "error_root": error_root})
+                });
+                serde_json::json!({
+                    "op": "wire.codec", "codec": index, "format": codec.format.code(),
+                    "direction": if codec.is_serialize() { "encode" } else if codec.direction == hew_types::CodecDirection::TestInput { "test_input" } else { "decode" },
+                    "decoded": decoded, "callbacks": callbacks,
+                    "args": boundaries(args), "result": call_result(result),
+                    "normal": encode_edge(normal), "unwind": encode_unwind(unwind),
+                })
             }
         };
         encoded["span"] = span;

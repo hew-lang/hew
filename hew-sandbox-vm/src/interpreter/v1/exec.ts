@@ -6,6 +6,7 @@
 /// follows the `unwind` edge the package names, and takes the failure edge a
 /// `checked.binary` names rather than trapping on its own.
 
+import { executeCodec } from "./codecs.js";
 import { TraceBuilder, runtimeFailure } from "../trace.js";
 import type {
   JsonValue,
@@ -291,6 +292,7 @@ export function runPackageV1(
     trace,
     StdinReader.fromReplay(replay.inputs),
     options.schedulerPolicy ?? "round_robin",
+    options,
   );
   try {
     vm.run();
@@ -337,6 +339,7 @@ class ExecutorV1 {
     private readonly trace: TraceBuilder,
     private readonly stdin: StdinReader,
     policy: "round_robin" | "chaos",
+    private readonly options: RunOptions,
   ) {
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
@@ -1426,6 +1429,22 @@ class ExecutorV1 {
         this.callShim(act, term, shim);
         return;
       }
+      case "wire.codec": {
+        const args = term.args.map((operand) => this.boundary(act, operand));
+        this.runValueProgram(
+          act,
+          term,
+          args,
+          executeCodec(
+            this.pkg,
+            term,
+            args[0]!,
+            this.options.codecBridge,
+            this.options.propertyInput ?? [],
+          ),
+        );
+        return;
+      }
       case "value.call": {
         const args = term.args.map((operand) => this.boundary(act, operand));
         this.runValueProgram(
@@ -1607,7 +1626,7 @@ class ExecutorV1 {
 
   private runValueProgram(
     act: Activation,
-    term: Extract<TermV1, { op: "runtime.call" | "value.call" }>,
+    term: Extract<TermV1, { op: "runtime.call" | "value.call" | "wire.codec" }>,
     args: VmValue[],
     iterator: ValueProgram,
   ): void {

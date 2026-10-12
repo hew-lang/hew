@@ -2,6 +2,8 @@
 // step moves the element out of the vector the cursor owns, so the body is the
 // element's owner and a completed drain leaves the vector empty. An early
 // `break` releases the elements the drain never reached, exactly once each.
+import std.iter;
+
 #[resource]
 type Token {
     label: string;
@@ -55,5 +57,29 @@ fn main() -> i64 {
         token.show();
     }
     println("popped");
+    {
+        var both = make("d").into_iter();
+        match both.next_back() {
+            .Some(token) => token.close(),
+            .None => panic("missing back token"),
+        }
+        match both.next() {
+            .Some(token) => token.close(),
+            .None => panic("missing front token"),
+        }
+    };
+    println("mixed");
+    for token in iter.rev(make("e").into_iter()) {
+        token.close();
+        break;
+    }
+    println("reverse stopped");
+    for token in iter.rev(iter.filter(make("f").into_iter(), |token: Token| token.id < 3)) {
+        token.close();
+        break;
+    }
+    println("filtered stopped");
+    let ids = iter.collect(iter.rev(iter.map(make("g").into_iter(), |token: Token| token.id)));
+    assert(ids == [3, 2, 1]);
     0
 }

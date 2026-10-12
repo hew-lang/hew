@@ -1129,16 +1129,27 @@ impl TypeFactService {
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
     ) -> Result<bool, ClassError> {
         match ty {
-            // Preserve the existing identity-aggregate exceptions exactly.
+            ResolvedTy::Tuple(members) => {
+                self.members_have_capability(members, ValueCapability::Hash, visiting)
+            }
             ResolvedTy::Named {
                 head: crate::TypeHead::Builtin(builtin),
+                args,
                 ..
-            } => Ok(matches!(
-                builtin,
+            } => match builtin {
                 crate::BuiltinType::NodeId
-                    | crate::BuiltinType::Location
-                    | crate::BuiltinType::RemotePid
-            )),
+                | crate::BuiltinType::Location
+                | crate::BuiltinType::RemotePid => Ok(true),
+                crate::BuiltinType::Vec => {
+                    if args.len() != 1 {
+                        return Err(ClassError::UnknownDeclaration {
+                            name: ty.user_facing().to_string(),
+                        });
+                    }
+                    self.members_have_capability(args, ValueCapability::Hash, visiting)
+                }
+                _ => Ok(false),
+            },
             ResolvedTy::Named { head, args, .. } => {
                 let name = head.registry_key();
                 let Some(definition) = self.context.types().of(*head) else {
@@ -1180,12 +1191,22 @@ impl TypeFactService {
                 )
             }
             _ => Ok(matches!(
-                crate::hash_eligibility::ty_is_hash_eligible_with_resources(
-                    &ty.to_ty(),
-                    self.context.types(),
-                    self.context.registry.resource_type_ids(),
-                ),
-                crate::hash_eligibility::HashEligibility::Eligible
+                ty,
+                ResolvedTy::I8
+                    | ResolvedTy::I16
+                    | ResolvedTy::I32
+                    | ResolvedTy::I64
+                    | ResolvedTy::U8
+                    | ResolvedTy::U16
+                    | ResolvedTy::U32
+                    | ResolvedTy::U64
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Bool
+                    | ResolvedTy::Char
+                    | ResolvedTy::Duration
+                    | ResolvedTy::String
+                    | ResolvedTy::Bytes
             )),
         }
     }

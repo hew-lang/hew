@@ -75,6 +75,15 @@ fn assert_hashset_vec_iter(
     receiver_shape: impl FnOnce(&HirExprKind) -> bool,
 ) {
     let iter_init = for_iter_init(function(output, function_name));
+    let HirExprKind::Block(block) = &iter_init.kind else {
+        panic!("`{function_name}` iterator must evaluate its vector before moving it");
+    };
+    let Some(HirStmtKind::Let(source, Some(vec))) =
+        block.statements.first().map(|statement| &statement.kind)
+    else {
+        panic!("`{function_name}` iterator must bind its projected vector");
+    };
+    let iter_init = block.tail.as_ref().expect("iterator record result");
     let HirExprKind::StructInit {
         name,
         type_args,
@@ -95,11 +104,15 @@ fn assert_hashset_vec_iter(
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        ["vec", "idx"],
+        ["vec", "front", "back"],
         "synthetic VecIter must initialise every field exactly once"
     );
 
-    let vec = &fields[0].1;
+    assert!(matches!(
+        &fields[0].1.kind,
+        HirExprKind::BindingRef { resolved: hew_hir::ResolvedRef::Binding(id), .. }
+            if *id == source.id
+    ));
     assert_eq!(
         vec.ty,
         ResolvedTy::Named {

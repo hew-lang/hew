@@ -72,7 +72,6 @@ impl LowerCtx {
                 method: handler,
                 policy,
             } => {
-                let method_id = self.actor_method_id(handler);
                 let Some(ty) = self.checker_expr_ty_if_present(&span) else {
                     return (
                         HirExprKind::Unsupported("message submission has no checked type".into()),
@@ -98,7 +97,7 @@ impl LowerCtx {
                     intent: IntentKind::Consume,
                     kind: HirExprKind::ActorMessage {
                         receiver: Box::new(lowered_receiver),
-                        method_id,
+                        handler,
                         args: lowered_args,
                         evaluation_order,
                         policy,
@@ -119,8 +118,7 @@ impl LowerCtx {
                 reply_ty,
                 policy,
             } => {
-                let method_id = self.actor_method_id(handler);
-                let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id) else {
+                let Some(result_ty) = self.checked_actor_ask_result_ty(&span, handler) else {
                     return (
                         HirExprKind::Unsupported("actor ask has no checked result".to_string()),
                         ResolvedTy::Unit,
@@ -134,20 +132,14 @@ impl LowerCtx {
                         // type (qualified in `lower_imported_actor` under the
                         // same collision gate) both resolve to the SAME
                         // qualified identity the MIR record layout is keyed by.
-                        // `method_id` is `{module}.{Actor}::{method}` for an
-                        // imported actor; a bare/root actor has no leading module
-                        // segment and is left unqualified (#2208).
-                        let reply_ty = Self::actor_module_short_of_method_id(&method_id)
-                            .map_or_else(
-                                || reply_ty.clone(),
-                                |module_short| {
-                                    self.qualify_colliding_module_record_ty(&reply_ty, module_short)
-                                },
-                            );
+                        let reply_ty = self.actor_handler_module(handler).map_or_else(
+                            || reply_ty.clone(),
+                            |module| self.qualify_colliding_module_record_ty(&reply_ty, module),
+                        );
                         (
                             HirExprKind::ActorAsk {
                                 receiver: Box::new(lowered_receiver),
-                                method_id,
+                                handler,
                                 args: lowered_args,
                                 evaluation_order,
                                 reply_ty: reply_ty.clone(),
@@ -175,7 +167,6 @@ impl LowerCtx {
                 }
             }
             ActorMethodKind::StreamProducer(handler, elem_ty) => {
-                let method_id = self.actor_method_id(handler);
                 match ResolvedTy::from_ty(&elem_ty) {
                     Ok(elem_ty) => {
                         let stream_ty = ResolvedTy::named_builtin(
@@ -185,7 +176,7 @@ impl LowerCtx {
                         (
                             HirExprKind::ActorGenStream {
                                 receiver: Box::new(lowered_receiver),
-                                method: method_id,
+                                handler,
                                 args: lowered_args,
                                 evaluation_order,
                             },
@@ -750,9 +741,14 @@ impl LowerCtx {
             Some(
                 rewrite @ (MethodCallRewrite::BuiltinVecIntoIter
                 | MethodCallRewrite::BuiltinVecIter
-                | MethodCallRewrite::BuiltinVecIterNext),
+                | MethodCallRewrite::BuiltinVecIterNext
+                | MethodCallRewrite::BuiltinVecIterNextBack),
             ) => {
-                let expected = if matches!(rewrite, MethodCallRewrite::BuiltinVecIterNext) {
+                let expected = if matches!(
+                    rewrite,
+                    MethodCallRewrite::BuiltinVecIterNext
+                        | MethodCallRewrite::BuiltinVecIterNextBack
+                ) {
                     BuiltinType::VecIter
                 } else {
                     BuiltinType::Vec
@@ -789,7 +785,10 @@ impl LowerCtx {
                         self.lower_builtin_vec_iter(receiver, element, span)
                     }
                     MethodCallRewrite::BuiltinVecIterNext => {
-                        self.lower_builtin_vec_iter_next(receiver, &element, span)
+                        self.lower_builtin_vec_iter_next(receiver, &element, false, span)
+                    }
+                    MethodCallRewrite::BuiltinVecIterNextBack => {
+                        self.lower_builtin_vec_iter_next(receiver, &element, true, span)
                     }
                     _ => unreachable!("matched cursor operation"),
                 }

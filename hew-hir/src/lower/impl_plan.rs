@@ -672,7 +672,9 @@ pub(super) fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
     matches!(
         (trait_name.as_str(), name.as_str()),
-        ("Iterator", "VecIter" | "HashMapIter" | "Generator") | ("IntoIterator", "Vec")
+        ("Iterator", "VecIter" | "HashMapIter" | "Generator")
+            | ("DoubleEndedIterator", "VecIter")
+            | ("IntoIterator", "Vec")
     )
 }
 

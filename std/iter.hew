@@ -1,7 +1,7 @@
 //! Iterator combinators for `Vec<T>` and any `Iterator` implementation.
 //!
 //! This module exposes the lazy `Iterator`-based combinator API (`Map`,
-//! `Filter`, `Take`, `Skip`, and the terminal helpers `fold`, `count`,
+//! `Filter`, `Rev`, `Take`, `Skip`, and the terminal helpers `fold`, `count`,
 //! `collect`). Each wrapper is a `pub type` record that itself implements
 //! the `Iterator` trait declared in `std/builtins.hew`, so adapters compose
 //! through chained constructor calls:
@@ -31,6 +31,7 @@
 //! |---------------|----------------------|--------------------------------|
 //! | `Map<I,A,B>`  | `map(it, f)`         | `B` from `fn(A) -> B`          |
 //! | `Filter<I,A>` | `filter(it, pred)`   | `A` (subset of inner)          |
+//! | `Rev<I,A>`    | `rev(it)`            | inner's `Item` (`A`)           |
 //! | `Take<I,A>`   | `take(it, n)`        | inner's `Item` (`A`)           |
 //! | `Skip<I,A>`   | `skip(it, n)`        | inner's `Item` (`A`)           |
 //!
@@ -66,6 +67,15 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     }
 }
 
+impl<I, A, B> DoubleEndedIterator for Map<I, A, B> where I: DoubleEndedIterator<Item = A> {
+    fn next_back(var self) -> Option<B> {
+        match self.iter.next_back() {
+            .Some(x) => .Some((self.f)(x)),
+            .None => .None,
+        }
+    }
+}
+
 /// Lazy filter adapter: yields only those items for which `pred` returns
 /// `true`. Inner `Item` and produced `Item` agree on `A`.
 pub type Filter<I, A> {
@@ -92,6 +102,41 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
                 }
             }
         }
+    }
+}
+
+impl<I, A> DoubleEndedIterator for Filter<I, A> where I: DoubleEndedIterator<Item = A> {
+    fn next_back(var self) -> Option<A> {
+        loop {
+            match self.iter.next_back() {
+                .Some(x) => {
+                    if (self.pred)(x) {
+                        return .Some(x);
+                    }
+                }
+                .None => {
+                    return .None;
+                }
+            }
+        }
+    }
+}
+
+/// Reverse traversal without collecting or copying the remaining items.
+pub type Rev<I, A> {
+    iter: I;
+}
+
+impl<I, A> Iterator for Rev<I, A> where I: DoubleEndedIterator<Item = A> {
+    type Item = A;
+    fn next(var self) -> Option<A> {
+        self.iter.next_back()
+    }
+}
+
+impl<I, A> DoubleEndedIterator for Rev<I, A> where I: DoubleEndedIterator<Item = A> {
+    fn next_back(var self) -> Option<A> {
+        self.iter.next()
     }
 }
 
@@ -180,6 +225,11 @@ impl<I, A> Iterator for Enumerate<I, A> where I: Iterator<Item = A> {
 }
 
 // ── lazy constructors ────────────────────────────────────────────────────
+/// Reverse the remaining items of a double-ended iterator.
+pub fn rev<I, A>(consume it: I) -> Rev<I, A> where I: DoubleEndedIterator<Item = A> {
+    Rev { iter: it }
+}
+
 /// Construct a lazy `Map` adapter over `it` applying `f` to each item.
 pub fn map<I, A, B>(consume it: I, consume f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
     Map { iter: it, f: f }
@@ -332,6 +382,9 @@ pub fn find<I, A>(consume it: I, pred: fn(A) -> bool) -> Option<A> where I: Iter
 // operation as `cursor.map(f)` selects exactly the same implementation as
 // `iter.map(cursor, f)`.
 impl<T> VecIter<T> {
+    pub fn rev(consume self) -> Rev<VecIter<T>, T> {
+        rev(self)
+    }
     pub fn map<U>(consume self, consume f: fn(T) -> U) -> Map<VecIter<T>, T, U> {
         map(self, f)
     }
@@ -363,6 +416,57 @@ impl<T> VecIter<T> {
         skip(self, n)
     }
     pub fn collect(consume self) -> Vec<T> {
+        collect(self)
+    }
+}
+
+impl<I, A, B> Map<I, A, B> where I: DoubleEndedIterator<Item = A> {
+    pub fn rev(consume self) -> Rev<Map<I, A, B>, B> {
+        rev(self)
+    }
+}
+
+impl<I, A> Filter<I, A> where I: DoubleEndedIterator<Item = A> {
+    pub fn rev(consume self) -> Rev<Filter<I, A>, A> {
+        rev(self)
+    }
+}
+
+impl<I, A> Rev<I, A> where I: DoubleEndedIterator<Item = A> {
+    pub fn rev(consume self) -> I {
+        self.iter
+    }
+    pub fn map<B>(consume self, consume f: fn(A) -> B) -> Map<Rev<I, A>, A, B> {
+        map(self, f)
+    }
+    pub fn filter(consume self, consume pred: fn(A) -> bool) -> Filter<Rev<I, A>, A> {
+        filter(self, pred)
+    }
+    pub fn fold<B>(consume self, init: B, f: fn(B, A) -> B) -> B {
+        fold(self, init, f)
+    }
+    pub fn any(consume self, pred: fn(A) -> bool) -> bool {
+        any(self, pred)
+    }
+    pub fn all(consume self, pred: fn(A) -> bool) -> bool {
+        all(self, pred)
+    }
+    pub fn find(consume self, pred: fn(A) -> bool) -> Option<A> {
+        find(self, pred)
+    }
+    pub fn count(consume self) -> i64 {
+        count(self)
+    }
+    pub fn enumerate(consume self) -> Enumerate<Rev<I, A>, A> {
+        enumerate(self)
+    }
+    pub fn take(consume self, n: i64) -> Take<Rev<I, A>, A> {
+        take(self, n)
+    }
+    pub fn skip(consume self, n: i64) -> Skip<Rev<I, A>, A> {
+        skip(self, n)
+    }
+    pub fn collect(consume self) -> Vec<A> {
         collect(self)
     }
 }

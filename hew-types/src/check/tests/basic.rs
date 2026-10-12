@@ -792,9 +792,11 @@ fn same(a: Packet, b: Packet) -> bool {
 #[test]
 fn record_with_non_hashable_field_is_not_hashable() {
     let output = check_source(
-        r"type Sample {
+        r"enum Tag { Named(string); }
+
+type Sample {
     data: bytes;
-    tags: Vec<string>;
+    tags: Vec<Tag>;
 }
 
 fn same(a: Sample, b: Sample) -> bool {
@@ -805,7 +807,8 @@ fn same(a: Sample, b: Sample) -> bool {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_for_test(
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_path(
+            &output.defs,
             "Sample",
             vec![],
         )))

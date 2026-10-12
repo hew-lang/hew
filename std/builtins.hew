@@ -491,6 +491,11 @@ pub trait Iterator {
     fn next(var self) -> Option<Self.Item>;
 }
 
+/// An iterator whose front and back share the same remaining items.
+pub trait DoubleEndedIterator: Iterator {
+    fn next_back(var self) -> Option<Self.Item>;
+}
+
 // ---------------------------------------------------------------------------
 // IntoIterator trait
 // ---------------------------------------------------------------------------
@@ -552,15 +557,13 @@ impl<T> Vec<T> {
 /// Cursor iterator over a `Vec<T>` produced by `vec.into_iter()`.
 ///
 /// `VecIter<T>` is the concrete `IntoIterator.IntoIter` for `Vec<T>` — it
-/// pairs the owned vector with the current `idx` cursor so that
+/// pairs the owned vector with front and exclusive back cursors so that
 /// `for x in v { ... }` (for-loop desugar) and the lazy combinators in
 /// `std/iter` can drive iteration through the trait surface rather than the
 /// per-type `*_int` / `*_str` / `*_f64` table.
 ///
-/// `next` takes a mutable receiver: each call reads the current element and
-/// then bumps `self.idx` in place via a field-store. `idx` advances once per
-/// call until it reaches the vector's length, after which every subsequent
-/// `next` returns `None`. The receiver remains `Live` after exhaustion and
+/// `next` advances the front and `next_back` retreats the back. Both return
+/// `None` when the cursors meet. The receiver remains `Live` after exhaustion and
 /// drops at scope exit — see the `Iterator` trait doc-comment.
 ///
 /// `Vec` is a refcounted heap handle, so the cursor carries the underlying
@@ -579,22 +582,31 @@ impl<T> Vec<T> {
 /// receivers; auto-registration on builtin nominals belongs in builtins).
 pub type VecIter<T> {
     vec: Vec<T>;
-    idx: i64;
+    front: i64;
+    back: i64;
 }
 
 impl<T> Iterator for VecIter<T> {
     type Item = T;
-    /// Return `Some(vec.get(idx))` and advance `idx` by one; return `None`
-    /// once the cursor reaches the vector's length.
-    ///
-    /// The `self.idx = self.idx + 1` field-store mutates the receiver in
-    /// place; the caller observes the bumped cursor on the next call.
     fn next(var self) -> Option<T> {
-        if self.idx >= self.vec.len() {
+        if self.front >= self.back {
             .None
         } else {
-            let v = self.vec[self.idx];
-            self.idx = self.idx + 1;
+            let v = self.vec.remove(self.front);
+            self.back = self.back - 1;
+            .Some(v)
+        }
+    }
+}
+
+impl<T> DoubleEndedIterator for VecIter<T> {
+    fn next_back(var self) -> Option<T> {
+        if self.front >= self.back {
+            .None
+        } else {
+            let index = self.back - 1;
+            let v = self.vec.remove(index);
+            self.back = index;
             .Some(v)
         }
     }
@@ -610,7 +622,8 @@ impl<T> IntoIterator for Vec<T> {
     /// the same semantics as any other shared-handle aliasing in Hew
     /// (no iterator-invalidation diagnostic — see Stage 5 HashSet note).
     fn into_iter(self) -> VecIter<T> {
-        VecIter { vec: self, idx: 0 }
+        let back = self.len();
+        VecIter { vec: self, front: 0, back: back }
     }
 }
 

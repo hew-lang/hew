@@ -2131,14 +2131,20 @@ impl Checker {
                         // Never retry through either the type or method leaf.
                         let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
-                        if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next" {
+                        if matches!(*builtin, Some(BuiltinType::VecIter))
+                            && matches!(method, "next" | "next_back")
+                        {
                             if let Some(elem_ty) = type_args.first() {
                                 if !self.record_vec_iter_element_mode(elem_ty, span) {
                                     return Ty::Error;
                                 }
                                 self.record_method_call_rewrite(
                                     span,
-                                    MethodCallRewrite::BuiltinVecIterNext,
+                                    if method == "next_back" {
+                                        MethodCallRewrite::BuiltinVecIterNextBack
+                                    } else {
+                                        MethodCallRewrite::BuiltinVecIterNext
+                                    },
                                 );
                             }
                         } else if selected_declaration.is_some()

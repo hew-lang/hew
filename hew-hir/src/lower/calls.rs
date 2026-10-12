@@ -723,6 +723,15 @@ impl LowerCtx {
             .get(&format!("{declaring_trait}::{method_name}"))
             .copied()
             .or_else(|| {
+                self.lowering_injected_items
+                    .then(|| {
+                        self.trait_method_ids
+                            .get(&format!("std.builtins.{declaring_trait}::{method_name}"))
+                    })
+                    .flatten()
+                    .copied()
+            })
+            .or_else(|| {
                 // The prelude iterator may be available without a lexical
                 // import binding.  Its lang-item binding carries the exact
                 // checker-minted declaration identities; compare only its
@@ -913,9 +922,8 @@ impl LowerCtx {
                 })
                 .cloned()
             {
-                let method_id = self.actor_method_id(method);
-                let (kind, ty) = self
-                    .lower_lambda_actor_call(function, args, &method_id, &reply_ty, policy, &span);
+                let (kind, ty) =
+                    self.lower_lambda_actor_call(function, args, method, &reply_ty, policy, &span);
                 return Err(Box::new(HirExpr {
                     node: self.ids.node(),
                     site,
@@ -936,9 +944,8 @@ impl LowerCtx {
                 })
                 .cloned()
             {
-                let method_id = self.actor_method_id(method);
                 let (kind, ty) =
-                    self.lower_lambda_actor_submission(function, args, &method_id, policy, &span);
+                    self.lower_lambda_actor_submission(function, args, method, policy, &span);
                 return Err(Box::new(HirExpr {
                     node: self.ids.node(),
                     site,

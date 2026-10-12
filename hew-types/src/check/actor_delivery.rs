@@ -452,8 +452,7 @@ impl Checker {
 
     /// The protocol row every lambda actor's `call` is dispatched through.
     pub(super) fn lambda_actor_method(&mut self) -> crate::DefId {
-        self.defs
-            .request_protocol(crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+        self.defs.lambda_actor_protocol()
     }
 
     /// Report every completion-call cycle a handle resolves statically. This
@@ -698,6 +697,7 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             ActorDeliveryCall::Resume {
                 policy,
+                source_method: handler,
                 method: destination_method,
                 redirect,
             },

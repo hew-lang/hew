@@ -21,6 +21,13 @@ fn capture_value(value: yaml.Value) -> fn[clone]() -> string {
     || value.array_get(0).expect("array_get succeeds").expect("array_get returns a value").get_string().expect("get_string succeeds")
 }
 
+fn parse_selected() -> yaml.Value {
+    let document = yaml.parse("workflow:\n  steps:\n    - build\n").expect("parse succeeds");
+    let workflow = document.get_field("workflow").expect("get_field succeeds").expect("workflow exists");
+    let steps = workflow.get_field("steps").expect("get_field succeeds").expect("steps exist");
+    steps.array_get(0).expect("array_get succeeds").expect("step exists")
+}
+
 fn main() -> i64 {
     var values = retained();
     let snapshot = values;
@@ -51,5 +58,13 @@ fn main() -> i64 {
     }).expect("the call succeeds");
     println(values.array_len().expect("array_len succeeds"));
     println(snapshot.array_len().expect("array_len succeeds"));
+    var parsed = yaml.parse("workflow:\n  signed: true\n").expect("parse succeeds");
+    var alias = parsed;
+    parsed.set("workflow", yaml.null()).expect("set succeeds");
+    alias.set("representable", yaml.from_bool(true)).expect("set succeeds");
+    println(parsed.get_field("workflow").expect("get_field succeeds").expect("workflow exists").type_of() == Kind.Null);
+    println(alias.get_field("workflow").expect("get_field succeeds").expect("workflow exists").type_of() == Kind.Mapping);
+    println(alias.get_field("representable").expect("get_field succeeds").expect("representable exists").get_bool().expect("get_bool succeeds"));
+    println(parse_selected().get_string().expect("get_string succeeds"));
     0
 }

@@ -432,19 +432,69 @@ impl LowerCtx {
         elem_ty: ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        let idx = self.make_i64_literal(0, span.clone());
+        self.push_scope();
+        let vec_ty = Self::resolved_vec_ty(elem_ty.clone());
+        let source_name = format!("__hew_iter_source_{}", self.ids.binding().0);
+        let source = self.bind(source_name.clone(), vec_ty.clone(), false, span.clone());
+        let source_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(source.clone(), Some(receiver_hir)),
+            span: span.clone(),
+        };
+        let vec_for_len = self.make_binding_ref(
+            source_name.clone(),
+            source.id,
+            vec_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let back = self.make_vec_len_call(vec_for_len, &elem_ty, span.clone());
+        let back_name = format!("__hew_iter_back_{}", self.ids.binding().0);
+        let back_binding = self.bind(back_name.clone(), ResolvedTy::I64, false, span.clone());
+        let back_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(back_binding.clone(), Some(back)),
+            span: span.clone(),
+        };
+        let vec = self.make_binding_ref(
+            source_name,
+            source.id,
+            vec_ty,
+            IntentKind::Consume,
+            span.clone(),
+        );
+        let front = self.make_i64_literal(0, span.clone());
+        let back = self.make_binding_ref(
+            back_name,
+            back_binding.id,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            span.clone(),
+        );
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
-        self.make_expr(
+        let init = self.make_expr(
             HirExprKind::StructInit {
                 name: "VecIter".to_string(),
                 type_args: vec![elem_ty],
-                fields: vec![("vec".to_string(), receiver_hir), ("idx".to_string(), idx)],
+                fields: vec![
+                    ("vec".to_string(), vec),
+                    ("front".to_string(), front),
+                    ("back".to_string(), back),
+                ],
                 base: None,
             },
-            iter_ty,
+            iter_ty.clone(),
             IntentKind::Read,
-            span,
-        )
+            span.clone(),
+        );
+        let block = self.make_unit_block(
+            vec![source_stmt, back_stmt],
+            Some(init),
+            iter_ty.clone(),
+            span.clone(),
+        );
+        self.pop_scope();
+        self.make_expr(HirExprKind::Block(block), iter_ty, IntentKind::Read, span)
     }
 
     /// Whether a for-in iterable expression is a *place* — an lvalue that can be
@@ -602,6 +652,7 @@ impl LowerCtx {
         &mut self,
         receiver: &Spanned<Expr>,
         elem_ty: &ResolvedTy,
+        from_back: bool,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let lowered_receiver = self.lower_expr(receiver, IntentKind::Modify);
@@ -624,6 +675,7 @@ impl LowerCtx {
             receiver_name.clone(),
             *receiver_binding,
             elem_ty,
+            from_back,
             span,
         )
     }
@@ -637,24 +689,16 @@ impl LowerCtx {
         receiver_name: String,
         receiver_binding: BindingId,
         elem_ty: &ResolvedTy,
+        from_back: bool,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         self.register_option_layout(elem_ty, &span, "VecIter::next");
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
 
-        if self
+        let take = self
             .owning_take_vec_cursors
-            .contains(&SpanKey::in_module(&span, self.current_module_idx))
-        {
-            return self.lower_builtin_vec_iter_take_next(
-                receiver_name,
-                receiver_binding,
-                &iter_ty,
-                elem_ty,
-                span,
-            );
-        }
+            .contains(&SpanKey::in_module(&span, self.current_module_idx));
 
         self.push_scope();
         let iter_obj = self.make_binding_ref(
@@ -667,7 +711,7 @@ impl LowerCtx {
         let idx_read = self.make_expr(
             HirExprKind::FieldAccess {
                 object: Box::new(iter_obj),
-                field: "idx".to_string(),
+                field: "front".to_string(),
             },
             ResolvedTy::I64,
             IntentKind::Read,
@@ -680,21 +724,20 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let vec_read_for_len = self.make_expr(
+        let back_read = self.make_expr(
             HirExprKind::FieldAccess {
                 object: Box::new(iter_obj),
-                field: "vec".to_string(),
+                field: "back".to_string(),
             },
-            Self::resolved_vec_ty(elem_ty.clone()),
+            ResolvedTy::I64,
             IntentKind::Read,
             span.clone(),
         );
-        let len_call = self.make_vec_len_call(vec_read_for_len, elem_ty, span.clone());
         let condition = self.make_expr(
             HirExprKind::Binary {
                 op: BinaryOp::GreaterEqual,
                 left: Box::new(idx_read),
-                right: Box::new(len_call),
+                right: Box::new(back_read),
             },
             ResolvedTy::Bool,
             IntentKind::Read,
@@ -715,7 +758,11 @@ impl LowerCtx {
             receiver_name.clone(),
             receiver_binding,
             iter_ty.clone(),
-            IntentKind::Read,
+            if take {
+                IntentKind::Modify
+            } else {
+                IntentKind::Read
+            },
             span.clone(),
         );
         let vec_read_for_get = self.make_expr(
@@ -724,7 +771,11 @@ impl LowerCtx {
                 field: "vec".to_string(),
             },
             Self::resolved_vec_ty(elem_ty.clone()),
-            IntentKind::Read,
+            if take {
+                IntentKind::Modify
+            } else {
+                IntentKind::Read
+            },
             span.clone(),
         );
         let iter_obj = self.make_binding_ref(
@@ -737,24 +788,53 @@ impl LowerCtx {
         let idx_read_for_get = self.make_expr(
             HirExprKind::FieldAccess {
                 object: Box::new(iter_obj),
-                field: "idx".to_string(),
+                field: if from_back { "back" } else { "front" }.to_string(),
             },
             ResolvedTy::I64,
             IntentKind::Read,
             span.clone(),
         );
+        let index = if from_back {
+            let one = self.make_i64_literal(1, span.clone());
+            self.make_expr(
+                HirExprKind::Binary {
+                    op: BinaryOp::Subtract,
+                    left: Box::new(idx_read_for_get),
+                    right: Box::new(one),
+                },
+                ResolvedTy::I64,
+                IntentKind::Read,
+                span.clone(),
+            )
+        } else {
+            idx_read_for_get
+        };
+        let value_ty = if take { elem_ty } else { &option_ty };
         let value_kind = self.collection_call_kind(
-            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Get),
-            vec![vec_read_for_get, idx_read_for_get],
-            &option_ty,
+            hew_types::RuntimeCallFamily::Vector(if take {
+                hew_types::VecValueOp::Remove
+            } else {
+                hew_types::VecValueOp::Get
+            }),
+            vec![vec_read_for_get, index],
+            value_ty,
             &span,
         );
         let value_expr = self.make_expr(
             value_kind,
-            option_ty.clone(),
-            IntentKind::Read,
+            value_ty.clone(),
+            if take {
+                IntentKind::Consume
+            } else {
+                IntentKind::Read
+            },
             span.clone(),
         );
+        let value_expr = if take {
+            self.make_option_ctor("Some", Some(value_expr), elem_ty, span.clone())
+        } else {
+            value_expr
+        };
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),
@@ -776,10 +856,11 @@ impl LowerCtx {
             IntentKind::Modify,
             span.clone(),
         );
+        let cursor_field = if from_back || take { "back" } else { "front" };
         let idx_assign_target = self.make_expr(
             HirExprKind::FieldAccess {
                 object: Box::new(iter_obj),
-                field: "idx".to_string(),
+                field: cursor_field.to_string(),
             },
             ResolvedTy::I64,
             IntentKind::Modify,
@@ -795,7 +876,7 @@ impl LowerCtx {
         let idx_read_for_add = self.make_expr(
             HirExprKind::FieldAccess {
                 object: Box::new(iter_obj),
-                field: "idx".to_string(),
+                field: cursor_field.to_string(),
             },
             ResolvedTy::I64,
             IntentKind::Read,
@@ -804,7 +885,11 @@ impl LowerCtx {
         let one = self.make_i64_literal(1, span.clone());
         let idx_plus_one = self.make_expr(
             HirExprKind::Binary {
-                op: BinaryOp::Add,
+                op: if from_back || take {
+                    BinaryOp::Subtract
+                } else {
+                    BinaryOp::Add
+                },
                 left: Box::new(idx_read_for_add),
                 right: Box::new(one),
             },
@@ -835,114 +920,6 @@ impl LowerCtx {
             option_ty.clone(),
             span.clone(),
         );
-        let else_expr = self.make_expr(
-            HirExprKind::Block(else_block),
-            option_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
-        let if_expr = self.make_expr(
-            HirExprKind::If {
-                condition: Box::new(condition),
-                then_expr: Box::new(then_expr),
-                else_expr: Some(Box::new(else_expr)),
-            },
-            option_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
-        let block = self.make_unit_block(Vec::new(), Some(if_expr), option_ty.clone(), span);
-        self.pop_scope();
-        (HirExprKind::Block(block), option_ty)
-    }
-
-    /// `VecIter.next()` for an element with no semantic clone: each step moves
-    /// the first element out of the vector the cursor owns.
-    ///
-    /// There is no index to advance — the removal shifts the tail down, so the
-    /// cursor is empty exactly when the vector is, and a completed drain leaves
-    /// it empty. An early exit drops the cursor, whose `vec` field releases
-    /// whatever the drain did not reach.
-    pub(super) fn lower_builtin_vec_iter_take_next(
-        &mut self,
-        receiver_name: String,
-        receiver_binding: BindingId,
-        iter_ty: &ResolvedTy,
-        elem_ty: &ResolvedTy,
-        span: Span,
-    ) -> (HirExprKind, ResolvedTy) {
-        let option_ty = Self::resolved_option_ty(elem_ty.clone());
-        self.push_scope();
-        let iter_obj = self.make_binding_ref(
-            receiver_name.clone(),
-            receiver_binding,
-            iter_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
-        let vec_read_for_len = self.make_expr(
-            HirExprKind::FieldAccess {
-                object: Box::new(iter_obj),
-                field: "vec".to_string(),
-            },
-            Self::resolved_vec_ty(elem_ty.clone()),
-            IntentKind::Read,
-            span.clone(),
-        );
-        let len_call = self.make_vec_len_call(vec_read_for_len, elem_ty, span.clone());
-        let zero = self.make_i64_literal(0, span.clone());
-        let condition = self.make_expr(
-            HirExprKind::Binary {
-                op: BinaryOp::LessEqual,
-                left: Box::new(len_call),
-                right: Box::new(zero),
-            },
-            ResolvedTy::Bool,
-            IntentKind::Read,
-            span.clone(),
-        );
-
-        let none_expr = self.make_option_ctor("None", None, elem_ty, span.clone());
-        let then_block =
-            self.make_unit_block(Vec::new(), Some(none_expr), option_ty.clone(), span.clone());
-        let then_expr = self.make_expr(
-            HirExprKind::Block(then_block),
-            option_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
-
-        let iter_obj = self.make_binding_ref(
-            receiver_name,
-            receiver_binding,
-            iter_ty.clone(),
-            IntentKind::Modify,
-            span.clone(),
-        );
-        let vec_take_target = self.make_expr(
-            HirExprKind::FieldAccess {
-                object: Box::new(iter_obj),
-                field: "vec".to_string(),
-            },
-            Self::resolved_vec_ty(elem_ty.clone()),
-            IntentKind::Modify,
-            span.clone(),
-        );
-        let take_kind = self.collection_call_kind(
-            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::TakeFirst),
-            vec![vec_take_target],
-            elem_ty,
-            &span,
-        );
-        let take_expr = self.make_expr(
-            take_kind,
-            elem_ty.clone(),
-            IntentKind::Consume,
-            span.clone(),
-        );
-        let some_expr = self.make_option_ctor("Some", Some(take_expr), elem_ty, span.clone());
-        let else_block =
-            self.make_unit_block(Vec::new(), Some(some_expr), option_ty.clone(), span.clone());
         let else_expr = self.make_expr(
             HirExprKind::Block(else_block),
             option_ty.clone(),
@@ -1552,6 +1529,7 @@ impl LowerCtx {
                     iter_name.clone(),
                     iter_binding.id,
                     &elem_ty,
+                    false,
                     iterable.1.clone(),
                 );
                 self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone())

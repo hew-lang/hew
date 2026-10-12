@@ -220,21 +220,8 @@ impl Checker {
                 continue;
             }
             let ty = self.resolve_type_expr(&param.ty);
-            if !matches!(
-                ty,
-                Ty::I8
-                    | Ty::I16
-                    | Ty::I32
-                    | Ty::I64
-                    | Ty::U8
-                    | Ty::U16
-                    | Ty::U32
-                    | Ty::U64
-                    | Ty::Isize
-                    | Ty::Usize
-                    | Ty::Bool
-                    | Ty::String
-            ) {
+            if !(ty.is_integer() && !ty.is_integer_literal() || matches!(ty, Ty::Bool | Ty::String))
+            {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,

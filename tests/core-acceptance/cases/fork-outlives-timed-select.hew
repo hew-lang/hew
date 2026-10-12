@@ -31,7 +31,10 @@ fn bounded() -> bool {
         let _ = wait_for(input);
         false
     } handle failure {
-        true
+        match failure {
+            .Deadline { message: _ } => true,
+            .Fault { message } => panic(message),
+        }
     };
     match release.try_send(1) {
         .Err(SendError.Closed) => {}
@@ -50,7 +53,10 @@ fn within_deadline() -> i64 {
             after 1ms => 0,
         }
     } handle failure {
-        -1
+        match failure {
+            .Deadline { message: _ } => -1,
+            .Fault { message } => panic(message),
+        }
     };
     match release.try_send(1) {
         .Err(SendError.Closed) => {}

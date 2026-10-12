@@ -697,6 +697,7 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             ActorDeliveryCall::Resume {
                 policy,
+                source_method: handler,
                 method: destination_method,
                 redirect,
             },

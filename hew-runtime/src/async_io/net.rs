@@ -278,9 +278,13 @@ pub(super) fn advance(operation: &Arc<HewAsyncIo>) {
     match attempt {
         Attempt::Done(result) => operation.complete(result),
         Attempt::Blocked { progressed } => {
-            if let Err(error) = net.slot.wait(net.direction, operation) {
-                operation.complete(Err(error));
-                return;
+            match net.slot.wait(net.direction, operation) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    operation.complete(Err(error));
+                    return;
+                }
             }
             // A read deadline counts from the operation's start; a write
             // deadline measures inactivity, so progress restarts it.

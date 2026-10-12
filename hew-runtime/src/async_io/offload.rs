@@ -125,7 +125,7 @@ unsafe extern "C" fn run_offload_job(context: *mut std::ffi::c_void) {
 ///
 /// `env` came from `hew_alloc(size, align)` and holds the call's owned
 /// arguments; ownership passes to the operation. Without an installed pool
-/// (wasm32, or a stopped runtime) the call runs before this returns. Take the
+/// (wasm32, or before runtime initialization) the call runs before this returns. Take the
 /// result with `hew_async_io_take_offload`; free the operation on every edge.
 ///
 /// # Safety
@@ -172,8 +172,11 @@ pub unsafe extern "C" fn hew_async_offload(
             return Arc::into_raw(operation);
         }
         // SAFETY: failed admission did not transfer the job.
-        let (_, rejected) = *unsafe { Box::from_raw(job) };
-        env = rejected;
+        drop(unsafe { Box::from_raw(job) });
+        operation.complete(Err(super::IoFailure::invalid(
+            "offload blocking pool could not accept work",
+        )));
+        return Arc::into_raw(operation);
     }
     env.run();
     operation.complete(Ok(IoValue::Offload(env)));

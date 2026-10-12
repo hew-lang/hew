@@ -2198,6 +2198,84 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_tls_connect( *const HewString, c_int, c_int, *const BytesTriple, i64, i64, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_tls_connect"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_tls_read( *const HewTlsStream, c_int, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_tls_read"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_tls_take_connect( *const HewAsyncIo, *mut *mut HewTlsStream, ) -> i32"
+      },
+      "symbol": "hew_async_tls_take_connect"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_tls_take_read( *const HewAsyncIo, *mut HewTlsReadResult, ) -> i32"
+      },
+      "symbol": "hew_async_tls_take_read"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_tls_take_write( *const HewAsyncIo, *mut HewTlsWriteResult, ) -> i32"
+      },
+      "symbol": "hew_async_tls_take_write"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_tls_write( *const HewTlsStream, *const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_tls_write"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],

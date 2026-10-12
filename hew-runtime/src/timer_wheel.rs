@@ -478,6 +478,53 @@ enum TimerSchedule {
     At(u64),
 }
 
+/// Advance across a long reactor stall without visiting every elapsed
+/// millisecond. All entries are already linked under this lock, so one scan can
+/// separate due callbacks from future entries and re-bucket the latter around
+/// the new cursor.
+fn advance_large_gap(w: &mut WheelInner, now: u64, expired: &mut Vec<ExpiredEntry>) {
+    let mut entries = Vec::new();
+    let mut take = |mut entry: *mut HewTimerEntry| {
+        while !entry.is_null() {
+            entries.push(entry);
+            // SAFETY: every entry is owned by one wheel list under this lock.
+            let next = unsafe { (*entry).next };
+            // SAFETY: the entry is detached before it is classified.
+            unsafe { (*entry).next = ptr::null_mut() };
+            entry = next;
+        }
+    };
+    for slot in &mut w.l0 {
+        take(std::mem::replace(slot, ptr::null_mut()));
+    }
+    for slot in &mut w.l1 {
+        take(std::mem::replace(slot, ptr::null_mut()));
+    }
+    take(std::mem::replace(&mut w.overflow, ptr::null_mut()));
+    w.current_ms = now;
+    for entry in entries {
+        // SAFETY: detached entries remain live and exclusively owned here.
+        if unsafe { (*entry).deadline_ms } <= now {
+            // SAFETY: fields are read while this function exclusively owns the
+            // detached node; the callback runs after the wheel lock is released.
+            unsafe {
+                expired.push(ExpiredEntry {
+                    cb: (*entry).cb,
+                    data: (*entry).data,
+                    cancelled: (*entry).cancelled,
+                    raw: entry,
+                });
+            }
+        } else {
+            insert_entry(w, entry);
+        }
+    }
+    expired.sort_by_key(|entry| {
+        // SAFETY: collected nodes stay owned until their callbacks finish.
+        unsafe { (*entry.raw).deadline_ms }
+    });
+}
+
 unsafe fn timer_wheel_schedule_handle_inner(
     tw: *mut HewTimerWheel,
     schedule: TimerSchedule,
@@ -497,7 +544,10 @@ unsafe fn timer_wheel_schedule_handle_inner(
         return HewTimerHandle::null();
     }
     let deadline_ms = match schedule {
-        TimerSchedule::After(delay_ms) => w.current_ms.saturating_add(delay_ms),
+        TimerSchedule::After(delay_ms) => {
+            let now = now_ms_for_wheel();
+            w.current_ms.max(now).saturating_add(delay_ms)
+        }
         // A deadline that elapsed before registration is already due. Keep it
         // in the current slot so the next tick can collect it immediately.
         TimerSchedule::At(deadline_ms) => deadline_ms.max(w.current_ms),
@@ -646,6 +696,10 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if now.saturating_sub(w.current_ms) > MAX_MS {
+            advance_large_gap(&mut w, now, &mut expired);
+        }
 
         // Absolute registrations can already be due when inserted. They are
         // placed in the current slot and must be observable without requiring

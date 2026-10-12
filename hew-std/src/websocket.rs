@@ -12,9 +12,7 @@ use hew_runtime::bytes::BytesTriple;
 use hew_runtime::transport::{AttachCallback, NativeActorToken, NativeAttachment};
 #[cfg(test)]
 use std::ffi::c_void;
-use std::io;
-#[cfg(test)]
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -97,9 +95,83 @@ struct HewWsConnInner {
     pending: Mutex<Vec<u8>>,
 }
 
-type HewWs = WebSocket<MaybeTlsStream<TcpStream>>;
+type HewWs = WebSocket<MaybeTlsStream<DeadlineTcp>>;
 type WriteOperationGate = Arc<PlMutex<()>>;
 type PreparedWebsockets = (HewWs, Option<HewWs>, Option<WriteOperationGate>);
+
+/// A deadline below both the TLS record layer and the WebSocket framer.
+/// Progress through partial records never restarts the operation's clock.
+#[derive(Debug)]
+struct DeadlineTcp {
+    socket: TcpStream,
+    read_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
+    deadline: Option<Instant>,
+}
+
+impl DeadlineTcp {
+    fn new(socket: TcpStream) -> io::Result<Self> {
+        Ok(Self {
+            read_timeout: socket.read_timeout()?,
+            write_timeout: socket.write_timeout()?,
+            socket,
+            deadline: None,
+        })
+    }
+
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            socket: self.socket.try_clone()?,
+            read_timeout: self.read_timeout,
+            write_timeout: self.write_timeout,
+            deadline: None,
+        })
+    }
+
+    fn timeout(&self, configured: Option<Duration>) -> io::Result<Option<Duration>> {
+        let Some(deadline) = self.deadline else {
+            return Ok(configured);
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Ok(Some(configured.map_or(left, |limit| limit.min(left))))
+    }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        self.socket.set_read_timeout(timeout)?;
+        self.read_timeout = timeout;
+        Ok(())
+    }
+
+    fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        self.socket.set_write_timeout(timeout)?;
+        self.write_timeout = timeout;
+        Ok(())
+    }
+}
+
+impl Read for DeadlineTcp {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.socket
+            .set_read_timeout(self.timeout(self.read_timeout)?)?;
+        self.socket.read(buffer)
+    }
+}
+
+impl Write for DeadlineTcp {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.socket
+            .set_write_timeout(self.timeout(self.write_timeout)?)?;
+        self.socket.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.timeout(self.write_timeout)?;
+        self.socket.flush()
+    }
+}
 
 #[derive(Debug)]
 struct ReaderControl {
@@ -129,7 +201,7 @@ impl Drop for ActiveCallGuard<'_> {
 
 #[derive(Debug)]
 enum HewWsAcceptResult {
-    Accepted(Box<WebSocket<MaybeTlsStream<TcpStream>>>),
+    Accepted(Box<HewWs>),
     Cancelled,
     Error,
 }
@@ -159,6 +231,7 @@ const WS_INVALID_ARGUMENT: i64 = -1;
 const WS_TIMED_OUT: i64 = -2;
 
 const READER_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const CLOSE_FRAME_TIMEOUT: Duration = Duration::from_millis(50);
 const READER_JOIN_WAIT: Duration = Duration::from_millis(500);
 const READER_WAIT_POLL: Duration = Duration::from_millis(10);
 const SERVER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -256,11 +329,7 @@ impl ActorDelivery {
 }
 
 impl HewWsConn {
-    fn new(
-        ws: WebSocket<MaybeTlsStream<TcpStream>>,
-        role: Role,
-        subprotocol: Option<String>,
-    ) -> Self {
+    fn new(ws: HewWs, role: Role, subprotocol: Option<String>) -> Self {
         let shutdown_stream = clone_shutdown_stream(&ws);
         let (ws, write_ws, write_operation_gate) = prepare_websockets(ws, role);
         let write_ws = write_ws.map(|w| PlMutex::new(Some(w)));
@@ -324,10 +393,10 @@ impl Drop for HewWsConn {
     }
 }
 
-fn clone_shutdown_stream(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<TcpStream> {
+fn clone_shutdown_stream(ws: &HewWs) -> Option<TcpStream> {
     match ws.get_ref() {
-        MaybeTlsStream::Plain(stream) => stream.try_clone().ok(),
-        MaybeTlsStream::Rustls(stream) => stream.sock.try_clone().ok(),
+        MaybeTlsStream::Plain(stream) => stream.socket.try_clone().ok(),
+        MaybeTlsStream::Rustls(stream) => stream.sock.socket.try_clone().ok(),
         _ => None,
     }
 }
@@ -351,7 +420,7 @@ fn prepare_websockets(ws: HewWs, role: Role) -> PreparedWebsockets {
 
 fn with_tcp_stream<R>(
     ws: &mut HewWs,
-    f: impl FnOnce(&mut TcpStream) -> io::Result<R>,
+    f: impl FnOnce(&mut DeadlineTcp) -> io::Result<R>,
 ) -> io::Result<R> {
     match ws.get_mut() {
         MaybeTlsStream::Plain(stream) => f(stream),
@@ -363,8 +432,11 @@ fn with_tcp_stream<R>(
     }
 }
 
-fn set_read_timeout(ws: &mut HewWs, timeout: Option<Duration>) -> io::Result<()> {
-    with_tcp_stream(ws, |stream| stream.set_read_timeout(timeout))
+fn set_operation_deadline(ws: &mut HewWs, deadline: Option<Instant>) -> io::Result<()> {
+    with_tcp_stream(ws, |stream| {
+        stream.deadline = deadline;
+        Ok(())
+    })
 }
 
 fn shutdown_socket(stream: Option<&TcpStream>, how: Shutdown) {
@@ -396,8 +468,22 @@ fn with_write_operation_gate<R>(gate: Option<&WriteOperationGate>, op: impl FnOn
 fn read_ws_with_operation_gate(
     inner: &HewWsConnInner,
     ws: &mut HewWs,
+    deadline: Instant,
 ) -> Result<Message, tungstenite::Error> {
-    with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.read())
+    let _gate = match &inner.write_operation_gate {
+        Some(gate) => Some(
+            gate.try_lock_until(deadline)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?,
+        ),
+        None => None,
+    };
+    if Instant::now() >= deadline {
+        return Err(io::Error::from(io::ErrorKind::TimedOut).into());
+    }
+    set_operation_deadline(ws, Some(deadline))?;
+    let result = ws.read();
+    set_operation_deadline(ws, None)?;
+    result
 }
 
 fn send_ws_with_operation_gate(
@@ -416,18 +502,24 @@ fn send_ws_with_operation_gate(
 /// independent write framer; TLS and unattached connections use the primary
 /// framer. Either path is serialized with all other frame writes.
 fn send_close_frame(inner: &Arc<HewWsConnInner>) {
-    if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
-        let mut guard = pl_lock(write_ws_mutex);
-        if let Some(ws) = guard.as_mut() {
-            let _ =
-                with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.close(None));
-        }
+    let deadline = Instant::now() + CLOSE_FRAME_TIMEOUT;
+    let framer = inner.write_ws.as_ref().unwrap_or(&inner.ws);
+    let Some(mut guard) = framer.try_lock_until(deadline) else {
+        return;
+    };
+    let _gate = match &inner.write_operation_gate {
+        Some(gate) => match gate.try_lock_until(deadline) {
+            Some(guard) => Some(guard),
+            None => return,
+        },
+        None => None,
+    };
+    let Some(ws) = guard.as_mut() else { return };
+    if set_operation_deadline(ws, Some(deadline)).is_err() {
         return;
     }
-    let mut guard = pl_lock(&inner.ws);
-    if let Some(ws) = guard.as_mut() {
-        let _ = with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.close(None));
-    }
+    let _ = ws.close(None);
+    let _ = set_operation_deadline(ws, None);
 }
 
 fn signal_reader_cancel(inner: &Arc<HewWsConnInner>) {
@@ -527,11 +619,7 @@ fn is_timeout_error(err: &tungstenite::Error) -> bool {
     )
 }
 
-fn spawn_attach_reader(
-    conn: &HewWsConn,
-    delivery: ActorDelivery,
-    ws_ptr: *mut HewWsConn,
-) -> Result<(), String> {
+fn spawn_attach_reader(conn: &HewWsConn, delivery: ActorDelivery) -> Result<(), String> {
     // Hold this guard through validation, spawn, and store. Two concurrent
     // callers must not both observe an empty slot and start competing readers.
     let mut reader = lock_or_recover(&conn.inner.reader);
@@ -539,14 +627,9 @@ fn spawn_attach_reader(
         return Err("websocket.attach: reader already attached".to_owned());
     }
     {
-        let mut guard = pl_lock(&conn.inner.ws);
-        let Some(ws) = guard.as_mut() else {
+        let guard = pl_lock(&conn.inner.ws);
+        if guard.is_none() {
             return Err("websocket.attach: connection already closed".to_owned());
-        };
-        if let Err(err) = set_read_timeout(ws, Some(READER_READ_TIMEOUT)) {
-            return Err(format!(
-                "websocket.attach: failed to set read timeout for {ws_ptr:p}: {err}"
-            ));
         }
     }
 
@@ -572,7 +655,7 @@ fn spawn_attach_reader(
                 let Some(ws) = guard.as_mut() else {
                     break;
                 };
-                read_ws_with_operation_gate(&inner, ws)
+                read_ws_with_operation_gate(&inner, ws, Instant::now() + READER_READ_TIMEOUT)
             };
 
             match read_result {
@@ -654,10 +737,10 @@ fn receive(inner: &Arc<HewWsConnInner>, deadline: Option<Instant>) -> Received {
         let Some(ws) = guard.as_mut() else {
             return Received::Closed;
         };
-        if let Err(err) = set_read_timeout(ws, Some(slice)) {
-            return Received::Failed(tungstenite::Error::Io(err));
-        }
-        let read = read_ws_with_operation_gate(inner, ws);
+        let operation_deadline = deadline
+            .unwrap_or_else(|| Instant::now() + READER_READ_TIMEOUT)
+            .min(Instant::now() + READER_READ_TIMEOUT);
+        let read = read_ws_with_operation_gate(inner, ws, operation_deadline);
         drop(guard);
         match read {
             Ok(Message::Text(text)) => return Received::Text(text.as_str().to_owned()),
@@ -775,15 +858,7 @@ fn connect_client(
             .as_str()
             .into_client_request()
             .map_err(|err| tungstenite_failure(&err))?;
-        if !options.subprotocols.is_empty() {
-            let offer = options.subprotocols.join(", ");
-            let value = offer
-                .parse()
-                .map_err(|_| (WS_INVALID_ARGUMENT, format!("subprotocol offer {offer:?}")))?;
-            request
-                .headers_mut()
-                .insert("Sec-WebSocket-Protocol", value);
-        }
+        offer_subprotocols(&mut request, &options.subprotocols)?;
         let uri = request.uri();
         let mode = uri_mode(uri).map_err(|err| tungstenite_failure(&err))?;
         keep_transport(&mut first_tls, mode)?;
@@ -806,7 +881,9 @@ fn connect_client(
         tcp.set_nodelay(true)
             .map_err(|err| connect_failure(&ConnectFailure::from_io("connect", &err)))?;
         let stream = match mode {
-            Mode::Plain => MaybeTlsStream::Plain(tcp),
+            Mode::Plain => MaybeTlsStream::Plain(DeadlineTcp::new(tcp).map_err(|err| {
+                connect_failure(&ConnectFailure::from_io("socket timeout", &err))
+            })?),
             Mode::Tls => {
                 let config = tls::client_config(options.trust)
                     .map_err(|failure| connect_failure(&failure))?;
@@ -816,6 +893,9 @@ fn connect_client(
                     .map_err(|err| (WS_INVALID_ARGUMENT, format!("tls client: {err}")))?;
                 tls::complete_handshake(&mut connection, &mut tcp, deadline)
                     .map_err(|failure| connect_failure(&failure))?;
+                let tcp = DeadlineTcp::new(tcp).map_err(|err| {
+                    connect_failure(&ConnectFailure::from_io("socket timeout", &err))
+                })?;
                 MaybeTlsStream::Rustls(rustls::StreamOwned::new(connection, tcp))
             }
         };
@@ -859,6 +939,7 @@ fn connect_client(
             .map(str::to_owned);
         // tungstenite refuses a response that selects none of the offer.
         with_tcp_stream(&mut ws, |tcp| {
+            tcp.deadline = None;
             tcp.set_read_timeout(None)?;
             tcp.set_write_timeout(options.io)
         })
@@ -866,6 +947,22 @@ fn connect_client(
         return Ok((ws, selected));
     }
     unreachable!("WebSocket redirect loop always returns or continues")
+}
+
+fn offer_subprotocols(
+    request: &mut tungstenite::handshake::client::Request,
+    subprotocols: &[&str],
+) -> Result<(), ConnectError> {
+    if !subprotocols.is_empty() {
+        let offer = subprotocols.join(", ");
+        let value = offer
+            .parse()
+            .map_err(|_| (WS_INVALID_ARGUMENT, format!("subprotocol offer {offer:?}")))?;
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", value);
+    }
+    Ok(())
 }
 
 /// Refuse a redirect whose transport differs from the first request's.
@@ -883,26 +980,16 @@ fn keep_transport(first_tls: &mut Option<bool>, mode: Mode) -> Result<(), Connec
 
 /// Bound the upgrade's socket reads and writes by the time left.
 fn bound_upgrade(
-    mut stream: MaybeTlsStream<TcpStream>,
+    mut stream: MaybeTlsStream<DeadlineTcp>,
     deadline: Option<Instant>,
-) -> Result<MaybeTlsStream<TcpStream>, ConnectError> {
-    let left = match deadline {
-        None => None,
-        Some(deadline) => {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err((WS_TIMED_OUT, "upgrade timed out".to_owned()));
-            }
-            Some(left)
-        }
-    };
+) -> Result<MaybeTlsStream<DeadlineTcp>, ConnectError> {
     let tcp = match &mut stream {
         MaybeTlsStream::Plain(tcp) => tcp,
         MaybeTlsStream::Rustls(tls) => &mut tls.sock,
         _ => return Ok(stream),
     };
-    tcp.set_read_timeout(left)
-        .and_then(|()| tcp.set_write_timeout(left))
+    tcp.deadline = deadline;
+    tcp.timeout(None)
         .map_err(|err| connect_failure(&ConnectFailure::from_io("upgrade", &err)))?;
     Ok(stream)
 }
@@ -1213,7 +1300,7 @@ pub unsafe extern "C" fn hew_ws_attach_native(
         set_ws_last_error(-1, "websocket.attach: destination is closed".to_owned());
         return -1;
     };
-    match spawn_attach_reader(conn, ActorDelivery::new(target), ws) {
+    match spawn_attach_reader(conn, ActorDelivery::new(target)) {
         Ok(()) => {
             clear_ws_last_error();
             0
@@ -1353,6 +1440,13 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
                     eprintln!("[accept] failed to prepare cancellable handshake: {err}");
                     return HewWsAcceptResult::Error;
                 }
+                let stream = match DeadlineTcp::new(stream) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        eprintln!("[accept] failed to inspect socket timeouts: {error}");
+                        return HewWsAcceptResult::Error;
+                    }
+                };
                 let tls_stream = MaybeTlsStream::Plain(stream);
                 let config = match websocket_config_from_env() {
                     Ok(config) => config,
@@ -1390,7 +1484,7 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
 
 fn accept_cancellable_handshake(
     inner: &Arc<HewWsServerInner>,
-    stream: MaybeTlsStream<TcpStream>,
+    stream: MaybeTlsStream<DeadlineTcp>,
     config: WebSocketConfig,
 ) -> HewWsAcceptResult {
     use tungstenite::handshake::HandshakeError;
@@ -1447,10 +1541,10 @@ fn accept_cancellable_handshake(
     }
 }
 
-fn set_server_websocket_blocking(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> io::Result<()> {
+fn set_server_websocket_blocking(ws: &mut HewWs) -> io::Result<()> {
     match ws.get_mut() {
-        MaybeTlsStream::Plain(stream) => stream.set_nonblocking(false),
-        MaybeTlsStream::Rustls(stream) => stream.sock.set_nonblocking(false),
+        MaybeTlsStream::Plain(stream) => stream.socket.set_nonblocking(false),
+        MaybeTlsStream::Rustls(stream) => stream.sock.socket.set_nonblocking(false),
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "unsupported websocket server stream kind",
@@ -1608,7 +1702,7 @@ mod tests {
         // This is the framer state produced when an HTTP upgrade and the first
         // server text frame arrive in one read. The peer sends no further bytes.
         let ws = WebSocket::from_partially_read(
-            MaybeTlsStream::Plain(stream),
+            MaybeTlsStream::Plain(DeadlineTcp::new(stream).expect("socket timeouts")),
             b"\x81\x05ready".to_vec(),
             Role::Client,
             None,

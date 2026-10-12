@@ -71,6 +71,9 @@ impl HewAsyncIo {
         // Hold registration through publication: an immediate callback may
         // complete the operation but cannot remove an unpublished handle.
         let mut deadline = self.deadline.lock_or_recover();
+        if !self.is_pending() {
+            return;
+        }
         let payload = Box::into_raw(Box::new(Expiry {
             operation: Arc::downgrade(self),
             failure,

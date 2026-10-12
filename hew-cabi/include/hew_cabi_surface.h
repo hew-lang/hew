@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1623u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1629u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -888,6 +888,36 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "HewWaker, ) -> *const HewAsyncIo\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_connect",
+     "{\"native\": \"fn hew_async_tls_connect( *const HewString, c_int, c_int, "
+     "*const BytesTriple, i64, i64, *const HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_read",
+     "{\"native\": \"fn hew_async_tls_read( *const HewTlsStream, c_int, *const "
+     "HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable-stdlib", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_take_connect",
+     "{\"native\": \"fn hew_async_tls_take_connect( *const HewAsyncIo, *mut "
+     "*mut HewTlsStream, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_take_read",
+     "{\"native\": \"fn hew_async_tls_take_read( *const HewAsyncIo, *mut "
+     "HewTlsReadResult, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_take_write",
+     "{\"native\": \"fn hew_async_tls_take_write( *const HewAsyncIo, *mut "
+     "HewTlsWriteResult, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_tls_write",
+     "{\"native\": \"fn hew_async_tls_write( *const HewTlsStream, *const "
+     "BytesTriple, *const HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_auto_mutex_alloc",
      "{\"native\": \"fn hew_auto_mutex_alloc() -> *mut HewAutoMutex\", "
      "\"wasm32-wasip1\": \"fn hew_auto_mutex_alloc() -> *mut HewAutoMutex\"}",

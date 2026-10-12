@@ -132,6 +132,16 @@ public-host-stdlib = [
   "hew_host_json_set_text",
 ]
 
+# Compiler-private native TLS request submission and result transfer.
+non-declarable-stdlib = [
+  "hew_async_tls_connect",
+  "hew_async_tls_read",
+  "hew_async_tls_take_connect",
+  "hew_async_tls_take_read",
+  "hew_async_tls_take_write",
+  "hew_async_tls_write",
+]
+
 # jit: stable — handle-oriented/user-visible runtime surface that JIT
 # modules may reference directly.
 stable = [

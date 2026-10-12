@@ -101,7 +101,7 @@ functions. Whenever a program compiles a module of the package, directly or
 through any depth of imports, `hew build` and `hew run` build that code and link
 it. Neither the package nor its consumers pass `--link-lib`.
 
-A section may declare a Rust crate, C and C++ sources, system libraries, or any
+A section may declare a Rust crate, C, C++ and assembly sources, system libraries, or any
 combination. An empty `[native]` is refused.
 
 ### Rust crate
@@ -117,34 +117,50 @@ built by the same rustc release as the Hew runtime, which a
 `rust-toolchain.toml` in the crate pins; a mismatch is refused with
 `E_NATIVE_TOOLCHAIN` before Cargo runs.
 
-### C and C++ sources
+### C, C++ and assembly sources
 
-| Field          | Meaning                                                                 |
-| -------------- | ----------------------------------------------------------------------- |
-| `sources`      | `.c` files compile as C; `.cc`, `.cpp` and `.cxx` files compile as C++. |
-| `include-dirs` | Header search directories.                                              |
-| `defines`      | Preprocessor definitions, `NAME` or `NAME=VALUE`.                       |
-| `cflags`       | Extra flags for C sources, such as `-std=c11` or `-Wall`.               |
-| `cxxflags`     | Extra flags for C++ sources, such as `-std=c++17`.                      |
+| Field          | Meaning                                                                                                    |
+| -------------- | ---------------------------------------------------------------------------------------------------------- |
+| `sources`      | `.c` compiles as C; `.cc`, `.cpp`, `.cxx` as C++; `.s` as assembly; `.S` as assembly with C preprocessing. |
+| `include-dirs` | Header search directories.                                                                                 |
+| `defines`      | Preprocessor definitions, `NAME` or `NAME=VALUE`.                                                          |
+| `cflags`       | Extra flags for C sources, such as `-std=c11` or `-Wall`.                                                  |
+| `cxxflags`     | Extra flags for C++ sources, such as `-std=c++17`.                                                         |
+| `asflags`      | Extra flags for assembly sources, using GNU driver spelling.                                               |
 
 Source and include paths are relative to `hew.toml`, written with `/`, and stay
 inside the package: a published package carries only what is below its
 manifest.
 
 Sources compile with the C driver Hew links with: `clang` when it is on `PATH`,
-otherwise the system `cc`, or the driver `HEW_CC` names. The driver chooses the
-language from the extension. Every compile carries the target triple, the
+otherwise the system `cc`, or the driver `HEW_CC` names. Assembly uses explicit
+`-x assembler` or `-x assembler-with-cpp`; C and C++ use their file extensions.
+Every compile carries the target triple, the
 build's optimization level (`-O0`, or `-O2` for `--release`), `-g` for debug
 builds, and AddressSanitizer when the runtime is built with it. Flags in
-`cflags` and `cxxflags` use the GNU driver spelling on every platform,
+`cflags`, `cxxflags` and `asflags` use the GNU driver spelling on every platform,
 Windows included.
 
-Objects are cached under `target/native/` in the package. An object is rebuilt
-when its source, a header it includes or any compile flag changes, and a copy of
+Assembly receives `include-dirs` and `asflags`, without C/C++-only flags.
+Preprocessed assembly also receives `defines`. To preprocess an upstream lowercase `.s` file intentionally, set
+`asflags = ["-x", "assembler-with-cpp"]`. Joined `-xassembler-with-cpp` also
+works; `-x assembler` selects raw assembly, including for `.S`. Other language
+overrides in `asflags` are refused. Assembly must match the selected target
+and its assembler syntax; Hew does not translate instructions between CPUs.
+
+C and C++ objects are cached under `target/native/` in the package. An object
+is rebuilt when its source, a header it includes or any compile flag changes,
+and a copy of
 the package tree at another path builds its own objects. When the package
 directory is read-only, objects are cached under `hew-native/` in the system
 temporary directory instead. A compile error stops the build with
 `E_NATIVE_COMPILE` and the compiler's own output.
+
+Assembly is rebuilt on every Hew invocation: integrated assemblers do not
+reliably report assembler `.include` dependencies. Preprocessed assembly
+contributes its `#include` headers to `--emit-deps`; raw assembly contributes
+the source itself. If an outer Make rule needs to track assembler `.include`
+files, list those prerequisites explicitly or use `#include` in `.S` files.
 
 A source listed twice in `sources`, in `[native]` or together with the matching
 `[native.<os>]` table, is refused. Every other malformed `[native]` entry (a
@@ -216,7 +232,7 @@ error[E_RESERVED_NATIVE_SYMBOL]: `native/listener.c` in package `meshcore.broker
   help: rename it to `meshcore_broker_listener_now` here and in the `extern "C"` block that declares it
 ```
 
-The check covers the compiled objects of C and C++ `sources` (functions, data,
+The check covers the compiled objects of C, C++ and assembly `sources` (functions, data,
 thread-local variables and common symbols) and the symbols a `[native]` Rust
 crate exports (`#[no_mangle] pub extern "C" fn hew_...`). Packages in the `hew.`
 namespace are the runtime's own ecosystem and may define `hew_` symbols. A

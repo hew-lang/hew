@@ -1,9 +1,8 @@
 //! Termination signals: SIGTERM and SIGINT on Unix, console control events on
 //! Windows.
 //!
-//! With no subscriber, a signal starts graceful runtime shutdown (spec §5.9):
-//! the handler records it and the first parking worker initiates shutdown in
-//! ordinary thread context. While a program holds an `os.shutdown_signal()`
+//! With no subscriber, a signal starts graceful runtime shutdown (spec §5.9)
+//! from the dispatcher or Windows console thread. While a program holds an `os.shutdown_signal()`
 //! stream, a signal instead delivers one `()` to every subscriber and the
 //! program decides when to stop. A program that never started the actor
 //! runtime and holds no subscription keeps the platform default and ends.
@@ -31,33 +30,39 @@ static SUBSCRIBERS: Mutex<Vec<Arc<ChannelCore>>> = Mutex::new(Vec::new());
 static SUBSCRIBED: AtomicUsize = AtomicUsize::new(0);
 /// The actor runtime has started and owns the default reaction.
 static RUNTIME_HANDLES: AtomicBool = AtomicBool::new(false);
-/// A signal arrived with no subscriber; a worker starts shutdown.
-static SHUTDOWN_PENDING: AtomicBool = AtomicBool::new(false);
 static INSTALL: Once = Once::new();
 
 /// Install the handlers and make the actor runtime the default reaction: a
 /// signal with no subscriber starts graceful shutdown. Called once the
 /// scheduler starts.
-pub fn install_runtime_handlers() {
+///
+/// # Errors
+/// Returns an error if the signal dispatcher cannot start.
+pub fn install_runtime_handlers() -> Result<(), String> {
     install();
+    #[cfg(unix)]
+    unix::ensure_dispatcher()?;
     RUNTIME_HANDLES.store(true, Ordering::Release);
-}
-
-/// Called by a worker before it parks: start the shutdown a signal requested.
-pub fn check_pending() {
-    if SHUTDOWN_PENDING
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-        .is_ok()
-    {
-        crate::shutdown::hew_shutdown_initiate(0);
-    }
+    Ok(())
 }
 
 /// A signal with no subscriber to receive it.
-fn unclaimed(signal: c_int) {
+fn request_runtime_shutdown() -> bool {
     if RUNTIME_HANDLES.load(Ordering::Acquire) {
-        SHUTDOWN_PENDING.store(true, Ordering::Release);
+        crate::shutdown::request_from_signal();
+        true
     } else {
+        false
+    }
+}
+
+/// Withdraw signal admission before shutdown work is joined and swept.
+pub(crate) fn disarm_runtime_handlers() {
+    RUNTIME_HANDLES.store(false, Ordering::Release);
+}
+
+fn unclaimed(signal: c_int) {
+    if !request_runtime_shutdown() {
         platform_default(signal);
     }
 }
@@ -169,7 +174,10 @@ mod unix {
     /// Only async-signal-safe work: atomics, `write`, `signal` and `raise`.
     extern "C" fn handler(signal: c_int, _info: *mut libc::siginfo_t, _ctx: *mut std::ffi::c_void) {
         let fd = WAKE_FD.load(Ordering::Acquire);
-        if super::SUBSCRIBED.load(Ordering::Acquire) > 0 && fd >= 0 {
+        if fd >= 0
+            && (super::SUBSCRIBED.load(Ordering::Acquire) > 0
+                || super::RUNTIME_HANDLES.load(Ordering::Acquire))
+        {
             LAST_SIGNAL.store(signal, Ordering::Release);
             let saved = errno::get();
             let byte = 1u8;
@@ -179,7 +187,7 @@ mod unix {
             errno::set(saved);
             return;
         }
-        super::unclaimed(signal);
+        super::platform_default(signal);
     }
 
     /// Create the self-pipe and the thread that turns its bytes into requests.
@@ -292,8 +300,7 @@ mod windows {
             super::deliver(signal);
             return 1;
         }
-        if super::RUNTIME_HANDLES.load(Ordering::Acquire) {
-            super::SHUTDOWN_PENDING.store(true, Ordering::Release);
+        if super::request_runtime_shutdown() {
             return 1;
         }
         // Unhandled: the next handler, ultimately the default, ends the process.

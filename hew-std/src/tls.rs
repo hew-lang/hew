@@ -4,6 +4,10 @@
 //! All `extern "C"` functions are designed to be called from compiled Hew
 //! programs via FFI. `host` and the result of [`hew_tls_last_error`] use
 //! managed UTF-8 strings; null is the canonical empty string.
+mod native_io;
+mod socket;
+use socket::TlsTcp;
+
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::raw::c_int;
@@ -51,7 +55,9 @@ const TLS_STATUS_IO_ERROR: c_int = 3;
 type TlsInner = Arc<TlsShared>;
 
 pub struct TlsShared {
-    stream: Mutex<Option<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>>,
+    stream: Mutex<Option<rustls::StreamOwned<rustls::ClientConnection, TlsTcp>>>,
+    /// Independent handle used to interrupt a blocking rustls read before join.
+    shutdown: Option<TcpStream>,
     closed: AtomicBool,
     /// Join handle for the background reader spawned by [`hew_tls_attach_native`].
     ///
@@ -105,9 +111,14 @@ impl HewTlsStream {
     fn from_stream(
         stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
     ) -> *mut HewTlsStream {
+        let shutdown = stream.sock.try_clone().expect("clone test TLS socket");
         Box::into_raw(Box::new(HewTlsStream {
             inner: Arc::new(TlsShared {
-                stream: Mutex::new(Some(stream)),
+                stream: Mutex::new(Some(rustls::StreamOwned::new(
+                    stream.conn,
+                    TlsTcp::new(stream.sock).expect("test TLS socket timeouts"),
+                ))),
+                shutdown: Some(shutdown),
                 closed: AtomicBool::new(false),
                 reader: Mutex::new(None),
                 reader_exited: AtomicBool::new(false),
@@ -307,12 +318,18 @@ fn connect_tls(
     trust: Trust<'_>,
     handshake_ms: i64,
     io_ms: i64,
+    cancellation: Option<&hew_runtime::async_io::library::SocketCancellation>,
 ) -> Result<HewTlsStream, ConnectFailure> {
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|err| ConnectFailure::invalid(format!("server name {host:?}: {err}")))?;
     let config = client_config(trust)?;
     let deadline = io_timeout(handshake_ms).map(|limit| Instant::now() + limit);
     let mut tcp = connect_tcp(host, port, deadline)?;
+    if let Some(cancellation) = cancellation {
+        cancellation
+            .bind(&tcp)
+            .map_err(|err| ConnectFailure::from_io("connect TLS", &err))?;
+    }
     let mut connection = rustls::ClientConnection::new(config, server_name)
         .map_err(|err| ConnectFailure::invalid(format!("tls client: {err}")))?;
     complete_handshake(&mut connection, &mut tcp, deadline)?;
@@ -320,9 +337,16 @@ fn connect_tls(
     tcp.set_read_timeout(timeout)
         .and_then(|()| tcp.set_write_timeout(timeout))
         .map_err(|err| ConnectFailure::from_io("socket timeout", &err))?;
+    let shutdown = tcp
+        .try_clone()
+        .map_err(|err| ConnectFailure::from_io("clone socket for shutdown", &err))?;
     Ok(HewTlsStream {
         inner: Arc::new(TlsShared {
-            stream: Mutex::new(Some(rustls::StreamOwned::new(connection, tcp))),
+            stream: Mutex::new(Some(rustls::StreamOwned::new(
+                connection,
+                TlsTcp::new(tcp).map_err(|err| ConnectFailure::from_io("socket timeout", &err))?,
+            ))),
+            shutdown: Some(shutdown),
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
             reader_exited: AtomicBool::new(false),
@@ -500,18 +524,7 @@ pub unsafe extern "C" fn hew_tls_connect(
     let host_str = unsafe { string_as_str(host) };
     // SAFETY: the caller passes a live triple or null.
     let pem_bytes = unsafe { bytes_view(pem) };
-    let trust = match trust {
-        TLS_TRUST_BUNDLED => Some(Trust::Bundled),
-        TLS_TRUST_PEM => Some(Trust::Pem(pem_bytes)),
-        _ => None,
-    };
-    let attempt = if host_str.is_empty() {
-        Err(ConnectFailure::invalid("host is empty"))
-    } else if let (Ok(port), Some(trust)) = (u16::try_from(port), trust) {
-        connect_tls(host_str, port, trust, handshake_ms, io_ms)
-    } else {
-        Err(ConnectFailure::invalid(format!("invalid port {port}")))
-    };
+    let attempt = connect_validated(host_str, port, trust, pem_bytes, handshake_ms, io_ms, None);
     match attempt {
         Ok(stream) => {
             LAST_CONNECT_FAILURE.with(|slot| slot.set((0, 0)));
@@ -522,6 +535,29 @@ pub unsafe extern "C" fn hew_tls_connect(
             record_connect_failure(&failure);
             std::ptr::null_mut()
         }
+    }
+}
+
+fn connect_validated(
+    host: &str,
+    port: c_int,
+    trust: c_int,
+    pem: &[u8],
+    handshake_ms: i64,
+    io_ms: i64,
+    cancellation: Option<&hew_runtime::async_io::library::SocketCancellation>,
+) -> Result<HewTlsStream, ConnectFailure> {
+    let trust = match trust {
+        TLS_TRUST_BUNDLED => Some(Trust::Bundled),
+        TLS_TRUST_PEM => Some(Trust::Pem(pem)),
+        _ => None,
+    };
+    if host.is_empty() {
+        Err(ConnectFailure::invalid("host is empty"))
+    } else if let (Ok(port), Some(trust)) = (u16::try_from(port), trust) {
+        connect_tls(host, port, trust, handshake_ms, io_ms, cancellation)
+    } else {
+        Err(ConnectFailure::invalid(format!("invalid port {port}")))
     }
 }
 
@@ -609,21 +645,6 @@ pub unsafe extern "C" fn hew_tls_write(
     }
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &*stream };
-    if s.inner.closed.load(Ordering::Acquire) {
-        set_tls_last_error("hew_tls_write: stream is closed");
-        let _ = write_out_status(out_status, TLS_STATUS_IO_ERROR);
-        return -1;
-    }
-    let mut guard = s
-        .inner
-        .stream
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(stream_ref) = guard.as_mut() else {
-        set_tls_last_error("hew_tls_write: stream is closed");
-        let _ = write_out_status(out_status, TLS_STATUS_IO_ERROR);
-        return -1;
-    };
     // SAFETY: `data` is valid for `data_len` bytes per caller contract.
     let buf = if data_len == 0 {
         &[]
@@ -631,7 +652,7 @@ pub unsafe extern "C" fn hew_tls_write(
         // SAFETY: caller guarantees `data` points to `data_len` readable bytes.
         unsafe { std::slice::from_raw_parts(data, data_len) }
     };
-    let result = write_tls_bytes(stream_ref, buf);
+    let result = write_tls_shared(&s.inner, buf, None);
     let _ = write_out_status(out_status, result.status);
     result.written
 }
@@ -668,19 +689,50 @@ pub unsafe extern "C" fn hew_tls_read(
     }
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &*stream };
-    let mut guard = s
-        .inner
-        .stream
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(stream_ref) = guard.as_mut() else {
-        set_tls_last_error("hew_tls_read: stream is closed");
-        let _ = write_out_status(out_status, TLS_STATUS_IO_ERROR);
-        return empty_bytes_triple();
-    };
-    let result = read_tls_vec(stream_ref, size);
+    let result = read_tls_shared(&s.inner, size, None);
     let _ = write_out_status(out_status, result.status);
     result.data
+}
+
+fn read_tls_shared(
+    inner: &TlsShared,
+    size: c_int,
+    cancellation: Option<Arc<hew_runtime::async_io::library::SocketCancellation>>,
+) -> HewTlsReadResult {
+    let mut guard = inner.stream.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(stream) = guard.as_mut() else {
+        set_tls_last_error("hew_tls_read: stream is closed");
+        return HewTlsReadResult {
+            data: empty_bytes_triple(),
+            status: TLS_STATUS_IO_ERROR,
+        };
+    };
+    stream.sock.set_cancellation(cancellation);
+    let result = read_tls_vec(stream, size);
+    stream.sock.set_cancellation(None);
+    result
+}
+
+fn write_tls_shared(
+    inner: &TlsShared,
+    data: &[u8],
+    cancellation: Option<Arc<hew_runtime::async_io::library::SocketCancellation>>,
+) -> HewTlsWriteResult {
+    let mut guard = inner.stream.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(stream) = guard
+        .as_mut()
+        .filter(|_| !inner.closed.load(Ordering::Acquire))
+    else {
+        set_tls_last_error("hew_tls_write: stream is closed");
+        return HewTlsWriteResult {
+            written: -1,
+            status: TLS_STATUS_IO_ERROR,
+        };
+    };
+    stream.sock.set_cancellation(cancellation);
+    let result = write_tls_bytes(stream, data);
+    stream.sock.set_cancellation(None);
+    result
 }
 
 /// Hew-facing bridge that packages `hew_tls_write` status into a repr(C) struct
@@ -743,10 +795,10 @@ fn take_tls_reader(inner: &TlsShared) -> Option<JoinHandle<()>> {
 
 /// Reap the background reader thread, blocking until it exits.
 ///
-/// The reader observes `closed` at its next loop boundary and exits within at
-/// most `TLS_READER_TIMEOUT` (the underlying socket read timeout). Joining here
-/// guarantees the reader has stopped calling into the runtime before
-/// `hew_tls_close` returns — mirroring `websocket.rs::join_reader`.
+/// The close path shuts down the independent socket handle before joining, so
+/// a read inside rustls is interrupted even when a peer keeps an incomplete TLS
+/// record active across repeated socket reads. Joining here guarantees the
+/// reader has stopped calling into the runtime before `hew_tls_close` returns.
 ///
 /// Returns `true` if a reader was attached (and joined), `false` if none was.
 fn join_tls_reader(inner: &TlsShared) -> bool {
@@ -760,11 +812,9 @@ fn join_tls_reader(inner: &TlsShared) -> bool {
 
 /// Close the TLS connection and free the stream handle.
 ///
-/// Sets the `closed` flag so any attached reader thread exits at its next loop
-/// boundary, then joins the reader before returning so it is deterministically
-/// reaped (it can otherwise call into the runtime for up to `TLS_READER_TIMEOUT`
-/// after close — the #1963 reader-lifetime hazard). Drops the inner stream,
-/// which closes the underlying TCP socket.
+/// Sets the `closed` flag, shuts down the socket to interrupt a blocked read,
+/// then joins the reader before returning so it is deterministically reaped.
+/// Drops the inner stream, which closes the underlying TCP socket.
 ///
 /// # Safety
 ///
@@ -781,9 +831,14 @@ pub unsafe extern "C" fn hew_tls_close(stream: *mut HewTlsStream) {
     // Clone the Arc first so the reader handle and stream guard outlive `s`.
     let inner = Arc::clone(&s.inner);
     drop(s);
-    // Reap the reader BEFORE freeing the connection: once `closed` is set the
-    // reader exits within `TLS_READER_TIMEOUT`, and joining it here ensures it
-    // is no longer touching the runtime when this returns.
+    // Interrupt any in-flight rustls read without taking its shared stream
+    // mutex. A peer can otherwise keep `complete_io` inside one read forever by
+    // trickling partial or empty TLS records before each socket timeout.
+    if let Some(socket) = &inner.shutdown {
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+    }
+    // Reap the reader before freeing the connection, ensuring it is no longer
+    // touching the runtime when this returns.
     //
     // The reader drops the inner stream on exit (`reader_exited` is set first,
     // then the stream is dropped — see `spawn_tls_attach_reader`). If no reader
@@ -1716,6 +1771,7 @@ pub(crate) mod tests {
         // Construct a minimal live stream so the null-stream guard does not fire.
         let shared = Arc::new(TlsShared {
             stream: Mutex::new(None),
+            shutdown: None,
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
             reader_exited: AtomicBool::new(false),
@@ -1737,6 +1793,7 @@ pub(crate) mod tests {
         // Verify that after close, the stream mutex yields None.
         let shared = Arc::new(TlsShared {
             stream: Mutex::new(None),
+            shutdown: None,
             closed: AtomicBool::new(true),
             reader: Mutex::new(None),
             reader_exited: AtomicBool::new(false),

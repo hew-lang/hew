@@ -202,7 +202,7 @@ const TLS_CONNECT_OS: i32 = 3;
 /// precedes them and is not bounded by the deadline. A bad trust PEM,
 /// host or port is `InvalidArgument`; a certificate the trust does not
 /// accept, or a hostname mismatch, is `Other` with the alert in
-/// `last_error()`. Each call blocks its worker until it finishes.
+/// `last_error()`. Waiting suspends the caller so unrelated actors can run.
 pub fn connect(host: string, port: i64, options: TlsOptions) -> TlsStream fails net.NetError {
     let checked = net.port_arg("tls.connect", port)?;
     let handshake_ms = net.duration_ms("tls.connect handshake_timeout", options.handshake_timeout.millis())?;

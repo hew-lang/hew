@@ -30,6 +30,8 @@ mod deadline;
 #[cfg(not(target_arch = "wasm32"))]
 mod file;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod library;
+#[cfg(not(target_arch = "wasm32"))]
 mod net;
 mod offload;
 mod sink;
@@ -44,8 +46,6 @@ pub(crate) use net::{accept_now, start_tcp_readable, start_tcp_stream_write};
 #[cfg(not(target_arch = "wasm32"))]
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
 pub use offload::hew_async_offload;
-#[cfg(windows)]
-pub(crate) use stdin::ensure_reader as ensure_stdin_reader;
 pub use stdin::hew_async_stdin_read_line;
 
 #[cfg(test)]
@@ -153,9 +153,13 @@ pub(crate) enum IoValue {
     Count(i64),
     #[cfg(not(target_arch = "wasm32"))]
     Connection(AcceptedConnection),
+    #[cfg(not(target_arch = "wasm32"))]
+    TcpConnection(std::net::TcpStream),
     StdinLine(stdin::Line),
     /// An `#[offload]` call's environment holding its result.
     Offload(offload::OffloadEnv),
+    #[cfg(not(target_arch = "wasm32"))]
+    Library(Box<dyn std::any::Any + Send>),
 }
 
 enum State {
@@ -184,6 +188,8 @@ pub struct HewAsyncIo {
     #[cfg(not(target_arch = "wasm32"))]
     net: Option<net::NetOp>,
     cleanup: Mutex<Cleanup>,
+    #[cfg(not(target_arch = "wasm32"))]
+    socket_cancel: Option<Arc<library::SocketCancellation>>,
     #[cfg(windows)]
     file_cancel: file::FileCancellation,
     #[cfg(not(target_arch = "wasm32"))]
@@ -290,6 +296,7 @@ impl HewAsyncIo {
         Arc::new(Self {
             state: Mutex::new(State::Pending(owned)),
             net,
+            socket_cancel: None,
             cleanup: Mutex::new(Cleanup::default()),
             deadline: Mutex::new(None),
             detach: Mutex::new(None),
@@ -423,13 +430,16 @@ impl HewAsyncIo {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.clear_deadline();
+            if won {
+                if let Some(cancel) = &self.socket_cancel {
+                    cancel.cancel();
+                }
+            }
             if let Some(net) = &self.net {
                 net.slot.forget(self);
             }
-            if won {
-                if let Some(detach) = self.detach.lock_or_recover().take() {
-                    detach.detach();
-                }
+            if let Some(detach) = self.detach.lock_or_recover().take() {
+                detach.detach();
             }
         }
         #[cfg(windows)]
@@ -840,17 +850,28 @@ pub unsafe extern "C" fn hew_async_io_take_handle(
         return AsyncIoStatus::Error as i32;
     }
     let mut state = operation.state.lock_or_recover();
-    let State::Ready(Ok(IoValue::Connection(handle))) = &mut *state else {
+    if !matches!(
+        &*state,
+        State::Ready(Ok(IoValue::Connection(_) | IoValue::TcpConnection(_)))
+    ) {
         return if state.status() == AsyncIoStatus::Success {
             AsyncIoStatus::Error as i32
         } else {
             state.status() as i32
         };
+    }
+    let State::Ready(Ok(value)) = std::mem::replace(&mut *state, State::Taken) else {
+        unreachable!("checked under the same lock")
+    };
+    let handle = match value {
+        IoValue::Connection(mut handle) => std::mem::replace(&mut handle.0, -1),
+        IoValue::TcpConnection(stream) => crate::transport::tcp_adopt_connection(stream),
+        _ => {
+            return AsyncIoStatus::Error as i32;
+        }
     };
     // SAFETY: out is writable; ownership is disarmed under the same lock.
-    unsafe { out.write(i64::from(handle.0)) };
-    handle.0 = -1;
-    *state = State::Taken;
+    unsafe { out.write(i64::from(handle)) };
     AsyncIoStatus::Success as i32
 }
 

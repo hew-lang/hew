@@ -4,7 +4,16 @@ use hew_runtime::async_io::library::{submit_socket_job, take_library_result};
 use hew_runtime::async_io::{AsyncIoStatus, HewAsyncIo};
 use hew_runtime::wake::HewWaker;
 
-use super::*;
+use std::os::raw::c_int;
+use std::sync::Arc;
+
+use super::{
+    bytes_view, clear_tls_last_error, connect_validated, empty_bytes_triple, get_tls_last_error,
+    read_tls_shared, set_tls_last_error, write_tls_shared, BytesTriple, HewString,
+    HewTlsReadResult, HewTlsStream, HewTlsWriteResult, LAST_CONNECT_FAILURE, TLS_CONNECT_OS,
+    TLS_STATUS_IO_ERROR,
+};
+use hew_cabi::string::string_as_str;
 
 enum Value {
     Connect(Option<HewTlsStream>),

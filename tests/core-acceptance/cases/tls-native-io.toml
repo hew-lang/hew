@@ -1,0 +1,15 @@
+[[case]]
+id = "tls-native-io"
+intent = "Slow verified TLS connect, read and write leave unrelated actors runnable with one worker; cancelled borrowed reads and writes preserve the connection for later I/O."
+source = "cases/tls-native-io.hew"
+fixtures = "fixtures/tls-native-io"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "TLS progress and retained read/write recovery\n"
+stderr = ""
+exit = 0

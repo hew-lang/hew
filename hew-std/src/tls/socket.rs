@@ -1,7 +1,10 @@
 //! A borrowed TLS operation may stop without closing its retained connection.
 
-use super::*;
 use hew_runtime::async_io::library::SocketCancellation;
+use std::io::{self, Read, Write};
+use std::net::TcpStream;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const CANCEL_INTERVAL: Duration = Duration::from_millis(25);
 

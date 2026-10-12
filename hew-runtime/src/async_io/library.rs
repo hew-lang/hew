@@ -94,6 +94,9 @@ where
 ///
 /// # Safety
 /// `waker` is null or a live borrowed descriptor for this call.
+///
+/// # Panics
+/// Panics if a newly created, unpublished operation is already shared.
 pub unsafe fn submit_socket_job<F, T>(waker: *const HewWaker, run: F) -> *const HewAsyncIo
 where
     F: FnOnce(&Arc<SocketCancellation>) -> T + Send + 'static,

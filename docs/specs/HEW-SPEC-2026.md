@@ -18,9 +18,10 @@ runtime.
 Hew tracks **two version axes** that move independently:
 
 - **Compiler version** is SemVer on the binary (`hew --version` → `hew
-  0.6.0`). Patch releases for soundness and codegen fixes; minor releases
-  for new stdlib surfaces and new language editions; the major release is
-  the v1.0 stability event.
+  0.6.0`). During the 0.6 series, patch releases may add compatible language
+  and standard-library features as well as correctness and performance fixes.
+  Packages using an addition declare the minimum compiler version through
+  `hew` in `hew.toml`. The major release is the v1.0 stability event.
 - **Spec edition** is a year-shaped identifier declared once per package in
   `hew.toml` as `edition = "2026"`. **2026** is the edition being developed;
   it has not yet stabilized. Editions are cadence-free: the next edition lands when
@@ -35,15 +36,17 @@ $ hew --supported-editions
 2026
 ```
 
-Before stabilization, the native compiler cutover may make breaking changes
-within edition 2026. Superseded syntax and APIs can be removed as the compiler,
-standard library and documentation converge on the agreed design; selecting
-edition 2026 is not yet a compatibility freeze.
+Before v0.6.0, the native compiler cutover may make breaking changes within
+edition 2026 as the compiler, standard library and documentation converge on
+the agreed design.
 
-After stabilization, the intended edition contract is compatibility for as
-long as that edition remains supported. Additive features can land within an
-edition; incompatible language changes require a later edition. This future
-contract does not prevent the current pre-stability redesign.
+Starting with v0.6.0, the 0.6 series preserves existing valid programs and
+their specified behaviour. Compatible additions may extend edition 2026;
+each addition updates this specification and identifies its first supported
+compiler version. New syntax must preserve existing names and parsing, and
+new APIs must preserve existing resolution, ownership and error semantics.
+Incompatible language changes require a later edition. An older compiler
+need not support features introduced by a newer compiler in the same edition.
 
 Hew does not adopt per-file edition pragmas. The edition stamp is
 package-level. Migration tooling (`hew migrate --edition <year>`) is

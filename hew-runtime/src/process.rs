@@ -341,12 +341,25 @@ pub unsafe extern "C" fn hew_process_start(
     let Some(args) = (unsafe { hewvec_string_args(args, CONTEXT) }) else {
         return std::ptr::null_mut();
     };
+    let mut command = Command::new(&program);
+    command.args(args);
+    spawn_child(command, &program, stdin, stdout, stderr, CONTEXT)
+}
+
+fn spawn_child(
+    mut command: Command,
+    program: &str,
+    stdin: i32,
+    stdout: i32,
+    stderr: i32,
+    context: &str,
+) -> *mut HewProcess {
     #[cfg(windows)]
     let output_modes = [stdout, stderr];
     let (Some(stdin), Some(stdout), Some(stderr)) = (
-        stdio(stdin, CONTEXT),
-        stdio(stdout, CONTEXT),
-        stdio(stderr, CONTEXT),
+        stdio(stdin, context),
+        stdio(stdout, context),
+        stdio(stderr, context),
     ) else {
         return std::ptr::null_mut();
     };
@@ -363,7 +376,7 @@ pub unsafe extern "C" fn hew_process_start(
                         modes[index] = Stdio::from(child);
                     }
                     Err(error) => {
-                        crate::set_last_error(format!("{CONTEXT}: create output pipe: {error}"));
+                        crate::set_last_error(format!("{context}: create output pipe: {error}"));
                         return std::ptr::null_mut();
                     }
                 }
@@ -372,12 +385,7 @@ pub unsafe extern "C" fn hew_process_start(
         let [stdout, stderr] = modes;
         (stdout, stderr)
     };
-    let mut command = Command::new(&program);
-    command
-        .args(args)
-        .stdin(stdin)
-        .stdout(stdout)
-        .stderr(stderr);
+    command.stdin(stdin).stdout(stdout).stderr(stderr);
     // An inheriting child shares stdout and stderr: queued output goes first.
     crate::output::flush();
     match command.spawn() {
@@ -394,7 +402,7 @@ pub unsafe extern "C" fn hew_process_start(
             }))
         }
         Err(error) => {
-            crate::set_last_error(format!("{CONTEXT}: failed to execute '{program}': {error}"));
+            crate::set_last_error(format!("{context}: failed to execute '{program}': {error}"));
             std::ptr::null_mut()
         }
     }

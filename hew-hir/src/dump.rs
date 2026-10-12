@@ -500,13 +500,17 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
         }
         HirExprKind::ActorMessage {
             receiver,
-            method_id,
+            handler,
             args,
             policy,
             ..
         } => {
-            writeln!(out, "{pad}  actor-message {method_id} policy={policy:?}")
-                .expect("write to string");
+            writeln!(
+                out,
+                "{pad}  actor-message {} policy={policy:?}",
+                defs.path(*handler)
+            )
+            .expect("write to string");
             dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
                 dump_expr(defs, out, arg, indent + 4);
@@ -525,14 +529,15 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
         }
         HirExprKind::ActorAsk {
             receiver,
-            method_id,
+            handler,
             args,
             reply_ty,
             ..
         } => {
             writeln!(
                 out,
-                "{pad}  actor-ask {method_id} -> {}",
+                "{pad}  actor-ask {} -> {}",
+                defs.path(*handler),
                 reply_ty.user_facing()
             )
             .expect("write to string");
@@ -543,11 +548,12 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
         }
         HirExprKind::ActorGenStream {
             receiver,
-            method,
+            handler,
             args,
             ..
         } => {
-            writeln!(out, "{pad}  actor-gen-stream {method}").expect("write to string");
+            writeln!(out, "{pad}  actor-gen-stream {}", defs.path(*handler))
+                .expect("write to string");
             dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
                 dump_expr(defs, out, arg, indent + 4);

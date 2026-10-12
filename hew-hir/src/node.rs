@@ -1381,7 +1381,8 @@ pub enum HirExprKind {
     /// Owned message construction; this does not enqueue or suspend.
     ActorMessage {
         receiver: Box<HirExpr>,
-        method_id: String,
+        /// Exact checker-selected receive handler declaration.
+        handler: DefId,
         /// Arguments in parameter order.
         args: Vec<HirExpr>,
         /// The index into `args` of each argument in the order the source
@@ -1400,7 +1401,8 @@ pub enum HirExprKind {
     /// crosses the boundary as `ResolvedTy`.
     ActorAsk {
         receiver: Box<HirExpr>,
-        method_id: String,
+        /// Exact checker-selected receive handler or lambda protocol declaration.
+        handler: DefId,
         /// Arguments in parameter order.
         args: Vec<HirExpr>,
         /// The index into `args` of each argument in the order the source
@@ -1422,7 +1424,8 @@ pub enum HirExprKind {
     /// ask-without-await guard already exempts generator methods.
     ActorGenStream {
         receiver: Box<HirExpr>,
-        method: String,
+        /// Exact checker-selected generator receive handler declaration.
+        handler: DefId,
         /// Arguments in parameter order.
         args: Vec<HirExpr>,
         /// The index into `args` of each argument in the order the source

@@ -351,10 +351,10 @@ impl SemActor {
                     .ok_or("ask rejection lacks its sealed handler protocol")?;
             if *request_target != target.to_ty()
                 || policy != hew_types::actor_delivery::SendPolicy::Reject
-                || (method.spelling.as_str() != defs.path(handler.declaration)
+                || (method.id.declaration() != handler.declaration
                     && !(self.is_lambda()
-                        && method.spelling.as_str()
-                            == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID))
+                        && defs.kind(method.id.declaration())
+                            == hew_types::DeclarationKind::RequestProtocol))
                 || *parameters
                     != hew_types::Ty::Tuple(handler.params.iter().map(ResolvedTy::to_ty).collect())
                 || *success != reply.to_ty()

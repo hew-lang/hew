@@ -681,7 +681,7 @@ impl Builder<'_, '_> {
     ) -> Result<ActorRequestPreparation, String> {
         let HirExprKind::ActorAsk {
             receiver,
-            method_id,
+            handler,
             args,
             evaluation_order,
             reply_ty: _,
@@ -698,11 +698,11 @@ impl Builder<'_, '_> {
                 .unwrap_or_else(|| self.ty(&receiver.ty));
         let actor = self.service.require_actor(&target_ty)?;
         let descriptor = &self.service.actors[actor.0 as usize];
-        // A lambda actor's call site reaches it through its `actor(M) -> R`
-        // handle, which names no particular lambda, so the dispatch id is the marker
-        // rather than a declaration path; the actor's one handler is the
-        // member. Every other actor selects its member by exact identity.
-        let handler = if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
+        // A lambda handle carries the shared request-protocol declaration;
+        // every named actor carries its exact receive declaration.
+        let handler = if self.service.module.defs.kind(*handler)
+            == hew_types::DeclarationKind::RequestProtocol
+        {
             match descriptor.handlers.as_slice() {
                 [only] if descriptor.is_lambda() => only,
                 _ => return Err("a lambda actor declares exactly one handler".into()),
@@ -711,9 +711,7 @@ impl Builder<'_, '_> {
             descriptor
                 .handlers
                 .iter()
-                .find(|handler| {
-                    self.service.module.defs.path(handler.declaration) == method_id.as_str()
-                })
+                .find(|candidate| candidate.declaration == *handler)
                 .ok_or("ask has no exact receive protocol member")?
         };
         let message = handler.message_id;
@@ -1361,7 +1359,7 @@ impl Builder<'_, '_> {
     pub(super) fn lower_actor_message(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
         let HirExprKind::ActorMessage {
             receiver,
-            method_id,
+            handler,
             args,
             evaluation_order,
             policy,
@@ -1377,7 +1375,9 @@ impl Builder<'_, '_> {
         // A lambda actor declares one unnamed handler, so its message
         // selects that member. Every other actor selects by exact identity.
         let descriptor = &self.service.actors[actor.0 as usize];
-        let handler = if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
+        let handler = if self.service.module.defs.kind(*handler)
+            == hew_types::DeclarationKind::RequestProtocol
+        {
             match descriptor.handlers.as_slice() {
                 [only] if descriptor.is_lambda() => only,
                 _ => return Err("a lambda actor declares exactly one handler".into()),
@@ -1386,9 +1386,7 @@ impl Builder<'_, '_> {
             descriptor
                 .handlers
                 .iter()
-                .find(|handler| {
-                    self.service.module.defs.path(handler.declaration) == method_id.as_str()
-                })
+                .find(|candidate| candidate.declaration == *handler)
                 .ok_or("message description has no exact receive member")?
         }
         .clone();
@@ -1535,13 +1533,11 @@ impl Builder<'_, '_> {
                 let (source_method, params, _, _) =
                     hew_types::actor_delivery::request_parts(payload_ty)
                         .ok_or("recovery input lacks its sealed completion protocol")?;
+                let source_handler = source_method.id.declaration();
                 if source_policy != *policy
-                    || self
-                        .service
-                        .module
-                        .defs
-                        .name(source_method.id.declaration())
-                        != self.service.module.defs.name(handler.declaration)
+                    || (source_handler != handler.declaration
+                        && self.service.module.defs.kind(source_handler)
+                            != hew_types::DeclarationKind::RequestProtocol)
                     || *params
                         != hew_types::Ty::Tuple(
                             handler.params.iter().map(ResolvedTy::to_ty).collect(),
@@ -1629,7 +1625,7 @@ impl Builder<'_, '_> {
     pub(super) fn lower_actor_stream(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
         let HirExprKind::ActorGenStream {
             receiver,
-            method,
+            handler,
             args,
             evaluation_order,
         } = &expression.kind
@@ -1644,10 +1640,7 @@ impl Builder<'_, '_> {
         let handler = self.service.actors[actor.0 as usize]
             .handlers
             .iter()
-            .find(|handler| {
-                self.service.module.defs.path(handler.declaration) == method.as_str()
-                    && handler.stream.is_some()
-            })
+            .find(|candidate| candidate.declaration == *handler && candidate.stream.is_some())
             .ok_or("stream request has no exact producer member")?
             .clone();
         let stream_ty = self.ty(&expression.ty);

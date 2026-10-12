@@ -318,7 +318,7 @@ impl LowerCtx {
         &mut self,
         function: &Spanned<Expr>,
         args: &[CallArg],
-        method_id: &str,
+        handler: hew_types::DefId,
         reply_ty: &hew_types::Ty,
         policy: hew_types::actor_delivery::SendPolicy,
         span: &Span,
@@ -339,7 +339,7 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         };
-        let Some(result_ty) = self.checked_actor_ask_result_ty(span, method_id) else {
+        let Some(result_ty) = self.checked_actor_ask_result_ty(span, handler) else {
             return (
                 HirExprKind::Unsupported("lambda actor call has no checked result".to_string()),
                 ResolvedTy::Unit,
@@ -348,7 +348,7 @@ impl LowerCtx {
         (
             HirExprKind::ActorAsk {
                 receiver: Box::new(receiver),
-                method_id: method_id.to_string(),
+                handler,
                 args: lowered_args,
                 evaluation_order: Vec::new(),
                 reply_ty,
@@ -365,7 +365,7 @@ impl LowerCtx {
         &mut self,
         function: &Spanned<Expr>,
         args: &[CallArg],
-        method_id: &str,
+        handler: hew_types::DefId,
         policy: hew_types::actor_delivery::SendPolicy,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
@@ -397,7 +397,7 @@ impl LowerCtx {
             intent: IntentKind::Consume,
             kind: HirExprKind::ActorMessage {
                 receiver: Box::new(receiver),
-                method_id: method_id.to_string(),
+                handler,
                 args: lowered_args,
                 evaluation_order: Vec::new(),
                 policy,

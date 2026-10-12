@@ -701,6 +701,8 @@ pub struct DefTable {
     /// id `Scope::resolve` returned instead of a rendered path.
     by_path: HashMap<String, DefId>,
     default_bodies: HashMap<DefaultBodyKey, DefId>,
+    /// The shared sourceless protocol selected for lambda actor calls.
+    lambda_actor_protocol: Option<DefId>,
     /// The std declaration each compiler builtin with a source declaration
     /// is (`CrashInfo` is `std.failure.CrashInfo`), bound when that
     /// declaration is established.
@@ -744,6 +746,7 @@ impl DefTable {
             restricted: HashMap::new(),
             by_path: HashMap::new(),
             default_bodies: HashMap::new(),
+            lambda_actor_protocol: None,
             builtin_declarations: HashMap::new(),
             members: HashMap::new(),
         };
@@ -1502,25 +1505,21 @@ impl DefTable {
         id
     }
 
-    /// The row of a checker-synthesized request record keyed by `method_id`:
-    /// the handler's own declaration when it has one, else a sourceless row
-    /// rendered as `method_id`.
-    ///
-    /// TRANSITION(P2): deleted by A1 commit 3, when the request type carries
-    /// the handler's `DefId` instead of its path.
-    pub(crate) fn request_protocol(&mut self, method_id: &str) -> DefId {
-        if let Some(&established) = self.by_path.get(method_id) {
+    /// The shared sourceless request protocol for lambda actor calls.
+    pub(crate) fn lambda_actor_protocol(&mut self) -> DefId {
+        if let Some(established) = self.lambda_actor_protocol {
             return established;
         }
+        let path = crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID;
         let id = self.push_row(DefRow {
-            name: Symbol::intern(method_id),
+            name: Symbol::intern(path),
             kind: DeclarationKind::RequestProtocol,
             module: None,
             owner: None,
             site: None,
-            path: method_id.to_string(),
+            path: path.to_string(),
         });
-        self.by_path.insert(method_id.to_string(), id);
+        self.lambda_actor_protocol = Some(id);
         id
     }
 

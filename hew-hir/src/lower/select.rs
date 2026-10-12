@@ -30,7 +30,7 @@ impl LowerCtx {
     pub(super) fn checked_actor_ask_result_ty(
         &mut self,
         span: &Span,
-        method_id: &str,
+        handler: hew_types::DefId,
     ) -> Option<ResolvedTy> {
         let result = self
             .expr_types
@@ -67,7 +67,7 @@ impl LowerCtx {
                 return None;
             }
         };
-        let result_ty = Self::actor_module_short_of_method_id(method_id).map_or_else(
+        let result_ty = self.actor_handler_module(handler).map_or_else(
             || result_ty.clone(),
             |module| self.qualify_colliding_module_record_ty(&result_ty, module),
         );

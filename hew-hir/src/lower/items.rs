@@ -691,25 +691,11 @@ impl LowerCtx {
         Some(lowered)
     }
 
-    /// Extract the declaring-module short segment from an imported actor's
-    /// method id (`{module}.{Actor}::{method}` → `module`). Returns `None` for
-    /// a bare/root actor (`Actor::method`, no leading module segment), which
-    /// carries no module identity to qualify against.
-    pub(super) fn actor_module_short_of_method_id(method_id: &str) -> Option<&str> {
-        let actor_identity = method_id.split("::").next()?;
-        actor_identity
-            .rsplit_once('.')
-            .map(|(module, _actor)| module)
-    }
-
-    /// The rendered path HIR actor nodes carry for a dispatched handler (a
-    /// lambda actor's `call` protocol row renders as the shared method id).
-    ///
-    /// TRANSITION(IDENT-B1): WHY HIR actor nodes still carry the handler's
-    /// rendered path. WHEN they carry the declaration, this render goes.
-    /// WHAT: HIR actor nodes keyed by handler id.
-    pub(super) fn actor_method_id(&self, method: hew_types::DefId) -> String {
-        self.defs.path(method).to_string()
+    /// The declaring module of an imported actor handler. Root handlers and
+    /// the sourceless lambda protocol carry no module qualification.
+    pub(super) fn actor_handler_module(&self, handler: hew_types::DefId) -> Option<&str> {
+        let module = self.defs.module(handler)?;
+        (Some(module) != self.defs.root_module()).then(|| self.defs.module_path(module))
     }
 
     /// Whether a dispatched handler is a lambda actor's `call` protocol.

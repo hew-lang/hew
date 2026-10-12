@@ -553,7 +553,7 @@ fn main() {
     );
     let select = find_first_select(&output);
     assert!(
-        matches!(&select.arms[0].kind, HirSelectArmKind::ActorAsk { call } if matches!(&call.kind, HirExprKind::ActorAsk { method_id, args, .. } if method_id.ends_with("process") && args.len() == 1))
+        matches!(&select.arms[0].kind, HirSelectArmKind::ActorAsk { call } if matches!(&call.kind, HirExprKind::ActorAsk { handler, args, .. } if output.module.defs.path(*handler).ends_with("process") && args.len() == 1))
     );
 }
 

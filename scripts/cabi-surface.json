@@ -9851,6 +9851,19 @@
       "availability": [
         "native"
       ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_jwt_decode_with_policy_hew( *const HewString, *const HewString, i32, *const HewString, *const HewString, ) -> *mut HewString"
+      },
+      "symbol": "hew_jwt_decode_with_policy_hew"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
@@ -9911,6 +9924,19 @@
         "native": "fn hew_jwt_validate( *const HewString, *const HewString, i32, ) -> i32"
       },
       "symbol": "hew_jwt_validate"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_jwt_validate_with_policy( *const HewString, *const HewString, i32, *const HewString, *const HewString, ) -> i32"
+      },
+      "symbol": "hew_jwt_validate_with_policy"
     },
     {
       "availability": [

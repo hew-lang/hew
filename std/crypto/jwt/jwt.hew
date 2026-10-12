@@ -8,7 +8,8 @@
 //! import std.crypto.jwt;
 //!
 //! fn main() {
-//!     match jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256") {
+//!     let claims = "{\"sub\":\"1234\",\"exp\":4102444800}";
+//!     match jwt.encode(claims, "example only secret, never use in production", "HS256") {
 //!         .Ok(token) => println(token),
 //!         .Err(err) => println(err),
 //!     }
@@ -24,6 +25,7 @@ pub enum JwtError {
     SignatureInvalid;
     ClaimsExpired;
     AllocationFailure;
+    ClaimsInvalid;
 }
 
 fn jwt_error_from_i32(code: i32) -> JwtError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
@@ -35,6 +37,7 @@ fn jwt_error_from_i32(code: i32) -> JwtError { // INTERNAL-ABI: C ABI error tag 
         4 => JwtError.SignatureInvalid,
         5 => JwtError.ClaimsExpired,
         6 => JwtError.AllocationFailure,
+        7 => JwtError.ClaimsInvalid,
         _ => JwtError.TokenMalformed,
     }
 }
@@ -49,6 +52,7 @@ impl Display for JwtError {
             JwtError.SignatureInvalid => "JWT signature verification failed",
             JwtError.ClaimsExpired => "JWT claims have expired",
             JwtError.AllocationFailure => "JWT native allocation failed",
+            JwtError.ClaimsInvalid => "JWT required claims are missing or invalid",
         }
     }
 }
@@ -89,11 +93,32 @@ pub fn encode(payload: string, secret: string, algorithm: string) -> Result<stri
 /// Decode and verify a JWT, returning its payload as a JSON string.
 ///
 /// Returns `Err(JwtError)` when the token is malformed, expired, signed with a
-/// different key, or cannot be allocated.
+/// different key, lacks a valid `exp` claim, has an invalid `nbf` claim, or
+/// cannot be allocated. HMAC secrets must be at least 32, 48 or 64 bytes for
+/// HS256, HS384 or HS512 respectively. A token carrying an `aud` claim must be
+/// decoded with `decode_with_policy`. Time claims are checked without clock-skew
+/// leeway.
 pub fn decode(token: string, secret: string, algorithm: string) -> Result<string, JwtError> {
     let algo = algo_to_i32(algorithm);
     let payload = unsafe {
         hew_jwt_decode_hew(token, secret, algo)
+    };
+    match last_error() {
+        JwtError.None => .Ok(payload),
+        err => .Err(err),
+    }
+}
+
+/// Decode and verify a JWT for one issuer and audience.
+///
+/// In addition to the checks performed by `decode`, this requires matching
+/// `iss` and `aud` claims. An audience array is accepted when it contains the
+/// expected audience. Use this at authentication boundaries where the expected
+/// token issuer and recipient are known.
+pub fn decode_with_policy(token: string, secret: string, algorithm: string, issuer: string, audience: string) -> Result<string, JwtError> {
+    let algo = algo_to_i32(algorithm);
+    let payload = unsafe {
+        hew_jwt_decode_with_policy_hew(token, secret, algo, issuer, audience)
     };
     match last_error() {
         JwtError.None => .Ok(payload),
@@ -112,7 +137,7 @@ pub fn decode(token: string, secret: string, algorithm: string) -> Result<string
 /// import std.crypto.jwt;
 ///
 /// fn main() {
-///     let token = jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256") handle error {
+///     let token = jwt.encode("{\"sub\":\"1234\"}", "example only secret, never use in production", "HS256") handle error {
 ///         println(f"operation failed: {error}");
 ///         return;
 ///     };
@@ -126,7 +151,7 @@ pub fn decode_insecure(token: string) -> string {
     }
 }
 
-/// Validate a JWT signature and expiration.
+/// Validate a JWT signature, required expiration and optional not-before claim.
 ///
 /// Returns `true` if the token is valid, `false` otherwise.
 ///
@@ -136,11 +161,13 @@ pub fn decode_insecure(token: string) -> string {
 /// import std.crypto.jwt;
 ///
 /// fn main() {
-///     let token = jwt.encode("{\"sub\":\"1234\"}", "my_secret", "HS256") handle error {
+///     let claims = "{\"sub\":\"1234\",\"exp\":4102444800}";
+///     let secret = "example only secret, never use in production";
+///     let token = jwt.encode(claims, secret, "HS256") handle error {
 ///         println(f"operation failed: {error}");
 ///         return;
 ///     };
-///     if jwt.validate(token, "my_secret", "HS256") {
+///     if jwt.validate(token, secret, "HS256") {
 ///         println("valid");
 ///     }
 /// }
@@ -152,11 +179,21 @@ pub fn validate(token: string, secret: string, algorithm: string) -> bool {
     }) == 1
 }
 
+/// Validate a JWT for one issuer and audience without returning its claims.
+pub fn validate_with_policy(token: string, secret: string, algorithm: string, issuer: string, audience: string) -> bool {
+    let algo = algo_to_i32(algorithm);
+    (unsafe {
+        hew_jwt_validate_with_policy(token, secret, algo, issuer, audience)
+    }) == 1
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_jwt_encode_hew(payload: string, secret: string, algorithm: i32) -> string;
     fn hew_jwt_decode_hew(token: string, secret: string, algorithm: i32) -> string;
+    fn hew_jwt_decode_with_policy_hew(token: string, secret: string, algorithm: i32, issuer: string, audience: string) -> string;
     fn hew_jwt_last_error_code() -> i32;
     fn hew_jwt_decode_insecure(token: string) -> string;
     fn hew_jwt_validate(token: string, secret: string, algorithm: i32) -> i32;
+    fn hew_jwt_validate_with_policy(token: string, secret: string, algorithm: i32, issuer: string, audience: string) -> i32;
 }

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1621u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1623u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -3785,6 +3785,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      "HewString\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_jwt_decode_with_policy_hew",
+     "{\"native\": \"fn hew_jwt_decode_with_policy_hew( *const HewString, "
+     "*const HewString, i32, *const HewString, *const HewString, ) -> *mut "
+     "HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_jwt_encode",
      "{\"native\": \"fn hew_jwt_encode( *const c_char, *const c_char, i32, "
      "*mut HewJwtError, ) -> *mut c_char\"}",
@@ -3805,6 +3811,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
     {"hew_jwt_validate",
      "{\"native\": \"fn hew_jwt_validate( *const HewString, *const HewString, "
      "i32, ) -> i32\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_jwt_validate_with_policy",
+     "{\"native\": \"fn hew_jwt_validate_with_policy( *const HewString, *const "
+     "HewString, i32, *const HewString, *const HewString, ) -> i32\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_last_error",

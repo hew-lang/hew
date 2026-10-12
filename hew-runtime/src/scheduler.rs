@@ -1043,14 +1043,6 @@ pub extern "C" fn hew_runtime_cleanup() {
     // Clear the name registry so no dangling pointers remain.
     crate::registry::hew_registry_clear();
 
-    // SHIM: JIT reload must clear handler_names here; see #1234 Commit 1 rebase.
-    // WHY: The `handler_names` side-table added by #1234 Commit 1 is part of
-    //      the WASM bridge (bridge.rs MetaState), which is not compiled on
-    //      native.  When a native equivalent arises, clearing it belongs here.
-    // WHEN: Remove this marker if a native handler_names structure is introduced
-    //       and needs teardown alongside the other native registry state.
-    // REAL: `handler_names.clear()` adjacent to `hew_registry_clear()` above.
-
     // FINAL step: detach the runtime from its slot and drop it. Workers are
     // already joined (above) and the runtime-owned sweep is complete, so nothing
     // can still reference it. Dropping it frees the scheduler (deques, parkers,

@@ -29,22 +29,8 @@ static REGISTRY: PoisonSafe<Option<HashMap<u64, SendPtr<HewActor>>>> = PoisonSaf
 
 /// Side table mapping dispatch function pointer (as `usize`) to Hew type name.
 ///
-/// Populated by `hew_actor_register_type` before any instance of the type is
-/// spawned.  A `&'static str` is safe to store here because all type name
-/// strings originate from string literals baked into the binary.
-///
-/// # SHIM
-///
-/// WHY: `HewActor` is `#[repr(C)]` — adding a field would break the codegen
-///      ABI.  A side table keyed by dispatch-fn pointer gives us the mapping
-///      without touching the struct layout.
-/// WHEN: Remove if we ever add an out-of-band actor metadata channel that
-///       communicates type identity at spawn time without using the dispatch
-///       pointer as a key.
-/// REAL: Embed the type name directly in `HewActor` once the C ABI is
-///       versioned and codegen is updated to fill the new field.
-static DISPATCH_TYPE_REGISTRY: PoisonSafe<Option<HashMap<usize, &'static str>>> =
-    PoisonSafe::new(None);
+/// Owns names until session reset; lookups clone while holding the lock.
+static DISPATCH_TYPE_REGISTRY: PoisonSafe<Option<HashMap<usize, String>>> = PoisonSafe::new(None);
 
 /// Side table mapping `(dispatch_fn_ptr_as_usize, msg_type)` to the fully-qualified
 /// handler name `"ActorName.handler_name"`.
@@ -68,18 +54,7 @@ static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> 
 
 /// Register a Hew type name for a dispatch function.
 ///
-/// First registration for a `dispatch_fn` key wins; later registrations for the
-/// same key drop their `type_name` without leaking. The accepted name is
-/// promoted to `&'static str` by leaking it exactly once — only when this call
-/// actually inserts — so the table holds at most one leaked string per type,
-/// never one per call. The allocation is owned by the table: it is reclaimed and
-/// freed by `clear_dispatch_registry` at session reset (see its docs).
-///
-/// `type_name` is taken by value so the leak decision happens under the table
-/// lock: a losing concurrent registration frees its `String` instead of
-/// orphaning a `Box::leak`'d copy. Before this took ownership the caller leaked
-/// on every call (one orphaned string per spawn of an already-registered type),
-/// which a repeated-spawn corpus surfaced under `LeakSanitizer`.
+/// First registration for a dispatch key wins; later names are dropped.
 pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: String) {
     let key = dispatch_fn.map_or(0, |f| f as usize);
     if key == 0 {
@@ -89,9 +64,7 @@ pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: Str
         guard
             .get_or_insert_with(HashMap::new)
             .entry(key)
-            // Leak only on insert: the vacant arm promotes the owned name to
-            // `&'static str`; the occupied arm drops `type_name` (no leak).
-            .or_insert_with(|| Box::leak(type_name.into_boxed_str()));
+            .or_insert(type_name);
     });
 }
 
@@ -100,16 +73,6 @@ pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: Str
 ///
 /// Returns `"Actor".to_owned()` if the dispatch fn is not registered.
 ///
-/// [`lookup_dispatch_type`] is now a thin wrapper around this helper — it used
-/// to return a bare `&'static str` that borrowed the registry's
-/// `Box::leak`'d backing allocation and **released the lock before
-/// returning** (see [`PoisonSafe::access`], which drops its guard when the
-/// closure returns). Copying *after* that — e.g. `lookup_dispatch_type(d).to_owned()`
-/// — raced a concurrent `clear_dispatch_registry`, which can `Box::from_raw`-free
-/// that allocation in the gap between lock-release and the copy, leaving the
-/// copy to read freed memory. This helper performs the `to_owned()` **inside**
-/// the `access` closure, so the copy completes while the lock is still held
-/// and `clear` cannot run.
 #[must_use]
 pub fn lookup_dispatch_type_owned(dispatch_fn: Option<HewDispatchFn>) -> String {
     let key = match dispatch_fn.map(|f| f as usize) {
@@ -131,14 +94,10 @@ pub fn lookup_dispatch_type_by_ptr_owned(dispatch_ptr: usize) -> String {
         return "Actor".to_owned();
     }
     DISPATCH_TYPE_REGISTRY.access(|guard| {
-        // `to_owned()` runs while the lock is held, so it observes the leaked
-        // backing allocation before any concurrent `clear_dispatch_registry`
-        // (which acquires this same lock) can free it.
         guard
             .as_ref()
-            .and_then(|m| m.get(&dispatch_ptr).copied())
-            .unwrap_or("Actor")
-            .to_owned()
+            .and_then(|m| m.get(&dispatch_ptr).cloned())
+            .unwrap_or_else(|| "Actor".to_owned())
     })
 }
 
@@ -157,8 +116,7 @@ pub(crate) fn lookup_registered_dispatch_type_by_ptr_owned(dispatch_ptr: usize) 
     DISPATCH_TYPE_REGISTRY.access(|guard| {
         guard
             .as_ref()
-            .and_then(|map| map.get(&dispatch_ptr).copied())
-            .map(str::to_owned)
+            .and_then(|map| map.get(&dispatch_ptr).cloned())
     })
 }
 
@@ -167,19 +125,6 @@ pub(crate) fn lookup_registered_dispatch_type_by_ptr_owned(dispatch_ptr: usize) 
 ///
 /// Returns `"Actor".to_owned()` if the dispatch fn is not registered.
 ///
-/// This is now a thin wrapper over [`lookup_dispatch_type_owned`]. It used to
-/// return a bare `&'static str` borrowed from the registry's `Box::leak`'d
-/// backing allocation, handed back *after* the registry lock was released — a
-/// caller that copied the name out after that point (`to_owned`, `format!`,
-/// comparison-then-copy) raced `clear_dispatch_registry`, which frees that
-/// exact allocation with `Box::from_raw`. Every real caller of the old
-/// borrowing form only ever consumed it transiently (immediate `assert_eq!`
-/// against a `&str` literal in this module's own tests; zero callers
-/// elsewhere in the crate), so there was no use case the unsound signature
-/// actually served — it only kept the footgun reachable from safe Rust with
-/// nothing in the type system enforcing the "don't retain this" invariant the
-/// docs relied on. Delegating to the owned helper closes the hole outright
-/// instead of just documenting around it.
 #[must_use]
 pub fn lookup_dispatch_type(dispatch_fn: Option<HewDispatchFn>) -> String {
     lookup_dispatch_type_owned(dispatch_fn)
@@ -189,9 +134,7 @@ pub fn lookup_dispatch_type(dispatch_fn: Option<HewDispatchFn>) -> String {
 /// `usize`, copied into an owned `String` under the registry lock.
 ///
 /// Returns `"Actor".to_owned()` if the pointer is zero or has not been
-/// registered. Thin wrapper over [`lookup_dispatch_type_by_ptr_owned`]; see
-/// [`lookup_dispatch_type`] for why the borrowing `&'static str` form was
-/// retired rather than kept as a documented-hazard fast path.
+/// registered.
 #[must_use]
 pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> String {
     lookup_dispatch_type_by_ptr_owned(dispatch_ptr)
@@ -268,65 +211,11 @@ pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
 /// `profiler::register_reset_hooks`) so that stale dispatch-pointer-to-type-name
 /// mappings from a prior JIT load cycle cannot bleed into a fresh one.
 ///
-/// Each value in `DISPATCH_TYPE_REGISTRY` is a `&'static str` produced by
-/// `Box::leak(String::into_boxed_str(..))` in `register_dispatch_type`. A plain
-/// `map.clear()` would drop the fat pointers but orphan the heap they point to,
-/// so we reclaim each allocation with `Box::from_raw` (the exact inverse of the
-/// `Box::leak` that created it) and let the reconstituted `Box<str>` drop.
-/// Keeping the table's internal value type as `&'static str` (rather than an
-/// owned `String` per entry) avoids a second per-registration allocation on
-/// top of the leak the table already needs to hand a process-lifetime pointer
-/// to lookup callers under the lock.
-///
-/// Reclaiming here is sound because no live borrow into these allocations races
-/// the free. Every retaining consumer copies the name out **while holding this
-/// same lock**, via the owned lookup helpers (`lookup_dispatch_type_owned` /
-/// `lookup_dispatch_type_by_ptr_owned`, and the public [`lookup_dispatch_type`] /
-/// [`lookup_dispatch_type_by_ptr`] wrappers around them): `snapshot_all` into an
-/// owned `ActorSnapshot::actor_type: String`, and `signal`/`tracing` into their
-/// `String`/`format!` outputs. Because the copy completes inside the
-/// `DISPATCH_TYPE_REGISTRY.access` closure, this `clear` — which acquires the
-/// same lock — cannot interleave between a consumer's lookup and its copy.
-/// There is no longer a borrowing public accessor that hands back a
-/// `&'static str` after releasing the lock: that lookup-to-copy TOCTOU
-/// use-after-free window (a caller copying the name out *after* the lock
-/// released, racing this reclaim) was closed by retiring the borrowing form
-/// of [`lookup_dispatch_type`] / [`lookup_dispatch_type_by_ptr`] in favor of
-/// copying under the lock unconditionally — see their docs. This lock-scope
-/// coupling matters because the profiler server/sampler threads are NOT
-/// joined on this path — they are joined only by `profiler::shutdown`
-/// (reachable from `hew_node_stop`), whereas this runs from the
-/// `session_reset` hook fired by `hew_sched_shutdown` after only the scheduler
-/// workers are joined. A live profiler thread serving `/api/actors` either
-/// holds an already-owned `ActorSnapshot` or is mid-copy under the lock —
-/// never a bare borrow into what we free here.
-///
 /// After this call, `lookup_dispatch_type` returns `"Actor".to_owned()` for all
 /// pointers until `register_dispatch_type` is called again.
 pub(crate) fn clear_dispatch_registry() {
     DISPATCH_TYPE_REGISTRY.access(|guard| {
         if let Some(map) = guard.as_mut() {
-            for leaked in map.values() {
-                // SAFETY: every value was created by
-                // `Box::leak(String::into_boxed_str(..))` in
-                // `register_dispatch_type`, so the pointer owns a live
-                // `Box<str>` allocation and reclaiming it via `Box::from_raw`
-                // is the exact inverse of that leak. Each pointer is unique
-                // (HashMap keys are distinct dispatch fns, each leaked exactly
-                // once), so there is no double free, and the reconstituted
-                // `Box<str>` drops before `map.clear()` invalidates the entry.
-                //
-                // No live borrow into these allocations races this free: every
-                // retaining consumer copies the name out under *this same lock*
-                // via the owned lookup helpers (see the doc above), so a copy
-                // either completed before we acquired the lock or has not started
-                // — it can never interleave with this reclaim. Even the profiler
-                // threads — which this path does NOT join before clearing — hold
-                // owned data, not a pointer into what we free here.
-                let owned: Box<str> =
-                    unsafe { Box::from_raw(std::ptr::from_ref(*leaked).cast_mut()) };
-                drop(owned);
-            }
             map.clear();
         }
     });
@@ -386,18 +275,7 @@ pub struct ActorSnapshot {
     /// Hew actor type name, e.g. `"Counter"`.  Defaults to `"Actor"` when the
     /// type has not been registered via `hew_actor_register_type`.
     ///
-    /// Owned (`String`, not `&'static str`) so a snapshot never aliases the
-    /// dispatch-type registry's leaked backing allocations. `clear_dispatch_registry`
-    /// (the `session_reset` hook) reclaims those allocations with `Box::from_raw`,
-    /// but it runs after only the *scheduler workers* are joined — NOT the
-    /// profiler server/sampler threads, which are joined solely by
-    /// `profiler::shutdown` on the `hew_node_stop` path. A `HEW_PPROF` program
-    /// with no `HewNode` (the profiler is started via `maybe_start` in
-    /// `hew_sched_init`) therefore has a live profiler thread serving
-    /// `/api/actors` concurrently with `clear_dispatch_registry`. Were this a
-    /// `&'static str` it would dangle in `serve_actors`/`pprof` after the clear;
-    /// copying the name out in `snapshot_all` severs that coupling so the
-    /// snapshot safely outlives the registry.
+    /// The owned name remains valid after registry reset.
     pub actor_type: String,
     /// Current lifecycle state.
     pub state: &'static str,
@@ -465,16 +343,6 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 )
             };
 
-            // lookup_dispatch_type_owned acquires DISPATCH_TYPE_REGISTRY — a
-            // different mutex, so nesting here is safe. The owned variant copies
-            // the name into a `String` *under that lock*, so the copy observes
-            // the registry's leaked backing allocation before any concurrent
-            // `clear_dispatch_registry` (which acquires the same lock) can
-            // `Box::from_raw`-free it. Copying after the lock released — as a
-            // plain `lookup_dispatch_type(..).to_owned()` would — is a
-            // lookup-to-copy TOCTOU read of freed memory, because the profiler
-            // thread consuming this snapshot is not joined before that reclaim
-            // (see `ActorSnapshot::actor_type` and `lookup_dispatch_type_owned`).
             let actor_type = lookup_dispatch_type_owned(a.dispatch);
 
             result.push(ActorSnapshot {
@@ -745,16 +613,9 @@ mod tests {
         std::ptr::null_mut()
     }
 
-    /// `clear_dispatch_registry` reclaims the `Box::leak`'d type-name strings.
-    ///
-    /// Repeatedly register-then-clear under the same dispatch key: each register
-    /// leaks one `Box<str>` and each clear must reclaim it. Run under
-    /// `LeakSanitizer` (`make asan`) this reports zero leaked bytes; a plain
-    /// `map.clear()` would orphan one allocation per iteration. The behavioural
-    /// assertion (fallback after clear) backstops the same invariant when
-    /// `AddressSanitizer` is not active.
+    /// Repeated registration and reset releases the registry's owned names.
     #[test]
-    fn clear_dispatch_registry_reclaims_leaked_strings() {
+    fn clear_dispatch_registry_releases_owned_strings() {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -788,23 +649,7 @@ mod tests {
         std::ptr::null_mut()
     }
 
-    /// Regression for the lookup-to-copy TOCTOU use-after-free that used to be
-    /// reachable through the public `lookup_dispatch_type`/`lookup_dispatch_type_by_ptr`
-    /// API: retain a lookup result across `clear_dispatch_registry` and read it.
-    ///
-    /// `lookup_dispatch_type` used to return a bare `&'static str` borrowed from
-    /// the registry's `Box::leak`'d backing allocation, handed back *after* the
-    /// registry lock was released. `clear_dispatch_registry` reclaims that exact
-    /// allocation with `Box::from_raw`. A caller that retained the borrow past a
-    /// concurrent (or, as here, subsequent) clear read freed memory through a
-    /// 100%-safe-Rust call path — no `unsafe` at the call site, nothing in the
-    /// type system preventing it. `lookup_dispatch_type` is now a thin wrapper
-    /// over the owned helper, so the retained value is a real `String` holding
-    /// its own copy: it must survive the clear and still read the exact
-    /// registered name, with no reliance on allocator-timing luck. Run under
-    /// `AddressSanitizer` (`make asan`), the pre-fix borrowing form would report
-    /// a heap-use-after-free at the final `assert_eq!`; the owned return type
-    /// makes that class of bug unreachable through this function at all.
+    /// A lookup result owns its name and remains valid across registry reset.
     #[test]
     fn lookup_dispatch_type_retained_across_clear_stays_valid() {
         let _guard = TEST_LOCK
@@ -848,23 +693,7 @@ mod tests {
         );
     }
 
-    /// A snapshot taken before `clear_dispatch_registry` stays valid after it.
-    ///
-    /// Regression for a use-after-free: `clear_dispatch_registry` frees the
-    /// `Box::leak`'d type-name allocations with `Box::from_raw`, but it runs on
-    /// the `session_reset`/`hew_sched_shutdown` path that joins only the
-    /// scheduler workers — NOT the profiler server/sampler threads (joined only
-    /// by `profiler::shutdown` from `hew_node_stop`). A `HEW_PPROF` program with
-    /// no `HewNode` therefore has a live profiler thread holding an
-    /// `ActorSnapshot` while the registry is cleared. If `ActorSnapshot::actor_type`
-    /// were a `&'static str` it would alias the freed allocation and dangle here;
-    /// because the snapshot owns its copy, the name survives the clear intact.
-    ///
-    /// This models that retained-snapshot-across-clear window directly: snapshot,
-    /// clear (frees the backing allocation), then read `actor_type`. Under
-    /// `AddressSanitizer`/`LeakSanitizer` (`make asan`) a borrow would be reported
-    /// as a use-after-free at the post-clear read; the owned `String` reads clean
-    /// and still equals the registered name.
+    /// Profiler snapshots remain valid when scheduler shutdown clears the registry.
     #[test]
     fn snapshot_actor_type_survives_registry_clear() {
         let _guard = TEST_LOCK
@@ -1225,8 +1054,7 @@ mod tests {
     /// Regression for the lookup-to-copy TOCTOU use-after-free:
     /// `lookup_dispatch_type_by_ptr_owned` must copy the type name *under* the
     /// `DISPATCH_TYPE_REGISTRY` lock, so a concurrent `clear_dispatch_registry`
-    /// (which `Box::from_raw`-frees each leaked `&'static str`) cannot free the
-    /// backing allocation between the lookup and the copy.
+    /// cannot free the backing allocation between the lookup and the copy.
     ///
     /// The original fix owned the name in `ActorSnapshot` (closing the
     /// *retained-snapshot-across-clear* dangle) but still copied via

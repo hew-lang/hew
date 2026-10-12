@@ -646,15 +646,8 @@ impl PartitionRegistry {
 /// snapshot supplied by [`HewCluster::tick`] so the detector itself stays
 /// orthogonal to the protocol (per A152 ratification).
 ///
-/// # SHIM note
-///
-/// v0.5 indirect-ping forwarding (`SWIM_MSG_PING_REQ`) records the
-/// sender's last-seen but does not yet issue a real forwarded ping to the
-/// target — the actual fanout requires the C3 SWIM driver (protocol
-/// runner + transport).  This is the correct "trampoline + caller handles
-/// forwarding" contract from the original `process_message` comment.
-/// When C3 lands it will either extend this impl or replace it via the
-/// trait.
+/// The connection SWIM receiver forwards indirect probes after applying the
+/// membership decision returned here.
 #[derive(Debug, Default)]
 pub struct SimpleSwim {
     /// Cursor for round-robin ping target selection.
@@ -692,13 +685,6 @@ impl ClusterProtocol for SimpleSwim {
     }
 
     fn handle_ping_req(&self, _from_node: u16) -> ProtocolDecision {
-        // SHIM: record last-seen for the intermediary; actual forwarding
-        // to the target is the caller's (C3 driver's) responsibility.
-        // WHY: C3 SWIM driver not yet wired; this preserves the pre-C1
-        //   "caller handles forwarding" trampoline contract.
-        // WHEN obsolete: when C3 supplies a real indirect-ping sender.
-        // REAL solution: ClusterProtocol gains a `send_indirect_ping`
-        //   callback or the C3 runner wraps the trait for transport access.
         ProtocolDecision {
             update_last_seen: true,
             upsert_alive: false,

@@ -282,11 +282,11 @@ fn collect_output(consume output: stream.Stream<bytes>) -> string {
 }
 
 fn capture(consume child: Child) -> CommandOutput fails ProcessError {
-    let stdout = child.stdout()?;
-    let stderr = child.stderr()?;
+    let stdout_stream = child.stdout()?;
+    let stderr_stream = child.stderr()?;
     scope {
-        let stdout_task = fork collect_output(stdout);
-        let stderr_task = fork collect_output(stderr);
+        let stdout_task = fork collect_output(stdout_stream);
+        let stderr_task = fork collect_output(stderr_stream);
         let stdout = await stdout_task;
         let stderr = await stderr_task;
         let status = child.wait() handle error {

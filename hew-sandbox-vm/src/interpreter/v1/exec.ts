@@ -688,9 +688,19 @@ class ExecutorV1 {
         act.places.set(op.place, { value: UNIT, valid: false });
         return;
       case "store.init":
-      case "store.assign":
         writeRef(this.placeRef(act, op.place), this.read(act, op.value));
         return;
+      case "store.assign": {
+        const ref = this.placeRef(act, op.place);
+        const replacement = this.read(act, op.value);
+        const previous = liveRef(ref) ? readRef(ref) : UNIT;
+        // Retire the old owner before invoking user close code. Publish the
+        // replacement after cleanup, including when close records a fault;
+        // the following cleanup.dispatch then drains the new owner once.
+        invalidateRef(ref);
+        this.releaseOperation(act, previous, () => writeRef(ref, replacement));
+        return;
+      }
       case "load.copy":
         this.define(
           act,
